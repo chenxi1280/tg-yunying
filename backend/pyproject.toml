@@ -1,0 +1,34 @@
+[project]
+name = "tg-yunying-backend"
+version = "0.1.0"
+description = "TG operations management platform backend"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "sqlalchemy>=2.0.0",
+  "psycopg[binary]>=3.2.0",
+  "pydantic>=2.7.0",
+  "python-dotenv>=1.0.0",
+  "python-multipart>=0.0.9",
+  "alembic>=1.13.0",
+  "telethon>=1.36.0",
+  "redis>=5.0.0",
+  "cryptography>=42.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "httpx>=0.27.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

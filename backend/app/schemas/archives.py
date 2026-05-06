@@ -1,0 +1,105 @@
+from __future__ import annotations
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel
+
+from .api import ApiModel
+
+
+class ArchiveCreate(BaseModel):
+    tenant_id: int = 1
+    group_id: int
+    title: str
+
+
+class ArchiveExportRequest(BaseModel):
+    export_format: str = "json"
+
+
+class ArchiveOut(ApiModel):
+    id: int
+    tenant_id: int
+    group_id: int
+    title: str
+    status: str
+    sync_mode: str
+    failure_detail: str
+    message_count: int
+    member_count: int
+    summary: str
+    new_group_plan: str
+    created_at: datetime
+
+
+class ArchivedMessageOut(ApiModel):
+    id: int
+    archive_id: int
+    sender_name: str
+    content: str
+    message_type: str
+    sent_at: datetime
+
+
+class ArchivedMemberOut(ApiModel):
+    id: int
+    archive_id: int
+    display_name: str
+    username: str | None
+    activity_score: int
+    tags: str
+
+
+class ArchiveDetailOut(BaseModel):
+    archive: ArchiveOut
+    messages: list[ArchivedMessageOut]
+    members: list[ArchivedMemberOut]
+    invite_candidates: list[ArchivedMemberOut] = []
+
+
+class ArchiveExportOut(BaseModel):
+    archive: ArchiveOut
+    export_format: str
+    generated_at: datetime
+    message_count: int
+    member_count: int
+    messages: list[ArchivedMessageOut]
+    members: list[ArchivedMemberOut]
+    invite_candidates: list[ArchivedMemberOut] = []
+
+
+# ── Audit ──
+
+class AuditLogOut(ApiModel):
+    id: int
+    tenant_id: int | None
+    actor: str
+    action: str
+    target_type: str
+    target_id: str
+    detail: str
+    ip_address: str
+    created_at: datetime
+
+
+# ── Reports / Overview ──
+
+class OverviewOut(BaseModel):
+    totals: dict[str, int]
+    rates: dict[str, float]
+    queue: dict[str, int]
+    risks: list[dict[str, Any]]
+
+
+class ReportOut(BaseModel):
+    accounts: dict[str, Any]
+    groups: dict[str, Any]
+    tasks: dict[str, Any]
+    tenant: dict[str, Any]
+
+
+__all__ = [
+    "ArchiveCreate", "ArchiveOut", "ArchivedMessageOut", "ArchivedMemberOut",
+    "ArchiveDetailOut", "ArchiveExportRequest", "ArchiveExportOut",
+    "AuditLogOut", "OverviewOut", "ReportOut",
+]

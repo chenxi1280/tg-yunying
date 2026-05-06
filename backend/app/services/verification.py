@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models import AccountStatus, TgAccount, VerificationTask
+
+from ._common import _now, audit, gateway
+from .developer_apps import credentials_for_account
+
+
+__all__ = [
+    "confirm_verification_task",
+    "create_verification_task",
+    "dismiss_verification_task",
+    "list_verification_tasks",
+]
+
+
+def list_verification_tasks(session: Session, tenant_id: int, account_id: int | None = None, group_id: int | None = None, limit: int = 100) -> list[VerificationTask]:
+    stmt = select(VerificationTask).where(VerificationTask.tenant_id == tenant_id)
+    if account_id:
+        stmt = stmt.where(VerificationTask.account_id == account_id)
+    if group_id:
+        stmt = stmt.where(VerificationTask.group_id == group_id)
+    return list(session.scalars(stmt.order_by(VerificationTask.id.desc()).limit(limit)))
+
+
+def create_verification_task(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_id: int | None,
+    group_id: int | None,
+    message_task_id: int | None,
+    verification_type: str,
+    detected_reason: str,
+    suggested_action: str,
+    target_peer_id: str = "",
+    target_display: str = "",
+) -> VerificationTask:
+    existing = session.scalar(
+        select(VerificationTask)
+        .where(
+            VerificationTask.tenant_id == tenant_id,
+            VerificationTask.account_id == account_id,
+            VerificationTask.group_id == group_id,
+            VerificationTask.status == "待处理",
+            VerificationTask.verification_type == verification_type,
+        )
+        .order_by(VerificationTask.id.desc())
+    )
+    if existing:
+        return existing
+    task = VerificationTask(
+        tenant_id=tenant_id,
+        account_id=account_id,
+        group_id=group_id,
+        message_task_id=message_task_id,
+        verification_type=verification_type,
+        detected_reason=detected_reason,
+        suggested_action=suggested_action,
+        target_peer_id=target_peer_id,
+        target_display=target_display,
+        requires_user_confirm=True,
+        status="待处理",
+    )
+    session.add(task)
+    session.flush()
+    audit(session, tenant_id=tenant_id, actor="system", action="生成验证辅助任务", target_type="verification_task", target_id=str(task.id), detail=verification_type)
+    return task
+
+
+def confirm_verification_task(session: Session, task_id: int, actor: str) -> VerificationTask:
+    task = session.get(VerificationTask, task_id)
+    if not task:
+        raise ValueError("verification task not found")
+    if task.status not in {"待处理", "失败"}:
+        return task
+    account = session.get(TgAccount, task.account_id) if task.account_id else None
+    if not account or account.status != AccountStatus.ACTIVE.value:
+        task.status = "失败"
+        task.failure_detail = "账号不可用，请先完成登录或健康检查"
+    else:
+        try:
+            credentials = credentials_for_account(session, account)
+            result = gateway.resolve_verification_task(account.id, task.suggested_action, task.target_peer_id, account.session_ciphertext, credentials)
+            task.status = result.status
+            task.failure_detail = result.detail
+        except Exception as exc:  # noqa: BLE001
+            task.status = "失败"
+            task.failure_detail = str(exc)
+    task.handled_at = _now()
+    audit(session, tenant_id=task.tenant_id, actor=actor, action="处理验证辅助任务", target_type="verification_task", target_id=str(task.id), detail=f"{task.status}:{task.failure_detail}")
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def dismiss_verification_task(session: Session, task_id: int, actor: str) -> VerificationTask:
+    task = session.get(VerificationTask, task_id)
+    if not task:
+        raise ValueError("verification task not found")
+    task.status = "已忽略"
+    task.handled_at = _now()
+    audit(session, tenant_id=task.tenant_id, actor=actor, action="忽略验证辅助任务", target_type="verification_task", target_id=str(task.id))
+    session.commit()
+    session.refresh(task)
+    return task

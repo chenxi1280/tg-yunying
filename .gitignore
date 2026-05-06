@@ -1,0 +1,40 @@
+.DS_Store
+.idea/
+.claude/
+.playwright-cli/
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+*.sqlite3
+*.sqlite
+*.db
+
+# Node / frontend
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Runtime uploads / local QA artifacts
+media/
+output/
+
+# Logs / temp files
+*.log
+*.tmp
+*.temp
+*.bak
+tmp/
+
+# Image artifacts at root
+*.webp
+*.png
