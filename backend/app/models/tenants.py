@@ -18,10 +18,10 @@ class Tenant(Base):
     plan_name: Mapped[str] = mapped_column(String(80), default="试运行")
     account_quota: Mapped[int] = mapped_column(Integer, default=50)
     task_quota: Mapped[int] = mapped_column(Integer, default=5000)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
-    accounts: Mapped[list[TgAccount]] = relationship(back_populates="tenant")  # noqa: F821
-    groups: Mapped[list[TgGroup]] = relationship(back_populates="tenant")  # noqa: F821
+    accounts: Mapped[list[TgAccount]] = relationship(back_populates="tenant")
+    groups: Mapped[list[TgGroup]] = relationship(back_populates="tenant")
 
 
 class AccountPool(Base):
@@ -33,10 +33,10 @@ class AccountPool(Base):
     name: Mapped[str] = mapped_column(String(120))
     description: Mapped[str] = mapped_column(String(255), default="")
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
-    accounts: Mapped[list[TgAccount]] = relationship(back_populates="pool")  # noqa: F821
+    accounts: Mapped[list[TgAccount]] = relationship(back_populates="pool")
 
 
 class AppUser(Base):
@@ -50,11 +50,11 @@ class AppUser(Base):
     phone: Mapped[str | None] = mapped_column(String(40), unique=True, nullable=True)
     password_hash: Mapped[str] = mapped_column(String(240), default="")
     subscription_status: Mapped[str] = mapped_column(String(30), default="active")
-    subscription_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
-    subscription_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
-    last_activated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    subscription_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    subscription_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_activated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -67,11 +67,11 @@ class ActivationCode(Base):
     duration_days: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(30), default="unused")
     created_by: Mapped[str] = mapped_column(String(100), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     redeemed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("app_users.id"), nullable=True)
-    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
-    subscription_start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
-    subscription_end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    subscription_start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    subscription_end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     note: Mapped[str] = mapped_column(String(255), default="")
 
 

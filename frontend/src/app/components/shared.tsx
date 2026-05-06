@@ -249,9 +249,3 @@ export function ServiceCard({
   );
 }
 
-
-// ── Helper ──
-
-export function activityLabel(active: boolean, healthyStatus: string, disabledLabel = '禁用'): string {
-  return active ? healthyStatus : disabledLabel;
-}

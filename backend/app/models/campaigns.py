@@ -31,7 +31,7 @@ class Campaign(Base):
     target_group_ids: Mapped[str] = mapped_column(Text, default="")
     selected_account_ids_by_group: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default=TaskStatus.DRAFT.value)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class AiDraft(Base):
@@ -54,7 +54,7 @@ class AiDraft(Base):
     generation_source: Mapped[str] = mapped_column(String(40), default="mock")
     generation_error: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default=TaskStatus.PENDING_REVIEW.value)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class MessageTask(Base):
@@ -79,9 +79,9 @@ class MessageTask(Base):
     idempotency_key: Mapped[str] = mapped_column(String(80))
     failure_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
     failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    scheduled_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
-    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
     @property
     def actual_account_changed(self) -> bool:
@@ -98,7 +98,7 @@ class MessageTaskAttempt(Base):
     status: Mapped[str] = mapped_column(String(30))
     failure_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class Material(Base):
@@ -112,7 +112,7 @@ class Material(Base):
     tags: Mapped[str] = mapped_column(String(240), default="")
     review_status: Mapped[str] = mapped_column(String(40), default="已审核")
     usage_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 __all__ = ["Campaign", "AiDraft", "MessageTask", "MessageTaskAttempt", "Material"]

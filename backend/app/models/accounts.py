@@ -21,14 +21,14 @@ class TelegramDeveloperApp(Base):
     health_status: Mapped[str] = mapped_column(String(30), default=DeveloperAppHealthStatus.HEALTHY.value)
     max_accounts: Mapped[int] = mapped_column(Integer, default=0)
     credentials_version: Mapped[int] = mapped_column(Integer, default=1)
-    last_assigned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
-    last_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    last_assigned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
     notes: Mapped[str] = mapped_column(String(255), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
-    accounts: Mapped[list[TgAccount]] = relationship(back_populates="developer_app")  # noqa: F821
+    accounts: Mapped[list[TgAccount]] = relationship(back_populates="developer_app")
 
 
 class TgAccount(Base):
@@ -46,22 +46,22 @@ class TgAccount(Base):
     avatar_object_key: Mapped[str] = mapped_column(String(300), default="")
     profile_sync_status: Mapped[str] = mapped_column(String(30), default="未同步")
     profile_sync_error: Mapped[str] = mapped_column(Text, default="")
-    profile_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    profile_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     phone_masked: Mapped[str] = mapped_column(String(60))
     phone_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     developer_app_id: Mapped[int | None] = mapped_column(ForeignKey("telegram_developer_apps.id"), nullable=True)
     developer_app_version: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(30), default=AccountStatus.PENDING_LOGIN.value)
     health_score: Mapped[float] = mapped_column(Float, default=100)
-    last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     session_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
-    tenant: Mapped[Tenant] = relationship(back_populates="accounts")  # noqa: F821
-    groups: Mapped[list[TgGroupAccount]] = relationship(back_populates="account")  # noqa: F821
-    contacts: Mapped[list[TgContact]] = relationship(back_populates="account")  # noqa: F821
+    tenant: Mapped[Tenant] = relationship(back_populates="accounts")
+    groups: Mapped[list[TgGroupAccount]] = relationship(back_populates="account")
+    contacts: Mapped[list[TgContact]] = relationship(back_populates="account")
     developer_app: Mapped[TelegramDeveloperApp | None] = relationship(back_populates="accounts")
-    pool: Mapped[AccountPool | None] = relationship(back_populates="accounts")  # noqa: F821
+    pool: Mapped[AccountPool | None] = relationship(back_populates="accounts")
 
     @property
     def developer_app_name(self) -> str | None:
@@ -98,8 +98,8 @@ class TgAccountProfileSyncRecord(Base):
     failure_type: Mapped[str] = mapped_column(String(40), default="")
     failure_detail: Mapped[str] = mapped_column(Text, default="")
     remote_detail: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
-    synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class TgAccountSyncRecord(Base):
@@ -114,10 +114,10 @@ class TgAccountSyncRecord(Base):
     result_count: Mapped[int] = mapped_column(Integer, default=0)
     failure_type: Mapped[str] = mapped_column(String(40), default="")
     failure_detail: Mapped[str] = mapped_column(Text, default="")
-    scheduled_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class TgContact(Base):
@@ -133,9 +133,9 @@ class TgContact(Base):
     phone_masked: Mapped[str] = mapped_column(String(60), default="")
     contact_type: Mapped[str] = mapped_column(String(40), default="private")
     is_mutual: Mapped[bool] = mapped_column(Boolean, default=False)
-    last_message_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
-    last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
     account: Mapped[TgAccount] = relationship(back_populates="contacts")
 
@@ -149,9 +149,9 @@ class TgLoginFlow(Base):
     method: Mapped[str] = mapped_column(String(24))
     status: Mapped[str] = mapped_column(String(30))
     code_preview: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    code_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    code_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     qr_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class TgVerificationCode(Base):
@@ -162,12 +162,12 @@ class TgVerificationCode(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     source: Mapped[str] = mapped_column(String(40), default="telegram_service_message")
     code_preview: Mapped[str | None] = mapped_column(String(24), nullable=True)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     viewed_by: Mapped[str] = mapped_column(String(100), default="")
-    viewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    viewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="可查看")
     raw_hint: Mapped[str] = mapped_column(String(160), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 __all__ = [

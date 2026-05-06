@@ -24,7 +24,7 @@ class GroupArchive(Base):
     member_count: Mapped[int] = mapped_column(Integer, default=0)
     summary: Mapped[str] = mapped_column(Text, default="")
     new_group_plan: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class ArchivedMessage(Base):
@@ -36,7 +36,7 @@ class ArchivedMessage(Base):
     sender_name: Mapped[str] = mapped_column(String(120))
     content: Mapped[str] = mapped_column(Text)
     message_type: Mapped[str] = mapped_column(String(40), default="text")
-    sent_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class ArchivedMember(Base):
@@ -62,7 +62,7 @@ class AuditLog(Base):
     target_id: Mapped[str] = mapped_column(String(80))
     detail: Mapped[str] = mapped_column(Text, default="")
     ip_address: Mapped[str] = mapped_column(String(80), default="127.0.0.1")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 __all__ = ["GroupArchive", "ArchivedMessage", "ArchivedMember", "AuditLog"]

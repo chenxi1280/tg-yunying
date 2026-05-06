@@ -32,12 +32,12 @@ class DeveloperAppOut(ApiModel):
     max_accounts: int
     assigned_accounts: int = 0
     credentials_version: int
-    last_assigned_at: datetime | None  # noqa: F821
-    last_check_at: datetime | None  # noqa: F821
+    last_assigned_at: datetime | None
+    last_check_at: datetime | None
     last_error: str
     notes: str
-    created_at: datetime  # noqa: F821
-    updated_at: datetime  # noqa: F821
+    created_at: datetime
+    updated_at: datetime
 
 
 __all__ = ["DeveloperAppCreate", "DeveloperAppOut", "DeveloperAppUpdate"]

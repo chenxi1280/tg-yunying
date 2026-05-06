@@ -31,8 +31,8 @@ class TgGroup(Base):
     link_whitelist: Mapped[str] = mapped_column(Text, default="")
     require_review: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    tenant: Mapped[Tenant] = relationship(back_populates="groups")  # noqa: F821
-    accounts: Mapped[list[TgGroupAccount]] = relationship(back_populates="group")  # noqa: F821
+    tenant: Mapped[Tenant] = relationship(back_populates="groups")
+    accounts: Mapped[list[TgGroupAccount]] = relationship(back_populates="group")
 
 
 class TgGroupAccount(Base):
@@ -45,10 +45,10 @@ class TgGroupAccount(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     permission_label: Mapped[str] = mapped_column(String(80), default="普通成员")
     can_send: Mapped[bool] = mapped_column(Boolean, default=True)
-    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     group: Mapped[TgGroup] = relationship(back_populates="accounts")
-    account: Mapped[TgAccount] = relationship(back_populates="groups")  # noqa: F821
+    account: Mapped[TgAccount] = relationship(back_populates="groups")
 
 
 class VerificationTask(Base):
@@ -67,8 +67,8 @@ class VerificationTask(Base):
     requires_user_confirm: Mapped[bool] = mapped_column(Boolean, default=True)
     status: Mapped[str] = mapped_column(String(30), default="待处理")
     failure_detail: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
-    handled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 __all__ = ["TgGroup", "TgGroupAccount", "VerificationTask"]

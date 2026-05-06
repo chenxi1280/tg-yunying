@@ -24,8 +24,8 @@ class AccountClonePlan(Base):
     items_failed: Mapped[int] = mapped_column(Integer, default=0)
     failure_detail: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[str] = mapped_column(String(100), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
-    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class AccountCloneItem(Base):
@@ -42,8 +42,8 @@ class AccountCloneItem(Base):
     status: Mapped[str] = mapped_column(String(30), default="待确认")
     failure_type: Mapped[str] = mapped_column(String(40), default="")
     failure_detail: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
-    executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 __all__ = ["AccountCloneItem", "AccountClonePlan"]

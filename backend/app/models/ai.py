@@ -26,11 +26,11 @@ class AiProvider(Base):
     is_billable: Mapped[bool] = mapped_column(Boolean, default=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     health_status: Mapped[str] = mapped_column(String(30), default=AiProviderHealthStatus.HEALTHY.value)
-    last_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # noqa: F821
+    last_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
     notes: Mapped[str] = mapped_column(String(255), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class PromptTemplate(Base):
@@ -43,8 +43,8 @@ class PromptTemplate(Base):
     content: Mapped[str] = mapped_column(Text)
     version: Mapped[int] = mapped_column(Integer, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class TenantAiSetting(Base):
@@ -58,7 +58,7 @@ class TenantAiSetting(Base):
     fallback_to_mock: Mapped[bool] = mapped_column(Boolean, default=True)
     temperature: Mapped[float] = mapped_column(Float, default=0.8)
     max_tokens: Mapped[int] = mapped_column(Integer, default=1024)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class SchedulingSetting(Base):
@@ -71,7 +71,7 @@ class SchedulingSetting(Base):
     jitter_max_seconds: Mapped[int] = mapped_column(Integer, default=180)
     batch_interval_seconds: Mapped[int] = mapped_column(Integer, default=45)
     respect_send_window: Mapped[bool] = mapped_column(Boolean, default=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class AiUsageLedger(Base):
@@ -97,7 +97,7 @@ class AiUsageLedger(Base):
     billable: Mapped[bool] = mapped_column(Boolean, default=False)
     request_status: Mapped[str] = mapped_column(String(30), default="success")
     error_detail: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)  # noqa: F821
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 __all__ = ["AiProvider", "PromptTemplate", "TenantAiSetting", "SchedulingSetting", "AiUsageLedger"]
