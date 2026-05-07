@@ -1,1 +1,177 @@
-/* Shared component rules are currently sourced from the legacy stylesheet while extraction continues. */
+/* AntD migration overrides: keep the existing operational tone while letting AntD own interaction surfaces. */
+
+.app-shell.ant-layout {
+  min-height: 100vh;
+  display: flex;
+  background: var(--bg);
+}
+
+.sidebar.ant-layout-sider {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  padding: 22px;
+  border-right: 1px solid var(--line);
+  background: #f9faf7 !important;
+}
+
+.sidebar .ant-layout-sider-children {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.shell-menu.ant-menu {
+  border-inline-end: 0;
+  background: transparent;
+}
+
+.shell-menu .ant-menu-item {
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.shell-menu .ant-menu-item-selected {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.topbar.ant-layout-header {
+  height: auto;
+  padding: 24px 24px 0;
+  margin-bottom: 0;
+  background: transparent;
+  line-height: 1.4;
+}
+
+.topbar .ant-typography {
+  margin: 0;
+}
+
+.topbar h1.ant-typography {
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+.app-content {
+  min-width: 0;
+  padding: 24px;
+}
+
+.panel.ant-card,
+.sub-panel.ant-card,
+.stat-card.ant-card,
+.developer-card.ant-card,
+.archive-card.ant-card,
+.task-card.ant-card,
+.summary-card.ant-card {
+  border-color: var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.panel.ant-card > .ant-card-body {
+  display: grid;
+  gap: 14px;
+}
+
+.stat-card.ant-card {
+  min-height: 138px;
+  padding: 0;
+}
+
+.stat-card .ant-statistic-title,
+.stat-card .stat-detail,
+.muted-line {
+  color: var(--muted);
+}
+
+.stat-card .ant-statistic-content {
+  display: grid;
+  gap: 4px;
+}
+
+.stat-detail {
+  display: block;
+  margin-left: 0;
+  font-size: 13px;
+}
+
+.tg-table,
+.activation-code-table {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.tg-table .ant-table-thead > tr > th,
+.activation-code-table .ant-table-thead > tr > th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tg-table .ant-table-cell,
+.activation-code-table .ant-table-cell {
+  vertical-align: top;
+}
+
+.tabs-row.ant-tabs {
+  margin: 16px 0;
+}
+
+.tabs-row.ant-segmented {
+  width: fit-content;
+}
+
+.wizard-steps.ant-steps {
+  display: flex;
+}
+
+.wizard-steps.ant-steps .ant-steps-item {
+  min-width: 0;
+}
+
+.group-option.ant-btn,
+.account-pick.ant-btn,
+.contact-pick.ant-btn {
+  height: auto;
+  white-space: normal;
+}
+
+.group-option.ant-btn > span,
+.account-pick.ant-btn > span,
+.contact-pick.ant-btn > span {
+  display: grid;
+  gap: 5px;
+  text-align: left;
+}
+
+.policy-grid .ant-input,
+.policy-grid .ant-input-number,
+.policy-grid .ant-select,
+.policy-grid .ant-picker {
+  width: 100%;
+}
+
+.modal-actions.ant-space {
+  position: sticky;
+  bottom: -18px;
+  width: calc(100% + 36px);
+  margin: 16px -18px -18px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  justify-content: flex-end;
+}
+
+.login-panel.ant-card {
+  padding: 0;
+}
+
+.login-panel .ant-form {
+  display: grid;
+  gap: 12px;
+}

@@ -12,9 +12,8 @@ import {
   Smartphone,
   Users,
 } from 'lucide-react';
+import { Alert, Button, Card, Form, Input, Layout, Menu, Space, Tabs, Typography } from 'antd';
 import { AppProvider, useAppContext } from './context';
-import { StatusBadge } from './components/shared';
-import { statusAccent, operationLabel } from './utils';
 import OverviewView from './views/OverviewView';
 import AccountsView from './views/AccountsView';
 import GroupsView from './views/GroupsView';
@@ -26,7 +25,9 @@ import UsageReportsView from './views/UsageReportsView';
 import ArchivesView from './views/ArchivesView';
 import AuditsView from './views/AuditsView';
 import { AppModals } from './AppModals';
-import { VIEW_ROUTES, viewFromPath } from './routes';
+import { VIEW_ROUTES } from './routes';
+
+const { Header, Sider, Content } = Layout;
 
 function AppShell() {
   const ctx = useAppContext();
@@ -123,16 +124,16 @@ function AppShell() {
   const registerReady = Boolean(registerForm.name.trim() && registerForm.email.trim() && registerForm.password && captchaToken && !busy);
 
   const captchaControl = (
-    <div className={`captcha-box ${captchaToken ? 'verified' : ''}`}>
+    <Card className={`captcha-box ${captchaToken ? 'verified' : ''}`} size="small">
       <div className="captcha-head">
         <span>验证码</span>
-        <button type="button" className="small" onClick={refreshCaptchaChallenge} disabled={captchaLoading}>
+        <Button size="small" onClick={refreshCaptchaChallenge} disabled={captchaLoading}>
           刷新
-        </button>
+        </Button>
       </div>
       <div className="captcha-code-row">
         {captchaChallenge ? <img src={captchaChallenge.image_data_url} alt="验证码" /> : <div className="captcha-image-placeholder">加载中</div>}
-        <input
+        <Input
           value={captchaInput}
           onChange={(event) => setCaptchaInput(event.target.value.toUpperCase())}
           disabled={!captchaChallenge || captchaLoading || Boolean(captchaToken)}
@@ -141,20 +142,20 @@ function AppShell() {
         />
       </div>
       <div className="captcha-actions">
-        <button type="button" onClick={verifyCaptcha} disabled={!captchaChallenge || captchaLoading || Boolean(captchaToken) || captchaInput.trim().length < 5}>
+        <Button size="small" onClick={verifyCaptcha} disabled={!captchaChallenge || captchaLoading || Boolean(captchaToken) || captchaInput.trim().length < 5}>
           {captchaToken ? '已通过' : captchaLoading ? '验证中' : '验证'}
-        </button>
+        </Button>
         <span className={captchaToken ? 'captcha-ok' : captchaError ? 'captcha-error' : ''}>
           {captchaToken ? '验证码已通过' : captchaError || '输入图片中的数字和字母'}
         </span>
       </div>
-    </div>
+    </Card>
   );
 
   if (!token) {
     return (
       <div className="login-screen">
-        <section className="login-panel">
+        <Card className="login-panel">
           <div className="brand login-brand">
             <div className="brand-mark">TG</div>
             <div>
@@ -162,54 +163,59 @@ function AppShell() {
               <span>登录后按租户隔离账号、群和任务</span>
             </div>
           </div>
-          <div className="tabs-row">
-            <button className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>登录</button>
-            <button className={authMode === 'register' ? 'active' : ''} onClick={() => setAuthMode('register')}>注册</button>
-          </div>
-          {authMode === 'login' ? (
-            <>
-              <label>
-                用户名、邮箱或手机号
-                <input value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} />
-              </label>
-              <label>
-                密码
-                <input type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} />
-              </label>
-              {captchaControl}
-              <button className="primary" onClick={login} disabled={!loginReady}>登录控制台</button>
-            </>
-          ) : (
-            <>
-              <label>
-                用户名
-                <input value={registerForm.name} onChange={(event) => setRegisterForm((current) => ({ ...current, name: event.target.value }))} />
-              </label>
-              <label>
-                邮箱
-                <input value={registerForm.email} onChange={(event) => setRegisterForm((current) => ({ ...current, email: event.target.value }))} />
-              </label>
-              <label>
-                手机号
-                <input value={registerForm.phone} onChange={(event) => setRegisterForm((current) => ({ ...current, phone: event.target.value }))} />
-              </label>
-              <label>
-                密码
-                <input type="password" value={registerForm.password} onChange={(event) => setRegisterForm((current) => ({ ...current, password: event.target.value }))} />
-              </label>
-              {captchaControl}
-              <button className="primary" onClick={register} disabled={!registerReady}>创建普通用户</button>
-            </>
-          )}
-          {notice && <p className="login-error">{notice}</p>}
-        </section>
+          <Tabs
+            activeKey={authMode}
+            onChange={(key) => setAuthMode(key as 'login' | 'register')}
+            items={[
+              {
+                key: 'login',
+                label: '登录',
+                children: (
+                  <Form layout="vertical">
+                    <Form.Item label="用户名、邮箱或手机号">
+                      <Input value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} />
+                    </Form.Item>
+                    <Form.Item label="密码">
+                      <Input.Password value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} />
+                    </Form.Item>
+                    {captchaControl}
+                    <Button type="primary" block onClick={login} disabled={!loginReady}>登录控制台</Button>
+                  </Form>
+                ),
+              },
+              {
+                key: 'register',
+                label: '注册',
+                children: (
+                  <Form layout="vertical">
+                    <Form.Item label="用户名">
+                      <Input value={registerForm.name} onChange={(event) => setRegisterForm((current) => ({ ...current, name: event.target.value }))} />
+                    </Form.Item>
+                    <Form.Item label="邮箱">
+                      <Input value={registerForm.email} onChange={(event) => setRegisterForm((current) => ({ ...current, email: event.target.value }))} />
+                    </Form.Item>
+                    <Form.Item label="手机号">
+                      <Input value={registerForm.phone} onChange={(event) => setRegisterForm((current) => ({ ...current, phone: event.target.value }))} />
+                    </Form.Item>
+                    <Form.Item label="密码">
+                      <Input.Password value={registerForm.password} onChange={(event) => setRegisterForm((current) => ({ ...current, password: event.target.value }))} />
+                    </Form.Item>
+                    {captchaControl}
+                    <Button type="primary" block onClick={register} disabled={!registerReady}>创建普通用户</Button>
+                  </Form>
+                ),
+              },
+            ]}
+          />
+          {notice && <Alert className="login-error" type="error" message={notice} showIcon />}
+        </Card>
       </div>
     );
   }
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
+    <Layout className="app-shell">
+      <Sider className="sidebar" width={260}>
         <div className="brand">
           <div className="brand-mark">TG</div>
           <div>
@@ -217,77 +223,73 @@ function AppShell() {
             <span>多客户代运营控制台</span>
           </div>
         </div>
-        <nav>
-          {nav.map(([id, label, icon]) => (
-            <button key={id} className={activeView === id ? 'active' : ''} onClick={() => goToView(id)}>
-              {icon}
-              {label}
-            </button>
-          ))}
-        </nav>
-        <div className="side-note">
+        <Menu
+          className="shell-menu"
+          mode="inline"
+          selectedKeys={[activeView]}
+          onClick={({ key }) => goToView(key)}
+          items={nav.map(([id, label, icon]) => ({ key: id, label, icon }))}
+        />
+        <Card className="side-note" size="small">
           <ShieldAlert size={18} />
           <span>默认半自动审核，只在可运营群内执行，验证码查看与发送动作都有记录。</span>
-        </div>
-      </aside>
+        </Card>
+      </Sider>
 
-      <main>
-        <header className="topbar">
+      <Layout>
+        <Header className="topbar">
           <div>
-            <p>{currentUser?.tenant_name ?? '试运行租户'} / {currentUser?.role ?? '未加载角色'}</p>
-            <h1>{nav.find(([id]) => id === activeView)?.[1]}</h1>
-            {currentUser && <span>订阅：{currentUser.subscription_status} / 剩余 {currentUser.subscription_days_remaining} 天</span>}
+            <Typography.Text type="secondary">{currentUser?.tenant_name ?? '试运行租户'} / {currentUser?.role ?? '未加载角色'}</Typography.Text>
+            <Typography.Title level={1}>{nav.find(([id]) => id === activeView)?.[1]}</Typography.Title>
+            {currentUser && <Typography.Text type="secondary">订阅：{currentUser.subscription_status} / 剩余 {currentUser.subscription_days_remaining} 天</Typography.Text>}
           </div>
-          <div className="top-actions">
-            {busy && <span className="busy">{busy}...</span>}
-            <button className="icon-button" onClick={() => refresh()}>
-              <RefreshCcw size={18} />
-            </button>
-            <button onClick={() => setModal({ type: 'changePassword' })}>修改密码</button>
-            <button onClick={logout}>退出</button>
-          </div>
-        </header>
+          <Space className="top-actions">
+            {busy && <Typography.Text className="busy">{busy}...</Typography.Text>}
+            <Button icon={<RefreshCcw size={18} />} onClick={() => refresh()} />
+            <Button onClick={() => setModal({ type: 'changePassword' })}>修改密码</Button>
+            <Button onClick={logout}>退出</Button>
+          </Space>
+        </Header>
 
+        <Content className="app-content">
         {currentUser && currentUser.role !== '系统管理员' && (
-          <section className="panel">
-            <div className="section-title">
-              <div>
-                <h2>订阅状态</h2>
-                <span>{currentUser.can_use_core_features ? '当前可正常使用核心功能' : '当前仅可查看数据，需先激活或续费'}</span>
-              </div>
-            </div>
+          <Card className="panel" title="订阅状态" extra={<Typography.Text type="secondary">{currentUser.can_use_core_features ? '当前可正常使用核心功能' : '当前仅可查看数据，需先激活或续费'}</Typography.Text>}>
             <div className="summary-grid">
-              <article className="summary-card">
+              <Card className="summary-card" size="small">
                 <span>当前状态</span>
                 <strong>{currentUser.subscription_status}</strong>
                 <p>到期时间 {currentUser.subscription_expires_at ?? '未激活'}</p>
-              </article>
-              <article className="summary-card">
+              </Card>
+              <Card className="summary-card" size="small">
                 <span>卡密兑换</span>
                 <strong>月卡 / 年卡</strong>
-                <p><input value={redeemCode} onChange={(event) => setRedeemCode(event.target.value)} placeholder="请输入卡密" /></p>
-                <button className="primary" onClick={submitRedeemCode}>兑换</button>
-              </article>
+                <Space.Compact>
+                  <Input value={redeemCode} onChange={(event) => setRedeemCode(event.target.value)} placeholder="请输入卡密" />
+                  <Button type="primary" onClick={submitRedeemCode}>兑换</Button>
+                </Space.Compact>
+              </Card>
             </div>
-          </section>
+          </Card>
         )}
 
         {runtime && currentUser?.role === '系统管理员' && activeView === 'developerApps' && (
-          <section className="runtime-strip">
-            <span>系统诊断</span>
-            <span>任务通道：{runtime.queue_backend}</span>
-            <span>TG 连接：{runtime.telethon_configured ? '已配置' : '待配置'}</span>
-            <span>应用池：{runtime.developer_app_healthy_count}/{runtime.developer_app_count} 正常</span>
-            <span>AI 服务：{runtime.healthy_ai_provider_count}/{runtime.ai_provider_count} 正常{runtime.mock_ai_fallback_enabled ? ' / 可回退' : ''}</span>
-          </section>
+          <Alert
+            className="runtime-strip"
+            type="info"
+            showIcon
+            message="系统诊断"
+            description={`任务通道：${runtime.queue_backend} / TG 连接：${runtime.telethon_configured ? '已配置' : '待配置'} / 应用池：${runtime.developer_app_healthy_count}/${runtime.developer_app_count} 正常 / AI 服务：${runtime.healthy_ai_provider_count}/${runtime.ai_provider_count} 正常${runtime.mock_ai_fallback_enabled ? ' / 可回退' : ''}`}
+          />
         )}
 
         {notice && (
-          <section className="notice">
-            <CheckCircle2 size={18} />
-            <span>{notice}</span>
-            <button onClick={() => setNotice('')}>关闭</button>
-          </section>
+          <Alert
+            className="notice"
+            type="success"
+            showIcon
+            message={notice}
+            action={<Button size="small" onClick={() => setNotice('')}>关闭</Button>}
+          />
         )}
 
         {/* ===== View routing ===== */}
@@ -316,8 +318,9 @@ function AppShell() {
 
         {/* ===== Modals ===== */}
         <AppModals />
-      </main>
-    </div>
+        </Content>
+      </Layout>
+    </Layout>
   );
 }
 

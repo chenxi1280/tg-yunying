@@ -42,6 +42,12 @@ class AiGenerationResult:
     usage: AiUsage
 
 
+class AiEmptyFinalContentError(RuntimeError):
+    def __init__(self, detail: str, *, retryable_reasoning_length: bool) -> None:
+        super().__init__(detail)
+        self.retryable_reasoning_length = retryable_reasoning_length
+
+
 MODEL_ALIASES = {
     "deepseek v4 flash": "deepseek-v4-flash",
     "deepseek-v4-flash": "deepseek-v4-flash",
@@ -122,7 +128,14 @@ class AiGateway:
         if credentials.provider_type != "openai_compatible":
             raise RuntimeError(f"unsupported ai provider type: {credentials.provider_type}")
 
-        raw, usage = self._post_openai_compatible(credentials, prompt, temperature, max_tokens, response_format_json=True)
+        raw, usage = self._post_openai_compatible(
+            credentials,
+            prompt,
+            temperature,
+            max_tokens,
+            response_format_json=True,
+            reasoning_retry_max_tokens=max(max_tokens, 2048),
+        )
         return AiGenerationResult(
             candidates=self._parse_candidates(raw, count, persona_set, material_ids),
             usage=usage,
@@ -139,25 +152,30 @@ class AiGateway:
                 256,
                 system_prompt="You are a health-check probe. Reply with exactly OK and no other text.",
             )
-            self._check_chat_capability(credentials)
+            warning = self._check_chat_capability(credentials)
         except Exception as exc:  # noqa: BLE001 - stored as operator-facing health detail.
             return False, str(exc)
+        if warning:
+            return True, warning
         return True, "provider ready; chat capability ready"
 
-    def _check_chat_capability(self, credentials: AiProviderCredentials) -> None:
-        raw, _ = self._post_openai_compatible(
-            credentials,
-            (
-                "请输出 json：{\"drafts\":[{\"sequence_index\":1,\"persona\":\"A\","
-                "\"content\":\"一句自然群聊回复\",\"risk_level\":\"低\",\"suggested_account_id\":101}]}。"
-                "只输出 json，不要解释。"
-            ),
-            0.1,
-            512,
-            system_prompt="You validate chat draft generation. Output only valid json.",
-            response_format_json=True,
-        )
-        self._parse_candidates(raw, 1, ["A"], None)
+    def _check_chat_capability(self, credentials: AiProviderCredentials) -> str:
+        try:
+            raw, _ = self._post_openai_compatible(
+                credentials,
+                '只输出这个 JSON，不要解释：{"drafts":[{"content":"OK"}]}',
+                0.1,
+                512,
+                system_prompt="Output compact valid JSON only. No analysis.",
+                response_format_json=True,
+                reasoning_retry_max_tokens=2048,
+            )
+            self._parse_candidates(raw, 1, ["A"], None)
+        except AiEmptyFinalContentError as exc:
+            if exc.retryable_reasoning_length:
+                return f"provider ready; chat capability warning: {exc}"
+            raise
+        return ""
 
     def _post_openai_compatible(
         self,
@@ -168,9 +186,50 @@ class AiGateway:
         *,
         system_prompt: str = "你是一个 Telegram 群运营话术助手，只输出用户要求的 JSON。",
         response_format_json: bool = False,
+        reasoning_retry_max_tokens: int | None = None,
     ) -> tuple[str, AiUsage]:
         url = self._chat_completions_url(credentials.base_url)
-        payload = {
+        headers = {"Content-Type": "application/json"}
+        if credentials.api_key_header.lower() == "authorization":
+            headers["Authorization"] = f"Bearer {credentials.api_key}"
+        else:
+            headers[credentials.api_key_header] = credentials.api_key
+        attempt_tokens = [max_tokens]
+        if reasoning_retry_max_tokens and reasoning_retry_max_tokens > max_tokens:
+            attempt_tokens.append(reasoning_retry_max_tokens)
+        last_empty_error: AiEmptyFinalContentError | None = None
+        for token_budget in attempt_tokens:
+            payload = self._chat_payload(credentials, prompt, system_prompt, temperature, token_budget, response_format_json)
+            request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="ignore")
+                raise RuntimeError(f"AI provider HTTP {exc.code}: {detail[:300]}") from exc
+            content = self._extract_message_content(data)
+            if content:
+                return content, self._usage_from_payload(data)
+            last_empty_error = AiEmptyFinalContentError(
+                self._empty_content_detail(data),
+                retryable_reasoning_length=self._is_reasoning_length_empty(data),
+            )
+            if not last_empty_error.retryable_reasoning_length:
+                break
+        if last_empty_error:
+            raise last_empty_error
+        raise RuntimeError("AI provider returned no choices")
+
+    def _chat_payload(
+        self,
+        credentials: AiProviderCredentials,
+        prompt: str,
+        system_prompt: str,
+        temperature: float,
+        max_tokens: int,
+        response_format_json: bool,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "model": credentials.model_name,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -183,22 +242,7 @@ class AiGateway:
         if response_format_json and self._is_deepseek(credentials):
             payload["response_format"] = {"type": "json_object"}
             payload["thinking"] = {"type": "disabled"}
-        headers = {"Content-Type": "application/json"}
-        if credentials.api_key_header.lower() == "authorization":
-            headers["Authorization"] = f"Bearer {credentials.api_key}"
-        else:
-            headers[credentials.api_key_header] = credentials.api_key
-        request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"AI provider HTTP {exc.code}: {detail[:300]}") from exc
-        content = self._extract_message_content(data)
-        if not content:
-            raise RuntimeError(self._empty_content_detail(data))
-        return content, self._usage_from_payload(data)
+        return payload
 
     def _chat_completions_url(self, base_url: str) -> str:
         url = base_url.rstrip("/")
@@ -260,8 +304,17 @@ class AiGateway:
                     reasoning_fields.append(f"{field} present ({len(str(value))} chars)")
         if reasoning_fields:
             detail_parts.append("; ".join(reasoning_fields))
-            detail_parts.append("model produced reasoning but no final answer; try higher max_tokens or a non-reasoning model")
+            detail_parts.append("model produced reasoning but no final answer; retry used a higher max_tokens budget; try an even higher provider limit or a non-reasoning model")
         return "; ".join(detail_parts)
+
+    def _is_reasoning_length_empty(self, data: dict[str, Any]) -> bool:
+        choice = self._first_choice(data)
+        if not isinstance(choice, dict) or choice.get("finish_reason") != "length":
+            return False
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            return False
+        return any(bool(message.get(field)) for field in ["reasoning_content", "reasoning", "reasoning_details"])
 
     def _first_choice(self, data: dict[str, Any]) -> dict[str, Any]:
         choices = data.get("choices") if isinstance(data, dict) else None

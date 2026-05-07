@@ -46,23 +46,6 @@ body {
   min-height: 100vh;
 }
 
-button,
-input,
-select,
-textarea {
-  font: inherit;
-}
-
-button {
-  border: 0;
-  cursor: pointer;
-}
-
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
 .login-screen {
   min-height: 100vh;
   padding: 24px;
@@ -95,25 +78,6 @@ button:disabled {
   color: var(--muted);
   font-size: 13px;
   font-weight: 650;
-}
-
-.login-panel input,
-.policy-grid input,
-.policy-grid select,
-.policy-grid textarea,
-.toolbar-row select,
-.composer input {
-  width: 100%;
-  min-height: 42px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-  padding: 10px 12px;
-  color: var(--ink);
-}
-
-.login-panel .primary {
-  width: 100%;
 }
 
 .login-error {
@@ -184,11 +148,6 @@ button:disabled {
   line-height: 1.4;
 }
 
-.captcha-actions button {
-  min-height: 32px;
-  padding: 0 12px;
-}
-
 .captcha-ok {
   color: var(--green);
   font-weight: 700;
@@ -197,12 +156,6 @@ button:disabled {
 .captcha-error {
   color: var(--red);
   font-weight: 700;
-}
-
-.app-shell {
-  min-height: 100vh;
-  display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
 }
 
 .sidebar {
@@ -252,29 +205,6 @@ button:disabled {
   font-size: 12px;
 }
 
-nav {
-  display: grid;
-  gap: 6px;
-}
-
-nav button {
-  min-height: 42px;
-  padding: 0 12px;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 14px;
-}
-
-nav button.active,
-nav button:hover {
-  background: var(--green-soft);
-  color: var(--green);
-}
-
 .side-note {
   margin-top: auto;
   padding: 14px;
@@ -286,11 +216,6 @@ nav button:hover {
   gap: 10px;
   font-size: 13px;
   line-height: 1.55;
-}
-
-main {
-  min-width: 0;
-  padding: 24px;
 }
 
 .topbar {
@@ -322,53 +247,6 @@ main {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-}
-
-.primary,
-.icon-button,
-.row-actions button,
-.detail-actions button,
-.modal-actions button,
-.modal-close,
-.composer button,
-.notice button,
-.draft-card button,
-.task-row button {
-  min-height: 38px;
-  padding: 0 14px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--ink);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 650;
-}
-
-.primary {
-  background: var(--green);
-  border-color: var(--green);
-  color: #fff;
-}
-
-.danger-button {
-  background: var(--red);
-  border-color: var(--red);
-  color: #fff;
-}
-
-.small {
-  min-height: 32px;
-  padding-inline: 12px;
-  font-size: 13px;
-}
-
-.icon-button {
-  width: 40px;
-  padding: 0;
 }
 
 .busy {
@@ -410,72 +288,10 @@ main {
   flex: 1;
 }
 
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  padding: 24px;
-  background: rgba(23, 32, 27, 0.44);
-  display: grid;
-  place-items: center;
-}
-
-.modal {
-  width: min(100%, 680px);
-  max-height: min(86vh, 860px);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: 0 26px 80px rgba(23, 32, 27, 0.24);
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
-}
-
-.modal.small {
-  width: min(100%, 440px);
-}
-
-.modal.large {
-  width: min(100%, 860px);
-}
-
-.modal-header {
-  padding: 16px 18px;
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.modal-header h2 {
-  margin: 0;
-  font-size: 18px;
-}
-
-.modal-close {
-  min-height: 32px;
-  padding-inline: 10px;
-  font-size: 13px;
-}
-
 .modal-body {
   min-height: 0;
   padding: 18px;
   overflow: auto;
-}
-
-.modal-actions {
-  position: sticky;
-  bottom: -18px;
-  margin: 16px -18px -18px;
-  padding: 14px 18px;
-  border-top: 1px solid var(--line);
-  background: var(--surface);
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
 }
 
 .dialog-message {
@@ -707,11 +523,6 @@ main {
   border-left-color: #a6aea8 !important;
 }
 
-.table {
-  display: grid;
-  gap: 10px;
-}
-
 .activation-code-table {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -743,35 +554,6 @@ main {
 
 .activation-code-table .ant-pagination {
   margin: 14px 12px;
-}
-
-.table-row {
-  min-height: 68px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  display: grid;
-  align-items: center;
-  gap: 14px;
-  background: #fff;
-}
-
-.account-row {
-  grid-template-columns: minmax(180px, 1fr) 110px minmax(180px, 0.8fr) minmax(120px, 180px) minmax(280px, auto);
-}
-
-.task-row {
-  grid-template-columns: minmax(260px, 1fr) 92px 90px 110px auto;
-}
-
-.table-row strong,
-.table-row span {
-  display: block;
-}
-
-.table-row span {
-  color: var(--muted);
-  font-size: 13px;
 }
 
 .meter {
@@ -936,22 +718,6 @@ main {
   margin: 14px 0;
 }
 
-.pool-filter-strip button {
-  min-height: 36px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-  color: var(--ink);
-  font-weight: 700;
-}
-
-.pool-filter-strip button.active {
-  border-color: var(--green);
-  background: var(--green-soft);
-  color: var(--green);
-}
-
 .pool-filter-strip small {
   margin-left: 6px;
   color: var(--muted);
@@ -972,7 +738,6 @@ main {
   flex-wrap: wrap;
 }
 
-.tabs-row button,
 .account-pick {
   min-height: 36px;
   padding: 0 12px;
@@ -981,12 +746,6 @@ main {
   background: #fff;
   color: var(--ink);
   font-weight: 650;
-}
-
-.tabs-row button.active {
-  border-color: var(--green);
-  background: var(--green-soft);
-  color: var(--green);
 }
 
 .compact-panel {
@@ -1001,19 +760,11 @@ main {
   font-weight: 700;
 }
 
-.account-detail-row {
-  grid-template-columns: minmax(220px, 1fr) 110px 130px minmax(160px, auto);
-}
-
 .toolbar-row {
   margin-bottom: 14px;
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
-}
-
-.toolbar-row select {
-  width: min(180px, 100%);
 }
 
 .composer {
@@ -1046,10 +797,6 @@ main {
 .composer textarea {
   min-height: 74px;
   resize: vertical;
-}
-
-.composer button {
-  width: fit-content;
 }
 
 .developer-form {
@@ -1146,11 +893,6 @@ main {
   margin-bottom: 14px;
 }
 
-.policy-grid textarea {
-  min-height: 74px;
-  resize: vertical;
-}
-
 .wide-field {
   grid-column: 1 / -1;
 }
@@ -1176,30 +918,11 @@ main {
   gap: 8px;
 }
 
-.material-picker button {
-  min-height: 34px;
-  border-radius: 999px;
-  padding: 0 12px;
-}
-
-.material-picker button.selected {
-  border-color: var(--green);
-  background: var(--green-soft);
-  color: var(--green);
-}
-
 .wizard-steps {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 16px;
-}
-
-.wizard-steps button {
-  min-height: 42px;
-  justify-content: center;
-  gap: 8px;
-  border-radius: 8px;
 }
 
 .wizard-steps span {
@@ -1212,19 +935,6 @@ main {
   background: #edf2ef;
   color: var(--muted);
   font-size: 12px;
-}
-
-.wizard-steps button.active,
-.wizard-steps button.done {
-  border-color: var(--green);
-  background: var(--green-soft);
-  color: var(--green);
-}
-
-.wizard-steps button.active span,
-.wizard-steps button.done span {
-  background: var(--green);
-  color: #fff;
 }
 
 .wizard-panel {
@@ -1343,13 +1053,6 @@ main {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
-}
-
-.tiny-button {
-  min-height: 24px;
-  padding: 0 7px;
-  border-radius: 6px;
-  font-size: 12px;
 }
 
 .selected-recipient-box {
@@ -1494,18 +1197,6 @@ main {
   gap: 8px;
 }
 
-.mini-list article {
-  min-height: 48px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-  display: grid;
-  grid-template-columns: auto minmax(110px, 0.6fr) minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-}
-
 .mini-list span {
   color: var(--muted);
   font-size: 13px;
@@ -1529,18 +1220,10 @@ main {
 }
 
 @media (max-width: 1100px) {
-  .app-shell {
-    grid-template-columns: 1fr;
-  }
-
   .sidebar {
     position: static;
     height: auto;
     padding: 14px;
-  }
-
-  .sidebar nav {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .side-note {
@@ -1553,9 +1236,6 @@ main {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .account-row,
-  .task-row,
-  .account-detail-row,
   .profile-layout,
   .profile-edit-layout,
   .composer,
@@ -1572,22 +1252,10 @@ main {
 }
 
 @media (max-width: 680px) {
-  .app-shell {
-    display: block;
-  }
-
-  main {
-    padding: 14px;
-  }
-
   .sidebar {
     display: block;
     height: auto;
     min-height: 0;
-  }
-
-  .sidebar nav {
-    margin-top: 16px;
   }
 
   .topbar {
@@ -1604,7 +1272,7 @@ main {
     display: flex;
   }
 
-  .top-actions button {
+  .top-actions .ant-btn {
     flex: 1 1 auto;
   }
 
@@ -1618,10 +1286,6 @@ main {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
-  }
-
-  .sidebar nav {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .stats-grid,
@@ -1640,37 +1304,12 @@ main {
     grid-template-columns: 1fr;
   }
 
-  .modal-backdrop {
-    padding: 10px;
-    align-items: end;
-  }
-
-  .modal {
-    width: 100%;
-    max-height: calc(100vh - 20px);
-  }
-
   .modal-body {
     padding: 14px;
   }
 
-  .modal-actions {
-    margin: 14px -14px -14px;
-    padding: 12px 14px;
-  }
-
   .section-title {
     display: grid;
-  }
-
-  .table-row {
-    align-items: stretch;
-  }
-
-  .toolbar-row select,
-  .composer button,
-  .developer-form button {
-    width: 100%;
   }
 
   .row-actions,
@@ -1680,10 +1319,6 @@ main {
 
   .detail-actions {
     display: grid;
-    grid-template-columns: 1fr;
-  }
-
-  .mini-list article {
     grid-template-columns: 1fr;
   }
 }

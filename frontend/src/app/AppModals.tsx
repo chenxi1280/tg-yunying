@@ -1,4 +1,5 @@
 import { useAppContext } from './context';
+import { Button, Checkbox, Input, InputNumber, Select, Space } from 'antd';
 import { Modal, FormActions, ConfirmDialog, ResultDialog, StatusBadge } from './components/shared';
 import { AccountDetailModal, AccountPoolDetailModal } from './views/AccountModals';
 import CampaignWizard from './views/CampaignWizard';
@@ -50,12 +51,12 @@ export function AppModals() {
       {(modal?.type === 'developerAppCreate' || modal?.type === 'developerAppEdit') && (
         <Modal title={modal.type === 'developerAppEdit' ? '编辑开发者应用' : '新增开发者应用'} size="medium" onClose={closeModal}>
           <div className="policy-grid">
-            <label>应用名称<input value={developerAppForm.app_name} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, app_name: event.target.value })} /></label>
-            <label>API ID<input value={developerAppForm.api_id} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, api_id: event.target.value })} /></label>
-            <label>账号上限<input type="number" min={0} value={developerAppForm.max_accounts} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, max_accounts: Number(event.target.value) })} /></label>
-            <label>备注<input value={developerAppForm.notes} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, notes: event.target.value })} /></label>
-            <label className="wide-field">API Hash<input type="password" value={developerAppForm.api_hash} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, api_hash: event.target.value })} placeholder={modal.type === 'developerAppEdit' ? '不填写则保留原凭证' : ''} /></label>
-            <label className="checkbox-line"><input type="checkbox" checked={developerAppForm.is_active} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, is_active: event.target.checked })} />启用应用</label>
+            <label>应用名称<Input value={developerAppForm.app_name} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, app_name: event.target.value })} /></label>
+            <label>API ID<Input value={developerAppForm.api_id} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, api_id: event.target.value })} /></label>
+            <label>账号上限<InputNumber min={0} value={developerAppForm.max_accounts} onChange={(value) => setDeveloperAppForm({ ...developerAppForm, max_accounts: Number(value ?? 0) })} /></label>
+            <label>备注<Input value={developerAppForm.notes} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, notes: event.target.value })} /></label>
+            <label className="wide-field">API Hash<Input.Password value={developerAppForm.api_hash} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, api_hash: event.target.value })} placeholder={modal.type === 'developerAppEdit' ? '不填写则保留原凭证' : ''} /></label>
+            <Checkbox checked={developerAppForm.is_active} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, is_active: event.target.checked })}>启用应用</Checkbox>
           </div>
           <FormActions submitLabel={modal.type === 'developerAppEdit' ? '保存应用' : '新增应用'} onCancel={closeModal} onSubmit={createDeveloperApp} disabled={!developerAppForm.app_name.trim() || !developerAppForm.api_id || (modal.type === 'developerAppCreate' && developerAppForm.api_hash.length < 8)} />
         </Modal>
@@ -64,13 +65,13 @@ export function AppModals() {
       {(modal?.type === 'aiProviderCreate' || modal?.type === 'aiProviderEdit') && (
         <Modal title={modal.type === 'aiProviderEdit' ? '编辑 AI 供应商' : '新增 AI 供应商'} size="medium" onClose={closeModal}>
           <div className="policy-grid">
-            <label>名称<input value={aiProviderForm.provider_name} onChange={(event) => setAiProviderForm({ ...aiProviderForm, provider_name: event.target.value })} /></label>
-            <label>Base URL<input value={aiProviderForm.base_url} onChange={(event) => setAiProviderForm({ ...aiProviderForm, base_url: event.target.value })} /></label>
-            <label>模型名<input value={aiProviderForm.model_name} onChange={(event) => setAiProviderForm({ ...aiProviderForm, model_name: event.target.value })} /></label>
-            <label>Key Header<input value={aiProviderForm.api_key_header} onChange={(event) => setAiProviderForm({ ...aiProviderForm, api_key_header: event.target.value })} /></label>
-            <label className="wide-field">API Key<input type="password" value={aiProviderForm.api_key} onChange={(event) => setAiProviderForm({ ...aiProviderForm, api_key: event.target.value })} placeholder={modal.type === 'aiProviderEdit' ? '不填写则保留原 Key' : ''} /></label>
-            <label className="wide-field">备注<input value={aiProviderForm.notes} onChange={(event) => setAiProviderForm({ ...aiProviderForm, notes: event.target.value })} /></label>
-            <label className="checkbox-line"><input type="checkbox" checked={aiProviderForm.is_active} onChange={(event) => setAiProviderForm({ ...aiProviderForm, is_active: event.target.checked })} />启用供应商</label>
+            <label>名称<Input value={aiProviderForm.provider_name} onChange={(event) => setAiProviderForm({ ...aiProviderForm, provider_name: event.target.value })} /></label>
+            <label>Base URL<Input value={aiProviderForm.base_url} onChange={(event) => setAiProviderForm({ ...aiProviderForm, base_url: event.target.value })} /></label>
+            <label>模型名<Input value={aiProviderForm.model_name} onChange={(event) => setAiProviderForm({ ...aiProviderForm, model_name: event.target.value })} /></label>
+            <label>Key Header<Input value={aiProviderForm.api_key_header} onChange={(event) => setAiProviderForm({ ...aiProviderForm, api_key_header: event.target.value })} /></label>
+            <label className="wide-field">API Key<Input.Password value={aiProviderForm.api_key} onChange={(event) => setAiProviderForm({ ...aiProviderForm, api_key: event.target.value })} placeholder={modal.type === 'aiProviderEdit' ? '不填写则保留原 Key' : ''} /></label>
+            <label className="wide-field">备注<Input value={aiProviderForm.notes} onChange={(event) => setAiProviderForm({ ...aiProviderForm, notes: event.target.value })} /></label>
+            <Checkbox checked={aiProviderForm.is_active} onChange={(event) => setAiProviderForm({ ...aiProviderForm, is_active: event.target.checked })}>启用供应商</Checkbox>
           </div>
           <FormActions submitLabel={modal.type === 'aiProviderEdit' ? '保存供应商' : '新增供应商'} onCancel={closeModal} onSubmit={createAiProvider} disabled={!aiProviderForm.provider_name.trim() || !aiProviderForm.base_url.trim() || !aiProviderForm.model_name.trim() || (modal.type === 'aiProviderCreate' && aiProviderForm.api_key.length < 4)} />
         </Modal>
@@ -79,10 +80,10 @@ export function AppModals() {
       {modal?.type === 'tenantEdit' && (
         <Modal title="编辑租户配额" size="medium" onClose={closeModal}>
           <div className="policy-grid">
-            <label>租户名称<input value={tenantForm.name} onChange={(event) => setTenantForm({ ...tenantForm, name: event.target.value })} /></label>
-            <label>套餐名称<input value={tenantForm.plan_name} onChange={(event) => setTenantForm({ ...tenantForm, plan_name: event.target.value })} /></label>
-            <label>账号配额<input type="number" min={0} value={tenantForm.account_quota} onChange={(event) => setTenantForm({ ...tenantForm, account_quota: Number(event.target.value) })} /></label>
-            <label>任务配额<input type="number" min={0} value={tenantForm.task_quota} onChange={(event) => setTenantForm({ ...tenantForm, task_quota: Number(event.target.value) })} /></label>
+            <label>租户名称<Input value={tenantForm.name} onChange={(event) => setTenantForm({ ...tenantForm, name: event.target.value })} /></label>
+            <label>套餐名称<Input value={tenantForm.plan_name} onChange={(event) => setTenantForm({ ...tenantForm, plan_name: event.target.value })} /></label>
+            <label>账号配额<InputNumber min={0} value={tenantForm.account_quota} onChange={(value) => setTenantForm({ ...tenantForm, account_quota: Number(value ?? 0) })} /></label>
+            <label>任务配额<InputNumber min={0} value={tenantForm.task_quota} onChange={(value) => setTenantForm({ ...tenantForm, task_quota: Number(value ?? 0) })} /></label>
           </div>
           <FormActions submitLabel="保存配额" onCancel={closeModal} onSubmit={saveTenantQuota} disabled={!tenantForm.name || !tenantForm.plan_name} />
         </Modal>
@@ -91,16 +92,11 @@ export function AppModals() {
       {modal?.type === 'tenantAiEdit' && tenantAiSetting && (
         <Modal title="编辑客户 AI 配置" size="medium" onClose={closeModal}>
           <div className="policy-grid">
-            <label>默认模型
-              <select value={selectedAiProviderId} disabled={!aiProviders.length} onChange={(event) => setSelectedAiProviderId(Number(event.target.value))}>
-                {!aiProviders.length && <option value="">请先新增 AI 供应商</option>}
-                {aiProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.provider_name} / {provider.model_name}</option>)}
-              </select>
-            </label>
-            <label>温度<input type="number" min={0} max={2} step={0.1} value={tenantAiSetting.temperature} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, temperature: Number(event.target.value) })} /></label>
-            <label>最大 Token<input type="number" min={128} max={8192} value={tenantAiSetting.max_tokens} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, max_tokens: Number(event.target.value) })} /></label>
-            <label className="checkbox-line"><input type="checkbox" checked={tenantAiSetting.ai_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_enabled: event.target.checked })} />启用 AI 草稿</label>
-            <label className="checkbox-line"><input type="checkbox" checked={tenantAiSetting.fallback_to_mock} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, fallback_to_mock: event.target.checked })} />失败回退模板</label>
+            <label>默认模型<Select<number | ''> value={selectedAiProviderId || ''} disabled={!aiProviders.length} onChange={(value) => setSelectedAiProviderId(Number(value) || '')} options={aiProviders.length ? aiProviders.map((provider) => ({ value: provider.id, label: `${provider.provider_name} / ${provider.model_name}` })) : [{ value: '', label: '请先新增 AI 供应商' }]} /></label>
+            <label>温度<InputNumber min={0} max={2} step={0.1} value={tenantAiSetting.temperature} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, temperature: Number(value ?? 0) })} /></label>
+            <label>最大 Token<InputNumber min={128} max={8192} value={tenantAiSetting.max_tokens} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, max_tokens: Number(value ?? 128) })} /></label>
+            <Checkbox checked={tenantAiSetting.ai_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_enabled: event.target.checked })}>启用 AI 草稿</Checkbox>
+            <Checkbox checked={tenantAiSetting.fallback_to_mock} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, fallback_to_mock: event.target.checked })}>失败回退模板</Checkbox>
           </div>
           <FormActions onCancel={closeModal} onSubmit={saveTenantAiSetting} disabled={!aiProviders.length} />
         </Modal>
@@ -109,10 +105,10 @@ export function AppModals() {
       {modal?.type === 'schedulingEdit' && (
         <Modal title="编辑发送节奏" size="medium" onClose={closeModal}>
           <div className="policy-grid">
-            <label>最小抖动秒<input type="number" min={0} value={jitterMinSeconds} onChange={(event) => setJitterMinSeconds(Number(event.target.value))} /></label>
-            <label>最大抖动秒<input type="number" min={0} value={jitterMaxSeconds} onChange={(event) => setJitterMaxSeconds(Number(event.target.value))} /></label>
-            <label>批次间隔秒<input type="number" min={0} value={batchIntervalSeconds} onChange={(event) => setBatchIntervalSeconds(Number(event.target.value))} /></label>
-            <label className="checkbox-line"><input type="checkbox" checked={respectSendWindow} onChange={(event) => setRespectSendWindow(event.target.checked)} />遵守发送时间窗</label>
+            <label>最小抖动秒<InputNumber min={0} value={jitterMinSeconds} onChange={(value) => setJitterMinSeconds(Number(value ?? 0))} /></label>
+            <label>最大抖动秒<InputNumber min={0} value={jitterMaxSeconds} onChange={(value) => setJitterMaxSeconds(Number(value ?? 0))} /></label>
+            <label>批次间隔秒<InputNumber min={0} value={batchIntervalSeconds} onChange={(value) => setBatchIntervalSeconds(Number(value ?? 0))} /></label>
+            <Checkbox checked={respectSendWindow} onChange={(event) => setRespectSendWindow(event.target.checked)}>遵守发送时间窗</Checkbox>
           </div>
           <FormActions onCancel={closeModal} onSubmit={saveSchedulingSetting} />
         </Modal>
@@ -121,9 +117,9 @@ export function AppModals() {
       {modal?.type === 'changePassword' && (
         <Modal title="修改登录密码" size="small" onClose={closeModal}>
           <div className="policy-grid">
-            <label className="wide-field">当前密码<input type="password" value={changePasswordForm.current_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, current_password: event.target.value }))} /></label>
-            <label className="wide-field">新密码<input type="password" value={changePasswordForm.new_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, new_password: event.target.value }))} /></label>
-            <label className="wide-field">确认新密码<input type="password" value={changePasswordForm.confirm_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, confirm_password: event.target.value }))} /></label>
+            <label className="wide-field">当前密码<Input.Password value={changePasswordForm.current_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, current_password: event.target.value }))} /></label>
+            <label className="wide-field">新密码<Input.Password value={changePasswordForm.new_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, new_password: event.target.value }))} /></label>
+            <label className="wide-field">确认新密码<Input.Password value={changePasswordForm.confirm_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, confirm_password: event.target.value }))} /></label>
           </div>
           <FormActions submitLabel="修改密码" onCancel={closeModal} onSubmit={changePassword} disabled={!changePasswordForm.current_password || changePasswordForm.new_password.length < 6 || changePasswordForm.new_password !== changePasswordForm.confirm_password} />
         </Modal>
@@ -132,13 +128,9 @@ export function AppModals() {
       {modal?.type === 'promptTemplateCreate' && (
         <Modal title="新增提示词模板" size="large" onClose={closeModal}>
           <div className="policy-grid">
-            <label>模板名称<input value={promptTemplateForm.name} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, name: event.target.value })} /></label>
-            <label>模板类型
-              <select value={promptTemplateForm.template_type} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, template_type: event.target.value })}>
-                <option>系统决策提示词</option><option>群活跃草稿</option><option>多账号对话脚本</option><option>素材配文</option><option>风险检查</option>
-              </select>
-            </label>
-            <label className="wide-field">模板内容<textarea value={promptTemplateForm.content} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, content: event.target.value })} /></label>
+            <label>模板名称<Input value={promptTemplateForm.name} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, name: event.target.value })} /></label>
+            <label>模板类型<Select value={promptTemplateForm.template_type} onChange={(value) => setPromptTemplateForm({ ...promptTemplateForm, template_type: value })} options={['系统决策提示词', '群活跃草稿', '多账号对话脚本', '素材配文', '风险检查'].map((value) => ({ value, label: value }))} /></label>
+            <label className="wide-field">模板内容<Input.TextArea value={promptTemplateForm.content} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, content: event.target.value })} /></label>
           </div>
           <FormActions submitLabel="新增提示词" onCancel={closeModal} onSubmit={createPromptTemplate} disabled={!promptTemplateForm.name || !promptTemplateForm.content} />
         </Modal>
@@ -147,14 +139,10 @@ export function AppModals() {
       {modal?.type === 'materialCreate' && (
         <Modal title="新增素材" size="medium" onClose={closeModal}>
           <div className="policy-grid">
-            <label>素材标题<input value={materialForm.title} onChange={(event) => setMaterialForm({ ...materialForm, title: event.target.value })} /></label>
-            <label>素材类型
-              <select value={materialForm.material_type} onChange={(event) => setMaterialForm({ ...materialForm, material_type: event.target.value })}>
-                <option>文本</option><option>图片</option><option>表情包</option><option>文件</option><option>链接</option><option>组合消息</option>
-              </select>
-            </label>
-            <label>标签<input value={materialForm.tags} onChange={(event) => setMaterialForm({ ...materialForm, tags: event.target.value })} /></label>
-            <label className="wide-field">内容/URL<textarea value={materialForm.content} onChange={(event) => setMaterialForm({ ...materialForm, content: event.target.value })} /></label>
+            <label>素材标题<Input value={materialForm.title} onChange={(event) => setMaterialForm({ ...materialForm, title: event.target.value })} /></label>
+            <label>素材类型<Select value={materialForm.material_type} onChange={(value) => setMaterialForm({ ...materialForm, material_type: value })} options={['文本', '图片', '表情包', '文件', '链接', '组合消息'].map((value) => ({ value, label: value }))} /></label>
+            <label>标签<Input value={materialForm.tags} onChange={(event) => setMaterialForm({ ...materialForm, tags: event.target.value })} /></label>
+            <label className="wide-field">内容/URL<Input.TextArea value={materialForm.content} onChange={(event) => setMaterialForm({ ...materialForm, content: event.target.value })} /></label>
           </div>
           <FormActions submitLabel="新增素材" onCancel={closeModal} onSubmit={createMaterial} disabled={!materialForm.title || !materialForm.content} />
         </Modal>
@@ -167,9 +155,9 @@ export function AppModals() {
       {modal?.type === 'accountPoolCreate' && (
         <Modal title="新增账号池" size="medium" onClose={closeModal}>
           <div className="policy-grid">
-            <label>账号池名称<input value={accountPoolForm.name} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, name: event.target.value })} /></label>
-            <label className="checkbox-line"><input type="checkbox" checked={accountPoolForm.is_default} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, is_default: event.target.checked })} />设为默认账号池</label>
-            <label className="wide-field">说明<textarea value={accountPoolForm.description} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, description: event.target.value })} /></label>
+            <label>账号池名称<Input value={accountPoolForm.name} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, name: event.target.value })} /></label>
+            <Checkbox checked={accountPoolForm.is_default} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, is_default: event.target.checked })}>设为默认账号池</Checkbox>
+            <label className="wide-field">说明<Input.TextArea value={accountPoolForm.description} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, description: event.target.value })} /></label>
           </div>
           <FormActions submitLabel="新增账号池" onCancel={closeModal} onSubmit={createAccountPool} disabled={!accountPoolForm.name.trim()} />
         </Modal>
@@ -178,15 +166,10 @@ export function AppModals() {
       {modal?.type === 'accountCreate' && (
         <Modal title={loginAfterCreate ? '新增登录账号' : '新增账号'} size="medium" onClose={closeModal}>
           <div className="policy-grid">
-            <label>所属账号池
-              <select value={accountCreateForm.pool_id} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, pool_id: Number(event.target.value) || '' })}>
-                <option value="">默认账号池</option>
-                {accountPools.map((pool) => <option key={pool.id} value={pool.id}>{pool.name}</option>)}
-              </select>
-            </label>
-            <label>平台备注名<input value={accountCreateForm.display_name} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, display_name: event.target.value })} /></label>
-            <label>TG 用户名<input value={accountCreateForm.username} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, username: event.target.value })} placeholder="可选，不含 @" /></label>
-            <label className="wide-field">手机号<input value={accountCreateForm.phone_number} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, phone_number: event.target.value })} placeholder="+8613800000000" /></label>
+            <label>所属账号池<Select value={accountCreateForm.pool_id || ''} onChange={(value) => setAccountCreateForm({ ...accountCreateForm, pool_id: Number(value) || '' })} options={[{ value: '', label: '默认账号池' }, ...accountPools.map((pool) => ({ value: pool.id, label: pool.name }))]} /></label>
+            <label>平台备注名<Input value={accountCreateForm.display_name} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, display_name: event.target.value })} /></label>
+            <label>TG 用户名<Input value={accountCreateForm.username} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, username: event.target.value })} placeholder="可选，不含 @" /></label>
+            <label className="wide-field">手机号<Input value={accountCreateForm.phone_number} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, phone_number: event.target.value })} placeholder="+8613800000000" /></label>
           </div>
           <p className="muted-line">{loginAfterCreate ? '创建后会直接发送登录验证码，并在这里完成验证码和二步密码验证。' : '添加后会继续留在弹窗内完成手机号验证码登录。'}</p>
           <FormActions submitLabel={loginAfterCreate ? '创建并登录' : '添加账号'} onCancel={closeModal} onSubmit={createAccount} disabled={!accountCreateForm.display_name.trim() || !accountCreateForm.phone_number.trim()} />
@@ -205,7 +188,7 @@ export function AppModals() {
             <>
               <div className="policy-grid">
                 <label className="wide-field">验证码
-                  <input
+                  <Input
                     value={accountLoginForm.code}
                     onChange={(event) => setAccountLoginForm((current) => ({ ...current, code: event.target.value, error: '' }))}
                     placeholder="输入 Telegram 收到的验证码"
@@ -215,18 +198,17 @@ export function AppModals() {
               </div>
               {accountLoginForm.flow?.code_preview && <p className="muted-line">开发模式验证码：{accountLoginForm.flow.code_preview}</p>}
               {accountLoginForm.error && <p className="danger-text">{accountLoginForm.error}</p>}
-              <div className="modal-actions">
-                <button onClick={resendAccountLoginCode} disabled={Boolean(busy)}>重新发送验证码</button>
-                <button className="primary" onClick={submitAccountLoginCode} disabled={Boolean(busy) || !accountLoginForm.code.trim()}>提交验证码</button>
-              </div>
+              <Space className="modal-actions">
+                <Button onClick={resendAccountLoginCode} disabled={Boolean(busy)}>重新发送验证码</Button>
+                <Button type="primary" onClick={submitAccountLoginCode} disabled={Boolean(busy) || !accountLoginForm.code.trim()}>提交验证码</Button>
+              </Space>
             </>
           )}
           {accountLoginForm.step === 'password' && (
             <>
               <div className="policy-grid">
                 <label className="wide-field">二步验证密码
-                  <input
-                    type="password"
+                  <Input.Password
                     value={accountLoginForm.password_2fa}
                     onChange={(event) => setAccountLoginForm((current) => ({ ...current, password_2fa: event.target.value, error: '' }))}
                     placeholder="输入 Telegram 2FA 密码"
@@ -235,10 +217,10 @@ export function AppModals() {
                 </label>
               </div>
               {accountLoginForm.error && <p className="danger-text">{accountLoginForm.error}</p>}
-              <div className="modal-actions">
-                <button onClick={() => setAccountLoginForm((current) => ({ ...current, step: 'code', password_2fa: '', error: '' }))}>返回验证码</button>
-                <button className="primary" onClick={submitAccountLoginPassword} disabled={Boolean(busy) || !accountLoginForm.password_2fa}>完成登录</button>
-              </div>
+              <Space className="modal-actions">
+                <Button onClick={() => setAccountLoginForm((current) => ({ ...current, step: 'code', password_2fa: '', error: '' }))}>返回验证码</Button>
+                <Button type="primary" onClick={submitAccountLoginPassword} disabled={Boolean(busy) || !accountLoginForm.password_2fa}>完成登录</Button>
+              </Space>
             </>
           )}
         </Modal>
@@ -247,13 +229,9 @@ export function AppModals() {
       {modal?.type === 'accountMovePool' && accountDetail && (
         <Modal title="移动账号池" size="small" onClose={() => ctx.setModal({ type: 'accountDetail' })}>
           <div className="policy-grid">
-            <label>目标账号池
-              <select value={accountDetail.account.pool_id ?? ''} onChange={(event) => moveCurrentAccountPool(Number(event.target.value))}>
-                {accountPools.map((pool) => <option key={pool.id} value={pool.id}>{pool.name}</option>)}
-              </select>
-            </label>
+            <label>目标账号池<Select value={accountDetail.account.pool_id ?? ''} onChange={(value) => moveCurrentAccountPool(Number(value))} options={accountPools.map((pool) => ({ value: pool.id, label: pool.name }))} /></label>
           </div>
-          <div className="modal-actions"><button onClick={() => ctx.setModal({ type: 'accountDetail' })}>返回</button></div>
+          <Space className="modal-actions"><Button onClick={() => ctx.setModal({ type: 'accountDetail' })}>返回</Button></Space>
         </Modal>
       )}
 
@@ -263,15 +241,15 @@ export function AppModals() {
             {accounts.filter((account) => account.id !== accountDetail.account.id).map((account) => {
               const selected = cloneForm.target_account_ids.includes(account.id);
               return (
-                <button key={account.id} type="button" className={selected ? 'selected contact-pick' : 'contact-pick'} onClick={() => setCloneForm({ ...cloneForm, target_account_ids: selected ? cloneForm.target_account_ids.filter((id) => id !== account.id) : [...cloneForm.target_account_ids, account.id] })}>
+                <Button key={account.id} className={selected ? 'selected contact-pick' : 'contact-pick'} onClick={() => setCloneForm({ ...cloneForm, target_account_ids: selected ? cloneForm.target_account_ids.filter((id) => id !== account.id) : [...cloneForm.target_account_ids, account.id] })}>
                   <strong>{account.display_name}</strong><span>{account.pool_name}</span><StatusBadge status={account.status} />
-                </button>
+                </Button>
               );
             })}
           </div>
           <div className="policy-grid">
-            <label className="checkbox-line"><input type="checkbox" checked={cloneForm.clone_contacts} onChange={(event) => setCloneForm({ ...cloneForm, clone_contacts: event.target.checked })} />克隆好友和私聊对象</label>
-            <label className="checkbox-line"><input type="checkbox" checked={cloneForm.clone_groups} onChange={(event) => setCloneForm({ ...cloneForm, clone_groups: event.target.checked })} />克隆群聊和频道清单</label>
+            <Checkbox checked={cloneForm.clone_contacts} onChange={(event) => setCloneForm({ ...cloneForm, clone_contacts: event.target.checked })}>克隆好友和私聊对象</Checkbox>
+            <Checkbox checked={cloneForm.clone_groups} onChange={(event) => setCloneForm({ ...cloneForm, clone_groups: event.target.checked })}>克隆群聊和频道清单</Checkbox>
           </div>
           <p className="muted-line">已选择 {cloneForm.target_account_ids.length} 个目标账号。系统会先生成计划，确认后逐项执行。</p>
           <FormActions submitLabel="生成克隆计划" onCancel={() => ctx.setModal({ type: 'accountDetail' })} onSubmit={createClonePlan} disabled={!cloneForm.target_account_ids.length || (!cloneForm.clone_contacts && !cloneForm.clone_groups)} />
@@ -288,36 +266,35 @@ export function AppModals() {
           </div>
           <p className="dialog-message">{modal.payload.detected_reason || '平台检测到当前账号在该群可能需要完成验证后才能发言。'}</p>
           <p className="muted-line">平台只会在你确认后执行可控动作。</p>
-          <div className="modal-actions">
-            <button onClick={() => ctx.setModal({ type: returnAfterVerification })}>返回</button>
-            <button onClick={() => dismissVerificationTask(modal.payload)}>忽略</button>
-            <button className="primary" disabled={!['待处理', '失败'].includes(modal.payload.status)} onClick={() => confirmVerificationTask(modal.payload)}>确认处理</button>
-          </div>
+          <Space className="modal-actions">
+            <Button onClick={() => ctx.setModal({ type: returnAfterVerification })}>返回</Button>
+            <Button onClick={() => dismissVerificationTask(modal.payload)}>忽略</Button>
+            <Button type="primary" disabled={!['待处理', '失败'].includes(modal.payload.status)} onClick={() => confirmVerificationTask(modal.payload)}>确认处理</Button>
+          </Space>
         </Modal>
       )}
 
       {modal?.type === 'groupPolicyEdit' && selectedGroup && (
         <Modal title="编辑群运营配置" size="large" onClose={closeModal}>
           <div className="policy-grid">
-            <label>活跃时间<input value={groupPolicy.active_window} onChange={(event) => setGroupPolicy({ ...groupPolicy, active_window: event.target.value })} /></label>
-            <label>每日上限<input type="number" value={groupPolicy.daily_limit} onChange={(event) => setGroupPolicy({ ...groupPolicy, daily_limit: Number(event.target.value) })} /></label>
-            <label>账号冷却秒<input type="number" value={groupPolicy.account_cooldown_seconds} onChange={(event) => setGroupPolicy({ ...groupPolicy, account_cooldown_seconds: Number(event.target.value) })} /></label>
-            <label>群冷却秒<input type="number" value={groupPolicy.group_cooldown_seconds} onChange={(event) => setGroupPolicy({ ...groupPolicy, group_cooldown_seconds: Number(event.target.value) })} /></label>
-            <label>话题方向<textarea value={groupPolicy.topic_direction} onChange={(event) => setGroupPolicy({ ...groupPolicy, topic_direction: event.target.value })} /></label>
-            <label>禁用词<textarea value={groupPolicy.banned_words} onChange={(event) => setGroupPolicy({ ...groupPolicy, banned_words: event.target.value })} /></label>
-            <label>链接白名单<textarea value={groupPolicy.link_whitelist} onChange={(event) => setGroupPolicy({ ...groupPolicy, link_whitelist: event.target.value })} /></label>
-            <label className="checkbox-line"><input type="checkbox" checked={groupPolicy.require_review} onChange={(event) => setGroupPolicy({ ...groupPolicy, require_review: event.target.checked })} />需要人工审核</label>
-            <label className="checkbox-line"><input type="checkbox" checked={groupPolicy.listener_enabled} onChange={(event) => setGroupPolicy({ ...groupPolicy, listener_enabled: event.target.checked })} />启用监听续聊</label>
-            <label className="checkbox-line"><input type="checkbox" checked={groupPolicy.listener_auto_reply_enabled} onChange={(event) => setGroupPolicy({ ...groupPolicy, listener_auto_reply_enabled: event.target.checked })} />监听触发后自动发送</label>
-            <label>监听间隔秒<input type="number" min={30} value={groupPolicy.listener_interval_seconds} onChange={(event) => setGroupPolicy({ ...groupPolicy, listener_interval_seconds: Number(event.target.value) })} /></label>
-            <label>上下文条数<input type="number" min={1} max={100} value={groupPolicy.listener_context_limit} onChange={(event) => setGroupPolicy({ ...groupPolicy, listener_context_limit: Number(event.target.value) })} /></label>
+            <label>活跃时间<Input value={groupPolicy.active_window} onChange={(event) => setGroupPolicy({ ...groupPolicy, active_window: event.target.value })} /></label>
+            <label>每日上限<InputNumber value={groupPolicy.daily_limit} onChange={(value) => setGroupPolicy({ ...groupPolicy, daily_limit: Number(value ?? 0) })} /></label>
+            <label>账号冷却秒<InputNumber value={groupPolicy.account_cooldown_seconds} onChange={(value) => setGroupPolicy({ ...groupPolicy, account_cooldown_seconds: Number(value ?? 0) })} /></label>
+            <label>群冷却秒<InputNumber value={groupPolicy.group_cooldown_seconds} onChange={(value) => setGroupPolicy({ ...groupPolicy, group_cooldown_seconds: Number(value ?? 0) })} /></label>
+            <label>话题方向<Input.TextArea value={groupPolicy.topic_direction} onChange={(event) => setGroupPolicy({ ...groupPolicy, topic_direction: event.target.value })} /></label>
+            <label>禁用词<Input.TextArea value={groupPolicy.banned_words} onChange={(event) => setGroupPolicy({ ...groupPolicy, banned_words: event.target.value })} /></label>
+            <label>链接白名单<Input.TextArea value={groupPolicy.link_whitelist} onChange={(event) => setGroupPolicy({ ...groupPolicy, link_whitelist: event.target.value })} /></label>
+            <Checkbox checked={groupPolicy.require_review} onChange={(event) => setGroupPolicy({ ...groupPolicy, require_review: event.target.checked })}>需要人工审核</Checkbox>
+            <Checkbox checked={groupPolicy.listener_enabled} onChange={(event) => setGroupPolicy({ ...groupPolicy, listener_enabled: event.target.checked })}>启用监听续聊</Checkbox>
+            <Checkbox checked={groupPolicy.listener_auto_reply_enabled} onChange={(event) => setGroupPolicy({ ...groupPolicy, listener_auto_reply_enabled: event.target.checked })}>监听触发后自动发送</Checkbox>
+            <label>监听间隔秒<InputNumber min={30} value={groupPolicy.listener_interval_seconds} onChange={(value) => setGroupPolicy({ ...groupPolicy, listener_interval_seconds: Number(value ?? 30) })} /></label>
+            <label>上下文条数<InputNumber min={1} max={100} value={groupPolicy.listener_context_limit} onChange={(value) => setGroupPolicy({ ...groupPolicy, listener_context_limit: Number(value ?? 1) })} /></label>
             <div className="wide-field">
               <span className="field-label">监听号</span>
               <div className="choice-grid">
                 {(groupDetail?.group.id === selectedGroup.id ? groupDetail.accounts : accounts).map((account) => (
-                  <label className="checkbox-line" key={account.id}>
-                    <input
-                      type="checkbox"
+                  <Checkbox
+                    key={account.id}
                       checked={groupPolicy.listener_account_ids.includes(account.id)}
                       onChange={(event) => {
                         const nextIds = event.target.checked
@@ -325,9 +302,9 @@ export function AppModals() {
                           : groupPolicy.listener_account_ids.filter((id) => id !== account.id);
                         setGroupPolicy({ ...groupPolicy, listener_account_ids: Array.from(new Set(nextIds)) });
                       }}
-                    />
+                    >
                     {account.display_name}{account.username ? ` / @${account.username}` : ''} / {account.status}
-                  </label>
+                  </Checkbox>
                 ))}
               </div>
             </div>
@@ -343,11 +320,11 @@ export function AppModals() {
               {avatarFile ? <img src={URL.createObjectURL(avatarFile)} alt="" /> : profileForm.avatar_object_key ? <img src={avatarUrl(`/media/${profileForm.avatar_object_key}`)} alt="" /> : <span>{profileForm.display_name.slice(0, 1) || 'T'}</span>}
             </div>
             <div className="policy-grid">
-              <label>平台备注名<input value={profileForm.display_name} onChange={(event) => setProfileForm({ ...profileForm, display_name: event.target.value })} /></label>
-              <label>TG 名<input value={profileForm.tg_first_name} onChange={(event) => setProfileForm({ ...profileForm, tg_first_name: event.target.value })} /></label>
-              <label>TG 姓<input value={profileForm.tg_last_name} onChange={(event) => setProfileForm({ ...profileForm, tg_last_name: event.target.value })} /></label>
-              <label className="wide-field">头像上传<input type="file" accept={runtime?.avatar_allowed_types.join(',') ?? 'image/jpeg,image/png,image/webp'} onChange={(event) => setAvatarFile(event.target.files?.[0] ?? null)} /></label>
-              <label className="wide-field">TG 简介<textarea value={profileForm.tg_bio} maxLength={220} onChange={(event) => setProfileForm({ ...profileForm, tg_bio: event.target.value })} /></label>
+              <label>平台备注名<Input value={profileForm.display_name} onChange={(event) => setProfileForm({ ...profileForm, display_name: event.target.value })} /></label>
+              <label>TG 名<Input value={profileForm.tg_first_name} onChange={(event) => setProfileForm({ ...profileForm, tg_first_name: event.target.value })} /></label>
+              <label>TG 姓<Input value={profileForm.tg_last_name} onChange={(event) => setProfileForm({ ...profileForm, tg_last_name: event.target.value })} /></label>
+              <label className="wide-field">头像上传<Input type="file" accept={runtime?.avatar_allowed_types.join(',') ?? 'image/jpeg,image/png,image/webp'} onChange={(event) => setAvatarFile(event.target.files?.[0] ?? null)} /></label>
+              <label className="wide-field">TG 简介<Input.TextArea value={profileForm.tg_bio} maxLength={220} onChange={(event) => setProfileForm({ ...profileForm, tg_bio: event.target.value })} /></label>
             </div>
           </div>
           <p className="muted-line">头像最大 {Math.round((runtime?.avatar_max_bytes ?? 0) / 1024 / 1024) || 2}MB；保存后会自动进入后台同步处理。</p>
@@ -358,18 +335,9 @@ export function AppModals() {
       {modal?.type === 'draftEdit' && draftEditTarget && (
         <Modal title="编辑草稿" size="medium" onClose={closeModal}>
           <div className="policy-grid">
-            <label>风险等级
-              <select value={draftEditForm.risk_level} onChange={(event) => setDraftEditForm({ ...draftEditForm, risk_level: event.target.value })}>
-                <option>低</option><option>中</option><option>高</option>
-              </select>
-            </label>
-            <label>建议账号
-              <select value={draftEditForm.suggested_account_id} onChange={(event) => setDraftEditForm({ ...draftEditForm, suggested_account_id: Number(event.target.value) || '' })}>
-                <option value="">不指定</option>
-                {accounts.map((account) => <option key={account.id} value={account.id}>{account.display_name}</option>)}
-              </select>
-            </label>
-            <label className="wide-field">草稿内容<textarea value={draftEditForm.content} onChange={(event) => setDraftEditForm({ ...draftEditForm, content: event.target.value })} /></label>
+            <label>风险等级<Select value={draftEditForm.risk_level} onChange={(value) => setDraftEditForm({ ...draftEditForm, risk_level: value })} options={['低', '中', '高'].map((value) => ({ value, label: value }))} /></label>
+            <label>建议账号<Select value={draftEditForm.suggested_account_id || ''} onChange={(value) => setDraftEditForm({ ...draftEditForm, suggested_account_id: Number(value) || '' })} options={[{ value: '', label: '不指定' }, ...accounts.map((account) => ({ value: account.id, label: account.display_name }))]} /></label>
+            <label className="wide-field">草稿内容<Input.TextArea value={draftEditForm.content} onChange={(event) => setDraftEditForm({ ...draftEditForm, content: event.target.value })} /></label>
           </div>
           <FormActions onCancel={closeModal} onSubmit={saveDraftEdit} disabled={!draftEditForm.content.trim()} />
         </Modal>

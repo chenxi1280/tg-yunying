@@ -482,6 +482,38 @@ def test_ai_provider_prompt_material_and_jitter_flow():
         assert drained["processed"] == 0
 
 
+def test_ai_provider_check_keeps_warning_when_provider_is_healthy(monkeypatch):
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        provider = client.post(
+            "/api/ai-providers",
+            headers=headers,
+            json={
+                "provider_name": f"MiMo Warning {uuid4().hex[:6]}",
+                "provider_type": "openai_compatible",
+                "base_url": "mock://openai-compatible",
+                "model_name": "mimo-v2.5",
+                "api_key": "mock_mimo_key",
+                "api_key_header": "Authorization",
+            },
+        ).json()
+
+        monkeypatch.setattr(
+            "app.services.ai_config.ai_gateway.check",
+            lambda _credentials: (
+                True,
+                "provider ready; chat capability warning: AI provider returned empty final content; finish_reason=length",
+            ),
+        )
+
+        checked = client.post(f"/api/ai-providers/{provider['id']}/check", headers=headers)
+
+        assert checked.status_code == 200, checked.text
+        body = checked.json()
+        assert body["health_status"] == "健康"
+        assert body["last_error"].startswith("provider ready; chat capability warning:")
+
+
 def test_prompt_template_listing_matches_existing_tenant_resolution_rules():
     with TestClient(app) as client:
         headers = auth_headers(client)

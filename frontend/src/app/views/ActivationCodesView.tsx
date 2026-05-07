@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { CheckCircle2, RefreshCcw, ShieldAlert } from 'lucide-react';
-import { Button, Space, Table, Tag, Typography } from 'antd';
+import { Button, Card, Input, InputNumber, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import type { ActivationCode, ActivationCodeCreateForm, ActivationCodeFilters, ActivationCodePage, ConfirmPayload } from '../types';
 import { FormActions, Modal } from '../components/shared';
@@ -191,79 +191,51 @@ export default function ActivationCodesView({
   }
 
   return (
-    <section className="panel">
-      <div className="section-title">
-        <div>
-          <h2>卡密管理</h2>
-          <span>查询卡密批次、激活账号与有效期，并停用未激活卡密</span>
-        </div>
-        <div className="row-actions">
-          <button className="primary" onClick={() => setCreateOpen(true)}><CheckCircle2 size={16} />生成卡密</button>
-        </div>
-      </div>
+    <Card className="panel" title="卡密管理" extra={<Button type="primary" icon={<CheckCircle2 size={16} />} onClick={() => setCreateOpen(true)}>生成卡密</Button>}>
+      <Typography.Text type="secondary">查询卡密批次、激活账号与有效期，并停用未激活卡密</Typography.Text>
 
       <div className="policy-grid">
-        <label>关键词<input value={activationCodeFilters.search} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, search: event.target.value }))} placeholder="卡密 / 生成者 / 激活账号" /></label>
-        <label>状态
-          <select value={activationCodeFilters.status} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, status: event.target.value }))}>
-            <option value="">全部状态</option>
-            <option value="unused">未激活</option>
-            <option value="redeemed">已激活</option>
-            <option value="disabled">已停用</option>
-          </select>
-        </label>
-        <label>套餐
-          <select value={activationCodeFilters.plan_type} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, plan_type: event.target.value }))}>
-            <option value="">全部套餐</option>
-            <option value="monthly">月卡</option>
-            <option value="yearly">年卡</option>
-          </select>
-        </label>
-        <label>批次<input maxLength={24} value={activationCodeFilters.batch_no} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, batch_no: event.target.value.toUpperCase() }))} placeholder="BATCH202605" /></label>
-        <label>生成开始<input type="datetime-local" value={activationCodeFilters.start_at} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, start_at: event.target.value }))} /></label>
-        <label>生成结束<input type="datetime-local" value={activationCodeFilters.end_at} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, end_at: event.target.value }))} /></label>
-        <div className="row-actions wide-field">
-          <button className="primary" onClick={applyFilters}><RefreshCcw size={16} />查询</button>
-          <button onClick={clearFilters}>清空</button>
-        </div>
+        <label>关键词<Input value={activationCodeFilters.search} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, search: event.target.value }))} placeholder="卡密 / 生成者 / 激活账号" /></label>
+        <label>状态<Select value={activationCodeFilters.status} onChange={(value) => setActivationCodeFilters((current) => ({ ...current, status: value }))} options={[{ value: '', label: '全部状态' }, { value: 'unused', label: '未激活' }, { value: 'redeemed', label: '已激活' }, { value: 'disabled', label: '已停用' }]} /></label>
+        <label>套餐<Select value={activationCodeFilters.plan_type} onChange={(value) => setActivationCodeFilters((current) => ({ ...current, plan_type: value }))} options={[{ value: '', label: '全部套餐' }, { value: 'monthly', label: '月卡' }, { value: 'yearly', label: '年卡' }]} /></label>
+        <label>批次<Input maxLength={24} value={activationCodeFilters.batch_no} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, batch_no: event.target.value.toUpperCase() }))} placeholder="BATCH202605" /></label>
+        <label>生成开始<Input type="datetime-local" value={activationCodeFilters.start_at} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, start_at: event.target.value }))} /></label>
+        <label>生成结束<Input type="datetime-local" value={activationCodeFilters.end_at} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, end_at: event.target.value }))} /></label>
+        <Space className="row-actions wide-field">
+          <Button type="primary" icon={<RefreshCcw size={16} />} onClick={applyFilters}>查询</Button>
+          <Button onClick={clearFilters}>清空</Button>
+        </Space>
       </div>
 
-      <div className="table">
-        <Table<ActivationCode>
-          className="activation-code-table"
-          rowKey="id"
-          columns={columns}
-          dataSource={activationCodes}
-          pagination={pagination}
-          scroll={{ x: 1550 }}
-          locale={{ emptyText: '暂无卡密。点击“生成卡密”创建新的批次。' }}
-          onChange={(nextPagination) => {
-            void onLoadCodes(
-              activationCodeFilters,
-              nextPagination.current ?? 1,
-              nextPagination.pageSize ?? activationCodePage.page_size,
-            );
-          }}
-        />
-      </div>
+      <Table<ActivationCode>
+        className="activation-code-table tg-table"
+        rowKey="id"
+        columns={columns}
+        dataSource={activationCodes}
+        pagination={pagination}
+        scroll={{ x: 1550 }}
+        locale={{ emptyText: '暂无卡密。点击“生成卡密”创建新的批次。' }}
+        onChange={(nextPagination) => {
+          void onLoadCodes(
+            activationCodeFilters,
+            nextPagination.current ?? 1,
+            nextPagination.pageSize ?? activationCodePage.page_size,
+          );
+        }}
+      />
 
       {createOpen && (
         <Modal title="生成卡密" size="medium" onClose={() => setCreateOpen(false)}>
           <div className="policy-grid">
-            <label>套餐类型
-              <select value={activationBatch.plan_type} onChange={(event) => setActivationBatch((current) => ({ ...current, plan_type: event.target.value }))}>
-                <option value="monthly">月卡</option>
-                <option value="yearly">年卡</option>
-              </select>
-            </label>
-            <label>生成数量<input type="number" min={1} max={200} value={activationBatch.quantity} onChange={(event) => setActivationBatch((current) => ({ ...current, quantity: Number(event.target.value) }))} /></label>
-            <label>批次号<input maxLength={24} value={activationBatch.batch_no} onChange={(event) => setActivationBatch((current) => ({ ...current, batch_no: event.target.value.toUpperCase() }))} placeholder="BATCH202605" /></label>
-            <label>序列号前缀<input maxLength={24} value={activationBatch.serial_prefix} onChange={(event) => setActivationBatch((current) => ({ ...current, serial_prefix: event.target.value.toUpperCase() }))} placeholder="VIP" /></label>
-            <label className="wide-field">备注<input value={activationBatch.note} onChange={(event) => setActivationBatch((current) => ({ ...current, note: event.target.value }))} placeholder="批次用途或来源" /></label>
+            <label>套餐类型<Select value={activationBatch.plan_type} onChange={(value) => setActivationBatch((current) => ({ ...current, plan_type: value }))} options={[{ value: 'monthly', label: '月卡' }, { value: 'yearly', label: '年卡' }]} /></label>
+            <label>生成数量<InputNumber min={1} max={200} value={activationBatch.quantity} onChange={(value) => setActivationBatch((current) => ({ ...current, quantity: Number(value ?? 1) }))} /></label>
+            <label>批次号<Input maxLength={24} value={activationBatch.batch_no} onChange={(event) => setActivationBatch((current) => ({ ...current, batch_no: event.target.value.toUpperCase() }))} placeholder="BATCH202605" /></label>
+            <label>序列号前缀<Input maxLength={24} value={activationBatch.serial_prefix} onChange={(event) => setActivationBatch((current) => ({ ...current, serial_prefix: event.target.value.toUpperCase() }))} placeholder="VIP" /></label>
+            <label className="wide-field">备注<Input value={activationBatch.note} onChange={(event) => setActivationBatch((current) => ({ ...current, note: event.target.value }))} placeholder="批次用途或来源" /></label>
           </div>
           <FormActions submitLabel="批量生成" onCancel={() => setCreateOpen(false)} onSubmit={submitCreate} disabled={!activationBatch.batch_no.trim() || !activationBatch.serial_prefix.trim() || activationBatch.quantity < 1 || activationBatch.quantity > 200} />
         </Modal>
       )}
-    </section>
+    </Card>
   );
 }

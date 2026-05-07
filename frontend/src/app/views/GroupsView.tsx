@@ -1,5 +1,6 @@
 import React from 'react';
 import { Archive, MessageSquareText } from 'lucide-react';
+import { Button, Card, Descriptions, List, Space, Typography } from 'antd';
 import type { Group } from '../types';
 import { StatusBadge } from '../components/shared';
 import { statusAccent, operationLabel } from '../utils';
@@ -35,70 +36,59 @@ export default function GroupsView({
 }: Props) {
   return (
     <section className="split-view">
-      <div className="panel">
-        <div className="section-title">
-          <h2>群聊库</h2>
-          <span>按可运营、仅归档和不可操作来管理群聊使用范围</span>
-        </div>
-        <div className="group-list">
-          {groups.map((group) => (
-            <button key={group.id} className={`${selectedGroupId === group.id ? 'selected group-card' : 'group-card'} ${statusAccent(group.auth_status)}`} onClick={() => setSelectedGroupId(group.id)}>
-              <strong>{group.title}</strong>
-              <span>{group.member_count.toLocaleString()} 成员 / {group.group_type}</span>
-              <StatusBadge status={group.auth_status} label={operationLabel(group.auth_status)} />
-            </button>
-          ))}
-        </div>
-      </div>
+      <Card className="panel" title="群聊库" extra={<Typography.Text type="secondary">按可运营、仅归档和不可操作来管理群聊使用范围</Typography.Text>}>
+        <List
+          className="group-list"
+          dataSource={groups}
+          renderItem={(group) => (
+            <List.Item
+              className={`${selectedGroupId === group.id ? 'selected group-card' : 'group-card'} ${statusAccent(group.auth_status)}`}
+              onClick={() => setSelectedGroupId(group.id)}
+              actions={[<StatusBadge status={group.auth_status} label={operationLabel(group.auth_status)} />]}
+            >
+              <List.Item.Meta title={group.title} description={`${group.member_count.toLocaleString()} 成员 / ${group.group_type}`} />
+            </List.Item>
+          )}
+        />
+      </Card>
       {selectedGroup && (
-        <div className="panel detail-panel">
-          <div className="section-title">
-            <h2>{selectedGroup.title}</h2>
-            <span>{selectedGroup.topic_direction}</span>
-          </div>
-          <dl className="detail-list">
-            <div><dt>活跃时间</dt><dd>{selectedGroup.active_window}</dd></div>
-            <div><dt>每日上限</dt><dd>{selectedGroup.daily_limit} 条</dd></div>
-            <div><dt>审核策略</dt><dd><StatusBadge status={selectedGroup.require_review ? '待审核' : '已审核'} label={selectedGroup.require_review ? '需要人工审核' : '规则内自动'} /></dd></div>
-            <div><dt>可发言</dt><dd><StatusBadge status={selectedGroup.can_send ? '可发言' : '不可发言'} /></dd></div>
-            <div><dt>监听续聊</dt><dd><StatusBadge status={selectedGroup.listener_enabled ? '已启用' : '未配置'} label={selectedGroup.listener_enabled ? `${selectedGroup.listener_account_ids.length} 个监听号` : '未启用'} /></dd></div>
-            <div><dt>自动发送</dt><dd>{selectedGroup.listener_auto_reply_enabled ? '监听触发后自动排队' : '只采集上下文'}</dd></div>
-          </dl>
-          {selectedGroup.listener_last_error && <p className="danger-text">{selectedGroup.listener_last_error}</p>}
-          <div className="detail-actions">
-            <button className="primary" onClick={() => onCreateCampaign(selectedGroup.id)}><MessageSquareText size={18} />用此群创建任务</button>
-            <button onClick={() => onOpenConfirm({
+        <Card className="panel detail-panel" title={selectedGroup.title} extra={<Typography.Text type="secondary">{selectedGroup.topic_direction}</Typography.Text>}>
+          <Descriptions className="detail-list" column={2} size="small" items={[
+            { key: 'active_window', label: '活跃时间', children: selectedGroup.active_window },
+            { key: 'daily_limit', label: '每日上限', children: `${selectedGroup.daily_limit} 条` },
+            { key: 'review', label: '审核策略', children: <StatusBadge status={selectedGroup.require_review ? '待审核' : '已审核'} label={selectedGroup.require_review ? '需要人工审核' : '规则内自动'} /> },
+            { key: 'can_send', label: '可发言', children: <StatusBadge status={selectedGroup.can_send ? '可发言' : '不可发言'} /> },
+            { key: 'listener', label: '监听续聊', children: <StatusBadge status={selectedGroup.listener_enabled ? '已启用' : '未配置'} label={selectedGroup.listener_enabled ? `${selectedGroup.listener_account_ids.length} 个监听号` : '未启用'} /> },
+            { key: 'auto_reply', label: '自动发送', children: selectedGroup.listener_auto_reply_enabled ? '监听触发后自动排队' : '只采集上下文' },
+          ]} />
+          {selectedGroup.listener_last_error && <Typography.Paragraph type="danger">{selectedGroup.listener_last_error}</Typography.Paragraph>}
+          <Space className="detail-actions" wrap>
+            <Button type="primary" icon={<MessageSquareText size={18} />} onClick={() => onCreateCampaign(selectedGroup.id)}>用此群创建任务</Button>
+            <Button icon={<Archive size={18} />} onClick={() => onOpenConfirm({
               title: '创建群归档',
               message: `确认归档「${selectedGroup.title}」的消息与成员清单？`,
               confirmLabel: '创建归档',
               onConfirm: onCreateArchive,
-            })}><Archive size={18} />创建归档</button>
+            })}>创建归档</Button>
             {['已授权运营', '只读归档', '禁止操作'].map((status) => (
-              <button key={status} onClick={() => onOpenConfirm({
+              <Button key={status} danger={status === '禁止操作'} onClick={() => onOpenConfirm({
                 title: '更新群使用范围',
                 message: `确认将「${selectedGroup.title}」设置为「${operationLabel(status)}」？`,
                 confirmLabel: '确认更新',
                 tone: status === '禁止操作' ? 'danger' : 'normal',
                 onConfirm: () => onAuthorizeGroup(status),
-              })}>{operationLabel(status)}</button>
+              })}>{operationLabel(status)}</Button>
             ))}
-          </div>
-          <div className="sub-panel">
-            <div className="section-title">
-              <div>
-                <h2>运营配置</h2>
-                <span>限频、审核和内容规则</span>
-              </div>
-              <button className="small" onClick={onEditGroupPolicy}>编辑运营配置</button>
-            </div>
+          </Space>
+          <Card className="sub-panel" title="运营配置" extra={<Button size="small" onClick={onEditGroupPolicy}>编辑运营配置</Button>}>
             <div className="summary-grid">
-              <article className="summary-card"><span>冷却规则</span><strong>账号 {selectedGroup.account_cooldown_seconds}s</strong><p>群 {selectedGroup.group_cooldown_seconds}s</p></article>
-              <article className="summary-card"><span>内容边界</span><strong>{selectedGroup.banned_words || '未配置禁用词'}</strong><p>{selectedGroup.link_whitelist || '未配置链接白名单'}</p></article>
-              <article className="summary-card"><span>话题方向</span><strong>{selectedGroup.topic_direction || '未设置'}</strong><p>{selectedGroup.require_review ? '需要人工审核' : '规则内自动'}</p></article>
-              <article className="summary-card"><span>监听配置</span><strong>{selectedGroup.listener_enabled ? `${selectedGroup.listener_interval_seconds}s 轮询` : '未启用'}</strong><p>上下文 {selectedGroup.listener_context_limit} 条</p></article>
+              <Card className="summary-card" size="small"><span>冷却规则</span><strong>账号 {selectedGroup.account_cooldown_seconds}s</strong><p>群 {selectedGroup.group_cooldown_seconds}s</p></Card>
+              <Card className="summary-card" size="small"><span>内容边界</span><strong>{selectedGroup.banned_words || '未配置禁用词'}</strong><p>{selectedGroup.link_whitelist || '未配置链接白名单'}</p></Card>
+              <Card className="summary-card" size="small"><span>话题方向</span><strong>{selectedGroup.topic_direction || '未设置'}</strong><p>{selectedGroup.require_review ? '需要人工审核' : '规则内自动'}</p></Card>
+              <Card className="summary-card" size="small"><span>监听配置</span><strong>{selectedGroup.listener_enabled ? `${selectedGroup.listener_interval_seconds}s 轮询` : '未启用'}</strong><p>上下文 {selectedGroup.listener_context_limit} 条</p></Card>
             </div>
-          </div>
-        </div>
+          </Card>
+        </Card>
       )}
     </section>
   );

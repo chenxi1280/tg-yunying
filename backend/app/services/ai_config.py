@@ -203,7 +203,7 @@ def check_ai_provider(session: Session, provider_id: int, actor: str) -> AiProvi
         try:
             ok, detail = ai_gateway.check(ai_provider_credentials(provider))
             provider.health_status = AiProviderHealthStatus.HEALTHY.value if ok else AiProviderHealthStatus.UNHEALTHY.value
-            provider.last_error = "" if ok else detail
+            provider.last_error = "" if ok and "warning" not in detail.lower() else detail
         except Exception as exc:  # noqa: BLE001 - shown to operator.
             provider.health_status = AiProviderHealthStatus.UNHEALTHY.value
             provider.last_error = str(exc)

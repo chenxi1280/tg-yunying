@@ -1521,7 +1521,8 @@ export function AppProvider({ children }: AppProviderProps) {
     setBusy('检查 AI 供应商');
     try {
       const checked = await api<AiProvider>(`/ai-providers/${provider.id}/check`, { method: 'POST' });
-      const errorSummary = checked.last_error ? `，${checked.last_error.slice(0, 220)}${checked.last_error.length > 220 ? '...' : ''}` : '';
+      const detailLabel = checked.health_status === '健康' ? '警告' : '错误';
+      const errorSummary = checked.last_error ? `，${detailLabel}：${checked.last_error.slice(0, 220)}${checked.last_error.length > 220 ? '...' : ''}` : '';
       showResult('AI 供应商检查完成', `${checked.provider_name}：${checked.health_status}${errorSummary}`);
       await refresh();
     } catch (error) {

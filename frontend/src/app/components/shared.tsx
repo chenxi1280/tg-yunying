@@ -1,4 +1,5 @@
 import React from 'react';
+import { Button, Card, Empty, Modal as AntModal, Segmented, Space, Statistic, Tag, Typography } from 'antd';
 import type { BadgeTone, ConfirmPayload, ResultDialogState } from '../types';
 
 export function statusTone(status: string | null | undefined): BadgeTone {
@@ -29,19 +30,25 @@ export function statusAccent(status: string | null | undefined) {
 
 export function StatCard({ label, value, detail, icon }: { label: string; value: string | number; detail: string; icon: React.ReactNode }) {
   return (
-    <section className="stat-card">
-      <div className="stat-icon">{icon}</div>
-      <div>
-        <p>{label}</p>
-        <strong>{value}</strong>
-        <span>{detail}</span>
-      </div>
-    </section>
+    <Card className="stat-card" size="small">
+      <Space align="start" size={12}>
+        <span className="stat-icon">{icon}</span>
+        <Statistic title={label} value={value} suffix={<span className="stat-detail">{detail}</span>} />
+      </Space>
+    </Card>
   );
 }
 
+const tagColorByTone: Record<string, string> = {
+  positive: 'green',
+  warning: 'gold',
+  danger: 'red',
+  muted: 'default',
+  neutral: 'blue',
+};
+
 export function Badge({ children, tone }: { children: React.ReactNode; tone: BadgeTone | string }) {
-  return <span className={`badge ${tone}`}>{children}</span>;
+  return <Tag className={`badge ${tone}`} color={tagColorByTone[String(tone)] ?? 'blue'}>{children}</Tag>;
 }
 
 export function StatusBadge({ status, label }: { status: string | null | undefined; label?: React.ReactNode }) {
@@ -66,25 +73,29 @@ export function syncTypeLabel(type: string) {
 }
 
 export function Modal({ title, size = 'medium', children, onClose }: { title: string; size?: 'small' | 'medium' | 'large'; children: React.ReactNode; onClose: () => void }) {
+  const widthBySize = { small: 480, medium: 640, large: 920 };
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className={`modal ${size}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}>
-        <header className="modal-header">
-          <h2>{title}</h2>
-          <button className="modal-close" onClick={onClose}>关闭</button>
-        </header>
-        <div className="modal-body">{children}</div>
-      </section>
-    </div>
+    <AntModal
+      className={`tg-modal ${size}`}
+      title={title}
+      open
+      width={widthBySize[size]}
+      onCancel={onClose}
+      footer={null}
+      destroyOnHidden
+      centered
+    >
+      <div className="modal-body">{children}</div>
+    </AntModal>
   );
 }
 
 export function FormActions({ submitLabel = '保存', onCancel, onSubmit, disabled }: { submitLabel?: string; onCancel: () => void; onSubmit: () => void; disabled?: boolean }) {
   return (
-    <div className="modal-actions">
-      <button onClick={onCancel}>取消</button>
-      <button className="primary" disabled={disabled} onClick={onSubmit}>{submitLabel}</button>
-    </div>
+    <Space className="modal-actions" align="center">
+      <Button onClick={onCancel}>取消</Button>
+      <Button type="primary" disabled={disabled} onClick={onSubmit}>{submitLabel}</Button>
+    </Space>
   );
 }
 
@@ -92,10 +103,10 @@ export function ConfirmDialog({ payload, onClose }: { payload: ConfirmPayload; o
   return (
     <Modal title={payload.title} size="small" onClose={onClose}>
       <p className="dialog-message">{payload.message}</p>
-      <div className="modal-actions">
-        <button onClick={onClose}>取消</button>
-        <button className={payload.tone === 'danger' ? 'danger-button' : 'primary'} onClick={() => payload.onConfirm()}>{payload.confirmLabel ?? '确认'}</button>
-      </div>
+      <Space className="modal-actions" align="center">
+        <Button onClick={onClose}>取消</Button>
+        <Button danger={payload.tone === 'danger'} type="primary" onClick={() => payload.onConfirm()}>{payload.confirmLabel ?? '确认'}</Button>
+      </Space>
     </Modal>
   );
 }
@@ -104,9 +115,9 @@ export function ResultDialog({ dialog, onClose }: { dialog: NonNullable<ResultDi
   return (
     <Modal title={dialog.title} size="small" onClose={onClose}>
       <p className="dialog-message">{dialog.message}</p>
-      <div className="modal-actions">
-        <button className="primary" onClick={onClose}>知道了</button>
-      </div>
+      <Space className="modal-actions" align="center">
+        <Button type="primary" onClick={onClose}>知道了</Button>
+      </Space>
     </Modal>
   );
 }
@@ -124,7 +135,7 @@ export function PanelHeader({
   children?: React.ReactNode;
 }) {
   return (
-    <section className="panel">
+    <Card className="panel" size="small">
       <div className="section-title">
         <div>
           <h2>{title}</h2>
@@ -132,7 +143,7 @@ export function PanelHeader({
         </div>
         {children && <div className="row-actions">{children}</div>}
       </div>
-    </section>
+    </Card>
   );
 }
 
@@ -140,7 +151,7 @@ export function PanelHeader({
 // ── EmptyState ──
 
 export function EmptyState({ message }: { message: string }) {
-  return <p className="muted-line">{message}</p>;
+  return <Empty className="muted-line" description={message} />;
 }
 
 
@@ -156,17 +167,12 @@ export function TabBar({
   onTabChange: (tab: string) => void;
 }) {
   return (
-    <div className="tabs-row">
-      {tabs.map((tab) => (
-        <button
-          key={tab}
-          className={activeTab === tab ? 'active' : ''}
-          onClick={() => onTabChange(tab)}
-        >
-          {tab}
-        </button>
-      ))}
-    </div>
+    <Segmented
+      className="tabs-row"
+      value={activeTab}
+      options={tabs}
+      onChange={(value) => onTabChange(String(value))}
+    />
   );
 }
 
@@ -181,10 +187,10 @@ export function FormField({
   children: React.ReactNode;
 }) {
   return (
-    <label>
-      {label}
+    <Space className="form-field" direction="vertical" size={6}>
+      <Typography.Text type="secondary">{label}</Typography.Text>
       {children}
-    </label>
+    </Space>
   );
 }
 
@@ -198,7 +204,7 @@ export function DataTable({
   children: React.ReactNode;
   className?: string;
 }) {
-  return <div className={`table ${className ?? ''}`.trim()}>{children}</div>;
+  return <Card className={`tg-table ${className ?? ''}`.trim()} size="small">{children}</Card>;
 }
 
 export function TableRow({
@@ -211,12 +217,13 @@ export function TableRow({
   onClick?: () => void;
 }) {
   return (
-    <div
-      className={`table-row ${accent ? statusAccent(accent) : ''}`.trim()}
+    <Card
+      size="small"
+      className={`table-card ${accent ? statusAccent(accent) : ''}`.trim()}
       onClick={onClick}
     >
       {children}
-    </div>
+    </Card>
   );
 }
 
@@ -239,12 +246,12 @@ export function ServiceCard({
   children?: React.ReactNode;
 }) {
   return (
-    <article className={`developer-card ${statusAccent(accent)}`.trim()}>
+    <Card className={`developer-card ${statusAccent(accent)}`.trim()} size="small">
       {badge}
       <h3>{title}</h3>
       {subtitle && <p className="mini-text">{subtitle}</p>}
       {error && <p className="danger-text">{error || undefined}</p>}
       {children && <div className="row-actions">{children}</div>}
-    </article>
+    </Card>
   );
 }
