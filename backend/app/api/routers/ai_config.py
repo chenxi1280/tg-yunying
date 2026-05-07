@@ -88,8 +88,9 @@ def get_prompt_templates(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Sequence[PromptTemplate]:
-    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id) if not current_user.is_platform_admin or tenant_id else tenant_id
-    return list_prompt_templates(session, resolved_tenant_id)
+    if current_user.is_platform_admin and tenant_id is None:
+        return list_prompt_templates(session, None)
+    return list_prompt_templates(session, resolve_tenant_id(current_user, tenant_id))
 
 
 @router.post("/api/prompt-templates", response_model=PromptTemplateOut)

@@ -899,6 +899,7 @@ export function AppProvider({ children }: AppProviderProps) {
         topic,
         send_window: sendWindow,
         intensity,
+        ai_provider_id: selectedAiProviderId || null,
         jitter_min_seconds: jitterMinSeconds,
         jitter_max_seconds: jitterMaxSeconds,
         batch_interval_seconds: batchIntervalSeconds,

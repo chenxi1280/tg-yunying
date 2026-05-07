@@ -1,10 +1,11 @@
 import React from 'react';
-import type { Group, Material, RecommendedAccount } from '../types';
+import type { AiProvider, Group, Material, RecommendedAccount } from '../types';
 import { Modal, FormActions, StatusBadge } from '../components/shared';
 import { statusAccent } from '../utils';
 
 interface Props {
   groups: Group[];
+  aiProviders: AiProvider[];
   materials: Material[];
   campaignStep: number;
   setCampaignStep: (step: number) => void;
@@ -22,6 +23,8 @@ interface Props {
   setDraftCount: (count: number) => void;
   tone: string;
   setTone: (tone: string) => void;
+  selectedAiProviderId: number | '';
+  setSelectedAiProviderId: (id: number | '') => void;
   selectedMaterialIds: number[];
   jitterMinSeconds: number;
   setJitterMinSeconds: (seconds: number) => void;
@@ -44,6 +47,7 @@ interface Props {
 
 export default function CampaignWizard({
   groups,
+  aiProviders,
   materials,
   campaignStep,
   setCampaignStep,
@@ -61,6 +65,8 @@ export default function CampaignWizard({
   setDraftCount,
   tone,
   setTone,
+  selectedAiProviderId,
+  setSelectedAiProviderId,
   selectedMaterialIds,
   jitterMinSeconds,
   setJitterMinSeconds,
@@ -186,6 +192,16 @@ export default function CampaignWizard({
             </label>
             <label>时间窗<input value={sendWindow} onChange={(event) => setSendWindow(event.target.value)} /></label>
             <label>草稿轮数<input type="number" min={1} max={12} value={draftCount} onChange={(event) => setDraftCount(Number(event.target.value))} /></label>
+            <label>模型后台
+              <select value={selectedAiProviderId} onChange={(event) => setSelectedAiProviderId(Number(event.target.value) || '')}>
+                <option value="">使用客户默认</option>
+                {aiProviders.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.provider_name} / {provider.model_name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="wide-field">话题/运营目标<textarea value={topic} onChange={(event) => setTopic(event.target.value)} /></label>
             <label className="wide-field">语气<textarea value={tone} onChange={(event) => setTone(event.target.value)} /></label>
             <label>最小抖动秒<input type="number" min={0} value={jitterMinSeconds} onChange={(event) => setJitterMinSeconds(Number(event.target.value))} /></label>

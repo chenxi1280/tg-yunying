@@ -97,6 +97,10 @@ def test_approve_all_retry_and_archive_detail_flow():
     with TestClient(app) as client:
         headers = auth_headers(client)
         group = client.get("/api/groups", headers=headers).json()[0]
+        with SessionLocal() as session:
+            account = session.get(TgAccount, client.get("/api/tg-accounts", headers=headers).json()[0]["id"])
+            account.status = AccountStatus.ACTIVE.value
+            session.commit()
         campaign = client.post(
             "/api/campaigns",
             headers=headers,
@@ -337,6 +341,63 @@ def test_ai_provider_prompt_material_and_jitter_flow():
         assert tasks[0]["message_type"] == "表情包"
         drained = client.post("/api/worker/drain-once", headers=headers).json()
         assert drained["processed"] == 0
+
+
+def test_prompt_template_listing_matches_existing_tenant_resolution_rules():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        created = client.post(
+            "/api/prompt-templates",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "template_type": "群活跃草稿",
+                "name": f"tenant-template-{uuid4().hex[:6]}",
+                "content": "tenant scoped template",
+            },
+        ).json()
+
+        all_visible = client.get("/api/prompt-templates", headers=headers).json()
+        assert any(item["id"] == created["id"] for item in all_visible)
+        assert any(item["tenant_id"] is None for item in all_visible)
+
+        tenant_visible = client.get("/api/prompt-templates?tenant_id=1", headers=headers).json()
+        assert any(item["id"] == created["id"] for item in tenant_visible)
+
+        ops_headers = auth_headers(client, "ops@demo.local", "ops123")
+        denied = client.get("/api/prompt-templates?tenant_id=999", headers=ops_headers)
+        assert denied.status_code == 403
+
+
+def test_ai_drafts_listing_uses_service_and_preserves_desc_order():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        group = client.get("/api/groups", headers=headers).json()[0]
+        campaign = client.post(
+            "/api/campaigns",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "group_id": group["id"],
+                "title": f"draft-list-{uuid4().hex[:6]}",
+                "campaign_type": "话题引导任务",
+                "topic": "draft list order",
+                "jitter_min_seconds": 0,
+                "jitter_max_seconds": 0,
+                "batch_interval_seconds": 0,
+                "respect_send_window": False,
+            },
+        ).json()
+        generated = client.post(
+            f"/api/campaigns/{campaign['id']}/generate-drafts",
+            headers=headers,
+            json={"count": 2},
+        ).json()
+
+        drafts = client.get("/api/ai-drafts", headers=headers).json()
+        returned_ids = [item["id"] for item in drafts]
+        assert generated[0]["id"] in returned_ids and generated[1]["id"] in returned_ids
+        assert returned_ids == sorted(returned_ids, reverse=True)
 
 
 def test_ai_provider_write_requires_platform_admin():

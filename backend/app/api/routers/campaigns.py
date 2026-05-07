@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user, require_core_feature_access, resolve_tenant_id
@@ -21,7 +20,7 @@ from app.schemas import (
 from app.services import (
     approve_all_drafts, approve_draft, campaign_detail, cancel_message_task,
     create_campaign, dispatch_task, filter_campaigns, filter_tasks,
-    generate_drafts, recommend_campaign_accounts, reject_ai_draft,
+    generate_drafts, list_ai_drafts_for_tenant, recommend_campaign_accounts, reject_ai_draft,
     retry_task, update_ai_draft,
 )
 
@@ -122,8 +121,7 @@ def list_ai_drafts(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Sequence[AiDraft]:
-    tenant_id = resolve_tenant_id(current_user, tenant_id)
-    return session.scalars(select(AiDraft).where(AiDraft.tenant_id == tenant_id).order_by(AiDraft.id.desc())).all()
+    return list_ai_drafts_for_tenant(session, resolve_tenant_id(current_user, tenant_id))
 
 
 @router.post("/api/ai-drafts/{draft_id}/approve", response_model=MessageTaskOut)
@@ -198,6 +196,8 @@ def post_dispatch_task(
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, MessageTask, task_id)
+        # Intentionally pass the session factory: dispatch spans DB work around external TG I/O
+        # and needs isolated sessions before and after the network boundary.
         return dispatch_task(SessionLocal, task_id)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
@@ -213,6 +213,7 @@ def post_retry_task(
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, MessageTask, task_id)
+        # Keep the same two-phase session boundary as dispatch_task for retry-and-redispatch flow.
         return retry_task(SessionLocal, task_id, payload.actor, payload.dispatch_now)
     except ValueError as exc:
         raise not_found(str(exc)) from exc

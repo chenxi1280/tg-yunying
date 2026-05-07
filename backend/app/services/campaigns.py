@@ -741,6 +741,16 @@ def campaign_detail(session: Session, campaign_id: int) -> dict:
     }
 
 
+def list_ai_drafts_for_tenant(session: Session, tenant_id: int) -> list[AiDraft]:
+    return list(
+        session.scalars(
+            select(AiDraft)
+            .where(AiDraft.tenant_id == tenant_id)
+            .order_by(AiDraft.id.desc())
+        )
+    )
+
+
 def filter_campaigns(session: Session, tenant_id: int, page: int, page_size: int, search: str | None, status: str | None) -> list[Campaign]:
     require_tenant(session, tenant_id)
     stmt = select(Campaign).where(Campaign.tenant_id == tenant_id)
@@ -803,6 +813,7 @@ __all__ = [
     "campaign_detail",
     "filter_campaigns",
     "generate_drafts",
+    "list_ai_drafts_for_tenant",
     "approve_draft",
     "approve_all_drafts",
     "update_ai_draft",
