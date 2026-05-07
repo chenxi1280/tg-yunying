@@ -1,7 +1,8 @@
 import React from 'react';
 import type {
   Overview, RuntimeConfig, CurrentUser, CaptchaChallenge, CaptchaVerifyResponse,
-  ActivationCode, UsageLedger, UsageSummary, LoginFlow, Account, AccountPool,
+  ActivationCode, ActivationCodeCreateForm, ActivationCodeFilters, ActivationCodePage,
+  UsageLedger, UsageSummary, LoginFlow, Account, AccountPool, AccountLoginForm,
   DeveloperApp, AiProvider, PromptTemplate, TenantAiSetting, SchedulingSetting,
   Material, Contact, Group, Campaign, Draft, MessageTask, ArchiveItem, ArchiveDetail,
   ArchiveExport, AuditLog, VerificationCode, AccountSyncRecord, VerificationTask,
@@ -24,6 +25,16 @@ export interface AppState {
   setLoginPassword: (password: string) => void;
   registerForm: { name: string; email: string; phone: string; password: string };
   setRegisterForm: React.Dispatch<React.SetStateAction<{ name: string; email: string; phone: string; password: string }>>;
+  changePasswordForm: { current_password: string; new_password: string; confirm_password: string };
+  setChangePasswordForm: React.Dispatch<React.SetStateAction<{ current_password: string; new_password: string; confirm_password: string }>>;
+  captchaChallenge: CaptchaChallenge | null;
+  captchaInput: string;
+  setCaptchaInput: (value: string) => void;
+  captchaToken: string;
+  captchaError: string;
+  captchaLoading: boolean;
+  refreshCaptchaChallenge: () => Promise<void>;
+  verifyCaptcha: () => Promise<void>;
 
   // View state
   activeView: string;
@@ -53,14 +64,18 @@ export interface AppState {
   // Activation & Usage
   activationCodes: ActivationCode[];
   setActivationCodes: (codes: ActivationCode[]) => void;
+  activationCodePage: ActivationCodePage;
+  setActivationCodePage: (page: ActivationCodePage) => void;
+  activationCodeFilters: ActivationCodeFilters;
+  setActivationCodeFilters: React.Dispatch<React.SetStateAction<ActivationCodeFilters>>;
   usageLedgers: UsageLedger[];
   setUsageLedgers: (ledgers: UsageLedger[]) => void;
   usageSummary: UsageSummary | null;
   setUsageSummary: (summary: UsageSummary | null) => void;
   redeemCode: string;
   setRedeemCode: (code: string) => void;
-  activationBatch: { plan_type: string; quantity: number; note: string };
-  setActivationBatch: React.Dispatch<React.SetStateAction<{ plan_type: string; quantity: number; note: string }>>;
+  activationBatch: ActivationCodeCreateForm;
+  setActivationBatch: React.Dispatch<React.SetStateAction<ActivationCodeCreateForm>>;
 
   // AI & Templates
   aiProviders: AiProvider[];
@@ -133,6 +148,8 @@ export interface AppState {
   setCloneForm: (form: { target_account_ids: number[]; clone_contacts: boolean; clone_groups: boolean }) => void;
   loginAfterCreate: boolean;
   setLoginAfterCreate: (login: boolean) => void;
+  accountLoginForm: AccountLoginForm;
+  setAccountLoginForm: React.Dispatch<React.SetStateAction<AccountLoginForm>>;
   profileForm: { display_name: string; tg_first_name: string; tg_last_name: string; tg_bio: string; avatar_object_key: string };
   setProfileForm: (form: { display_name: string; tg_first_name: string; tg_last_name: string; tg_bio: string; avatar_object_key: string }) => void;
   avatarFile: File | null;
@@ -182,6 +199,11 @@ export interface AppState {
     banned_words: string;
     link_whitelist: string;
     require_review: boolean;
+    listener_enabled: boolean;
+    listener_auto_reply_enabled: boolean;
+    listener_interval_seconds: number;
+    listener_context_limit: number;
+    listener_account_ids: number[];
   };
   setGroupPolicy: (policy: {
     active_window: string;
@@ -192,15 +214,20 @@ export interface AppState {
     banned_words: string;
     link_whitelist: string;
     require_review: boolean;
+    listener_enabled: boolean;
+    listener_auto_reply_enabled: boolean;
+    listener_interval_seconds: number;
+    listener_context_limit: number;
+    listener_account_ids: number[];
   }) => void;
 
   // Developer & AI forms
-  developerAppForm: { app_name: string; api_id: string; api_hash: string; max_accounts: number; notes: string };
-  setDeveloperAppForm: (form: { app_name: string; api_id: string; api_hash: string; max_accounts: number; notes: string }) => void;
+  developerAppForm: { id: number | null; app_name: string; api_id: string; api_hash: string; max_accounts: number; notes: string; is_active: boolean };
+  setDeveloperAppForm: (form: { id: number | null; app_name: string; api_id: string; api_hash: string; max_accounts: number; notes: string; is_active: boolean }) => void;
   tenantForm: { id: number | null; name: string; plan_name: string; account_quota: number; task_quota: number };
   setTenantForm: (form: { id: number | null; name: string; plan_name: string; account_quota: number; task_quota: number }) => void;
-  aiProviderForm: { provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string };
-  setAiProviderForm: (form: { provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string }) => void;
+  aiProviderForm: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; is_active: boolean };
+  setAiProviderForm: (form: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; is_active: boolean }) => void;
   promptTemplateForm: { name: string; template_type: string; content: string };
   setPromptTemplateForm: (form: { name: string; template_type: string; content: string }) => void;
   materialForm: { title: string; material_type: string; content: string; tags: string };
@@ -276,11 +303,17 @@ export interface AppState {
   retryAccountProfileSync: () => Promise<void>;
   login: () => Promise<void>;
   register: () => Promise<void>;
+  changePassword: () => Promise<void>;
   submitRedeemCode: () => Promise<void>;
+  loadActivationCodes: (filters?: ActivationCodeFilters, page?: number, pageSize?: number) => Promise<void>;
   createActivationCodes: () => Promise<void>;
+  disableActivationCode: (code: ActivationCode) => Promise<void>;
   logout: () => void;
   runLogin: (account: Account, method: 'code' | 'qr') => Promise<void>;
   verifyAccount: (account: Account) => Promise<void>;
+  submitAccountLoginCode: () => Promise<void>;
+  submitAccountLoginPassword: () => Promise<void>;
+  resendAccountLoginCode: () => Promise<void>;
   healthCheck: (account: Account) => Promise<void>;
   syncAccountGroups: (account: Account) => Promise<void>;
   createCampaignAndDrafts: () => Promise<void>;
@@ -297,11 +330,14 @@ export interface AppState {
   openArchiveDetail: (archive: ArchiveItem) => Promise<void>;
   exportArchive: (archive: ArchiveItem) => Promise<void>;
   createDeveloperApp: () => Promise<void>;
+  openDeveloperAppEdit: (app: DeveloperApp) => void;
   toggleDeveloperApp: (app: DeveloperApp) => Promise<void>;
   checkDeveloperApp: (app: DeveloperApp) => Promise<void>;
   openTenantEdit: (tenant: Tenant) => void;
   saveTenantQuota: () => Promise<void>;
   createAiProvider: () => Promise<void>;
+  openAiProviderEdit: (provider: AiProvider) => void;
+  toggleAiProvider: (provider: AiProvider) => Promise<void>;
   checkAiProvider: (provider: AiProvider) => Promise<void>;
   saveTenantAiSetting: () => Promise<void>;
   saveSchedulingSetting: () => Promise<void>;

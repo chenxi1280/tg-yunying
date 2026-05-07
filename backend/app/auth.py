@@ -4,7 +4,6 @@ import base64
 import hashlib
 import hmac
 import json
-import random
 import re
 import secrets
 import threading
@@ -300,7 +299,8 @@ def require_core_feature_access(current_user: CurrentUser) -> None:
 def create_captcha_challenge() -> dict:
     now = datetime.now(UTC)
     challenge_id = secrets.token_urlsafe(18)
-    target = random.randint(72, 96)
+    alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+    target = "".join(secrets.choice(alphabet) for _ in range(5))
     expires_at = now + timedelta(minutes=5)
     store = _get_captcha_store()
     store.set_challenge(
@@ -308,25 +308,30 @@ def create_captcha_challenge() -> dict:
         {"target": target, "expires_at": expires_at.isoformat(), "consumed": False},
         ttl_seconds=330,  # 5.5 min — slightly longer than logical expiry
     )
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="132" height="44" viewBox="0 0 132 44">
+<rect width="132" height="44" rx="8" fill="#f5f7f3"/>
+<path d="M8 31 C32 5, 56 43, 80 14 S112 40, 126 12" stroke="#9aa7a0" stroke-width="1.5" fill="none" opacity=".55"/>
+<path d="M10 13 L122 33 M18 36 L116 8" stroke="#c6d1ca" stroke-width="1" opacity=".65"/>
+<text x="66" y="29" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="24" font-weight="800" letter-spacing="4" fill="#17362c">{target}</text>
+</svg>"""
     return {
         "challenge_id": challenge_id,
-        "slider_min": 0,
-        "slider_max": 100,
-        "target_value": target,
+        "image_data_url": "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii"),
         "expires_at": expires_at,
     }
 
 
-def get_challenge_target(challenge_id: str) -> int | None:
+def get_challenge_target(challenge_id: str) -> str | None:
     """从验证码 store 中读取 challenge 的目标值（仅供测试使用）。"""
     store = _get_captcha_store()
     challenge = store.get_challenge(challenge_id)
     if challenge is None:
         return None
-    return challenge.get("target")
+    target = challenge.get("target")
+    return str(target) if target is not None else None
 
 
-def verify_captcha_challenge(challenge_id: str, slider_value: int) -> dict:
+def verify_captcha_challenge(challenge_id: str, captcha_value: str) -> dict:
     store = _get_captcha_store()
     challenge = store.get_challenge(challenge_id)
     now = datetime.now(UTC)
@@ -339,7 +344,8 @@ def verify_captcha_challenge(challenge_id: str, slider_value: int) -> dict:
         raise HTTPException(status_code=400, detail="captcha challenge expired")
     if challenge["consumed"]:
         raise HTTPException(status_code=400, detail="captcha challenge already used")
-    if abs(int(slider_value) - int(challenge["target"])) > 2:
+    normalized_value = re.sub(r"\s+", "", captcha_value or "").upper()
+    if normalized_value != str(challenge["target"]).upper():
         raise HTTPException(status_code=400, detail="captcha verification failed")
     # Mark consumed
     challenge["consumed"] = True
@@ -392,11 +398,15 @@ def serialize_user(session: Session, user: AppUser) -> dict:
 
 
 def authenticate_user(session: Session, identifier: str, password: str) -> AppUser | None:
+    identifier = identifier.strip()
     normalized_phone = normalize_phone(identifier)
+    conditions = [AppUser.email == identifier.lower(), AppUser.name == identifier]
+    if normalized_phone:
+        conditions.append(AppUser.phone == normalized_phone)
     user = session.scalar(
         select(AppUser).where(
             AppUser.is_active.is_(True),
-            or_(AppUser.email == identifier, AppUser.phone == normalized_phone),
+            or_(*conditions),
         )
     )
     if not user:

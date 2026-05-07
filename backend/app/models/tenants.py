@@ -66,6 +66,8 @@ class ActivationCode(Base):
     plan_type: Mapped[str] = mapped_column(String(30))
     duration_days: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(30), default="unused")
+    batch_no: Mapped[str] = mapped_column(String(24), default="")
+    serial_prefix: Mapped[str] = mapped_column(String(24), default="")
     created_by: Mapped[str] = mapped_column(String(100), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     redeemed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("app_users.id"), nullable=True)
@@ -73,6 +75,16 @@ class ActivationCode(Base):
     subscription_start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     subscription_end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     note: Mapped[str] = mapped_column(String(255), default="")
+
+    redeemed_by_user: Mapped[AppUser | None] = relationship()
+
+    @property
+    def redeemed_user_name(self) -> str | None:
+        return self.redeemed_by_user.name if self.redeemed_by_user else None
+
+    @property
+    def redeemed_user_email(self) -> str | None:
+        return self.redeemed_by_user.email if self.redeemed_by_user else None
 
 
 __all__ = ["Tenant", "AccountPool", "AppUser", "ActivationCode"]

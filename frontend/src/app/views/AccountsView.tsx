@@ -1,7 +1,10 @@
 import React from 'react';
 import type { Account, AccountPool } from '../types';
+import type { RuntimeConfig } from '../types';
 import { StatusBadge } from '../components/shared';
 import { statusAccent, healthTone } from '../utils';
+
+const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待2FA', '需重新登录', '异常']);
 
 interface Props {
   accounts: Account[];
@@ -10,6 +13,8 @@ interface Props {
   setSelectedPoolId: (id: number | '') => void;
   selectedPool: AccountPool | undefined;
   avatarUrl: (value: string) => string;
+  runtime: RuntimeConfig | null;
+  onConfigureDeveloperApps: () => void;
   onCreatePoolClick: () => void;
   onCreateAccount: (login: boolean) => void;
   onOpenPoolDetail: (pool: AccountPool) => void;
@@ -27,6 +32,8 @@ export default function AccountsView({
   setSelectedPoolId,
   selectedPool,
   avatarUrl,
+  runtime,
+  onConfigureDeveloperApps,
   onCreatePoolClick,
   onCreateAccount,
   onOpenPoolDetail,
@@ -45,10 +52,17 @@ export default function AccountsView({
         </div>
         <div className="row-actions">
           <button onClick={onCreatePoolClick}>新增账号池</button>
-          <button onClick={() => onCreateAccount(false)}>新增账号</button>
-          <button className="primary" onClick={() => onCreateAccount(true)}>新增登录账号</button>
+          <button disabled={!runtime?.can_create_tg_account} onClick={() => onCreateAccount(false)}>新增账号</button>
+          <button className="primary" disabled={!runtime?.can_create_tg_account} onClick={() => onCreateAccount(true)}>新增登录账号</button>
         </div>
       </div>
+      {!runtime?.can_create_tg_account && (
+        <div className="sub-panel compact-panel">
+          <strong>请先配置开发者应用</strong>
+          <p className="muted-line">新增 TG 账号需要可用的 Telegram api_id/api_hash。配置完成并保持健康后，账号新增和登录入口会自动启用。</p>
+          <button className="primary small" onClick={onConfigureDeveloperApps}>去配置开发者应用</button>
+        </div>
+      )}
       <div className="pool-filter-strip">
         <button className={selectedPoolId === '' ? 'active' : ''} onClick={() => setSelectedPoolId('')}>全部账号池</button>
         {accountPools.map((pool) => (
@@ -59,6 +73,7 @@ export default function AccountsView({
         {selectedPool && <button className="primary" onClick={() => onOpenPoolDetail(selectedPool)}>进入账号池</button>}
       </div>
       <div className="table">
+        {!accounts.length && <p className="muted-line">暂无 TG 账号。配置开发者应用后，可以通过手机号新增账号并启动真实 TG 登录。</p>}
         {accounts.map((account) => (
           <div className={`table-row account-row ${statusAccent(account.status)}`} key={account.id}>
             <div className="account-identity">
@@ -81,12 +96,18 @@ export default function AccountsView({
             </div>
             <div className={`meter ${healthTone(account.health_score)}`} title={`健康分 ${account.health_score}`}><span style={{ width: `${account.health_score}%` }} /></div>
             <div className="row-actions">
-              <button className="primary small" onClick={() => onOpenAccountDetail(account)}>详情</button>
-              <button onClick={() => onRunLogin(account, 'code')}>验证码</button>
-              <button onClick={() => onRunLogin(account, 'qr')}>扫码</button>
-              <button onClick={() => onVerifyAccount(account)}>验证</button>
-              <button onClick={() => onHealthCheck(account)}>检查</button>
-              <button onClick={() => onSyncGroups(account)}>同步群</button>
+              {LOGIN_REQUIRED_STATUSES.has(account.status) ? (
+                <button className="primary small" onClick={() => onVerifyAccount(account)}>完成登录</button>
+              ) : account.status === '在线' ? (
+                <>
+                  <button className="primary small" onClick={() => onOpenAccountDetail(account)}>详情</button>
+                  <button onClick={() => onRunLogin(account, 'qr')}>扫码</button>
+                  <button onClick={() => onHealthCheck(account)}>检查</button>
+                  <button onClick={() => onSyncGroups(account)}>同步群</button>
+                </>
+              ) : (
+                <button className="primary small" onClick={() => onOpenAccountDetail(account)}>详情</button>
+              )}
             </div>
           </div>
         ))}

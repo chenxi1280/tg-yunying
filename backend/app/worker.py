@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from .database import SessionLocal
 from .models import MessageTask, TaskStatus
 from .task_queue import get_task_queue
-from .services import dispatch_task, drain_account_sync_records, drain_archives, drain_profile_sync_records
+from .services import dispatch_task, drain_account_sync_records, drain_archives, drain_group_listeners, drain_profile_sync_records
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +47,10 @@ def drain_once(limit: int = 100) -> int:
     remaining = max(0, remaining - profile_count)
     account_count = drain_account_sync_records(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - account_count)
+    listener_count = drain_group_listeners(SessionLocal, max(1, remaining))
+    remaining = max(0, remaining - listener_count)
     archive_count = drain_archives(SessionLocal, max(1, remaining))
-    return count + profile_count + account_count + archive_count
+    return count + profile_count + account_count + listener_count + archive_count
 
 
 if __name__ == "__main__":

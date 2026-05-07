@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session, joinedload
 
-from app.auth import CurrentUser, hash_password, normalize_phone
+from app.auth import CurrentUser, hash_password, normalize_phone, verify_password
+from app.config import get_settings
 from app.models import (
     AccountPool,
     ActivationCode,
@@ -19,8 +20,6 @@ from app.schemas import (
     SubscriptionRedeemRequest,
     TenantCreate,
 )
-from app.config import get_settings
-
 from ._common import (
     _now,
     activation_plan_days,
@@ -32,7 +31,6 @@ from .account_pools import ensure_default_account_pool, seed_account_pools
 from .ai_config import seed_ai_configuration
 from .developer_apps import (
     backfill_account_developer_apps,
-    first_assignable_developer_app,
     seed_developer_apps,
 )
 
@@ -47,7 +45,7 @@ def ensure_seed_data(session: Session) -> None:
         session.commit()
         return
 
-    tenant = Tenant(name="本地测试租户", plan_name="试运行", account_quota=50, task_quota=5000)
+    tenant = Tenant(name="默认租户", plan_name="试运行", account_quota=50, task_quota=5000)
     session.add(tenant)
     session.flush()
     default_pool = AccountPool(tenant_id=tenant.id, name="默认账号池", description="系统默认账号分组", is_default=True)
@@ -56,44 +54,8 @@ def ensure_seed_data(session: Session) -> None:
     seed_developer_apps(session)
     seed_users(session, tenant.id)
     seed_ai_configuration(session)
-    if get_settings().seed_demo_data:
-        seed_demo_workspace(session, tenant.id, default_pool.id)
     audit(session, tenant_id=tenant.id, actor="system", action="初始化本地工作区", target_type="tenant", target_id=str(tenant.id))
     session.commit()
-
-
-def seed_demo_workspace(session: Session, tenant_id: int, default_pool_id: int) -> None:
-    from app.models import AccountStatus, GroupAuthStatus, Material, TgAccount, TgGroup, TgGroupAccount
-
-    default_app = first_assignable_developer_app(session)
-    accounts = [
-        TgAccount(tenant_id=tenant_id, pool_id=default_pool_id, display_name="运营号 A", username="spark_ops_a", phone_masked="+86 138****1024", status=AccountStatus.ACTIVE.value, health_score=96, session_ciphertext="encrypted-demo", developer_app_id=default_app.id if default_app else None, developer_app_version=default_app.credentials_version if default_app else 1),
-        TgAccount(tenant_id=tenant_id, pool_id=default_pool_id, display_name="运营号 B", username="spark_ops_b", phone_masked="+86 139****2048", status=AccountStatus.ACTIVE.value, health_score=88, session_ciphertext="encrypted-demo", developer_app_id=default_app.id if default_app else None, developer_app_version=default_app.credentials_version if default_app else 1),
-        TgAccount(tenant_id=tenant_id, pool_id=default_pool_id, display_name="备用号 C", username="spark_ops_c", phone_masked="+852 ****7788", status=AccountStatus.WAITING_CODE.value, health_score=72, developer_app_id=default_app.id if default_app else None, developer_app_version=default_app.credentials_version if default_app else 1),
-    ]
-    session.add_all(accounts)
-    session.flush()
-
-    groups = [
-        TgGroup(tenant_id=tenant_id, tg_peer_id="-100001", title="星火项目交流群", member_count=2480, auth_status=GroupAuthStatus.AUTHORIZED.value, topic_direction="活动答疑、产品体验、日常聊天"),
-        TgGroup(tenant_id=tenant_id, tg_peer_id="-100002", title="新品内测社群", member_count=836, auth_status=GroupAuthStatus.READONLY.value, topic_direction="内测反馈、问题收集"),
-        TgGroup(tenant_id=tenant_id, tg_peer_id="-100003", title="海外用户增长群", member_count=1289, auth_status=GroupAuthStatus.UNVERIFIED.value, topic_direction="增长案例、运营方法"),
-    ]
-    session.add_all(groups)
-    session.flush()
-
-    for group in groups:
-        for account in accounts[:2]:
-            session.add(TgGroupAccount(tenant_id=tenant_id, group_id=group.id, account_id=account.id, can_send=group.auth_status == GroupAuthStatus.AUTHORIZED.value))
-
-    session.add_all(
-        [
-            Material(tenant_id=tenant_id, title="欢迎语模板", material_type="AI话术模板", content="欢迎新朋友，可以先看置顶公告，有问题直接问。", tags="欢迎,FAQ"),
-            Material(tenant_id=tenant_id, title="活动提醒", material_type="文本", content="今晚 8 点有一轮答疑，感兴趣的朋友可以提前把问题发出来。", tags="活动,提醒"),
-            Material(tenant_id=tenant_id, title="活动表情包", material_type="表情包", content="https://example.local/stickers/welcome.webp", tags="表情包,欢迎"),
-            Material(tenant_id=tenant_id, title="产品海报", material_type="图片", content="https://example.local/images/product-poster.png", tags="图片,产品"),
-        ]
-    )
 
 
 def seed_users(session: Session, tenant_id: int | None = None) -> None:
@@ -117,10 +79,72 @@ def seed_users(session: Session, tenant_id: int | None = None) -> None:
             if user.password_hash == "":
                 user.password_hash = hash_password("admin123" if user.role == "系统管理员" else "ops123")
                 changed = True
+        if not any(user.role == "系统管理员" for user in users):
+            session.add(_build_bootstrap_admin(session, tenant_id))
+            changed = True
+        else:
+            bootstrap_admin = _get_bootstrap_admin(session)
+            if not bootstrap_admin:
+                session.add(_build_bootstrap_admin(session, tenant_id))
+                changed = True
+            elif bootstrap_admin.last_login_at is None and not verify_password(get_settings().admin_bootstrap_password, bootstrap_admin.password_hash):
+                bootstrap_admin.password_hash = hash_password(get_settings().admin_bootstrap_password)
+                changed = True
         if changed:
             session.commit()
         return
 
+    session.add(_build_bootstrap_admin(session, tenant_id))
+    _seed_default_operator(session, tenant_id)
+    session.commit()
+
+
+def _build_bootstrap_admin(session: Session, tenant_id: int | None = None) -> AppUser:
+    active_tenant_id = tenant_id or session.scalar(select(Tenant.id).order_by(Tenant.id))
+    settings = get_settings()
+    admin_identifier, admin_email = _bootstrap_admin_identity()
+    active_start = _now()
+    active_end = active_start + timedelta(days=365)
+    return AppUser(
+        tenant_id=active_tenant_id,
+        name=admin_identifier,
+        role="系统管理员",
+        email=admin_email,
+        password_hash=hash_password(settings.admin_bootstrap_password),
+        subscription_status="active",
+        subscription_started_at=active_start,
+        subscription_expires_at=active_end,
+    )
+
+
+def _bootstrap_admin_identity() -> tuple[str, str]:
+    settings = get_settings()
+    admin_identifier = settings.admin_bootstrap_username
+    admin_email = (
+        settings.admin_bootstrap_email.strip().lower()
+        if settings.admin_bootstrap_email
+        else admin_identifier.lower()
+        if "@" in admin_identifier
+        else f"{admin_identifier.lower()}@bootstrap.local"
+    )
+    return admin_identifier, admin_email
+
+
+def _get_bootstrap_admin(session: Session) -> AppUser | None:
+    admin_identifier, admin_email = _bootstrap_admin_identity()
+    return session.scalar(
+        select(AppUser).where(
+            AppUser.role == "系统管理员",
+            (AppUser.name == admin_identifier) | (AppUser.email == admin_email),
+        )
+    )
+
+
+def _bootstrap_admin_exists(session: Session) -> bool:
+    return bool(_get_bootstrap_admin(session))
+
+
+def _seed_default_operator(session: Session, tenant_id: int | None = None) -> None:
     active_tenant_id = tenant_id or session.scalar(select(Tenant.id).order_by(Tenant.id))
     active_start = _now()
     active_end = active_start + timedelta(days=365)
@@ -128,19 +152,9 @@ def seed_users(session: Session, tenant_id: int | None = None) -> None:
         [
             AppUser(
                 tenant_id=active_tenant_id,
-                name="系统管理员",
-                role="系统管理员",
-                email="admin@demo.local",
-                password_hash=hash_password("admin123"),
-                subscription_status="active",
-                subscription_started_at=active_start,
-                subscription_expires_at=active_end,
-            ),
-            AppUser(
-                tenant_id=active_tenant_id,
-                name="演示普通用户",
+                name="普通用户",
                 role="普通用户",
-                email="ops@demo.local",
+                email="ops@bootstrap.local",
                 password_hash=hash_password("ops123"),
                 subscription_status="active",
                 subscription_started_at=active_start,
@@ -149,7 +163,19 @@ def seed_users(session: Session, tenant_id: int | None = None) -> None:
             ),
         ]
     )
+
+
+def change_user_password(session: Session, current_user: CurrentUser, current_password: str, new_password: str) -> AppUser:
+    user = session.get(AppUser, current_user.id)
+    if not user or not user.is_active:
+        raise ValueError("user not found")
+    if not verify_password(current_password, user.password_hash):
+        raise ValueError("current password is incorrect")
+    user.password_hash = hash_password(new_password)
+    audit(session, tenant_id=user.tenant_id, actor=user.name, action="修改登录密码", target_type="app_user", target_id=str(user.id))
     session.commit()
+    session.refresh(user)
+    return user
 
 
 def create_user_registration(session: Session, payload: AuthRegisterRequest) -> AppUser:
@@ -185,10 +211,12 @@ def create_user_registration(session: Session, payload: AuthRegisterRequest) -> 
 
 def create_user_activation_codes(session: Session, payload: ActivationCodeCreateRequest, actor: str) -> list[ActivationCode]:
     duration_days = activation_plan_days(payload.plan_type)
+    serial_prefix = (payload.serial_prefix.strip() or payload.plan_type[:1]).upper()
+    batch_no = (payload.batch_no.strip() or "DEFAULT").upper()
     created: list[ActivationCode] = []
     for _ in range(payload.quantity):
         while True:
-            code = f"{payload.plan_type[:1].upper()}{uuid4().hex[:15].upper()}"
+            code = f"{serial_prefix}-{batch_no}-{uuid4().hex[:10].upper()}"
             if not session.scalar(select(ActivationCode.id).where(ActivationCode.code == code)):
                 break
         item = ActivationCode(
@@ -196,21 +224,88 @@ def create_user_activation_codes(session: Session, payload: ActivationCodeCreate
             plan_type=payload.plan_type,
             duration_days=duration_days,
             status="unused",
+            batch_no=batch_no,
+            serial_prefix=serial_prefix,
             created_by=actor,
             note=payload.note,
         )
         session.add(item)
         created.append(item)
     session.flush()
-    audit(session, tenant_id=None, actor=actor, action="生成卡密", target_type="activation_code", target_id=str(created[0].id if created else "0"), detail=f"count={len(created)}; plan={payload.plan_type}")
+    audit(session, tenant_id=None, actor=actor, action="生成卡密", target_type="activation_code", target_id=str(created[0].id if created else "0"), detail=f"count={len(created)}; plan={payload.plan_type}; batch={batch_no}")
     session.commit()
     for item in created:
         session.refresh(item)
     return created
 
 
-def list_activation_codes(session: Session) -> list[ActivationCode]:
-    return list(session.scalars(select(ActivationCode).order_by(ActivationCode.id.desc())))
+def list_activation_codes(
+    session: Session,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    search: str | None = None,
+    status: str | None = None,
+    plan_type: str | None = None,
+    batch_no: str | None = None,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+) -> dict:
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    filters = []
+    if search:
+        like = f"%{search.strip()}%"
+        filters.append(
+            or_(
+                ActivationCode.code.ilike(like),
+                ActivationCode.batch_no.ilike(like),
+                ActivationCode.serial_prefix.ilike(like),
+                ActivationCode.created_by.ilike(like),
+                AppUser.name.ilike(like),
+                AppUser.email.ilike(like),
+            )
+        )
+    if status:
+        filters.append(ActivationCode.status == status)
+    if plan_type:
+        filters.append(ActivationCode.plan_type == plan_type)
+    if batch_no:
+        filters.append(ActivationCode.batch_no == batch_no.strip().upper())
+    if start_at:
+        filters.append(ActivationCode.created_at >= start_at)
+    if end_at:
+        filters.append(ActivationCode.created_at <= end_at)
+
+    base = select(ActivationCode).outerjoin(AppUser, ActivationCode.redeemed_by_user_id == AppUser.id).where(*filters)
+    total = session.scalar(
+        select(func.count(ActivationCode.id))
+        .select_from(ActivationCode)
+        .outerjoin(AppUser, ActivationCode.redeemed_by_user_id == AppUser.id)
+        .where(*filters)
+    ) or 0
+    items = list(
+        session.scalars(
+            base.options(joinedload(ActivationCode.redeemed_by_user))
+            .order_by(ActivationCode.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+def disable_activation_code(session: Session, code_id: int, actor: str) -> ActivationCode:
+    code = session.get(ActivationCode, code_id)
+    if not code:
+        raise ValueError("activation code not found")
+    if code.status != "unused" or code.redeemed_by_user_id is not None:
+        raise ValueError("only unused activation codes can be disabled")
+    code.status = "disabled"
+    audit(session, tenant_id=None, actor=actor, action="停用卡密", target_type="activation_code", target_id=str(code.id), detail=f"batch={code.batch_no}; plan={code.plan_type}")
+    session.commit()
+    session.refresh(code)
+    return code
 
 
 def redeem_activation_code(session: Session, current_user: CurrentUser, payload: SubscriptionRedeemRequest) -> dict:
@@ -221,7 +316,7 @@ def redeem_activation_code(session: Session, current_user: CurrentUser, payload:
     if not code:
         raise ValueError("activation code not found")
     if code.status != "unused":
-        raise ValueError("activation code already used")
+        raise ValueError("activation code is not available")
     now = _now()
     start_at = user.subscription_expires_at if user.subscription_expires_at and user.subscription_expires_at > now else now
     end_at = start_at + timedelta(days=code.duration_days)
@@ -265,7 +360,9 @@ def create_tenant(session: Session, payload: TenantCreate) -> Tenant:
 __all__ = [
     "create_tenant",
     "create_user_activation_codes",
+    "disable_activation_code",
     "create_user_registration",
+    "change_user_password",
     "ensure_seed_data",
     "list_activation_codes",
     "redeem_activation_code",

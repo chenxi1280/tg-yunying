@@ -105,6 +105,16 @@ class ArchivedMessageSnapshot:
 
 
 @dataclass(frozen=True)
+class GroupMessageSnapshot:
+    remote_message_id: str
+    sender_name: str
+    content: str
+    sender_peer_id: str = ""
+    message_type: str = "text"
+    sent_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class ArchivedMemberSnapshot:
     display_name: str
     username: str | None = None
@@ -320,6 +330,25 @@ class TelegramGateway:
             summary=f"{title} 的活跃内容集中在欢迎引导、常见问题和真实体验反馈。",
             new_group_plan="新群建议保留欢迎语、FAQ 置顶、前三天轻话题暖场和高活跃成员召回清单。",
         )
+
+    def fetch_group_messages(
+        self,
+        account_id: int,
+        peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        limit: int = 20,
+    ) -> list[GroupMessageSnapshot]:
+        now_value = datetime.now(UTC).replace(tzinfo=None)
+        return [
+            GroupMessageSnapshot(
+                remote_message_id=f"mock:{peer_id}:real-user-context",
+                sender_peer_id="mock-real-user",
+                sender_name="真人用户",
+                content=f"这个 {peer_id} 里的话题现在有人在问，具体怎么参与？",
+                sent_at=now_value,
+            )
+        ][:limit]
 
 
 class TelethonTelegramGateway(TelegramGateway):
@@ -991,6 +1020,57 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials | None = None,
     ) -> ArchiveSnapshot:
         return self._run(self._fetch_group_archive_async(peer_id, session_ciphertext, self._usable_credentials(credentials)))
+
+    async def _fetch_group_messages_async(
+        self,
+        peer_id: str,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        limit: int,
+    ) -> list[GroupMessageSnapshot]:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            raise RuntimeError("listener fetch requires a valid session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            raise RuntimeError("session is not authorized")
+        target: int | str = int(peer_id) if peer_id.lstrip("-").isdigit() else peer_id
+        messages_resp = await client.get_messages(target, limit=limit)
+        snapshots: list[GroupMessageSnapshot] = []
+        for message in list(messages_resp or []):
+            text = getattr(message, "message", "") or ""
+            if not text and not getattr(message, "media", None):
+                continue
+            sender = await message.get_sender() if hasattr(message, "get_sender") else None
+            sender_peer_id = str(getattr(sender, "id", "") or "")
+            sender_name = (
+                getattr(sender, "first_name", "")
+                or getattr(sender, "title", "")
+                or getattr(sender, "username", None)
+                or sender_peer_id
+                or "未知成员"
+            )
+            snapshots.append(
+                GroupMessageSnapshot(
+                    remote_message_id=str(getattr(message, "id", uuid4().hex)),
+                    sender_peer_id=sender_peer_id,
+                    sender_name=sender_name,
+                    content=text or "[media]",
+                    message_type="media" if getattr(message, "media", None) else "text",
+                    sent_at=getattr(message, "date", None),
+                )
+            )
+        return snapshots
+
+    def fetch_group_messages(
+        self,
+        account_id: int,
+        peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        limit: int = 20,
+    ) -> list[GroupMessageSnapshot]:
+        return self._run(self._fetch_group_messages_async(peer_id, session_ciphertext, self._usable_credentials(credentials), limit))
 
 
 def create_gateway(settings: Settings | None = None) -> TelegramGateway:

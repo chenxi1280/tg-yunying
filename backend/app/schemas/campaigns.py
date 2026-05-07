@@ -26,13 +26,22 @@ class CampaignCreate(BaseModel):
     selected_account_ids_by_group: dict[str, list[int]] = Field(default_factory=dict)
 
 
+class ConversationContextMessage(BaseModel):
+    sender_name: str = "真人用户"
+    content: str
+    sent_at: str | None = None
+    account_id: int | None = None
+
+
 class GenerateDraftsRequest(BaseModel):
     count: int = Field(default=4, ge=1, le=12)
     tone: str = "自然、像真实群成员聊天"
     persona_set: list[str] = Field(default_factory=lambda: ["老用户", "新用户", "客服", "活跃成员"])
     use_ai: bool = True
-    fallback_to_mock: bool = True
+    fallback_to_mock: bool = False
     selected_account_ids_by_group: dict[str, list[int]] = Field(default_factory=dict)
+    listener_account_id: int | None = None
+    conversation_context: list[ConversationContextMessage] = Field(default_factory=list)
 
 
 class ApproveDraftRequest(BaseModel):
@@ -152,7 +161,7 @@ class CampaignDetailOut(BaseModel):
 
 
 __all__ = [
-    "CampaignCreate", "GenerateDraftsRequest", "ApproveDraftRequest",
+    "CampaignCreate", "ConversationContextMessage", "GenerateDraftsRequest", "ApproveDraftRequest",
     "ApproveAllRequest", "RetryTaskRequest", "AiDraftUpdate",
     "DirectMessageTaskCreate", "CampaignRecommendAccountsRequest",
     "CampaignOut", "AiDraftOut", "MessageTaskOut", "CampaignDetailOut",

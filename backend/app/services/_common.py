@@ -131,7 +131,7 @@ def get_runtime_config(session: Session | None = None) -> dict:
     healthy_count = 0
     ai_count = 0
     healthy_ai_count = 0
-    mock_fallback_enabled = True
+    mock_fallback_enabled = False
     if session is not None:
         app_count = session.scalar(select(func.count(TelegramDeveloperApp.id))) or 0
         healthy_count = (
@@ -155,7 +155,6 @@ def get_runtime_config(session: Session | None = None) -> dict:
         )
         mock_fallback_enabled = bool(
             session.scalar(select(func.count(TenantAiSetting.id)).where(TenantAiSetting.fallback_to_mock.is_(True)))
-            or session.scalar(select(func.count(Tenant.id)))
         )
     return {
         "app_env": settings.app_env,
@@ -167,6 +166,8 @@ def get_runtime_config(session: Session | None = None) -> dict:
         "developer_app_pool_enabled": app_count > 0,
         "developer_app_count": app_count,
         "developer_app_healthy_count": healthy_count,
+        "can_create_tg_account": healthy_count > 0,
+        "has_ai_provider": ai_count > 0,
         "ai_enabled": healthy_ai_count > 0,
         "ai_provider_count": ai_count,
         "healthy_ai_provider_count": healthy_ai_count,

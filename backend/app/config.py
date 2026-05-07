@@ -28,12 +28,16 @@ def _bool_env(name: str, default: bool) -> bool:
 
 
 def _sync_database_url(raw: str) -> str:
+    if raw.startswith("sqlite"):
+        raise ValueError("SQLite is no longer supported. Set DATABASE_URL to a PostgreSQL connection string.")
     if raw.startswith("postgresql+asyncpg://"):
-        return raw.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
+        raw = raw.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
     if raw.startswith("postgres://"):
-        return raw.replace("postgres://", "postgresql+psycopg://", 1)
+        raw = raw.replace("postgres://", "postgresql+psycopg://", 1)
     if raw.startswith("postgresql://"):
-        return raw.replace("postgresql://", "postgresql+psycopg://", 1)
+        raw = raw.replace("postgresql://", "postgresql+psycopg://", 1)
+    if not raw.startswith("postgresql+psycopg://"):
+        raise ValueError("Only PostgreSQL via psycopg is supported. Set DATABASE_URL to postgresql+psycopg://...")
     return raw
 
 
@@ -84,11 +88,15 @@ class Settings:
             )
     tg_api_id: str | None = os.getenv("TG_API_ID")
     tg_api_hash: str | None = os.getenv("TG_API_HASH")
-    tg_gateway_mode: str = os.getenv("TG_GATEWAY_MODE", "mock")
+    tg_gateway_mode: str = os.getenv("TG_GATEWAY_MODE", "mock" if os.getenv("APP_ENV") == "test" else "telethon")
+    admin_bootstrap_username: str = os.getenv("ADMIN_BOOTSTRAP_USERNAME", "admin").strip() or "admin"
+    admin_bootstrap_email: str | None = os.getenv("ADMIN_BOOTSTRAP_EMAIL")
+    admin_bootstrap_password: str = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "admin123")
     login_code_ttl_seconds: int = int(os.getenv("LOGIN_CODE_TTL_SECONDS", "180"))
     enable_sync_dispatch_fallback: bool = _bool_env("ENABLE_SYNC_DISPATCH_FALLBACK", True)
     auto_migrate_on_start: bool = _bool_env("AUTO_MIGRATE_ON_START", False)
     seed_demo_data: bool = _bool_env("SEED_DEMO_DATA", False)
+    seed_tg_developer_app_from_env: bool = _bool_env("SEED_TG_DEVELOPER_APP_FROM_ENV", False)
     media_root: str = os.getenv("MEDIA_ROOT", str(PROJECT_ROOT / "media"))
     avatar_max_bytes: int = int(os.getenv("AVATAR_MAX_BYTES", str(2 * 1024 * 1024)))
     avatar_allowed_types: tuple[str, ...] = tuple(

@@ -42,6 +42,25 @@ class AiGenerationResult:
     usage: AiUsage
 
 
+MODEL_ALIASES = {
+    "deepseek v4 flash": "deepseek-v4-flash",
+    "deepseek-v4-flash": "deepseek-v4-flash",
+    "deepseek v4 pro": "deepseek-v4-pro",
+    "deepseek-v4-pro": "deepseek-v4-pro",
+    "mimo v2.5": "mimo-v2.5",
+    "mimo-v2.5": "mimo-v2.5",
+    "xiaomi mimo-v2.5": "mimo-v2.5",
+    "mimo v2.5 pro": "mimo-v2.5-pro",
+    "mimo-v2.5-pro": "mimo-v2.5-pro",
+    "xiaomi mimo-v2.5-pro": "mimo-v2.5-pro",
+}
+
+
+def normalize_ai_model_name(model_name: str) -> str:
+    normalized = " ".join(model_name.strip().split()).lower()
+    return MODEL_ALIASES.get(normalized, model_name.strip())
+
+
 def mock_candidates(
     count: int,
     topic: str,
@@ -103,7 +122,7 @@ class AiGateway:
         if credentials.provider_type != "openai_compatible":
             raise RuntimeError(f"unsupported ai provider type: {credentials.provider_type}")
 
-        raw, usage = self._post_openai_compatible(credentials, prompt, temperature, max_tokens)
+        raw, usage = self._post_openai_compatible(credentials, prompt, temperature, max_tokens, response_format_json=True)
         return AiGenerationResult(
             candidates=self._parse_candidates(raw, count, persona_set, material_ids),
             usage=usage,
@@ -113,29 +132,57 @@ class AiGateway:
         if credentials.base_url.startswith("mock://"):
             return True, "mock provider ready"
         try:
-            self._post_openai_compatible(credentials, "请只回复 OK。", 0.1, 32)
+            self._post_openai_compatible(
+                credentials,
+                "请直接回复 OK，不要解释，不要推理过程。",
+                0.1,
+                256,
+                system_prompt="You are a health-check probe. Reply with exactly OK and no other text.",
+            )
+            self._check_chat_capability(credentials)
         except Exception as exc:  # noqa: BLE001 - stored as operator-facing health detail.
             return False, str(exc)
-        return True, "provider ready"
+        return True, "provider ready; chat capability ready"
 
-    def _post_openai_compatible(self, credentials: AiProviderCredentials, prompt: str, temperature: float, max_tokens: int) -> tuple[str, AiUsage]:
-        url = credentials.base_url.rstrip("/")
-        if url.endswith("/chat/completions"):
-            pass  # already the full endpoint URL
-        elif url.endswith("/v1"):
-            url = f"{url}/chat/completions"
-        else:
-            url = f"{url}/v1/chat/completions"
+    def _check_chat_capability(self, credentials: AiProviderCredentials) -> None:
+        raw, _ = self._post_openai_compatible(
+            credentials,
+            (
+                "请输出 json：{\"drafts\":[{\"sequence_index\":1,\"persona\":\"A\","
+                "\"content\":\"一句自然群聊回复\",\"risk_level\":\"低\",\"suggested_account_id\":101}]}。"
+                "只输出 json，不要解释。"
+            ),
+            0.1,
+            512,
+            system_prompt="You validate chat draft generation. Output only valid json.",
+            response_format_json=True,
+        )
+        self._parse_candidates(raw, 1, ["A"], None)
+
+    def _post_openai_compatible(
+        self,
+        credentials: AiProviderCredentials,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+        *,
+        system_prompt: str = "你是一个 Telegram 群运营话术助手，只输出用户要求的 JSON。",
+        response_format_json: bool = False,
+    ) -> tuple[str, AiUsage]:
+        url = self._chat_completions_url(credentials.base_url)
         payload = {
             "model": credentials.model_name,
             "messages": [
-                {"role": "system", "content": "你是一个 Telegram 群运营话术助手，只输出用户要求的 JSON。"},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": False,
         }
+        if response_format_json and self._is_deepseek(credentials):
+            payload["response_format"] = {"type": "json_object"}
+            payload["thinking"] = {"type": "disabled"}
         headers = {"Content-Type": "application/json"}
         if credentials.api_key_header.lower() == "authorization":
             headers["Authorization"] = f"Bearer {credentials.api_key}"
@@ -148,20 +195,91 @@ class AiGateway:
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="ignore")
             raise RuntimeError(f"AI provider HTTP {exc.code}: {detail[:300]}") from exc
-        content = data.get("choices", [{}])[0].get("message", {}).get("content")
+        content = self._extract_message_content(data)
         if not content:
-            raise RuntimeError("AI provider returned empty content")
+            raise RuntimeError(self._empty_content_detail(data))
+        return content, self._usage_from_payload(data)
+
+    def _chat_completions_url(self, base_url: str) -> str:
+        url = base_url.rstrip("/")
+        if url.endswith("/chat/completions"):
+            return url
+        if self._is_deepseek_base_url(url):
+            if url.endswith("/v1"):
+                url = url[:-3]
+            return f"{url}/chat/completions"
+        if url.endswith("/v1"):
+            return f"{url}/chat/completions"
+        return f"{url}/v1/chat/completions"
+
+    def _is_deepseek(self, credentials: AiProviderCredentials) -> bool:
+        return credentials.model_name.startswith("deepseek-") or self._is_deepseek_base_url(credentials.base_url)
+
+    def _is_deepseek_base_url(self, base_url: str) -> bool:
+        return "api.deepseek.com" in base_url.lower()
+
+    def _extract_message_content(self, data: dict[str, Any]) -> str:
+        choice = self._first_choice(data)
+        message = choice.get("message") if isinstance(choice, dict) else None
+        if not isinstance(message, dict):
+            return ""
+        content = message.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                    elif isinstance(item.get("content"), str):
+                        parts.append(str(item["content"]))
+            return "".join(parts).strip()
+        return ""
+
+    def _empty_content_detail(self, data: dict[str, Any]) -> str:
+        choice = self._first_choice(data)
+        message = choice.get("message") if isinstance(choice, dict) else None
+        detail_parts = ["AI provider returned empty final content"]
+        if isinstance(choice, dict) and choice.get("finish_reason"):
+            detail_parts.append(f"finish_reason={choice['finish_reason']}")
+        usage_payload = data.get("usage") if isinstance(data, dict) else None
+        if isinstance(usage_payload, dict):
+            prompt_tokens = usage_payload.get("prompt_tokens", 0) or 0
+            completion_tokens = usage_payload.get("completion_tokens", 0) or 0
+            total_tokens = usage_payload.get("total_tokens", 0) or 0
+            detail_parts.append(f"usage=prompt:{prompt_tokens}, completion:{completion_tokens}, total:{total_tokens}")
+        reasoning_fields: list[str] = []
+        if isinstance(message, dict):
+            for field in ["reasoning_content", "reasoning", "reasoning_details"]:
+                value = message.get(field)
+                if value:
+                    reasoning_fields.append(f"{field} present ({len(str(value))} chars)")
+        if reasoning_fields:
+            detail_parts.append("; ".join(reasoning_fields))
+            detail_parts.append("model produced reasoning but no final answer; try higher max_tokens or a non-reasoning model")
+        return "; ".join(detail_parts)
+
+    def _first_choice(self, data: dict[str, Any]) -> dict[str, Any]:
+        choices = data.get("choices") if isinstance(data, dict) else None
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            return choices[0]
+        return {}
+
+    def _usage_from_payload(self, data: dict[str, Any]) -> AiUsage:
         usage_payload = data.get("usage") or {}
         prompt_tokens = int(usage_payload.get("prompt_tokens") or 0)
         completion_tokens = int(usage_payload.get("completion_tokens") or 0)
         total_tokens = int(usage_payload.get("total_tokens") or (prompt_tokens + completion_tokens))
-        usage = AiUsage(
+        return AiUsage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             billable=bool(total_tokens > 0),
         )
-        return str(content), usage
 
     def _parse_candidates(self, raw: str, count: int, persona_set: list[str], material_ids: list[int] | None) -> list[AiDraftCandidate]:
         clean = raw.strip()

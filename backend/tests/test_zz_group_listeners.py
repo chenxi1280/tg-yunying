@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+from uuid import uuid4
+
+from fastapi.testclient import TestClient
+
+from app.database import SessionLocal
+from app.gateways import GroupMessageSnapshot
+from app.main import app
+from app.models import AccountStatus, GroupContextMessage, MessageTask, TgGroupAccount
+from app.worker import drain_once
+from tests.test_workflow import auth_headers, ensure_developer_app, ensure_test_workspace
+
+
+def _active_account(client: TestClient, headers: dict[str, str], display_name: str) -> dict:
+    account = client.post(
+        "/api/tg-accounts",
+        headers=headers,
+        json={
+            "tenant_id": 1,
+            "display_name": display_name,
+            "username": f"listener_{uuid4().hex[:8]}",
+            "phone_number": f"+86139{int(uuid4().int % 100000000):08d}",
+        },
+    ).json()
+    if account["status"] != AccountStatus.ACTIVE.value:
+        client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr"})
+        account = client.post(f"/api/tg-accounts/{account['id']}/login/qr/check", headers=headers).json()
+    client.post(f"/api/tg-accounts/{account['id']}/sync-groups", headers=headers)
+    return account
+
+
+def test_group_listener_config_rejects_invalid_account():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        _, group = ensure_test_workspace(client, headers)
+
+        response = client.patch(
+            f"/api/groups/{group['id']}",
+            headers=headers,
+            json={"listener_enabled": True, "listener_account_ids": [999999]},
+        )
+
+        assert response.status_code == 404
+
+
+def test_group_listener_collects_context_and_auto_queues_reply(monkeypatch):
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ensure_developer_app(client, headers)
+        listener, group = ensure_test_workspace(client, headers)
+        sender = _active_account(client, headers, "自动续聊发送号")
+
+        provider = client.post(
+            "/api/ai-providers",
+            headers=headers,
+            json={
+                "provider_name": "Listener Mock",
+                "provider_type": "openai_compatible",
+                "base_url": "mock://openai-compatible",
+                "model_name": "deepseek-v4-flash",
+                "api_key": "mock_listener_key",
+            },
+        ).json()
+        client.patch(
+            "/api/tenant-ai-settings?tenant_id=1",
+            headers=headers,
+            json={"default_provider_id": provider["id"], "ai_enabled": True, "fallback_to_mock": False},
+        )
+
+        with SessionLocal() as session:
+            for link in session.query(TgGroupAccount).filter_by(group_id=group["id"]):
+                link.can_send = link.account_id in {listener["id"], sender["id"]}
+            session.commit()
+
+        snapshots = [
+            GroupMessageSnapshot(
+                remote_message_id="remote-real-1",
+                sender_peer_id="real-user-1",
+                sender_name="真人用户",
+                content="这个功能怎么开始参与？",
+            ),
+            GroupMessageSnapshot(
+                remote_message_id="remote-managed-1",
+                sender_peer_id=f"account:{sender['id']}",
+                sender_name=sender["display_name"],
+                content="托管账号自己发的消息不应触发。",
+            ),
+        ]
+        monkeypatch.setattr("app.services.group_listeners.gateway.fetch_group_messages", lambda *args, **kwargs: snapshots)
+
+        patched = client.patch(
+            f"/api/groups/{group['id']}",
+            headers=headers,
+            json={
+                "listener_enabled": True,
+                "listener_auto_reply_enabled": True,
+                "listener_interval_seconds": 30,
+                "listener_context_limit": 20,
+                "listener_account_ids": [listener["id"]],
+            },
+        )
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["listener_account_ids"] == [listener["id"]]
+
+        processed = drain_once()
+        assert processed >= 2
+
+        with SessionLocal() as session:
+            contexts = session.query(GroupContextMessage).filter_by(group_id=group["id"]).all()
+            assert len(contexts) == 1
+            assert contexts[0].content == "这个功能怎么开始参与？"
+            assert contexts[0].used_for_ai is True
+            tasks = session.query(MessageTask).filter_by(group_id=group["id"]).order_by(MessageTask.id.desc()).limit(5).all()
+            assert tasks
+            assert tasks[0].preferred_account_id == sender["id"]
+
+        assert drain_once() >= 1
+        assert drain_once() == 0

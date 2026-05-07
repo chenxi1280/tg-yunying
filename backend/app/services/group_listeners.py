@@ -1,0 +1,377 @@
+from __future__ import annotations
+
+import json
+from datetime import timedelta
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.auth import CurrentUser
+from app.models import (
+    AccountStatus,
+    AppUser,
+    Campaign,
+    GroupAuthStatus,
+    GroupContextMessage,
+    PromptTemplate,
+    TaskStatus,
+    TgAccount,
+    TgGroup,
+    TgGroupAccount,
+)
+from app.schemas import CampaignCreate, GenerateDraftsRequest
+
+from ._common import _now, audit, gateway
+from .campaigns import approve_all_drafts, create_campaign, generate_drafts
+from .developer_apps import credentials_for_account
+
+
+def validate_listener_accounts(session: Session, group: TgGroup, account_ids: list[int]) -> list[TgGroupAccount]:
+    links: list[TgGroupAccount] = []
+    for account_id in dict.fromkeys(account_ids):
+        account = session.get(TgAccount, account_id)
+        link = session.scalar(
+            select(TgGroupAccount).where(
+                TgGroupAccount.tenant_id == group.tenant_id,
+                TgGroupAccount.group_id == group.id,
+                TgGroupAccount.account_id == account_id,
+            )
+        )
+        if not account or account.tenant_id != group.tenant_id:
+            raise ValueError("listener account not found")
+        if account.status != AccountStatus.ACTIVE.value:
+            raise ValueError("listener account must be online")
+        if not link:
+            raise ValueError("listener account must be in target group")
+        links.append(link)
+    return links
+
+
+def apply_group_listener_accounts(session: Session, group: TgGroup, account_ids: list[int]) -> None:
+    links = list(
+        session.scalars(
+            select(TgGroupAccount).where(TgGroupAccount.tenant_id == group.tenant_id, TgGroupAccount.group_id == group.id)
+        )
+    )
+    wanted = set(dict.fromkeys(account_ids))
+    validate_listener_accounts(session, group, list(wanted))
+    for link in links:
+        link.is_listener = link.account_id in wanted
+
+
+def recent_context_messages(session: Session, group: TgGroup, limit: int | None = None) -> list[GroupContextMessage]:
+    return list(
+        session.scalars(
+            select(GroupContextMessage)
+            .where(GroupContextMessage.tenant_id == group.tenant_id, GroupContextMessage.group_id == group.id)
+            .order_by(GroupContextMessage.sent_at.desc(), GroupContextMessage.id.desc())
+            .limit(limit or group.listener_context_limit)
+        )
+    )
+
+
+def listener_account_summaries(session: Session, group: TgGroup) -> list[dict]:
+    rows = list(
+        session.scalars(
+            select(TgGroupAccount)
+            .where(
+                TgGroupAccount.tenant_id == group.tenant_id,
+                TgGroupAccount.group_id == group.id,
+                TgGroupAccount.is_listener.is_(True),
+            )
+            .order_by(TgGroupAccount.id.asc())
+        )
+    )
+    summaries: list[dict] = []
+    for link in rows:
+        account = session.get(TgAccount, link.account_id)
+        if account:
+            summaries.append({"id": account.id, "display_name": account.display_name, "username": account.username, "status": account.status})
+    return summaries
+
+
+def _managed_sender_keys(session: Session, group: TgGroup) -> set[str]:
+    keys: set[str] = set()
+    accounts = list(
+        session.scalars(
+            select(TgAccount)
+            .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
+            .where(TgGroupAccount.group_id == group.id, TgAccount.tenant_id == group.tenant_id)
+        )
+    )
+    for account in accounts:
+        keys.add(str(account.id))
+        keys.add(f"account:{account.id}")
+        keys.add(account.display_name.lower())
+        if account.username:
+            keys.add(account.username.lower().lstrip("@"))
+            keys.add(f"@{account.username.lower().lstrip('@')}")
+    return keys
+
+
+def _is_managed_sender(snapshot, managed_keys: set[str]) -> bool:
+    sender_peer_id = str(getattr(snapshot, "sender_peer_id", "") or "").lower()
+    sender_name = str(getattr(snapshot, "sender_name", "") or "").lower()
+    return sender_peer_id in managed_keys or sender_name in managed_keys
+
+
+def _system_user(session: Session, tenant_id: int) -> CurrentUser:
+    user = session.scalar(
+        select(AppUser)
+        .where((AppUser.tenant_id == tenant_id) | (AppUser.tenant_id.is_(None)))
+        .order_by(AppUser.tenant_id.is_(None), AppUser.id.asc())
+    )
+    if not user:
+        raise ValueError("no app user available for AI usage ledger")
+    return CurrentUser(
+        id=user.id,
+        tenant_id=tenant_id,
+        name="监听AI服务",
+        role=user.role,
+        email=user.email,
+        phone=user.phone,
+        tenant_name=None,
+        subscription_status=user.subscription_status,
+        subscription_started_at=user.subscription_started_at,
+        subscription_expires_at=user.subscription_expires_at,
+        subscription_days_remaining=0,
+        can_use_core_features=True,
+    )
+
+
+def _listener_template_id(session: Session, tenant_id: int) -> int | None:
+    return session.scalar(
+        select(PromptTemplate.id)
+        .where(
+            PromptTemplate.is_active.is_(True),
+            PromptTemplate.template_type == "监听上下文续聊脚本",
+            (PromptTemplate.tenant_id == tenant_id) | (PromptTemplate.tenant_id.is_(None)),
+        )
+        .order_by(PromptTemplate.tenant_id.is_(None), PromptTemplate.id.asc())
+    )
+
+
+def _send_account_ids(session: Session, group: TgGroup) -> list[int]:
+    links = list(
+        session.scalars(
+            select(TgGroupAccount)
+            .where(
+                TgGroupAccount.tenant_id == group.tenant_id,
+                TgGroupAccount.group_id == group.id,
+                TgGroupAccount.can_send.is_(True),
+                TgGroupAccount.is_listener.is_(False),
+            )
+            .order_by(TgGroupAccount.id.asc())
+        )
+    )
+    ids = [link.account_id for link in links if (account := session.get(TgAccount, link.account_id)) and account.status == AccountStatus.ACTIVE.value]
+    if ids:
+        return ids
+    fallback_links = list(
+        session.scalars(
+            select(TgGroupAccount)
+            .where(TgGroupAccount.tenant_id == group.tenant_id, TgGroupAccount.group_id == group.id, TgGroupAccount.can_send.is_(True))
+            .order_by(TgGroupAccount.id.asc())
+        )
+    )
+    return [
+        link.account_id
+        for link in fallback_links
+        if (account := session.get(TgAccount, link.account_id)) and account.status == AccountStatus.ACTIVE.value
+    ]
+
+
+def collect_group_context(session: Session, group: TgGroup) -> int:
+    listener_links = list(
+        session.scalars(
+            select(TgGroupAccount)
+            .where(
+                TgGroupAccount.tenant_id == group.tenant_id,
+                TgGroupAccount.group_id == group.id,
+                TgGroupAccount.is_listener.is_(True),
+            )
+            .order_by(TgGroupAccount.id.asc())
+        )
+    )
+    if not listener_links:
+        return 0
+    managed_keys = _managed_sender_keys(session, group)
+    inserted = 0
+    for link in listener_links:
+        account = session.get(TgAccount, link.account_id)
+        if not account or account.status != AccountStatus.ACTIVE.value:
+            continue
+        credentials = credentials_for_account(session, account)
+        snapshots = gateway.fetch_group_messages(
+            account.id,
+            group.tg_peer_id,
+            account.session_ciphertext,
+            credentials,
+            limit=group.listener_context_limit,
+        )
+        for snapshot in snapshots:
+            content = str(snapshot.content or "").strip()
+            if not content or _is_managed_sender(snapshot, managed_keys):
+                continue
+            exists = session.scalar(
+                select(GroupContextMessage.id).where(
+                    GroupContextMessage.group_id == group.id,
+                    GroupContextMessage.remote_message_id == str(snapshot.remote_message_id),
+                )
+            )
+            if exists:
+                continue
+            message = GroupContextMessage(
+                tenant_id=group.tenant_id,
+                group_id=group.id,
+                listener_account_id=account.id,
+                sender_peer_id=str(snapshot.sender_peer_id or ""),
+                sender_name=str(snapshot.sender_name or "真人用户"),
+                content=content[:4000],
+                message_type=snapshot.message_type,
+                remote_message_id=str(snapshot.remote_message_id),
+                sent_at=snapshot.sent_at,
+            )
+            session.add(message)
+            session.flush()
+            inserted += 1
+    return inserted
+
+
+def trigger_listener_auto_reply(session: Session, group: TgGroup) -> int:
+    unprocessed = list(
+        session.scalars(
+            select(GroupContextMessage)
+            .where(
+                GroupContextMessage.tenant_id == group.tenant_id,
+                GroupContextMessage.group_id == group.id,
+                GroupContextMessage.used_for_ai.is_(False),
+            )
+            .order_by(GroupContextMessage.sent_at.asc(), GroupContextMessage.id.asc())
+        )
+    )
+    if not unprocessed or not group.listener_auto_reply_enabled:
+        return 0
+    account_ids = _send_account_ids(session, group)
+    if not account_ids:
+        group.listener_last_error = "没有可用于自动续聊的发送账号"
+        return 0
+    template_id = _listener_template_id(session, group.tenant_id)
+    selected = {str(group.id): account_ids}
+    campaign = create_campaign(
+        session,
+        CampaignCreate(
+            tenant_id=group.tenant_id,
+            group_id=group.id,
+            title=f"{group.title} 监听自动续聊",
+            campaign_type="监听上下文续聊",
+            topic=group.topic_direction or "群内真人问题接话",
+            send_window=group.active_window,
+            intensity="自动续聊",
+            prompt_template_id=template_id,
+            jitter_min_seconds=0,
+            jitter_max_seconds=0,
+            batch_interval_seconds=max(1, group.group_cooldown_seconds),
+            respect_send_window=True,
+            target_group_ids=[group.id],
+            selected_account_ids_by_group=selected,
+        ),
+        actor="监听AI服务",
+    )
+    contexts = recent_context_messages(session, group, group.listener_context_limit)
+    listener_ids = [item.listener_account_id for item in unprocessed]
+    payload = GenerateDraftsRequest(
+        count=min(len(account_ids), 5),
+        tone="自然、像真实群成员聊天，接住真人上下文继续聊",
+        use_ai=True,
+        fallback_to_mock=False,
+        selected_account_ids_by_group=selected,
+        listener_account_id=listener_ids[-1] if listener_ids else None,
+        conversation_context=[
+            {
+                "sender_name": item.sender_name,
+                "content": item.content,
+                "sent_at": item.sent_at.isoformat() if item.sent_at else None,
+            }
+            for item in reversed(contexts)
+        ],
+    )
+    user = _system_user(session, group.tenant_id)
+    drafts = generate_drafts(session, campaign.id, payload, user)
+    tasks = approve_all_drafts(session, campaign.id, "监听AI服务")
+    with session.no_autoflush:
+        for message_id in [item.id for item in unprocessed]:
+            message = session.get(GroupContextMessage, message_id)
+            if message:
+                message.used_for_ai = True
+        refreshed_group = session.get(TgGroup, group.id)
+        if refreshed_group:
+            refreshed_group.listener_last_reply_at = _now()
+            refreshed_group.listener_last_error = ""
+        audit(
+            session,
+            tenant_id=group.tenant_id,
+            actor="监听AI服务",
+            action="监听上下文自动续聊",
+            target_type="tg_group",
+            target_id=str(group.id),
+            detail=f"contexts={len(unprocessed)}; drafts={len(drafts)}; tasks={len(tasks)}; accounts={json.dumps(account_ids)}",
+        )
+        session.commit()
+    return len(tasks)
+
+
+def process_group_listener(session: Session, group_id: int) -> int:
+    group = session.get(TgGroup, group_id)
+    if not group or not group.listener_enabled:
+        return 0
+    if group.auth_status != GroupAuthStatus.AUTHORIZED.value:
+        return 0
+    now_value = _now()
+    if group.listener_last_polled_at and group.listener_last_polled_at + timedelta(seconds=group.listener_interval_seconds) > now_value:
+        return 0
+    try:
+        inserted = collect_group_context(session, group)
+        group = session.get(TgGroup, group_id)
+        group.listener_last_polled_at = now_value
+        group.listener_last_error = ""
+        session.commit()
+        if inserted:
+            return inserted + trigger_listener_auto_reply(session, group)
+        return 0
+    except Exception as exc:  # noqa: BLE001 - operator-facing listener status.
+        session.rollback()
+        group = session.get(TgGroup, group_id)
+        if group:
+            group.listener_last_error = str(exc)
+            group.listener_last_polled_at = now_value
+            session.commit()
+        return 0
+
+
+def drain_group_listeners(session_factory, limit: int = 10) -> int:
+    with session_factory() as session:
+        group_ids = list(
+            session.scalars(
+                select(TgGroup.id)
+                .where(TgGroup.listener_enabled.is_(True), TgGroup.auth_status == GroupAuthStatus.AUTHORIZED.value)
+                .order_by(TgGroup.listener_last_polled_at.asc().nullsfirst(), TgGroup.id.asc())
+                .limit(limit)
+            )
+        )
+    processed = 0
+    for group_id in group_ids:
+        with session_factory() as session:
+            processed += process_group_listener(session, group_id)
+    return processed
+
+
+__all__ = [
+    "apply_group_listener_accounts",
+    "drain_group_listeners",
+    "listener_account_summaries",
+    "process_group_listener",
+    "recent_context_messages",
+    "trigger_listener_auto_reply",
+    "validate_listener_accounts",
+]

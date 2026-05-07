@@ -52,7 +52,7 @@ def patch_group(
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, TgGroup, group_id)
-        return update_group_policy(session, group_id, payload)
+        return update_group_policy(session, group_id, payload, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 

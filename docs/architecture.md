@@ -4,7 +4,7 @@
 
 - 前端：React + TypeScript + Vite
 - 后端：FastAPI + SQLAlchemy
-- 数据库：SQLite 开发态，生产替换 PostgreSQL
+- 数据库：PostgreSQL
 - 队列：开发态同步模拟，生产替换 Redis 队列 + 独立 Worker
 - TG 客户端：`TelegramGateway` 接口，生产实现使用 Telethon
 
@@ -23,7 +23,7 @@
 ## 配置与迁移
 
 - 配置集中在 `app/config.py`，通过环境变量管理数据库、CORS、TG API、队列和验证码有效期。
-- 数据库元数据仍可在开发态自动建表，长期 schema 管理入口已预留在 Alembic。
+- 数据库 schema 通过 Alembic 迁移管理。
 - 初始迁移位于 `migrations/versions/0001_initial.py`。
 
 ## 任务执行原则

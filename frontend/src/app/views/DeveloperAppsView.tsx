@@ -7,6 +7,7 @@ interface Props {
   developerApps: DeveloperApp[];
   tenants: Tenant[];
   onCreateClick: () => void;
+  onEdit: (app: DeveloperApp) => void;
   onCheck: (app: DeveloperApp) => void;
   onToggle: (app: DeveloperApp) => void;
   onEditTenant: (tenant: Tenant) => void;
@@ -19,7 +20,7 @@ interface Props {
   }) => void;
 }
 
-export default function DeveloperAppsView({ developerApps, tenants, onCreateClick, onCheck, onToggle, onEditTenant, onOpenConfirm }: Props) {
+export default function DeveloperAppsView({ developerApps, tenants, onCreateClick, onEdit, onCheck, onToggle, onEditTenant, onOpenConfirm }: Props) {
   return (
     <>
       <section className="panel">
@@ -31,6 +32,13 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
           <button className="primary" onClick={onCreateClick}>新增应用</button>
         </div>
         <div className="cards-grid developer-grid">
+          {!developerApps.length && (
+            <article className="developer-card status-accent warning">
+              <h3>还没有开发者应用</h3>
+              <p>请新增真实 Telegram api_id/api_hash。配置完成前，账号新增和登录入口会保持禁用。</p>
+              <button className="primary" onClick={onCreateClick}>新增应用</button>
+            </article>
+          )}
           {developerApps.map((app) => (
             <article className={`developer-card ${statusAccent(app.is_active ? app.health_status : '禁用')}`} key={app.id}>
               <div>
@@ -45,6 +53,7 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
               </dl>
               {app.last_error && <p className="danger-text">{app.last_error}</p>}
               <div className="row-actions">
+                <button onClick={() => onEdit(app)}>编辑</button>
                 <button onClick={() => onCheck(app)}>检查</button>
                 <button onClick={() => onOpenConfirm({
                   title: app.is_active ? '禁用开发者应用' : '启用开发者应用',

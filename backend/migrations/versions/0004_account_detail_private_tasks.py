@@ -36,11 +36,7 @@ def _make_nullable(table_name: str, column_name: str) -> None:
     column = _columns(table_name).get(column_name)
     if not column or column.get("nullable") is True:
         return
-    if op.get_bind().dialect.name == "sqlite":
-        with op.batch_alter_table(table_name) as batch:
-            batch.alter_column(column_name, existing_type=column["type"], nullable=True)
-    else:
-        op.alter_column(table_name, column_name, existing_type=column["type"], nullable=True)
+    op.alter_column(table_name, column_name, existing_type=column["type"], nullable=True)
 
 
 def upgrade() -> None:

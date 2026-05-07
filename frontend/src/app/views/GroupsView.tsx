@@ -61,7 +61,10 @@ export default function GroupsView({
             <div><dt>每日上限</dt><dd>{selectedGroup.daily_limit} 条</dd></div>
             <div><dt>审核策略</dt><dd><StatusBadge status={selectedGroup.require_review ? '待审核' : '已审核'} label={selectedGroup.require_review ? '需要人工审核' : '规则内自动'} /></dd></div>
             <div><dt>可发言</dt><dd><StatusBadge status={selectedGroup.can_send ? '可发言' : '不可发言'} /></dd></div>
+            <div><dt>监听续聊</dt><dd><StatusBadge status={selectedGroup.listener_enabled ? '已启用' : '未配置'} label={selectedGroup.listener_enabled ? `${selectedGroup.listener_account_ids.length} 个监听号` : '未启用'} /></dd></div>
+            <div><dt>自动发送</dt><dd>{selectedGroup.listener_auto_reply_enabled ? '监听触发后自动排队' : '只采集上下文'}</dd></div>
           </dl>
+          {selectedGroup.listener_last_error && <p className="danger-text">{selectedGroup.listener_last_error}</p>}
           <div className="detail-actions">
             <button className="primary" onClick={() => onCreateCampaign(selectedGroup.id)}><MessageSquareText size={18} />用此群创建任务</button>
             <button onClick={() => onOpenConfirm({
@@ -92,6 +95,7 @@ export default function GroupsView({
               <article className="summary-card"><span>冷却规则</span><strong>账号 {selectedGroup.account_cooldown_seconds}s</strong><p>群 {selectedGroup.group_cooldown_seconds}s</p></article>
               <article className="summary-card"><span>内容边界</span><strong>{selectedGroup.banned_words || '未配置禁用词'}</strong><p>{selectedGroup.link_whitelist || '未配置链接白名单'}</p></article>
               <article className="summary-card"><span>话题方向</span><strong>{selectedGroup.topic_direction || '未设置'}</strong><p>{selectedGroup.require_review ? '需要人工审核' : '规则内自动'}</p></article>
+              <article className="summary-card"><span>监听配置</span><strong>{selectedGroup.listener_enabled ? `${selectedGroup.listener_interval_seconds}s 轮询` : '未启用'}</strong><p>上下文 {selectedGroup.listener_context_limit} 条</p></article>
             </div>
           </div>
         </div>

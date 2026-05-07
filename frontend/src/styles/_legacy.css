@@ -116,26 +116,87 @@ button:disabled {
   width: 100%;
 }
 
-.demo-accounts {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.demo-accounts button {
-  min-height: 36px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--surface-strong);
-  color: var(--ink);
-  font-weight: 650;
-}
-
 .login-error {
   margin: 0;
   color: var(--red);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.captcha-box {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-strong);
+}
+
+.captcha-box.verified {
+  border-color: rgba(25, 107, 77, 0.34);
+  background: var(--green-soft);
+}
+
+.captcha-head,
+.captcha-code-row,
+.captcha-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.captcha-head {
+  justify-content: space-between;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.captcha-code-row img,
+.captcha-image-placeholder {
+  width: 132px;
+  height: 44px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.captcha-image-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.captcha-code-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 800;
+}
+
+.captcha-actions {
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.captcha-actions button {
+  min-height: 32px;
+  padding: 0 12px;
+}
+
+.captcha-ok {
+  color: var(--green);
+  font-weight: 700;
+}
+
+.captcha-error {
+  color: var(--red);
+  font-weight: 700;
 }
 
 .app-shell {
@@ -651,6 +712,39 @@ main {
   gap: 10px;
 }
 
+.activation-code-table {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.activation-code-table .ant-table {
+  color: var(--text);
+  background: #fff;
+}
+
+.activation-code-table .ant-table-thead > tr > th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  background: #f7f9fb;
+  border-bottom-color: var(--line);
+}
+
+.activation-code-table .ant-table-tbody > tr > td {
+  border-bottom-color: var(--line);
+  vertical-align: top;
+}
+
+.activation-code-table .ant-typography {
+  margin: 0;
+}
+
+.activation-code-table .ant-pagination {
+  margin: 14px 12px;
+}
+
 .table-row {
   min-height: 68px;
   padding: 12px;
@@ -1059,6 +1153,20 @@ main {
 
 .wide-field {
   grid-column: 1 / -1;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .material-picker {
@@ -1585,8 +1693,19 @@ main {
     padding: 14px;
   }
 
-  .demo-accounts {
-    grid-template-columns: 1fr;
+  .captcha-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .captcha-code-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .captcha-code-row img,
+  .captcha-image-placeholder {
+    width: 100%;
   }
 
   .runtime-strip {

@@ -30,7 +30,7 @@ from app.security import encrypt_secret, encrypt_session
 from app.storage import object_path, preview_url, save_avatar_bytes
 
 from ._common import _is_expired, _now, audit, gateway, get_account_phone, mask_phone, require_tenant
-from .developer_apps import credentials_for_account
+from .developer_apps import credentials_for_account, first_assignable_developer_app
 from .tenants import ensure_account_quota_available
 from .verification import list_verification_tasks, create_verification_task
 from .account_pools import account_pool_snapshot, ensure_default_account_pool, seed_account_pools
@@ -71,6 +71,8 @@ __all__ = [
 def create_account(session: Session, payload: TgAccountCreate, actor: str = "普通用户") -> TgAccount:
     require_tenant(session, payload.tenant_id)
     ensure_account_quota_available(session, payload.tenant_id)
+    if not first_assignable_developer_app(session):
+        raise ValueError("请先在开发者应用中配置可用的 Telegram api_id/api_hash，再新增 TG 账号")
     data = payload.model_dump(exclude={"phone_number"})
     pool_id = data.get("pool_id")
     if pool_id:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.ai_gateway import AiProviderCredentials, AiUsage
+from app.ai_gateway import AiProviderCredentials, AiUsage, normalize_ai_model_name
 from app.auth import CurrentUser
 from app.models import (
     AiProvider,
@@ -34,20 +34,6 @@ from ._common import _now, ai_gateway, audit, require_tenant
 
 
 def seed_ai_configuration(session: Session) -> None:
-    if session.scalar(select(func.count(AiProvider.id))) == 0:
-        session.add(
-            AiProvider(
-                provider_name="MiMo V2.5 Pro 演示",
-                provider_type="openai_compatible",
-                base_url="mock://openai-compatible",
-                model_name="mimo-v2.5-pro",
-                api_key_ciphertext=encrypt_secret("mock_ai_key"),
-                api_key_header="Authorization",
-                health_status=AiProviderHealthStatus.HEALTHY.value,
-                notes="本地 mock，配置真实 base_url/key 后可接 MiMo 或 DeepSeek",
-            )
-        )
-        session.flush()
     default_templates = [
         PromptTemplate(
             tenant_id=None,
@@ -82,6 +68,17 @@ def seed_ai_configuration(session: Session) -> None:
         ),
         PromptTemplate(
             tenant_id=None,
+            template_type="监听上下文续聊脚本",
+            name="默认监听上下文续聊脚本",
+            content=(
+                "你正在根据 Telegram 群的真人上下文生成自然续聊。请围绕 {{topic}} 生成 {{count}} 条，"
+                "必须输出 json drafts。所选账号：{{selected_accounts}}。监听账号：{{listener_account}}。"
+                "真人上下文：{{conversation_context}}。要求从 A 账号开始按顺序轮流接话，"
+                "每条包含 sequence_index、persona、content、risk_level、suggested_account_id。"
+            ),
+        ),
+        PromptTemplate(
+            tenant_id=None,
             template_type="素材配文",
             name="默认素材配文",
             content="围绕 {{topic}} 给素材 {{materials}} 写 Telegram 群内自然配文，输出 JSON drafts。",
@@ -107,7 +104,14 @@ def seed_ai_configuration(session: Session) -> None:
     default_provider_id = session.scalar(select(AiProvider.id).order_by(AiProvider.id.asc()))
     for tenant_id in tenant_ids:
         if not session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id)):
-            session.add(TenantAiSetting(tenant_id=tenant_id, default_provider_id=default_provider_id))
+            session.add(
+                TenantAiSetting(
+                    tenant_id=tenant_id,
+                    default_provider_id=default_provider_id,
+                    ai_enabled=bool(default_provider_id),
+                    fallback_to_mock=False,
+                )
+            )
     if not session.scalar(select(SchedulingSetting).where(SchedulingSetting.tenant_id.is_(None))):
         session.add(SchedulingSetting(tenant_id=None, jitter_min_seconds=15, jitter_max_seconds=180, batch_interval_seconds=45, respect_send_window=True))
     for tenant_id in tenant_ids:
@@ -143,7 +147,7 @@ def create_ai_provider(session: Session, payload: AiProviderCreate, actor: str) 
         provider_name=payload.provider_name,
         provider_type=payload.provider_type,
         base_url=payload.base_url,
-        model_name=payload.model_name,
+        model_name=normalize_ai_model_name(payload.model_name),
         api_key_ciphertext=encrypt_secret(payload.api_key),
         api_key_header=payload.api_key_header,
         input_price_per_1k=payload.input_price_per_1k,
@@ -167,6 +171,8 @@ def update_ai_provider(session: Session, provider_id: int, payload: AiProviderUp
     if not provider:
         raise ValueError("ai provider not found")
     data = payload.model_dump(exclude_unset=True)
+    if data.get("model_name") is not None:
+        data["model_name"] = normalize_ai_model_name(data["model_name"])
     for field in ["provider_name", "provider_type", "base_url", "model_name", "api_key_header", "notes", "currency"]:
         if data.get(field) is not None:
             setattr(provider, field, data[field])

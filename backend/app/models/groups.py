@@ -30,9 +30,20 @@ class TgGroup(Base):
     banned_words: Mapped[str] = mapped_column(Text, default="")
     link_whitelist: Mapped[str] = mapped_column(Text, default="")
     require_review: Mapped[bool] = mapped_column(Boolean, default=True)
+    listener_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    listener_interval_seconds: Mapped[int] = mapped_column(Integer, default=60)
+    listener_context_limit: Mapped[int] = mapped_column(Integer, default=20)
+    listener_auto_reply_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    listener_last_polled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    listener_last_reply_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    listener_last_error: Mapped[str] = mapped_column(Text, default="")
 
     tenant: Mapped[Tenant] = relationship(back_populates="groups")
     accounts: Mapped[list[TgGroupAccount]] = relationship(back_populates="group")
+
+    @property
+    def listener_account_ids(self) -> list[int]:
+        return [link.account_id for link in self.accounts if link.is_listener]
 
 
 class TgGroupAccount(Base):
@@ -45,10 +56,29 @@ class TgGroupAccount(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
     permission_label: Mapped[str] = mapped_column(String(80), default="普通成员")
     can_send: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_listener: Mapped[bool] = mapped_column(Boolean, default=False)
     last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     group: Mapped[TgGroup] = relationship(back_populates="accounts")
     account: Mapped[TgAccount] = relationship(back_populates="groups")
+
+
+class GroupContextMessage(Base):
+    __tablename__ = "group_context_messages"
+    __table_args__ = (UniqueConstraint("group_id", "remote_message_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    group_id: Mapped[int] = mapped_column(ForeignKey("tg_groups.id"))
+    listener_account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    sender_peer_id: Mapped[str] = mapped_column(String(120), default="")
+    sender_name: Mapped[str] = mapped_column(String(160), default="真人用户")
+    content: Mapped[str] = mapped_column(Text)
+    message_type: Mapped[str] = mapped_column(String(40), default="text")
+    remote_message_id: Mapped[str] = mapped_column(String(160))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    used_for_ai: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class VerificationTask(Base):
@@ -71,4 +101,4 @@ class VerificationTask(Base):
     handled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-__all__ = ["TgGroup", "TgGroupAccount", "VerificationTask"]
+__all__ = ["TgGroup", "TgGroupAccount", "GroupContextMessage", "VerificationTask"]

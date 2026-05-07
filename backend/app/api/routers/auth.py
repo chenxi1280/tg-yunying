@@ -1,8 +1,9 @@
 """Auth, captcha, subscription, and admin routes."""
 from __future__ import annotations
 
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.auth import (
@@ -13,14 +14,14 @@ from app.auth import (
 from app.database import get_session
 from app.common.http import forbidden
 from app.schemas import (
-    ActivationCodeCreateRequest, ActivationCodeOut, AiUsageLedgerOut,
-    AiUsageSummaryOut, AuthLoginRequest, AuthRegisterRequest, AuthTokenOut,
+    ActivationCodeCreateRequest, ActivationCodeOut, ActivationCodePageOut, AiUsageLedgerOut,
+    AiUsageSummaryOut, AuthChangePasswordRequest, AuthLoginRequest, AuthRegisterRequest, AuthTokenOut,
     AuthUserOut, CaptchaChallengeOut, CaptchaVerifyOut, CaptchaVerifyRequest,
     SubscriptionRedeemOut, SubscriptionRedeemRequest,
 )
 from app.services import (
-    create_user_activation_codes, create_user_registration, list_activation_codes,
-    list_usage_ledgers, list_usage_summary, redeem_activation_code,
+    change_user_password, create_user_activation_codes, create_user_registration, disable_activation_code,
+    list_activation_codes, list_usage_ledgers, list_usage_summary, redeem_activation_code,
 )
 
 router = APIRouter()
@@ -33,7 +34,7 @@ def auth_captcha_challenge() -> dict:
 
 @router.post("/api/auth/captcha/verify", response_model=CaptchaVerifyOut)
 def auth_captcha_verify(payload: CaptchaVerifyRequest) -> dict:
-    return verify_captcha_challenge(payload.challenge_id, payload.slider_value)
+    return verify_captcha_challenge(payload.challenge_id, payload.captcha_value)
 
 
 @router.post("/api/auth/register", response_model=AuthTokenOut)
@@ -75,23 +76,47 @@ def auth_logout() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.post("/api/auth/change-password", response_model=AuthUserOut)
+def auth_change_password(
+    payload: AuthChangePasswordRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        user = change_user_password(session, current_user, payload.current_password, payload.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return serialize_user(session, user)
+
+
 @router.post("/api/subscription/redeem", response_model=SubscriptionRedeemOut)
 def post_subscription_redeem(
     payload: SubscriptionRedeemRequest,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> dict:
-    return redeem_activation_code(session, current_user, payload)
+    try:
+        return redeem_activation_code(session, current_user, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/api/admin/activation-codes", response_model=list[ActivationCodeOut])
+@router.get("/api/admin/activation-codes", response_model=ActivationCodePageOut)
 def get_activation_codes(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    search: str | None = None,
+    status: str | None = None,
+    plan_type: str | None = None,
+    batch_no: str | None = None,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     if not current_user.is_platform_admin:
         raise forbidden("platform admin required")
-    return list_activation_codes(session)
+    return list_activation_codes(session, page=page, page_size=page_size, search=search, status=status, plan_type=plan_type, batch_no=batch_no, start_at=start_at, end_at=end_at)
 
 
 @router.post("/api/admin/activation-codes", response_model=list[ActivationCodeOut])
@@ -103,6 +128,20 @@ def post_activation_codes(
     if not current_user.is_platform_admin:
         raise forbidden("platform admin required")
     return create_user_activation_codes(session, payload, current_user.name)
+
+
+@router.post("/api/admin/activation-codes/{code_id}/disable", response_model=ActivationCodeOut)
+def post_activation_code_disable(
+    code_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    if not current_user.is_platform_admin:
+        raise forbidden("platform admin required")
+    try:
+        return disable_activation_code(session, code_id, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/admin/usage-ledgers", response_model=list[AiUsageLedgerOut])

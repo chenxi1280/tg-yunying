@@ -34,6 +34,8 @@ function AppShell() {
     token, currentUser, authMode, setAuthMode,
     loginEmail, setLoginEmail, loginPassword, setLoginPassword,
     registerForm, setRegisterForm, login, register,
+    captchaChallenge, captchaInput, setCaptchaInput,
+    captchaToken, captchaError, captchaLoading, refreshCaptchaChallenge, verifyCaptcha,
     activeView, goToView, busy, notice, setNotice,
     runtime, overview, redeemCode, setRedeemCode, submitRedeemCode,
     accountPools, selectedPoolId, setSelectedPoolId, accounts, selectedPool,
@@ -44,7 +46,8 @@ function AppShell() {
     taskStatusFilter, setTaskStatusFilter,
     archives, archiveDetail, audits,
     aiProviders, promptTemplates, tenantAiSetting, setTenantAiSetting, schedulingSetting, materials,
-    activationCodes, activationBatch, setActivationBatch,
+    activationCodes, activationCodePage, activationCodeFilters, setActivationCodeFilters,
+    activationBatch, setActivationBatch,
     usageLedgers, usageSummary,
     accountDetail, accountDetailTab, setAccountDetailTab,
     accountPoolDetail, poolDirectAccountId, setPoolDirectAccountId,
@@ -89,12 +92,12 @@ function AppShell() {
     dispatchTask, drainQueue, retryTask,
     authorizeSelectedGroup, createArchive, saveGroupPolicy,
     openArchiveDetail,
-    createDeveloperApp, toggleDeveloperApp, checkDeveloperApp,
+    createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp,
     openTenantEdit, saveTenantQuota,
-    createAiProvider, checkAiProvider,
+    createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider,
     saveTenantAiSetting, saveSchedulingSetting,
     createPromptTemplate, createMaterial, toggleMaterial,
-    createActivationCodes, logout,
+    loadActivationCodes, createActivationCodes, disableActivationCode, logout,
     runLogin, verifyAccount, healthCheck, syncAccountGroups,
     accountName, groupName,
   } = ctx;
@@ -116,6 +119,38 @@ function AppShell() {
     ['audits', '审计安全', <LockKeyhole size={18} />],
   ];
 
+  const loginReady = Boolean(loginEmail.trim() && loginPassword && captchaToken && !busy);
+  const registerReady = Boolean(registerForm.name.trim() && registerForm.email.trim() && registerForm.password && captchaToken && !busy);
+
+  const captchaControl = (
+    <div className={`captcha-box ${captchaToken ? 'verified' : ''}`}>
+      <div className="captcha-head">
+        <span>验证码</span>
+        <button type="button" className="small" onClick={refreshCaptchaChallenge} disabled={captchaLoading}>
+          刷新
+        </button>
+      </div>
+      <div className="captcha-code-row">
+        {captchaChallenge ? <img src={captchaChallenge.image_data_url} alt="验证码" /> : <div className="captcha-image-placeholder">加载中</div>}
+        <input
+          value={captchaInput}
+          onChange={(event) => setCaptchaInput(event.target.value.toUpperCase())}
+          disabled={!captchaChallenge || captchaLoading || Boolean(captchaToken)}
+          placeholder="输入验证码"
+          maxLength={5}
+        />
+      </div>
+      <div className="captcha-actions">
+        <button type="button" onClick={verifyCaptcha} disabled={!captchaChallenge || captchaLoading || Boolean(captchaToken) || captchaInput.trim().length < 5}>
+          {captchaToken ? '已通过' : captchaLoading ? '验证中' : '验证'}
+        </button>
+        <span className={captchaToken ? 'captcha-ok' : captchaError ? 'captcha-error' : ''}>
+          {captchaToken ? '验证码已通过' : captchaError || '输入图片中的数字和字母'}
+        </span>
+      </div>
+    </div>
+  );
+
   if (!token) {
     return (
       <div className="login-screen">
@@ -134,14 +169,15 @@ function AppShell() {
           {authMode === 'login' ? (
             <>
               <label>
-                邮箱或手机号
+                用户名、邮箱或手机号
                 <input value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} />
               </label>
               <label>
                 密码
                 <input type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} />
               </label>
-              <button className="primary" onClick={login}>登录控制台</button>
+              {captchaControl}
+              <button className="primary" onClick={login} disabled={!loginReady}>登录控制台</button>
             </>
           ) : (
             <>
@@ -161,13 +197,10 @@ function AppShell() {
                 密码
                 <input type="password" value={registerForm.password} onChange={(event) => setRegisterForm((current) => ({ ...current, password: event.target.value }))} />
               </label>
-              <button className="primary" onClick={register}>创建普通用户</button>
+              {captchaControl}
+              <button className="primary" onClick={register} disabled={!registerReady}>创建普通用户</button>
             </>
           )}
-          <div className="demo-accounts">
-            <button onClick={() => { setLoginEmail('admin@demo.local'); setLoginPassword('admin123'); }}>平台管理员</button>
-            <button onClick={() => { setLoginEmail('ops@demo.local'); setLoginPassword('ops123'); }}>演示普通用户</button>
-          </div>
           {notice && <p className="login-error">{notice}</p>}
         </section>
       </div>
@@ -210,6 +243,7 @@ function AppShell() {
             <button className="icon-button" onClick={() => refresh()}>
               <RefreshCcw size={18} />
             </button>
+            <button onClick={() => setModal({ type: 'changePassword' })}>修改密码</button>
             <button onClick={logout}>退出</button>
           </div>
         </header>
@@ -259,17 +293,17 @@ function AppShell() {
         {/* ===== View routing ===== */}
         {activeView === 'overview' && overview && <OverviewView overview={overview} runtime={runtime} />}
         {activeView === 'developerApps' && (
-          <DeveloperAppsView developerApps={developerApps} tenants={tenants} onCreateClick={() => setModal({ type: 'developerAppCreate' })} onCheck={checkDeveloperApp} onToggle={toggleDeveloperApp} onEditTenant={openTenantEdit} onOpenConfirm={openConfirm} />
+          <DeveloperAppsView developerApps={developerApps} tenants={tenants} onCreateClick={() => setModal({ type: 'developerAppCreate' })} onEdit={openDeveloperAppEdit} onCheck={checkDeveloperApp} onToggle={toggleDeveloperApp} onEditTenant={openTenantEdit} onOpenConfirm={openConfirm} />
         )}
         {activeView === 'aiSettings' && (
-          <AISettingsView aiProviders={aiProviders} promptTemplates={promptTemplates} tenantAiSetting={tenantAiSetting} schedulingSetting={schedulingSetting} materials={materials} currentUserRole={currentUser?.role} onCreateProvider={() => setModal({ type: 'aiProviderCreate' })} onCheckProvider={checkAiProvider} onEditTenantAi={() => setModal({ type: 'tenantAiEdit' })} onEditScheduling={() => setModal({ type: 'schedulingEdit' })} onCreatePromptTemplate={() => setModal({ type: 'promptTemplateCreate' })} onCreateMaterial={() => setModal({ type: 'materialCreate' })} />
+          <AISettingsView aiProviders={aiProviders} promptTemplates={promptTemplates} tenantAiSetting={tenantAiSetting} schedulingSetting={schedulingSetting} materials={materials} currentUserRole={currentUser?.role} onCreateProvider={() => setModal({ type: 'aiProviderCreate' })} onEditProvider={openAiProviderEdit} onToggleProvider={toggleAiProvider} onCheckProvider={checkAiProvider} onEditTenantAi={() => setModal({ type: 'tenantAiEdit' })} onEditScheduling={() => setModal({ type: 'schedulingEdit' })} onCreatePromptTemplate={() => setModal({ type: 'promptTemplateCreate' })} onCreateMaterial={() => setModal({ type: 'materialCreate' })} />
         )}
         {activeView === 'activationCodes' && (
-          <ActivationCodesView activationCodes={activationCodes} activationBatch={activationBatch} setActivationBatch={setActivationBatch} onCreateCodes={createActivationCodes} />
+          <ActivationCodesView activationCodes={activationCodes} activationCodePage={activationCodePage} activationCodeFilters={activationCodeFilters} setActivationCodeFilters={setActivationCodeFilters} activationBatch={activationBatch} setActivationBatch={setActivationBatch} onLoadCodes={loadActivationCodes} onCreateCodes={createActivationCodes} onDisableCode={disableActivationCode} onOpenConfirm={openConfirm} />
         )}
         {activeView === 'usageReports' && <UsageReportsView usageLedgers={usageLedgers} usageSummary={usageSummary} />}
         {activeView === 'accounts' && (
-          <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} />
+          <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => goToView('developerApps')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} />
         )}
         {activeView === 'groups' && (
           <GroupsView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} setSelectedGroupId={setSelectedGroupId} onCreateCampaign={openCampaignModal} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenConfirm={openConfirm} />

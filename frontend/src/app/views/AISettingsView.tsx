@@ -11,6 +11,8 @@ interface Props {
   materials: Material[];
   currentUserRole: string | undefined;
   onCreateProvider: () => void;
+  onEditProvider: (provider: AiProvider) => void;
+  onToggleProvider: (provider: AiProvider) => void;
   onCheckProvider: (provider: AiProvider) => void;
   onEditTenantAi: () => void;
   onEditScheduling: () => void;
@@ -26,6 +28,8 @@ export default function AISettingsView({
   materials,
   currentUserRole,
   onCreateProvider,
+  onEditProvider,
+  onToggleProvider,
   onCheckProvider,
   onEditTenantAi,
   onEditScheduling,
@@ -43,6 +47,13 @@ export default function AISettingsView({
           {currentUserRole === '系统管理员' && <button className="primary" onClick={onCreateProvider}>新增供应商</button>}
         </div>
         <div className="cards-grid developer-grid">
+          {!aiProviders.length && (
+            <article className="developer-card status-accent warning">
+              <h3>还没有 AI 供应商</h3>
+              <p>请配置真实 OpenAI-Compatible Base URL、模型名和 API Key 后再启用 AI 草稿。</p>
+              {currentUserRole === '系统管理员' && <button className="primary" onClick={onCreateProvider}>新增供应商</button>}
+            </article>
+          )}
           {aiProviders.map((provider) => (
             <article className={`developer-card ${statusAccent(provider.is_active ? provider.health_status : '禁用')}`} key={provider.id}>
               <div>
@@ -54,7 +65,9 @@ export default function AISettingsView({
               <p>{provider.base_url}</p>
               {provider.last_error && <p className="danger-text">{provider.last_error}</p>}
               <div className="row-actions">
+                {currentUserRole === '系统管理员' && <button onClick={() => onEditProvider(provider)}>编辑</button>}
                 <button onClick={() => onCheckProvider(provider)}>检查</button>
+                {currentUserRole === '系统管理员' && <button onClick={() => onToggleProvider(provider)}>{provider.is_active ? '禁用' : '启用'}</button>}
               </div>
             </article>
           ))}
@@ -68,7 +81,7 @@ export default function AISettingsView({
             <span>平台默认可被客户配置覆盖，任务创建时可覆盖发送节奏</span>
           </div>
           <div className="row-actions">
-            <button className="small" onClick={onEditTenantAi}>编辑 AI 配置</button>
+            <button className="small" disabled={!aiProviders.length} onClick={onEditTenantAi}>编辑 AI 配置</button>
             <button className="small" onClick={onEditScheduling}>编辑发送节奏</button>
           </div>
         </div>
@@ -103,6 +116,7 @@ export default function AISettingsView({
           </div>
         </div>
         <div className="mini-list">
+          {!promptTemplates.length && !materials.length && <p className="muted-line">暂无提示词或素材。可以先新增提示词模板，再创建素材。</p>}
           {promptTemplates.slice(0, 6).map((template) => (
             <article key={template.id}>
               <Badge tone={template.tenant_id ? 'positive' : 'neutral'}>{template.tenant_id ? '客户' : '平台'}</Badge>

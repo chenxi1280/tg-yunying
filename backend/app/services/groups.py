@@ -7,6 +7,7 @@ from app.models import AccountStatus, Campaign, GroupArchive, GroupAuthStatus, T
 from app.schemas import GroupPolicyUpdate
 
 from ._common import audit, require_tenant
+from .group_listeners import apply_group_listener_accounts, listener_account_summaries, recent_context_messages
 from .verification import list_verification_tasks
 
 
@@ -23,10 +24,14 @@ def update_group_policy(session: Session, group_id: int, payload: GroupPolicyUpd
     if not group:
         raise ValueError("group not found")
 
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    listener_account_ids = data.pop("listener_account_ids", None)
+    for key, value in data.items():
         if key in {"id", "tenant_id", "created_at", "updated_at"}:
             continue
         setattr(group, key, value)
+    if listener_account_ids is not None:
+        apply_group_listener_accounts(session, group, listener_account_ids)
     audit(session, tenant_id=group.tenant_id, actor=actor, action="更新群运营配置", target_type="tg_group", target_id=str(group.id))
     session.commit()
     session.refresh(group)
@@ -73,9 +78,11 @@ def group_detail(session: Session, group_id: int) -> dict:
                 "health_score": account.health_score,
                 "permission_label": link.permission_label,
                 "can_send": link.can_send,
+                "is_listener": link.is_listener,
                 "last_sent_at": link.last_sent_at,
             }
         )
+    context_messages = recent_context_messages(session, group, group.listener_context_limit)
     group_id_text = str(group.id)
     recent_campaigns = list(
         session.scalars(
@@ -100,6 +107,19 @@ def group_detail(session: Session, group_id: int) -> dict:
     return {
         "group": group,
         "accounts": accounts,
+        "listener_accounts": listener_account_summaries(session, group),
+        "recent_context_messages": [
+            {
+                "id": item.id,
+                "listener_account_id": item.listener_account_id,
+                "sender_name": item.sender_name,
+                "content": item.content,
+                "message_type": item.message_type,
+                "sent_at": item.sent_at,
+                "used_for_ai": item.used_for_ai,
+            }
+            for item in context_messages
+        ],
         "recent_campaigns": recent_campaigns,
         "recent_archives": recent_archives,
         "verification_tasks": verification_tasks,
@@ -108,6 +128,8 @@ def group_detail(session: Session, group_id: int) -> dict:
             "recent_campaigns": len(recent_campaigns),
             "archives": len(recent_archives),
             "verification_tasks": len(verification_tasks),
+            "listener_accounts": sum(1 for item in accounts if item["is_listener"]),
+            "listener_context_messages": len(context_messages),
         },
     }
 

@@ -17,6 +17,11 @@ class GroupPolicyUpdate(BaseModel):
     banned_words: str | None = None
     link_whitelist: str | None = None
     require_review: bool | None = None
+    listener_enabled: bool | None = None
+    listener_auto_reply_enabled: bool | None = None
+    listener_interval_seconds: int | None = Field(default=None, ge=30)
+    listener_context_limit: int | None = Field(default=None, ge=1, le=100)
+    listener_account_ids: list[int] | None = None
 
 
 class AuthorizeGroupRequest(BaseModel):
@@ -45,6 +50,14 @@ class GroupOut(ApiModel):
     banned_words: str
     link_whitelist: str
     require_review: bool
+    listener_enabled: bool = False
+    listener_auto_reply_enabled: bool = True
+    listener_interval_seconds: int = 60
+    listener_context_limit: int = 20
+    listener_last_polled_at: datetime | None = None
+    listener_last_reply_at: datetime | None = None
+    listener_last_error: str = ""
+    listener_account_ids: list[int] = []
 
 
 class VerificationTaskOut(ApiModel):
@@ -70,6 +83,8 @@ class VerificationTaskOut(ApiModel):
 class GroupDetailOut(BaseModel):
     group: GroupOut
     accounts: list[dict[str, Any]]
+    listener_accounts: list[dict[str, Any]] = []
+    recent_context_messages: list[dict[str, Any]] = []
     recent_campaigns: list[Any]  # list[CampaignOut] — lazy to avoid circular import
     recent_archives: list[Any]   # list[ArchiveOut]
     verification_tasks: list[VerificationTaskOut] = []

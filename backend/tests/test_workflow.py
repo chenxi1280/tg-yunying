@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 from app.config import get_settings
+from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.gateways import SendResult
@@ -12,9 +13,13 @@ def auth_headers(client: TestClient, email: str = "admin@demo.local", password: 
     challenge = client.get("/api/auth/captcha/challenge")
     assert challenge.status_code == 200, challenge.text
     challenge_body = challenge.json()
+    assert "target_value" not in challenge_body
+    assert "image_data_url" in challenge_body
+    captcha_value = get_challenge_target(challenge_body["challenge_id"])
+    assert captcha_value is not None
     captcha = client.post(
         "/api/auth/captcha/verify",
-        json={"challenge_id": challenge_body["challenge_id"], "slider_value": challenge_body["target_value"]},
+        json={"challenge_id": challenge_body["challenge_id"], "captcha_value": captcha_value},
     )
     assert captcha.status_code == 200, captcha.text
     captcha_token = captcha.json()["captcha_token"]
@@ -24,7 +29,29 @@ def auth_headers(client: TestClient, email: str = "admin@demo.local", password: 
     return {"Authorization": f"Bearer {token}"}
 
 
+def ensure_developer_app(client: TestClient, headers: dict[str, str]) -> dict:
+    apps = client.get("/api/developer-apps", headers=headers).json()
+    healthy = [app for app in apps if app["is_active"] and app["health_status"] == "健康"]
+    if healthy:
+        return healthy[0]
+    suffix = int(uuid4().int % 100000)
+    response = client.post(
+        "/api/developer-apps",
+        headers=headers,
+        json={
+            "app_name": f"测试开发者应用 {suffix}",
+            "api_id": 700000 + suffix,
+            "api_hash": f"test_api_hash_secret_{suffix}",
+            "max_accounts": 50,
+            "notes": "pytest",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[dict, dict]:
+    ensure_developer_app(client, headers)
     suffix = uuid4().hex[:8]
     account = client.post(
         "/api/tg-accounts",
@@ -54,6 +81,23 @@ def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[
             json={"auth_status": "已授权运营"},
         ).json()
     return account, group
+
+
+def test_clean_seed_requires_config_before_account_create():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        runtime = client.get("/api/config/runtime").json()
+        assert runtime["can_create_tg_account"] is False
+        assert runtime["developer_app_count"] == 0
+        assert runtime["ai_provider_count"] == 0
+
+        blocked = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={"tenant_id": 1, "display_name": "未配置账号", "phone_number": "+8613800000000"},
+        )
+        assert blocked.status_code == 400
+        assert "开发者应用" in blocked.text
 
 
 def test_campaign_draft_approval_and_dispatch_flow():
@@ -171,7 +215,7 @@ def test_approve_all_retry_and_archive_detail_flow():
 
 def test_auth_and_tenant_isolation():
     with TestClient(app) as client:
-        headers = auth_headers(client, "ops@demo.local", "ops123")
+        headers = auth_headers(client, "ops@bootstrap.local", "ops123")
         me = client.get("/api/auth/me", headers=headers).json()
         assert me["tenant_id"] == 1
 
@@ -179,6 +223,71 @@ def test_auth_and_tenant_isolation():
         assert response.status_code == 403
 
         assert client.get("/api/tg-accounts").status_code == 401
+
+
+def test_activation_code_generation_search_pagination_and_disable():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ops_headers = auth_headers(client, "ops@bootstrap.local", "ops123")
+        batch_no = f"B{uuid4().hex[:8]}".upper()
+        serial_prefix = f"VIP{uuid4().hex[:4]}".upper()
+
+        created = client.post(
+            "/api/admin/activation-codes",
+            headers=headers,
+            json={
+                "plan_type": "monthly",
+                "quantity": 5,
+                "batch_no": batch_no,
+                "serial_prefix": serial_prefix,
+                "note": "pytest batch",
+            },
+        )
+        assert created.status_code == 200, created.text
+        codes = created.json()
+        assert len(codes) == 5
+        assert all(item["batch_no"] == batch_no for item in codes)
+        assert all(item["serial_prefix"] == serial_prefix for item in codes)
+        assert all(item["plan_type"] == "monthly" and item["duration_days"] == 30 for item in codes)
+        assert all(item["code"].startswith(f"{serial_prefix}-{batch_no}-") for item in codes)
+
+        first_page = client.get("/api/admin/activation-codes", headers=headers, params={"batch_no": batch_no, "page": 1, "page_size": 2}).json()
+        assert first_page["total"] == 5
+        assert first_page["page"] == 1
+        assert first_page["page_size"] == 2
+        assert len(first_page["items"]) == 2
+        assert first_page["items"][0]["id"] > first_page["items"][1]["id"]
+
+        by_plan = client.get("/api/admin/activation-codes", headers=headers, params={"batch_no": batch_no, "plan_type": "monthly"}).json()
+        assert by_plan["total"] == 5
+        by_keyword = client.get("/api/admin/activation-codes", headers=headers, params={"search": serial_prefix}).json()
+        assert by_keyword["total"] >= 5
+
+        disabled = client.post(f"/api/admin/activation-codes/{codes[0]['id']}/disable", headers=headers)
+        assert disabled.status_code == 200, disabled.text
+        assert disabled.json()["status"] == "disabled"
+        disabled_redeem = client.post("/api/subscription/redeem", headers=ops_headers, json={"code": codes[0]["code"]})
+        assert disabled_redeem.status_code == 400
+
+        redeemed = client.post("/api/subscription/redeem", headers=ops_headers, json={"code": codes[1]["code"]})
+        assert redeemed.status_code == 200, redeemed.text
+        redeemed_disable = client.post(f"/api/admin/activation-codes/{codes[1]['id']}/disable", headers=headers)
+        assert redeemed_disable.status_code == 400
+
+        disabled_page = client.get("/api/admin/activation-codes", headers=headers, params={"batch_no": batch_no, "status": "disabled"}).json()
+        assert disabled_page["total"] == 1
+        unused_page = client.get("/api/admin/activation-codes", headers=headers, params={"batch_no": batch_no, "status": "unused"}).json()
+        assert unused_page["total"] == 3
+        by_redeemed_user = client.get("/api/admin/activation-codes", headers=headers, params={"batch_no": batch_no, "search": "ops@bootstrap.local"}).json()
+        assert by_redeemed_user["total"] == 1
+        assert by_redeemed_user["items"][0]["redeemed_user_email"] == "ops@bootstrap.local"
+
+        denied_list = client.get("/api/admin/activation-codes", headers=ops_headers)
+        denied_create = client.post("/api/admin/activation-codes", headers=ops_headers, json={"plan_type": "monthly", "quantity": 1})
+        denied_disable = client.post(f"/api/admin/activation-codes/{codes[2]['id']}/disable", headers=ops_headers)
+        assert denied_list.status_code == 403
+        assert denied_create.status_code == 403
+        assert denied_disable.status_code == 403
 
 
 def test_developer_app_admin_crud_hides_api_hash():
@@ -206,7 +315,7 @@ def test_developer_app_admin_crud_hides_api_hash():
         apps = client.get("/api/developer-apps", headers=headers).json()
         assert all("api_hash" not in app for app in apps)
 
-        ops_headers = auth_headers(client, "ops@demo.local", "ops123")
+        ops_headers = auth_headers(client, "ops@bootstrap.local", "ops123")
         denied = client.post(
             "/api/developer-apps",
             headers=ops_headers,
@@ -299,7 +408,7 @@ def test_ai_provider_prompt_material_and_jitter_flow():
         assert "ai_provider_count" in runtime
 
         providers = client.get("/api/ai-providers", headers=headers).json()
-        assert providers
+        assert providers == []
         assert all("api_key" not in provider for provider in providers)
 
         provider = client.post(
@@ -338,7 +447,7 @@ def test_ai_provider_prompt_material_and_jitter_flow():
         setting = client.patch(
             "/api/tenant-ai-settings?tenant_id=1",
             headers=headers,
-            json={"default_provider_id": provider["id"], "fallback_to_mock": True, "temperature": 0.7, "max_tokens": 512},
+            json={"default_provider_id": provider["id"], "ai_enabled": True, "fallback_to_mock": True, "temperature": 0.7, "max_tokens": 512},
         ).json()
         assert setting["default_provider_id"] == provider["id"]
 
@@ -394,7 +503,7 @@ def test_prompt_template_listing_matches_existing_tenant_resolution_rules():
         tenant_visible = client.get("/api/prompt-templates?tenant_id=1", headers=headers).json()
         assert any(item["id"] == created["id"] for item in tenant_visible)
 
-        ops_headers = auth_headers(client, "ops@demo.local", "ops123")
+        ops_headers = auth_headers(client, "ops@bootstrap.local", "ops123")
         denied = client.get("/api/prompt-templates?tenant_id=999", headers=ops_headers)
         assert denied.status_code == 403
 
@@ -432,7 +541,7 @@ def test_ai_drafts_listing_uses_service_and_preserves_desc_order():
 
 def test_ai_provider_write_requires_platform_admin():
     with TestClient(app) as client:
-        ops_headers = auth_headers(client, "ops@demo.local", "ops123")
+        ops_headers = auth_headers(client, "ops@bootstrap.local", "ops123")
         denied = client.post(
             "/api/ai-providers",
             headers=ops_headers,

@@ -8,6 +8,7 @@ export function AppModals() {
   const ctx = useAppContext();
   const {
     modal, closeModal, resultDialog, setResultDialog,
+    changePasswordForm, setChangePasswordForm, changePassword,
     // Developer App
     developerAppForm, setDeveloperAppForm, createDeveloperApp,
     // AI Provider
@@ -25,11 +26,11 @@ export function AppModals() {
     // Account Pool
     accountPoolForm, setAccountPoolForm, createAccountPool, accountPoolDetail, poolDirectAccountId, setPoolDirectAccountId, refreshAccountPoolDetail,
     // Account
-    accountCreateForm, setAccountCreateForm, createAccount, loginAfterCreate, accountPools, accounts, accountDetail, setAccountDetailTab, accountDetailTab, runtime, cloneForm, setCloneForm, createClonePlan, confirmClonePlan, moveCurrentAccountPool,
+    accountCreateForm, setAccountCreateForm, createAccount, loginAfterCreate, accountLoginForm, setAccountLoginForm, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, accountPools, accounts, accountDetail, setAccountDetailTab, accountDetailTab, runtime, cloneForm, setCloneForm, createClonePlan, confirmClonePlan, moveCurrentAccountPool,
     // Profile
     profileForm, setProfileForm, avatarFile, setAvatarFile, avatarUrl, saveAccountProfile, openAccountProfileEdit, queueAccountSyncNow, pollVerificationCodes, retryAccountProfileSync,
     // Group
-    selectedGroup, groupPolicy, setGroupPolicy, saveGroupPolicy,
+    selectedGroup, groupPolicy, setGroupPolicy, saveGroupPolicy, groupDetail,
     // Campaign
     groups, campaigns, materials, campaignStep, setCampaignStep, selectedTargetGroupIds, recommendedAccounts, selectedAccountsByGroup, targetGroupsMissingAccounts, topic, setTopic, sendWindow, setSendWindow, intensity, setIntensity, draftCount, setDraftCount, tone, setTone, selectedMaterialIds, toggleTargetGroup, goCampaignAccountStep, goCampaignContentStep, toggleRecommendedAccount, setGroupAccountsSelected, toggleMaterial, createCampaignAndDrafts, selectedCampaignId, setSelectedCampaignId,
     // Draft
@@ -39,37 +40,39 @@ export function AppModals() {
     // Direct Message
     directMessageForm, setDirectMessageForm, selectedDirectContact, startDirectMessageToContact, createDirectMessageTask,
     // Misc
-    openAccountCreate, openAccountDetail, openConfirm, accountContacts, accountName, groupName,
+    openAccountCreate, openAccountDetail, openConfirm, accountContacts, accountName, groupName, busy,
   } = ctx;
 
   if (!modal && !resultDialog) return null;
 
   return (
     <>
-      {modal?.type === 'developerAppCreate' && (
-        <Modal title="新增开发者应用" size="medium" onClose={closeModal}>
+      {(modal?.type === 'developerAppCreate' || modal?.type === 'developerAppEdit') && (
+        <Modal title={modal.type === 'developerAppEdit' ? '编辑开发者应用' : '新增开发者应用'} size="medium" onClose={closeModal}>
           <div className="policy-grid">
             <label>应用名称<input value={developerAppForm.app_name} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, app_name: event.target.value })} /></label>
             <label>API ID<input value={developerAppForm.api_id} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, api_id: event.target.value })} /></label>
             <label>账号上限<input type="number" min={0} value={developerAppForm.max_accounts} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, max_accounts: Number(event.target.value) })} /></label>
             <label>备注<input value={developerAppForm.notes} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, notes: event.target.value })} /></label>
-            <label className="wide-field">API Hash<input type="password" value={developerAppForm.api_hash} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, api_hash: event.target.value })} /></label>
+            <label className="wide-field">API Hash<input type="password" value={developerAppForm.api_hash} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, api_hash: event.target.value })} placeholder={modal.type === 'developerAppEdit' ? '不填写则保留原凭证' : ''} /></label>
+            <label className="checkbox-line"><input type="checkbox" checked={developerAppForm.is_active} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, is_active: event.target.checked })} />启用应用</label>
           </div>
-          <FormActions submitLabel="新增应用" onCancel={closeModal} onSubmit={createDeveloperApp} disabled={!developerAppForm.api_id || developerAppForm.api_hash.length < 8} />
+          <FormActions submitLabel={modal.type === 'developerAppEdit' ? '保存应用' : '新增应用'} onCancel={closeModal} onSubmit={createDeveloperApp} disabled={!developerAppForm.app_name.trim() || !developerAppForm.api_id || (modal.type === 'developerAppCreate' && developerAppForm.api_hash.length < 8)} />
         </Modal>
       )}
 
-      {modal?.type === 'aiProviderCreate' && (
-        <Modal title="新增 AI 供应商" size="medium" onClose={closeModal}>
+      {(modal?.type === 'aiProviderCreate' || modal?.type === 'aiProviderEdit') && (
+        <Modal title={modal.type === 'aiProviderEdit' ? '编辑 AI 供应商' : '新增 AI 供应商'} size="medium" onClose={closeModal}>
           <div className="policy-grid">
             <label>名称<input value={aiProviderForm.provider_name} onChange={(event) => setAiProviderForm({ ...aiProviderForm, provider_name: event.target.value })} /></label>
             <label>Base URL<input value={aiProviderForm.base_url} onChange={(event) => setAiProviderForm({ ...aiProviderForm, base_url: event.target.value })} /></label>
             <label>模型名<input value={aiProviderForm.model_name} onChange={(event) => setAiProviderForm({ ...aiProviderForm, model_name: event.target.value })} /></label>
             <label>Key Header<input value={aiProviderForm.api_key_header} onChange={(event) => setAiProviderForm({ ...aiProviderForm, api_key_header: event.target.value })} /></label>
-            <label className="wide-field">API Key<input type="password" value={aiProviderForm.api_key} onChange={(event) => setAiProviderForm({ ...aiProviderForm, api_key: event.target.value })} /></label>
+            <label className="wide-field">API Key<input type="password" value={aiProviderForm.api_key} onChange={(event) => setAiProviderForm({ ...aiProviderForm, api_key: event.target.value })} placeholder={modal.type === 'aiProviderEdit' ? '不填写则保留原 Key' : ''} /></label>
             <label className="wide-field">备注<input value={aiProviderForm.notes} onChange={(event) => setAiProviderForm({ ...aiProviderForm, notes: event.target.value })} /></label>
+            <label className="checkbox-line"><input type="checkbox" checked={aiProviderForm.is_active} onChange={(event) => setAiProviderForm({ ...aiProviderForm, is_active: event.target.checked })} />启用供应商</label>
           </div>
-          <FormActions submitLabel="新增供应商" onCancel={closeModal} onSubmit={createAiProvider} disabled={aiProviderForm.api_key.length < 4} />
+          <FormActions submitLabel={modal.type === 'aiProviderEdit' ? '保存供应商' : '新增供应商'} onCancel={closeModal} onSubmit={createAiProvider} disabled={!aiProviderForm.provider_name.trim() || !aiProviderForm.base_url.trim() || !aiProviderForm.model_name.trim() || (modal.type === 'aiProviderCreate' && aiProviderForm.api_key.length < 4)} />
         </Modal>
       )}
 
@@ -89,7 +92,8 @@ export function AppModals() {
         <Modal title="编辑客户 AI 配置" size="medium" onClose={closeModal}>
           <div className="policy-grid">
             <label>默认模型
-              <select value={selectedAiProviderId} onChange={(event) => setSelectedAiProviderId(Number(event.target.value))}>
+              <select value={selectedAiProviderId} disabled={!aiProviders.length} onChange={(event) => setSelectedAiProviderId(Number(event.target.value))}>
+                {!aiProviders.length && <option value="">请先新增 AI 供应商</option>}
                 {aiProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.provider_name} / {provider.model_name}</option>)}
               </select>
             </label>
@@ -98,7 +102,7 @@ export function AppModals() {
             <label className="checkbox-line"><input type="checkbox" checked={tenantAiSetting.ai_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_enabled: event.target.checked })} />启用 AI 草稿</label>
             <label className="checkbox-line"><input type="checkbox" checked={tenantAiSetting.fallback_to_mock} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, fallback_to_mock: event.target.checked })} />失败回退模板</label>
           </div>
-          <FormActions onCancel={closeModal} onSubmit={saveTenantAiSetting} />
+          <FormActions onCancel={closeModal} onSubmit={saveTenantAiSetting} disabled={!aiProviders.length} />
         </Modal>
       )}
 
@@ -111,6 +115,17 @@ export function AppModals() {
             <label className="checkbox-line"><input type="checkbox" checked={respectSendWindow} onChange={(event) => setRespectSendWindow(event.target.checked)} />遵守发送时间窗</label>
           </div>
           <FormActions onCancel={closeModal} onSubmit={saveSchedulingSetting} />
+        </Modal>
+      )}
+
+      {modal?.type === 'changePassword' && (
+        <Modal title="修改登录密码" size="small" onClose={closeModal}>
+          <div className="policy-grid">
+            <label className="wide-field">当前密码<input type="password" value={changePasswordForm.current_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, current_password: event.target.value }))} /></label>
+            <label className="wide-field">新密码<input type="password" value={changePasswordForm.new_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, new_password: event.target.value }))} /></label>
+            <label className="wide-field">确认新密码<input type="password" value={changePasswordForm.confirm_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, confirm_password: event.target.value }))} /></label>
+          </div>
+          <FormActions submitLabel="修改密码" onCancel={closeModal} onSubmit={changePassword} disabled={!changePasswordForm.current_password || changePasswordForm.new_password.length < 6 || changePasswordForm.new_password !== changePasswordForm.confirm_password} />
         </Modal>
       )}
 
@@ -173,8 +188,59 @@ export function AppModals() {
             <label>TG 用户名<input value={accountCreateForm.username} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, username: event.target.value })} placeholder="可选，不含 @" /></label>
             <label className="wide-field">手机号<input value={accountCreateForm.phone_number} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, phone_number: event.target.value })} placeholder="+8613800000000" /></label>
           </div>
-          <p className="muted-line">{loginAfterCreate ? '创建后会直接启动扫码登录流程，也可以在账号详情切换验证码登录。' : '创建后会进入账号详情，后续可选择扫码或验证码登录。'}</p>
+          <p className="muted-line">{loginAfterCreate ? '创建后会直接发送登录验证码，并在这里完成验证码和二步密码验证。' : '添加后会继续留在弹窗内完成手机号验证码登录。'}</p>
           <FormActions submitLabel={loginAfterCreate ? '创建并登录' : '添加账号'} onCancel={closeModal} onSubmit={createAccount} disabled={!accountCreateForm.display_name.trim() || !accountCreateForm.phone_number.trim()} />
+        </Modal>
+      )}
+
+      {modal?.type === 'accountLogin' && accountLoginForm.account && (
+        <Modal title={`${accountLoginForm.account.display_name} 完成登录`} size="small" onClose={closeModal}>
+          <div className="detail-list">
+            <div><dt>账号</dt><dd>{accountLoginForm.account.phone_masked}</dd></div>
+            <div><dt>当前状态</dt><dd><StatusBadge status={accountLoginForm.account.status} /></dd></div>
+            <div><dt>登录方式</dt><dd>手机号验证码</dd></div>
+            {accountLoginForm.flow?.code_expires_at && <div><dt>验证码有效期</dt><dd>{new Date(accountLoginForm.flow.code_expires_at).toLocaleTimeString()}</dd></div>}
+          </div>
+          {accountLoginForm.step === 'code' && (
+            <>
+              <div className="policy-grid">
+                <label className="wide-field">验证码
+                  <input
+                    value={accountLoginForm.code}
+                    onChange={(event) => setAccountLoginForm((current) => ({ ...current, code: event.target.value, error: '' }))}
+                    placeholder="输入 Telegram 收到的验证码"
+                    autoFocus
+                  />
+                </label>
+              </div>
+              {accountLoginForm.flow?.code_preview && <p className="muted-line">开发模式验证码：{accountLoginForm.flow.code_preview}</p>}
+              {accountLoginForm.error && <p className="danger-text">{accountLoginForm.error}</p>}
+              <div className="modal-actions">
+                <button onClick={resendAccountLoginCode} disabled={Boolean(busy)}>重新发送验证码</button>
+                <button className="primary" onClick={submitAccountLoginCode} disabled={Boolean(busy) || !accountLoginForm.code.trim()}>提交验证码</button>
+              </div>
+            </>
+          )}
+          {accountLoginForm.step === 'password' && (
+            <>
+              <div className="policy-grid">
+                <label className="wide-field">二步验证密码
+                  <input
+                    type="password"
+                    value={accountLoginForm.password_2fa}
+                    onChange={(event) => setAccountLoginForm((current) => ({ ...current, password_2fa: event.target.value, error: '' }))}
+                    placeholder="输入 Telegram 2FA 密码"
+                    autoFocus
+                  />
+                </label>
+              </div>
+              {accountLoginForm.error && <p className="danger-text">{accountLoginForm.error}</p>}
+              <div className="modal-actions">
+                <button onClick={() => setAccountLoginForm((current) => ({ ...current, step: 'code', password_2fa: '', error: '' }))}>返回验证码</button>
+                <button className="primary" onClick={submitAccountLoginPassword} disabled={Boolean(busy) || !accountLoginForm.password_2fa}>完成登录</button>
+              </div>
+            </>
+          )}
         </Modal>
       )}
 
@@ -241,6 +307,30 @@ export function AppModals() {
             <label>禁用词<textarea value={groupPolicy.banned_words} onChange={(event) => setGroupPolicy({ ...groupPolicy, banned_words: event.target.value })} /></label>
             <label>链接白名单<textarea value={groupPolicy.link_whitelist} onChange={(event) => setGroupPolicy({ ...groupPolicy, link_whitelist: event.target.value })} /></label>
             <label className="checkbox-line"><input type="checkbox" checked={groupPolicy.require_review} onChange={(event) => setGroupPolicy({ ...groupPolicy, require_review: event.target.checked })} />需要人工审核</label>
+            <label className="checkbox-line"><input type="checkbox" checked={groupPolicy.listener_enabled} onChange={(event) => setGroupPolicy({ ...groupPolicy, listener_enabled: event.target.checked })} />启用监听续聊</label>
+            <label className="checkbox-line"><input type="checkbox" checked={groupPolicy.listener_auto_reply_enabled} onChange={(event) => setGroupPolicy({ ...groupPolicy, listener_auto_reply_enabled: event.target.checked })} />监听触发后自动发送</label>
+            <label>监听间隔秒<input type="number" min={30} value={groupPolicy.listener_interval_seconds} onChange={(event) => setGroupPolicy({ ...groupPolicy, listener_interval_seconds: Number(event.target.value) })} /></label>
+            <label>上下文条数<input type="number" min={1} max={100} value={groupPolicy.listener_context_limit} onChange={(event) => setGroupPolicy({ ...groupPolicy, listener_context_limit: Number(event.target.value) })} /></label>
+            <div className="wide-field">
+              <span className="field-label">监听号</span>
+              <div className="choice-grid">
+                {(groupDetail?.group.id === selectedGroup.id ? groupDetail.accounts : accounts).map((account) => (
+                  <label className="checkbox-line" key={account.id}>
+                    <input
+                      type="checkbox"
+                      checked={groupPolicy.listener_account_ids.includes(account.id)}
+                      onChange={(event) => {
+                        const nextIds = event.target.checked
+                          ? [...groupPolicy.listener_account_ids, account.id]
+                          : groupPolicy.listener_account_ids.filter((id) => id !== account.id);
+                        setGroupPolicy({ ...groupPolicy, listener_account_ids: Array.from(new Set(nextIds)) });
+                      }}
+                    />
+                    {account.display_name}{account.username ? ` / @${account.username}` : ''} / {account.status}
+                  </label>
+                ))}
+              </div>
+            </div>
           </div>
           <FormActions onCancel={closeModal} onSubmit={saveGroupPolicy} />
         </Modal>

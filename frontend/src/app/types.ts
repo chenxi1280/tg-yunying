@@ -15,6 +15,8 @@ export type RuntimeConfig = {
   developer_app_pool_enabled: boolean;
   developer_app_count: number;
   developer_app_healthy_count: number;
+  can_create_tg_account: boolean;
+  has_ai_provider: boolean;
   ai_enabled: boolean;
   ai_provider_count: number;
   healthy_ai_provider_count: number;
@@ -50,9 +52,7 @@ export type Tenant = {
 
 export type CaptchaChallenge = {
   challenge_id: string;
-  slider_min: number;
-  slider_max: number;
-  target_value: number;
+  image_data_url: string;
   expires_at: string;
 };
 
@@ -67,12 +67,40 @@ export type ActivationCode = {
   plan_type: string;
   duration_days: number;
   status: string;
+  batch_no: string;
+  serial_prefix: string;
   created_by: string;
   created_at: string;
   redeemed_by_user_id: number | null;
+  redeemed_user_name: string | null;
+  redeemed_user_email: string | null;
   redeemed_at: string | null;
   subscription_start_at: string | null;
   subscription_end_at: string | null;
+  note: string;
+};
+
+export type ActivationCodePage = {
+  items: ActivationCode[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
+export type ActivationCodeFilters = {
+  search: string;
+  status: string;
+  plan_type: string;
+  batch_no: string;
+  start_at: string;
+  end_at: string;
+};
+
+export type ActivationCodeCreateForm = {
+  plan_type: string;
+  quantity: number;
+  batch_no: string;
+  serial_prefix: string;
   note: string;
 };
 
@@ -132,6 +160,15 @@ export type LoginFlow = {
   created_at: string;
 };
 
+export type AccountLoginForm = {
+  account: Account | null;
+  step: 'code' | 'password';
+  code: string;
+  password_2fa: string;
+  flow: LoginFlow | null;
+  error: string;
+};
+
 export type Account = {
   id: number;
   pool_id: number | null;
@@ -179,6 +216,8 @@ export type DeveloperApp = {
   last_check_at: string | null;
   last_error: string;
   notes: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type AiProvider = {
@@ -188,11 +227,17 @@ export type AiProvider = {
   base_url: string;
   model_name: string;
   api_key_header: string;
+  input_price_per_1k: number;
+  output_price_per_1k: number;
+  currency: string;
+  is_billable: boolean;
   is_active: boolean;
   health_status: string;
   last_check_at: string | null;
   last_error: string;
   notes: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type PromptTemplate = {
@@ -262,6 +307,14 @@ export type Group = {
   banned_words: string;
   link_whitelist: string;
   require_review: boolean;
+  listener_enabled: boolean;
+  listener_auto_reply_enabled: boolean;
+  listener_interval_seconds: number;
+  listener_context_limit: number;
+  listener_last_polled_at: string | null;
+  listener_last_reply_at: string | null;
+  listener_last_error: string;
+  listener_account_ids: number[];
 };
 
 export type Campaign = {
@@ -498,7 +551,18 @@ export type GroupDetail = {
     health_score: number;
     permission_label: string;
     can_send: boolean;
+    is_listener?: boolean;
     last_sent_at: string | null;
+  }>;
+  listener_accounts: Array<{ id: number; display_name: string; username: string | null; status: string }>;
+  recent_context_messages: Array<{
+    id: number;
+    listener_account_id: number;
+    sender_name: string;
+    content: string;
+    message_type: string;
+    sent_at: string | null;
+    used_for_ai: boolean;
   }>;
   recent_campaigns: Campaign[];
   recent_archives: ArchiveItem[];
@@ -541,18 +605,22 @@ export type ConfirmPayload = {
 
 export type ModalState =
   | { type: 'accountCreate' }
+  | { type: 'accountLogin' }
   | { type: 'accountPoolCreate' }
   | { type: 'accountPoolDetail' }
   | { type: 'accountMovePool' }
   | { type: 'accountCloneCreate' }
   | { type: 'verificationTaskDetail'; payload: VerificationTask }
   | { type: 'developerAppCreate' }
+  | { type: 'developerAppEdit' }
   | { type: 'tenantEdit' }
   | { type: 'aiProviderCreate' }
+  | { type: 'aiProviderEdit' }
   | { type: 'promptTemplateCreate' }
   | { type: 'materialCreate' }
   | { type: 'tenantAiEdit' }
   | { type: 'schedulingEdit' }
+  | { type: 'changePassword' }
   | { type: 'groupPolicyEdit' }
   | { type: 'campaignCreate' }
   | { type: 'accountDetail' }

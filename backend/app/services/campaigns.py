@@ -307,12 +307,25 @@ def render_prompt(
     payload: GenerateDraftsRequest,
     materials: list[Material],
     selected_accounts: list[TgAccount],
+    listener_account: TgAccount | None = None,
 ) -> str:
     material_text = "\n".join(f"#{item.id} {item.material_type} {item.title}: {item.content[:180]}" for item in materials) or "无"
+    labels = [chr(ord("A") + index) for index in range(len(selected_accounts))]
     account_text = "\n".join(
-        f"#{account.id} {account.display_name} @{account.username or '-'} 健康分 {account.health_score:.0f}"
-        for account in selected_accounts
+        f"{labels[index]}账号: #{account.id} {account.display_name} @{account.username or '-'} 健康分 {account.health_score:.0f}"
+        for index, account in enumerate(selected_accounts)
     ) or "未指定，由系统自动分配"
+    listener_text = (
+        f"监听账号: #{listener_account.id} {listener_account.display_name} @{listener_account.username or '-'}"
+        if listener_account
+        else "监听账号: 未指定"
+    )
+    context_items = payload.conversation_context[-20:]
+    context_text = "\n".join(
+        f"{item.sent_at or '-'} {item.sender_name}: {item.content[:500]}"
+        for item in context_items
+        if item.content.strip()
+    ) or "暂无真人上下文"
     variables = {
         "count": str(payload.count),
         "group_title": group.title,
@@ -323,6 +336,8 @@ def render_prompt(
         "banned_words": group.banned_words or "无",
         "materials": material_text,
         "selected_accounts": account_text,
+        "listener_account": listener_text,
+        "conversation_context": context_text,
     }
     rendered = template.content
     for key, value in variables.items():
@@ -332,7 +347,9 @@ def render_prompt(
         + "\n\n输出要求：请只返回 JSON，格式为 {\"drafts\":[...] }。"
         + "每条 drafts 必须包含 sequence_index、persona、content、risk_level，"
         + "可选 suggested_account_id、reply_to_sequence_index、material_id。"
-        + "请按自然群聊接话顺序生成，多账号之间要像真实用户在接续讨论，不要所有消息重复同一表达。"
+        + "请按所选账号顺序从 A 账号开始轮流生成，suggested_account_id 必须优先使用对应账号 id。"
+        + "如果有真人上下文，要接住真人最新消息继续聊；不要暴露运营、脚本、AI、监听等内部信息。"
+        + f"\n\n所选账号：\n{account_text}\n{listener_text}\n真人上下文：\n{context_text}"
     )
 
 
@@ -369,6 +386,18 @@ def generate_drafts(session: Session, campaign_id: int, payload: GenerateDraftsR
                     .order_by(TgAccount.id.asc())
                 )
             )
+    listener_account = None
+    if payload.listener_account_id is not None:
+        listener_account = session.get(TgAccount, payload.listener_account_id)
+        listener_link = session.scalar(
+            select(TgGroupAccount).where(
+                TgGroupAccount.tenant_id == campaign.tenant_id,
+                TgGroupAccount.group_id == campaign.group_id,
+                TgGroupAccount.account_id == payload.listener_account_id,
+            )
+        )
+        if not listener_account or listener_account.tenant_id != campaign.tenant_id or not listener_link:
+            raise ValueError("listener account cannot access target group")
     decision = resolve_prompt_decision(
         session,
         campaign=campaign,
@@ -379,7 +408,15 @@ def generate_drafts(session: Session, campaign_id: int, payload: GenerateDraftsR
     )
     template = pick_prompt_template(session, campaign, decision.template_type)
     provider = pick_ai_provider(session, campaign, tenant_setting)
-    prompt = render_prompt(template, campaign=campaign, group=group, payload=payload, materials=materials, selected_accounts=selected_accounts)
+    prompt = render_prompt(
+        template,
+        campaign=campaign,
+        group=group,
+        payload=payload,
+        materials=materials,
+        selected_accounts=selected_accounts,
+        listener_account=listener_account,
+    )
     generation_source = decision.generation_source
     generation_error = ""
     provider_name = "系统决策" if not decision.use_ai else "Mock"

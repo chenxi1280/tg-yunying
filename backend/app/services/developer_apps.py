@@ -23,30 +23,30 @@ def seed_developer_apps(session: Session) -> None:
     if session.scalar(select(func.count(TelegramDeveloperApp.id))) > 0:
         return
     settings = get_settings()
-    if settings.tg_api_id and settings.tg_api_hash:
-        app_name = "环境默认开发者应用"
-        api_id = int(settings.tg_api_id)
-        api_hash = settings.tg_api_hash
-        notes = "由 TG_API_ID/TG_API_HASH 初始化"
-    else:
-        app_name = "Mock 开发者应用"
-        api_id = 100000
-        api_hash = "mock_api_hash_for_development"
-        notes = "开发和测试默认凭证，真实接入时请替换"
+    if not (settings.seed_tg_developer_app_from_env and settings.tg_api_id and settings.tg_api_hash):
+        return
     session.add(
         TelegramDeveloperApp(
-            app_name=app_name,
-            api_id=api_id,
-            api_hash_ciphertext=encrypt_secret(api_hash),
+            app_name="环境默认开发者应用",
+            api_id=int(settings.tg_api_id),
+            api_hash_ciphertext=encrypt_secret(settings.tg_api_hash),
             health_status=DeveloperAppHealthStatus.HEALTHY.value,
-            notes=notes,
+            notes="由 TG_API_ID/TG_API_HASH 初始化",
         )
     )
     session.flush()
 
 
 def first_assignable_developer_app(session: Session) -> TelegramDeveloperApp | None:
-    return session.scalar(select(TelegramDeveloperApp).order_by(TelegramDeveloperApp.id.asc()).limit(1))
+    return session.scalar(
+        select(TelegramDeveloperApp)
+        .where(
+            TelegramDeveloperApp.is_active.is_(True),
+            TelegramDeveloperApp.health_status == DeveloperAppHealthStatus.HEALTHY.value,
+        )
+        .order_by(TelegramDeveloperApp.id.asc())
+        .limit(1)
+    )
 
 
 def backfill_account_developer_apps(session: Session) -> None:

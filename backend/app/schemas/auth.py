@@ -48,6 +48,11 @@ class AuthRegisterRequest(BaseModel):
     captcha_token: str
 
 
+class AuthChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=80)
+    new_password: str = Field(..., min_length=6, max_length=80)
+
+
 class AuthUserOut(BaseModel):
     id: int
     tenant_id: int | None
@@ -73,15 +78,13 @@ class AuthTokenOut(BaseModel):
 
 class CaptchaChallengeOut(BaseModel):
     challenge_id: str
-    slider_min: int
-    slider_max: int
-    target_value: int
+    image_data_url: str
     expires_at: datetime
 
 
 class CaptchaVerifyRequest(BaseModel):
     challenge_id: str
-    slider_value: int
+    captcha_value: str
 
 
 class CaptchaVerifyOut(BaseModel):
@@ -109,6 +112,8 @@ class SubscriptionRedeemOut(BaseModel):
 class ActivationCodeCreateRequest(BaseModel):
     plan_type: str  # Literal["monthly", "yearly"] — relaxed to str for validation flexibility
     quantity: int = Field(default=1, ge=1, le=200)
+    batch_no: str = Field(default="", max_length=24, pattern=r"^[A-Za-z0-9_-]*$")
+    serial_prefix: str = Field(default="", max_length=24, pattern=r"^[A-Za-z0-9_-]*$")
     note: str = Field(default="", max_length=255)
 
 
@@ -118,13 +123,24 @@ class ActivationCodeOut(ApiModel):
     plan_type: str
     duration_days: int
     status: str
+    batch_no: str
+    serial_prefix: str
     created_by: str
     created_at: datetime
     redeemed_by_user_id: int | None
+    redeemed_user_name: str | None = None
+    redeemed_user_email: str | None = None
     redeemed_at: datetime | None
     subscription_start_at: datetime | None
     subscription_end_at: datetime | None
     note: str
+
+
+class ActivationCodePageOut(BaseModel):
+    items: list[ActivationCodeOut]
+    total: int
+    page: int
+    page_size: int
 
 
 # ── Runtime config (system info exposed to authorised users) ──
@@ -139,6 +155,8 @@ class RuntimeConfigOut(BaseModel):
     developer_app_pool_enabled: bool
     developer_app_count: int
     developer_app_healthy_count: int
+    can_create_tg_account: bool = False
+    has_ai_provider: bool = False
     ai_enabled: bool
     ai_provider_count: int
     healthy_ai_provider_count: int
@@ -150,9 +168,9 @@ class RuntimeConfigOut(BaseModel):
 
 __all__ = [
     "TenantCreate", "TenantUpdate", "TenantOut",
-    "AuthLoginRequest", "AuthRegisterRequest", "AuthUserOut", "AuthTokenOut",
+    "AuthLoginRequest", "AuthRegisterRequest", "AuthChangePasswordRequest", "AuthUserOut", "AuthTokenOut",
     "CaptchaChallengeOut", "CaptchaVerifyRequest", "CaptchaVerifyOut",
     "SubscriptionRedeemRequest", "SubscriptionRedeemOut",
-    "ActivationCodeCreateRequest", "ActivationCodeOut",
+    "ActivationCodeCreateRequest", "ActivationCodeOut", "ActivationCodePageOut",
     "RuntimeConfigOut",
 ]

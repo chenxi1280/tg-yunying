@@ -13,7 +13,7 @@ class AiProviderCreate(BaseModel):
     provider_name: str
     provider_type: str = "openai_compatible"
     base_url: str = "mock://openai-compatible"
-    model_name: str = "mimo-v2.5-pro"
+    model_name: str = "deepseek-v4-flash"
     api_key: str = Field(..., min_length=4)
     api_key_header: str = "Authorization"
     input_price_per_1k: float = Field(default=0, ge=0)

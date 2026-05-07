@@ -8,7 +8,7 @@ TG 运营管理平台是一个多租户 SaaS 系统，用于统一管理 Telegra
 
 - **后端**: Python FastAPI + SQLAlchemy
 - **前端**: React + TypeScript + Vite
-- **数据库**: SQLite/PostgreSQL
+- **数据库**: PostgreSQL
 - **部署**: Docker 容器化
 
 ## 角色体系
@@ -263,5 +263,5 @@ TG 运营管理平台是一个多租户 SaaS 系统，用于统一管理 Telegra
 
 - Python 3.12+
 - Node.js 18+
-- PostgreSQL/SQLite
+- PostgreSQL
 - Redis（可选，用于任务队列）

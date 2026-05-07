@@ -2,6 +2,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,18 +10,22 @@ from fastapi.staticfiles import StaticFiles
 
 from .api.routers import router as api_router
 from .config import get_settings
-from .database import Base, SessionLocal, engine, ensure_schema_compat, is_sqlite_url, run_migrations
+from .database import SessionLocal, prepare_database
 from .services import ensure_seed_data
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    settings = get_settings()
-    if is_sqlite_url():
-        Base.metadata.create_all(bind=engine)
-        ensure_schema_compat()
-    elif settings.auto_migrate_on_start:
-        run_migrations()
+    status = prepare_database()
+    logger.info(
+        "Database ready: tables=%s was_empty=%s alembic=%s previous_alembic=%s",
+        status["table_count"],
+        status["was_empty"],
+        status["alembic_version"],
+        status["previous_alembic_version"],
+    )
     with SessionLocal() as session:
         ensure_seed_data(session)
     yield
