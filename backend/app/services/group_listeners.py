@@ -136,6 +136,9 @@ def _system_user(session: Session, tenant_id: int) -> CurrentUser:
         subscription_expires_at=user.subscription_expires_at,
         subscription_days_remaining=0,
         can_use_core_features=True,
+        token_balance=user.token_balance,
+        token_quota_total=user.token_quota_total,
+        menu_permissions=[],
     )
 
 

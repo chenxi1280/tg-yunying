@@ -1,10 +1,12 @@
 import React from 'react';
 import type {
   Overview, RuntimeConfig, CurrentUser, CaptchaChallenge, CaptchaVerifyResponse,
+  AdminUser, AdminUserForm,
   ActivationCode, ActivationCodeCreateForm, ActivationCodeFilters, ActivationCodePage,
+  SubscriptionPlan, SubscriptionPlanForm, TokenLedger,
   UsageLedger, UsageSummary, LoginFlow, Account, AccountPool, AccountLoginForm,
   DeveloperApp, AiProvider, PromptTemplate, TenantAiSetting, SchedulingSetting,
-  Material, Contact, Group, Campaign, Draft, MessageTask, ArchiveItem, ArchiveDetail,
+  Material, ContentKeywordRule, Contact, Group, Campaign, Draft, MessageTask, ArchiveItem, ArchiveDetail,
   ArchiveExport, AuditLog, VerificationCode, AccountSyncRecord, VerificationTask,
   AccountCloneItem, AccountClonePlan, AccountGroup, ProfileSyncRecord,
   AccountDetail, AccountPoolDetail, GroupDetail, CampaignDetail, RecommendedAccount, Tenant,
@@ -60,6 +62,20 @@ export interface AppState {
   setDeveloperApps: (apps: DeveloperApp[]) => void;
   tenants: Tenant[];
   setTenants: (tenants: Tenant[]) => void;
+  subscriptionPlans: SubscriptionPlan[];
+  setSubscriptionPlans: (plans: SubscriptionPlan[]) => void;
+  subscriptionPlanForm: SubscriptionPlanForm;
+  setSubscriptionPlanForm: React.Dispatch<React.SetStateAction<SubscriptionPlanForm>>;
+  adminUsers: AdminUser[];
+  setAdminUsers: (users: AdminUser[]) => void;
+  selectedAdminUserId: number | null;
+  setSelectedAdminUserId: (id: number | null) => void;
+  selectedUserTokenLedgers: TokenLedger[];
+  setSelectedUserTokenLedgers: (ledgers: TokenLedger[]) => void;
+  adminUserForm: AdminUserForm;
+  setAdminUserForm: React.Dispatch<React.SetStateAction<AdminUserForm>>;
+  tokenAdjustmentForm: { delta_tokens: number; reason: string };
+  setTokenAdjustmentForm: React.Dispatch<React.SetStateAction<{ delta_tokens: number; reason: string }>>;
 
   // Activation & Usage
   activationCodes: ActivationCode[];
@@ -88,6 +104,8 @@ export interface AppState {
   setSchedulingSetting: (setting: SchedulingSetting | null) => void;
   materials: Material[];
   setMaterials: (materials: Material[]) => void;
+  contentKeywordRules: ContentKeywordRule[];
+  setContentKeywordRules: (rules: ContentKeywordRule[]) => void;
 
   // Groups & Campaigns
   groups: Group[];
@@ -140,8 +158,8 @@ export interface AppState {
   setDraftEditForm: (form: { content: string; risk_level: string; suggested_account_id: number | '' }) => void;
 
   // Account forms
-  accountCreateForm: { display_name: string; username: string; phone_number: string; pool_id: number | '' };
-  setAccountCreateForm: (form: { display_name: string; username: string; phone_number: string; pool_id: number | '' }) => void;
+  accountCreateForm: { display_name: string; username: string; phone_number: string; pool_id: number | ''; login_method: 'code' | 'qr' };
+  setAccountCreateForm: (form: { display_name: string; username: string; phone_number: string; pool_id: number | ''; login_method: 'code' | 'qr' }) => void;
   accountPoolForm: { name: string; description: string; is_default: boolean };
   setAccountPoolForm: (form: { name: string; description: string; is_default: boolean }) => void;
   cloneForm: { target_account_ids: number[]; clone_contacts: boolean; clone_groups: boolean };
@@ -162,6 +180,10 @@ export interface AppState {
   setCampaignStep: (step: number) => void;
   selectedTargetGroupIds: number[];
   setSelectedTargetGroupIds: (ids: number[]) => void;
+  selectedSourceGroupIds: number[];
+  setSelectedSourceGroupIds: (ids: number[]) => void;
+  campaignMode: string;
+  setCampaignMode: (mode: string) => void;
   recommendedAccounts: RecommendedAccount[];
   setRecommendedAccounts: (accounts: RecommendedAccount[]) => void;
   selectedAccountsByGroup: Record<string, number[]>;
@@ -188,6 +210,20 @@ export interface AppState {
   setBatchIntervalSeconds: (seconds: number) => void;
   respectSendWindow: boolean;
   setRespectSendWindow: (respect: boolean) => void;
+  campaignEndsAt: string;
+  setCampaignEndsAt: (value: string) => void;
+  maxAiTokens: number;
+  setMaxAiTokens: (tokens: number) => void;
+  runIntervalSeconds: number;
+  setRunIntervalSeconds: (seconds: number) => void;
+  participationMinRatio: number;
+  setParticipationMinRatio: (value: number) => void;
+  participationMaxRatio: number;
+  setParticipationMaxRatio: (value: number) => void;
+  maxMessagesPerAccount: number;
+  setMaxMessagesPerAccount: (value: number) => void;
+  maxDraftsPerBatch: number;
+  setMaxDraftsPerBatch: (value: number) => void;
   taskStatusFilter: string;
   setTaskStatusFilter: (filter: string) => void;
   groupPolicy: {
@@ -232,6 +268,8 @@ export interface AppState {
   setPromptTemplateForm: (form: { name: string; template_type: string; content: string }) => void;
   materialForm: { title: string; material_type: string; content: string; tags: string };
   setMaterialForm: (form: { title: string; material_type: string; content: string; tags: string }) => void;
+  keywordRuleForm: { id: number | null; keyword: string; match_type: string; is_active: boolean; note: string };
+  setKeywordRuleForm: (form: { id: number | null; keyword: string; match_type: string; is_active: boolean; note: string }) => void;
 
   // Modal & Dialog
   modal: ModalState;
@@ -293,6 +331,7 @@ export interface AppState {
   openAccountProfileEdit: () => void;
   pollVerificationCodes: () => Promise<void>;
   toggleTargetGroup: (groupId: number) => void;
+  toggleSourceGroup: (groupId: number) => void;
   recommendAccounts: (groupIds?: number[]) => Promise<void>;
   toggleRecommendedAccount: (groupId: number, accountId: number) => void;
   setGroupAccountsSelected: (groupId: number, accountIds: number[]) => void;
@@ -314,9 +353,11 @@ export interface AppState {
   submitAccountLoginCode: () => Promise<void>;
   submitAccountLoginPassword: () => Promise<void>;
   resendAccountLoginCode: () => Promise<void>;
+  checkAccountQrLogin: () => Promise<void>;
   healthCheck: (account: Account) => Promise<void>;
   syncAccountGroups: (account: Account) => Promise<void>;
   createCampaignAndDrafts: () => Promise<void>;
+  cancelCampaign: (campaign: Campaign) => Promise<void>;
   approveDraft: (draft: Draft) => Promise<void>;
   rejectDraft: (draft: Draft) => Promise<void>;
   approveAllDrafts: () => Promise<void>;
@@ -335,6 +376,14 @@ export interface AppState {
   checkDeveloperApp: (app: DeveloperApp) => Promise<void>;
   openTenantEdit: (tenant: Tenant) => void;
   saveTenantQuota: () => Promise<void>;
+  createSubscriptionPlan: () => Promise<void>;
+  openSubscriptionPlanEdit: (plan: SubscriptionPlan) => void;
+  saveSubscriptionPlan: () => Promise<void>;
+  openAdminUserEdit: (user: AdminUser) => void;
+  saveAdminUser: () => Promise<void>;
+  resetAdminUserPassword: (user: AdminUser, newPassword: string) => Promise<void>;
+  adjustAdminUserTokens: (user: AdminUser) => Promise<void>;
+  loadUserTokenLedgers: (userId: number) => Promise<void>;
   createAiProvider: () => Promise<void>;
   openAiProviderEdit: (provider: AiProvider) => void;
   toggleAiProvider: (provider: AiProvider) => Promise<void>;
@@ -343,6 +392,9 @@ export interface AppState {
   saveSchedulingSetting: () => Promise<void>;
   createPromptTemplate: () => Promise<void>;
   createMaterial: () => Promise<void>;
+  createContentKeywordRule: () => Promise<void>;
+  openContentKeywordRuleEdit: (rule: ContentKeywordRule) => void;
+  saveContentKeywordRule: () => Promise<void>;
   toggleMaterial: (materialId: number) => void;
   accountName: (accountId: number | null | undefined) => string;
   groupName: (groupId: number | null | undefined) => string;

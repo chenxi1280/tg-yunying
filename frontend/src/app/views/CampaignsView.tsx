@@ -30,6 +30,7 @@ interface Props {
   setTaskStatusFilter: (filter: string) => void;
   setSelectedCampaignId: (id: number | null) => void;
   onCreateCampaign: () => void;
+  onCancelCampaign: (campaign: Campaign) => void;
   onApproveDraft: (draft: Draft) => void;
   onApproveAllDrafts: () => void;
   onDispatchTask: (task: MessageTask) => void;
@@ -39,6 +40,7 @@ interface Props {
     title: string;
     message: string;
     confirmLabel: string;
+    tone?: 'normal' | 'danger';
     onConfirm: () => void | Promise<void>;
   }) => void;
   groupName: (groupId: number | null | undefined) => string;
@@ -61,6 +63,7 @@ export default function CampaignsView({
   setTaskStatusFilter,
   setSelectedCampaignId,
   onCreateCampaign,
+  onCancelCampaign,
   onApproveDraft,
   onApproveAllDrafts,
   onDispatchTask,
@@ -129,14 +132,30 @@ export default function CampaignsView({
             const campaignDrafts = drafts.filter((draft) => draft.campaign_id === campaign.id);
             const campaignTasks = tasks.filter((task) => task.campaign_id === campaign.id);
             const targetCount = campaign.target_group_ids ? campaign.target_group_ids.split(',').filter(Boolean).length : 1;
+            const sourceCount = campaign.source_group_ids ? campaign.source_group_ids.split(',').filter(Boolean).length : 0;
+            const modeLabel = campaign.execution_mode === 'mirror_forward' ? '监听转发' : campaign.execution_mode === 'ai_activity' ? 'AI 活跃' : '一次性草稿';
             return (
               <Card className={`task-card selectable-card ${selectedCampaign?.id === campaign.id ? 'selected' : ''} ${statusAccent(campaign.status)}`} key={campaign.id} size="small" onClick={() => setSelectedCampaignId(campaign.id)}>
                 <StatusBadge status={campaign.status} />
                 <Typography.Title level={3}>{campaign.title}</Typography.Title>
                 <Typography.Paragraph>{campaign.topic}</Typography.Paragraph>
-                <Typography.Text type="secondary">{campaign.campaign_type} / {campaign.intensity} / {campaign.send_window}</Typography.Text>
-                <Typography.Text type="secondary">目标群 {targetCount} 个 / 草稿 {campaignDrafts.length} 条 / 发送明细 {campaignTasks.length} 条</Typography.Text>
+                <Typography.Text type="secondary">{modeLabel} / {campaign.intensity} / {campaign.send_window}</Typography.Text>
+                <Typography.Text type="secondary">目标群 {targetCount} 个{sourceCount ? ` / 源群 ${sourceCount} 个` : ''} / 草稿 {campaignDrafts.length} 条 / 发送明细 {campaignTasks.length} 条</Typography.Text>
+                {campaign.execution_mode !== 'manual_draft' && <Typography.Text type="secondary">结束 {campaign.ends_at ? new Date(campaign.ends_at).toLocaleString() : '未设置'} / Token {campaign.used_ai_tokens}{campaign.max_ai_tokens ? `/${campaign.max_ai_tokens}` : ''} / 过滤 {campaign.filtered_count}</Typography.Text>}
+                {campaign.last_error && <Typography.Text type="danger">{campaign.last_error}</Typography.Text>}
                 <Space><StatusBadge status="已发送" label={`已发送 ${campaignTasks.filter((task) => task.status === '已发送').length}`} /> <StatusBadge status={campaignTasks.some((task) => task.status === '失败') ? '失败' : '无失败'} label={`失败 ${campaignTasks.filter((task) => task.status === '失败').length}`} /></Space>
+                {campaign.execution_mode !== 'manual_draft' && !['已完成', '已取消'].includes(campaign.status) && (
+                  <Button size="small" danger onClick={(event) => {
+                    event.stopPropagation();
+                    onOpenConfirm({
+                      title: '取消持续任务',
+                      message: `确认停止「${campaign.title}」后续运行？`,
+                      confirmLabel: '取消任务',
+                      tone: 'danger',
+                      onConfirm: () => onCancelCampaign(campaign),
+                    });
+                  }}>停止运行</Button>
+                )}
               </Card>
             );
           })}

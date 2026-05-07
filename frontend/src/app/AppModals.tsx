@@ -16,6 +16,8 @@ export function AppModals() {
     aiProviderForm, setAiProviderForm, createAiProvider,
     // Tenant
     tenantForm, setTenantForm, saveTenantQuota,
+    subscriptionPlanForm, setSubscriptionPlanForm, createSubscriptionPlan,
+    adminUserForm, setAdminUserForm, saveAdminUser, tokenAdjustmentForm, setTokenAdjustmentForm, adminUsers, selectedUserTokenLedgers, adjustAdminUserTokens, resetAdminUserPassword,
     // Tenant AI
     tenantAiSetting, setTenantAiSetting, selectedAiProviderId, setSelectedAiProviderId, aiProviders, saveTenantAiSetting,
     // Scheduling
@@ -23,17 +25,17 @@ export function AppModals() {
     // Prompt Template
     promptTemplateForm, setPromptTemplateForm, createPromptTemplate,
     // Material
-    materialForm, setMaterialForm, createMaterial,
+    materialForm, setMaterialForm, createMaterial, keywordRuleForm, setKeywordRuleForm, createContentKeywordRule, saveContentKeywordRule,
     // Account Pool
     accountPoolForm, setAccountPoolForm, createAccountPool, accountPoolDetail, poolDirectAccountId, setPoolDirectAccountId, refreshAccountPoolDetail,
     // Account
-    accountCreateForm, setAccountCreateForm, createAccount, loginAfterCreate, accountLoginForm, setAccountLoginForm, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, accountPools, accounts, accountDetail, setAccountDetailTab, accountDetailTab, runtime, cloneForm, setCloneForm, createClonePlan, confirmClonePlan, moveCurrentAccountPool,
+    accountCreateForm, setAccountCreateForm, createAccount, loginAfterCreate, accountLoginForm, setAccountLoginForm, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, checkAccountQrLogin, accountPools, accounts, accountDetail, setAccountDetailTab, accountDetailTab, runtime, cloneForm, setCloneForm, createClonePlan, confirmClonePlan, moveCurrentAccountPool,
     // Profile
     profileForm, setProfileForm, avatarFile, setAvatarFile, avatarUrl, saveAccountProfile, openAccountProfileEdit, queueAccountSyncNow, pollVerificationCodes, retryAccountProfileSync,
     // Group
     selectedGroup, groupPolicy, setGroupPolicy, saveGroupPolicy, groupDetail,
     // Campaign
-    groups, campaigns, materials, campaignStep, setCampaignStep, selectedTargetGroupIds, recommendedAccounts, selectedAccountsByGroup, targetGroupsMissingAccounts, topic, setTopic, sendWindow, setSendWindow, intensity, setIntensity, draftCount, setDraftCount, tone, setTone, selectedMaterialIds, toggleTargetGroup, goCampaignAccountStep, goCampaignContentStep, toggleRecommendedAccount, setGroupAccountsSelected, toggleMaterial, createCampaignAndDrafts, selectedCampaignId, setSelectedCampaignId,
+    groups, campaigns, materials, campaignStep, setCampaignStep, campaignMode, setCampaignMode, selectedTargetGroupIds, selectedSourceGroupIds, recommendedAccounts, selectedAccountsByGroup, targetGroupsMissingAccounts, topic, setTopic, sendWindow, setSendWindow, intensity, setIntensity, draftCount, setDraftCount, tone, setTone, selectedMaterialIds, toggleTargetGroup, toggleSourceGroup, goCampaignAccountStep, goCampaignContentStep, toggleRecommendedAccount, setGroupAccountsSelected, toggleMaterial, createCampaignAndDrafts, selectedCampaignId, setSelectedCampaignId, campaignEndsAt, setCampaignEndsAt, maxAiTokens, setMaxAiTokens, runIntervalSeconds, setRunIntervalSeconds, participationMinRatio, setParticipationMinRatio, participationMaxRatio, setParticipationMaxRatio, maxMessagesPerAccount, setMaxMessagesPerAccount, maxDraftsPerBatch, setMaxDraftsPerBatch,
     // Draft
     draftEditTarget, draftEditForm, setDraftEditForm, saveDraftEdit,
     // Verification
@@ -86,6 +88,78 @@ export function AppModals() {
             <label>任务配额<InputNumber min={0} value={tenantForm.task_quota} onChange={(value) => setTenantForm({ ...tenantForm, task_quota: Number(value ?? 0) })} /></label>
           </div>
           <FormActions submitLabel="保存配额" onCancel={closeModal} onSubmit={saveTenantQuota} disabled={!tenantForm.name || !tenantForm.plan_name} />
+        </Modal>
+      )}
+
+      {(modal?.type === 'subscriptionPlanCreate' || modal?.type === 'subscriptionPlanEdit') && (
+        <Modal title={modal.type === 'subscriptionPlanEdit' ? '编辑套餐' : '新增套餐'} size="medium" onClose={closeModal}>
+          <div className="policy-grid">
+            <label>套餐标识<Input disabled={modal.type === 'subscriptionPlanEdit'} value={subscriptionPlanForm.plan_type} onChange={(event) => setSubscriptionPlanForm((current) => ({ ...current, plan_type: event.target.value.trim().toLowerCase() }))} placeholder="monthly" /></label>
+            <label>套餐名称<Input value={subscriptionPlanForm.name} onChange={(event) => setSubscriptionPlanForm((current) => ({ ...current, name: event.target.value }))} /></label>
+            <label>有效天数<InputNumber min={1} value={subscriptionPlanForm.duration_days} onChange={(value) => setSubscriptionPlanForm((current) => ({ ...current, duration_days: Number(value ?? 1) }))} /></label>
+            <label>赠送 Token<InputNumber min={0} value={subscriptionPlanForm.token_quota} onChange={(value) => setSubscriptionPlanForm((current) => ({ ...current, token_quota: Number(value ?? 0) }))} /></label>
+            <label className="wide-field">备注<Input value={subscriptionPlanForm.note} onChange={(event) => setSubscriptionPlanForm((current) => ({ ...current, note: event.target.value }))} /></label>
+            <Checkbox checked={subscriptionPlanForm.is_active} onChange={(event) => setSubscriptionPlanForm((current) => ({ ...current, is_active: event.target.checked }))}>启用套餐</Checkbox>
+          </div>
+          <FormActions submitLabel="保存套餐" onCancel={closeModal} onSubmit={createSubscriptionPlan} disabled={!subscriptionPlanForm.plan_type.trim() || !subscriptionPlanForm.name.trim()} />
+        </Modal>
+      )}
+
+      {modal?.type === 'adminUserEdit' && (
+        <Modal title="用户管理" size="large" onClose={closeModal}>
+          <div className="policy-grid">
+            <label>用户名称<Input value={adminUserForm.name} onChange={(event) => setAdminUserForm((current) => ({ ...current, name: event.target.value }))} /></label>
+            <label>邮箱<Input value={adminUserForm.email} onChange={(event) => setAdminUserForm((current) => ({ ...current, email: event.target.value }))} /></label>
+            <label>手机号<Input value={adminUserForm.phone} onChange={(event) => setAdminUserForm((current) => ({ ...current, phone: event.target.value }))} /></label>
+            <label>角色<Select value={adminUserForm.role} onChange={(value) => setAdminUserForm((current) => ({ ...current, role: value }))} options={['普通用户', '系统管理员'].map((value) => ({ value, label: value }))} /></label>
+            <label>订阅状态<Select value={adminUserForm.subscription_status} onChange={(value) => setAdminUserForm((current) => ({ ...current, subscription_status: value }))} options={[{ value: 'pending_activation', label: '待激活' }, { value: 'active', label: '已激活' }, { value: 'expired', label: '已过期' }]} /></label>
+            <Checkbox checked={adminUserForm.is_active} onChange={(event) => setAdminUserForm((current) => ({ ...current, is_active: event.target.checked }))}>允许登录</Checkbox>
+            <div className="wide-field">
+              <span className="field-label">可见菜单</span>
+              <div className="choice-grid">
+                {[
+                  ['overview', '运营概览'],
+                  ['accounts', '账号管理'],
+                  ['taskManagement', '任务管理'],
+                  ['groupManagement', '群聊管理'],
+                  ['usageReports', '用户用量'],
+                  ['audits', '审计安全'],
+                ].map(([value, label]) => (
+                  <Checkbox
+                    key={value}
+                    checked={adminUserForm.menu_permissions.includes(value)}
+                    onChange={(event) => {
+                      const next = event.target.checked
+                        ? [...adminUserForm.menu_permissions, value]
+                        : adminUserForm.menu_permissions.filter((item) => item !== value);
+                      setAdminUserForm((current) => ({ ...current, menu_permissions: Array.from(new Set(next)) }));
+                    }}
+                  >
+                    {label}
+                  </Checkbox>
+                ))}
+              </div>
+            </div>
+            <label>Token 调整<InputNumber value={tokenAdjustmentForm.delta_tokens} onChange={(value) => setTokenAdjustmentForm((current) => ({ ...current, delta_tokens: Number(value ?? 0) }))} /></label>
+            <label>调整原因<Input value={tokenAdjustmentForm.reason} onChange={(event) => setTokenAdjustmentForm((current) => ({ ...current, reason: event.target.value }))} /></label>
+          </div>
+          <div className="mini-list">
+            {selectedUserTokenLedgers.slice(0, 5).map((ledger) => (
+              <p key={ledger.id} className="muted-line">{ledger.created_at.replace('T', ' ').slice(0, 16)} / {ledger.change_type} / {ledger.delta_tokens} / 余额 {ledger.balance_after}</p>
+            ))}
+          </div>
+          <Space className="modal-actions">
+            <Button onClick={closeModal}>取消</Button>
+            <Button onClick={() => {
+              const user = adminUsers.find((item) => item.id === adminUserForm.id);
+              if (user) void resetAdminUserPassword(user, 'user123456');
+            }}>重置密码</Button>
+            <Button onClick={() => {
+              const user = adminUsers.find((item) => item.id === adminUserForm.id);
+              if (user) void adjustAdminUserTokens(user);
+            }}>调整 Token</Button>
+            <Button type="primary" onClick={saveAdminUser} disabled={!adminUserForm.name.trim() || !adminUserForm.email.trim()}>保存用户</Button>
+          </Space>
         </Modal>
       )}
 
@@ -148,31 +222,44 @@ export function AppModals() {
         </Modal>
       )}
 
+      {(modal?.type === 'keywordRuleCreate' || modal?.type === 'keywordRuleEdit') && (
+        <Modal title={modal.type === 'keywordRuleEdit' ? '编辑关键词' : '新增关键词'} size="medium" onClose={closeModal}>
+          <div className="policy-grid">
+            <label>关键词<Input value={keywordRuleForm.keyword} onChange={(event) => setKeywordRuleForm({ ...keywordRuleForm, keyword: event.target.value })} /></label>
+            <label>匹配方式<Select value={keywordRuleForm.match_type} onChange={(value) => setKeywordRuleForm({ ...keywordRuleForm, match_type: value })} options={[{ value: 'contains', label: '包含' }]} /></label>
+            <label className="wide-field">备注<Input value={keywordRuleForm.note} onChange={(event) => setKeywordRuleForm({ ...keywordRuleForm, note: event.target.value })} /></label>
+            <Checkbox checked={keywordRuleForm.is_active} onChange={(event) => setKeywordRuleForm({ ...keywordRuleForm, is_active: event.target.checked })}>启用关键词</Checkbox>
+          </div>
+          <FormActions submitLabel={modal.type === 'keywordRuleEdit' ? '保存关键词' : '新增关键词'} onCancel={closeModal} onSubmit={modal.type === 'keywordRuleEdit' ? saveContentKeywordRule : createContentKeywordRule} disabled={!keywordRuleForm.keyword.trim()} />
+        </Modal>
+      )}
+
       {modal?.type === 'accountPoolDetail' && accountPoolDetail && (
         <AccountPoolDetailModal accountPoolDetail={accountPoolDetail} poolDirectAccountId={poolDirectAccountId} setPoolDirectAccountId={setPoolDirectAccountId} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} onClose={closeModal} onOpenAccountCreate={openAccountCreate} onOpenAccountDetail={openAccountDetail} onRefreshAccountPoolDetail={refreshAccountPoolDetail} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} accountName={accountName} />
       )}
 
       {modal?.type === 'accountPoolCreate' && (
-        <Modal title="新增账号池" size="medium" onClose={closeModal}>
+        <Modal title="新增账号分组" size="medium" onClose={closeModal}>
           <div className="policy-grid">
-            <label>账号池名称<Input value={accountPoolForm.name} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, name: event.target.value })} /></label>
-            <Checkbox checked={accountPoolForm.is_default} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, is_default: event.target.checked })}>设为默认账号池</Checkbox>
+            <label>账号分组名称<Input value={accountPoolForm.name} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, name: event.target.value })} /></label>
+            <Checkbox checked={accountPoolForm.is_default} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, is_default: event.target.checked })}>设为默认账号分组</Checkbox>
             <label className="wide-field">说明<Input.TextArea value={accountPoolForm.description} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, description: event.target.value })} /></label>
           </div>
-          <FormActions submitLabel="新增账号池" onCancel={closeModal} onSubmit={createAccountPool} disabled={!accountPoolForm.name.trim()} />
+          <FormActions submitLabel="新增账号分组" onCancel={closeModal} onSubmit={createAccountPool} disabled={!accountPoolForm.name.trim()} />
         </Modal>
       )}
 
       {modal?.type === 'accountCreate' && (
-        <Modal title={loginAfterCreate ? '新增登录账号' : '新增账号'} size="medium" onClose={closeModal}>
+        <Modal title="新增账号" size="medium" onClose={closeModal}>
           <div className="policy-grid">
-            <label>所属账号池<Select value={accountCreateForm.pool_id || ''} onChange={(value) => setAccountCreateForm({ ...accountCreateForm, pool_id: Number(value) || '' })} options={[{ value: '', label: '默认账号池' }, ...accountPools.map((pool) => ({ value: pool.id, label: pool.name }))]} /></label>
+            <label>所属账号分组<Select value={accountCreateForm.pool_id || ''} onChange={(value) => setAccountCreateForm({ ...accountCreateForm, pool_id: Number(value) || '' })} options={[{ value: '', label: '默认账号分组' }, ...accountPools.map((pool) => ({ value: pool.id, label: pool.name }))]} /></label>
+            <label>登录方式<Select value={accountCreateForm.login_method} onChange={(value) => setAccountCreateForm({ ...accountCreateForm, login_method: value as 'code' | 'qr' })} options={[{ value: 'code', label: '手机号验证码' }, { value: 'qr', label: '二维码扫码' }]} /></label>
             <label>平台备注名<Input value={accountCreateForm.display_name} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, display_name: event.target.value })} /></label>
             <label>TG 用户名<Input value={accountCreateForm.username} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, username: event.target.value })} placeholder="可选，不含 @" /></label>
             <label className="wide-field">手机号<Input value={accountCreateForm.phone_number} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, phone_number: event.target.value })} placeholder="+8613800000000" /></label>
           </div>
-          <p className="muted-line">{loginAfterCreate ? '创建后会直接发送登录验证码，并在这里完成验证码和二步密码验证。' : '添加后会继续留在弹窗内完成手机号验证码登录。'}</p>
-          <FormActions submitLabel={loginAfterCreate ? '创建并登录' : '添加账号'} onCancel={closeModal} onSubmit={createAccount} disabled={!accountCreateForm.display_name.trim() || !accountCreateForm.phone_number.trim()} />
+          <p className="muted-line">创建后会进入所选登录方式；验证码和扫码是同级二选一流程。</p>
+          <FormActions submitLabel="创建账号" onCancel={closeModal} onSubmit={createAccount} disabled={!accountCreateForm.display_name.trim() || !accountCreateForm.phone_number.trim()} />
         </Modal>
       )}
 
@@ -181,9 +268,23 @@ export function AppModals() {
           <div className="detail-list">
             <div><dt>账号</dt><dd>{accountLoginForm.account.phone_masked}</dd></div>
             <div><dt>当前状态</dt><dd><StatusBadge status={accountLoginForm.account.status} /></dd></div>
-            <div><dt>登录方式</dt><dd>手机号验证码</dd></div>
+            <div><dt>登录方式</dt><dd>{accountLoginForm.method === 'qr' ? '二维码扫码' : '手机号验证码'}</dd></div>
             {accountLoginForm.flow?.code_expires_at && <div><dt>验证码有效期</dt><dd>{new Date(accountLoginForm.flow.code_expires_at).toLocaleTimeString()}</dd></div>}
           </div>
+          {accountLoginForm.step === 'qr' && (
+            <>
+              <div className="policy-grid">
+                <label className="wide-field">扫码 payload
+                  <Input.TextArea value={accountLoginForm.flow?.qr_payload ?? ''} readOnly autoSize={{ minRows: 4, maxRows: 8 }} placeholder="二维码 payload 将在启动扫码登录后展示" />
+                </label>
+              </div>
+              {accountLoginForm.error && <p className="danger-text">{accountLoginForm.error}</p>}
+              <Space className="modal-actions">
+                <Button onClick={resendAccountLoginCode} disabled={Boolean(busy)}>改用验证码</Button>
+                <Button type="primary" onClick={checkAccountQrLogin} disabled={Boolean(busy)}>检查扫码结果</Button>
+              </Space>
+            </>
+          )}
           {accountLoginForm.step === 'code' && (
             <>
               <div className="policy-grid">
@@ -199,7 +300,7 @@ export function AppModals() {
               {accountLoginForm.flow?.code_preview && <p className="muted-line">开发模式验证码：{accountLoginForm.flow.code_preview}</p>}
               {accountLoginForm.error && <p className="danger-text">{accountLoginForm.error}</p>}
               <Space className="modal-actions">
-                <Button onClick={resendAccountLoginCode} disabled={Boolean(busy)}>重新发送验证码</Button>
+                <Button onClick={resendAccountLoginCode} disabled={Boolean(busy)}>{accountLoginForm.flow ? '重新发送验证码' : '获取验证码'}</Button>
                 <Button type="primary" onClick={submitAccountLoginCode} disabled={Boolean(busy) || !accountLoginForm.code.trim()}>提交验证码</Button>
               </Space>
             </>
@@ -227,9 +328,9 @@ export function AppModals() {
       )}
 
       {modal?.type === 'accountMovePool' && accountDetail && (
-        <Modal title="移动账号池" size="small" onClose={() => ctx.setModal({ type: 'accountDetail' })}>
+        <Modal title="移动账号分组" size="small" onClose={() => ctx.setModal({ type: 'accountDetail' })}>
           <div className="policy-grid">
-            <label>目标账号池<Select value={accountDetail.account.pool_id ?? ''} onChange={(value) => moveCurrentAccountPool(Number(value))} options={accountPools.map((pool) => ({ value: pool.id, label: pool.name }))} /></label>
+            <label>目标账号分组<Select value={accountDetail.account.pool_id ?? ''} onChange={(value) => moveCurrentAccountPool(Number(value))} options={accountPools.map((pool) => ({ value: pool.id, label: pool.name }))} /></label>
           </div>
           <Space className="modal-actions"><Button onClick={() => ctx.setModal({ type: 'accountDetail' })}>返回</Button></Space>
         </Modal>
@@ -348,7 +449,7 @@ export function AppModals() {
       )}
 
       {modal?.type === 'campaignCreate' && (
-        <CampaignWizard groups={groups} aiProviders={aiProviders} materials={materials} campaignStep={campaignStep} setCampaignStep={setCampaignStep} selectedTargetGroupIds={selectedTargetGroupIds} recommendedAccounts={recommendedAccounts} selectedAccountsByGroup={selectedAccountsByGroup} targetGroupsMissingAccounts={targetGroupsMissingAccounts} topic={topic} setTopic={setTopic} sendWindow={sendWindow} setSendWindow={setSendWindow} intensity={intensity} setIntensity={setIntensity} draftCount={draftCount} setDraftCount={setDraftCount} tone={tone} setTone={setTone} selectedAiProviderId={selectedAiProviderId} setSelectedAiProviderId={setSelectedAiProviderId} selectedMaterialIds={selectedMaterialIds} jitterMinSeconds={jitterMinSeconds} setJitterMinSeconds={setJitterMinSeconds} jitterMaxSeconds={jitterMaxSeconds} setJitterMaxSeconds={setJitterMaxSeconds} batchIntervalSeconds={batchIntervalSeconds} setBatchIntervalSeconds={setBatchIntervalSeconds} respectSendWindow={respectSendWindow} setRespectSendWindow={setRespectSendWindow} onClose={closeModal} onToggleTargetGroup={toggleTargetGroup} onGoAccountStep={goCampaignAccountStep} onGoContentStep={goCampaignContentStep} onToggleRecommendedAccount={toggleRecommendedAccount} onSetGroupAccountsSelected={setGroupAccountsSelected} onToggleMaterial={toggleMaterial} onCreateCampaignAndDrafts={createCampaignAndDrafts} groupName={groupName} />
+        <CampaignWizard groups={groups} aiProviders={aiProviders} materials={materials} campaignStep={campaignStep} setCampaignStep={setCampaignStep} campaignMode={campaignMode} setCampaignMode={setCampaignMode} selectedTargetGroupIds={selectedTargetGroupIds} selectedSourceGroupIds={selectedSourceGroupIds} recommendedAccounts={recommendedAccounts} selectedAccountsByGroup={selectedAccountsByGroup} targetGroupsMissingAccounts={targetGroupsMissingAccounts} topic={topic} setTopic={setTopic} sendWindow={sendWindow} setSendWindow={setSendWindow} intensity={intensity} setIntensity={setIntensity} draftCount={draftCount} setDraftCount={setDraftCount} tone={tone} setTone={setTone} selectedAiProviderId={selectedAiProviderId} setSelectedAiProviderId={setSelectedAiProviderId} selectedMaterialIds={selectedMaterialIds} jitterMinSeconds={jitterMinSeconds} setJitterMinSeconds={setJitterMinSeconds} jitterMaxSeconds={jitterMaxSeconds} setJitterMaxSeconds={setJitterMaxSeconds} batchIntervalSeconds={batchIntervalSeconds} setBatchIntervalSeconds={setBatchIntervalSeconds} respectSendWindow={respectSendWindow} setRespectSendWindow={setRespectSendWindow} campaignEndsAt={campaignEndsAt} setCampaignEndsAt={setCampaignEndsAt} maxAiTokens={maxAiTokens} setMaxAiTokens={setMaxAiTokens} runIntervalSeconds={runIntervalSeconds} setRunIntervalSeconds={setRunIntervalSeconds} participationMinRatio={participationMinRatio} setParticipationMinRatio={setParticipationMinRatio} participationMaxRatio={participationMaxRatio} setParticipationMaxRatio={setParticipationMaxRatio} maxMessagesPerAccount={maxMessagesPerAccount} setMaxMessagesPerAccount={setMaxMessagesPerAccount} maxDraftsPerBatch={maxDraftsPerBatch} setMaxDraftsPerBatch={setMaxDraftsPerBatch} onClose={closeModal} onToggleTargetGroup={toggleTargetGroup} onToggleSourceGroup={toggleSourceGroup} onGoAccountStep={goCampaignAccountStep} onGoContentStep={goCampaignContentStep} onToggleRecommendedAccount={toggleRecommendedAccount} onSetGroupAccountsSelected={setGroupAccountsSelected} onToggleMaterial={toggleMaterial} onCreateCampaignAndDrafts={createCampaignAndDrafts} groupName={groupName} />
       )}
 
       {modal?.type === 'confirmAction' && <ConfirmDialog payload={modal.payload} onClose={closeModal} />}

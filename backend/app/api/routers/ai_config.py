@@ -10,20 +10,21 @@ from sqlalchemy.orm import Session
 from app.auth import CurrentUser, get_current_user, require_core_feature_access, resolve_tenant_id
 from app.database import get_session
 from app.common.http import forbidden, not_found
-from app.models import Material, PromptTemplate, SchedulingSetting, TenantAiSetting
+from app.models import ContentKeywordRule, Material, PromptTemplate, SchedulingSetting, TenantAiSetting
 from app.repositories.tenant import require_resource_tenant
 from app.schemas import (
     AiProviderCreate, AiProviderOut, AiProviderUpdate,
+    ContentKeywordRuleCreate, ContentKeywordRuleOut, ContentKeywordRuleUpdate,
     MaterialCreate, MaterialOut, MaterialUpdate,
     PromptTemplateCreate, PromptTemplateOut, PromptTemplateUpdate,
     SchedulingSettingOut, SchedulingSettingUpdate,
     TenantAiSettingOut, TenantAiSettingUpdate,
 )
 from app.services import (
-    check_ai_provider, create_ai_provider, create_material, create_prompt_template,
+    check_ai_provider, create_ai_provider, create_content_keyword_rule, create_material, create_prompt_template,
     get_scheduling_setting, get_tenant_ai_setting,
-    list_ai_providers, list_materials, list_prompt_templates,
-    update_ai_provider, update_material, update_prompt_template,
+    list_ai_providers, list_content_keyword_rules, list_materials, list_prompt_templates,
+    update_ai_provider, update_content_keyword_rule, update_material, update_prompt_template,
     update_scheduling_setting, update_tenant_ai_setting,
 )
 
@@ -203,5 +204,45 @@ def patch_material(
     try:
         require_resource_tenant(session, current_user, Material, material_id)
         return update_material(session, material_id, payload, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+# ── Content keyword rules ──
+
+@router.get("/api/content-keyword-rules", response_model=list[ContentKeywordRuleOut])
+def get_content_keyword_rules(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return list_content_keyword_rules(session, resolve_tenant_id(current_user, tenant_id))
+
+
+@router.post("/api/content-keyword-rules", response_model=ContentKeywordRuleOut)
+def post_content_keyword_rule(
+    payload: ContentKeywordRuleCreate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ContentKeywordRule:
+    require_core_feature_access(current_user)
+    tenant_id = resolve_tenant_id(current_user, payload.tenant_id)
+    try:
+        return create_content_keyword_rule(session, payload.model_copy(update={"tenant_id": tenant_id}), current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.patch("/api/content-keyword-rules/{rule_id}", response_model=ContentKeywordRuleOut)
+def patch_content_keyword_rule(
+    rule_id: int,
+    payload: ContentKeywordRuleUpdate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ContentKeywordRule:
+    require_core_feature_access(current_user)
+    try:
+        require_resource_tenant(session, current_user, ContentKeywordRule, rule_id)
+        return update_content_keyword_rule(session, rule_id, payload, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc

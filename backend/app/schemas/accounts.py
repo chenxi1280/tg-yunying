@@ -47,6 +47,7 @@ class TgAccountProfileUpdate(BaseModel):
 
 class LoginStartRequest(BaseModel):
     method: str = Field(pattern="^(code|qr)$")
+    force: bool = False
 
 
 class LoginVerifyRequest(BaseModel):

@@ -11,18 +11,22 @@ from app.models import (
     AiUsageLedger,
     AppUser,
     Campaign,
+    ContentKeywordRule,
     Material,
     PromptTemplate,
     SchedulingSetting,
     Tenant,
     TenantAiSetting,
     TgGroup,
+    UserTokenLedger,
 )
 from app.schemas import (
     AiProviderCreate,
     AiProviderUpdate,
     MaterialCreate,
     MaterialUpdate,
+    ContentKeywordRuleCreate,
+    ContentKeywordRuleUpdate,
     PromptTemplateCreate,
     PromptTemplateUpdate,
     SchedulingSettingUpdate,
@@ -358,6 +362,44 @@ def record_ai_usage(
     return ledger
 
 
+def require_ai_token_balance(session: Session, current_user: CurrentUser) -> None:
+    if current_user.is_platform_admin:
+        return
+    user = session.get(AppUser, current_user.id)
+    if not user or not user.is_active:
+        raise ValueError("user not found")
+    if user.token_balance <= 0:
+        raise ValueError("Token 余额不足，请先充值或兑换卡密后再使用 AI")
+
+
+def deduct_ai_usage_tokens(session: Session, current_user: CurrentUser, usage_ledger: AiUsageLedger) -> UserTokenLedger | None:
+    if current_user.is_platform_admin or usage_ledger.total_tokens <= 0:
+        return None
+    user = session.get(AppUser, current_user.id)
+    if not user or not user.is_active:
+        raise ValueError("user not found")
+    consumed = min(user.token_balance, usage_ledger.total_tokens)
+    if consumed <= 0:
+        raise ValueError("Token 余额不足，请先充值或兑换卡密后再使用 AI")
+    user.token_balance -= consumed
+    if usage_ledger.campaign_id:
+        campaign = session.get(Campaign, usage_ledger.campaign_id)
+        if campaign and hasattr(campaign, "used_ai_tokens"):
+            campaign.used_ai_tokens += usage_ledger.total_tokens
+    ledger = UserTokenLedger(
+        tenant_id=user.tenant_id,
+        user_id=user.id,
+        change_type="ai_usage",
+        delta_tokens=-consumed,
+        balance_after=user.token_balance,
+        related_ai_usage_ledger_id=usage_ledger.id,
+        reason=f"{usage_ledger.provider_name}/{usage_ledger.model_name} AI 调用消耗 {usage_ledger.total_tokens} tokens",
+        actor=current_user.name,
+    )
+    session.add(ledger)
+    return ledger
+
+
 def list_usage_ledgers(session: Session, *, user_id: int | None = None, campaign_id: int | None = None) -> list[AiUsageLedger]:
     stmt = select(AiUsageLedger).order_by(AiUsageLedger.id.desc())
     if user_id is not None:
@@ -423,22 +465,95 @@ def update_material(session: Session, material_id: int, payload: MaterialUpdate,
     return material
 
 
+def list_content_keyword_rules(session: Session, tenant_id: int) -> list[ContentKeywordRule]:
+    require_tenant(session, tenant_id)
+    return list(
+        session.scalars(
+            select(ContentKeywordRule)
+            .where(ContentKeywordRule.tenant_id == tenant_id)
+            .order_by(ContentKeywordRule.is_active.desc(), ContentKeywordRule.id.desc())
+        )
+    )
+
+
+def create_content_keyword_rule(session: Session, payload: ContentKeywordRuleCreate, actor: str) -> ContentKeywordRule:
+    require_tenant(session, payload.tenant_id)
+    keyword = payload.keyword.strip()
+    if not keyword:
+        raise ValueError("keyword is required")
+    exists = session.scalar(
+        select(ContentKeywordRule.id).where(
+            ContentKeywordRule.tenant_id == payload.tenant_id,
+            ContentKeywordRule.keyword == keyword,
+        )
+    )
+    if exists:
+        raise ValueError("keyword rule already exists")
+    rule = ContentKeywordRule(
+        tenant_id=payload.tenant_id,
+        keyword=keyword,
+        match_type=payload.match_type or "contains",
+        is_active=payload.is_active,
+        note=payload.note,
+    )
+    session.add(rule)
+    session.flush()
+    audit(session, tenant_id=rule.tenant_id, actor=actor, action="新增关键词规则", target_type="content_keyword_rule", target_id=str(rule.id))
+    session.commit()
+    session.refresh(rule)
+    return rule
+
+
+def update_content_keyword_rule(session: Session, rule_id: int, payload: ContentKeywordRuleUpdate, actor: str) -> ContentKeywordRule:
+    rule = session.get(ContentKeywordRule, rule_id)
+    if not rule:
+        raise ValueError("keyword rule not found")
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("keyword") is not None:
+        keyword = str(data["keyword"]).strip()
+        if not keyword:
+            raise ValueError("keyword is required")
+        duplicate = session.scalar(
+            select(ContentKeywordRule.id).where(
+                ContentKeywordRule.tenant_id == rule.tenant_id,
+                ContentKeywordRule.keyword == keyword,
+                ContentKeywordRule.id != rule.id,
+            )
+        )
+        if duplicate:
+            raise ValueError("keyword rule already exists")
+        rule.keyword = keyword
+    for field in ["match_type", "is_active", "note"]:
+        if field in data and data[field] is not None:
+            setattr(rule, field, data[field])
+    rule.updated_at = _now()
+    audit(session, tenant_id=rule.tenant_id, actor=actor, action="更新关键词规则", target_type="content_keyword_rule", target_id=str(rule.id))
+    session.commit()
+    session.refresh(rule)
+    return rule
+
+
 __all__ = [
     "ai_provider_credentials",
     "check_ai_provider",
     "create_ai_provider",
+    "create_content_keyword_rule",
     "create_material",
     "create_prompt_template",
     "get_scheduling_setting",
     "get_tenant_ai_setting",
     "list_ai_providers",
+    "list_content_keyword_rules",
     "list_materials",
     "list_prompt_templates",
     "list_usage_ledgers",
     "list_usage_summary",
     "record_ai_usage",
+    "require_ai_token_balance",
     "seed_ai_configuration",
+    "deduct_ai_usage_tokens",
     "update_ai_provider",
+    "update_content_keyword_rule",
     "update_material",
     "update_prompt_template",
     "update_scheduling_setting",

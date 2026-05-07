@@ -21,6 +21,7 @@ class ArchiveOut(ApiModel):
     id: int
     tenant_id: int
     group_id: int
+    collection_account_id: int | None = None
     title: str
     status: str
     sync_mode: str
@@ -29,12 +30,17 @@ class ArchiveOut(ApiModel):
     member_count: int
     summary: str
     new_group_plan: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    last_synced_at: datetime | None = None
     created_at: datetime
 
 
 class ArchivedMessageOut(ApiModel):
     id: int
     archive_id: int
+    sender_peer_id: str = ""
+    remote_message_id: str = ""
     sender_name: str
     content: str
     message_type: str
@@ -44,10 +50,12 @@ class ArchivedMessageOut(ApiModel):
 class ArchivedMemberOut(ApiModel):
     id: int
     archive_id: int
+    peer_id: str = ""
     display_name: str
     username: str | None
     activity_score: int
     tags: str
+    last_seen_at: datetime | None = None
 
 
 class ArchiveDetailOut(BaseModel):

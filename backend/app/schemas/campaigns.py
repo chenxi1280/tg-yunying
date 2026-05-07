@@ -13,6 +13,7 @@ class CampaignCreate(BaseModel):
     title: str
     campaign_type: str
     topic: str
+    execution_mode: str = "manual_draft"
     send_window: str = "10:00-22:00"
     intensity: str = "轻度"
     ai_provider_id: int | None = None
@@ -23,7 +24,15 @@ class CampaignCreate(BaseModel):
     respect_send_window: bool | None = None
     material_ids: str = ""
     target_group_ids: list[int] = Field(default_factory=list)
+    source_group_ids: list[int] = Field(default_factory=list)
     selected_account_ids_by_group: dict[str, list[int]] = Field(default_factory=dict)
+    run_interval_seconds: int = Field(default=300, ge=1)
+    ends_at: datetime | None = None
+    max_ai_tokens: int | None = Field(default=None, ge=1)
+    participation_min_ratio: float = Field(default=0.6, ge=0, le=1)
+    participation_max_ratio: float = Field(default=1.0, ge=0, le=1)
+    max_messages_per_account: int = Field(default=2, ge=1, le=10)
+    max_drafts_per_batch: int = Field(default=50, ge=1, le=50)
 
 
 class ConversationContextMessage(BaseModel):
@@ -34,12 +43,13 @@ class ConversationContextMessage(BaseModel):
 
 
 class GenerateDraftsRequest(BaseModel):
-    count: int = Field(default=4, ge=1, le=12)
+    count: int = Field(default=4, ge=1, le=50)
     tone: str = "自然、像真实群成员聊天"
     persona_set: list[str] = Field(default_factory=lambda: ["老用户", "新用户", "客服", "活跃成员"])
     use_ai: bool = True
     fallback_to_mock: bool = False
     selected_account_ids_by_group: dict[str, list[int]] = Field(default_factory=dict)
+    target_group_id: int | None = None
     listener_account_id: int | None = None
     conversation_context: list[ConversationContextMessage] = Field(default_factory=list)
 
@@ -86,6 +96,7 @@ class CampaignOut(ApiModel):
     title: str
     campaign_type: str
     topic: str
+    execution_mode: str = "manual_draft"
     send_window: str
     intensity: str
     ai_provider_id: int | None
@@ -96,7 +107,19 @@ class CampaignOut(ApiModel):
     respect_send_window: bool | None
     material_ids: str
     target_group_ids: str
+    source_group_ids: str = ""
     selected_account_ids_by_group: str
+    run_interval_seconds: int = 300
+    ends_at: datetime | None = None
+    max_ai_tokens: int | None = None
+    used_ai_tokens: int = 0
+    last_run_at: datetime | None = None
+    last_error: str = ""
+    participation_min_ratio: float = 0.6
+    participation_max_ratio: float = 1.0
+    max_messages_per_account: int = 2
+    max_drafts_per_batch: int = 50
+    filtered_count: int = 0
     status: str
     created_at: datetime
 

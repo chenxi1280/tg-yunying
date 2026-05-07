@@ -164,6 +164,21 @@ def _get_captcha_store() -> CaptchaStore:
 
 
 _PBKDF2_ITERATIONS = 600_000
+DEFAULT_USER_MENU_PERMISSIONS = ["overview", "accounts", "taskManagement", "groupManagement", "usageReports"]
+
+
+def parse_menu_permissions(raw: str | None, *, role: str | None = None) -> list[str]:
+    if role == "系统管理员":
+        return ["*"]
+    if not raw:
+        return list(DEFAULT_USER_MENU_PERMISSIONS)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def format_menu_permissions(values: list[str] | None) -> str:
+    if values is None:
+        return ""
+    return ",".join(dict.fromkeys(item.strip() for item in values if item.strip()))
 
 
 def hash_password(password: str) -> str:
@@ -238,6 +253,9 @@ class CurrentUser:
     subscription_expires_at: datetime | None
     subscription_days_remaining: int
     can_use_core_features: bool
+    token_balance: int
+    token_quota_total: int
+    menu_permissions: list[str]
 
     @property
     def is_platform_admin(self) -> bool:
@@ -394,6 +412,9 @@ def serialize_user(session: Session, user: AppUser) -> dict:
         "subscription_expires_at": user.subscription_expires_at,
         "subscription_days_remaining": compute_subscription_days_remaining(user),
         "can_use_core_features": can_user_use_core_features(user),
+        "token_balance": user.token_balance,
+        "token_quota_total": user.token_quota_total,
+        "menu_permissions": parse_menu_permissions(user.menu_permissions, role=user.role),
     }
 
 

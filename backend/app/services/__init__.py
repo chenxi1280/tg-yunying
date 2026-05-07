@@ -6,7 +6,9 @@ from .ai_config import *  # noqa: F401,F403
 from .archives import *  # noqa: F401,F403
 from .audit import *  # noqa: F401,F403
 from .campaigns import *  # noqa: F401,F403
+from .campaign_runs import *  # noqa: F401,F403
 from .cloning import *  # noqa: F401,F403
+from .content_filters import *  # noqa: F401,F403
 from .developer_apps import *  # noqa: F401,F403
 from .groups import *  # noqa: F401,F403
 from .group_listeners import *  # noqa: F401,F403

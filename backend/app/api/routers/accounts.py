@@ -100,8 +100,10 @@ def post_login_start(
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return start_login(session, account_id, payload.method)
+        return start_login(session, account_id, payload.method, current_user.name, payload.force)
     except ValueError as exc:
+        if "already online" in str(exc):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise not_found(str(exc)) from exc
 
 

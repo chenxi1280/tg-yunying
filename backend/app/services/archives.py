@@ -45,30 +45,38 @@ def _collect_archive(session: Session, archive: GroupArchive, actor: str) -> Gro
     if not group:
         raise ValueError("group not found")
     account = _pick_archive_account(session, group)
+    archive.collection_account_id = account.id
+    archive.started_at = archive.started_at or _now()
+    archive.status = "归档中"
+    session.commit()
     credentials = credentials_for_account(session, account)
     snapshot = gateway.fetch_group_archive(account.id, group.tg_peer_id, account.session_ciphertext, credentials)
     session.query(ArchivedMessage).filter(ArchivedMessage.archive_id == archive.id).delete()
     session.query(ArchivedMember).filter(ArchivedMember.archive_id == archive.id).delete()
-    for item in snapshot.messages:
+    for index, item in enumerate(snapshot.messages, start=1):
         session.add(
             ArchivedMessage(
                 tenant_id=archive.tenant_id,
                 archive_id=archive.id,
+                sender_peer_id="",
+                remote_message_id=f"archive-{archive.id}-msg-{index}",
                 sender_name=item.sender_name,
                 content=item.content,
                 message_type=item.message_type,
                 sent_at=item.sent_at or _now(),
             )
         )
-    for item in snapshot.members:
+    for index, item in enumerate(snapshot.members, start=1):
         session.add(
             ArchivedMember(
                 tenant_id=archive.tenant_id,
                 archive_id=archive.id,
+                peer_id=item.username or f"archive-{archive.id}-member-{index}",
                 display_name=item.display_name,
                 username=item.username,
                 activity_score=item.activity_score,
                 tags=item.tags,
+                last_seen_at=_now(),
             )
         )
     archive.message_count = len(snapshot.messages)
@@ -77,6 +85,8 @@ def _collect_archive(session: Session, archive: GroupArchive, actor: str) -> Gro
     archive.new_group_plan = snapshot.new_group_plan
     archive.status = "已完成"
     archive.failure_detail = ""
+    archive.finished_at = _now()
+    archive.last_synced_at = archive.finished_at
     audit(session, tenant_id=archive.tenant_id, actor=actor, action="完成群归档", target_type="group_archive", target_id=str(archive.id), detail=archive.sync_mode)
     session.commit()
     session.refresh(archive)
@@ -105,24 +115,24 @@ def create_archive(session: Session, payload: ArchiveCreate, actor: str = "普�
     return archive
 
 
-def get_archive_detail(session: Session, archive_id: int) -> dict:
+def get_archive_detail(session: Session, archive_id: int, message_search: str | None = None, member_search: str | None = None) -> dict:
     archive = session.get(GroupArchive, archive_id)
     if not archive:
         raise ValueError("archive not found")
-    messages = list(
-        session.scalars(
-            select(ArchivedMessage)
-            .where(ArchivedMessage.archive_id == archive.id, ArchivedMessage.tenant_id == archive.tenant_id)
-            .order_by(ArchivedMessage.id)
+    message_stmt = select(ArchivedMessage).where(ArchivedMessage.archive_id == archive.id, ArchivedMessage.tenant_id == archive.tenant_id)
+    if message_search:
+        like = f"%{message_search.strip()}%"
+        message_stmt = message_stmt.where((ArchivedMessage.content.ilike(like)) | (ArchivedMessage.sender_name.ilike(like)))
+    messages = list(session.scalars(message_stmt.order_by(ArchivedMessage.id)))
+    member_stmt = select(ArchivedMember).where(ArchivedMember.archive_id == archive.id, ArchivedMember.tenant_id == archive.tenant_id)
+    if member_search:
+        like = f"%{member_search.strip()}%"
+        member_stmt = member_stmt.where(
+            (ArchivedMember.display_name.ilike(like))
+            | (ArchivedMember.username.ilike(like))
+            | (ArchivedMember.tags.ilike(like))
         )
-    )
-    members = list(
-        session.scalars(
-            select(ArchivedMember)
-            .where(ArchivedMember.archive_id == archive.id, ArchivedMember.tenant_id == archive.tenant_id)
-            .order_by(ArchivedMember.activity_score.desc())
-        )
-    )
+    members = list(session.scalars(member_stmt.order_by(ArchivedMember.activity_score.desc())))
     return {"archive": archive, "messages": messages, "members": members, "invite_candidates": _invite_candidates(members)}
 
 
@@ -154,6 +164,7 @@ def process_archive(session: Session, archive_id: int) -> GroupArchive:
         archive = session.get(GroupArchive, archive_id)
         archive.status = "失败"
         archive.failure_detail = str(exc)
+        archive.finished_at = _now()
         audit(session, tenant_id=archive.tenant_id, actor="tg-worker", action="群归档失败", target_type="group_archive", target_id=str(archive.id), detail=archive.failure_detail)
         session.commit()
         session.refresh(archive)
@@ -178,4 +189,20 @@ def drain_archives(session_factory, limit: int = 10) -> int:
     return count
 
 
-__all__ = ["create_archive", "drain_archives", "export_archive", "get_archive_detail", "process_archive"]
+def rerun_archive(session: Session, archive_id: int, actor: str) -> GroupArchive:
+    archive = session.get(GroupArchive, archive_id)
+    if not archive:
+        raise ValueError("archive not found")
+    archive.status = "归档中" if get_settings().tg_gateway_mode != "telethon" else "排队中"
+    archive.failure_detail = ""
+    archive.started_at = None
+    archive.finished_at = None
+    audit(session, tenant_id=archive.tenant_id, actor=actor, action="重新执行群归档", target_type="group_archive", target_id=str(archive.id))
+    session.commit()
+    session.refresh(archive)
+    if archive.sync_mode == "sync":
+        return _collect_archive(session, archive, "tg-worker")
+    return archive
+
+
+__all__ = ["create_archive", "drain_archives", "export_archive", "get_archive_detail", "process_archive", "rerun_archive"]

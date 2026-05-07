@@ -38,6 +38,7 @@ class TaskStatus(StrEnum):
     FAILED = "失败"
     CANCELLED = "已取消"
     REJECTED = "已驳回"
+    COMPLETED = "已完成"
 
 
 class FailureType(StrEnum):

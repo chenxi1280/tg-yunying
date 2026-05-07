@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -53,9 +53,26 @@ class AppUser(Base):
     subscription_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     subscription_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_activated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    token_balance: Mapped[int] = mapped_column(Integer, default=0)
+    token_quota_total: Mapped[int] = mapped_column(Integer, default=0)
+    menu_permissions: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class SubscriptionPlan(Base):
+    __tablename__ = "subscription_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    plan_type: Mapped[str] = mapped_column(String(30), unique=True)
+    name: Mapped[str] = mapped_column(String(80))
+    duration_days: Mapped[int] = mapped_column(Integer)
+    token_quota: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    note: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class ActivationCode(Base):
@@ -63,8 +80,11 @@ class ActivationCode(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     code: Mapped[str] = mapped_column(String(64), unique=True)
+    plan_id: Mapped[int | None] = mapped_column(ForeignKey("subscription_plans.id"), nullable=True)
     plan_type: Mapped[str] = mapped_column(String(30))
+    plan_name: Mapped[str] = mapped_column(String(80), default="")
     duration_days: Mapped[int] = mapped_column(Integer)
+    token_quota: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default="unused")
     batch_no: Mapped[str] = mapped_column(String(24), default="")
     serial_prefix: Mapped[str] = mapped_column(String(24), default="")
@@ -77,6 +97,7 @@ class ActivationCode(Base):
     note: Mapped[str] = mapped_column(String(255), default="")
 
     redeemed_by_user: Mapped[AppUser | None] = relationship()
+    plan: Mapped[SubscriptionPlan | None] = relationship()
 
     @property
     def redeemed_user_name(self) -> str | None:
@@ -87,4 +108,22 @@ class ActivationCode(Base):
         return self.redeemed_by_user.email if self.redeemed_by_user else None
 
 
-__all__ = ["Tenant", "AccountPool", "AppUser", "ActivationCode"]
+class UserTokenLedger(Base):
+    __tablename__ = "user_token_ledgers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id"))
+    change_type: Mapped[str] = mapped_column(String(40))
+    delta_tokens: Mapped[int] = mapped_column(Integer)
+    balance_after: Mapped[int] = mapped_column(Integer)
+    related_activation_code_id: Mapped[int | None] = mapped_column(ForeignKey("activation_codes.id"), nullable=True)
+    related_ai_usage_ledger_id: Mapped[int | None] = mapped_column(ForeignKey("ai_usage_ledgers.id"), nullable=True)
+    reason: Mapped[str] = mapped_column(String(255), default="")
+    actor: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+    user: Mapped[AppUser] = relationship()
+
+
+__all__ = ["Tenant", "AccountPool", "AppUser", "SubscriptionPlan", "ActivationCode", "UserTokenLedger"]

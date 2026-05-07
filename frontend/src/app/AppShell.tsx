@@ -1,8 +1,6 @@
 import React from 'react';
 import {
   Activity,
-  Archive,
-  Bot,
   CheckCircle2,
   Database,
   LayoutDashboard,
@@ -16,13 +14,10 @@ import { Alert, Button, Card, Form, Input, Layout, Menu, Space, Tabs, Typography
 import { AppProvider, useAppContext } from './context';
 import OverviewView from './views/OverviewView';
 import AccountsView from './views/AccountsView';
-import GroupsView from './views/GroupsView';
 import CampaignsView from './views/CampaignsView';
-import DeveloperAppsView from './views/DeveloperAppsView';
-import AISettingsView from './views/AISettingsView';
-import ActivationCodesView from './views/ActivationCodesView';
+import SystemConfigView from './views/SystemConfigView';
 import UsageReportsView from './views/UsageReportsView';
-import ArchivesView from './views/ArchivesView';
+import GroupManagementView from './views/GroupManagementView';
 import AuditsView from './views/AuditsView';
 import { AppModals } from './AppModals';
 import { VIEW_ROUTES } from './routes';
@@ -40,13 +35,13 @@ function AppShell() {
     activeView, goToView, busy, notice, setNotice,
     runtime, overview, redeemCode, setRedeemCode, submitRedeemCode,
     accountPools, selectedPoolId, setSelectedPoolId, accounts, selectedPool,
-    developerApps, tenants, groups, selectedGroup, selectedGroupId, setSelectedGroupId,
+    developerApps, tenants, subscriptionPlans, adminUsers, groups, selectedGroup, selectedGroupId, setSelectedGroupId,
     campaigns, selectedCampaign, selectedCampaignId, setSelectedCampaignId,
     drafts, tasks, taskManagementTab, setTaskManagementTab,
     taskSummary, selectedCampaignDrafts, selectedCampaignTasks,
     taskStatusFilter, setTaskStatusFilter,
-    archives, archiveDetail, audits,
-    aiProviders, promptTemplates, tenantAiSetting, setTenantAiSetting, schedulingSetting, materials,
+    archives, archiveDetail, audits, groupDetail,
+    aiProviders, promptTemplates, tenantAiSetting, setTenantAiSetting, schedulingSetting, materials, contentKeywordRules,
     activationCodes, activationCodePage, activationCodeFilters, setActivationCodeFilters,
     activationBatch, setActivationBatch,
     usageLedgers, usageSummary,
@@ -60,7 +55,7 @@ function AppShell() {
     tenantForm, setTenantForm,
     aiProviderForm, setAiProviderForm,
     promptTemplateForm, setPromptTemplateForm,
-    materialForm, setMaterialForm,
+    materialForm, setMaterialForm, openContentKeywordRuleEdit,
     groupPolicy, setGroupPolicy,
     modal, setModal, resultDialog, setResultDialog,
     selectedTargetGroupIds, recommendedAccounts, selectedAccountsByGroup,
@@ -90,11 +85,13 @@ function AppShell() {
     toggleTargetGroup, toggleRecommendedAccount, setGroupAccountsSelected,
     goCampaignAccountStep, goCampaignContentStep,
     createCampaignAndDrafts, approveDraft, approveAllDrafts,
+    cancelCampaign,
     dispatchTask, drainQueue, retryTask,
     authorizeSelectedGroup, createArchive, saveGroupPolicy,
-    openArchiveDetail,
+    openArchiveDetail, exportArchive,
     createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp,
     openTenantEdit, saveTenantQuota,
+    createSubscriptionPlan, openSubscriptionPlanEdit, openAdminUserEdit,
     createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider,
     saveTenantAiSetting, saveSchedulingSetting,
     createPromptTemplate, createMaterial, toggleMaterial,
@@ -103,22 +100,27 @@ function AppShell() {
     accountName, groupName,
   } = ctx;
 
-  const nav: Array<[string, string, React.ReactNode]> = [
+  const menuPermissions = currentUser?.menu_permissions ?? [];
+  const canSeeMenu = (viewId: string) => currentUser?.role === '系统管理员'
+    || viewId === 'overview'
+    || menuPermissions.includes('*')
+    || menuPermissions.includes(viewId);
+  const navCandidates: Array<[string, string, React.ReactNode]> = [
     ['overview', '运营概览', <LayoutDashboard size={18} />],
-    ...(currentUser?.role === '系统管理员'
-      ? [
-          ['developerApps', '开发者应用', <Database size={18} />] as [string, string, React.ReactNode],
-          ['aiSettings', 'AI 配置', <Bot size={18} />] as [string, string, React.ReactNode],
-          ['activationCodes', '卡密管理', <LockKeyhole size={18} />] as [string, string, React.ReactNode],
-          ['usageReports', '用户用量', <Activity size={18} />] as [string, string, React.ReactNode],
-        ]
-      : []),
-    ['accounts', '账号池', <Smartphone size={18} />],
-    ['groups', '群聊库', <Users size={18} />],
-    ['taskManagement', '任务管理', <Activity size={18} />],
-    ['archives', '群聊归档', <Archive size={18} />],
-    ['audits', '审计安全', <LockKeyhole size={18} />],
   ];
+  if (currentUser?.role === '系统管理员') {
+    navCandidates.push(['systemConfig', '系统配置', <Database size={18} />]);
+  }
+  navCandidates.push(
+    ['accounts', '账号管理', <Smartphone size={18} />],
+    ['groupManagement', '群聊管理', <Users size={18} />],
+    ['taskManagement', '任务管理', <Activity size={18} />],
+  );
+  if (currentUser?.role !== '系统管理员') {
+    navCandidates.push(['usageReports', '用量余额', <Activity size={18} />]);
+  }
+  navCandidates.push(['audits', '审计安全', <LockKeyhole size={18} />]);
+  const nav = navCandidates.filter(([viewId]) => canSeeMenu(viewId));
 
   const loginReady = Boolean(loginEmail.trim() && loginPassword && captchaToken && !busy);
   const registerReady = Boolean(registerForm.name.trim() && registerForm.email.trim() && registerForm.password && captchaToken && !busy);
@@ -241,7 +243,12 @@ function AppShell() {
           <div>
             <Typography.Text type="secondary">{currentUser?.tenant_name ?? '试运行租户'} / {currentUser?.role ?? '未加载角色'}</Typography.Text>
             <Typography.Title level={1}>{nav.find(([id]) => id === activeView)?.[1]}</Typography.Title>
-            {currentUser && <Typography.Text type="secondary">订阅：{currentUser.subscription_status} / 剩余 {currentUser.subscription_days_remaining} 天</Typography.Text>}
+            {currentUser && (
+              <Typography.Text type="secondary">
+                订阅：{currentUser.subscription_status} / 剩余 {currentUser.subscription_days_remaining} 天
+                {currentUser.role !== '系统管理员' ? ` / Token ${currentUser.token_balance.toLocaleString()}` : ''}
+              </Typography.Text>
+            )}
           </div>
           <Space className="top-actions">
             {busy && <Typography.Text className="busy">{busy}...</Typography.Text>}
@@ -261,8 +268,18 @@ function AppShell() {
                 <p>到期时间 {currentUser.subscription_expires_at ?? '未激活'}</p>
               </Card>
               <Card className="summary-card" size="small">
+                <span>Token 余额</span>
+                <strong>{currentUser.token_balance.toLocaleString()}</strong>
+                <p>累计额度 {currentUser.token_quota_total.toLocaleString()}</p>
+              </Card>
+              <Card className="summary-card" size="small">
+                <span>任务/消息</span>
+                <strong>{taskSummary.campaigns} / {taskSummary.sent}</strong>
+                <p>失败 {taskSummary.failed}，排队 {taskSummary.queued}</p>
+              </Card>
+              <Card className="summary-card" size="small">
                 <span>卡密兑换</span>
-                <strong>月卡 / 年卡</strong>
+                <strong>订阅 + Token</strong>
                 <Space.Compact>
                   <Input value={redeemCode} onChange={(event) => setRedeemCode(event.target.value)} placeholder="请输入卡密" />
                   <Button type="primary" onClick={submitRedeemCode}>兑换</Button>
@@ -272,7 +289,7 @@ function AppShell() {
           </Card>
         )}
 
-        {runtime && currentUser?.role === '系统管理员' && activeView === 'developerApps' && (
+        {runtime && currentUser?.role === '系统管理员' && activeView === 'systemConfig' && (
           <Alert
             className="runtime-strip"
             type="info"
@@ -294,26 +311,61 @@ function AppShell() {
 
         {/* ===== View routing ===== */}
         {activeView === 'overview' && overview && <OverviewView overview={overview} runtime={runtime} />}
-        {activeView === 'developerApps' && (
-          <DeveloperAppsView developerApps={developerApps} tenants={tenants} onCreateClick={() => setModal({ type: 'developerAppCreate' })} onEdit={openDeveloperAppEdit} onCheck={checkDeveloperApp} onToggle={toggleDeveloperApp} onEditTenant={openTenantEdit} onOpenConfirm={openConfirm} />
+        {activeView === 'systemConfig' && currentUser?.role === '系统管理员' && (
+          <SystemConfigView
+            developerApps={developerApps}
+            tenants={tenants}
+            subscriptionPlans={subscriptionPlans}
+            adminUsers={adminUsers}
+            aiProviders={aiProviders}
+            promptTemplates={promptTemplates}
+            tenantAiSetting={tenantAiSetting}
+            schedulingSetting={schedulingSetting}
+            materials={materials}
+            contentKeywordRules={contentKeywordRules}
+            activationCodes={activationCodes}
+            activationCodePage={activationCodePage}
+            activationCodeFilters={activationCodeFilters}
+            setActivationCodeFilters={setActivationCodeFilters}
+            activationBatch={activationBatch}
+            setActivationBatch={setActivationBatch}
+            usageLedgers={usageLedgers}
+            usageSummary={usageSummary}
+            currentUserRole={currentUser?.role}
+            onCreateDeveloperApp={() => setModal({ type: 'developerAppCreate' })}
+            onEditDeveloperApp={openDeveloperAppEdit}
+            onCheckDeveloperApp={checkDeveloperApp}
+            onToggleDeveloperApp={toggleDeveloperApp}
+            onEditTenant={openTenantEdit}
+            onCreateSubscriptionPlan={() => setModal({ type: 'subscriptionPlanCreate' })}
+            onEditSubscriptionPlan={openSubscriptionPlanEdit}
+            onEditAdminUser={openAdminUserEdit}
+            onCreateAiProvider={() => setModal({ type: 'aiProviderCreate' })}
+            onEditAiProvider={openAiProviderEdit}
+            onToggleAiProvider={toggleAiProvider}
+            onCheckAiProvider={checkAiProvider}
+            onEditTenantAi={() => setModal({ type: 'tenantAiEdit' })}
+            onEditScheduling={() => setModal({ type: 'schedulingEdit' })}
+            onCreatePromptTemplate={() => setModal({ type: 'promptTemplateCreate' })}
+            onCreateMaterial={() => setModal({ type: 'materialCreate' })}
+            onCreateKeywordRule={() => setModal({ type: 'keywordRuleCreate' })}
+            onEditKeywordRule={openContentKeywordRuleEdit}
+            onLoadCodes={loadActivationCodes}
+            onCreateCodes={createActivationCodes}
+            onDisableCode={disableActivationCode}
+            onOpenConfirm={openConfirm}
+          />
         )}
-        {activeView === 'aiSettings' && (
-          <AISettingsView aiProviders={aiProviders} promptTemplates={promptTemplates} tenantAiSetting={tenantAiSetting} schedulingSetting={schedulingSetting} materials={materials} currentUserRole={currentUser?.role} onCreateProvider={() => setModal({ type: 'aiProviderCreate' })} onEditProvider={openAiProviderEdit} onToggleProvider={toggleAiProvider} onCheckProvider={checkAiProvider} onEditTenantAi={() => setModal({ type: 'tenantAiEdit' })} onEditScheduling={() => setModal({ type: 'schedulingEdit' })} onCreatePromptTemplate={() => setModal({ type: 'promptTemplateCreate' })} onCreateMaterial={() => setModal({ type: 'materialCreate' })} />
-        )}
-        {activeView === 'activationCodes' && (
-          <ActivationCodesView activationCodes={activationCodes} activationCodePage={activationCodePage} activationCodeFilters={activationCodeFilters} setActivationCodeFilters={setActivationCodeFilters} activationBatch={activationBatch} setActivationBatch={setActivationBatch} onLoadCodes={loadActivationCodes} onCreateCodes={createActivationCodes} onDisableCode={disableActivationCode} onOpenConfirm={openConfirm} />
-        )}
-        {activeView === 'usageReports' && <UsageReportsView usageLedgers={usageLedgers} usageSummary={usageSummary} />}
+        {activeView === 'usageReports' && <UsageReportsView usageLedgers={usageLedgers} usageSummary={usageSummary} currentUser={currentUser} />}
         {activeView === 'accounts' && (
-          <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => goToView('developerApps')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} />
+          <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => goToView('systemConfig')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} />
         )}
-        {activeView === 'groups' && (
-          <GroupsView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} setSelectedGroupId={setSelectedGroupId} onCreateCampaign={openCampaignModal} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenConfirm={openConfirm} />
+        {activeView === 'groupManagement' && (
+          <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateCampaign={openCampaignModal} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onOpenConfirm={openConfirm} />
         )}
         {activeView === 'taskManagement' && (
-          <CampaignsView campaigns={campaigns} tasks={tasks} drafts={drafts} groups={groups} accounts={accounts} taskManagementTab={taskManagementTab} setTaskManagementTab={setTaskManagementTab} taskSummary={taskSummary} selectedCampaign={selectedCampaign ?? undefined} selectedCampaignDrafts={selectedCampaignDrafts} selectedCampaignTasks={selectedCampaignTasks} taskStatusFilter={taskStatusFilter} setTaskStatusFilter={setTaskStatusFilter} setSelectedCampaignId={setSelectedCampaignId} onCreateCampaign={() => openCampaignModal()} onApproveDraft={approveDraft} onApproveAllDrafts={approveAllDrafts} onDispatchTask={dispatchTask} onRetryTask={retryTask} onDrainQueue={drainQueue} onOpenConfirm={openConfirm} groupName={groupName} accountName={accountName} />
+          <CampaignsView campaigns={campaigns} tasks={tasks} drafts={drafts} groups={groups} accounts={accounts} taskManagementTab={taskManagementTab} setTaskManagementTab={setTaskManagementTab} taskSummary={taskSummary} selectedCampaign={selectedCampaign ?? undefined} selectedCampaignDrafts={selectedCampaignDrafts} selectedCampaignTasks={selectedCampaignTasks} taskStatusFilter={taskStatusFilter} setTaskStatusFilter={setTaskStatusFilter} setSelectedCampaignId={setSelectedCampaignId} onCreateCampaign={() => openCampaignModal()} onCancelCampaign={cancelCampaign} onApproveDraft={approveDraft} onApproveAllDrafts={approveAllDrafts} onDispatchTask={dispatchTask} onRetryTask={retryTask} onDrainQueue={drainQueue} onOpenConfirm={openConfirm} groupName={groupName} accountName={accountName} />
         )}
-        {activeView === 'archives' && <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={openArchiveDetail} />}
         {activeView === 'audits' && <AuditsView audits={audits} />}
 
         {/* ===== Modals ===== */}

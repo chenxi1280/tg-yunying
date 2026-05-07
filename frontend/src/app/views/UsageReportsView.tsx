@@ -2,15 +2,16 @@ import React from 'react';
 import { Activity, Bot, CheckCircle2, Database } from 'lucide-react';
 import { Card, List, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { UsageLedger, UsageSummary } from '../types';
+import type { CurrentUser, UsageLedger, UsageSummary } from '../types';
 import { StatCard, StatusBadge } from '../components/shared';
 
 interface Props {
   usageLedgers: UsageLedger[];
   usageSummary: UsageSummary | null;
+  currentUser?: CurrentUser | null;
 }
 
-export default function UsageReportsView({ usageLedgers, usageSummary }: Props) {
+export default function UsageReportsView({ usageLedgers, usageSummary, currentUser }: Props) {
   const columns: ColumnsType<UsageLedger> = [
     {
       title: '模型',
@@ -61,6 +62,7 @@ export default function UsageReportsView({ usageLedgers, usageSummary }: Props) 
           <StatCard label="总 Token" value={usageSummary?.total_tokens ?? 0} detail="输入输出累计" icon={<Activity size={22} />} />
           <StatCard label="总费用" value={`${usageSummary?.total_cost ?? 0} ${usageSummary?.currency ?? 'CNY'}`} detail="按模型单价结算" icon={<Database size={22} />} />
           <StatCard label="计费请求" value={usageSummary?.billable_requests ?? 0} detail="返回 usage 的真实请求" icon={<CheckCircle2 size={22} />} />
+          {currentUser?.role !== '系统管理员' && <StatCard label="我的余额" value={currentUser?.token_balance ?? 0} detail={`累计额度 ${currentUser?.token_quota_total ?? 0}`} icon={<Activity size={22} />} />}
         </div>
         <List
           className="mini-list"

@@ -14,7 +14,7 @@ from app.common.http import not_found
 from app.models import GroupArchive
 from app.repositories.tenant import require_resource_tenant
 from app.schemas import ArchiveCreate, ArchiveDetailOut, ArchiveExportOut, ArchiveExportRequest, ArchiveOut
-from app.services import create_archive, export_archive, get_archive_detail
+from app.services import create_archive, export_archive, get_archive_detail, rerun_archive
 
 router = APIRouter()
 
@@ -46,12 +46,28 @@ def post_archive(
 @router.get("/api/archives/{archive_id}", response_model=ArchiveDetailOut)
 def get_archive(
     archive_id: int,
+    message_search: str | None = None,
+    member_search: str | None = None,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     try:
         require_resource_tenant(session, current_user, GroupArchive, archive_id)
-        return get_archive_detail(session, archive_id)
+        return get_archive_detail(session, archive_id, message_search=message_search, member_search=member_search)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/archives/{archive_id}/rerun", response_model=ArchiveOut)
+def post_archive_rerun(
+    archive_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        require_resource_tenant(session, current_user, GroupArchive, archive_id)
+        return rerun_archive(session, archive_id, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 

@@ -1,11 +1,12 @@
 from uuid import uuid4
 
+from app.ai_gateway import AiGenerationResult, AiUsage, mock_candidates
 from app.config import get_settings
 from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.gateways import SendResult
-from app.models import AccountStatus, AiDraft, DeveloperAppHealthStatus, Material, MessageTask, TelegramDeveloperApp, TgAccount, TgAccountSyncRecord, TgContact, TgGroupAccount
+from app.models import AccountStatus, AiDraft, AppUser, DeveloperAppHealthStatus, Material, MessageTask, TelegramDeveloperApp, TgAccount, TgAccountSyncRecord, TgContact, TgGroupAccount, UserTokenLedger
 from fastapi.testclient import TestClient
 
 
@@ -137,7 +138,7 @@ def test_login_flow_masks_verification_state():
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, _ = ensure_test_workspace(client, headers)
-        flow = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code"}).json()
+        flow = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code", "force": True}).json()
         assert flow["status"] == "等待验证码"
         assert flow["code_preview"]
 
@@ -154,7 +155,9 @@ def test_runtime_login_flows_health_and_group_authorize():
         assert runtime["tg_gateway_mode"] in {"mock", "telethon"}
 
         account, group = ensure_test_workspace(client, headers)
-        client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr"})
+        blocked = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr"})
+        assert blocked.status_code == 400
+        client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr", "force": True})
         flows = client.get(f"/api/tg-accounts/{account['id']}/login-flows", headers=headers).json()
         assert flows
         qr_account = client.post(f"/api/tg-accounts/{account['id']}/login/qr/check", headers=headers).json()
@@ -248,7 +251,7 @@ def test_activation_code_generation_search_pagination_and_disable():
         assert len(codes) == 5
         assert all(item["batch_no"] == batch_no for item in codes)
         assert all(item["serial_prefix"] == serial_prefix for item in codes)
-        assert all(item["plan_type"] == "monthly" and item["duration_days"] == 30 for item in codes)
+        assert all(item["plan_type"] == "monthly" and item["duration_days"] == 30 and item["token_quota"] == 500000 for item in codes)
         assert all(item["code"].startswith(f"{serial_prefix}-{batch_no}-") for item in codes)
 
         first_page = client.get("/api/admin/activation-codes", headers=headers, params={"batch_no": batch_no, "page": 1, "page_size": 2}).json()
@@ -269,8 +272,11 @@ def test_activation_code_generation_search_pagination_and_disable():
         disabled_redeem = client.post("/api/subscription/redeem", headers=ops_headers, json={"code": codes[0]["code"]})
         assert disabled_redeem.status_code == 400
 
+        before_redeem = client.get("/api/auth/me", headers=ops_headers).json()
         redeemed = client.post("/api/subscription/redeem", headers=ops_headers, json={"code": codes[1]["code"]})
         assert redeemed.status_code == 200, redeemed.text
+        assert redeemed.json()["token_quota"] == 500000
+        assert redeemed.json()["token_balance"] == before_redeem["token_balance"] + 500000
         redeemed_disable = client.post(f"/api/admin/activation-codes/{codes[1]['id']}/disable", headers=headers)
         assert redeemed_disable.status_code == 400
 
@@ -288,6 +294,63 @@ def test_activation_code_generation_search_pagination_and_disable():
         assert denied_list.status_code == 403
         assert denied_create.status_code == 403
         assert denied_disable.status_code == 403
+
+
+def test_subscription_plans_admin_users_and_token_adjustments():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ops_headers = auth_headers(client, "ops@bootstrap.local", "ops123")
+
+        plans = client.get("/api/admin/subscription-plans", headers=headers)
+        assert plans.status_code == 200, plans.text
+        monthly = next(item for item in plans.json() if item["plan_type"] == "monthly")
+        assert monthly["token_quota"] == 500000
+
+        custom_type = f"pytest_{uuid4().hex[:8]}"
+        created_plan = client.post(
+            "/api/admin/subscription-plans",
+            headers=headers,
+            json={"plan_type": custom_type, "name": "Pytest 套餐", "duration_days": 7, "token_quota": 12345, "is_active": True},
+        )
+        assert created_plan.status_code == 200, created_plan.text
+        assert created_plan.json()["token_quota"] == 12345
+
+        assert client.get("/api/admin/subscription-plans", headers=ops_headers).status_code == 403
+        assert client.get("/api/admin/users", headers=ops_headers).status_code == 403
+
+        users = client.get("/api/admin/users", headers=headers).json()
+        ops_user = next(item for item in users if item["email"] == "ops@bootstrap.local")
+        updated = client.patch(
+            f"/api/admin/users/{ops_user['id']}",
+            headers=headers,
+            json={"menu_permissions": ["accounts", "groupManagement"], "is_active": True},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["menu_permissions"] == ["accounts", "groupManagement"]
+
+        adjusted = client.post(
+            f"/api/admin/users/{ops_user['id']}/token-adjustments",
+            headers=headers,
+            json={"delta_tokens": 1234, "reason": "pytest top-up"},
+        )
+        assert adjusted.status_code == 200, adjusted.text
+        assert adjusted.json()["token_balance"] == ops_user["token_balance"] + 1234
+        ledgers = client.get(f"/api/admin/users/{ops_user['id']}/token-ledgers", headers=headers).json()
+        assert ledgers[0]["change_type"] == "admin_adjustment"
+        assert ledgers[0]["delta_tokens"] == 1234
+
+        reset = client.post(
+            f"/api/admin/users/{ops_user['id']}/reset-password",
+            headers=headers,
+            json={"new_password": "ops456789"},
+        )
+        assert reset.status_code == 200, reset.text
+        reset_back = client.post(
+            f"/api/admin/users/{ops_user['id']}/reset-password",
+            headers=headers,
+            json={"new_password": "ops123"},
+        )
+        assert reset_back.status_code == 200, reset_back.text
 
 
 def test_developer_app_admin_crud_hides_api_hash():
@@ -480,6 +543,89 @@ def test_ai_provider_prompt_material_and_jitter_flow():
         assert tasks[0]["message_type"] == "表情包"
         drained = client.post("/api/worker/drain-once", headers=headers).json()
         assert drained["processed"] == 0
+
+
+def test_ai_real_provider_requires_and_deducts_user_token_balance(monkeypatch):
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ops_headers = auth_headers(client, "ops@bootstrap.local", "ops123")
+        previous_setting = client.get("/api/tenant-ai-settings?tenant_id=1", headers=headers).json()
+        provider = client.post(
+            "/api/ai-providers",
+            headers=headers,
+            json={
+                "provider_name": f"Real Billing {uuid4().hex[:6]}",
+                "provider_type": "openai_compatible",
+                "base_url": "https://ai-billing.test",
+                "model_name": "deepseek-chat",
+                "api_key": "real_token_test_key",
+            },
+        ).json()
+        client.patch(
+            "/api/tenant-ai-settings?tenant_id=1",
+            headers=headers,
+            json={"default_provider_id": provider["id"], "ai_enabled": True, "fallback_to_mock": False, "temperature": 0.7, "max_tokens": 512},
+        )
+        _, group = ensure_test_workspace(client, headers)
+        campaign = client.post(
+            "/api/campaigns",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "group_id": group["id"],
+                "title": f"token-billing-{uuid4().hex[:6]}",
+                "campaign_type": "话题引导任务",
+                "topic": "Token billing",
+                "ai_provider_id": provider["id"],
+                "jitter_min_seconds": 0,
+                "jitter_max_seconds": 0,
+                "batch_interval_seconds": 0,
+                "respect_send_window": False,
+            },
+        ).json()
+
+        with SessionLocal() as session:
+            user = session.query(AppUser).filter_by(email="ops@bootstrap.local").one()
+            user.token_balance = 0
+            user.token_quota_total = 0
+            session.commit()
+
+        blocked = client.post(f"/api/campaigns/{campaign['id']}/generate-drafts", headers=ops_headers, json={"count": 1, "use_ai": True})
+        assert blocked.status_code == 400
+        assert "Token 余额不足" in blocked.text
+
+        def fake_generate(credentials, prompt, *, count, topic, tone, persona_set, temperature, max_tokens, material_ids=None, selected_account_ids=None):
+            return AiGenerationResult(
+                candidates=mock_candidates(count, topic, tone, persona_set, material_ids, selected_account_ids),
+                usage=AiUsage(prompt_tokens=12, completion_tokens=30, total_tokens=42, billable=True),
+            )
+
+        monkeypatch.setattr("app.services.campaigns.ai_gateway.generate_drafts", fake_generate)
+        with SessionLocal() as session:
+            user = session.query(AppUser).filter_by(email="ops@bootstrap.local").one()
+            user.token_balance = 1000
+            user.token_quota_total = 1000
+            session.commit()
+
+        generated = client.post(f"/api/campaigns/{campaign['id']}/generate-drafts", headers=ops_headers, json={"count": 1, "use_ai": True})
+        assert generated.status_code == 200, generated.text
+        with SessionLocal() as session:
+            user = session.query(AppUser).filter_by(email="ops@bootstrap.local").one()
+            assert user.token_balance == 958
+            ledger = session.query(UserTokenLedger).filter_by(user_id=user.id, change_type="ai_usage").order_by(UserTokenLedger.id.desc()).first()
+            assert ledger is not None
+            assert ledger.delta_tokens == -42
+        client.patch(
+            "/api/tenant-ai-settings?tenant_id=1",
+            headers=headers,
+            json={
+                "default_provider_id": previous_setting["default_provider_id"],
+                "ai_enabled": previous_setting["ai_enabled"],
+                "fallback_to_mock": previous_setting["fallback_to_mock"],
+                "temperature": previous_setting["temperature"],
+                "max_tokens": previous_setting["max_tokens"],
+            },
+        )
 
 
 def test_ai_provider_check_keeps_warning_when_provider_is_healthy(monkeypatch):

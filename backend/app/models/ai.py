@@ -100,4 +100,18 @@ class AiUsageLedger(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
-__all__ = ["AiProvider", "PromptTemplate", "TenantAiSetting", "SchedulingSetting", "AiUsageLedger"]
+class ContentKeywordRule(Base):
+    __tablename__ = "content_keyword_rules"
+    __table_args__ = (UniqueConstraint("tenant_id", "keyword"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    keyword: Mapped[str] = mapped_column(String(160))
+    match_type: Mapped[str] = mapped_column(String(40), default="contains")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    note: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+__all__ = ["AiProvider", "PromptTemplate", "TenantAiSetting", "SchedulingSetting", "AiUsageLedger", "ContentKeywordRule"]

@@ -7,11 +7,16 @@ import type {
   RuntimeConfig,
   CurrentUser,
   Tenant,
+  AdminUser,
+  AdminUserForm,
   CaptchaChallenge,
   CaptchaVerifyResponse,
   ActivationCode,
   ActivationCodeFilters,
   ActivationCodePage,
+  SubscriptionPlan,
+  SubscriptionPlanForm,
+  TokenLedger,
   UsageLedger,
   UsageSummary,
   LoginFlow,
@@ -23,6 +28,7 @@ import type {
   TenantAiSetting,
   SchedulingSetting,
   Material,
+  ContentKeywordRule,
   Contact,
   Group,
   Campaign,
@@ -58,6 +64,7 @@ const DEFAULT_ACTIVATION_CODE_PAGE: ActivationCodePage = { items: [], total: 0, 
 const EMPTY_ACCOUNT_LOGIN_FORM: AccountLoginForm = {
   account: null,
   step: 'code',
+  method: 'code',
   code: '',
   password_2fa: '',
   flow: null,
@@ -99,18 +106,43 @@ export function AppProvider({ children }: AppProviderProps) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [developerApps, setDeveloperApps] = useState<DeveloperApp[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [subscriptionPlans, setSubscriptionPlans] = useState<SubscriptionPlan[]>([]);
+  const [subscriptionPlanForm, setSubscriptionPlanForm] = useState<SubscriptionPlanForm>({
+    id: null,
+    plan_type: 'monthly',
+    name: '月卡',
+    duration_days: 30,
+    token_quota: 500000,
+    is_active: true,
+    note: '',
+  });
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [selectedAdminUserId, setSelectedAdminUserId] = useState<number | null>(null);
+  const [selectedUserTokenLedgers, setSelectedUserTokenLedgers] = useState<TokenLedger[]>([]);
+  const [adminUserForm, setAdminUserForm] = useState<AdminUserForm>({
+    id: null,
+    name: '',
+    email: '',
+    phone: '',
+    role: '普通用户',
+    subscription_status: 'pending_activation',
+    menu_permissions: ['overview', 'accounts', 'taskManagement', 'groupManagement', 'usageReports'],
+    is_active: true,
+  });
+  const [tokenAdjustmentForm, setTokenAdjustmentForm] = useState({ delta_tokens: 500000, reason: '管理员充值' });
   const [activationCodes, setActivationCodes] = useState<ActivationCode[]>([]);
   const [activationCodePage, setActivationCodePage] = useState<ActivationCodePage>(DEFAULT_ACTIVATION_CODE_PAGE);
   const [activationCodeFilters, setActivationCodeFilters] = useState<ActivationCodeFilters>(DEFAULT_ACTIVATION_CODE_FILTERS);
   const [usageLedgers, setUsageLedgers] = useState<UsageLedger[]>([]);
   const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null);
   const [redeemCode, setRedeemCode] = useState('');
-  const [activationBatch, setActivationBatch] = useState({ plan_type: 'monthly', quantity: 10, batch_no: '', serial_prefix: '', note: '' });
+  const [activationBatch, setActivationBatch] = useState({ plan_type: 'monthly', plan_id: '' as number | '', quantity: 10, batch_no: '', serial_prefix: '', note: '' });
   const [aiProviders, setAiProviders] = useState<AiProvider[]>([]);
   const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
   const [tenantAiSetting, setTenantAiSetting] = useState<TenantAiSetting | null>(null);
   const [schedulingSetting, setSchedulingSetting] = useState<SchedulingSetting | null>(null);
   const [materials, setMaterials] = useState<Material[]>([]);
+  const [contentKeywordRules, setContentKeywordRules] = useState<ContentKeywordRule[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [drafts, setDrafts] = useState<Draft[]>([]);
@@ -135,9 +167,10 @@ export function AppProvider({ children }: AppProviderProps) {
     username: '',
     phone_number: '',
     pool_id: '' as number | '',
+    login_method: 'code' as 'code' | 'qr',
   });
   const [accountPoolForm, setAccountPoolForm] = useState({
-    name: '新账号池',
+    name: '新账号分组',
     description: '',
     is_default: false,
   });
@@ -158,7 +191,9 @@ export function AppProvider({ children }: AppProviderProps) {
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [campaignStep, setCampaignStep] = useState(1);
+  const [campaignMode, setCampaignMode] = useState('ai_activity');
   const [selectedTargetGroupIds, setSelectedTargetGroupIds] = useState<number[]>([]);
+  const [selectedSourceGroupIds, setSelectedSourceGroupIds] = useState<number[]>([]);
   const [recommendedAccounts, setRecommendedAccounts] = useState<RecommendedAccount[]>([]);
   const [selectedAccountsByGroup, setSelectedAccountsByGroup] = useState<Record<string, number[]>>({});
   const [topic, setTopic] = useState('围绕新品体验做一轮自然讨论');
@@ -172,6 +207,16 @@ export function AppProvider({ children }: AppProviderProps) {
   const [jitterMaxSeconds, setJitterMaxSeconds] = useState(180);
   const [batchIntervalSeconds, setBatchIntervalSeconds] = useState(45);
   const [respectSendWindow, setRespectSendWindow] = useState(true);
+  const [campaignEndsAt, setCampaignEndsAt] = useState(() => {
+    const value = new Date(Date.now() + 2 * 60 * 60 * 1000);
+    return value.toISOString().slice(0, 16);
+  });
+  const [maxAiTokens, setMaxAiTokens] = useState(100000);
+  const [runIntervalSeconds, setRunIntervalSeconds] = useState(300);
+  const [participationMinRatio, setParticipationMinRatio] = useState(0.6);
+  const [participationMaxRatio, setParticipationMaxRatio] = useState(1);
+  const [maxMessagesPerAccount, setMaxMessagesPerAccount] = useState(2);
+  const [maxDraftsPerBatch, setMaxDraftsPerBatch] = useState(50);
   const [taskStatusFilter, setTaskStatusFilter] = useState('');
   const [groupPolicy, setGroupPolicy] = useState({
     active_window: '09:00-23:00',
@@ -224,6 +269,13 @@ export function AppProvider({ children }: AppProviderProps) {
     material_type: '表情包',
     content: 'https://example.local/stickers/welcome.webp',
     tags: '表情包,欢迎',
+  });
+  const [keywordRuleForm, setKeywordRuleForm] = useState({
+    id: null as number | null,
+    keyword: '',
+    match_type: 'contains',
+    is_active: true,
+    note: '',
   });
   const [modal, setModal] = useState<ModalState>(null);
   const [resultDialog, setResultDialog] = useState<ResultDialogState>(null);
@@ -367,6 +419,7 @@ export function AppProvider({ children }: AppProviderProps) {
         api<TenantAiSetting>('/tenant-ai-settings'),
         api<SchedulingSetting>('/scheduling-settings'),
         api<Material[]>('/materials'),
+        api<ContentKeywordRule[]>('/content-keyword-rules'),
       ]);
       const runtimeData = settledValue(results[0], {} as RuntimeConfig);
       const overviewData = settledValue(results[1], {} as Overview);
@@ -383,8 +436,11 @@ export function AppProvider({ children }: AppProviderProps) {
       const tenantAiData = settledValue(results[12], {} as TenantAiSetting);
       const schedulingData = settledValue(results[13], {} as SchedulingSetting);
       const materialData = settledValue(results[14], [] as Material[]);
+      const keywordRuleData = settledValue(results[15], [] as ContentKeywordRule[]);
       const developerAppData = me.role === '系统管理员' ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
       const tenantData = me.role === '系统管理员' ? await api<Tenant[]>('/tenants').catch(() => [] as Tenant[]) : [];
+      const subscriptionPlanData = me.role === '系统管理员' ? await api<SubscriptionPlan[]>('/admin/subscription-plans').catch(() => [] as SubscriptionPlan[]) : [];
+      const adminUserData = me.role === '系统管理员' ? await api<AdminUser[]>('/admin/users').catch(() => [] as AdminUser[]) : [];
       const activationCodeData = me.role === '系统管理员' ? await api<ActivationCodePage>(activationCodeQuery()).catch(() => DEFAULT_ACTIVATION_CODE_PAGE) : DEFAULT_ACTIVATION_CODE_PAGE;
       const usageLedgerData = me.role === '系统管理员' ? await api<UsageLedger[]>('/admin/usage-ledgers').catch(() => [] as UsageLedger[]) : [];
       const usageSummaryData = me.role === '系统管理员' ? await api<UsageSummary>('/admin/usage-summary').catch(() => null) : null;
@@ -394,6 +450,9 @@ export function AppProvider({ children }: AppProviderProps) {
       setAccounts(accountData);
       setDeveloperApps(developerAppData);
       setTenants(tenantData);
+      setSubscriptionPlans(subscriptionPlanData);
+      setAdminUsers(adminUserData);
+      setSelectedAdminUserId((current) => current ?? adminUserData[0]?.id ?? null);
       setActivationCodes(activationCodeData.items);
       setActivationCodePage(activationCodeData);
       setUsageLedgers(usageLedgerData);
@@ -403,6 +462,7 @@ export function AppProvider({ children }: AppProviderProps) {
       setTenantAiSetting(tenantAiData);
       setSchedulingSetting(schedulingData);
       setMaterials(materialData);
+      setContentKeywordRules(keywordRuleData);
       setGroups(groupData);
       setCampaigns(campaignData);
       setDrafts(draftData);
@@ -481,7 +541,9 @@ export function AppProvider({ children }: AppProviderProps) {
     if (groupId) setSelectedGroupId(groupId);
     goToView('taskManagement');
     setTaskManagementTab('任务列表');
+    setCampaignMode('ai_activity');
     setSelectedTargetGroupIds(targetIds);
+    setSelectedSourceGroupIds([]);
     setRecommendedAccounts([]);
     setSelectedAccountsByGroup({});
     setCampaignStep(1);
@@ -490,7 +552,7 @@ export function AppProvider({ children }: AppProviderProps) {
 
   function openAccountCreate(loginNow = false) {
     if (!runtime?.can_create_tg_account) {
-      goToView('developerApps');
+      goToView('systemConfig');
       showResult('请先配置开发者应用', '新增 TG 账号前，需要先在开发者应用中配置可用的 Telegram api_id/api_hash。');
       return;
     }
@@ -500,6 +562,7 @@ export function AppProvider({ children }: AppProviderProps) {
       username: '',
       phone_number: '',
       pool_id: selectedPoolId || accountPools.find((pool) => pool.is_default)?.id || accountPools[0]?.id || '',
+      login_method: 'code',
     });
     setModal({ type: 'accountCreate' });
   }
@@ -515,7 +578,7 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   async function openAccountPoolDetail(pool: AccountPool) {
-    setBusy('读取账号池详情');
+    setBusy('读取账号分组详情');
     const detail = await api<AccountPoolDetail>(`/account-pools/${pool.id}/detail`);
     const defaultAccount = choosePoolSendAccount(detail);
     setAccountPoolDetail(detail);
@@ -544,13 +607,19 @@ export function AppProvider({ children }: AppProviderProps) {
     )) ?? null;
   }
 
-  async function startOrResumeAccountLogin(account: Account, resend = false) {
-    setBusy(resend ? '重新发送验证码' : '启动登录');
+  async function startOrResumeAccountLogin(account: Account, method: 'code' | 'qr' = 'code', resend = false) {
+    const isQr = method === 'qr';
+    setBusy(isQr ? '启动扫码登录' : resend ? '重新发送验证码' : '启动登录');
     setModal({ type: 'accountLogin' });
-    setAccountLoginForm({ ...EMPTY_ACCOUNT_LOGIN_FORM, account, step: account.status === '等待2FA' ? 'password' : 'code' });
+    setAccountLoginForm({
+      ...EMPTY_ACCOUNT_LOGIN_FORM,
+      account,
+      method,
+      step: account.status === '等待2FA' ? 'password' : isQr || account.status === '等待扫码' ? 'qr' : 'code',
+    });
     try {
       let flow: LoginFlow | null = null;
-      if (!resend && account.status === '等待验证码') {
+      if (!resend && account.status === '等待验证码' && method === 'code') {
         const detail = await api<AccountDetail>(`/tg-accounts/${account.id}/detail`);
         flow = latestUsableCodeFlow(detail);
         if (accountDetail?.account.id === account.id) {
@@ -560,18 +629,19 @@ export function AppProvider({ children }: AppProviderProps) {
       if (!flow && account.status !== '等待2FA') {
         flow = await api<LoginFlow>(`/tg-accounts/${account.id}/login/start`, {
           method: 'POST',
-          body: JSON.stringify({ method: 'code' }),
+          body: JSON.stringify({ method }),
         });
       }
       const nextAccount = flow ? { ...account, status: flow.status } : account;
       setAccountLoginForm((current) => ({
         ...current,
         account: nextAccount,
-        step: nextAccount.status === '等待2FA' ? 'password' : 'code',
+        method,
+        step: nextAccount.status === '等待2FA' ? 'password' : method === 'qr' || nextAccount.status === '等待扫码' ? 'qr' : 'code',
         flow,
         error: '',
       }));
-      setNotice(resend ? '已重新发送登录验证码。' : '请完成验证码登录。');
+      setNotice(isQr ? '请使用 Telegram 扫码确认登录。' : resend ? '已重新发送登录验证码。' : '请完成验证码登录。');
       await refresh();
       if (accountDetail?.account.id === account.id) await refreshAccountDetail();
     } catch (error) {
@@ -600,7 +670,7 @@ export function AppProvider({ children }: AppProviderProps) {
     setAccountDetailTab('登录同步');
     setAccountLoginForm(EMPTY_ACCOUNT_LOGIN_FORM);
     setModal({ type: 'accountDetail' });
-    showResult('登录完成', `${updated.display_name} 已完成登录，后台会继续同步群聊、联系人和验证码。`);
+    setNotice(`${updated.display_name} 已完成登录，后台会继续同步群聊、联系人和验证码。`);
   }
 
   async function createAccount() {
@@ -616,9 +686,9 @@ export function AppProvider({ children }: AppProviderProps) {
           phone_number: accountCreateForm.phone_number,
         }),
       });
-      setAccountCreateForm({ display_name: '新托管账号', username: '', phone_number: '', pool_id: '' });
+      setAccountCreateForm({ display_name: '新托管账号', username: '', phone_number: '', pool_id: '', login_method: 'code' });
       await refresh();
-      await startOrResumeAccountLogin(created, true);
+      await startOrResumeAccountLogin(created, accountCreateForm.login_method, accountCreateForm.login_method === 'code');
     } catch (error) {
       handleActionError(error);
     } finally {
@@ -627,14 +697,14 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   async function createAccountPool() {
-    setBusy('新增账号池');
+    setBusy('新增账号分组');
     const pool = await api<AccountPool>('/account-pools', {
       method: 'POST',
       body: JSON.stringify({ tenant_id: currentUser?.tenant_id ?? 1, ...accountPoolForm }),
     });
     closeModal();
-    showResult('账号池已新增', `已新增账号池：${pool.name}`);
-    setAccountPoolForm({ name: '新账号池', description: '', is_default: false });
+    showResult('账号分组已新增', `已新增账号分组：${pool.name}`);
+    setAccountPoolForm({ name: '新账号分组', description: '', is_default: false });
     setSelectedPoolId(pool.id);
     await refresh();
     setBusy('');
@@ -642,12 +712,12 @@ export function AppProvider({ children }: AppProviderProps) {
 
   async function moveCurrentAccountPool(poolId: number) {
     if (!accountDetail) return;
-    setBusy('移动账号池');
+    setBusy('移动账号分组');
     const updated = await api<Account>(`/tg-accounts/${accountDetail.account.id}/move-pool`, {
       method: 'POST',
       body: JSON.stringify({ pool_id: poolId }),
     });
-    showResult('账号池已更新', `${updated.display_name} 已移动到 ${updated.pool_name}`);
+    showResult('账号分组已更新', `${updated.display_name} 已移动到 ${updated.pool_name}`);
     await refresh();
     await refreshAccountDetail();
     setModal({ type: 'accountDetail' });
@@ -836,6 +906,10 @@ export function AppProvider({ children }: AppProviderProps) {
     });
   }
 
+  function toggleSourceGroup(groupId: number) {
+    setSelectedSourceGroupIds((current) => current.includes(groupId) ? current.filter((id) => id !== groupId) : [...current, groupId]);
+  }
+
   async function recommendAccounts(groupIds = selectedTargetGroupIds) {
     if (!groupIds.length) {
       setRecommendedAccounts([]);
@@ -875,7 +949,7 @@ export function AppProvider({ children }: AppProviderProps) {
     setBusy('推荐账号');
     try {
       await recommendAccounts(selectedTargetGroupIds);
-      setCampaignStep(2);
+      setCampaignStep(3);
     } catch (error) {
       setNotice(`推荐账号失败：${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
@@ -885,7 +959,7 @@ export function AppProvider({ children }: AppProviderProps) {
 
   function goCampaignContentStep() {
     if (targetGroupsMissingAccounts.length) return;
-    setCampaignStep(3);
+    setCampaignStep(4);
   }
 
   async function createDirectMessageTask() {
@@ -1066,9 +1140,9 @@ export function AppProvider({ children }: AppProviderProps) {
   async function submitRedeemCode() {
     if (!redeemCode.trim()) return;
     setBusy('兑换卡密');
-    await api('/subscription/redeem', { method: 'POST', body: JSON.stringify({ code: redeemCode.trim() }) });
+    const redeemed = await api<{ plan_name: string; token_quota: number; token_balance: number }>('/subscription/redeem', { method: 'POST', body: JSON.stringify({ code: redeemCode.trim() }) });
     setRedeemCode('');
-    setNotice('卡密兑换成功，订阅已更新。');
+    setNotice(`卡密兑换成功：${redeemed.plan_name}，赠送 ${redeemed.token_quota.toLocaleString()} Token，当前余额 ${redeemed.token_balance.toLocaleString()}。`);
     await refresh();
     setBusy('');
   }
@@ -1082,6 +1156,7 @@ export function AppProvider({ children }: AppProviderProps) {
     try {
       const payload = {
         ...activationBatch,
+        plan_id: activationBatch.plan_id || null,
         batch_no: activationBatch.batch_no.trim().toUpperCase(),
         serial_prefix: activationBatch.serial_prefix.trim().toUpperCase(),
       };
@@ -1119,28 +1194,11 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   async function runLogin(account: Account, method: 'code' | 'qr') {
-    if (method === 'code') {
-      await startOrResumeAccountLogin(account, true);
-      return;
-    }
-    setBusy('启动登录');
-    try {
-      await api<LoginFlow>(`/tg-accounts/${account.id}/login/start`, {
-        method: 'POST',
-        body: JSON.stringify({ method }),
-      });
-      showResult('登录流程已启动', `${account.display_name} 已进入扫码登录，请在账号详情查看扫码状态。`);
-      await refresh();
-      if (accountDetail?.account.id === account.id) await refreshAccountDetail();
-    } catch (error) {
-      handleActionError(error);
-    } finally {
-      setBusy('');
-    }
+    await startOrResumeAccountLogin(account, method, method === 'code');
   }
 
   async function verifyAccount(account: Account) {
-    await startOrResumeAccountLogin(account);
+    await startOrResumeAccountLogin(account, account.status === '等待扫码' ? 'qr' : 'code');
   }
 
   async function submitAccountLoginCode() {
@@ -1181,7 +1239,22 @@ export function AppProvider({ children }: AppProviderProps) {
 
   async function resendAccountLoginCode() {
     if (!accountLoginForm.account) return;
-    await startOrResumeAccountLogin(accountLoginForm.account, true);
+    await startOrResumeAccountLogin(accountLoginForm.account, 'code', true);
+  }
+
+  async function checkAccountQrLogin() {
+    if (!accountLoginForm.account) return;
+    setBusy('检查扫码结果');
+    try {
+      const updated = await api<Account>(`/tg-accounts/${accountLoginForm.account.id}/login/qr/check`, { method: 'POST' });
+      await completeAccountLogin(updated);
+    } catch (error) {
+      const message = errorMessage(error);
+      setNotice(message);
+      setAccountLoginForm((current) => ({ ...current, error: message }));
+    } finally {
+      setBusy('');
+    }
   }
 
   async function healthCheck(account: Account) {
@@ -1203,13 +1276,16 @@ export function AppProvider({ children }: AppProviderProps) {
     const primaryGroup = groups.find((group) => group.id === targetIds[0]) ?? selectedGroup;
     if (!primaryGroup || !targetIds.length) return;
     setBusy('创建任务');
+    const modeLabel = campaignMode === 'mirror_forward' ? '监听转发' : campaignMode === 'ai_activity' ? 'AI 活跃' : '多账号对话脚本';
+    const endsAt = campaignMode === 'manual_draft' ? null : campaignEndsAt ? new Date(campaignEndsAt).toISOString() : null;
     const campaign = await api<Campaign>('/campaigns', {
       method: 'POST',
       body: JSON.stringify({
         tenant_id: currentUser?.tenant_id ?? 1,
         group_id: primaryGroup.id,
-        title: `${primaryGroup.title}${targetIds.length > 1 ? `等 ${targetIds.length} 个群` : ''} 活跃任务`,
-        campaign_type: '多账号对话脚本',
+        title: `${primaryGroup.title}${targetIds.length > 1 ? `等 ${targetIds.length} 个群` : ''} ${modeLabel}`,
+        campaign_type: modeLabel,
+        execution_mode: campaignMode,
         topic,
         send_window: sendWindow,
         intensity,
@@ -1220,23 +1296,33 @@ export function AppProvider({ children }: AppProviderProps) {
         respect_send_window: respectSendWindow,
         material_ids: selectedMaterialIds.join(','),
         target_group_ids: targetIds,
+        source_group_ids: campaignMode === 'mirror_forward' ? selectedSourceGroupIds : [],
         selected_account_ids_by_group: selectedAccountsByGroup,
+        run_interval_seconds: runIntervalSeconds,
+        ends_at: endsAt,
+        max_ai_tokens: campaignMode === 'ai_activity' ? maxAiTokens : null,
+        participation_min_ratio: participationMinRatio,
+        participation_max_ratio: participationMaxRatio,
+        max_messages_per_account: maxMessagesPerAccount,
+        max_drafts_per_batch: maxDraftsPerBatch,
       }),
     });
-    await api(`/campaigns/${campaign.id}/generate-drafts`, {
-      method: 'POST',
-      body: JSON.stringify({
-        count: draftCount,
-        tone,
-        use_ai: true,
-        fallback_to_mock: tenantAiSetting?.fallback_to_mock ?? false,
-        selected_account_ids_by_group: selectedAccountsByGroup,
-      }),
-    });
+    if (campaignMode === 'manual_draft') {
+      await api(`/campaigns/${campaign.id}/generate-drafts`, {
+        method: 'POST',
+        body: JSON.stringify({
+          count: draftCount,
+          tone,
+          use_ai: true,
+          fallback_to_mock: tenantAiSetting?.fallback_to_mock ?? false,
+          selected_account_ids_by_group: selectedAccountsByGroup,
+        }),
+      });
+    }
     closeModal();
-    showResult('任务已创建', '系统提示词已自动决策提示词模板，并生成草稿等待人工审核。');
+    showResult('任务已创建', campaignMode === 'manual_draft' ? '系统提示词已自动决策提示词模板，并生成草稿等待人工审核。' : '持续任务已进入排队状态，worker 会按间隔生成或转发并自动入队。');
     goToView('taskManagement');
-    setTaskManagementTab('草稿审核');
+    setTaskManagementTab(campaignMode === 'manual_draft' ? '草稿审核' : '任务列表');
     await refresh();
     setSelectedCampaignId(campaign.id);
   }
@@ -1249,6 +1335,17 @@ export function AppProvider({ children }: AppProviderProps) {
     });
     showResult('草稿已通过', '已生成排队消息任务。');
     setTaskManagementTab('发送进度');
+    await refresh();
+    setBusy('');
+  }
+
+  async function cancelCampaign(campaign: Campaign) {
+    setBusy('取消任务');
+    await api(`/campaigns/${campaign.id}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ actor: '普通用户' }),
+    });
+    showResult('任务已取消', `${campaign.title} 已停止后续运行。`);
     await refresh();
     setBusy('');
   }
@@ -1337,7 +1434,7 @@ export function AppProvider({ children }: AppProviderProps) {
       }),
     });
     showResult('归档已创建', '已生成群归档和新群初始化方案。');
-    goToView('archives');
+    goToView('groupManagement');
     await refresh();
   }
 
@@ -1436,6 +1533,128 @@ export function AppProvider({ children }: AppProviderProps) {
     closeModal();
     showResult('租户配额已更新', `${tenantForm.name} 的账号和任务配额已保存。`);
     await refresh();
+  }
+
+  async function createSubscriptionPlan() {
+    setBusy(subscriptionPlanForm.id ? '保存套餐' : '新增套餐');
+    try {
+      const payload = {
+        plan_type: subscriptionPlanForm.plan_type,
+        name: subscriptionPlanForm.name,
+        duration_days: subscriptionPlanForm.duration_days,
+        token_quota: subscriptionPlanForm.token_quota,
+        is_active: subscriptionPlanForm.is_active,
+        note: subscriptionPlanForm.note,
+      };
+      const saved = subscriptionPlanForm.id
+        ? await api<SubscriptionPlan>(`/admin/subscription-plans/${subscriptionPlanForm.id}`, { method: 'PATCH', body: JSON.stringify(payload) })
+        : await api<SubscriptionPlan>('/admin/subscription-plans', { method: 'POST', body: JSON.stringify(payload) });
+      closeModal();
+      setNotice(`套餐已保存：${saved.name}`);
+      setSubscriptionPlanForm({ id: null, plan_type: 'monthly', name: '月卡', duration_days: 30, token_quota: 500000, is_active: true, note: '' });
+      await refresh();
+    } catch (error) {
+      handleActionError(error);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  function openSubscriptionPlanEdit(plan: SubscriptionPlan) {
+    setSubscriptionPlanForm({
+      id: plan.id,
+      plan_type: plan.plan_type,
+      name: plan.name,
+      duration_days: plan.duration_days,
+      token_quota: plan.token_quota,
+      is_active: plan.is_active,
+      note: plan.note,
+    });
+    setModal({ type: 'subscriptionPlanEdit' });
+  }
+
+  async function saveSubscriptionPlan() {
+    await createSubscriptionPlan();
+  }
+
+  function openAdminUserEdit(user: AdminUser) {
+    setAdminUserForm({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone ?? '',
+      role: user.role,
+      subscription_status: user.subscription_status,
+      menu_permissions: user.menu_permissions.includes('*') ? ['overview', 'accounts', 'taskManagement', 'groupManagement', 'usageReports'] : user.menu_permissions,
+      is_active: user.is_active,
+    });
+    setSelectedAdminUserId(user.id);
+    void loadUserTokenLedgers(user.id);
+    setModal({ type: 'adminUserEdit' });
+  }
+
+  async function saveAdminUser() {
+    if (!adminUserForm.id) return;
+    setBusy('保存用户');
+    try {
+      const saved = await api<AdminUser>(`/admin/users/${adminUserForm.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: adminUserForm.name,
+          email: adminUserForm.email,
+          phone: adminUserForm.phone || null,
+          role: adminUserForm.role,
+          subscription_status: adminUserForm.subscription_status,
+          menu_permissions: adminUserForm.menu_permissions,
+          is_active: adminUserForm.is_active,
+        }),
+      });
+      setNotice(`用户已保存：${saved.name}`);
+      closeModal();
+      await refresh();
+    } catch (error) {
+      handleActionError(error);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function resetAdminUserPassword(user: AdminUser, newPassword: string) {
+    setBusy('重置密码');
+    try {
+      await api<AdminUser>(`/admin/users/${user.id}/reset-password`, {
+        method: 'POST',
+        body: JSON.stringify({ new_password: newPassword }),
+      });
+      setNotice(`${user.name} 的密码已重置。`);
+    } catch (error) {
+      handleActionError(error);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function adjustAdminUserTokens(user: AdminUser) {
+    setBusy('调整 Token');
+    try {
+      const saved = await api<AdminUser>(`/admin/users/${user.id}/token-adjustments`, {
+        method: 'POST',
+        body: JSON.stringify(tokenAdjustmentForm),
+      });
+      setNotice(`${saved.name} 当前 Token 余额：${saved.token_balance}`);
+      await loadUserTokenLedgers(user.id);
+      await refresh();
+    } catch (error) {
+      handleActionError(error);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function loadUserTokenLedgers(userId: number) {
+    const ledgers = await api<TokenLedger[]>(`/admin/users/${userId}/token-ledgers`);
+    setSelectedAdminUserId(userId);
+    setSelectedUserTokenLedgers(ledgers);
   }
 
   async function toggleDeveloperApp(app: DeveloperApp) {
@@ -1596,6 +1815,41 @@ export function AppProvider({ children }: AppProviderProps) {
     await refresh();
   }
 
+  function openContentKeywordRuleEdit(rule: ContentKeywordRule) {
+    setKeywordRuleForm({
+      id: rule.id,
+      keyword: rule.keyword,
+      match_type: rule.match_type,
+      is_active: rule.is_active,
+      note: rule.note,
+    });
+    setModal({ type: 'keywordRuleEdit' });
+  }
+
+  async function createContentKeywordRule() {
+    setBusy('新增关键词');
+    const rule = await api<ContentKeywordRule>('/content-keyword-rules', {
+      method: 'POST',
+      body: JSON.stringify({ ...keywordRuleForm, tenant_id: currentUser?.tenant_id ?? 1 }),
+    });
+    closeModal();
+    showResult('关键词已新增', `已新增过滤关键词：${rule.keyword}`);
+    setKeywordRuleForm({ id: null, keyword: '', match_type: 'contains', is_active: true, note: '' });
+    await refresh();
+  }
+
+  async function saveContentKeywordRule() {
+    if (!keywordRuleForm.id) return createContentKeywordRule();
+    setBusy('保存关键词');
+    const rule = await api<ContentKeywordRule>(`/content-keyword-rules/${keywordRuleForm.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(keywordRuleForm),
+    });
+    closeModal();
+    showResult('关键词已保存', `已更新过滤关键词：${rule.keyword}`);
+    await refresh();
+  }
+
   function toggleMaterial(materialId: number) {
     setSelectedMaterialIds((current) => current.includes(materialId) ? current.filter((id) => id !== materialId) : [...current, materialId]);
   }
@@ -1666,6 +1920,20 @@ export function AppProvider({ children }: AppProviderProps) {
     setDeveloperApps,
     tenants,
     setTenants,
+    subscriptionPlans,
+    setSubscriptionPlans,
+    subscriptionPlanForm,
+    setSubscriptionPlanForm,
+    adminUsers,
+    setAdminUsers,
+    selectedAdminUserId,
+    setSelectedAdminUserId,
+    selectedUserTokenLedgers,
+    setSelectedUserTokenLedgers,
+    adminUserForm,
+    setAdminUserForm,
+    tokenAdjustmentForm,
+    setTokenAdjustmentForm,
 
     // Activation & Usage
     activationCodes,
@@ -1694,6 +1962,8 @@ export function AppProvider({ children }: AppProviderProps) {
     setSchedulingSetting,
     materials,
     setMaterials,
+    contentKeywordRules,
+    setContentKeywordRules,
 
     // Groups & Campaigns
     groups,
@@ -1766,8 +2036,12 @@ export function AppProvider({ children }: AppProviderProps) {
     setSelectedGroupId,
     campaignStep,
     setCampaignStep,
+    campaignMode,
+    setCampaignMode,
     selectedTargetGroupIds,
     setSelectedTargetGroupIds,
+    selectedSourceGroupIds,
+    setSelectedSourceGroupIds,
     recommendedAccounts,
     setRecommendedAccounts,
     selectedAccountsByGroup,
@@ -1794,6 +2068,20 @@ export function AppProvider({ children }: AppProviderProps) {
     setBatchIntervalSeconds,
     respectSendWindow,
     setRespectSendWindow,
+    campaignEndsAt,
+    setCampaignEndsAt,
+    maxAiTokens,
+    setMaxAiTokens,
+    runIntervalSeconds,
+    setRunIntervalSeconds,
+    participationMinRatio,
+    setParticipationMinRatio,
+    participationMaxRatio,
+    setParticipationMaxRatio,
+    maxMessagesPerAccount,
+    setMaxMessagesPerAccount,
+    maxDraftsPerBatch,
+    setMaxDraftsPerBatch,
     taskStatusFilter,
     setTaskStatusFilter,
     groupPolicy,
@@ -1810,6 +2098,8 @@ export function AppProvider({ children }: AppProviderProps) {
     setPromptTemplateForm,
     materialForm,
     setMaterialForm,
+    keywordRuleForm,
+    setKeywordRuleForm,
 
     // Modal & Dialog
     modal,
@@ -1864,6 +2154,7 @@ export function AppProvider({ children }: AppProviderProps) {
     openAccountProfileEdit,
     pollVerificationCodes,
     toggleTargetGroup,
+    toggleSourceGroup,
     recommendAccounts,
     toggleRecommendedAccount,
     setGroupAccountsSelected,
@@ -1885,9 +2176,11 @@ export function AppProvider({ children }: AppProviderProps) {
     submitAccountLoginCode,
     submitAccountLoginPassword,
     resendAccountLoginCode,
+    checkAccountQrLogin,
     healthCheck,
     syncAccountGroups,
     createCampaignAndDrafts,
+    cancelCampaign,
     approveDraft,
     rejectDraft,
     approveAllDrafts,
@@ -1906,6 +2199,14 @@ export function AppProvider({ children }: AppProviderProps) {
     checkDeveloperApp,
     openTenantEdit,
     saveTenantQuota,
+    createSubscriptionPlan,
+    openSubscriptionPlanEdit,
+    saveSubscriptionPlan,
+    openAdminUserEdit,
+    saveAdminUser,
+    resetAdminUserPassword,
+    adjustAdminUserTokens,
+    loadUserTokenLedgers,
     createAiProvider,
     openAiProviderEdit,
     toggleAiProvider,
@@ -1914,11 +2215,14 @@ export function AppProvider({ children }: AppProviderProps) {
     saveSchedulingSetting,
     createPromptTemplate,
     createMaterial,
+    createContentKeywordRule,
+    openContentKeywordRuleEdit,
+    saveContentKeywordRule,
     toggleMaterial,
     accountName,
     groupName,
     choosePoolSendAccount,
-  }), [token, currentUser, authMode, loginEmail, loginPassword, registerForm, changePasswordForm, captchaChallenge, captchaInput, captchaToken, captchaError, captchaLoading, activeView, runtime, overview, accountPools, selectedPoolId, accounts, developerApps, tenants, activationCodes, activationCodePage, activationCodeFilters, usageLedgers, usageSummary, redeemCode, activationBatch, aiProviders, promptTemplates, tenantAiSetting, schedulingSetting, materials, groups, campaigns, drafts, tasks, selectedCampaignId, taskManagementTab, archives, archiveDetail, audits, auditFilters, accountDetail, accountContacts, selectedDirectContact, accountDetailTab, accountPoolDetail, poolDirectAccountId, returnAfterVerification, groupDetail, campaignDetail, draftEditTarget, draftEditForm, accountCreateForm, accountPoolForm, cloneForm, loginAfterCreate, accountLoginForm, profileForm, avatarFile, selectedGroupId, campaignStep, selectedTargetGroupIds, recommendedAccounts, selectedAccountsByGroup, topic, sendWindow, intensity, draftCount, tone, selectedAiProviderId, selectedMaterialIds, jitterMinSeconds, jitterMaxSeconds, batchIntervalSeconds, respectSendWindow, taskStatusFilter, groupPolicy, developerAppForm, tenantForm, aiProviderForm, promptTemplateForm, materialForm, modal, resultDialog, busy, notice, directMessageForm, selectedPool, selectedGroup, selectedCampaign, selectedCampaignDrafts, selectedCampaignTasks, targetGroupsMissingAccounts, taskSummary, refresh, showResult, closeModal, openConfirm, openCampaignModal, openAccountCreate, openAccountDetail, openAccountPoolDetail, refreshAccountPoolDetail, createAccount, createAccountPool, moveCurrentAccountPool, createClonePlan, confirmClonePlan, retryCloneItem, confirmVerificationTask, dismissVerificationTask, refreshAccountDetail, syncAccountContacts, queueAccountSyncNow, startDirectMessageToContact, openGroupDetail, loadCampaignDetail, openDraftEdit, saveDraftEdit, avatarUrl, openAccountProfileEdit, pollVerificationCodes, toggleTargetGroup, recommendAccounts, toggleRecommendedAccount, setGroupAccountsSelected, goCampaignAccountStep, goCampaignContentStep, createDirectMessageTask, saveAccountProfile, retryAccountProfileSync, login, register, changePassword, submitRedeemCode, loadActivationCodes, createActivationCodes, disableActivationCode, logout, runLogin, verifyAccount, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, healthCheck, syncAccountGroups, createCampaignAndDrafts, approveDraft, rejectDraft, approveAllDrafts, cancelTask, dispatchTask, drainQueue, retryTask, authorizeSelectedGroup, createArchive, saveGroupPolicy, openArchiveDetail, exportArchive, createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp, openTenantEdit, saveTenantQuota, createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider, createPromptTemplate, saveTenantAiSetting, saveSchedulingSetting, createMaterial, toggleMaterial, accountName, groupName, choosePoolSendAccount, refreshCaptchaChallenge, verifyCaptcha]);
+  }), [token, currentUser, authMode, loginEmail, loginPassword, registerForm, changePasswordForm, captchaChallenge, captchaInput, captchaToken, captchaError, captchaLoading, activeView, runtime, overview, accountPools, selectedPoolId, accounts, developerApps, tenants, subscriptionPlans, subscriptionPlanForm, adminUsers, selectedAdminUserId, selectedUserTokenLedgers, adminUserForm, tokenAdjustmentForm, activationCodes, activationCodePage, activationCodeFilters, usageLedgers, usageSummary, redeemCode, activationBatch, aiProviders, promptTemplates, tenantAiSetting, schedulingSetting, materials, contentKeywordRules, groups, campaigns, drafts, tasks, selectedCampaignId, taskManagementTab, archives, archiveDetail, audits, auditFilters, accountDetail, accountContacts, selectedDirectContact, accountDetailTab, accountPoolDetail, poolDirectAccountId, returnAfterVerification, groupDetail, campaignDetail, draftEditTarget, draftEditForm, accountCreateForm, accountPoolForm, cloneForm, loginAfterCreate, accountLoginForm, profileForm, avatarFile, selectedGroupId, campaignStep, campaignMode, selectedTargetGroupIds, selectedSourceGroupIds, recommendedAccounts, selectedAccountsByGroup, topic, sendWindow, intensity, draftCount, tone, selectedAiProviderId, selectedMaterialIds, jitterMinSeconds, jitterMaxSeconds, batchIntervalSeconds, respectSendWindow, campaignEndsAt, maxAiTokens, runIntervalSeconds, participationMinRatio, participationMaxRatio, maxMessagesPerAccount, maxDraftsPerBatch, taskStatusFilter, groupPolicy, developerAppForm, tenantForm, aiProviderForm, promptTemplateForm, materialForm, keywordRuleForm, modal, resultDialog, busy, notice, directMessageForm, selectedPool, selectedGroup, selectedCampaign, selectedCampaignDrafts, selectedCampaignTasks, targetGroupsMissingAccounts, taskSummary, refresh, showResult, closeModal, openConfirm, openCampaignModal, openAccountCreate, openAccountDetail, openAccountPoolDetail, refreshAccountPoolDetail, createAccount, createAccountPool, moveCurrentAccountPool, createClonePlan, confirmClonePlan, retryCloneItem, confirmVerificationTask, dismissVerificationTask, refreshAccountDetail, syncAccountContacts, queueAccountSyncNow, startDirectMessageToContact, openGroupDetail, loadCampaignDetail, openDraftEdit, saveDraftEdit, avatarUrl, openAccountProfileEdit, pollVerificationCodes, toggleTargetGroup, toggleSourceGroup, recommendAccounts, toggleRecommendedAccount, setGroupAccountsSelected, goCampaignAccountStep, goCampaignContentStep, createDirectMessageTask, saveAccountProfile, retryAccountProfileSync, login, register, changePassword, submitRedeemCode, loadActivationCodes, createActivationCodes, disableActivationCode, logout, runLogin, verifyAccount, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, checkAccountQrLogin, healthCheck, syncAccountGroups, createCampaignAndDrafts, cancelCampaign, approveDraft, rejectDraft, approveAllDrafts, cancelTask, dispatchTask, drainQueue, retryTask, authorizeSelectedGroup, createArchive, saveGroupPolicy, openArchiveDetail, exportArchive, createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp, openTenantEdit, saveTenantQuota, createSubscriptionPlan, openSubscriptionPlanEdit, saveSubscriptionPlan, openAdminUserEdit, saveAdminUser, resetAdminUserPassword, adjustAdminUserTokens, loadUserTokenLedgers, createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider, createPromptTemplate, saveTenantAiSetting, saveSchedulingSetting, createMaterial, createContentKeywordRule, openContentKeywordRuleEdit, saveContentKeywordRule, toggleMaterial, accountName, groupName, choosePoolSendAccount, refreshCaptchaChallenge, verifyCaptcha]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

@@ -14,14 +14,19 @@ from app.auth import (
 from app.database import get_session
 from app.common.http import forbidden
 from app.schemas import (
-    ActivationCodeCreateRequest, ActivationCodeOut, ActivationCodePageOut, AiUsageLedgerOut,
-    AiUsageSummaryOut, AuthChangePasswordRequest, AuthLoginRequest, AuthRegisterRequest, AuthTokenOut,
+    ActivationCodeCreateRequest, ActivationCodeOut, ActivationCodePageOut, AdminResetPasswordRequest,
+    AdminUserOut, AdminUserUpdate, AiUsageLedgerOut, AiUsageSummaryOut,
+    AuthChangePasswordRequest, AuthLoginRequest, AuthRegisterRequest, AuthTokenOut,
     AuthUserOut, CaptchaChallengeOut, CaptchaVerifyOut, CaptchaVerifyRequest,
-    SubscriptionRedeemOut, SubscriptionRedeemRequest,
+    SubscriptionPlanCreate, SubscriptionPlanOut, SubscriptionPlanUpdate,
+    SubscriptionRedeemOut, SubscriptionRedeemRequest, TokenAdjustmentRequest, UserTokenLedgerOut,
 )
 from app.services import (
-    change_user_password, create_user_activation_codes, create_user_registration, disable_activation_code,
-    list_activation_codes, list_usage_ledgers, list_usage_summary, redeem_activation_code,
+    adjust_user_tokens, change_user_password, create_subscription_plan,
+    create_user_activation_codes, create_user_registration, disable_activation_code,
+    list_activation_codes, list_admin_users, list_subscription_plans, list_usage_ledgers,
+    list_usage_summary, list_user_token_ledgers, redeem_activation_code,
+    reset_admin_user_password, update_admin_user, update_subscription_plan,
 )
 
 router = APIRouter()
@@ -117,6 +122,117 @@ def get_activation_codes(
     if not current_user.is_platform_admin:
         raise forbidden("platform admin required")
     return list_activation_codes(session, page=page, page_size=page_size, search=search, status=status, plan_type=plan_type, batch_no=batch_no, start_at=start_at, end_at=end_at)
+
+
+@router.get("/api/admin/subscription-plans", response_model=list[SubscriptionPlanOut])
+def get_subscription_plans(
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    if not current_user.is_platform_admin:
+        raise forbidden("platform admin required")
+    return list_subscription_plans(session)
+
+
+@router.post("/api/admin/subscription-plans", response_model=SubscriptionPlanOut)
+def post_subscription_plan(
+    payload: SubscriptionPlanCreate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    if not current_user.is_platform_admin:
+        raise forbidden("platform admin required")
+    try:
+        return create_subscription_plan(session, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/api/admin/subscription-plans/{plan_id}", response_model=SubscriptionPlanOut)
+def patch_subscription_plan(
+    plan_id: int,
+    payload: SubscriptionPlanUpdate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    if not current_user.is_platform_admin:
+        raise forbidden("platform admin required")
+    try:
+        return update_subscription_plan(session, plan_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/admin/users", response_model=list[AdminUserOut])
+def get_admin_users(
+    search: str | None = None,
+    role: str | None = None,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    if not current_user.is_platform_admin:
+        raise forbidden("platform admin required")
+    return list_admin_users(session, search=search, role=role, tenant_id=tenant_id)
+
+
+@router.patch("/api/admin/users/{user_id}", response_model=AdminUserOut)
+def patch_admin_user(
+    user_id: int,
+    payload: AdminUserUpdate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    if not current_user.is_platform_admin:
+        raise forbidden("platform admin required")
+    try:
+        return update_admin_user(session, user_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/admin/users/{user_id}/reset-password", response_model=AdminUserOut)
+def post_admin_user_reset_password(
+    user_id: int,
+    payload: AdminResetPasswordRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    if not current_user.is_platform_admin:
+        raise forbidden("platform admin required")
+    try:
+        return reset_admin_user_password(session, user_id, payload.new_password, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/admin/users/{user_id}/token-adjustments", response_model=AdminUserOut)
+def post_admin_user_token_adjustment(
+    user_id: int,
+    payload: TokenAdjustmentRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    if not current_user.is_platform_admin:
+        raise forbidden("platform admin required")
+    try:
+        return adjust_user_tokens(session, user_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/admin/users/{user_id}/token-ledgers", response_model=list[UserTokenLedgerOut])
+def get_admin_user_token_ledgers(
+    user_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    if not current_user.is_platform_admin:
+        raise forbidden("platform admin required")
+    try:
+        return list_user_token_ledgers(session, user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/admin/activation-codes", response_model=list[ActivationCodeOut])

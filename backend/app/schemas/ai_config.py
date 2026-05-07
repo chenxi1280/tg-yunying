@@ -159,6 +159,34 @@ class MaterialOut(ApiModel):
     last_used_at: datetime | None
 
 
+# ── Content keyword rules ──
+
+class ContentKeywordRuleCreate(BaseModel):
+    tenant_id: int = 1
+    keyword: str = Field(..., min_length=1, max_length=160)
+    match_type: str = "contains"
+    is_active: bool = True
+    note: str = ""
+
+
+class ContentKeywordRuleUpdate(BaseModel):
+    keyword: str | None = Field(default=None, min_length=1, max_length=160)
+    match_type: str | None = None
+    is_active: bool | None = None
+    note: str | None = None
+
+
+class ContentKeywordRuleOut(ApiModel):
+    id: int
+    tenant_id: int
+    keyword: str
+    match_type: str
+    is_active: bool
+    note: str
+    created_at: datetime
+    updated_at: datetime
+
+
 # ── AI Usage ──
 
 class AiUsageLedgerOut(ApiModel):
@@ -204,5 +232,6 @@ __all__ = [
     "TenantAiSettingUpdate", "TenantAiSettingOut",
     "SchedulingSettingUpdate", "SchedulingSettingOut",
     "MaterialCreate", "MaterialUpdate", "MaterialOut",
+    "ContentKeywordRuleCreate", "ContentKeywordRuleUpdate", "ContentKeywordRuleOut",
     "AiUsageLedgerOut", "AiUsageSummaryOut",
 ]

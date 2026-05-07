@@ -39,6 +39,9 @@ export type CurrentUser = {
   subscription_expires_at: string | null;
   subscription_days_remaining: number;
   can_use_core_features: boolean;
+  token_balance: number;
+  token_quota_total: number;
+  menu_permissions: string[];
 };
 
 export type Tenant = {
@@ -64,8 +67,11 @@ export type CaptchaVerifyResponse = {
 export type ActivationCode = {
   id: number;
   code: string;
+  plan_id: number | null;
   plan_type: string;
+  plan_name: string;
   duration_days: number;
+  token_quota: number;
   status: string;
   batch_no: string;
   serial_prefix: string;
@@ -98,10 +104,78 @@ export type ActivationCodeFilters = {
 
 export type ActivationCodeCreateForm = {
   plan_type: string;
+  plan_id: number | '';
   quantity: number;
   batch_no: string;
   serial_prefix: string;
   note: string;
+};
+
+export type SubscriptionPlan = {
+  id: number;
+  plan_type: string;
+  name: string;
+  duration_days: number;
+  token_quota: number;
+  is_active: boolean;
+  note: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SubscriptionPlanForm = {
+  id: number | null;
+  plan_type: string;
+  name: string;
+  duration_days: number;
+  token_quota: number;
+  is_active: boolean;
+  note: string;
+};
+
+export type AdminUser = {
+  id: number;
+  tenant_id: number | null;
+  tenant_name: string | null;
+  name: string;
+  role: string;
+  email: string;
+  phone: string | null;
+  subscription_status: string;
+  subscription_started_at: string | null;
+  subscription_expires_at: string | null;
+  subscription_days_remaining: number;
+  token_balance: number;
+  token_quota_total: number;
+  menu_permissions: string[];
+  is_active: boolean;
+  created_at: string;
+  last_login_at: string | null;
+};
+
+export type TokenLedger = {
+  id: number;
+  tenant_id: number | null;
+  user_id: number;
+  change_type: string;
+  delta_tokens: number;
+  balance_after: number;
+  related_activation_code_id: number | null;
+  related_ai_usage_ledger_id: number | null;
+  reason: string;
+  actor: string;
+  created_at: string;
+};
+
+export type AdminUserForm = {
+  id: number | null;
+  name: string;
+  email: string;
+  phone: string;
+  role: string;
+  subscription_status: string;
+  menu_permissions: string[];
+  is_active: boolean;
 };
 
 export type UsageLedger = {
@@ -162,7 +236,8 @@ export type LoginFlow = {
 
 export type AccountLoginForm = {
   account: Account | null;
-  step: 'code' | 'password';
+  step: 'method' | 'code' | 'qr' | 'password';
+  method: 'code' | 'qr';
   code: string;
   password_2fa: string;
   flow: LoginFlow | null;
@@ -279,6 +354,17 @@ export type Material = {
   usage_count: number;
 };
 
+export type ContentKeywordRule = {
+  id: number;
+  tenant_id: number;
+  keyword: string;
+  match_type: string;
+  is_active: boolean;
+  note: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Contact = {
   id: number;
   account_id: number;
@@ -323,6 +409,7 @@ export type Campaign = {
   title: string;
   campaign_type: string;
   topic: string;
+  execution_mode: string;
   send_window: string;
   intensity: string;
   ai_provider_id: number | null;
@@ -333,7 +420,19 @@ export type Campaign = {
   respect_send_window: boolean | null;
   material_ids: string;
   target_group_ids: string;
+  source_group_ids: string;
   selected_account_ids_by_group: string;
+  run_interval_seconds: number;
+  ends_at: string | null;
+  max_ai_tokens: number | null;
+  used_ai_tokens: number;
+  last_run_at: string | null;
+  last_error: string;
+  participation_min_ratio: number;
+  participation_max_ratio: number;
+  max_messages_per_account: number;
+  max_drafts_per_batch: number;
+  filtered_count: number;
   status: string;
 };
 
@@ -383,6 +482,7 @@ export type MessageTask = {
 export type ArchiveItem = {
   id: number;
   group_id: number;
+  collection_account_id?: number | null;
   title: string;
   status: string;
   sync_mode: string;
@@ -391,13 +491,16 @@ export type ArchiveItem = {
   member_count: number;
   summary: string;
   new_group_plan: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  last_synced_at?: string | null;
 };
 
 export type ArchiveDetail = {
   archive: ArchiveItem;
-  messages: Array<{ id: number; sender_name: string; content: string; message_type: string; sent_at: string }>;
-  members: Array<{ id: number; display_name: string; username: string | null; activity_score: number; tags: string }>;
-  invite_candidates: Array<{ id: number; display_name: string; username: string | null; activity_score: number; tags: string }>;
+  messages: Array<{ id: number; sender_name: string; sender_peer_id?: string; remote_message_id?: string; content: string; message_type: string; sent_at: string }>;
+  members: Array<{ id: number; display_name: string; username: string | null; peer_id?: string; activity_score: number; tags: string; last_seen_at?: string | null }>;
+  invite_candidates: Array<{ id: number; display_name: string; username: string | null; peer_id?: string; activity_score: number; tags: string; last_seen_at?: string | null }>;
 };
 
 export type ArchiveExport = ArchiveDetail & {
@@ -614,10 +717,15 @@ export type ModalState =
   | { type: 'developerAppCreate' }
   | { type: 'developerAppEdit' }
   | { type: 'tenantEdit' }
+  | { type: 'subscriptionPlanCreate' }
+  | { type: 'subscriptionPlanEdit' }
+  | { type: 'adminUserEdit' }
   | { type: 'aiProviderCreate' }
   | { type: 'aiProviderEdit' }
   | { type: 'promptTemplateCreate' }
   | { type: 'materialCreate' }
+  | { type: 'keywordRuleCreate' }
+  | { type: 'keywordRuleEdit' }
   | { type: 'tenantAiEdit' }
   | { type: 'schedulingEdit' }
   | { type: 'changePassword' }

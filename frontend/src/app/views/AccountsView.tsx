@@ -5,7 +5,7 @@ import type { Account, AccountPool } from '../types';
 import type { RuntimeConfig } from '../types';
 import { StatusBadge } from '../components/shared';
 
-const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待2FA', '需重新登录', '异常']);
+const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', '异常']);
 
 interface Props {
   accounts: Account[];
@@ -59,7 +59,7 @@ export default function AccountsView({
           <Space direction="vertical" size={0}>
             <Typography.Text strong>{account.display_name}</Typography.Text>
             <Typography.Text type="secondary">@{account.username ?? '未设置'} / {account.phone_masked}</Typography.Text>
-            <Typography.Text type="secondary">账号池：{account.pool_name}</Typography.Text>
+            <Typography.Text type="secondary">账号分组：{account.pool_name}</Typography.Text>
             <Typography.Text type="secondary">昵称：{[account.tg_first_name, account.tg_last_name].filter(Boolean).join(' ') || '未设置'}</Typography.Text>
           </Space>
         </Space>
@@ -103,11 +103,10 @@ export default function AccountsView({
       render: (_, account) => (
         <Space wrap>
           {LOGIN_REQUIRED_STATUSES.has(account.status) ? (
-            <Button type="primary" size="small" onClick={() => onVerifyAccount(account)}>完成登录</Button>
+            <Button type="primary" size="small" onClick={() => onVerifyAccount(account)}>{account.status === '待登录' ? '完成登录' : '继续登录'}</Button>
           ) : account.status === '在线' ? (
             <>
               <Button type="primary" size="small" onClick={() => onOpenAccountDetail(account)}>详情</Button>
-              <Button size="small" onClick={() => onRunLogin(account, 'qr')}>扫码</Button>
               <Button size="small" onClick={() => onHealthCheck(account)}>检查</Button>
               <Button size="small" onClick={() => onSyncGroups(account)}>同步群</Button>
             </>
@@ -122,16 +121,15 @@ export default function AccountsView({
   return (
     <Card
       className="panel"
-      title="TG 账号池"
+      title="TG 账号管理"
       extra={(
         <Space wrap>
-          <Button onClick={onCreatePoolClick}>新增账号池</Button>
+          <Button onClick={onCreatePoolClick}>新增账号分组</Button>
           <Button disabled={!runtime?.can_create_tg_account} onClick={() => onCreateAccount(false)}>新增账号</Button>
-          <Button type="primary" disabled={!runtime?.can_create_tg_account} onClick={() => onCreateAccount(true)}>新增登录账号</Button>
         </Space>
       )}
     >
-      <Typography.Text type="secondary">按客户账号池分组管理，登录、资料、克隆和验证辅助都在账号详情中处理</Typography.Text>
+      <Typography.Text type="secondary">按账号分组管理，登录、资料、克隆和验证辅助都在账号详情中处理</Typography.Text>
       {!runtime?.can_create_tg_account && (
         <Alert
           className="sub-panel compact-panel"
@@ -147,11 +145,11 @@ export default function AccountsView({
           value={selectedPoolId === '' ? 'all' : String(selectedPoolId)}
           onChange={(value) => setSelectedPoolId(value === 'all' ? '' : Number(value))}
           options={[
-            { label: '全部账号池', value: 'all' },
+            { label: '全部账号分组', value: 'all' },
             ...accountPools.map((pool) => ({ label: `${pool.name} ${pool.account_count}`, value: String(pool.id) })),
           ]}
         />
-        {selectedPool && <Button type="primary" onClick={() => onOpenPoolDetail(selectedPool)}>进入账号池</Button>}
+        {selectedPool && <Button type="primary" onClick={() => onOpenPoolDetail(selectedPool)}>进入账号分组</Button>}
       </Space>
       <Table<Account>
         className="tg-table"

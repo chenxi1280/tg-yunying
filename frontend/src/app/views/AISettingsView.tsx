@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button, Card, Descriptions, Empty, List, Space, Typography } from 'antd';
-import type { AiProvider, PromptTemplate, TenantAiSetting, SchedulingSetting, Material } from '../types';
+import type { AiProvider, PromptTemplate, TenantAiSetting, SchedulingSetting, Material, ContentKeywordRule } from '../types';
 import { StatusBadge, Badge } from '../components/shared';
 import { statusAccent } from '../utils';
 
@@ -10,6 +10,7 @@ interface Props {
   tenantAiSetting: TenantAiSetting | null;
   schedulingSetting: SchedulingSetting | null;
   materials: Material[];
+  contentKeywordRules: ContentKeywordRule[];
   currentUserRole: string | undefined;
   onCreateProvider: () => void;
   onEditProvider: (provider: AiProvider) => void;
@@ -19,6 +20,8 @@ interface Props {
   onEditScheduling: () => void;
   onCreatePromptTemplate: () => void;
   onCreateMaterial: () => void;
+  onCreateKeywordRule: () => void;
+  onEditKeywordRule: (rule: ContentKeywordRule) => void;
 }
 
 export default function AISettingsView({
@@ -27,6 +30,7 @@ export default function AISettingsView({
   tenantAiSetting,
   schedulingSetting,
   materials,
+  contentKeywordRules,
   currentUserRole,
   onCreateProvider,
   onEditProvider,
@@ -36,6 +40,8 @@ export default function AISettingsView({
   onEditScheduling,
   onCreatePromptTemplate,
   onCreateMaterial,
+  onCreateKeywordRule,
+  onEditKeywordRule,
 }: Props) {
   return (
     <section className="view-grid">
@@ -131,6 +137,27 @@ export default function AISettingsView({
               </List.Item>
             );
           }}
+        />
+      </Card>
+
+      <Card
+        className="panel"
+        title="关键词库"
+        extra={<Button size="small" onClick={onCreateKeywordRule}>新增关键词</Button>}
+      >
+        <Typography.Text type="secondary">持续任务和发送前校验会合并租户关键词与群规则</Typography.Text>
+        <List
+          className="mini-list"
+          dataSource={contentKeywordRules}
+          locale={{ emptyText: '暂无关键词规则。' }}
+          renderItem={(rule) => (
+            <List.Item actions={[<Button size="small" onClick={() => onEditKeywordRule(rule)}>编辑</Button>]}>
+              <List.Item.Meta
+                title={<Space><StatusBadge status={rule.is_active ? '已启用' : '禁用'} />{rule.keyword}</Space>}
+                description={rule.note || rule.match_type}
+              />
+            </List.Item>
+          )}
         />
       </Card>
     </section>

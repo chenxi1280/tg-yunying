@@ -45,25 +45,25 @@ export function AccountPoolDetailModal({
   onSetModal, accountName,
 }: AccountPoolDetailModalProps) {
   return (
-    <Modal title={`${accountPoolDetail.pool.name} 账号池`} size="large" onClose={onClose}>
+    <Modal title={`${accountPoolDetail.pool.name} 账号分组`} size="large" onClose={onClose}>
       <Descriptions
         className="detail-list"
         size="small"
         column={2}
         items={[
-          { key: 'accounts', label: '池内账号', children: `${accountPoolDetail.stats.accounts ?? 0} 个` },
+          { key: 'accounts', label: '组内账号', children: `${accountPoolDetail.stats.accounts ?? 0} 个` },
           { key: 'online', label: '在线账号', children: `${accountPoolDetail.stats.online ?? 0} 个` },
           { key: 'contacts', label: '云联系人', children: `${accountPoolDetail.stats.contacts ?? 0} 个` },
           { key: 'verification', label: '待处理验证', children: <StatusBadge status={(accountPoolDetail.stats.verification_tasks ?? 0) ? '待处理' : '已完成'} label={accountPoolDetail.stats.verification_tasks ?? 0} /> },
         ]}
       />
       <div className="flow-sections">
-        <Card className="sub-panel compact-panel" title="账号" extra={<Button size="small" onClick={() => onOpenAccountCreate(true)}>新增登录账号</Button>}>
+        <Card className="sub-panel compact-panel" title="账号" extra={<Button size="small" onClick={() => onOpenAccountCreate(true)}>新增账号</Button>}>
           <Typography.Text type="secondary">从池内账号进入详情、登录、同步和资料管理。</Typography.Text>
           <List
             className="mini-list"
             dataSource={accountPoolDetail.accounts}
-            locale={{ emptyText: '这个账号池还没有账号。' }}
+            locale={{ emptyText: '这个账号分组还没有账号。' }}
             renderItem={(account) => (
               <List.Item className={statusAccent(account.status)} actions={[<Button size="small" onClick={() => onOpenAccountDetail(account)}>进入账号</Button>]}>
                 <List.Item.Meta
@@ -75,7 +75,7 @@ export function AccountPoolDetailModal({
           />
         </Card>
 
-        <Card className="sub-panel compact-panel" title="云联系人发送" extra={<Button size="small" onClick={onRefreshAccountPoolDetail}>刷新账号池</Button>}>
+        <Card className="sub-panel compact-panel" title="云联系人发送" extra={<Button size="small" onClick={onRefreshAccountPoolDetail}>刷新账号分组</Button>}>
           <Typography.Text type="secondary">先选择发送账号，再从已同步联系人或群友中选择对象。</Typography.Text>
           <div className="policy-grid">
             <label>发送账号<Select value={poolDirectAccountId || ''} onChange={(value) => setPoolDirectAccountId(Number(value) || '')} options={[{ value: '', label: '选择发送账号' }, ...accountPoolDetail.accounts.map((account) => ({ value: account.id, label: `${account.display_name} / ${account.status === '在线' ? '可发送' : account.status}`, disabled: account.status !== '在线' }))]} /></label>
@@ -233,7 +233,7 @@ export function AccountDetailModal({
         column={3}
         items={[
           { key: 'status', label: '账号状态', children: <StatusBadge status={accountDetail.account.status} /> },
-          { key: 'pool', label: '所属账号池', children: accountDetail.account.pool_name },
+          { key: 'pool', label: '所属账号分组', children: accountDetail.account.pool_name },
           { key: 'profile', label: '资料同步', children: <StatusBadge status={accountDetail.account.profile_sync_status} /> },
           { key: 'groups', label: '加入群聊', children: `${accountDetail.stats.joined_groups ?? 0} 个` },
           { key: 'records', label: '发送记录', children: `${accountDetail.stats.message_records ?? 0} 条` },
@@ -256,7 +256,7 @@ export function AccountDetailModal({
             </div>
             <div className="row-actions">
               <Button type="primary" size="small" onClick={onOpenAccountProfileEdit}>编辑资料</Button>
-              <Button size="small" onClick={() => onSetModal({ type: 'accountMovePool' })}>移动账号池</Button>
+              <Button size="small" onClick={() => onSetModal({ type: 'accountMovePool' })}>移动账号分组</Button>
               <Button size="small" onClick={() => {
                 onSetCloneForm({ target_account_ids: accounts.filter((item) => item.id !== accountDetail.account.id).slice(0, 2).map((item) => item.id), clone_contacts: true, clone_groups: true });
                 onSetModal({ type: 'accountCloneCreate' });

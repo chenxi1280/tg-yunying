@@ -423,11 +423,12 @@ def drain_account_sync_records(session_factory, limit: int = 20) -> int:
     return count
 
 
-def start_login(session: Session, account_id: int, method: str, actor: str = "普通用户") -> TgLoginFlow:
+def start_login(session: Session, account_id: int, method: str, actor: str = "普通用户", force: bool = False) -> TgLoginFlow:
     account = session.get(TgAccount, account_id)
     if not account:
         raise ValueError("account not found")
-
+    if account.status == AccountStatus.ACTIVE.value and not force:
+        raise ValueError("account already online; use force to restart login")
     credentials = credentials_for_account(session, account, assign_if_missing=True)
     phone = get_account_phone(account)
     challenge = gateway.start_login(method, account_id=account.id, phone=phone, credentials=credentials)

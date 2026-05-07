@@ -31,7 +31,14 @@ from app.models import (
 from app.task_queue import get_task_queue
 
 from ._common import _as_utc, _now, audit, gateway, ai_gateway, require_tenant
-from .ai_config import ai_provider_credentials, get_scheduling_setting, get_tenant_ai_setting, record_ai_usage
+from .ai_config import (
+    ai_provider_credentials,
+    deduct_ai_usage_tokens,
+    get_scheduling_setting,
+    get_tenant_ai_setting,
+    record_ai_usage,
+    require_ai_token_balance,
+)
 from .messages import dispatch_task
 from .tenants import ensure_task_quota_available
 from app.schemas import (
@@ -162,17 +169,48 @@ def create_campaign(session: Session, payload: CampaignCreate, actor: str = "普
     if not group or group.tenant_id != payload.tenant_id:
         raise ValueError("group not found")
     data = payload.model_dump()
+    execution_mode = data.get("execution_mode") or "manual_draft"
+    if execution_mode not in {"manual_draft", "ai_activity", "mirror_forward"}:
+        raise ValueError("unsupported campaign execution mode")
+    if execution_mode in {"ai_activity", "mirror_forward"} and not data.get("ends_at"):
+        raise ValueError("continuous campaign requires ends_at")
+    if data.get("participation_min_ratio", 0.6) > data.get("participation_max_ratio", 1.0):
+        raise ValueError("participation_min_ratio cannot exceed participation_max_ratio")
     target_group_ids = data.pop("target_group_ids", []) or [payload.group_id]
+    source_group_ids = data.pop("source_group_ids", []) or []
     selected_accounts = data.pop("selected_account_ids_by_group", {}) or {}
     all_groups = session.scalars(select(TgGroup).where(TgGroup.id.in_(list(dict.fromkeys(target_group_ids))), TgGroup.tenant_id == payload.tenant_id)).all()
     valid_group_ids = [group.id for group in all_groups]
     if not valid_group_ids:
         raise ValueError("target groups not found")
+    source_groups = []
+    if source_group_ids:
+        source_groups = list(
+            session.scalars(
+                select(TgGroup).where(
+                    TgGroup.id.in_(list(dict.fromkeys(source_group_ids))),
+                    TgGroup.tenant_id == payload.tenant_id,
+                )
+            )
+        )
+    valid_source_group_ids = [group.id for group in source_groups]
+    if execution_mode == "mirror_forward" and not valid_source_group_ids:
+        raise ValueError("mirror forwarding requires source groups")
     selected_accounts = validate_selected_accounts_by_group(session, payload.tenant_id, valid_group_ids, selected_accounts)
+    if execution_mode in {"ai_activity", "mirror_forward"}:
+        missing_group_ids = [group_id for group_id in valid_group_ids if not selected_accounts.get(str(group_id))]
+        if missing_group_ids:
+            raise ValueError(f"target groups missing selected accounts: {missing_group_ids}")
     data["group_id"] = valid_group_ids[0]
     data["target_group_ids"] = ",".join(str(group_id) for group_id in valid_group_ids)
+    data["source_group_ids"] = ",".join(str(group_id) for group_id in valid_source_group_ids)
     data["selected_account_ids_by_group"] = json.dumps({str(key): value for key, value in selected_accounts.items()}, ensure_ascii=False)
-    campaign = Campaign(**data, status=TaskStatus.DRAFT.value)
+    if execution_mode == "ai_activity" and data.get("max_ai_tokens") is None:
+        data["max_ai_tokens"] = 100000
+    if execution_mode == "mirror_forward":
+        data["max_ai_tokens"] = None
+    campaign_status = TaskStatus.DRAFT.value if execution_mode == "manual_draft" else TaskStatus.QUEUED.value
+    campaign = Campaign(**data, status=campaign_status)
     session.add(campaign)
     session.flush()
     audit(session, tenant_id=campaign.tenant_id, actor=actor, action="创建活跃任务", target_type="campaign", target_id=str(campaign.id))
@@ -367,16 +405,19 @@ def generate_drafts(session: Session, campaign_id: int, payload: GenerateDraftsR
         raise ValueError("campaign not found")
 
     campaign.status = TaskStatus.PENDING_REVIEW.value
-    group = session.get(TgGroup, campaign.group_id)
+    target_group_id = payload.target_group_id or campaign.group_id
+    if target_group_id not in campaign_target_group_ids(campaign):
+        raise ValueError("target group not in campaign targets")
+    group = session.get(TgGroup, target_group_id)
     if not group:
         raise ValueError("group not found")
     tenant_setting = get_tenant_ai_setting(session, campaign.tenant_id)
     materials = campaign_materials(session, campaign)
     material_ids = [material.id for material in materials]
-    selected_accounts = load_selected_accounts_for_group(session, campaign, campaign.group_id)
+    selected_accounts = load_selected_accounts_for_group(session, campaign, group.id)
     selected_account_ids = [account.id for account in selected_accounts]
     if payload.selected_account_ids_by_group:
-        override_ids = payload.selected_account_ids_by_group.get(str(campaign.group_id), [])
+        override_ids = payload.selected_account_ids_by_group.get(str(group.id), [])
         if override_ids:
             selected_account_ids = [account_id for account_id in override_ids if account_id in set(selected_account_ids or override_ids)]
             selected_accounts = list(
@@ -392,7 +433,7 @@ def generate_drafts(session: Session, campaign_id: int, payload: GenerateDraftsR
         listener_link = session.scalar(
             select(TgGroupAccount).where(
                 TgGroupAccount.tenant_id == campaign.tenant_id,
-                TgGroupAccount.group_id == campaign.group_id,
+                TgGroupAccount.group_id == group.id,
                 TgGroupAccount.account_id == payload.listener_account_id,
             )
         )
@@ -408,6 +449,8 @@ def generate_drafts(session: Session, campaign_id: int, payload: GenerateDraftsR
     )
     template = pick_prompt_template(session, campaign, decision.template_type)
     provider = pick_ai_provider(session, campaign, tenant_setting)
+    if decision.use_ai and provider and not provider.base_url.startswith("mock://"):
+        require_ai_token_balance(session, current_user)
     prompt = render_prompt(
         template,
         campaign=campaign,
@@ -476,7 +519,7 @@ def generate_drafts(session: Session, campaign_id: int, payload: GenerateDraftsR
         draft = AiDraft(
             tenant_id=campaign.tenant_id,
             campaign_id=campaign.id,
-            group_id=campaign.group_id,
+            group_id=group.id,
             persona=candidate.persona,
             content=candidate.content,
             risk_level=candidate.risk_level,
@@ -507,7 +550,7 @@ def generate_drafts(session: Session, campaign_id: int, payload: GenerateDraftsR
         target_id=str(campaign.id),
         detail=f"count={len(drafts)}; source={generation_source}; decision={decision.reason}; template_type={decision.template_type}",
     )
-    record_ai_usage(
+    usage_ledger = record_ai_usage(
         session,
         current_user=current_user,
         campaign=campaign,
@@ -520,6 +563,9 @@ def generate_drafts(session: Session, campaign_id: int, payload: GenerateDraftsR
         request_status="success",
         error_detail=generation_error,
     )
+    if generation_source != "mock_fallback" and usage.total_tokens > 0:
+        session.flush()
+        deduct_ai_usage_tokens(session, current_user, usage_ledger)
     session.commit()
     for draft in drafts:
         session.refresh(draft)
@@ -770,8 +816,11 @@ def campaign_detail(session: Session, campaign_id: int) -> dict:
         "message_tasks": tasks,
         "stats": {
             "target_groups": len(target_groups),
+            "source_groups": len(parse_id_list(campaign.source_group_ids)),
             "selected_accounts": sum(len(items) for items in selected.values()),
             "drafts": len(drafts),
+            "filtered": campaign.filtered_count,
+            "used_ai_tokens": campaign.used_ai_tokens,
             "queued": sum(1 for task in tasks if task.status == TaskStatus.QUEUED.value),
             "sent": sum(1 for task in tasks if task.status == TaskStatus.SENT.value),
             "failed": sum(1 for task in tasks if task.status == TaskStatus.FAILED.value),

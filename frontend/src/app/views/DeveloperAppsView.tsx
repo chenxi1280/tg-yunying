@@ -12,6 +12,7 @@ interface Props {
   onCheck: (app: DeveloperApp) => void;
   onToggle: (app: DeveloperApp) => void;
   onEditTenant: (tenant: Tenant) => void;
+  showTenants?: boolean;
   onOpenConfirm: (payload: {
     title: string;
     message: string;
@@ -21,7 +22,7 @@ interface Props {
   }) => void;
 }
 
-export default function DeveloperAppsView({ developerApps, tenants, onCreateClick, onEdit, onCheck, onToggle, onEditTenant, onOpenConfirm }: Props) {
+export default function DeveloperAppsView({ developerApps, tenants, onCreateClick, onEdit, onCheck, onToggle, onEditTenant, showTenants = true, onOpenConfirm }: Props) {
   return (
     <>
       <Card
@@ -64,7 +65,7 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
         </div>
       </Card>
 
-      <Card className="panel" title="租户与配额" extra={<Typography.Text type="secondary">后台统一维护套餐名称、账号配额和任务配额</Typography.Text>}>
+      {showTenants && <Card className="panel" title="租户与配额" extra={<Typography.Text type="secondary">后台统一维护套餐名称、账号配额和任务配额</Typography.Text>}>
         <div className="cards-grid developer-grid">
           {tenants.map((tenant) => (
             <Card className="developer-card status-accent neutral" key={tenant.id} size="small" title={tenant.name}>
@@ -80,7 +81,7 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
             </Card>
           ))}
         </div>
-      </Card>
+      </Card>}
     </>
   );
 }

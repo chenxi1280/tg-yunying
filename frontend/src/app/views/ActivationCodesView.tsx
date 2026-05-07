@@ -2,11 +2,12 @@ import React, { useState } from 'react';
 import { CheckCircle2, RefreshCcw, ShieldAlert } from 'lucide-react';
 import { Button, Card, Input, InputNumber, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
-import type { ActivationCode, ActivationCodeCreateForm, ActivationCodeFilters, ActivationCodePage, ConfirmPayload } from '../types';
+import type { ActivationCode, ActivationCodeCreateForm, ActivationCodeFilters, ActivationCodePage, ConfirmPayload, SubscriptionPlan } from '../types';
 import { FormActions, Modal } from '../components/shared';
 
 interface Props {
   activationCodes: ActivationCode[];
+  subscriptionPlans: SubscriptionPlan[];
   activationCodePage: ActivationCodePage;
   activationCodeFilters: ActivationCodeFilters;
   setActivationCodeFilters: React.Dispatch<React.SetStateAction<ActivationCodeFilters>>;
@@ -47,6 +48,7 @@ function statusColor(status: string) {
 
 export default function ActivationCodesView({
   activationCodes,
+  subscriptionPlans,
   activationCodePage,
   activationCodeFilters,
   setActivationCodeFilters,
@@ -58,6 +60,9 @@ export default function ActivationCodesView({
   onOpenConfirm,
 }: Props) {
   const [createOpen, setCreateOpen] = useState(false);
+  const selectedPlan = subscriptionPlans.find((plan) => plan.id === activationBatch.plan_id)
+    ?? subscriptionPlans.find((plan) => plan.plan_type === activationBatch.plan_type)
+    ?? null;
   const columns: ColumnsType<ActivationCode> = [
     {
       title: '卡密',
@@ -66,7 +71,7 @@ export default function ActivationCodesView({
       width: 250,
       fixed: 'left',
       render: (code: string, item) => (
-        <Space orientation="vertical" size={2}>
+        <Space direction="vertical" size={2}>
           <Typography.Text strong copyable>{code}</Typography.Text>
           <Typography.Text type="secondary">{item.note || '无备注'}</Typography.Text>
         </Space>
@@ -84,9 +89,9 @@ export default function ActivationCodesView({
       key: 'plan',
       width: 130,
       render: (_, item) => (
-        <Space orientation="vertical" size={2}>
+        <Space direction="vertical" size={2}>
           <Typography.Text>{planLabel(item.plan_type)}</Typography.Text>
-          <Typography.Text type="secondary">{item.duration_days} 天</Typography.Text>
+          <Typography.Text type="secondary">{item.duration_days} 天 / {item.token_quota.toLocaleString()} Token</Typography.Text>
         </Space>
       ),
     },
@@ -95,7 +100,7 @@ export default function ActivationCodesView({
       key: 'batch',
       width: 170,
       render: (_, item) => (
-        <Space orientation="vertical" size={2}>
+        <Space direction="vertical" size={2}>
           <Typography.Text>{item.batch_no || '-'}</Typography.Text>
           <Typography.Text type="secondary">{item.serial_prefix || '-'}</Typography.Text>
         </Space>
@@ -106,7 +111,7 @@ export default function ActivationCodesView({
       key: 'created',
       width: 180,
       render: (_, item) => (
-        <Space orientation="vertical" size={2}>
+        <Space direction="vertical" size={2}>
           <Typography.Text>{item.created_by || '-'}</Typography.Text>
           <Typography.Text type="secondary">{formatDate(item.created_at)}</Typography.Text>
         </Space>
@@ -117,7 +122,7 @@ export default function ActivationCodesView({
       key: 'redeemed_user',
       width: 190,
       render: (_, item) => (
-        <Space orientation="vertical" size={2}>
+        <Space direction="vertical" size={2}>
           <Typography.Text>{item.redeemed_user_name || '未激活'}</Typography.Text>
           <Typography.Text type="secondary">{item.redeemed_user_email || '-'}</Typography.Text>
         </Space>
@@ -197,7 +202,7 @@ export default function ActivationCodesView({
       <div className="policy-grid">
         <label>关键词<Input value={activationCodeFilters.search} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, search: event.target.value }))} placeholder="卡密 / 生成者 / 激活账号" /></label>
         <label>状态<Select value={activationCodeFilters.status} onChange={(value) => setActivationCodeFilters((current) => ({ ...current, status: value }))} options={[{ value: '', label: '全部状态' }, { value: 'unused', label: '未激活' }, { value: 'redeemed', label: '已激活' }, { value: 'disabled', label: '已停用' }]} /></label>
-        <label>套餐<Select value={activationCodeFilters.plan_type} onChange={(value) => setActivationCodeFilters((current) => ({ ...current, plan_type: value }))} options={[{ value: '', label: '全部套餐' }, { value: 'monthly', label: '月卡' }, { value: 'yearly', label: '年卡' }]} /></label>
+        <label>套餐<Select value={activationCodeFilters.plan_type} onChange={(value) => setActivationCodeFilters((current) => ({ ...current, plan_type: value }))} options={[{ value: '', label: '全部套餐' }, ...subscriptionPlans.map((plan) => ({ value: plan.plan_type, label: plan.name }))]} /></label>
         <label>批次<Input maxLength={24} value={activationCodeFilters.batch_no} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, batch_no: event.target.value.toUpperCase() }))} placeholder="BATCH202605" /></label>
         <label>生成开始<Input type="datetime-local" value={activationCodeFilters.start_at} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, start_at: event.target.value }))} /></label>
         <label>生成结束<Input type="datetime-local" value={activationCodeFilters.end_at} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, end_at: event.target.value }))} /></label>
@@ -227,11 +232,16 @@ export default function ActivationCodesView({
       {createOpen && (
         <Modal title="生成卡密" size="medium" onClose={() => setCreateOpen(false)}>
           <div className="policy-grid">
-            <label>套餐类型<Select value={activationBatch.plan_type} onChange={(value) => setActivationBatch((current) => ({ ...current, plan_type: value }))} options={[{ value: 'monthly', label: '月卡' }, { value: 'yearly', label: '年卡' }]} /></label>
+            <label>套餐<Select<number | ''> value={activationBatch.plan_id} onChange={(value) => {
+              const plan = subscriptionPlans.find((item) => item.id === value);
+              setActivationBatch((current) => ({ ...current, plan_id: value, plan_type: plan?.plan_type ?? current.plan_type }));
+            }} options={[{ value: '', label: '按类型兼容创建' }, ...subscriptionPlans.filter((plan) => plan.is_active).map((plan) => ({ value: plan.id, label: `${plan.name} / ${plan.duration_days} 天 / ${plan.token_quota.toLocaleString()} Token` }))]} /></label>
+            <label>兼容类型<Select value={activationBatch.plan_type} onChange={(value) => setActivationBatch((current) => ({ ...current, plan_type: value, plan_id: '' }))} options={subscriptionPlans.length ? subscriptionPlans.map((plan) => ({ value: plan.plan_type, label: plan.name })) : [{ value: 'monthly', label: '月卡' }, { value: 'yearly', label: '年卡' }]} /></label>
             <label>生成数量<InputNumber min={1} max={200} value={activationBatch.quantity} onChange={(value) => setActivationBatch((current) => ({ ...current, quantity: Number(value ?? 1) }))} /></label>
             <label>批次号<Input maxLength={24} value={activationBatch.batch_no} onChange={(event) => setActivationBatch((current) => ({ ...current, batch_no: event.target.value.toUpperCase() }))} placeholder="BATCH202605" /></label>
             <label>序列号前缀<Input maxLength={24} value={activationBatch.serial_prefix} onChange={(event) => setActivationBatch((current) => ({ ...current, serial_prefix: event.target.value.toUpperCase() }))} placeholder="VIP" /></label>
             <label className="wide-field">备注<Input value={activationBatch.note} onChange={(event) => setActivationBatch((current) => ({ ...current, note: event.target.value }))} placeholder="批次用途或来源" /></label>
+            {selectedPlan && <p className="muted-line wide-field">将快照写入卡密：{selectedPlan.name} / {selectedPlan.duration_days} 天 / {selectedPlan.token_quota.toLocaleString()} Token</p>}
           </div>
           <FormActions submitLabel="批量生成" onCancel={() => setCreateOpen(false)} onSubmit={submitCreate} disabled={!activationBatch.batch_no.trim() || !activationBatch.serial_prefix.trim() || activationBatch.quantity < 1 || activationBatch.quantity > 200} />
         </Modal>

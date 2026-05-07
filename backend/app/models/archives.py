@@ -16,6 +16,7 @@ class GroupArchive(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     group_id: Mapped[int] = mapped_column(ForeignKey("tg_groups.id"))
+    collection_account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
     title: Mapped[str] = mapped_column(String(160))
     status: Mapped[str] = mapped_column(String(30), default="已完成")
     sync_mode: Mapped[str] = mapped_column(String(30), default="sync")
@@ -24,6 +25,9 @@ class GroupArchive(Base):
     member_count: Mapped[int] = mapped_column(Integer, default=0)
     summary: Mapped[str] = mapped_column(Text, default="")
     new_group_plan: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -33,6 +37,8 @@ class ArchivedMessage(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     archive_id: Mapped[int] = mapped_column(ForeignKey("group_archives.id"))
+    sender_peer_id: Mapped[str] = mapped_column(String(120), default="")
+    remote_message_id: Mapped[str] = mapped_column(String(160), default="")
     sender_name: Mapped[str] = mapped_column(String(120))
     content: Mapped[str] = mapped_column(Text)
     message_type: Mapped[str] = mapped_column(String(40), default="text")
@@ -45,10 +51,12 @@ class ArchivedMember(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     archive_id: Mapped[int] = mapped_column(ForeignKey("group_archives.id"))
+    peer_id: Mapped[str] = mapped_column(String(120), default="")
     display_name: Mapped[str] = mapped_column(String(120))
     username: Mapped[str | None] = mapped_column(String(120), nullable=True)
     activity_score: Mapped[int] = mapped_column(Integer, default=0)
     tags: Mapped[str] = mapped_column(String(160), default="")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class AuditLog(Base):

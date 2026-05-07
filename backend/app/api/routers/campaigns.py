@@ -19,7 +19,7 @@ from app.schemas import (
 )
 from app.services import (
     approve_all_drafts, approve_draft, campaign_detail, cancel_message_task,
-    create_campaign, dispatch_task, filter_campaigns, filter_tasks,
+    cancel_campaign, create_campaign, dispatch_task, filter_campaigns, filter_tasks,
     generate_drafts, list_ai_drafts_for_tenant, recommend_campaign_accounts, reject_ai_draft,
     retry_task, update_ai_draft,
 )
@@ -95,6 +95,8 @@ def post_generate_drafts(
         require_resource_tenant(session, current_user, Campaign, campaign_id)
         return generate_drafts(session, campaign_id, payload, current_user)
     except ValueError as exc:
+        if "Token 余额不足" in str(exc):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise not_found(str(exc)) from exc
 
 
@@ -109,6 +111,21 @@ def post_approve_all(
     try:
         require_resource_tenant(session, current_user, Campaign, campaign_id)
         return approve_all_drafts(session, campaign_id, payload.actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/campaigns/{campaign_id}/cancel", response_model=CampaignOut)
+def post_cancel_campaign(
+    campaign_id: int,
+    payload: ApproveDraftRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        require_resource_tenant(session, current_user, Campaign, campaign_id)
+        return cancel_campaign(session, campaign_id, payload.actor)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

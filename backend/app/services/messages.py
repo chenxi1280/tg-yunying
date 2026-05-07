@@ -33,6 +33,7 @@ from .accounts import find_account_contact
 from .developer_apps import credentials_for_account
 from .tenants import ensure_task_quota_available
 from .verification import create_verification_task
+from .content_filters import tenant_keyword_rules
 
 
 def create_direct_message_task(session: Session, account_id: int, payload: DirectMessageTaskCreate, actor: str) -> MessageTask:
@@ -186,6 +187,9 @@ def validate_group_task_policy(session: Session, task: MessageTask, group: TgGro
     for segment in segments:
         text_parts.extend([segment.content, segment.caption, segment.source or ""])
     text = "\n".join(piece for piece in text_parts if piece)
+    tenant_hit = next((rule.keyword for rule in tenant_keyword_rules(session, task.tenant_id) if rule.keyword and rule.keyword.lower() in text.lower()), None)
+    if tenant_hit:
+        return FailureType.CONTENT_REJECTED.value, f"命中租户关键词：{tenant_hit}"
     banned_words = _split_rule_list(group.banned_words)
     hit_words = [word for word in banned_words if word and word in text]
     if hit_words:

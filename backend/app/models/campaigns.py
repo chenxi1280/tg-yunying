@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -29,7 +29,20 @@ class Campaign(Base):
     respect_send_window: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     material_ids: Mapped[str] = mapped_column(Text, default="")
     target_group_ids: Mapped[str] = mapped_column(Text, default="")
+    source_group_ids: Mapped[str] = mapped_column(Text, default="")
     selected_account_ids_by_group: Mapped[str] = mapped_column(Text, default="")
+    execution_mode: Mapped[str] = mapped_column(String(40), default="manual_draft")
+    run_interval_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    max_ai_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=100000)
+    used_ai_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    participation_min_ratio: Mapped[float] = mapped_column(Float, default=0.6)
+    participation_max_ratio: Mapped[float] = mapped_column(Float, default=1.0)
+    max_messages_per_account: Mapped[int] = mapped_column(Integer, default=2)
+    max_drafts_per_batch: Mapped[int] = mapped_column(Integer, default=50)
+    filtered_count: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default=TaskStatus.DRAFT.value)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
@@ -101,6 +114,21 @@ class MessageTaskAttempt(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class CampaignProcessedMessage(Base):
+    __tablename__ = "campaign_processed_messages"
+    __table_args__ = (UniqueConstraint("campaign_id", "source_group_id", "source_remote_message_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"))
+    source_group_id: Mapped[int] = mapped_column(ForeignKey("tg_groups.id"))
+    source_remote_message_id: Mapped[str] = mapped_column(String(160))
+    action: Mapped[str] = mapped_column(String(40), default="queued")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    content: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class Material(Base):
     __tablename__ = "materials"
 
@@ -115,4 +143,4 @@ class Material(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-__all__ = ["Campaign", "AiDraft", "MessageTask", "MessageTaskAttempt", "Material"]
+__all__ = ["Campaign", "AiDraft", "MessageTask", "MessageTaskAttempt", "CampaignProcessedMessage", "Material"]
