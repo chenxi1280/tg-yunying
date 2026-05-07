@@ -45,6 +45,7 @@ class AuthRegisterRequest(BaseModel):
     email: str = Field(..., min_length=3, max_length=160)
     phone: str | None = Field(default=None, max_length=40)
     password: str = Field(..., min_length=6, max_length=80)
+    captcha_token: str
 
 
 class AuthUserOut(BaseModel):

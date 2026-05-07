@@ -68,7 +68,7 @@ __all__ = [
 ]
 
 
-def create_account(session: Session, payload: TgAccountCreate) -> TgAccount:
+def create_account(session: Session, payload: TgAccountCreate, actor: str = "普通用户") -> TgAccount:
     require_tenant(session, payload.tenant_id)
     ensure_account_quota_available(session, payload.tenant_id)
     data = payload.model_dump(exclude={"phone_number"})
@@ -88,7 +88,7 @@ def create_account(session: Session, payload: TgAccountCreate) -> TgAccount:
     account = TgAccount(**data)
     session.add(account)
     session.flush()
-    audit(session, tenant_id=account.tenant_id, actor="普通用户", action="添加TG账号", target_type="tg_account", target_id=str(account.id))
+    audit(session, tenant_id=account.tenant_id, actor=actor, action="添加TG账号", target_type="tg_account", target_id=str(account.id))
     session.commit()
     session.refresh(account)
     return account
@@ -421,7 +421,7 @@ def drain_account_sync_records(session_factory, limit: int = 20) -> int:
     return count
 
 
-def start_login(session: Session, account_id: int, method: str) -> TgLoginFlow:
+def start_login(session: Session, account_id: int, method: str, actor: str = "普通用户") -> TgLoginFlow:
     account = session.get(TgAccount, account_id)
     if not account:
         raise ValueError("account not found")
@@ -451,7 +451,7 @@ def start_login(session: Session, account_id: int, method: str) -> TgLoginFlow:
                 raw_hint="平台发起登录验证码",
             )
         )
-    audit(session, tenant_id=account.tenant_id, actor="普通用户", action="开始TG登录", target_type="tg_account", target_id=str(account.id), detail=f"method={method}; developer_app_id={account.developer_app_id}")
+    audit(session, tenant_id=account.tenant_id, actor=actor, action="开始TG登录", target_type="tg_account", target_id=str(account.id), detail=f"method={method}; developer_app_id={account.developer_app_id}")
     session.commit()
     session.refresh(flow)
     return flow
@@ -480,7 +480,7 @@ def list_login_flows(session: Session, account_id: int) -> list[TgLoginFlow]:
     return flows
 
 
-def verify_login(session: Session, account_id: int, code: str | None, password_2fa: str | None) -> TgAccount:
+def verify_login(session: Session, account_id: int, code: str | None, password_2fa: str | None, actor: str = "普通用户") -> TgAccount:
     account = session.get(TgAccount, account_id)
     if not account:
         raise ValueError("account not found")
@@ -495,7 +495,7 @@ def verify_login(session: Session, account_id: int, code: str | None, password_2
         latest_flow.code_preview = None
         latest_flow.status = "已过期"
         account.status = AccountStatus.ERROR.value
-        audit(session, tenant_id=account.tenant_id, actor="普通用户", action="验证TG登录失败", target_type="tg_account", target_id=str(account.id), detail="code expired")
+        audit(session, tenant_id=account.tenant_id, actor=actor, action="验证TG登录失败", target_type="tg_account", target_id=str(account.id), detail="code expired")
         session.commit()
         session.refresh(account)
         return account
@@ -513,13 +513,13 @@ def verify_login(session: Session, account_id: int, code: str | None, password_2
         if status == AccountStatus.ACTIVE.value:
             queue_account_sync_records(session, account, trigger_source="login")
 
-    audit(session, tenant_id=account.tenant_id, actor="普通用户", action="验证TG登录", target_type="tg_account", target_id=str(account.id), detail=f"status={status}")
+    audit(session, tenant_id=account.tenant_id, actor=actor, action="验证TG登录", target_type="tg_account", target_id=str(account.id), detail=f"status={status}")
     session.commit()
     session.refresh(account)
     return account
 
 
-def check_qr_login(session: Session, account_id: int) -> TgAccount:
+def check_qr_login(session: Session, account_id: int, actor: str = "普通用户") -> TgAccount:
     account = session.get(TgAccount, account_id)
     if not account:
         raise ValueError("account not found")
@@ -543,7 +543,7 @@ def check_qr_login(session: Session, account_id: int) -> TgAccount:
         if status == AccountStatus.ACTIVE.value:
             queue_account_sync_records(session, account, trigger_source="login")
     latest_flow.status = status
-    audit(session, tenant_id=account.tenant_id, actor="普通用户", action="检查QR登录", target_type="tg_account", target_id=str(account.id), detail=f"status={status}")
+    audit(session, tenant_id=account.tenant_id, actor=actor, action="检查QR登录", target_type="tg_account", target_id=str(account.id), detail=f"status={status}")
     session.commit()
     session.refresh(account)
     return account

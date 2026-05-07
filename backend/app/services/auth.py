@@ -9,15 +9,9 @@ from sqlalchemy.orm import Session
 from app.auth import CurrentUser, hash_password, normalize_phone
 from app.models import (
     AccountPool,
-    AccountStatus,
     ActivationCode,
     AppUser,
-    GroupAuthStatus,
-    Material,
     Tenant,
-    TgAccount,
-    TgGroup,
-    TgGroupAccount,
 )
 from app.schemas import (
     ActivationCodeCreateRequest,
@@ -25,6 +19,7 @@ from app.schemas import (
     SubscriptionRedeemRequest,
     TenantCreate,
 )
+from app.config import get_settings
 
 from ._common import (
     _now,
@@ -52,47 +47,53 @@ def ensure_seed_data(session: Session) -> None:
         session.commit()
         return
 
-    tenant = Tenant(name="星火代运营", plan_name="试运行", account_quota=50, task_quota=5000)
+    tenant = Tenant(name="本地测试租户", plan_name="试运行", account_quota=50, task_quota=5000)
     session.add(tenant)
     session.flush()
     default_pool = AccountPool(tenant_id=tenant.id, name="默认账号池", description="系统默认账号分组", is_default=True)
     session.add(default_pool)
     session.flush()
     seed_developer_apps(session)
-    default_app = first_assignable_developer_app(session)
+    seed_users(session, tenant.id)
+    seed_ai_configuration(session)
+    if get_settings().seed_demo_data:
+        seed_demo_workspace(session, tenant.id, default_pool.id)
+    audit(session, tenant_id=tenant.id, actor="system", action="初始化本地工作区", target_type="tenant", target_id=str(tenant.id))
+    session.commit()
 
+
+def seed_demo_workspace(session: Session, tenant_id: int, default_pool_id: int) -> None:
+    from app.models import AccountStatus, GroupAuthStatus, Material, TgAccount, TgGroup, TgGroupAccount
+
+    default_app = first_assignable_developer_app(session)
     accounts = [
-        TgAccount(tenant_id=tenant.id, pool_id=default_pool.id, display_name="运营号 A", username="spark_ops_a", phone_masked="+86 138****1024", status=AccountStatus.ACTIVE.value, health_score=96, session_ciphertext="encrypted-demo", developer_app_id=default_app.id if default_app else None, developer_app_version=default_app.credentials_version if default_app else 1),
-        TgAccount(tenant_id=tenant.id, pool_id=default_pool.id, display_name="运营号 B", username="spark_ops_b", phone_masked="+86 139****2048", status=AccountStatus.ACTIVE.value, health_score=88, session_ciphertext="encrypted-demo", developer_app_id=default_app.id if default_app else None, developer_app_version=default_app.credentials_version if default_app else 1),
-        TgAccount(tenant_id=tenant.id, pool_id=default_pool.id, display_name="备用号 C", username="spark_ops_c", phone_masked="+852 ****7788", status=AccountStatus.WAITING_CODE.value, health_score=72, developer_app_id=default_app.id if default_app else None, developer_app_version=default_app.credentials_version if default_app else 1),
+        TgAccount(tenant_id=tenant_id, pool_id=default_pool_id, display_name="运营号 A", username="spark_ops_a", phone_masked="+86 138****1024", status=AccountStatus.ACTIVE.value, health_score=96, session_ciphertext="encrypted-demo", developer_app_id=default_app.id if default_app else None, developer_app_version=default_app.credentials_version if default_app else 1),
+        TgAccount(tenant_id=tenant_id, pool_id=default_pool_id, display_name="运营号 B", username="spark_ops_b", phone_masked="+86 139****2048", status=AccountStatus.ACTIVE.value, health_score=88, session_ciphertext="encrypted-demo", developer_app_id=default_app.id if default_app else None, developer_app_version=default_app.credentials_version if default_app else 1),
+        TgAccount(tenant_id=tenant_id, pool_id=default_pool_id, display_name="备用号 C", username="spark_ops_c", phone_masked="+852 ****7788", status=AccountStatus.WAITING_CODE.value, health_score=72, developer_app_id=default_app.id if default_app else None, developer_app_version=default_app.credentials_version if default_app else 1),
     ]
     session.add_all(accounts)
     session.flush()
 
     groups = [
-        TgGroup(tenant_id=tenant.id, tg_peer_id="-100001", title="星火项目交流群", member_count=2480, auth_status=GroupAuthStatus.AUTHORIZED.value, topic_direction="活动答疑、产品体验、日常聊天"),
-        TgGroup(tenant_id=tenant.id, tg_peer_id="-100002", title="新品内测社群", member_count=836, auth_status=GroupAuthStatus.READONLY.value, topic_direction="内测反馈、问题收集"),
-        TgGroup(tenant_id=tenant.id, tg_peer_id="-100003", title="海外用户增长群", member_count=1289, auth_status=GroupAuthStatus.UNVERIFIED.value, topic_direction="增长案例、运营方法"),
+        TgGroup(tenant_id=tenant_id, tg_peer_id="-100001", title="星火项目交流群", member_count=2480, auth_status=GroupAuthStatus.AUTHORIZED.value, topic_direction="活动答疑、产品体验、日常聊天"),
+        TgGroup(tenant_id=tenant_id, tg_peer_id="-100002", title="新品内测社群", member_count=836, auth_status=GroupAuthStatus.READONLY.value, topic_direction="内测反馈、问题收集"),
+        TgGroup(tenant_id=tenant_id, tg_peer_id="-100003", title="海外用户增长群", member_count=1289, auth_status=GroupAuthStatus.UNVERIFIED.value, topic_direction="增长案例、运营方法"),
     ]
     session.add_all(groups)
     session.flush()
 
     for group in groups:
         for account in accounts[:2]:
-            session.add(TgGroupAccount(tenant_id=tenant.id, group_id=group.id, account_id=account.id, can_send=group.auth_status == GroupAuthStatus.AUTHORIZED.value))
+            session.add(TgGroupAccount(tenant_id=tenant_id, group_id=group.id, account_id=account.id, can_send=group.auth_status == GroupAuthStatus.AUTHORIZED.value))
 
     session.add_all(
         [
-            Material(tenant_id=tenant.id, title="欢迎语模板", material_type="AI话术模板", content="欢迎新朋友，可以先看置顶公告，有问题直接问。", tags="欢迎,FAQ"),
-            Material(tenant_id=tenant.id, title="活动提醒", material_type="文本", content="今晚 8 点有一轮答疑，感兴趣的朋友可以提前把问题发出来。", tags="活动,提醒"),
-            Material(tenant_id=tenant.id, title="活动表情包", material_type="表情包", content="https://example.local/stickers/welcome.webp", tags="表情包,欢迎"),
-            Material(tenant_id=tenant.id, title="产品海报", material_type="图片", content="https://example.local/images/product-poster.png", tags="图片,产品"),
+            Material(tenant_id=tenant_id, title="欢迎语模板", material_type="AI话术模板", content="欢迎新朋友，可以先看置顶公告，有问题直接问。", tags="欢迎,FAQ"),
+            Material(tenant_id=tenant_id, title="活动提醒", material_type="文本", content="今晚 8 点有一轮答疑，感兴趣的朋友可以提前把问题发出来。", tags="活动,提醒"),
+            Material(tenant_id=tenant_id, title="活动表情包", material_type="表情包", content="https://example.local/stickers/welcome.webp", tags="表情包,欢迎"),
+            Material(tenant_id=tenant_id, title="产品海报", material_type="图片", content="https://example.local/images/product-poster.png", tags="图片,产品"),
         ]
     )
-    audit(session, tenant_id=tenant.id, actor="system", action="初始化演示数据", target_type="tenant", target_id=str(tenant.id))
-    seed_users(session, tenant.id)
-    seed_ai_configuration(session)
-    session.commit()
 
 
 def seed_users(session: Session, tenant_id: int | None = None) -> None:

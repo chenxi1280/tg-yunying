@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.auth import (
     CurrentUser, authenticate_user, consume_captcha_token,
     create_captcha_challenge, create_access_token, get_current_user,
-    serialize_user, verify_captcha_challenge,
+    hash_password, is_legacy_password_hash, serialize_user, verify_captcha_challenge,
 )
 from app.database import get_session
 from app.common.http import forbidden
@@ -38,6 +38,7 @@ def auth_captcha_verify(payload: CaptchaVerifyRequest) -> dict:
 
 @router.post("/api/auth/register", response_model=AuthTokenOut)
 def auth_register(payload: AuthRegisterRequest, session: Session = Depends(get_session)) -> dict:
+    consume_captcha_token(payload.captcha_token)
     user = create_user_registration(session, payload)
     return {
         "access_token": create_access_token(user),
@@ -53,6 +54,10 @@ def auth_login(payload: AuthLoginRequest, session: Session = Depends(get_session
     user = authenticate_user(session, identifier, payload.password)
     if not user:
         raise HTTPException(status_code=401, detail="invalid identifier or password")
+    # 自动升级旧格式密码哈希为新格式（独立 salt + 600k 迭代）
+    if is_legacy_password_hash(user.password_hash):
+        user.password_hash = hash_password(payload.password)
+        session.commit()
     return {
         "access_token": create_access_token(user),
         "token_type": "bearer",

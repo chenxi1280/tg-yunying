@@ -88,6 +88,7 @@ class Settings:
     login_code_ttl_seconds: int = int(os.getenv("LOGIN_CODE_TTL_SECONDS", "180"))
     enable_sync_dispatch_fallback: bool = _bool_env("ENABLE_SYNC_DISPATCH_FALLBACK", True)
     auto_migrate_on_start: bool = _bool_env("AUTO_MIGRATE_ON_START", False)
+    seed_demo_data: bool = _bool_env("SEED_DEMO_DATA", False)
     media_root: str = os.getenv("MEDIA_ROOT", str(PROJECT_ROOT / "media"))
     avatar_max_bytes: int = int(os.getenv("AVATAR_MAX_BYTES", str(2 * 1024 * 1024)))
     avatar_allowed_types: tuple[str, ...] = tuple(

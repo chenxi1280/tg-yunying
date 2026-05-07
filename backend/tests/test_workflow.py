@@ -24,18 +24,49 @@ def auth_headers(client: TestClient, email: str = "admin@demo.local", password: 
     return {"Authorization": f"Bearer {token}"}
 
 
+def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[dict, dict]:
+    suffix = uuid4().hex[:8]
+    account = client.post(
+        "/api/tg-accounts",
+        headers=headers,
+        json={
+            "tenant_id": 1,
+            "display_name": f"本地测试账号 {suffix}",
+            "username": f"local_test_{suffix}",
+            "phone_number": f"+86138{int(uuid4().int % 100000000):08d}",
+        },
+    ).json()
+
+    if account["status"] != AccountStatus.ACTIVE.value:
+        client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr"})
+        account = client.post(f"/api/tg-accounts/{account['id']}/login/qr/check", headers=headers).json()
+
+    groups = client.post(f"/api/tg-accounts/{account['id']}/sync-groups", headers=headers).json()
+    with SessionLocal() as session:
+        for record in session.query(TgAccountSyncRecord).filter_by(account_id=account["id"], status="排队中"):
+            record.status = "已同步"
+        session.commit()
+    group = groups[0]
+    if group["auth_status"] != "已授权运营":
+        group = client.post(
+            f"/api/groups/{group['id']}/authorize",
+            headers=headers,
+            json={"auth_status": "已授权运营"},
+        ).json()
+    return account, group
+
+
 def test_campaign_draft_approval_and_dispatch_flow():
     with TestClient(app) as client:
         headers = auth_headers(client)
-        groups = client.get("/api/groups", headers=headers).json()
-        assert groups
+        _, group = ensure_test_workspace(client, headers)
 
         campaign = client.post(
             "/api/campaigns",
             headers=headers,
             json={
                 "tenant_id": 1,
-                "group_id": groups[0]["id"],
+                "group_id": group["id"],
                 "title": "晚间热群",
                 "campaign_type": "话题引导任务",
                 "topic": "产品体验反馈",
@@ -61,14 +92,14 @@ def test_campaign_draft_approval_and_dispatch_flow():
 def test_login_flow_masks_verification_state():
     with TestClient(app) as client:
         headers = auth_headers(client)
-        accounts = client.get("/api/tg-accounts", headers=headers).json()
-        flow = client.post(f"/api/tg-accounts/{accounts[0]['id']}/login/start", headers=headers, json={"method": "code"}).json()
+        account, _ = ensure_test_workspace(client, headers)
+        flow = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code"}).json()
         assert flow["status"] == "等待验证码"
         assert flow["code_preview"]
 
-        account = client.post(f"/api/tg-accounts/{accounts[0]['id']}/login/verify", headers=headers, json={"code": flow["code_preview"]}).json()
+        account = client.post(f"/api/tg-accounts/{account['id']}/login/verify", headers=headers, json={"code": flow["code_preview"]}).json()
         assert account["status"] == "在线"
-        sync_records = client.get(f"/api/tg-accounts/{accounts[0]['id']}/sync-records", headers=headers).json()
+        sync_records = client.get(f"/api/tg-accounts/{account['id']}/sync-records", headers=headers).json()
         assert {"groups", "contacts", "codes"}.issubset({record["sync_type"] for record in sync_records})
 
 
@@ -78,7 +109,7 @@ def test_runtime_login_flows_health_and_group_authorize():
         runtime = client.get("/api/config/runtime").json()
         assert runtime["tg_gateway_mode"] in {"mock", "telethon"}
 
-        account = client.get("/api/tg-accounts", headers=headers).json()[0]
+        account, group = ensure_test_workspace(client, headers)
         client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr"})
         flows = client.get(f"/api/tg-accounts/{account['id']}/login-flows", headers=headers).json()
         assert flows
@@ -88,7 +119,6 @@ def test_runtime_login_flows_health_and_group_authorize():
         checked = client.post(f"/api/tg-accounts/{account['id']}/health-check", headers=headers).json()
         assert checked["status"] in {"在线", "受限", "需重新登录"}
 
-        group = client.get("/api/groups", headers=headers).json()[0]
         authorized = client.post(f"/api/groups/{group['id']}/authorize", headers=headers, json={"auth_status": "已授权运营"}).json()
         assert authorized["auth_status"] == "已授权运营"
 
@@ -96,10 +126,10 @@ def test_runtime_login_flows_health_and_group_authorize():
 def test_approve_all_retry_and_archive_detail_flow():
     with TestClient(app) as client:
         headers = auth_headers(client)
-        group = client.get("/api/groups", headers=headers).json()[0]
+        account, group = ensure_test_workspace(client, headers)
         with SessionLocal() as session:
-            account = session.get(TgAccount, client.get("/api/tg-accounts", headers=headers).json()[0]["id"])
-            account.status = AccountStatus.ACTIVE.value
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
             session.commit()
         campaign = client.post(
             "/api/campaigns",
@@ -312,7 +342,7 @@ def test_ai_provider_prompt_material_and_jitter_flow():
         ).json()
         assert setting["default_provider_id"] == provider["id"]
 
-        group = client.get("/api/groups", headers=headers).json()[0]
+        _, group = ensure_test_workspace(client, headers)
         campaign = client.post(
             "/api/campaigns",
             headers=headers,
@@ -372,7 +402,7 @@ def test_prompt_template_listing_matches_existing_tenant_resolution_rules():
 def test_ai_drafts_listing_uses_service_and_preserves_desc_order():
     with TestClient(app) as client:
         headers = auth_headers(client)
-        group = client.get("/api/groups", headers=headers).json()[0]
+        _, group = ensure_test_workspace(client, headers)
         campaign = client.post(
             "/api/campaigns",
             headers=headers,
@@ -417,7 +447,7 @@ def test_system_prompt_decision_seed_and_auto_template_selection():
         templates = client.get("/api/prompt-templates", headers=headers).json()
         assert any(template["template_type"] == "系统决策提示词" for template in templates)
 
-        group = client.get("/api/groups", headers=headers).json()[0]
+        _, group = ensure_test_workspace(client, headers)
         material = client.post(
             "/api/materials",
             headers=headers,
@@ -457,7 +487,7 @@ def test_system_prompt_skips_ai_when_tenant_ai_disabled():
         original = client.get("/api/tenant-ai-settings", headers=headers).json()
         client.patch("/api/tenant-ai-settings?tenant_id=1", headers=headers, json={"ai_enabled": False})
         try:
-            group = client.get("/api/groups", headers=headers).json()[0]
+            _, group = ensure_test_workspace(client, headers)
             campaign = client.post(
                 "/api/campaigns",
                 headers=headers,
@@ -493,7 +523,7 @@ def test_system_prompt_skips_ai_when_tenant_ai_disabled():
 def test_account_detail_codes_and_direct_message_queue():
     with TestClient(app) as client:
         headers = auth_headers(client)
-        account = client.get("/api/tg-accounts", headers=headers).json()[0]
+        account, _ = ensure_test_workspace(client, headers)
 
         detail = client.get(f"/api/tg-accounts/{account['id']}/detail", headers=headers).json()
         assert detail["account"]["id"] == account["id"]
@@ -524,7 +554,7 @@ def test_account_detail_codes_and_direct_message_queue():
 def test_account_profile_upload_save_sync_and_retry():
     with TestClient(app) as client:
         headers = auth_headers(client)
-        account = client.get("/api/tg-accounts", headers=headers).json()[0]
+        account, _ = ensure_test_workspace(client, headers)
 
         uploaded = client.post(
             f"/api/tg-accounts/{account['id']}/avatar",
@@ -569,6 +599,7 @@ def test_account_profile_upload_save_sync_and_retry():
 def test_account_pool_clone_plan_and_verification_tasks():
     with TestClient(app) as client:
         headers = auth_headers(client)
+        source, group = ensure_test_workspace(client, headers)
         pool = client.post(
             "/api/account-pools",
             headers=headers,
@@ -590,7 +621,6 @@ def test_account_pool_clone_plan_and_verification_tasks():
         filtered = client.get(f"/api/tg-accounts?pool_id={pool['id']}", headers=headers).json()
         assert any(item["id"] == account["id"] for item in filtered)
 
-        source = client.get("/api/tg-accounts", headers=headers).json()[0]
         client.post(f"/api/tg-accounts/{source['id']}/contacts/sync", headers=headers)
         second_target = client.post(
             "/api/tg-accounts",
@@ -637,7 +667,6 @@ def test_account_pool_clone_plan_and_verification_tasks():
             ).json()
             assert pool_task["target_type"] == "private"
 
-        group = client.get("/api/groups", headers=headers).json()[0]
         with SessionLocal() as session:
             source_account = session.get(TgAccount, source["id"])
             source_account.status = AccountStatus.ACTIVE.value
@@ -683,6 +712,7 @@ def test_account_pool_clone_plan_and_verification_tasks():
 def test_multi_group_recommendation_and_approval_expands_tasks():
     with TestClient(app) as client:
         headers = auth_headers(client)
+        ensure_test_workspace(client, headers)
         groups = client.get("/api/groups", headers=headers).json()[:2]
         assert len(groups) >= 2
         for group in groups:
@@ -838,8 +868,7 @@ def test_group_policy_enforcement_material_usage_and_reports(monkeypatch):
     monkeypatch.setattr("app.services._common.gateway.send_message", lambda *args, **kwargs: SendResult(True, remote_message_id="pytest-sent"))
     with TestClient(app) as client:
         headers = auth_headers(client)
-        group = client.get("/api/groups", headers=headers).json()[0]
-        account = client.get("/api/tg-accounts", headers=headers).json()[0]
+        account, group = ensure_test_workspace(client, headers)
         client.post(f"/api/groups/{group['id']}/authorize", headers=headers, json={"auth_status": "已授权运营"})
         with SessionLocal() as session:
             db_account = session.get(TgAccount, account["id"])
@@ -991,8 +1020,7 @@ def test_archive_async_and_extended_sync_types():
     try:
         with TestClient(app) as client:
             headers = auth_headers(client)
-            group = client.get("/api/groups", headers=headers).json()[0]
-            account = client.get("/api/tg-accounts", headers=headers).json()[0]
+            account, group = ensure_test_workspace(client, headers)
             with SessionLocal() as session:
                 db_account = session.get(TgAccount, account["id"])
                 db_account.status = AccountStatus.ACTIVE.value

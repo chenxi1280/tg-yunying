@@ -83,7 +83,7 @@ def _collect_archive(session: Session, archive: GroupArchive, actor: str) -> Gro
     return archive
 
 
-def create_archive(session: Session, payload: ArchiveCreate) -> GroupArchive:
+def create_archive(session: Session, payload: ArchiveCreate, actor: str = "普通用户") -> GroupArchive:
     group = session.get(TgGroup, payload.group_id)
     if not group:
         raise ValueError("group not found")
@@ -97,7 +97,7 @@ def create_archive(session: Session, payload: ArchiveCreate) -> GroupArchive:
     )
     session.add(archive)
     session.flush()
-    audit(session, tenant_id=payload.tenant_id, actor="普通用户", action="创建群归档", target_type="group_archive", target_id=str(archive.id))
+    audit(session, tenant_id=payload.tenant_id, actor=actor, action="创建群归档", target_type="group_archive", target_id=str(archive.id))
     session.commit()
     session.refresh(archive)
     if archive.sync_mode == "sync":

@@ -156,7 +156,7 @@ def validate_selected_accounts_by_group(
     return normalized
 
 
-def create_campaign(session: Session, payload: CampaignCreate) -> Campaign:
+def create_campaign(session: Session, payload: CampaignCreate, actor: str = "普通用户") -> Campaign:
     require_tenant(session, payload.tenant_id)
     group = session.get(TgGroup, payload.group_id)
     if not group or group.tenant_id != payload.tenant_id:
@@ -164,7 +164,8 @@ def create_campaign(session: Session, payload: CampaignCreate) -> Campaign:
     data = payload.model_dump()
     target_group_ids = data.pop("target_group_ids", []) or [payload.group_id]
     selected_accounts = data.pop("selected_account_ids_by_group", {}) or {}
-    valid_group_ids = [group_id for group_id in dict.fromkeys(target_group_ids) if session.get(TgGroup, group_id) and session.get(TgGroup, group_id).tenant_id == payload.tenant_id]
+    all_groups = session.scalars(select(TgGroup).where(TgGroup.id.in_(list(dict.fromkeys(target_group_ids))), TgGroup.tenant_id == payload.tenant_id)).all()
+    valid_group_ids = [group.id for group in all_groups]
     if not valid_group_ids:
         raise ValueError("target groups not found")
     selected_accounts = validate_selected_accounts_by_group(session, payload.tenant_id, valid_group_ids, selected_accounts)
@@ -174,7 +175,7 @@ def create_campaign(session: Session, payload: CampaignCreate) -> Campaign:
     campaign = Campaign(**data, status=TaskStatus.DRAFT.value)
     session.add(campaign)
     session.flush()
-    audit(session, tenant_id=campaign.tenant_id, actor="普通用户", action="创建活跃任务", target_type="campaign", target_id=str(campaign.id))
+    audit(session, tenant_id=campaign.tenant_id, actor=actor, action="创建活跃任务", target_type="campaign", target_id=str(campaign.id))
     session.commit()
     session.refresh(campaign)
     return campaign

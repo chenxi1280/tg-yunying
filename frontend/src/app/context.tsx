@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useMemo, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { API_BASE, API_ORIGIN, api } from '../shared/api/client';
+import { API_BASE, API_ORIGIN, api, ApiError } from '../shared/api/client';
 import { operationLabel } from './components/shared';
 import type {
   Overview,
@@ -283,67 +283,91 @@ export function AppProvider({ children }: AppProviderProps) {
     return query ? `/audit-logs?${query}` : '/audit-logs';
   }
 
+  // 从 Promise.allSettled 结果中提取成功值，失败时返回 fallback
+  function settledValue<T>(result: PromiseSettledResult<T>, fallback: T): T {
+    return result.status === 'fulfilled' ? result.value : fallback;
+  }
+
   async function refresh() {
     setBusy('刷新数据');
-    const me = await api<CurrentUser>('/auth/me');
-    const accountQuery = selectedPoolId ? `/tg-accounts?pool_id=${selectedPoolId}` : '/tg-accounts';
-    const [runtimeData, overviewData, poolData, accountData, groupData, campaignData, draftData, taskData, archiveData, auditData, aiProviderData, promptTemplateData, tenantAiData, schedulingData, materialData] = await Promise.all([
-      api<RuntimeConfig>('/config/runtime'),
-      api<Overview>('/overview'),
-      api<AccountPool[]>('/account-pools'),
-      api<Account[]>(accountQuery),
-      api<Group[]>('/groups'),
-      api<Campaign[]>('/campaigns'),
-      api<Draft[]>('/ai-drafts'),
-      api<MessageTask[]>(`/message-tasks${taskStatusFilter ? `?status=${encodeURIComponent(taskStatusFilter)}` : ''}`),
-      api<ArchiveItem[]>('/archives'),
-      api<AuditLog[]>(auditQuery()),
-      api<AiProvider[]>('/ai-providers'),
-      api<PromptTemplate[]>('/prompt-templates'),
-      api<TenantAiSetting>('/tenant-ai-settings'),
-      api<SchedulingSetting>('/scheduling-settings'),
-      api<Material[]>('/materials'),
-    ]);
-    const developerAppData = me.role === '系统管理员' ? await api<DeveloperApp[]>('/developer-apps') : [];
-    const tenantData = me.role === '系统管理员' ? await api<Tenant[]>('/tenants') : [];
-    const activationCodeData = me.role === '系统管理员' ? await api<ActivationCode[]>('/admin/activation-codes') : [];
-    const usageLedgerData = me.role === '系统管理员' ? await api<UsageLedger[]>('/admin/usage-ledgers') : [];
-    const usageSummaryData = me.role === '系统管理员' ? await api<UsageSummary>('/admin/usage-summary') : null;
-    setCurrentUser(me);
-    setRuntime(runtimeData);
-    setOverview(overviewData);
-    setAccountPools(poolData);
-    setAccounts(accountData);
-    setDeveloperApps(developerAppData);
-    setTenants(tenantData);
-    setActivationCodes(activationCodeData);
-    setUsageLedgers(usageLedgerData);
-    setUsageSummary(usageSummaryData);
-    setAiProviders(aiProviderData);
-    setPromptTemplates(promptTemplateData);
-    setTenantAiSetting(tenantAiData);
-    setSchedulingSetting(schedulingData);
-    setMaterials(materialData);
-    setGroups(groupData);
-    setCampaigns(campaignData);
-    setDrafts(draftData);
-    setTasks(taskData);
-    setArchives(archiveData);
-    setAudits(auditData);
-    setSelectedGroupId((current) => current ?? groupData[0]?.id ?? null);
-    setSelectedAiProviderId((current) => current || tenantAiData.default_provider_id || aiProviderData[0]?.id || '');
-    setJitterMinSeconds((current) => current || schedulingData.jitter_min_seconds);
-    setJitterMaxSeconds((current) => current || schedulingData.jitter_max_seconds);
-    setBatchIntervalSeconds((current) => current || schedulingData.batch_interval_seconds);
-    setRespectSendWindow(schedulingData.respect_send_window);
-    setBusy('');
+    try {
+      const me = await api<CurrentUser>('/auth/me');
+      setCurrentUser(me);
+      const accountQuery = selectedPoolId ? `/tg-accounts?pool_id=${selectedPoolId}` : '/tg-accounts';
+      const results = await Promise.allSettled([
+        api<RuntimeConfig>('/config/runtime'),
+        api<Overview>('/overview'),
+        api<AccountPool[]>('/account-pools'),
+        api<Account[]>(accountQuery),
+        api<Group[]>('/groups'),
+        api<Campaign[]>('/campaigns'),
+        api<Draft[]>('/ai-drafts'),
+        api<MessageTask[]>(`/message-tasks${taskStatusFilter ? `?status=${encodeURIComponent(taskStatusFilter)}` : ''}`),
+        api<ArchiveItem[]>('/archives'),
+        api<AuditLog[]>(auditQuery()),
+        api<AiProvider[]>('/ai-providers'),
+        api<PromptTemplate[]>('/prompt-templates'),
+        api<TenantAiSetting>('/tenant-ai-settings'),
+        api<SchedulingSetting>('/scheduling-settings'),
+        api<Material[]>('/materials'),
+      ]);
+      const runtimeData = settledValue(results[0], {} as RuntimeConfig);
+      const overviewData = settledValue(results[1], {} as Overview);
+      const poolData = settledValue(results[2], [] as AccountPool[]);
+      const accountData = settledValue(results[3], [] as Account[]);
+      const groupData = settledValue(results[4], [] as Group[]);
+      const campaignData = settledValue(results[5], [] as Campaign[]);
+      const draftData = settledValue(results[6], [] as Draft[]);
+      const taskData = settledValue(results[7], [] as MessageTask[]);
+      const archiveData = settledValue(results[8], [] as ArchiveItem[]);
+      const auditData = settledValue(results[9], [] as AuditLog[]);
+      const aiProviderData = settledValue(results[10], [] as AiProvider[]);
+      const promptTemplateData = settledValue(results[11], [] as PromptTemplate[]);
+      const tenantAiData = settledValue(results[12], {} as TenantAiSetting);
+      const schedulingData = settledValue(results[13], {} as SchedulingSetting);
+      const materialData = settledValue(results[14], [] as Material[]);
+      const developerAppData = me.role === '系统管理员' ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
+      const tenantData = me.role === '系统管理员' ? await api<Tenant[]>('/tenants').catch(() => [] as Tenant[]) : [];
+      const activationCodeData = me.role === '系统管理员' ? await api<ActivationCode[]>('/admin/activation-codes').catch(() => [] as ActivationCode[]) : [];
+      const usageLedgerData = me.role === '系统管理员' ? await api<UsageLedger[]>('/admin/usage-ledgers').catch(() => [] as UsageLedger[]) : [];
+      const usageSummaryData = me.role === '系统管理员' ? await api<UsageSummary>('/admin/usage-summary').catch(() => null) : null;
+      setRuntime(runtimeData);
+      setOverview(overviewData);
+      setAccountPools(poolData);
+      setAccounts(accountData);
+      setDeveloperApps(developerAppData);
+      setTenants(tenantData);
+      setActivationCodes(activationCodeData);
+      setUsageLedgers(usageLedgerData);
+      setUsageSummary(usageSummaryData);
+      setAiProviders(aiProviderData);
+      setPromptTemplates(promptTemplateData);
+      setTenantAiSetting(tenantAiData);
+      setSchedulingSetting(schedulingData);
+      setMaterials(materialData);
+      setGroups(groupData);
+      setCampaigns(campaignData);
+      setDrafts(draftData);
+      setTasks(taskData);
+      setArchives(archiveData);
+      setAudits(auditData);
+      setSelectedGroupId((current) => current ?? groupData[0]?.id ?? null);
+      setSelectedAiProviderId((current) => current || tenantAiData.default_provider_id || aiProviderData[0]?.id || '');
+      setJitterMinSeconds((current) => current || schedulingData.jitter_min_seconds);
+      setJitterMaxSeconds((current) => current || schedulingData.jitter_max_seconds);
+      setBatchIntervalSeconds((current) => current || schedulingData.batch_interval_seconds);
+      setRespectSendWindow(schedulingData.respect_send_window);
+    } catch (error) {
+      throw error;
+    } finally {
+      setBusy('');
+    }
   }
 
   useEffect(() => {
     if (!token) return;
     refresh().catch((error) => {
-      setBusy('');
-      if (String(error.message).includes('401') || String(error.message).includes('token expired')) {
+      if (error instanceof ApiError && (error.status === 401 || error.body.includes('token expired'))) {
         localStorage.removeItem('tg_ops_token');
         setToken('');
         setCurrentUser(null);
@@ -775,17 +799,22 @@ export function AppProvider({ children }: AppProviderProps) {
     setBusy('');
   }
 
-  async function login() {
-    setBusy('登录');
+  async function requestCaptchaToken(): Promise<string> {
     const challenge = await api<CaptchaChallenge>('/auth/captcha/challenge');
     const captcha = await api<CaptchaVerifyResponse>('/auth/captcha/verify', {
       method: 'POST',
       body: JSON.stringify({ challenge_id: challenge.challenge_id, slider_value: challenge.target_value }),
     });
+    return captcha.captcha_token;
+  }
+
+  async function login() {
+    setBusy('登录');
+    const captchaToken = await requestCaptchaToken();
     const response = await fetch(`${API_BASE}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ identifier: loginEmail, email: loginEmail, password: loginPassword, captcha_token: captcha.captcha_token }),
+      body: JSON.stringify({ identifier: loginEmail, email: loginEmail, password: loginPassword, captcha_token: captchaToken }),
     });
     if (!response.ok) {
       setBusy('');
@@ -802,10 +831,11 @@ export function AppProvider({ children }: AppProviderProps) {
   async function register() {
     setBusy('注册');
     try {
+      const captchaToken = await requestCaptchaToken();
       const response = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(registerForm),
+        body: JSON.stringify({ ...registerForm, captcha_token: captchaToken }),
       });
       if (!response.ok) {
         setBusy('');
@@ -860,12 +890,15 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   async function verifyAccount(account: Account) {
+    const code = window.prompt(`请输入 ${account.display_name} 收到的验证码：`);
+    if (!code) return;
     setBusy('验证登录');
     await api(`/tg-accounts/${account.id}/login/verify`, {
       method: 'POST',
-      body: JSON.stringify({ code: '12345' }),
+      body: JSON.stringify({ code }),
     });
     showResult('验证完成', `${account.display_name} 已完成登录验证`);
+    setBusy('');
     await refresh();
     if (accountDetail?.account.id === account.id) await refreshAccountDetail();
   }
@@ -936,6 +969,7 @@ export function AppProvider({ children }: AppProviderProps) {
     showResult('草稿已通过', '已生成排队消息任务。');
     setTaskManagementTab('发送进度');
     await refresh();
+    setBusy('');
   }
 
   async function rejectDraft(draft: Draft) {
@@ -1211,7 +1245,8 @@ export function AppProvider({ children }: AppProviderProps) {
     navigate(VIEW_ROUTES[viewId] ?? '/dashboard');
   }
 
-  const value: AppState = {
+  // 使用 useMemo 稳定 context value 引用，避免消费者不必要的重渲染
+  const value: AppState = useMemo(() => ({
     // Auth state
     token,
     setToken,
@@ -1487,7 +1522,7 @@ export function AppProvider({ children }: AppProviderProps) {
     accountName,
     groupName,
     choosePoolSendAccount,
-  };
+  }), [token, currentUser, authMode, loginEmail, loginPassword, registerForm, activeView, runtime, overview, accountPools, selectedPoolId, accounts, developerApps, tenants, activationCodes, usageLedgers, usageSummary, redeemCode, activationBatch, aiProviders, promptTemplates, tenantAiSetting, schedulingSetting, materials, groups, campaigns, drafts, tasks, selectedCampaignId, taskManagementTab, archives, archiveDetail, audits, auditFilters, accountDetail, accountContacts, selectedDirectContact, accountDetailTab, accountPoolDetail, poolDirectAccountId, returnAfterVerification, groupDetail, campaignDetail, draftEditTarget, draftEditForm, accountCreateForm, accountPoolForm, cloneForm, loginAfterCreate, profileForm, avatarFile, selectedGroupId, campaignStep, selectedTargetGroupIds, recommendedAccounts, selectedAccountsByGroup, topic, sendWindow, intensity, draftCount, tone, selectedAiProviderId, selectedMaterialIds, jitterMinSeconds, jitterMaxSeconds, batchIntervalSeconds, respectSendWindow, taskStatusFilter, groupPolicy, developerAppForm, tenantForm, aiProviderForm, promptTemplateForm, materialForm, modal, resultDialog, busy, notice, directMessageForm, selectedPool, selectedGroup, selectedCampaign, selectedCampaignDrafts, selectedCampaignTasks, targetGroupsMissingAccounts, taskSummary, refresh, showResult, closeModal, openConfirm, openCampaignModal, openAccountCreate, openAccountDetail, openAccountPoolDetail, refreshAccountPoolDetail, createAccount, createAccountPool, moveCurrentAccountPool, createClonePlan, confirmClonePlan, retryCloneItem, confirmVerificationTask, dismissVerificationTask, refreshAccountDetail, syncAccountContacts, queueAccountSyncNow, startDirectMessageToContact, openGroupDetail, loadCampaignDetail, openDraftEdit, saveDraftEdit, avatarUrl, openAccountProfileEdit, pollVerificationCodes, toggleTargetGroup, recommendAccounts, toggleRecommendedAccount, setGroupAccountsSelected, goCampaignAccountStep, goCampaignContentStep, createDirectMessageTask, saveAccountProfile, retryAccountProfileSync, login, register, submitRedeemCode, createActivationCodes, logout, runLogin, verifyAccount, healthCheck, syncAccountGroups, createCampaignAndDrafts, approveDraft, rejectDraft, approveAllDrafts, cancelTask, dispatchTask, drainQueue, retryTask, authorizeSelectedGroup, createArchive, saveGroupPolicy, openArchiveDetail, exportArchive, createDeveloperApp, toggleDeveloperApp, checkDeveloperApp, openTenantEdit, saveTenantQuota, createAiProvider, checkAiProvider, createPromptTemplate, saveTenantAiSetting, saveSchedulingSetting, createMaterial, toggleMaterial, accountName, groupName, choosePoolSendAccount]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

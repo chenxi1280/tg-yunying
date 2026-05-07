@@ -336,6 +336,7 @@ class TelethonTelegramGateway(TelegramGateway):
     _loop: asyncio.AbstractEventLoop | None = None
     _loop_thread: threading.Thread | None = None
     _client_cache: dict[tuple[int, str], Any] = {}  # (api_id, session_str) → connected client
+    _cache_lock: threading.Lock = threading.Lock()
 
     def __init__(self, settings: Settings | None = None) -> None:
         super().__init__(settings)
@@ -344,11 +345,12 @@ class TelethonTelegramGateway(TelegramGateway):
 
     @classmethod
     def _get_or_create_loop(cls) -> asyncio.AbstractEventLoop:
-        if cls._loop is None or cls._loop.is_closed():
-            cls._loop = asyncio.new_event_loop()
-            cls._loop_thread = threading.Thread(target=cls._loop.run_forever, daemon=True)
-            cls._loop_thread.start()
-        return cls._loop
+        with cls._cache_lock:
+            if cls._loop is None or cls._loop.is_closed():
+                cls._loop = asyncio.new_event_loop()
+                cls._loop_thread = threading.Thread(target=cls._loop.run_forever, daemon=True)
+                cls._loop_thread.start()
+            return cls._loop
 
     @staticmethod
     def _run(coro):
@@ -374,7 +376,8 @@ class TelethonTelegramGateway(TelegramGateway):
 
         api_id = int(credentials.api_id)
         cache_key = (api_id, raw_session)
-        client = self._client_cache.get(cache_key)
+        with self._cache_lock:
+            client = self._client_cache.get(cache_key)
         if client is not None:
             try:
                 if client.is_connected():
@@ -383,7 +386,8 @@ class TelethonTelegramGateway(TelegramGateway):
                 pass  # stale client, reconnect below
         client = TelegramClient(StringSession(raw_session or ""), api_id, credentials.api_hash)
         await client.connect()
-        self._client_cache[cache_key] = client
+        with self._cache_lock:
+            self._client_cache[cache_key] = client
         return client
 
     @staticmethod

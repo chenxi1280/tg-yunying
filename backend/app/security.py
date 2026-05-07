@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+from functools import lru_cache
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -19,6 +20,7 @@ def _master_secret() -> bytes:
     return get_settings().session_secret_key.encode("utf-8")
 
 
+@lru_cache(maxsize=1)
 def _derive_fernet_key() -> bytes:
     """Derive a 32-byte Fernet key from the master secret via HKDF."""
     hkdf = HKDF(

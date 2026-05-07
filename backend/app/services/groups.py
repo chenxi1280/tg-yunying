@@ -18,14 +18,16 @@ __all__ = [
 ]
 
 
-def update_group_policy(session: Session, group_id: int, payload: GroupPolicyUpdate) -> TgGroup:
+def update_group_policy(session: Session, group_id: int, payload: GroupPolicyUpdate, actor: str = "普通用户") -> TgGroup:
     group = session.get(TgGroup, group_id)
     if not group:
         raise ValueError("group not found")
 
     for key, value in payload.model_dump(exclude_unset=True).items():
+        if key in {"id", "tenant_id", "created_at", "updated_at"}:
+            continue
         setattr(group, key, value)
-    audit(session, tenant_id=group.tenant_id, actor="普通用户", action="更新群运营配置", target_type="tg_group", target_id=str(group.id))
+    audit(session, tenant_id=group.tenant_id, actor=actor, action="更新群运营配置", target_type="tg_group", target_id=str(group.id))
     session.commit()
     session.refresh(group)
     return group

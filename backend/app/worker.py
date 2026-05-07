@@ -43,7 +43,12 @@ def drain_once(limit: int = 100) -> int:
     for task_id in deferred:
         queue.enqueue(task_id)
     remaining = max(1, limit - count)
-    return count + drain_profile_sync_records(SessionLocal, remaining) + drain_account_sync_records(SessionLocal, remaining) + drain_archives(SessionLocal, remaining)
+    profile_count = drain_profile_sync_records(SessionLocal, remaining)
+    remaining = max(0, remaining - profile_count)
+    account_count = drain_account_sync_records(SessionLocal, max(1, remaining))
+    remaining = max(0, remaining - account_count)
+    archive_count = drain_archives(SessionLocal, max(1, remaining))
+    return count + profile_count + account_count + archive_count
 
 
 if __name__ == "__main__":

@@ -296,12 +296,12 @@ def list_materials(session: Session, tenant_id: int) -> list[Material]:
     return list(session.scalars(select(Material).where(Material.tenant_id == tenant_id).order_by(Material.id.desc())))
 
 
-def create_material(session: Session, payload: MaterialCreate) -> Material:
+def create_material(session: Session, payload: MaterialCreate, actor: str = "普通用户") -> Material:
     require_tenant(session, payload.tenant_id)
     material = Material(**payload.model_dump())
     session.add(material)
     session.flush()
-    audit(session, tenant_id=material.tenant_id, actor="普通用户", action="新增素材", target_type="material", target_id=str(material.id))
+    audit(session, tenant_id=material.tenant_id, actor=actor, action="新增素材", target_type="material", target_id=str(material.id))
     session.commit()
     session.refresh(material)
     return material
@@ -408,6 +408,8 @@ def update_material(session: Session, material_id: int, payload: MaterialUpdate,
     if not material:
         raise ValueError("material not found")
     for field, value in payload.model_dump(exclude_unset=True).items():
+        if field in {"id", "tenant_id", "created_at", "updated_at"}:
+            continue
         setattr(material, field, value)
     audit(session, tenant_id=material.tenant_id, actor=actor, action="更新素材", target_type="material", target_id=str(material.id))
     session.commit()

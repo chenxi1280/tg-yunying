@@ -6,6 +6,8 @@ import hmac
 import json
 import random
 import re
+import secrets
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Protocol
@@ -33,28 +35,51 @@ class CaptchaStore(Protocol):
 
 
 class InMemoryCaptchaStore:
+    """开发环境验证码存储，支持 TTL 自动过期和线程安全的 token 消费。"""
+
     def __init__(self) -> None:
         self._challenges: dict[str, dict] = {}
         self._tokens: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def _is_expired(self, entry: dict) -> bool:
+        """检查条目是否已过期（基于存储时的 TTL 时间戳）。"""
+        expires_at = entry.get("_expires_at")
+        if expires_at is None:
+            return False
+        return datetime.now(UTC).timestamp() > expires_at
 
     def get_challenge(self, challenge_id: str) -> dict | None:
-        return self._challenges.get(challenge_id)
+        entry = self._challenges.get(challenge_id)
+        if entry is None or self._is_expired(entry):
+            self._challenges.pop(challenge_id, None)
+            return None
+        return entry
 
     def set_challenge(self, challenge_id: str, data: dict, ttl_seconds: int) -> None:
+        data["_expires_at"] = datetime.now(UTC).timestamp() + ttl_seconds
         self._challenges[challenge_id] = data
 
     def get_token(self, token: str) -> dict | None:
-        return self._tokens.get(token)
+        entry = self._tokens.get(token)
+        if entry is None or self._is_expired(entry):
+            self._tokens.pop(token, None)
+            return None
+        return entry
 
     def set_token(self, token: str, data: dict, ttl_seconds: int) -> None:
+        data["_expires_at"] = datetime.now(UTC).timestamp() + ttl_seconds
         self._tokens[token] = data
 
     def consume_token(self, token: str) -> bool:
-        entry = self._tokens.get(token)
-        if entry is None or entry.get("consumed"):
-            return False
-        entry["consumed"] = True
-        return True
+        with self._lock:
+            entry = self._tokens.get(token)
+            if entry is None or self._is_expired(entry):
+                return False
+            if entry.get("consumed"):
+                return False
+            entry["consumed"] = True
+            return True
 
 
 class RedisCaptchaStore:
@@ -87,20 +112,42 @@ class RedisCaptchaStore:
         key = self._token_key(token)
         self._client.setex(key, ttl_seconds, json.dumps(data, default=str))
 
+    # Lua 脚本实现原子性 check-and-consume，避免竞态条件
+    _CONSUME_LUA = """
+    local key = KEYS[1]
+    local raw = redis.call('GET', key)
+    if not raw then return 0 end
+    local data = cjson.decode(raw)
+    if data['consumed'] == true then return 0 end
+    data['consumed'] = true
+    local ttl = redis.call('TTL', key)
+    local updated = cjson.encode(data)
+    if ttl > 0 then
+        redis.call('SETEX', key, ttl, updated)
+    else
+        redis.call('SET', key, updated)
+    end
+    return 1
+    """
+
     def consume_token(self, token: str) -> bool:
         key = self._token_key(token)
-        raw = self._client.get(key)
-        if not raw:
-            return False
-        data = json.loads(raw)
-        if data.get("consumed"):
-            return False
-        data["consumed"] = True
-        # Re-set with flag; keep original TTL
-        ttl = self._client.ttl(key)
-        if ttl > 0:
-            self._client.setex(key, ttl, json.dumps(data, default=str))
-        return True
+        try:
+            result = self._client.eval(self._CONSUME_LUA, 1, key)
+            return result == 1
+        except Exception:
+            # Redis 不可用时回退到非原子操作
+            raw = self._client.get(key)
+            if not raw:
+                return False
+            data = json.loads(raw)
+            if data.get("consumed"):
+                return False
+            data["consumed"] = True
+            ttl = self._client.ttl(key)
+            if ttl > 0:
+                self._client.setex(key, ttl, json.dumps(data, default=str))
+            return True
 
 
 _captcha_store: CaptchaStore | None = None
@@ -117,13 +164,36 @@ def _get_captcha_store() -> CaptchaStore:
     return _captcha_store
 
 
+_PBKDF2_ITERATIONS = 600_000
+
+
 def hash_password(password: str) -> str:
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), get_password_salt(), 120_000)
-    return base64.urlsafe_b64encode(digest).decode("ascii")
+    """生成密码哈希，使用独立随机 salt，格式: $iterations$salt_b64$hash_b64"""
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS)
+    return f"${_PBKDF2_ITERATIONS}${base64.urlsafe_b64encode(salt).decode()}${base64.urlsafe_b64encode(digest).decode()}"
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
-    return hmac.compare_digest(hash_password(password), stored_hash)
+    """验证密码，兼容新格式（独立 salt）和旧格式（共享 salt）。"""
+    if stored_hash.startswith("$"):
+        # 新格式: $iterations$salt_b64$hash_b64
+        parts = stored_hash.split("$")
+        if len(parts) != 4:
+            return False
+        iterations = int(parts[1])
+        salt = base64.urlsafe_b64decode(parts[2])
+        expected = base64.urlsafe_b64decode(parts[3])
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return hmac.compare_digest(actual, expected)
+    # 旧格式: 共享 salt 的 base64 哈希（向后兼容）
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), get_password_salt(), 120_000)
+    return hmac.compare_digest(base64.urlsafe_b64encode(digest).decode("ascii"), stored_hash)
+
+
+def is_legacy_password_hash(stored_hash: str) -> bool:
+    """检查密码哈希是否为旧格式（共享 salt）。"""
+    return not stored_hash.startswith("$")
 
 
 def _sign(payload: bytes) -> str:
@@ -229,7 +299,7 @@ def require_core_feature_access(current_user: CurrentUser) -> None:
 
 def create_captcha_challenge() -> dict:
     now = datetime.now(UTC)
-    challenge_id = base64.urlsafe_b64encode(hashlib.sha256(f"{now.timestamp()}:{random.random()}".encode("utf-8")).digest()[:18]).decode("ascii")
+    challenge_id = secrets.token_urlsafe(18)
     target = random.randint(72, 96)
     expires_at = now + timedelta(minutes=5)
     store = _get_captcha_store()
@@ -245,6 +315,15 @@ def create_captcha_challenge() -> dict:
         "target_value": target,
         "expires_at": expires_at,
     }
+
+
+def get_challenge_target(challenge_id: str) -> int | None:
+    """从验证码 store 中读取 challenge 的目标值（仅供测试使用）。"""
+    store = _get_captcha_store()
+    challenge = store.get_challenge(challenge_id)
+    if challenge is None:
+        return None
+    return challenge.get("target")
 
 
 def verify_captcha_challenge(challenge_id: str, slider_value: int) -> dict:
@@ -265,8 +344,7 @@ def verify_captcha_challenge(challenge_id: str, slider_value: int) -> dict:
     # Mark consumed
     challenge["consumed"] = True
     store.set_challenge(challenge_id, challenge, ttl_seconds=300)
-    token_seed = f"{challenge_id}:{slider_value}:{now.timestamp()}".encode("utf-8")
-    captcha_token = base64.urlsafe_b64encode(hashlib.sha256(token_seed).digest()[:24]).decode("ascii")
+    captcha_token = secrets.token_urlsafe(24)
     expires_at = now + timedelta(minutes=10)
     store.set_token(
         captcha_token,

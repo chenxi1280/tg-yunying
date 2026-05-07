@@ -43,6 +43,8 @@ def update_tenant(session: Session, tenant_id: int, payload: TenantUpdate, actor
         raise ValueError("tenant not found")
     data = payload.model_dump(exclude_unset=True)
     for key, value in data.items():
+        if key in {"id", "created_at", "updated_at"}:
+            continue
         if isinstance(value, str):
             value = value.strip()
         setattr(tenant, key, value)
