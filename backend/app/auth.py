@@ -225,6 +225,17 @@ def create_access_token(user: AppUser) -> str:
     return f"{encoded}.{_sign(encoded.encode('ascii'))}"
 
 
+def create_admin_access_token() -> str:
+    payload = {
+        "sub": "admin",
+        "tenant_id": 1,
+        "role": "系统管理员",
+        "exp": int((datetime.now(UTC) + timedelta(hours=12)).timestamp()),
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
+    return f"{encoded}.{_sign(encoded.encode('ascii'))}"
+
+
 def decode_access_token(token: str) -> dict:
     try:
         encoded, signature = token.split(".", 1)
@@ -308,10 +319,40 @@ def can_user_use_core_features(user: AppUser) -> bool:
 
 
 def require_core_feature_access(current_user: CurrentUser) -> None:
-    if current_user.is_platform_admin:
-        return
-    if not current_user.can_use_core_features:
-        raise HTTPException(status_code=403, detail="subscription inactive")
+    return
+
+
+def admin_user_payload() -> dict:
+    settings = get_settings()
+    username = settings.admin_bootstrap_username
+    email = settings.admin_bootstrap_email or f"{username}@local.admin"
+    return {
+        "id": 0,
+        "tenant_id": 1,
+        "name": username,
+        "role": "系统管理员",
+        "email": email,
+        "phone": None,
+        "tenant_name": "默认运营空间",
+        "subscription_status": "active",
+        "subscription_started_at": None,
+        "subscription_expires_at": None,
+        "subscription_days_remaining": 0,
+        "can_use_core_features": True,
+        "token_balance": 0,
+        "token_quota_total": 0,
+        "menu_permissions": ["*"],
+    }
+
+
+def authenticate_admin(identifier: str, password: str) -> bool:
+    settings = get_settings()
+    expected_identifier = settings.admin_bootstrap_username
+    expected_email = settings.admin_bootstrap_email or f"{expected_identifier}@local.admin"
+    identifier = (identifier or "").strip()
+    password_ok = hmac.compare_digest(password or "", settings.admin_bootstrap_password)
+    identifier_ok = identifier in {expected_identifier, expected_email}
+    return bool(identifier_ok and password_ok)
 
 
 def create_captcha_challenge() -> dict:
@@ -446,10 +487,11 @@ def get_current_user(
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
     payload = decode_access_token(authorization.split(" ", 1)[1])
-    user = session.get(AppUser, int(payload["sub"]))
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="user not found")
-    return CurrentUser(**serialize_user(session, user))
+    if payload.get("sub") == "admin":
+        return CurrentUser(**admin_user_payload())
+    # The operation-center build no longer keeps database users. Reject legacy
+    # user tokens before touching removed authorization tables.
+    raise HTTPException(status_code=401, detail="legacy user token unsupported")
 
 
 def require_platform_admin(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
@@ -462,14 +504,4 @@ def require_platform_admin(current_user: CurrentUser = Depends(get_current_user)
 
 
 def resolve_tenant_id(current_user: CurrentUser, requested_tenant_id: int | None = None) -> int:
-    if current_user.is_platform_admin:
-        if requested_tenant_id is not None:
-            return requested_tenant_id
-        if current_user.tenant_id is not None:
-            return current_user.tenant_id
-        return 1
-    if current_user.tenant_id is None:
-        raise HTTPException(status_code=403, detail="user has no tenant")
-    if requested_tenant_id is not None and requested_tenant_id != current_user.tenant_id:
-        raise HTTPException(status_code=403, detail="cross-tenant access denied")
-    return current_user.tenant_id
+    return 1

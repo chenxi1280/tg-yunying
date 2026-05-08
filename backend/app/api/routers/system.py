@@ -14,8 +14,25 @@ from app.config import get_settings
 from app.database import get_session
 from app.common.http import forbidden
 from app.models import Tenant
-from app.schemas import OverviewOut, ReportOut, RuntimeConfigOut, TenantCreate, TenantOut, TenantUpdate
-from app.services import build_overview, build_report, create_tenant, get_runtime_config, update_tenant
+from app.schemas import (
+    OverviewOut,
+    ReportOut,
+    RuntimeConfigOut,
+    TenantCreate,
+    TenantNotificationSettingsOut,
+    TenantNotificationSettingsUpdate,
+    TenantOut,
+    TenantUpdate,
+)
+from app.services import (
+    build_overview,
+    build_report,
+    create_tenant,
+    get_runtime_config,
+    notification_settings_payload,
+    update_tenant,
+    update_tenant_notification_settings,
+)
 from app.worker import drain_once
 
 router = APIRouter()
@@ -75,6 +92,33 @@ def patch_tenant(
         raise forbidden("platform admin required")
     try:
         return update_tenant(session, tenant_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/tenant-notification-settings", response_model=TenantNotificationSettingsOut)
+def get_tenant_notification_settings(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    tenant = session.get(Tenant, resolved_tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    return notification_settings_payload(tenant)
+
+
+@router.patch("/api/tenant-notification-settings", response_model=TenantNotificationSettingsOut)
+def patch_tenant_notification_settings(
+    payload: TenantNotificationSettingsUpdate,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        return update_tenant_notification_settings(session, resolved_tenant_id, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

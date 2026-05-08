@@ -4,8 +4,8 @@ export const VIEW_ROUTES: Record<string, string> = {
   overview: '/dashboard',
   systemConfig: '/system-config',
   accounts: '/accounts',
-  groupManagement: '/group-management',
-  taskManagement: '/campaigns',
+  targetManagement: '/targets',
+  taskManagement: '/operation-tasks',
   usageReports: '/usage-reports',
   audits: '/audit',
 };
@@ -17,9 +17,11 @@ export const ROUTE_VIEWS: Record<string, string> = Object.fromEntries(
 Object.assign(ROUTE_VIEWS, {
   '/developer-apps': 'systemConfig',
   '/ai-config': 'systemConfig',
-  '/activation-codes': 'systemConfig',
   '/account-pools': 'accounts',
   '/groups': 'groupManagement',
+  '/group-management': 'targetManagement',
+  '/campaigns': 'taskManagement',
+  '/operation-targets': 'targetManagement',
   '/archives': 'groupManagement',
 });
 

@@ -23,8 +23,6 @@ interface Props {
   setSendWindow: (window: string) => void;
   intensity: string;
   setIntensity: (intensity: string) => void;
-  draftCount: number;
-  setDraftCount: (count: number) => void;
   tone: string;
   setTone: (tone: string) => void;
   selectedAiProviderId: number | '';
@@ -84,8 +82,6 @@ export default function CampaignWizard({
   setSendWindow,
   intensity,
   setIntensity,
-  draftCount,
-  setDraftCount,
   tone,
   setTone,
   selectedAiProviderId,
@@ -127,7 +123,6 @@ export default function CampaignWizard({
 }: Props) {
   const stepItems = ['任务模式', '选择群聊', '选择账号', '任务内容'].map((title) => ({ title }));
   const groupSelectionReady = selectedTargetGroupIds.length > 0 && (campaignMode !== 'mirror_forward' || selectedSourceGroupIds.length > 0);
-  const isContinuous = campaignMode !== 'manual_draft';
 
   return (
     <Modal title="创建群活跃任务" size="large" onClose={onClose}>
@@ -149,7 +144,6 @@ export default function CampaignWizard({
             {[
               { value: 'ai_activity', title: 'AI 活跃', desc: '监听上下文并批量生成自然群聊消息。' },
               { value: 'mirror_forward', title: '监听转发', desc: '把源群真人消息净化后同步到目标群。' },
-              { value: 'manual_draft', title: '一次性草稿', desc: '沿用原流程，创建后生成草稿并人工审核。' },
             ].map((item) => (
               <Button key={item.value} className={campaignMode === item.value ? 'selected group-option' : 'group-option'} onClick={() => setCampaignMode(item.value)}>
                 <strong>{item.title}</strong>
@@ -239,17 +233,16 @@ export default function CampaignWizard({
             <span>目标群 {selectedTargetGroupIds.length} 个</span>
             {campaignMode === 'mirror_forward' && <span>源群 {selectedSourceGroupIds.length} 个</span>}
             <span>参与账号 {Object.values(selectedAccountsByGroup).reduce((total, ids) => total + ids.length, 0)} 个</span>
-            <span>{campaignMode === 'mirror_forward' ? '净化后原文转发' : campaignMode === 'ai_activity' ? '持续 AI 活跃' : '一次性多账号对话脚本'}</span>
+            <span>{campaignMode === 'mirror_forward' ? '净化后原文转发' : '持续 AI 活跃'}</span>
           </div>
           <div className="policy-grid">
             <label>强度<Select value={intensity} onChange={setIntensity} options={['轻度', '中度', '高频'].map((value) => ({ value, label: value }))} /></label>
             <label>时间窗<Input value={sendWindow} onChange={(event) => setSendWindow(event.target.value)} /></label>
-            {campaignMode === 'manual_draft' && <label>草稿轮数<InputNumber min={1} max={50} value={draftCount} onChange={(value) => setDraftCount(Number(value ?? 1))} /></label>}
             <label>模型后台<Select value={selectedAiProviderId || ''} onChange={(value) => setSelectedAiProviderId(Number(value) || '')} options={[{ value: '', label: '使用客户默认' }, ...aiProviders.map((provider) => ({ value: provider.id, label: `${provider.provider_name} / ${provider.model_name}` }))]} /></label>
             <label className="wide-field">话题/运营目标<Input.TextArea value={topic} onChange={(event) => setTopic(event.target.value)} /></label>
             <label className="wide-field">语气<Input.TextArea value={tone} onChange={(event) => setTone(event.target.value)} /></label>
-            {isContinuous && <label>结束时间<Input type="datetime-local" value={campaignEndsAt} onChange={(event) => setCampaignEndsAt(event.target.value)} /></label>}
-            {isContinuous && <label>运行间隔秒<InputNumber min={1} value={runIntervalSeconds} onChange={(value) => setRunIntervalSeconds(Number(value ?? 1))} /></label>}
+            <label>结束时间<Input type="datetime-local" value={campaignEndsAt} onChange={(event) => setCampaignEndsAt(event.target.value)} /></label>
+            <label>运行间隔秒<InputNumber min={1} value={runIntervalSeconds} onChange={(value) => setRunIntervalSeconds(Number(value ?? 1))} /></label>
             {campaignMode === 'ai_activity' && <label>Token 上限<InputNumber min={1} value={maxAiTokens} onChange={(value) => setMaxAiTokens(Number(value ?? 1))} /></label>}
             {campaignMode === 'ai_activity' && <label>单轮最多消息<InputNumber min={1} max={50} value={maxDraftsPerBatch} onChange={(value) => setMaxDraftsPerBatch(Number(value ?? 1))} /></label>}
             {campaignMode === 'ai_activity' && <label>最小参与比例<InputNumber min={0} max={1} step={0.05} value={participationMinRatio} onChange={(value) => setParticipationMinRatio(Number(value ?? 0))} /></label>}
@@ -270,11 +263,11 @@ export default function CampaignWizard({
               </Space>
             </div>
           </div>
-          <p className="muted-line">{campaignMode === 'manual_draft' ? '系统提示词会自动决定是否调用 AI，并默认按多账号对话脚本生成接话内容；审核后才会按顺序和抖动进入待发送状态。' : '持续任务会自动过滤 @、回复、关键词和群规则，过滤通过后直接生成已审核草稿并入队。'}</p>
+          <p className="muted-line">持续任务会自动过滤 @、回复、关键词和群规则，过滤通过后直接生成已审核草稿并入队。</p>
           {targetGroupsMissingAccounts.length > 0 && <p className="danger-text">这些群还没有选择账号：{targetGroupsMissingAccounts.map((groupId) => groupName(groupId)).join('、')}</p>}
           <Space className="modal-actions">
             <Button onClick={() => setCampaignStep(3)}>上一步</Button>
-            <Button type="primary" loading={isActionPending('campaign:create')} disabled={!selectedTargetGroupIds.length || !topic || targetGroupsMissingAccounts.length > 0 || (isContinuous && !campaignEndsAt)} onClick={onCreateCampaignAndDrafts}>{campaignMode === 'manual_draft' ? '创建并生成草稿' : '创建持续任务'}</Button>
+            <Button type="primary" loading={isActionPending('campaign:create')} disabled={!selectedTargetGroupIds.length || !topic || targetGroupsMissingAccounts.length > 0 || !campaignEndsAt} onClick={onCreateCampaignAndDrafts}>创建持续任务</Button>
           </Space>
         </Card>
       )}

@@ -10,6 +10,7 @@ from .auth import router as auth_router
 from .campaigns import router as campaigns_router
 from .developer_apps import router as developer_apps_router
 from .groups import router as groups_router
+from .operations import router as operations_router
 from .system import router as system_router
 
 
@@ -21,6 +22,7 @@ for sub_router in (
     ai_config_router,
     account_pools_router,
     accounts_router,
+    operations_router,
     groups_router,
     campaigns_router,
     archives_router,

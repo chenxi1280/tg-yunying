@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import timedelta
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -8,8 +7,7 @@ from fastapi.testclient import TestClient
 from app.database import SessionLocal
 from app.gateways import GroupMessageSnapshot
 from app.main import app
-from app.models import AccountStatus, AppUser, Campaign, GroupContextMessage, MessageTask, TgGroup, TgGroupAccount
-from app.models.enums import now
+from app.models import AccountStatus, Campaign, GroupContextMessage, MessageTask, TgGroup, TgGroupAccount
 from app.services.group_listeners import process_group_listener
 from app.worker import drain_once
 from tests.test_workflow import auth_headers, ensure_developer_app, ensure_test_workspace
@@ -31,28 +29,6 @@ def _active_account(client: TestClient, headers: dict[str, str], display_name: s
         account = client.post(f"/api/tg-accounts/{account['id']}/login/qr/check", headers=headers).json()
     client.post(f"/api/tg-accounts/{account['id']}/sync-groups", headers=headers)
     return account
-
-
-def _expire_tenant_subscription(tenant_id: int = 1) -> tuple[int, str, object, object]:
-    with SessionLocal() as session:
-        user = session.query(AppUser).filter(AppUser.tenant_id == tenant_id, AppUser.role == "普通用户").order_by(AppUser.id.asc()).first()
-        assert user is not None
-        original = (user.id, user.subscription_status, user.subscription_started_at, user.subscription_expires_at)
-        user.subscription_status = "expired"
-        user.subscription_expires_at = now() - timedelta(days=1)
-        session.commit()
-        return original
-
-
-def _restore_tenant_subscription(original: tuple[int, str, object, object]) -> None:
-    user_id, status, started_at, expires_at = original
-    with SessionLocal() as session:
-        user = session.get(AppUser, user_id)
-        assert user is not None
-        user.subscription_status = status
-        user.subscription_started_at = started_at
-        user.subscription_expires_at = expires_at
-        session.commit()
 
 
 def test_group_listener_config_rejects_invalid_account():
@@ -152,7 +128,7 @@ def test_group_listener_collects_context_and_auto_queues_reply(monkeypatch):
         assert drain_once() == 0
 
 
-def test_group_listener_auto_reply_skips_when_subscription_expired(monkeypatch):
+def test_group_listener_auto_reply_is_not_subscription_gated(monkeypatch):
     with TestClient(app) as client:
         headers = auth_headers(client)
         ensure_developer_app(client, headers)
@@ -163,7 +139,7 @@ def test_group_listener_auto_reply_skips_when_subscription_expired(monkeypatch):
                 remote_message_id=f"expired-real-{uuid4().hex[:8]}",
                 sender_peer_id="real-expired-user",
                 sender_name="真人用户",
-                content="订阅过期时不应自动回复。",
+                content="没有订阅体系后也应自动回复。",
             )
         ]
         monkeypatch.setattr("app.services.group_listeners.gateway.fetch_group_messages", lambda *args, **kwargs: snapshots)
@@ -182,24 +158,22 @@ def test_group_listener_auto_reply_skips_when_subscription_expired(monkeypatch):
         assert patched.status_code == 200, patched.text
 
         with SessionLocal() as session:
+            for link in session.query(TgGroupAccount).filter_by(group_id=group["id"]):
+                link.can_send = link.account_id == listener["id"]
             db_group = session.get(TgGroup, group["id"])
             db_group.listener_last_polled_at = None
             campaign_count = session.query(Campaign).count()
             task_count = session.query(MessageTask).count()
             session.commit()
 
-        original = _expire_tenant_subscription()
-        try:
-            with SessionLocal() as session:
-                assert process_group_listener(session, group["id"]) == 1
+        with SessionLocal() as session:
+            assert process_group_listener(session, group["id"]) >= 1
 
-            with SessionLocal() as session:
-                db_group = session.get(TgGroup, group["id"])
-                contexts = session.query(GroupContextMessage).filter_by(remote_message_id=snapshots[0].remote_message_id).all()
-                assert db_group.listener_last_error == "subscription inactive"
-                assert len(contexts) == 1
-                assert contexts[0].used_for_ai is False
-                assert session.query(Campaign).count() == campaign_count
-                assert session.query(MessageTask).count() == task_count
-        finally:
-            _restore_tenant_subscription(original)
+        with SessionLocal() as session:
+            db_group = session.get(TgGroup, group["id"])
+            contexts = session.query(GroupContextMessage).filter_by(remote_message_id=snapshots[0].remote_message_id).all()
+            assert db_group.listener_last_error == ""
+            assert len(contexts) == 1
+            assert contexts[0].used_for_ai is True
+            assert session.query(Campaign).count() >= campaign_count + 1
+            assert session.query(MessageTask).count() >= task_count + 1

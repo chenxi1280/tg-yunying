@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import timedelta
 import random
+import re
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -22,7 +23,8 @@ from app.models import (
 )
 from app.schemas import GenerateDraftsRequest
 
-from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, require_system_user_core_features
+from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, ai_gateway, audit, require_system_user_core_features
+from .ai_config import ai_provider_credentials
 from .ai_config import get_tenant_ai_setting
 from .campaigns import (
     build_message_task_from_draft,
@@ -30,6 +32,7 @@ from .campaigns import (
     generate_drafts,
     load_selected_accounts_for_group,
     parse_id_list,
+    pick_ai_provider,
 )
 from .content_filters import filter_outbound_content
 from .group_listeners import collect_group_context, recent_context_messages
@@ -189,6 +192,65 @@ def _unprocessed_context_messages(session: Session, campaign: Campaign, source_g
     return rows
 
 
+def light_rewrite_message(content: str) -> str:
+    text = re.sub(r"https?://\S+|www\.\S+", "", content or "", flags=re.IGNORECASE)
+    text = re.sub(r"@\w+", "", text)
+    text = re.sub(r"(?i)\b(reply|回复)\s+[^:：]{0,80}[:：]", "", text)
+    text = re.sub(r"(?im)^\s*(回复|reply)\s*[:：].*$", "", text)
+    text = re.sub(r"([！？!?。,.，])\1+", r"\1", text)
+    text = re.sub(r"\s+", " ", text).strip(" -_，,。")
+    if not text:
+        return "这个点挺值得聊的，大家可以接着说说看法。"
+    prefixes = ["刚看到有人聊这个，", "顺着这个话题说，", "这个点我也留意到了，", ""]
+    suffixes = ["大家怎么看？", "感觉可以继续聊聊。", "有经验的朋友也可以补充下。", ""]
+    prefix = random.choice(prefixes)
+    suffix = random.choice(suffixes)
+    rewritten = f"{prefix}{text}"
+    if suffix and len(rewritten) < 180:
+        rewritten = f"{rewritten}，{suffix}"
+    return rewritten[:1000]
+
+
+def _rewrite_mirror_content(
+    session: Session,
+    *,
+    campaign: Campaign,
+    target_group: TgGroup,
+    message: GroupContextMessage,
+) -> tuple[str, str, str]:
+    tenant_setting = get_tenant_ai_setting(session, campaign.tenant_id)
+    provider = pick_ai_provider(session, campaign, tenant_setting)
+    if not tenant_setting.ai_enabled or not provider:
+        return light_rewrite_message(message.content), "template_fallback", "AI 未启用或没有健康供应商"
+    prompt = (
+        "请把源群消息改写成适合目标 Telegram 群发送的一条自然消息。\n"
+        "要求：保留原意，换一种表达；不要暴露转发、监听、AI、运营；不要 @ 用户；不要直接引用原消息；只输出 JSON。\n"
+        f"目标群：{target_group.title}\n"
+        f"目标话题：{campaign.topic or target_group.topic_direction}\n"
+        f"源消息发送者：{message.sender_name}\n"
+        f"源消息：{message.content}\n"
+        '输出格式：{"drafts":[{"persona":"自然群友","content":"改写后的消息","risk_level":"低"}]}'
+    )
+    try:
+        result = ai_gateway.generate_drafts(
+            ai_provider_credentials(provider),
+            prompt,
+            count=1,
+            topic=campaign.topic or target_group.topic_direction,
+            tone="自然、口语化、和原文不完全一样",
+            persona_set=["自然群友"],
+            temperature=tenant_setting.temperature,
+            max_tokens=max(tenant_setting.max_tokens, 512),
+        )
+        candidate = result.candidates[0]
+        content = candidate.content.strip()
+        if not content:
+            raise RuntimeError("AI 润色返回空内容")
+        return content, provider.provider_type, ""
+    except Exception as exc:  # noqa: BLE001 - mirror forwarding has a local fallback.
+        return light_rewrite_message(message.content), "template_fallback", str(exc)
+
+
 def _auto_queue_draft(session: Session, draft: AiDraft, *, actor: str, task_index: int, target_group_id: int, preferred_account_id: int | None = None) -> int:
     if preferred_account_id:
         draft.suggested_account_id = preferred_account_id
@@ -324,11 +386,17 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
                 if not selected_ids:
                     target_reason = "目标群没有可用发送账号"
                     continue
+                outbound_content, generation_source, rewrite_error = _rewrite_mirror_content(
+                    session,
+                    campaign=campaign,
+                    target_group=target_group,
+                    message=message,
+                )
                 filtered = filter_outbound_content(
                     session,
                     tenant_id=campaign.tenant_id,
                     group=target_group,
-                    content=message.content,
+                    content=outbound_content,
                     reject_mentions=True,
                     reject_replies=True,
                 )
@@ -342,7 +410,7 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
                         target_group_id=target_group.id,
                         action=target_action,
                         reason=target_reason,
-                        content=message.content,
+                        content=outbound_content,
                     )
                     continue
                 ensure_task_quota_available(session, campaign.tenant_id)
@@ -353,12 +421,13 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
                     persona="源群同步",
                     content=filtered.content,
                     risk_level="低",
-                    provider_name="监听转发",
-                    model_name="mirror-forward",
-                    prompt_template_name="净化后原文转发",
+                    provider_name="监听转发" if generation_source != "template_fallback" else "代码轻改写",
+                    model_name=generation_source,
+                    prompt_template_name="AI 润色监听转发" if generation_source != "template_fallback" else "代码轻改写降级",
                     suggested_account_id=selected_ids[task_index % len(selected_ids)],
                     sequence_index=task_index + 1,
-                    generation_source="mirror_forward",
+                    generation_source=generation_source,
+                    generation_error=rewrite_error,
                     status=TaskStatus.APPROVED.value,
                 )
                 session.add(draft)
@@ -372,8 +441,8 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
                     message=message,
                     target_group_id=target_group.id,
                     action="queued",
-                    reason="queued=1",
-                    content=message.content,
+                    reason=f"ai_failed_template_fallback:{rewrite_error[:500]}" if generation_source == "template_fallback" and rewrite_error else "queued=1",
+                    content=filtered.content,
                 )
     campaign.last_run_at = _now()
     campaign.status = TaskStatus.RUNNING.value

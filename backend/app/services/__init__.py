@@ -13,6 +13,8 @@ from .developer_apps import *  # noqa: F401,F403
 from .groups import *  # noqa: F401,F403
 from .group_listeners import *  # noqa: F401,F403
 from .messages import *  # noqa: F401,F403
+from .notifications import *  # noqa: F401,F403
+from .operations import *  # noqa: F401,F403
 from .reports import *  # noqa: F401,F403
 from .tenants import *  # noqa: F401,F403
 from .verification import *  # noqa: F401,F403

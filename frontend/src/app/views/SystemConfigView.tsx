@@ -20,7 +20,7 @@ import type {
   UsageLedger,
   UsageSummary,
 } from '../types';
-import { Badge, StatusBadge } from '../components/shared';
+import { Badge, StatusBadge, useAntdTableControls } from '../components/shared';
 import ActivationCodesView from './ActivationCodesView';
 import AISettingsView from './AISettingsView';
 import DeveloperAppsView from './DeveloperAppsView';
@@ -93,6 +93,21 @@ function TenantPlansPanel({
   onEditSubscriptionPlan: (plan: SubscriptionPlan) => void;
   onEditTenant: (tenant: Tenant) => void;
 }) {
+  const planTable = useAntdTableControls<SubscriptionPlan>({
+    rows: subscriptionPlans,
+    placeholder: '搜索套餐 / 类型 / 状态',
+    search: [
+      (plan) => [
+        plan.id,
+        plan.name,
+        plan.plan_type,
+        plan.duration_days,
+        plan.token_quota,
+        plan.is_active ? '已启用' : '禁用',
+      ],
+    ],
+  });
+
   const planColumns: ColumnsType<SubscriptionPlan> = [
     { title: '套餐', dataIndex: 'name', key: 'name', render: (_, plan) => <Space><Typography.Text strong>{plan.name}</Typography.Text><Tag>{plan.plan_type}</Tag></Space> },
     { title: '有效期', dataIndex: 'duration_days', key: 'duration_days', render: (days: number) => `${days} 天` },
@@ -105,12 +120,15 @@ function TenantPlansPanel({
     <section className="view-grid">
       <Card className="panel" title="套餐配置" extra={<Button type="primary" onClick={onCreateSubscriptionPlan}>新增套餐</Button>}>
         <Typography.Text type="secondary">卡密生成会复制套餐快照，用户兑换后按快照延长订阅并增加 Token 余额。</Typography.Text>
+        <Space className="toolbar-row" wrap>
+          {planTable.searchInput}
+        </Space>
         <Table<SubscriptionPlan>
           className="tg-table"
           rowKey="id"
           columns={planColumns}
-          dataSource={subscriptionPlans}
-          pagination={false}
+          dataSource={planTable.filteredRows}
+          pagination={planTable.pagination}
           scroll={{ x: 760 }}
           locale={{ emptyText: '暂无套餐。' }}
         />
@@ -137,6 +155,23 @@ function TenantPlansPanel({
 }
 
 function AdminUsersPanel({ users, onEditUser }: { users: AdminUser[]; onEditUser: (user: AdminUser) => void }) {
+  const userTable = useAntdTableControls<AdminUser>({
+    rows: users,
+    placeholder: '搜索用户 / 邮箱 / 角色 / 权限',
+    search: [
+      (user) => [
+        user.id,
+        user.name,
+        user.email,
+        user.role,
+        user.subscription_status,
+        user.token_balance,
+        user.menu_permissions.includes('*') ? '全部菜单' : user.menu_permissions.map((item) => MENU_LABELS[item] ?? item).join(' / '),
+        user.is_active ? '已启用' : '禁用',
+      ],
+    ],
+  });
+
   const columns: ColumnsType<AdminUser> = [
     {
       title: '用户',
@@ -159,12 +194,15 @@ function AdminUsersPanel({ users, onEditUser }: { users: AdminUser[]; onEditUser
   ];
   return (
     <Card className="panel" title="用户管理" extra={<Typography.Text type="secondary">启停用户、菜单权限、Token 调整和密码重置</Typography.Text>}>
+      <Space className="toolbar-row" wrap>
+        {userTable.searchInput}
+      </Space>
       <Table<AdminUser>
         className="tg-table"
         rowKey="id"
         columns={columns}
-        dataSource={users}
-        pagination={false}
+        dataSource={userTable.filteredRows}
+        pagination={userTable.pagination}
         scroll={{ x: 1050 }}
         locale={{ emptyText: '暂无用户。普通用户可自行注册，管理员在这里启停与分配权限。' }}
       />
@@ -178,8 +216,17 @@ function MenuPermissionsPanel({ users }: { users: AdminUser[] }) {
     label,
     users: users.filter((user) => user.menu_permissions.includes('*') || user.menu_permissions.includes(key)).length,
   }));
+  const permissionTable = useAntdTableControls<(typeof rows)[number]>({
+    rows,
+    placeholder: '搜索菜单 / 权限键',
+    search: ['label', 'key', 'users'],
+  });
+
   return (
     <Card className="panel" title="菜单权限" extra={<Typography.Text type="secondary">本轮控制前端入口可见与可进入</Typography.Text>}>
+      <Space className="toolbar-row" wrap>
+        {permissionTable.searchInput}
+      </Space>
       <Table
         className="tg-table"
         rowKey="key"
@@ -188,8 +235,8 @@ function MenuPermissionsPanel({ users }: { users: AdminUser[] }) {
           { title: '权限键', dataIndex: 'key', key: 'key' },
           { title: '已授权用户数', dataIndex: 'users', key: 'users' },
         ]}
-        dataSource={rows}
-        pagination={false}
+        dataSource={permissionTable.filteredRows}
+        pagination={permissionTable.pagination}
       />
     </Card>
   );
@@ -265,19 +312,6 @@ export default function SystemConfigView(props: Props) {
           ),
         },
         {
-          key: 'plans',
-          label: '租户与套餐',
-          children: (
-            <TenantPlansPanel
-              tenants={tenants}
-              subscriptionPlans={subscriptionPlans}
-              onCreateSubscriptionPlan={onCreateSubscriptionPlan}
-              onEditSubscriptionPlan={onEditSubscriptionPlan}
-              onEditTenant={onEditTenant}
-            />
-          ),
-        },
-        {
           key: 'ai',
           label: 'AI 配置',
           children: (
@@ -303,29 +337,6 @@ export default function SystemConfigView(props: Props) {
             />
           ),
         },
-        { key: 'users', label: '用户管理', children: <AdminUsersPanel users={adminUsers} onEditUser={onEditAdminUser} /> },
-        { key: 'menus', label: '菜单权限', children: <MenuPermissionsPanel users={adminUsers} /> },
-        {
-          key: 'activation-codes',
-          label: '卡密管理',
-          children: (
-            <ActivationCodesView
-              activationCodes={activationCodes}
-              subscriptionPlans={subscriptionPlans}
-              activationCodePage={activationCodePage}
-              activationCodeFilters={activationCodeFilters}
-              setActivationCodeFilters={setActivationCodeFilters}
-              activationBatch={activationBatch}
-              setActivationBatch={setActivationBatch}
-              onLoadCodes={onLoadCodes}
-              onCreateCodes={onCreateCodes}
-              onDisableCode={onDisableCode}
-              onOpenConfirm={onOpenConfirm}
-              isActionPending={isActionPending}
-            />
-          ),
-        },
-        { key: 'usage', label: '用户用量', children: <UsageReportsView usageLedgers={usageLedgers} usageSummary={usageSummary} /> },
       ]}
     />
   );

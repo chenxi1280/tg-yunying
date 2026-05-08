@@ -10,7 +10,7 @@ import {
   Smartphone,
   Users,
 } from 'lucide-react';
-import { Alert, App as AntdApp, Button, Card, Form, Input, Layout, Menu, Space, Tabs, Typography } from 'antd';
+import { Alert, App as AntdApp, Button, Card, Form, Input, Layout, Menu, Space, Typography } from 'antd';
 import { AppProvider, useAppContext } from './context';
 import OverviewView from './views/OverviewView';
 import AccountsView from './views/AccountsView';
@@ -19,6 +19,8 @@ import SystemConfigView from './views/SystemConfigView';
 import UsageReportsView from './views/UsageReportsView';
 import GroupManagementView from './views/GroupManagementView';
 import AuditsView from './views/AuditsView';
+import OperationTargetsView from './views/OperationTargetsView';
+import OperationTasksView from './views/OperationTasksView';
 import { AppModals } from './AppModals';
 import { VIEW_ROUTES } from './routes';
 
@@ -108,27 +110,16 @@ function AppShell() {
     accountName, groupName,
   } = ctx;
 
-  const menuPermissions = currentUser?.menu_permissions ?? [];
-  const canSeeMenu = (viewId: string) => currentUser?.role === '系统管理员'
-    || viewId === 'overview'
-    || menuPermissions.includes('*')
-    || menuPermissions.includes(viewId);
   const navCandidates: Array<[string, string, React.ReactNode]> = [
     ['overview', '运营概览', <LayoutDashboard size={18} />],
+    ['accounts', 'TG账号管理', <Smartphone size={18} />],
+    ['targetManagement', '群/频道目标', <Users size={18} />],
+    ['taskManagement', '任务中心', <Activity size={18} />],
+    ['usageReports', '运营数据', <Activity size={18} />],
+    ['systemConfig', '系统设置', <Database size={18} />],
+    ['audits', '执行记录', <LockKeyhole size={18} />],
   ];
-  if (currentUser?.role === '系统管理员') {
-    navCandidates.push(['systemConfig', '系统配置', <Database size={18} />]);
-  }
-  navCandidates.push(
-    ['accounts', '账号管理', <Smartphone size={18} />],
-    ['groupManagement', '群聊管理', <Users size={18} />],
-    ['taskManagement', '任务管理', <Activity size={18} />],
-  );
-  if (currentUser?.role !== '系统管理员') {
-    navCandidates.push(['usageReports', '用量余额', <Activity size={18} />]);
-  }
-  navCandidates.push(['audits', '审计安全', <LockKeyhole size={18} />]);
-  const nav = navCandidates.filter(([viewId]) => canSeeMenu(viewId));
+  const nav = navCandidates;
 
   React.useEffect(() => {
     if (!notice) return;
@@ -187,53 +178,19 @@ function AppShell() {
             <div className="brand-mark">TG</div>
             <div>
               <strong>运营管理平台</strong>
-              <span>登录后按租户隔离账号、群和任务</span>
+              <span>单运营空间的 TG 账号运营中心</span>
             </div>
           </div>
-          <Tabs
-            activeKey={authMode}
-            onChange={(key) => setAuthMode(key as 'login' | 'register')}
-            items={[
-              {
-                key: 'login',
-                label: '登录',
-                children: (
-                  <Form layout="vertical">
-                    <Form.Item label="用户名、邮箱或手机号">
-                      <Input value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} />
-                    </Form.Item>
-                    <Form.Item label="密码">
-                      <Input.Password value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} />
-                    </Form.Item>
-                    {captchaControl}
-                    <Button type="primary" block onClick={login} loading={isActionPending('auth:login')} disabled={!loginReady}>登录控制台</Button>
-                  </Form>
-                ),
-              },
-              {
-                key: 'register',
-                label: '注册',
-                children: (
-                  <Form layout="vertical">
-                    <Form.Item label="用户名">
-                      <Input value={registerForm.name} onChange={(event) => setRegisterForm((current) => ({ ...current, name: event.target.value }))} />
-                    </Form.Item>
-                    <Form.Item label="邮箱">
-                      <Input value={registerForm.email} onChange={(event) => setRegisterForm((current) => ({ ...current, email: event.target.value }))} />
-                    </Form.Item>
-                    <Form.Item label="手机号">
-                      <Input value={registerForm.phone} onChange={(event) => setRegisterForm((current) => ({ ...current, phone: event.target.value }))} />
-                    </Form.Item>
-                    <Form.Item label="密码">
-                      <Input.Password value={registerForm.password} onChange={(event) => setRegisterForm((current) => ({ ...current, password: event.target.value }))} />
-                    </Form.Item>
-                    {captchaControl}
-                    <Button type="primary" block onClick={register} loading={isActionPending('auth:register')} disabled={!registerReady}>创建普通用户</Button>
-                  </Form>
-                ),
-              },
-            ]}
-          />
+          <Form layout="vertical">
+            <Form.Item label="管理员账号">
+              <Input value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} />
+            </Form.Item>
+            <Form.Item label="密码">
+              <Input.Password value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} />
+            </Form.Item>
+            {captchaControl}
+            <Button type="primary" block onClick={login} loading={isActionPending('auth:login')} disabled={!loginReady}>登录运营中心</Button>
+          </Form>
         </Card>
       </div>
     );
@@ -246,7 +203,7 @@ function AppShell() {
           <div className="brand-mark">TG</div>
           <div>
             <strong>运营管理平台</strong>
-            <span>多客户代运营控制台</span>
+            <span>TG 账号运营中心</span>
           </div>
         </div>
         <Menu
@@ -265,54 +222,22 @@ function AppShell() {
       <Layout>
         <Header className="topbar">
           <div>
-            <Typography.Text type="secondary">{currentUser?.tenant_name ?? '试运行租户'} / {currentUser?.role ?? '未加载角色'}</Typography.Text>
+            <Typography.Text type="secondary">默认运营空间 / {currentUser?.role ?? '未加载角色'}</Typography.Text>
             <Typography.Title level={1}>{nav.find(([id]) => id === activeView)?.[1]}</Typography.Title>
             {currentUser && (
               <Typography.Text type="secondary">
-                订阅：{currentUser.subscription_status} / 剩余 {currentUser.subscription_days_remaining} 天
-                {currentUser.role !== '系统管理员' ? ` / Token ${currentUser.token_balance.toLocaleString()}` : ''}
+                TG 账号资产、群频道目标与运营任务
               </Typography.Text>
             )}
           </div>
           <Space className="top-actions">
             {busy && <Typography.Text className="busy">{busy}...</Typography.Text>}
             <Button icon={<RefreshCcw size={18} />} loading={isActionPending('app:refresh')} onClick={() => refresh()} />
-            <Button onClick={() => setModal({ type: 'changePassword' })}>修改密码</Button>
             <Button onClick={logout}>退出</Button>
           </Space>
         </Header>
 
         <Content className="app-content">
-        {currentUser && currentUser.role !== '系统管理员' && (
-          <Card className="panel" title="订阅状态" extra={<Typography.Text type="secondary">{currentUser.can_use_core_features ? '当前可正常使用核心功能' : '当前仅可查看数据，需先激活或续费'}</Typography.Text>}>
-            <div className="summary-grid">
-              <Card className="summary-card" size="small">
-                <span>当前状态</span>
-                <strong>{currentUser.subscription_status}</strong>
-                <p>到期时间 {currentUser.subscription_expires_at ?? '未激活'}</p>
-              </Card>
-              <Card className="summary-card" size="small">
-                <span>Token 余额</span>
-                <strong>{currentUser.token_balance.toLocaleString()}</strong>
-                <p>累计额度 {currentUser.token_quota_total.toLocaleString()}</p>
-              </Card>
-              <Card className="summary-card" size="small">
-                <span>任务/消息</span>
-                <strong>{taskSummary.campaigns} / {taskSummary.sent}</strong>
-                <p>失败 {taskSummary.failed}，排队 {taskSummary.queued}</p>
-              </Card>
-              <Card className="summary-card" size="small">
-                <span>卡密兑换</span>
-                <strong>订阅 + Token</strong>
-                <Space.Compact>
-                  <Input value={redeemCode} onChange={(event) => setRedeemCode(event.target.value)} placeholder="请输入卡密" />
-                  <Button type="primary" loading={isActionPending('subscription:redeem')} onClick={submitRedeemCode}>兑换</Button>
-                </Space.Compact>
-              </Card>
-            </div>
-          </Card>
-        )}
-
         {runtime && currentUser?.role === '系统管理员' && activeView === 'systemConfig' && (
           <Alert
             className="runtime-strip"
@@ -375,12 +300,11 @@ function AppShell() {
         {activeView === 'accounts' && (
           <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => goToView('systemConfig')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onDeleteAccount={(account) => openConfirm({ title: '移除账号', message: `确认移除 ${account.display_name}？历史任务、群归档和审计记录会保留，手机号可以重新新增。`, confirmLabel: '移除账号', tone: 'danger', onConfirm: () => deleteAccount(account) })} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} isActionPending={isActionPending} />
         )}
+        {activeView === 'targetManagement' && <OperationTargetsView />}
         {activeView === 'groupManagement' && (
           <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateCampaign={openCampaignModal} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
         )}
-        {activeView === 'taskManagement' && (
-          <CampaignsView campaigns={campaigns} tasks={tasks} drafts={drafts} groups={groups} accounts={accounts} taskManagementTab={taskManagementTab} setTaskManagementTab={setTaskManagementTab} taskSummary={taskSummary} selectedCampaign={selectedCampaign ?? undefined} selectedCampaignDrafts={selectedCampaignDrafts} selectedCampaignTasks={selectedCampaignTasks} taskStatusFilter={taskStatusFilter} setTaskStatusFilter={setTaskStatusFilter} setSelectedCampaignId={setSelectedCampaignId} onCreateCampaign={() => openCampaignModal()} onCancelCampaign={cancelCampaign} onApproveDraft={approveDraft} onApproveAllDrafts={approveAllDrafts} onDispatchTask={dispatchTask} onRetryTask={retryTask} onDrainQueue={drainQueue} onOpenConfirm={openConfirm} groupName={groupName} accountName={accountName} isActionPending={isActionPending} />
-        )}
+        {activeView === 'taskManagement' && <OperationTasksView accounts={accounts} />}
         {activeView === 'audits' && <AuditsView audits={audits} />}
 
         {/* ===== Modals ===== */}

@@ -29,7 +29,9 @@ def _bool_env(name: str, default: bool) -> bool:
 
 def _sync_database_url(raw: str) -> str:
     if raw.startswith("sqlite"):
-        raise ValueError("SQLite is no longer supported. Set DATABASE_URL to a PostgreSQL connection string.")
+        if os.getenv("APP_ENV") == "test":
+            return raw
+        raise ValueError("SQLite is only supported for tests. Set DATABASE_URL to a PostgreSQL connection string.")
     if raw.startswith("postgresql+asyncpg://"):
         raw = raw.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
     if raw.startswith("postgres://"):
@@ -89,9 +91,9 @@ class Settings:
     tg_api_id: str | None = os.getenv("TG_API_ID")
     tg_api_hash: str | None = os.getenv("TG_API_HASH")
     tg_gateway_mode: str = os.getenv("TG_GATEWAY_MODE", "mock" if os.getenv("APP_ENV") == "test" else "telethon")
-    admin_bootstrap_username: str = os.getenv("ADMIN_BOOTSTRAP_USERNAME", "admin").strip() or "admin"
+    admin_bootstrap_username: str = os.getenv("ADMIN_USERNAME", os.getenv("ADMIN_BOOTSTRAP_USERNAME", "admin")).strip() or "admin"
     admin_bootstrap_email: str | None = os.getenv("ADMIN_BOOTSTRAP_EMAIL")
-    admin_bootstrap_password: str = os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "admin123")
+    admin_bootstrap_password: str = os.getenv("ADMIN_PASSWORD", os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "admin123"))
     login_code_ttl_seconds: int = int(os.getenv("LOGIN_CODE_TTL_SECONDS", "180"))
     enable_sync_dispatch_fallback: bool = _bool_env("ENABLE_SYNC_DISPATCH_FALLBACK", True)
     auto_migrate_on_start: bool = _bool_env("AUTO_MIGRATE_ON_START", False)

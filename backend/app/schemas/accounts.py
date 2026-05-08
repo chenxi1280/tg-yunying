@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from .api import ApiModel
 from .campaigns import MessageTaskOut
 from .groups import VerificationTaskOut
+from .operations import ManualOperationRecordOut, OperationTargetOut, OperationTaskAttemptOut
 
 
 # ── Request schemas ──
@@ -260,8 +261,19 @@ class RecommendedAccountOut(BaseModel):
 
 # ── Composite detail outputs ──
 
+class AccountRiskDiagnosticOut(BaseModel):
+    level: str
+    code: str
+    title: str
+    detail: str
+    source: str
+    action: str
+    occurred_at: datetime | None = None
+
+
 class AccountDetailOut(BaseModel):
     account: AccountOut
+    risk_diagnostics: list[AccountRiskDiagnosticOut] = []
     login_flows: list[LoginFlowOut]
     verification_codes: list[VerificationCodeOut]
     profile_sync_records: list[ProfileSyncRecordOut]
@@ -269,7 +281,10 @@ class AccountDetailOut(BaseModel):
     next_sync_at: datetime | None = None
     contacts: list[ContactOut]
     groups: list[AccountGroupOut]
+    operation_targets: list[OperationTargetOut] = []
     message_records: list[MessageTaskOut]
+    manual_operation_records: list[ManualOperationRecordOut] = []
+    operation_task_attempts: list[OperationTaskAttemptOut] = []
     clone_plans: list[AccountClonePlanOut] = []
     verification_tasks: list[VerificationTaskOut] = []
     stats: dict[str, Any]
@@ -294,6 +309,6 @@ __all__ = [
     "ProfileSyncRecordOut", "AccountSyncRecordOut",
     "ContactOut", "AccountGroupOut",
     "AccountCloneItemOut", "AccountClonePlanOut",
-    "RecommendedAccountOut",
+    "RecommendedAccountOut", "AccountRiskDiagnosticOut",
     "AccountDetailOut", "AccountPoolDetailOut",
 ]

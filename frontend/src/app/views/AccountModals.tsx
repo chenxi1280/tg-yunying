@@ -1,13 +1,14 @@
 import React from 'react';
-import { Button, Card, Descriptions, Empty, Input, List, Select, Space, Table, Tabs, Typography } from 'antd';
+import { Alert, Button, Card, Descriptions, Empty, Input, List, Select, Space, Table, Tabs, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type {
   Account, AccountPool, AccountDetail, AccountPoolDetail,
   AccountClonePlan, AccountCloneItem, VerificationTask, Contact,
   RuntimeConfig, CurrentUser, AccountGroup, MessageTask,
 } from '../types';
-import { Modal, FormActions, StatusBadge } from '../components/shared';
+import { Modal, FormActions, StatusBadge, useAntdTableControls } from '../components/shared';
 import { statusAccent, operationLabel, syncTypeLabel } from '../utils';
+import { api } from '../../shared/api/client';
 
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
 
@@ -198,6 +199,35 @@ export function AccountDetailModal({
   onOpenConfirm, onSetReturnAfterVerification, onSetModal,
   onSetCloneForm, accountName, isActionPending,
 }: AccountDetailModalProps) {
+  const [manualTargetId, setManualTargetId] = React.useState<number | null>(null);
+  const [manualContent, setManualContent] = React.useState('');
+  const [manualSending, setManualSending] = React.useState(false);
+
+  React.useEffect(() => {
+    setManualTargetId((current) => current ?? accountDetail.operation_targets[0]?.id ?? null);
+  }, [accountDetail.operation_targets]);
+
+  async function syncTargets() {
+    await api(`/tg-accounts/${accountDetail.account.id}/sync-targets`, { method: 'POST' });
+    await onRefreshAccountDetail();
+  }
+
+  async function manualSendNow() {
+    if (!manualTargetId || !manualContent.trim()) return;
+    setManualSending(true);
+    try {
+      await api(`/tg-accounts/${accountDetail.account.id}/manual-send`, {
+        method: 'POST',
+        body: JSON.stringify({ target_id: manualTargetId, content: manualContent }),
+      });
+      setManualContent('');
+      await onRefreshAccountDetail();
+      setAccountDetailTab('执行记录');
+    } finally {
+      setManualSending(false);
+    }
+  }
+
   const groupColumns: ColumnsType<AccountGroup> = [
     {
       title: '群聊',
@@ -231,6 +261,45 @@ export function AccountDetailModal({
     { title: '时间', key: 'time', width: 200, render: (_, task) => task.sent_at ? new Date(task.sent_at).toLocaleString() : new Date(task.scheduled_at).toLocaleString() },
   ];
 
+  const groupTable = useAntdTableControls<AccountGroup>({
+    rows: accountDetail.groups,
+    pageSize: 5,
+    pageSizeOptions: [5, 10, 20, 50],
+    placeholder: '搜索群聊 / 权限 / 状态',
+    search: [
+      (group) => [
+        group.id,
+        group.title,
+        group.member_count,
+        group.permission_label,
+        group.auth_status,
+        operationLabel(group.auth_status),
+        group.account_can_send ? '账号可发言' : '账号不可发言',
+        group.last_sent_at,
+      ],
+    ],
+  });
+
+  const messageTable = useAntdTableControls<MessageTask>({
+    rows: accountDetail.message_records,
+    pageSize: 5,
+    pageSizeOptions: [5, 10, 20, 50],
+    placeholder: '搜索任务 / 目标 / 内容 / 状态',
+    search: [
+      (task) => [
+        task.id,
+        task.target_type,
+        task.target_display,
+        task.group_id,
+        task.content,
+        task.status,
+        task.failure_type,
+        task.scheduled_at,
+        task.sent_at,
+      ],
+    ],
+  });
+
   return (
     <Modal title={`${accountDetail.account.display_name} 账号详情`} size="large" onClose={onClose}>
       <div className="account-detail-summary">
@@ -250,7 +319,7 @@ export function AccountDetailModal({
         className="tabs-row"
         activeKey={accountDetailTab}
         onChange={setAccountDetailTab}
-        items={['资料', '登录同步', '云联系人', '群聊', '克隆', '验证待处理', '发送记录'].map((tabName) => ({ key: tabName, label: tabName }))}
+        items={['资料', '官方验证码', '群/频道', '立即发送', '云联系人', '克隆', '验证待处理', '执行记录'].map((tabName) => ({ key: tabName, label: tabName }))}
       />
 
       {accountDetailTab === '资料' && (
@@ -275,6 +344,19 @@ export function AccountDetailModal({
                 onConfirm: onRetryAccountProfileSync,
               })}>重试同步</Button>
             </div>
+          </div>
+          <div className="mini-list">
+            {accountDetail.risk_diagnostics.length ? accountDetail.risk_diagnostics.map((risk) => (
+              <Alert
+                key={`${risk.code}-${risk.source}-${risk.title}`}
+                type={risk.level === '高' ? 'error' : risk.level === '中' ? 'warning' : 'info'}
+                showIcon
+                message={`${risk.level}风险：${risk.title}`}
+                description={`${risk.detail} 建议：${risk.action}${risk.occurred_at ? ` / ${new Date(risk.occurred_at).toLocaleString()}` : ''}`}
+              />
+            )) : (
+              <Alert type="success" showIcon message="账号风险正常" description="当前没有受限、封禁、FloodWait、目标不可访问或待处理验证信号。" />
+            )}
           </div>
           <div className="profile-layout">
             <div className="avatar-preview">
@@ -302,7 +384,7 @@ export function AccountDetailModal({
         </Card>
       )}
 
-      {accountDetailTab === '登录同步' && (
+      {(accountDetailTab === '官方验证码' || accountDetailTab === '登录同步') && (
         <Card className="sub-panel compact-panel">
           <div className="section-title">
             <div>
@@ -312,6 +394,7 @@ export function AccountDetailModal({
             <div className="row-actions">
               <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:detail-refresh`)} onClick={onRefreshAccountDetail}>刷新同步状态</Button>
               <Button size="small" type="primary" loading={isActionPending(`account:${accountDetail.account.id}:sync`)} onClick={onQueueAccountSyncNow}>立即全量同步</Button>
+              <Button size="small" onClick={syncTargets}>同步群/频道目标</Button>
               <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={onPollVerificationCodes}>查看 TG 官方验证码</Button>
             </div>
           </div>
@@ -348,16 +431,59 @@ export function AccountDetailModal({
         </Card>
       )}
 
-      {accountDetailTab === '群聊' && (
-        <Table<AccountGroup>
-          className="tg-table"
-          rowKey="id"
-          columns={groupColumns}
-          dataSource={accountDetail.groups}
-          pagination={false}
-          scroll={{ x: 780 }}
-          locale={{ emptyText: '暂无群聊记录。' }}
-        />
+      {(accountDetailTab === '群/频道' || accountDetailTab === '群聊') && (
+        <>
+          <Space className="toolbar-row" wrap>
+            {groupTable.searchInput}
+            <Button onClick={syncTargets}>同步群/频道目标</Button>
+          </Space>
+          <div className="cards-grid compact-stats">
+            {accountDetail.operation_targets.map((target) => (
+              <Card key={target.id} size="small" className="summary-card">
+                <span>{target.target_type === 'channel' ? '频道' : '群聊'}</span>
+                <strong>{target.title}</strong>
+                <p>{target.tg_peer_id}{target.username ? ` / @${target.username}` : ''}</p>
+                <StatusBadge status={target.can_send ? '可发送' : '只读'} label={target.auth_status} />
+              </Card>
+            ))}
+            {!accountDetail.operation_targets.length && <p className="muted-line">暂无群/频道目标。可以先同步账号目标。</p>}
+          </div>
+          <Table<AccountGroup>
+            className="tg-table"
+            rowKey="id"
+            columns={groupColumns}
+            dataSource={groupTable.filteredRows}
+            pagination={groupTable.pagination}
+            scroll={{ x: 780 }}
+            locale={{ emptyText: '暂无群聊记录。' }}
+          />
+        </>
+      )}
+
+      {accountDetailTab === '立即发送' && (
+        <Card className="sub-panel compact-panel">
+          <div className="section-title">
+            <div>
+              <h2>立即发送</h2>
+              <span>直接使用当前 TG 账号向群聊或频道发送文本，emoji 会按普通 Unicode 文本发送。</span>
+            </div>
+            <Button size="small" onClick={syncTargets}>同步群/频道目标</Button>
+          </div>
+          <div className="policy-grid">
+            <label className="wide-field">
+              目标
+              <Select
+                value={manualTargetId ?? undefined}
+                onChange={(value) => setManualTargetId(value)}
+                options={accountDetail.operation_targets.map((target) => ({ value: target.id, label: `${target.target_type === 'channel' ? '频道' : '群聊'} / ${target.title} / ${target.can_send ? '可发送' : '只读'}`, disabled: !target.can_send }))}
+              />
+            </label>
+            <label className="wide-field">消息内容<Input.TextArea rows={4} value={manualContent} onChange={(event) => setManualContent(event.target.value)} placeholder="支持文本和 emoji，例如：今天活动开始啦 👍🔥" /></label>
+            <div className="wide-field detail-actions">
+              <Button type="primary" loading={manualSending} disabled={!manualTargetId || !manualContent.trim()} onClick={manualSendNow}>立即发送</Button>
+            </div>
+          </div>
+        </Card>
       )}
 
       {accountDetailTab === '云联系人' && (
@@ -473,16 +599,38 @@ export function AccountDetailModal({
         </Card>
       )}
 
-      {accountDetailTab === '发送记录' && (
-        <Table<MessageTask>
-          className="tg-table"
-          rowKey="id"
-          columns={messageColumns}
-          dataSource={accountDetail.message_records}
-          pagination={false}
-          scroll={{ x: 840 }}
-          locale={{ emptyText: '暂无发送记录。' }}
-        />
+      {(accountDetailTab === '执行记录' || accountDetailTab === '发送记录') && (
+        <>
+          <div className="cards-grid compact-stats">
+            {accountDetail.manual_operation_records.map((record) => (
+              <Card key={record.id} size="small" className={statusAccent(record.status)}>
+                <StatusBadge status={record.status} />
+                <strong>手动发送 #{record.id}</strong>
+                <span>{record.content}</span>
+                <span>{record.remote_message_id || record.failure_detail || new Date(record.created_at).toLocaleString()}</span>
+              </Card>
+            ))}
+            {accountDetail.operation_task_attempts.map((attempt) => (
+              <Card key={`attempt-${attempt.id}`} size="small" className={statusAccent(attempt.status)}>
+                <StatusBadge status={attempt.status} />
+                <strong>{attempt.action_type} #{attempt.task_id}</strong>
+                <span>{attempt.remote_message_id || attempt.failure_detail || (attempt.executed_at ? new Date(attempt.executed_at).toLocaleString() : '待执行')}</span>
+              </Card>
+            ))}
+          </div>
+          <Space className="toolbar-row" wrap>
+            {messageTable.searchInput}
+          </Space>
+          <Table<MessageTask>
+            className="tg-table"
+            rowKey="id"
+            columns={messageColumns}
+            dataSource={messageTable.filteredRows}
+            pagination={messageTable.pagination}
+            scroll={{ x: 840 }}
+            locale={{ emptyText: '暂无发送记录。' }}
+          />
+        </>
       )}
     </Modal>
   );

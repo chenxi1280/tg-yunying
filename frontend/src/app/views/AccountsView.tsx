@@ -3,7 +3,7 @@ import { Alert, Avatar, Button, Card, Progress, Segmented, Space, Table, Typogra
 import type { ColumnsType } from 'antd/es/table';
 import type { Account, AccountPool } from '../types';
 import type { RuntimeConfig } from '../types';
-import { StatusBadge } from '../components/shared';
+import { StatusBadge, useAntdTableControls } from '../components/shared';
 
 const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', '异常']);
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
@@ -49,6 +49,26 @@ export default function AccountsView({
   onSyncGroups,
   isActionPending,
 }: Props) {
+  const accountTable = useAntdTableControls<Account>({
+    rows: accounts,
+    placeholder: '搜索账号 / username / 手机号 / 分组 / 状态',
+    search: [
+      (account) => [
+        account.id,
+        account.display_name,
+        account.username,
+        accountPhone(account),
+        account.pool_name,
+        account.status,
+        account.profile_sync_status,
+        account.developer_app_name,
+        account.developer_app_health_status,
+        account.tg_first_name,
+        account.tg_last_name,
+      ],
+    ],
+  });
+
   const columns: ColumnsType<Account> = [
     {
       title: '账号',
@@ -158,13 +178,14 @@ export default function AccountsView({
           ]}
         />
         {selectedPool && <Button type="primary" loading={isActionPending(`account-pool:${selectedPool.id}:detail`)} onClick={() => onOpenPoolDetail(selectedPool)}>进入账号分组</Button>}
+        {accountTable.searchInput}
       </Space>
       <Table<Account>
         className="tg-table"
         rowKey="id"
         columns={columns}
-        dataSource={accounts}
-        pagination={false}
+        dataSource={accountTable.filteredRows}
+        pagination={accountTable.pagination}
         scroll={{ x: 1050 }}
         locale={{ emptyText: '暂无 TG 账号。配置开发者应用后，可以通过手机号新增账号并启动真实 TG 登录。' }}
       />

@@ -28,7 +28,23 @@ class TenantOut(ApiModel):
     plan_name: str
     account_quota: int
     task_quota: int
+    admin_chat_id: str = ""
+    notify_ai_failures_enabled: bool = False
+    telegram_bot_configured: bool = False
     created_at: datetime
+
+
+class TenantNotificationSettingsOut(BaseModel):
+    tenant_id: int
+    notify_ai_failures_enabled: bool = False
+    admin_chat_id: str = ""
+    telegram_bot_configured: bool = False
+
+
+class TenantNotificationSettingsUpdate(BaseModel):
+    notify_ai_failures_enabled: bool | None = None
+    admin_chat_id: str | None = Field(default=None, max_length=120)
+    telegram_bot_token: str | None = Field(default=None, max_length=300)
 
 
 # ── Auth ──
@@ -61,14 +77,7 @@ class AuthUserOut(BaseModel):
     email: str
     phone: str | None = None
     tenant_name: str | None = None
-    subscription_status: str
-    subscription_started_at: datetime | None = None
-    subscription_expires_at: datetime | None = None
-    subscription_days_remaining: int = 0
     can_use_core_features: bool = True
-    token_balance: int = 0
-    token_quota_total: int = 0
-    menu_permissions: list[str] = []
 
 
 class AuthTokenOut(BaseModel):
@@ -259,7 +268,7 @@ class RuntimeConfigOut(BaseModel):
 
 
 __all__ = [
-    "TenantCreate", "TenantUpdate", "TenantOut",
+    "TenantCreate", "TenantUpdate", "TenantOut", "TenantNotificationSettingsOut", "TenantNotificationSettingsUpdate",
     "AuthLoginRequest", "AuthRegisterRequest", "AuthChangePasswordRequest", "AuthUserOut", "AuthTokenOut",
     "CaptchaChallengeOut", "CaptchaVerifyRequest", "CaptchaVerifyOut",
     "SubscriptionRedeemRequest", "SubscriptionRedeemOut",

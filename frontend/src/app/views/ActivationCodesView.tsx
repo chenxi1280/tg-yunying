@@ -202,7 +202,11 @@ export default function ActivationCodesView({
       <Typography.Text type="secondary">查询卡密批次、激活账号与有效期，并停用未激活卡密</Typography.Text>
 
       <div className="policy-grid">
-        <label>关键词<Input value={activationCodeFilters.search} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, search: event.target.value }))} placeholder="卡密 / 生成者 / 激活账号" /></label>
+        <label>关键词<Input.Search allowClear value={activationCodeFilters.search} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, search: event.target.value }))} onSearch={(value) => {
+          const nextFilters = { ...activationCodeFilters, search: value.trim() };
+          setActivationCodeFilters(nextFilters);
+          void onLoadCodes(nextFilters, 1, activationCodePage.page_size);
+        }} placeholder="卡密 / 生成者 / 激活账号" /></label>
         <label>状态<Select value={activationCodeFilters.status} onChange={(value) => setActivationCodeFilters((current) => ({ ...current, status: value }))} options={[{ value: '', label: '全部状态' }, { value: 'unused', label: '未激活' }, { value: 'redeemed', label: '已激活' }, { value: 'disabled', label: '已停用' }]} /></label>
         <label>套餐<Select value={activationCodeFilters.plan_type} onChange={(value) => setActivationCodeFilters((current) => ({ ...current, plan_type: value }))} options={[{ value: '', label: '全部套餐' }, ...subscriptionPlans.map((plan) => ({ value: plan.plan_type, label: plan.name }))]} /></label>
         <label>批次<Input maxLength={24} value={activationCodeFilters.batch_no} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, batch_no: event.target.value.toUpperCase() }))} placeholder="BATCH202605" /></label>

@@ -3,13 +3,28 @@ import { Database } from 'lucide-react';
 import { Card, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { AuditLog } from '../types';
-import { StatusBadge } from '../components/shared';
+import { StatusBadge, useAntdTableControls } from '../components/shared';
 
 interface Props {
   audits: AuditLog[];
 }
 
 export default function AuditsView({ audits }: Props) {
+  const auditTable = useAntdTableControls<AuditLog>({
+    rows: audits,
+    placeholder: '搜索动作 / 操作人 / 对象 / 详情',
+    search: [
+      (log) => [
+        log.id,
+        log.action,
+        log.actor,
+        log.target_type,
+        log.detail,
+        log.created_at,
+      ],
+    ],
+  });
+
   const columns: ColumnsType<AuditLog> = [
     {
       title: '动作',
@@ -52,12 +67,15 @@ export default function AuditsView({ audits }: Props) {
 
   return (
     <Card className="panel" title="审计安全" extra={<Typography.Text type="secondary">登录、验证码、发送、归档、权限变更都留痕</Typography.Text>}>
+      <Space className="toolbar-row" wrap>
+        {auditTable.searchInput}
+      </Space>
       <Table<AuditLog>
         className="tg-table"
         rowKey="id"
         columns={columns}
-        dataSource={audits}
-        pagination={false}
+        dataSource={auditTable.filteredRows}
+        pagination={auditTable.pagination}
         scroll={{ x: 900 }}
         locale={{ emptyText: '暂无审计记录。配置、登录、卡密和账号池操作会写入这里。' }}
       />

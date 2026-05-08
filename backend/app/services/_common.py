@@ -8,11 +8,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai_gateway import create_ai_gateway
-from app.auth import CurrentUser, normalize_phone, serialize_user
+from app.auth import CurrentUser, admin_user_payload, normalize_phone
 from app.gateways import create_gateway
 from app.models import (
     AuditLog,
-    AppUser,
     DeveloperAppHealthStatus,
     AiProviderHealthStatus,
     TelegramDeveloperApp,
@@ -45,37 +44,17 @@ def _is_expired(value: datetime | None) -> bool:
     return _as_utc(value) < _as_utc(_now())
 
 
-def subscription_days_remaining(user: AppUser) -> int:
-    if not user.subscription_expires_at:
-        return 0
-    remaining = user.subscription_expires_at - _now()
-    return max(0, int((remaining.total_seconds() + 86399) // 86400))
-
-
 SUBSCRIPTION_INACTIVE_DETAIL = "subscription inactive"
 
 
 def system_user_for_tenant(session: Session, tenant_id: int, *, service_name: str, missing_message: str) -> CurrentUser:
-    user = session.scalar(
-        select(AppUser)
-        .where(
-            AppUser.tenant_id == tenant_id,
-            AppUser.role != "系统管理员",
-            AppUser.is_active.is_(True),
-        )
-        .order_by(AppUser.id.asc())
-    )
-    if not user:
-        raise ValueError(missing_message)
-    data = serialize_user(session, user)
+    data = admin_user_payload()
     data["name"] = service_name
     return CurrentUser(**data)
 
 
 def require_system_user_core_features(session: Session, tenant_id: int, *, service_name: str, missing_message: str) -> CurrentUser:
     user = system_user_for_tenant(session, tenant_id, service_name=service_name, missing_message=missing_message)
-    if not user.can_use_core_features:
-        raise ValueError(SUBSCRIPTION_INACTIVE_DETAIL)
     return user
 
 

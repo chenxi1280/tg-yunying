@@ -19,7 +19,8 @@ from app.schemas import (
     AccountDetailOut, AccountGroupOut, AccountOut, AccountSyncRecordOut,
     AvatarUploadOut, ContactOut, DirectMessageTaskCreate, GroupOut,
     LoginFlowOut, LoginStartRequest, LoginVerifyRequest, MessageTaskOut,
-    MoveAccountPoolRequest, ProfileSyncRecordOut, TgAccountCreate,
+    ManualOperationRecordOut, ManualSendRequest, MoveAccountPoolRequest,
+    OperationTargetOut, ProfileSyncRecordOut, TgAccountCreate,
     TgAccountProfileUpdate, VerificationCodeOut, VerificationTaskOut,
 )
 from app.services import (
@@ -34,6 +35,7 @@ from app.services import (
     retry_account_clone_item, retry_account_profile_sync,
     soft_delete_account, start_login, sync_account_contacts, sync_groups,
     update_account_profile, upload_account_avatar, verify_login,
+    manual_send, sync_account_targets,
 )
 
 router = APIRouter()
@@ -221,6 +223,20 @@ def post_account_sync_now(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/api/tg-accounts/{account_id}/sync-targets", response_model=list[OperationTargetOut])
+def post_account_sync_targets(
+    account_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return sync_account_targets(session, account_id, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 # ── Detail / Profile ──
 
 @router.get("/api/tg-accounts/{account_id}/detail", response_model=AccountDetailOut)
@@ -389,6 +405,21 @@ def post_account_direct_message_task(
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
         return create_direct_message_task(session, account_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/manual-send", response_model=ManualOperationRecordOut)
+def post_account_manual_send(
+    account_id: int,
+    payload: ManualSendRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return manual_send(session, account_id, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -34,14 +34,14 @@ export type CurrentUser = {
   email: string;
   phone: string | null;
   tenant_name: string | null;
-  subscription_status: string;
-  subscription_started_at: string | null;
-  subscription_expires_at: string | null;
-  subscription_days_remaining: number;
   can_use_core_features: boolean;
-  token_balance: number;
-  token_quota_total: number;
-  menu_permissions: string[];
+  subscription_status?: string;
+  subscription_started_at?: string | null;
+  subscription_expires_at?: string | null;
+  subscription_days_remaining?: number;
+  token_balance?: number;
+  token_quota_total?: number;
+  menu_permissions?: string[];
 };
 
 export type Tenant = {
@@ -50,6 +50,9 @@ export type Tenant = {
   plan_name: string;
   account_quota: number;
   task_quota: number;
+  admin_chat_id: string;
+  notify_ai_failures_enabled: boolean;
+  telegram_bot_configured: boolean;
   created_at: string;
 };
 
@@ -608,6 +611,99 @@ export type AccountGroup = Group & {
   last_sent_at: string | null;
 };
 
+export type OperationTarget = {
+  id: number;
+  tenant_id: number;
+  target_type: 'group' | 'channel';
+  tg_peer_id: string;
+  title: string;
+  username: string;
+  member_count: number;
+  can_send: boolean;
+  auth_status: string;
+  last_sync_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChannelMessage = {
+  id: number;
+  tenant_id: number;
+  channel_target_id: number;
+  message_id: number;
+  message_url: string;
+  content_preview: string;
+  published_at: string | null;
+  created_at: string;
+};
+
+export type OperationTask = {
+  id: number;
+  tenant_id: number;
+  task_type: 'MESSAGE_SEND' | 'CHANNEL_VIEW' | 'CHANNEL_REACTION' | 'CHANNEL_REPLY';
+  target_id: number | null;
+  channel_message_id: number | null;
+  title: string;
+  content: string;
+  reaction: string;
+  account_ids: string;
+  quantity: number;
+  actual_quantity: number;
+  quantity_jitter_ratio: number;
+  content_mode: 'literal' | 'ai';
+  completed_count: number;
+  interval_seconds: number;
+  status: string;
+  failure_type: string;
+  failure_detail: string;
+  scheduled_at: string;
+  executed_at: string | null;
+  created_at: string;
+};
+
+export type OperationTaskAttempt = {
+  id: number;
+  tenant_id: number;
+  task_id: number;
+  account_id: number | null;
+  action_type: string;
+  content: string;
+  reaction: string;
+  status: string;
+  failure_type: string;
+  failure_detail: string;
+  remote_message_id: string;
+  idempotency_key: string;
+  planned_delay_seconds: number;
+  scheduled_at: string;
+  executed_at: string | null;
+};
+
+export type AccountRiskDiagnostic = {
+  level: string;
+  code: string;
+  title: string;
+  detail: string;
+  source: string;
+  action: string;
+  occurred_at: string | null;
+};
+
+export type ManualOperationRecord = {
+  id: number;
+  tenant_id: number;
+  account_id: number;
+  target_id: number | null;
+  operation_type: string;
+  content: string;
+  status: string;
+  failure_type: string;
+  failure_detail: string;
+  remote_message_id: string;
+  actor: string;
+  created_at: string;
+};
+
 export type ProfileSyncRecord = {
   id: number;
   account_id: number;
@@ -625,6 +721,7 @@ export type ProfileSyncRecord = {
 
 export type AccountDetail = {
   account: Account;
+  risk_diagnostics: AccountRiskDiagnostic[];
   login_flows: LoginFlow[];
   verification_codes: VerificationCode[];
   profile_sync_records: ProfileSyncRecord[];
@@ -632,7 +729,10 @@ export type AccountDetail = {
   next_sync_at: string | null;
   contacts: Contact[];
   groups: AccountGroup[];
+  operation_targets: OperationTarget[];
   message_records: MessageTask[];
+  manual_operation_records: ManualOperationRecord[];
+  operation_task_attempts: OperationTaskAttempt[];
   clone_plans: AccountClonePlan[];
   verification_tasks: VerificationTask[];
   stats: Record<string, number>;

@@ -18,10 +18,17 @@ class Tenant(Base):
     plan_name: Mapped[str] = mapped_column(String(80), default="试运行")
     account_quota: Mapped[int] = mapped_column(Integer, default=50)
     task_quota: Mapped[int] = mapped_column(Integer, default=5000)
+    telegram_bot_token_ciphertext: Mapped[str] = mapped_column(Text, default="")
+    admin_chat_id: Mapped[str] = mapped_column(String(120), default="")
+    notify_ai_failures_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
     accounts: Mapped[list[TgAccount]] = relationship(back_populates="tenant")
     groups: Mapped[list[TgGroup]] = relationship(back_populates="tenant")
+
+    @property
+    def telegram_bot_configured(self) -> bool:
+        return bool(self.telegram_bot_token_ciphertext)
 
 
 class AccountPool(Base):

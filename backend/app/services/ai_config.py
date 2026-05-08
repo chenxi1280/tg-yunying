@@ -9,7 +9,6 @@ from app.models import (
     AiProvider,
     AiProviderHealthStatus,
     AiUsageLedger,
-    AppUser,
     Campaign,
     ContentKeywordRule,
     Material,
@@ -18,7 +17,6 @@ from app.models import (
     Tenant,
     TenantAiSetting,
     TgGroup,
-    UserTokenLedger,
 )
 from app.schemas import (
     AiProviderCreate,
@@ -363,41 +361,15 @@ def record_ai_usage(
 
 
 def require_ai_token_balance(session: Session, current_user: CurrentUser) -> None:
-    if current_user.is_platform_admin:
-        return
-    user = session.get(AppUser, current_user.id)
-    if not user or not user.is_active:
-        raise ValueError("user not found")
-    if user.token_balance <= 0:
-        raise ValueError("Token 余额不足，请先充值或兑换卡密后再使用 AI")
+    return
 
 
-def deduct_ai_usage_tokens(session: Session, current_user: CurrentUser, usage_ledger: AiUsageLedger) -> UserTokenLedger | None:
-    if current_user.is_platform_admin or usage_ledger.total_tokens <= 0:
-        return None
-    user = session.get(AppUser, current_user.id)
-    if not user or not user.is_active:
-        raise ValueError("user not found")
-    if user.token_balance < usage_ledger.total_tokens:
-        raise ValueError("Token 余额不足，请先充值或兑换卡密后再使用 AI")
-    consumed = usage_ledger.total_tokens
-    user.token_balance -= consumed
+def deduct_ai_usage_tokens(session: Session, current_user: CurrentUser, usage_ledger: AiUsageLedger):
     if usage_ledger.campaign_id:
         campaign = session.get(Campaign, usage_ledger.campaign_id)
         if campaign and hasattr(campaign, "used_ai_tokens"):
             campaign.used_ai_tokens += usage_ledger.total_tokens
-    ledger = UserTokenLedger(
-        tenant_id=user.tenant_id,
-        user_id=user.id,
-        change_type="ai_usage",
-        delta_tokens=-consumed,
-        balance_after=user.token_balance,
-        related_ai_usage_ledger_id=usage_ledger.id,
-        reason=f"{usage_ledger.provider_name}/{usage_ledger.model_name} AI 调用消耗 {usage_ledger.total_tokens} tokens",
-        actor=current_user.name,
-    )
-    session.add(ledger)
-    return ledger
+    return None
 
 
 def list_usage_ledgers(session: Session, *, user_id: int | None = None, campaign_id: int | None = None) -> list[AiUsageLedger]:
@@ -419,14 +391,13 @@ def list_usage_summary(session: Session) -> dict:
     total_completion_tokens = sum(item.completion_tokens for item in ledgers)
     total_tokens = sum(item.total_tokens for item in ledgers)
     total_cost = round(sum(item.total_cost for item in ledgers), 6)
-    by_user_map: dict[int, dict] = {}
+    by_actor_map: dict[int, dict] = {}
     for item in ledgers:
-        user = session.get(AppUser, item.user_id)
-        row = by_user_map.setdefault(
+        row = by_actor_map.setdefault(
             item.user_id,
             {
                 "user_id": item.user_id,
-                "user_name": user.name if user else f"user-{item.user_id}",
+                "user_name": "系统管理员" if item.user_id == 0 else f"actor-{item.user_id}",
                 "tenant_id": item.tenant_id,
                 "requests": 0,
                 "total_tokens": 0,
@@ -447,7 +418,7 @@ def list_usage_summary(session: Session) -> dict:
         "total_tokens": total_tokens,
         "total_cost": total_cost,
         "currency": "CNY",
-        "by_user": list(by_user_map.values()),
+        "by_user": list(by_actor_map.values()),
     }
 
 

@@ -1,5 +1,6 @@
 import React from 'react';
-import { Button, Card, Empty, Modal as AntModal, Segmented, Space, Statistic, Tag, Typography } from 'antd';
+import { Button, Card, Empty, Input, Modal as AntModal, Segmented, Space, Statistic, Tag, Typography } from 'antd';
+import type { TablePaginationConfig } from 'antd/es/table';
 import type { BadgeTone, ConfirmPayload, ResultDialogState } from '../types';
 
 export function statusTone(status: string | null | undefined): BadgeTone {
@@ -53,6 +54,81 @@ export function Badge({ children, tone }: { children: React.ReactNode; tone: Bad
 
 export function StatusBadge({ status, label }: { status: string | null | undefined; label?: React.ReactNode }) {
   return <Badge tone={statusTone(status)}>{label ?? status ?? '未配置'}</Badge>;
+}
+
+type TableSearchAccessor<T> = keyof T | ((row: T) => unknown);
+
+function valueToSearchText(value: unknown): string {
+  if (value == null) return '';
+  if (Array.isArray(value)) return value.map(valueToSearchText).join(' ');
+  if (value instanceof Date) return value.toLocaleString();
+  if (typeof value === 'object') return Object.values(value as Record<string, unknown>).map(valueToSearchText).join(' ');
+  return String(value);
+}
+
+export function useAntdTableControls<T>({
+  rows,
+  search,
+  placeholder = '搜索',
+  pageSize = 10,
+  pageSizeOptions = [10, 20, 50, 100],
+}: {
+  rows: T[];
+  search?: TableSearchAccessor<T>[];
+  placeholder?: string;
+  pageSize?: number;
+  pageSizeOptions?: number[];
+}) {
+  const [query, setQuery] = React.useState('');
+  const [current, setCurrent] = React.useState(1);
+  const [currentPageSize, setCurrentPageSize] = React.useState(pageSize);
+  const normalizedQuery = query.trim().toLowerCase();
+
+  const filteredRows = React.useMemo(() => {
+    if (!normalizedQuery) return rows;
+    return rows.filter((row) => {
+      const values = search?.length
+        ? search.map((accessor) => (typeof accessor === 'function' ? accessor(row) : row[accessor]))
+        : Object.values(row as Record<string, unknown>);
+      return values.some((value) => valueToSearchText(value).toLowerCase().includes(normalizedQuery));
+    });
+  }, [normalizedQuery, rows, search]);
+
+  React.useEffect(() => {
+    setCurrent(1);
+  }, [normalizedQuery, rows]);
+
+  React.useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil(filteredRows.length / currentPageSize));
+    if (current > maxPage) setCurrent(maxPage);
+  }, [current, currentPageSize, filteredRows.length]);
+
+  const pagination: TablePaginationConfig = {
+    current,
+    pageSize: currentPageSize,
+    total: filteredRows.length,
+    showSizeChanger: true,
+    pageSizeOptions: pageSizeOptions.map(String),
+    showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条 / 共 ${total} 条`,
+    onChange: (page, nextPageSize) => {
+      setCurrent(page);
+      setCurrentPageSize(nextPageSize);
+    },
+  };
+
+  const searchInput = (
+    <Input.Search
+      allowClear
+      className="table-search"
+      value={query}
+      placeholder={placeholder}
+      onChange={(event) => setQuery(event.target.value)}
+      onSearch={(value) => setQuery(value.trim())}
+      style={{ width: 320, maxWidth: '100%' }}
+    />
+  );
+
+  return { query, setQuery, filteredRows, pagination, searchInput };
 }
 
 export function operationLabel(status: string | null | undefined) {

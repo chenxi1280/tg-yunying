@@ -3,7 +3,7 @@ import { Activity, Bot, CheckCircle2, Database } from 'lucide-react';
 import { Card, List, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { CurrentUser, UsageLedger, UsageSummary } from '../types';
-import { StatCard, StatusBadge } from '../components/shared';
+import { StatCard, StatusBadge, useAntdTableControls } from '../components/shared';
 
 interface Props {
   usageLedgers: UsageLedger[];
@@ -12,6 +12,24 @@ interface Props {
 }
 
 export default function UsageReportsView({ usageLedgers, usageSummary, currentUser }: Props) {
+  const usageTable = useAntdTableControls<UsageLedger>({
+    rows: usageLedgers,
+    placeholder: '搜索模型 / 任务 / 状态 / 费用',
+    search: [
+      (item) => [
+        item.id,
+        item.provider_name,
+        item.model_name,
+        item.campaign_id,
+        item.request_status,
+        item.total_tokens,
+        item.total_cost,
+        item.currency,
+        item.created_at,
+      ],
+    ],
+  });
+
   const columns: ColumnsType<UsageLedger> = [
     {
       title: '模型',
@@ -76,12 +94,15 @@ export default function UsageReportsView({ usageLedgers, usageSummary, currentUs
         />
       </Card>
       <Card className="panel" title="调用明细" extra={<Typography.Text type="secondary">记录用户、任务、模型、token 和费用</Typography.Text>}>
+        <Space className="toolbar-row" wrap>
+          {usageTable.searchInput}
+        </Space>
         <Table<UsageLedger>
           className="tg-table"
           rowKey="id"
           columns={columns}
-          dataSource={usageLedgers}
-          pagination={false}
+          dataSource={usageTable.filteredRows}
+          pagination={usageTable.pagination}
           scroll={{ x: 760 }}
           locale={{ emptyText: '暂无调用明细。' }}
         />

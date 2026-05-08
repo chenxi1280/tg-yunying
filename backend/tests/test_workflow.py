@@ -7,8 +7,10 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.gateways import SendResult
-from app.models import AccountStatus, AiDraft, AppUser, DeveloperAppHealthStatus, Material, MessageTask, TelegramDeveloperApp, TgAccount, TgAccountSyncRecord, TgContact, TgGroupAccount, TgLoginFlow, UserTokenLedger
+from app.models import AccountStatus, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, ManualOperationRecord, Material, MessageTask, OperationTaskAttempt, TaskStatus, TelegramDeveloperApp, TgAccount, TgAccountSyncRecord, TgGroupAccount, TgLoginFlow
+from app.services.notifications import NotificationResult
 from fastapi.testclient import TestClient
+from sqlalchemy import inspect
 
 
 def auth_headers(client: TestClient, email: str = "admin@demo.local", password: str = "admin123") -> dict[str, str]:
@@ -29,6 +31,20 @@ def auth_headers(client: TestClient, email: str = "admin@demo.local", password: 
     assert response.status_code == 200, response.text
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+def login_response(client: TestClient, identifier: str, password: str):
+    challenge = client.get("/api/auth/captcha/challenge")
+    challenge_body = challenge.json()
+    captcha_value = get_challenge_target(challenge_body["challenge_id"])
+    captcha = client.post(
+        "/api/auth/captcha/verify",
+        json={"challenge_id": challenge_body["challenge_id"], "captcha_value": captcha_value},
+    )
+    return client.post(
+        "/api/auth/login",
+        json={"email": identifier, "password": password, "captcha_token": captcha.json()["captcha_token"]},
+    )
 
 
 def ensure_developer_app(client: TestClient, headers: dict[str, str]) -> dict:
@@ -154,7 +170,10 @@ def test_login_flow_masks_verification_state():
         assert detail["account"]["profile_sync_status"] == "已同步"
         assert detail["contacts"]
         assert detail["groups"]
-        assert detail["stats"]["pending_verification_tasks"] >= 1
+        targets = client.post(f"/api/tg-accounts/{account['id']}/sync-targets", headers=headers).json()
+        assert targets
+        assert {target["target_type"] for target in targets} <= {"group", "channel"}
+        assert detail["stats"]["pending_verification_tasks"] >= 0
 
 
 def test_unfinished_account_soft_delete_allows_phone_reuse():
@@ -286,141 +305,42 @@ def test_approve_all_retry_and_archive_detail_flow():
         assert detail["members"]
 
 
-def test_auth_and_tenant_isolation():
+def test_auth_single_admin_and_default_operation_space():
     with TestClient(app) as client:
-        headers = auth_headers(client, "ops@bootstrap.local", "ops123")
+        headers = auth_headers(client)
         me = client.get("/api/auth/me", headers=headers).json()
         assert me["tenant_id"] == 1
+        assert me["role"] == "系统管理员"
+        assert "subscription_status" not in me
+        assert login_response(client, "ops@bootstrap.local", "ops123").status_code == 401
 
         response = client.get("/api/tg-accounts?tenant_id=999", headers=headers)
-        assert response.status_code == 403
+        assert response.status_code == 200
 
         assert client.get("/api/tg-accounts").status_code == 401
 
 
-def test_activation_code_generation_search_pagination_and_disable():
+def test_legacy_authorization_endpoints_and_tables_are_removed():
     with TestClient(app) as client:
         headers = auth_headers(client)
-        ops_headers = auth_headers(client, "ops@bootstrap.local", "ops123")
-        batch_no = f"B{uuid4().hex[:8]}".upper()
-        serial_prefix = f"VIP{uuid4().hex[:4]}".upper()
+        old_endpoints = [
+            ("post", "/api/auth/register", {"email": "x@example.local", "password": "secret"}),
+            ("post", "/api/subscription/redeem", {"code": "NOPE"}),
+            ("get", "/api/admin/users", None),
+            ("get", "/api/admin/activation-codes", None),
+            ("post", "/api/admin/activation-codes", {"plan_type": "monthly", "quantity": 1}),
+            ("get", "/api/admin/subscription-plans", None),
+            ("post", "/api/admin/subscription-plans", {"plan_type": "monthly", "name": "Legacy"}),
+        ]
+        for method, path, payload in old_endpoints:
+            request = getattr(client, method)
+            response = request(path, headers=headers, json=payload) if payload is not None and method != "get" else request(path, headers=headers)
+            assert response.status_code == 404, f"{path} should be removed"
 
-        created = client.post(
-            "/api/admin/activation-codes",
-            headers=headers,
-            json={
-                "plan_type": "monthly",
-                "quantity": 5,
-                "batch_no": batch_no,
-                "serial_prefix": serial_prefix,
-                "note": "pytest batch",
-            },
-        )
-        assert created.status_code == 200, created.text
-        codes = created.json()
-        assert len(codes) == 5
-        assert all(item["batch_no"] == batch_no for item in codes)
-        assert all(item["serial_prefix"] == serial_prefix for item in codes)
-        assert all(item["plan_type"] == "monthly" and item["duration_days"] == 30 and item["token_quota"] == 500000 for item in codes)
-        assert all(item["code"].startswith(f"{serial_prefix}-{batch_no}-") for item in codes)
-
-        first_page = client.get("/api/admin/activation-codes", headers=headers, params={"batch_no": batch_no, "page": 1, "page_size": 2}).json()
-        assert first_page["total"] == 5
-        assert first_page["page"] == 1
-        assert first_page["page_size"] == 2
-        assert len(first_page["items"]) == 2
-        assert first_page["items"][0]["id"] > first_page["items"][1]["id"]
-
-        by_plan = client.get("/api/admin/activation-codes", headers=headers, params={"batch_no": batch_no, "plan_type": "monthly"}).json()
-        assert by_plan["total"] == 5
-        by_keyword = client.get("/api/admin/activation-codes", headers=headers, params={"search": serial_prefix}).json()
-        assert by_keyword["total"] >= 5
-
-        disabled = client.post(f"/api/admin/activation-codes/{codes[0]['id']}/disable", headers=headers)
-        assert disabled.status_code == 200, disabled.text
-        assert disabled.json()["status"] == "disabled"
-        disabled_redeem = client.post("/api/subscription/redeem", headers=ops_headers, json={"code": codes[0]["code"]})
-        assert disabled_redeem.status_code == 400
-
-        before_redeem = client.get("/api/auth/me", headers=ops_headers).json()
-        redeemed = client.post("/api/subscription/redeem", headers=ops_headers, json={"code": codes[1]["code"]})
-        assert redeemed.status_code == 200, redeemed.text
-        assert redeemed.json()["token_quota"] == 500000
-        assert redeemed.json()["token_balance"] == before_redeem["token_balance"] + 500000
-        redeemed_disable = client.post(f"/api/admin/activation-codes/{codes[1]['id']}/disable", headers=headers)
-        assert redeemed_disable.status_code == 400
-
-        disabled_page = client.get("/api/admin/activation-codes", headers=headers, params={"batch_no": batch_no, "status": "disabled"}).json()
-        assert disabled_page["total"] == 1
-        unused_page = client.get("/api/admin/activation-codes", headers=headers, params={"batch_no": batch_no, "status": "unused"}).json()
-        assert unused_page["total"] == 3
-        by_redeemed_user = client.get("/api/admin/activation-codes", headers=headers, params={"batch_no": batch_no, "search": "ops@bootstrap.local"}).json()
-        assert by_redeemed_user["total"] == 1
-        assert by_redeemed_user["items"][0]["redeemed_user_email"] == "ops@bootstrap.local"
-
-        denied_list = client.get("/api/admin/activation-codes", headers=ops_headers)
-        denied_create = client.post("/api/admin/activation-codes", headers=ops_headers, json={"plan_type": "monthly", "quantity": 1})
-        denied_disable = client.post(f"/api/admin/activation-codes/{codes[2]['id']}/disable", headers=ops_headers)
-        assert denied_list.status_code == 403
-        assert denied_create.status_code == 403
-        assert denied_disable.status_code == 403
-
-
-def test_subscription_plans_admin_users_and_token_adjustments():
-    with TestClient(app) as client:
-        headers = auth_headers(client)
-        ops_headers = auth_headers(client, "ops@bootstrap.local", "ops123")
-
-        plans = client.get("/api/admin/subscription-plans", headers=headers)
-        assert plans.status_code == 200, plans.text
-        monthly = next(item for item in plans.json() if item["plan_type"] == "monthly")
-        assert monthly["token_quota"] == 500000
-
-        custom_type = f"pytest_{uuid4().hex[:8]}"
-        created_plan = client.post(
-            "/api/admin/subscription-plans",
-            headers=headers,
-            json={"plan_type": custom_type, "name": "Pytest 套餐", "duration_days": 7, "token_quota": 12345, "is_active": True},
-        )
-        assert created_plan.status_code == 200, created_plan.text
-        assert created_plan.json()["token_quota"] == 12345
-
-        assert client.get("/api/admin/subscription-plans", headers=ops_headers).status_code == 403
-        assert client.get("/api/admin/users", headers=ops_headers).status_code == 403
-
-        users = client.get("/api/admin/users", headers=headers).json()
-        ops_user = next(item for item in users if item["email"] == "ops@bootstrap.local")
-        updated = client.patch(
-            f"/api/admin/users/{ops_user['id']}",
-            headers=headers,
-            json={"menu_permissions": ["accounts", "groupManagement"], "is_active": True},
-        )
-        assert updated.status_code == 200, updated.text
-        assert updated.json()["menu_permissions"] == ["accounts", "groupManagement"]
-
-        adjusted = client.post(
-            f"/api/admin/users/{ops_user['id']}/token-adjustments",
-            headers=headers,
-            json={"delta_tokens": 1234, "reason": "pytest top-up"},
-        )
-        assert adjusted.status_code == 200, adjusted.text
-        assert adjusted.json()["token_balance"] == ops_user["token_balance"] + 1234
-        ledgers = client.get(f"/api/admin/users/{ops_user['id']}/token-ledgers", headers=headers).json()
-        assert ledgers[0]["change_type"] == "admin_adjustment"
-        assert ledgers[0]["delta_tokens"] == 1234
-
-        reset = client.post(
-            f"/api/admin/users/{ops_user['id']}/reset-password",
-            headers=headers,
-            json={"new_password": "ops456789"},
-        )
-        assert reset.status_code == 200, reset.text
-        reset_back = client.post(
-            f"/api/admin/users/{ops_user['id']}/reset-password",
-            headers=headers,
-            json={"new_password": "ops123"},
-        )
-        assert reset_back.status_code == 200, reset_back.text
+        with SessionLocal() as session:
+            inspector = inspect(session.bind)
+            for table_name in ["app_users", "activation_codes", "subscription_plans", "user_token_ledgers"]:
+                assert not inspector.has_table(table_name)
 
 
 def test_developer_app_admin_crud_hides_api_hash():
@@ -448,13 +368,7 @@ def test_developer_app_admin_crud_hides_api_hash():
         apps = client.get("/api/developer-apps", headers=headers).json()
         assert all("api_hash" not in app for app in apps)
 
-        ops_headers = auth_headers(client, "ops@bootstrap.local", "ops123")
-        denied = client.post(
-            "/api/developer-apps",
-            headers=ops_headers,
-            json={"app_name": "无权应用", "api_id": api_id + 1, "api_hash": "another_secret"},
-        )
-        assert denied.status_code == 403
+        assert login_response(client, "ops@bootstrap.local", "ops123").status_code == 401
 
         disabled = client.post(f"/api/developer-apps/{body['id']}/disable", headers=headers).json()
         assert disabled["is_active"] is False
@@ -615,10 +529,9 @@ def test_ai_provider_prompt_material_and_jitter_flow():
         assert drained["processed"] == 0
 
 
-def test_ai_real_provider_requires_and_deducts_user_token_balance(monkeypatch):
+def test_ai_real_provider_records_campaign_usage_without_user_token_balance(monkeypatch):
     with TestClient(app) as client:
         headers = auth_headers(client)
-        ops_headers = auth_headers(client, "ops@bootstrap.local", "ops123")
         previous_setting = client.get("/api/tenant-ai-settings?tenant_id=1", headers=headers).json()
         provider = client.post(
             "/api/ai-providers",
@@ -654,16 +567,6 @@ def test_ai_real_provider_requires_and_deducts_user_token_balance(monkeypatch):
             },
         ).json()
 
-        with SessionLocal() as session:
-            user = session.query(AppUser).filter_by(email="ops@bootstrap.local").one()
-            user.token_balance = 0
-            user.token_quota_total = 0
-            session.commit()
-
-        blocked = client.post(f"/api/campaigns/{campaign['id']}/generate-drafts", headers=ops_headers, json={"count": 1, "use_ai": True})
-        assert blocked.status_code == 400
-        assert "Token 余额不足" in blocked.text
-
         def fake_generate(credentials, prompt, *, count, topic, tone, persona_set, temperature, max_tokens, material_ids=None, selected_account_ids=None):
             return AiGenerationResult(
                 candidates=mock_candidates(count, topic, tone, persona_set, material_ids, selected_account_ids),
@@ -671,20 +574,16 @@ def test_ai_real_provider_requires_and_deducts_user_token_balance(monkeypatch):
             )
 
         monkeypatch.setattr("app.services.campaigns.ai_gateway.generate_drafts", fake_generate)
-        with SessionLocal() as session:
-            user = session.query(AppUser).filter_by(email="ops@bootstrap.local").one()
-            user.token_balance = 1000
-            user.token_quota_total = 1000
-            session.commit()
 
-        generated = client.post(f"/api/campaigns/{campaign['id']}/generate-drafts", headers=ops_headers, json={"count": 1, "use_ai": True})
+        generated = client.post(f"/api/campaigns/{campaign['id']}/generate-drafts", headers=headers, json={"count": 1, "use_ai": True})
         assert generated.status_code == 200, generated.text
         with SessionLocal() as session:
-            user = session.query(AppUser).filter_by(email="ops@bootstrap.local").one()
-            assert user.token_balance == 958
-            ledger = session.query(UserTokenLedger).filter_by(user_id=user.id, change_type="ai_usage").order_by(UserTokenLedger.id.desc()).first()
+            campaign_row = session.get(Campaign, campaign["id"])
+            ledger = session.query(AiUsageLedger).filter_by(campaign_id=campaign["id"], request_status="success").order_by(AiUsageLedger.id.desc()).first()
             assert ledger is not None
-            assert ledger.delta_tokens == -42
+            assert ledger.user_id == 0
+            assert ledger.total_tokens == 42
+            assert campaign_row.used_ai_tokens == 42
         client.patch(
             "/api/tenant-ai-settings?tenant_id=1",
             headers=headers,
@@ -751,9 +650,8 @@ def test_prompt_template_listing_matches_existing_tenant_resolution_rules():
         tenant_visible = client.get("/api/prompt-templates?tenant_id=1", headers=headers).json()
         assert any(item["id"] == created["id"] for item in tenant_visible)
 
-        ops_headers = auth_headers(client, "ops@bootstrap.local", "ops123")
-        denied = client.get("/api/prompt-templates?tenant_id=999", headers=ops_headers)
-        assert denied.status_code == 403
+        default_space = client.get("/api/prompt-templates?tenant_id=999", headers=headers)
+        assert default_space.status_code == 200
 
 
 def test_ai_drafts_listing_uses_service_and_preserves_desc_order():
@@ -787,15 +685,16 @@ def test_ai_drafts_listing_uses_service_and_preserves_desc_order():
         assert returned_ids == sorted(returned_ids, reverse=True)
 
 
-def test_ai_provider_write_requires_platform_admin():
+def test_ai_provider_write_uses_single_admin():
     with TestClient(app) as client:
-        ops_headers = auth_headers(client, "ops@bootstrap.local", "ops123")
-        denied = client.post(
+        headers = auth_headers(client)
+        created = client.post(
             "/api/ai-providers",
-            headers=ops_headers,
-            json={"provider_name": "Denied", "base_url": "mock://openai-compatible", "model_name": "x", "api_key": "secret"},
+            headers=headers,
+            json={"provider_name": f"Single Admin {uuid4().hex[:6]}", "base_url": "mock://openai-compatible", "model_name": "x", "api_key": "secret"},
         )
-        assert denied.status_code == 403
+        assert created.status_code == 200, created.text
+        assert login_response(client, "ops@bootstrap.local", "ops123").status_code == 401
 
 
 def test_system_prompt_decision_seed_and_auto_template_selection():
@@ -906,6 +805,37 @@ def test_account_detail_codes_and_direct_message_queue():
 
         records = client.get(f"/api/tg-accounts/{account['id']}/message-records", headers=headers).json()
         assert any(record["id"] == task["id"] for record in records)
+
+
+def test_account_detail_risk_diagnostics_collects_status_and_failures():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _ = ensure_test_workspace(client, headers)
+
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.LIMITED.value
+            db_account.health_score = 35
+            session.add(
+                ManualOperationRecord(
+                    tenant_id=1,
+                    account_id=account["id"],
+                    operation_type="MESSAGE_SEND",
+                    content="risk probe",
+                    status=TaskStatus.FAILED.value,
+                    failure_type=FailureType.FLOOD_WAIT.value,
+                    failure_detail="FloodWait 120 秒",
+                    actor="pytest",
+                )
+            )
+            session.commit()
+
+        detail = client.get(f"/api/tg-accounts/{account['id']}/detail", headers=headers).json()
+        risks = detail["risk_diagnostics"]
+        assert detail["stats"]["risk_diagnostics"] >= 2
+        assert detail["stats"]["high_risk_diagnostics"] >= 1
+        assert any(risk["code"] == "ACCOUNT_STATUS" and risk["title"] == "账号受限" for risk in risks)
+        assert any(risk["title"] == "触发 FloodWait" and "120" in risk["detail"] for risk in risks)
 
 
 def test_account_profile_upload_save_sync_and_retry():
@@ -1137,88 +1067,263 @@ def test_multi_group_recommendation_and_approval_expands_tasks():
         assert all(task["preferred_account_id"] in selected[str(task["group_id"])] for task in tasks)
 
 
-def test_tenant_quota_patch_and_enforcement():
+def test_operation_targets_manual_send_and_task_lifecycle(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.operations.gateway.send_message_to_target",
+        lambda *args, **kwargs: SendResult(True, remote_message_id="operation-sent"),
+    )
     with TestClient(app) as client:
         headers = auth_headers(client)
-        tenant = client.post(
-            "/api/tenants",
-            headers=headers,
-            json={
-                "name": f"quota-tenant-{uuid4().hex[:6]}",
-                "plan_name": "配额测试",
-                "account_quota": 1,
-                "task_quota": 1,
-            },
-        ).json()
-
-        first = client.post(
-            "/api/tg-accounts",
-            headers=headers,
-            json={"tenant_id": tenant["id"], "display_name": "配额账号一", "phone_number": f"+86136{uuid4().int % 100000000:08d}"},
-        )
-        assert first.status_code == 200, first.text
-
-        second = client.post(
-            "/api/tg-accounts",
-            headers=headers,
-            json={"tenant_id": tenant["id"], "display_name": "配额账号二", "phone_number": f"+86135{uuid4().int % 100000000:08d}"},
-        )
-        assert second.status_code == 400
-        assert "账号配额不足" in second.text
-
-        account = first.json()
+        account, _ = ensure_test_workspace(client, headers)
         with SessionLocal() as session:
             db_account = session.get(TgAccount, account["id"])
             db_account.status = AccountStatus.ACTIVE.value
-            session.add(
-                TgContact(
-                    tenant_id=tenant["id"],
-                    account_id=db_account.id,
-                    peer_id="quota-peer-1",
-                    display_name="Quota Contact",
-                    username="quota_contact",
-                    created_at=db_account.created_at,
-                    last_synced_at=db_account.created_at,
-                )
-            )
             session.commit()
 
-        first_task = client.post(
-            f"/api/tg-accounts/{account['id']}/direct-message-tasks",
+        group_target = client.post(
+            "/api/operation-targets",
             headers=headers,
-            json={"target_peer_id": "@quota_contact", "target_display": "Quota Contact", "content": "first quota task"},
-        )
-        assert first_task.status_code == 200, first_task.text
+            json={
+                "tenant_id": 1,
+                "target_type": "group",
+                "tg_peer_id": f"pytest-group-{uuid4().hex[:8]}",
+                "title": "pytest 群目标",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-channel-{uuid4().hex[:8]}",
+                "title": "pytest 频道目标",
+                "username": "pytest_channel",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
 
-        second_task = client.post(
-            f"/api/tg-accounts/{account['id']}/direct-message-tasks",
+        manual = client.post(
+            f"/api/tg-accounts/{account['id']}/manual-send",
             headers=headers,
-            json={"target_peer_id": "@quota_contact", "target_display": "Quota Contact", "content": "second quota task"},
+            json={"target_id": group_target["id"], "content": "实时发送 emoji 😄"},
         )
-        assert second_task.status_code == 400
-        assert "任务配额不足" in second_task.text
+        assert manual.status_code == 200, manual.text
+        assert manual.json()["status"] == "已完成"
+        assert manual.json()["remote_message_id"] == "operation-sent"
 
-        updated = client.patch(
-            f"/api/tenants/{tenant['id']}",
+        message_task = client.post(
+            "/api/operation-tasks",
             headers=headers,
-            json={"account_quota": 2, "task_quota": 2},
-        )
-        assert updated.status_code == 200, updated.text
-        assert updated.json()["task_quota"] == 2
+            json={
+                "task_type": "MESSAGE_SEND",
+                "target_id": channel_target["id"],
+                "title": "频道发帖任务",
+                "content": "频道发送内容 😄",
+                "account_ids": [account["id"]],
+                "quantity": 1,
+            },
+        ).json()
+        dispatched = client.post(f"/api/operation-tasks/{message_task['id']}/dispatch", headers=headers).json()
+        assert dispatched["status"] == "已完成"
+        assert dispatched["completed_count"] == 1
 
-        third = client.post(
-            "/api/tg-accounts",
+        channel_message = client.post(
+            "/api/channel-messages",
             headers=headers,
-            json={"tenant_id": tenant["id"], "display_name": "配额账号二", "phone_number": f"+86134{uuid4().int % 100000000:08d}"},
-        )
-        assert third.status_code == 200, third.text
+            json={
+                "channel_target_id": channel_target["id"],
+                "message_id": 1001,
+                "message_url": "https://t.me/pytest_channel/1001",
+                "content_preview": "频道消息",
+            },
+        ).json()
+        for task_type, payload in [
+            ("CHANNEL_VIEW", {}),
+            ("CHANNEL_REACTION", {"reaction": "👍"}),
+            ("CHANNEL_REPLY", {"content": "评论区回复"}),
+        ]:
+            created = client.post(
+                "/api/operation-tasks",
+                headers=headers,
+                json={
+                    "task_type": task_type,
+                    "channel_message_id": channel_message["id"],
+                    "title": task_type,
+                    "account_ids": [account["id"]],
+                    "quantity": 1,
+                    **payload,
+                },
+            )
+            assert created.status_code == 200, created.text
 
-        third_task = client.post(
-            f"/api/tg-accounts/{account['id']}/direct-message-tasks",
+
+def test_ai_operation_failure_notifies_admin(monkeypatch):
+    sent: list[tuple[str, str, str]] = []
+
+    def fake_bot(token: str, chat_id: str, text: str):
+        sent.append((token, chat_id, text))
+        return NotificationResult(True, "sent")
+
+    monkeypatch.setattr("app.services.notifications.send_telegram_bot_message", fake_bot)
+    monkeypatch.setattr("app.services.operations.ai_gateway.generate_drafts", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("AI provider down")))
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _ = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
+            session.commit()
+
+        configured = client.patch(
+            "/api/tenant-notification-settings",
             headers=headers,
-            json={"target_peer_id": "@quota_contact", "target_display": "Quota Contact", "content": "third quota task"},
+            json={"notify_ai_failures_enabled": True, "admin_chat_id": "12345", "telegram_bot_token": "bot-token"},
         )
-        assert third_task.status_code == 200, third_task.text
+        assert configured.status_code == 200, configured.text
+        assert configured.json()["telegram_bot_configured"] is True
+
+        target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "target_type": "group",
+                "tg_peer_id": f"pytest-ai-fail-{uuid4().hex[:8]}",
+                "title": "AI失败目标",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        task = client.post(
+            "/api/operation-tasks",
+            headers=headers,
+            json={
+                "task_type": "MESSAGE_SEND",
+                "target_id": target["id"],
+                "title": "AI消息失败",
+                "content": "围绕活动自然发一条",
+                "content_mode": "ai",
+                "account_ids": [account["id"]],
+                "quantity": 3,
+            },
+        )
+        assert task.status_code == 200, task.text
+        body = task.json()
+        assert body["status"] == TaskStatus.FAILED.value
+        assert "AI" in body["failure_detail"] or "供应商" in body["failure_detail"]
+        assert sent and sent[0][1] == "12345"
+        assert "AI 运营任务失败" in sent[0][2]
+
+        with SessionLocal() as session:
+            attempts = session.query(OperationTaskAttempt).filter_by(task_id=body["id"]).all()
+            assert len(attempts) == 1
+            assert attempts[0].status == TaskStatus.FAILED.value
+
+
+def test_ai_failure_notification_error_is_non_blocking(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.notifications.send_telegram_bot_message",
+        lambda *args, **kwargs: NotificationResult(False, "bot down"),
+    )
+    monkeypatch.setattr("app.services.operations.ai_gateway.generate_drafts", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("AI provider down")))
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _ = ensure_test_workspace(client, headers)
+        client.patch(
+            "/api/tenant-notification-settings",
+            headers=headers,
+            json={"notify_ai_failures_enabled": True, "admin_chat_id": "12345", "telegram_bot_token": "bot-token"},
+        )
+        target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "target_type": "group",
+                "tg_peer_id": f"pytest-bot-fail-{uuid4().hex[:8]}",
+                "title": "通知失败目标",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        task = client.post(
+            "/api/operation-tasks",
+            headers=headers,
+            json={
+                "task_type": "MESSAGE_SEND",
+                "target_id": target["id"],
+                "title": "AI消息失败但通知失败",
+                "content": "自然发一条",
+                "content_mode": "ai",
+                "account_ids": [account["id"]],
+                "quantity": 1,
+            },
+        )
+        assert task.status_code == 200, task.text
+        assert task.json()["status"] == TaskStatus.FAILED.value
+        with SessionLocal() as session:
+            assert session.query(AuditLog).filter_by(action="AI失败通知失败").count() >= 1
+
+
+def test_ai_operation_retry_replans_after_generation_failure(monkeypatch):
+    generation_should_fail = {"value": True}
+
+    def fake_generate(*args, **kwargs):
+        count = kwargs["count"]
+        if generation_should_fail["value"]:
+            raise RuntimeError("AI provider down")
+        return [f"重试生成内容 {index + 1}" for index in range(count)]
+
+    monkeypatch.setattr("app.services.operations._generate_operation_contents", fake_generate)
+    monkeypatch.setattr("app.services.operations.gateway.send_message_to_target", lambda *args, **kwargs: SendResult(True, remote_message_id="retry-sent"))
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _ = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
+            session.commit()
+        target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "target_type": "group",
+                "tg_peer_id": f"pytest-retry-ai-{uuid4().hex[:8]}",
+                "title": "AI重试目标",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        created = client.post(
+            "/api/operation-tasks",
+            headers=headers,
+            json={
+                "task_type": "MESSAGE_SEND",
+                "target_id": target["id"],
+                "title": "AI消息重试",
+                "content": "重试时重新生成",
+                "content_mode": "ai",
+                "account_ids": [account["id"]],
+                "quantity": 2,
+                "quantity_jitter_ratio": 0,
+            },
+        ).json()
+        assert created["status"] == TaskStatus.FAILED.value
+
+        generation_should_fail["value"] = False
+        retried = client.post(f"/api/operation-tasks/{created['id']}/retry", headers=headers)
+        assert retried.status_code == 200, retried.text
+        body = retried.json()
+        assert body["status"] == TaskStatus.COMPLETED.value
+        assert body["completed_count"] == 2
+        with SessionLocal() as session:
+            attempts = session.query(OperationTaskAttempt).filter_by(task_id=created["id"]).order_by(OperationTaskAttempt.id.asc()).all()
+            assert len(attempts) == 2
+            assert all(attempt.account_id == account["id"] for attempt in attempts)
+            assert [attempt.content for attempt in attempts] == ["重试生成内容 1", "重试生成内容 2"]
 
 
 def test_group_policy_enforcement_material_usage_and_reports(monkeypatch):

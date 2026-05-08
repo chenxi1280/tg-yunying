@@ -12,6 +12,7 @@ from app.gateways import ContactSnapshot, VerificationCodeSnapshot
 from app.models import (
     AccountPool,
     AccountStatus,
+    FailureType,
     GroupAuthStatus,
     MessageTask,
     MessageTaskAttempt,
@@ -804,6 +805,107 @@ def _contact_phone_mask(phone: str | None) -> str:
     return mask_phone(phone) if phone else ""
 
 
+def _risk_item(
+    *,
+    level: str,
+    code: str,
+    title: str,
+    detail: str,
+    source: str,
+    action: str,
+    occurred_at: datetime | None = None,
+) -> dict:
+    return {
+        "level": level,
+        "code": code,
+        "title": title,
+        "detail": detail,
+        "source": source,
+        "action": action,
+        "occurred_at": occurred_at,
+    }
+
+
+def account_risk_diagnostics(
+    account: TgAccount,
+    *,
+    sync_records: list[TgAccountSyncRecord],
+    profile_records: list[TgAccountProfileSyncRecord],
+    message_records: list[MessageTask],
+    manual_records: list,
+    operation_attempts: list,
+    verification_tasks: list,
+    groups: list[dict],
+    operation_targets: list,
+) -> list[dict]:
+    risks: list[dict] = []
+    status_level = {
+        AccountStatus.BANNED.value: ("高", "账号已封禁", "账号状态已标记为封禁，暂停所有发送动作。", "更换账号或重新登录确认。"),
+        AccountStatus.SUSPECTED_BANNED.value: ("高", "疑似封禁", "账号状态已标记为疑似封禁，需要人工确认。", "立即做健康检查，并在 TG 客户端确认账号状态。"),
+        AccountStatus.LIMITED.value: ("高", "账号受限", "账号最近触发受限类错误，系统已降低派单优先级。", "暂停高频任务，等待限制解除后再恢复。"),
+        AccountStatus.SESSION_EXPIRED.value: ("高", "Session 失效", "账号 session 不再可用。", "重新登录账号。"),
+        AccountStatus.NEED_RELOGIN.value: ("中", "需重新登录", "账号缺少可用 session 或开发者应用凭证不可用。", "重新登录账号并检查开发者应用。"),
+        AccountStatus.ERROR.value: ("中", "账号异常", "账号处于异常状态。", "执行健康检查并查看最近失败记录。"),
+        AccountStatus.DISABLED.value: ("中", "账号已禁用", "账号已从可执行池移除。", "需要运营时先恢复或重新添加账号。"),
+    }
+    if account.status in status_level:
+        level, title, detail, action = status_level[account.status]
+        risks.append(_risk_item(level=level, code="ACCOUNT_STATUS", title=title, detail=detail, source="账号状态", action=action, occurred_at=account.last_active_at))
+    if not account.session_ciphertext and account.status not in {AccountStatus.PENDING_LOGIN.value, AccountStatus.WAITING_CODE.value, AccountStatus.WAITING_QR.value, AccountStatus.WAITING_2FA.value}:
+        risks.append(_risk_item(level="中", code="SESSION_MISSING", title="缺少 Session", detail="账号没有可用 session，无法执行真实 TG 操作。", source="账号状态", action="重新登录账号。"))
+    if account.health_score < 60:
+        risks.append(_risk_item(level="中", code="LOW_HEALTH", title="健康分偏低", detail=f"当前健康分 {round(account.health_score)}，建议减少任务量。", source="健康分", action="查看失败记录并执行健康检查。", occurred_at=account.last_active_at))
+    if account.developer_app and account.developer_app.health_status != "健康":
+        risks.append(_risk_item(level="中", code="DEVELOPER_APP_UNHEALTHY", title="开发者应用异常", detail=f"底层开发者应用状态为 {account.developer_app.health_status}。", source="开发者应用", action="检查开发者应用 api_id/api_hash。", occurred_at=account.developer_app.last_check_at))
+    pending_tasks = [task for task in verification_tasks if getattr(task, "status", "") == "待处理"]
+    if pending_tasks:
+        risks.append(_risk_item(level="中", code="PENDING_VERIFICATION", title="存在待处理验证", detail=f"有 {len(pending_tasks)} 个发言验证、按钮或关注频道事项待处理。", source="验证任务", action="进入验证待处理页签逐项处理。", occurred_at=getattr(pending_tasks[0], "created_at", None)))
+
+    failure_actions = {
+        FailureType.FLOOD_WAIT.value: ("高", "触发 FloodWait", "账号最近触发 Telegram FloodWait。", "暂停该账号任务，等待失败详情中的时间后再重试。"),
+        FailureType.ACCOUNT_LIMITED.value: ("高", "账号受限", "账号最近被判定为受限或不可用。", "暂停发送并做健康检查。"),
+        FailureType.ACCOUNT_UNAVAILABLE.value: ("中", "账号不可用", "账号最近执行时不可用。", "重新登录或检查 session。"),
+        FailureType.PEER_INVALID.value: ("中", "目标不可访问", "账号最近访问目标失败。", "同步群/频道目标，确认账号仍在目标内。"),
+        FailureType.GROUP_PERMISSION_DENIED.value: ("中", "群无发言权限", "账号最近在群内没有发言权限。", "处理群验证或更换可发言账号。"),
+        FailureType.CHANNEL_POST_DENIED.value: ("中", "频道无发帖权限", "账号最近没有频道发帖权限。", "使用有频道发帖权限的账号。"),
+        FailureType.COMMENT_UNAVAILABLE.value: ("低", "评论区不可用", "频道消息不支持回复或账号无法进入评论区。", "改用查看/点赞任务，或确认频道讨论区设置。"),
+        FailureType.REACTION_UNAVAILABLE.value: ("低", "Reaction 不可用", "频道消息不支持该 Reaction。", "更换 Reaction 或跳过点赞任务。"),
+    }
+    failure_events: list[tuple[datetime | None, str, str, str]] = []
+    for attempt in operation_attempts:
+        if getattr(attempt, "failure_type", ""):
+            failure_events.append((attempt.executed_at, attempt.failure_type, attempt.failure_detail, f"运营任务 #{attempt.task_id}"))
+    for record in manual_records:
+        if getattr(record, "failure_type", ""):
+            failure_events.append((record.created_at, record.failure_type, record.failure_detail, "立即发送"))
+    for task in message_records:
+        if getattr(task, "failure_type", ""):
+            failure_events.append((getattr(task, "sent_at", None) or getattr(task, "scheduled_at", None), task.failure_type, getattr(task, "failure_detail", ""), f"消息任务 #{task.id}"))
+    for record in sync_records:
+        if record.status == "失败":
+            failure_events.append((record.finished_at or record.created_at, record.failure_type or "同步失败", record.failure_detail, f"同步 {record.sync_type}"))
+    for record in profile_records:
+        if record.status == "失败":
+            failure_events.append((record.synced_at or record.created_at, record.failure_type or "资料同步失败", record.failure_detail, "资料同步"))
+    seen_failure_types: set[str] = set()
+    for occurred_at, failure_type, detail, source in sorted(failure_events, key=lambda item: item[0] or datetime.min, reverse=True):
+        if failure_type in seen_failure_types:
+            continue
+        level, title, fallback_detail, action = failure_actions.get(failure_type, ("低", failure_type or "未知失败", "账号最近存在失败记录。", "查看执行记录定位原因。"))
+        risks.append(_risk_item(level=level, code="RECENT_FAILURE", title=title, detail=detail or fallback_detail, source=source, action=action, occurred_at=occurred_at))
+        seen_failure_types.add(failure_type)
+        if len(seen_failure_types) >= 5:
+            break
+
+    readonly_groups = [group for group in groups if not group.get("account_can_send")]
+    readonly_targets = [target for target in operation_targets if not getattr(target, "can_send", True)]
+    if readonly_groups or readonly_targets:
+        risks.append(_risk_item(level="低", code="TARGET_READONLY", title="部分目标只读", detail=f"{len(readonly_groups) + len(readonly_targets)} 个群/频道目标当前不可发送。", source="群/频道目标", action="同步目标权限，或选择其他可发送目标。"))
+
+    level_order = {"高": 0, "中": 1, "低": 2}
+    return sorted(risks, key=lambda item: (level_order.get(item["level"], 9), item["occurred_at"] or datetime.min), reverse=False)[:12]
+
+
 def sync_account_contacts(session: Session, account_id: int, actor: str) -> list[TgContact]:
     account = session.get(TgAccount, account_id)
     if not account:
@@ -938,10 +1040,26 @@ def account_detail(session: Session, account_id: int, actor: str) -> dict:
     contacts = account_contacts(session, account_id)
     groups = account_groups(session, account_id)
     records = account_message_records(session, account_id, 50)
+    from .operations import filter_operation_targets, list_manual_operations, list_operation_attempts
+
+    operation_targets = filter_operation_targets(session, account.tenant_id)
+    manual_records = list_manual_operations(session, account.tenant_id, account.id)
+    operation_attempts = [attempt for attempt in list_operation_attempts(session, account.tenant_id) if attempt.account_id == account.id][:50]
     from .cloning import account_clone_plans
 
     clone_plans = account_clone_plans(session, account.tenant_id, account_id=account.id, limit=8)
     verification_tasks = list_verification_tasks(session, account.tenant_id, account_id=account.id, limit=8)
+    risk_diagnostics = account_risk_diagnostics(
+        account,
+        sync_records=sync_records,
+        profile_records=profile_records,
+        message_records=records,
+        manual_records=manual_records,
+        operation_attempts=operation_attempts,
+        verification_tasks=verification_tasks,
+        groups=groups,
+        operation_targets=operation_targets,
+    )
     pending_verification_count = sum(1 for task in verification_tasks if task.status == "待处理")
     sent_count = sum(1 for task in records if task.status == TaskStatus.SENT.value)
     failed_count = sum(1 for task in records if task.status == TaskStatus.FAILED.value)
@@ -949,6 +1067,7 @@ def account_detail(session: Session, account_id: int, actor: str) -> dict:
     next_sync_at = latest_sync_time + timedelta(hours=6) if latest_sync_time and account.status == AccountStatus.ACTIVE.value else None
     return {
         "account": account,
+        "risk_diagnostics": risk_diagnostics,
         "login_flows": login_flows,
         "verification_codes": codes,
         "profile_sync_records": profile_records,
@@ -956,18 +1075,26 @@ def account_detail(session: Session, account_id: int, actor: str) -> dict:
         "next_sync_at": next_sync_at,
         "contacts": contacts,
         "groups": groups,
+        "operation_targets": operation_targets,
         "message_records": records,
+        "manual_operation_records": manual_records,
+        "operation_task_attempts": operation_attempts,
         "clone_plans": clone_plans,
         "verification_tasks": verification_tasks,
         "stats": {
             "joined_groups": len(groups),
             "contacts": len(contacts),
             "message_records": len(records),
+            "operation_targets": len(operation_targets),
+            "manual_operation_records": len(manual_records),
+            "operation_task_attempts": len(operation_attempts),
             "sent": sent_count,
             "failed": failed_count,
             "clone_plans": len(clone_plans),
             "verification_tasks": len(verification_tasks),
             "pending_verification_tasks": pending_verification_count,
+            "risk_diagnostics": len(risk_diagnostics),
+            "high_risk_diagnostics": sum(1 for item in risk_diagnostics if item["level"] == "高"),
         },
     }
 

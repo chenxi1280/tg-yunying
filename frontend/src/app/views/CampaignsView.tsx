@@ -3,7 +3,7 @@ import { Activity, Bot, CheckCircle2, ClipboardCheck, Send } from 'lucide-react'
 import { Button, Card, Empty, List, Select, Segmented, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { Campaign, Draft, MessageTask, Group, Account } from '../types';
-import { StatCard, StatusBadge, Badge } from '../components/shared';
+import { StatCard, StatusBadge, Badge, useAntdTableControls } from '../components/shared';
 import { statusAccent, riskTone } from '../utils';
 
 interface TaskSummary {
@@ -75,6 +75,28 @@ export default function CampaignsView({
   accountName,
   isActionPending,
 }: Props) {
+  const taskTable = useAntdTableControls<MessageTask>({
+    rows: selectedCampaignTasks,
+    placeholder: '搜索发送明细 / 目标 / 账号 / 内容 / 状态',
+    search: [
+      (task) => [
+        task.id,
+        task.content,
+        task.status,
+        task.failure_type,
+        task.target_type,
+        task.target_display,
+        task.message_type,
+        task.material_id,
+        task.draft_id,
+        groupName(task.group_id),
+        accountName(task.preferred_account_id),
+        accountName(task.account_id),
+        task.scheduled_at,
+      ],
+    ],
+  });
+
   const taskColumns: ColumnsType<MessageTask> = [
     {
       title: '发送明细',
@@ -135,7 +157,7 @@ export default function CampaignsView({
             const campaignTasks = tasks.filter((task) => task.campaign_id === campaign.id);
             const targetCount = campaign.target_group_ids ? campaign.target_group_ids.split(',').filter(Boolean).length : 1;
             const sourceCount = campaign.source_group_ids ? campaign.source_group_ids.split(',').filter(Boolean).length : 0;
-            const modeLabel = campaign.execution_mode === 'mirror_forward' ? '监听转发' : campaign.execution_mode === 'ai_activity' ? 'AI 活跃' : '一次性草稿';
+            const modeLabel = campaign.execution_mode === 'mirror_forward' ? '监听转发' : campaign.execution_mode === 'ai_activity' ? 'AI 活跃' : '草稿任务';
             return (
               <Card className={`task-card selectable-card ${selectedCampaign?.id === campaign.id ? 'selected' : ''} ${statusAccent(campaign.status)}`} key={campaign.id} size="small" onClick={() => setSelectedCampaignId(campaign.id)}>
                 <StatusBadge status={campaign.status} />
@@ -213,6 +235,7 @@ export default function CampaignsView({
                 { value: '失败', label: '失败' },
               ]}
             />
+            {taskTable.searchInput}
             <Typography.Text>{selectedCampaign ? `当前任务：${selectedCampaign.title}` : '请先选择任务'}</Typography.Text>
             <Button type="primary" loading={isActionPending('worker:drain')} disabled={!selectedCampaign} onClick={() => onOpenConfirm({
               title: '处理到期发送',
@@ -225,8 +248,8 @@ export default function CampaignsView({
             className="tg-table"
             rowKey="id"
             columns={taskColumns}
-            dataSource={selectedCampaignTasks}
-            pagination={false}
+            dataSource={taskTable.filteredRows}
+            pagination={taskTable.pagination}
             scroll={{ x: 1010 }}
             locale={{ emptyText: '当前任务还没有发送明细，审核草稿后会生成待发送记录。' }}
           />

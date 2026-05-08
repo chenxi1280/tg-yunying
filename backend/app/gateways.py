@@ -61,6 +61,7 @@ class GroupSnapshot:
     permission_label: str
     can_send: bool
     slowmode_seconds: int | None = None
+    username: str | None = None
 
 
 @dataclass(frozen=True)
@@ -221,10 +222,68 @@ class TelegramGateway:
         credentials: DeveloperAppCredentials | None = None,
     ) -> list[GroupSnapshot]:
         return [
-            GroupSnapshot("-100001", "星火项目交流群", "supergroup", 2480, "普通成员", True, None),
-            GroupSnapshot("-100002", "新品内测社群", "supergroup", 836, "普通成员", False, None),
-            GroupSnapshot("-100003", "海外用户增长群", "supergroup", 1289, "普通成员", True, 30),
+            GroupSnapshot("-100001", "星火项目交流群", "supergroup", 2480, "普通成员", True, None, "spark_group"),
+            GroupSnapshot("-100002", "新品内测频道", "channel", 836, "可发帖", True, None, "product_channel"),
+            GroupSnapshot("-100003", "海外用户增长群", "supergroup", 1289, "普通成员", True, 30, "growth_group"),
         ]
+
+    def send_message_to_target(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        content: str,
+        target_type: str = "group",
+        segments: list[OutboundSegment] | None = None,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return self.send_message(account_id, 0, content, segments, session_ciphertext, target_peer_id, credentials)
+
+    def view_channel_message(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        message_id: int,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        return OperationResult(True, detail=f"viewed:{channel_peer_id}:{message_id}:{account_id}")
+
+    def send_channel_reaction(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        message_id: int,
+        reaction: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        if reaction.lower() in {"blocked", "不可用"}:
+            return OperationResult(False, "失败", FailureType.REACTION_UNAVAILABLE.value, "Reaction不可用")
+        return OperationResult(True, detail=f"reaction:{reaction}:{channel_peer_id}:{message_id}:{account_id}")
+
+    def reply_channel_message(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        message_id: int,
+        content: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        if "无评论" in content:
+            return SendResult(False, failure_type=FailureType.COMMENT_UNAVAILABLE.value, detail="频道消息不支持回复")
+        return SendResult(True, remote_message_id=f"reply-{account_id}-{message_id}-{uuid4().hex[:8]}")
+
+    def probe_target_capabilities(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        target_type: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        return OperationResult(True, detail=f"{target_type}:{target_peer_id}:可访问")
 
     def poll_verification_codes(
         self,
@@ -567,6 +626,7 @@ class TelethonTelegramGateway(TelegramGateway):
                     permission_label="可发言" if can_send else "不可发言",
                     can_send=can_send,
                     slowmode_seconds=getattr(entity, "slowmode_seconds", None),
+                    username=getattr(entity, "username", None),
                 )
             )
         return snapshots
@@ -781,6 +841,142 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials | None = None,
     ) -> SendResult:
         return self._run(self._send_async(session_ciphertext, peer_id, content, segments, self._usable_credentials(credentials)))
+
+    async def _view_channel_message_async(
+        self,
+        session_ciphertext: str | None,
+        channel_peer_id: str,
+        message_id: int,
+        credentials: DeveloperAppCredentials,
+    ) -> OperationResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
+        try:
+            from telethon import functions
+
+            target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
+            entity = await client.get_entity(target)
+            await client(functions.messages.GetMessagesViewsRequest(peer=entity, id=[message_id], increment=True))
+            return OperationResult(True, detail=f"message_id={message_id}")
+        except Exception as exc:
+            mapped = self._map_send_error(exc)
+            return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+
+    def view_channel_message(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        message_id: int,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        return self._run(self._view_channel_message_async(session_ciphertext, channel_peer_id, message_id, self._usable_credentials(credentials)))
+
+    async def _send_channel_reaction_async(
+        self,
+        session_ciphertext: str | None,
+        channel_peer_id: str,
+        message_id: int,
+        reaction: str,
+        credentials: DeveloperAppCredentials,
+    ) -> OperationResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
+        try:
+            from telethon import functions, types
+
+            target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
+            entity = await client.get_entity(target)
+            await client(
+                functions.messages.SendReactionRequest(
+                    peer=entity,
+                    msg_id=message_id,
+                    reaction=[types.ReactionEmoji(emoticon=reaction or "👍")],
+                )
+            )
+            return OperationResult(True, detail=f"reaction={reaction or '👍'}; message_id={message_id}")
+        except Exception as exc:
+            mapped = self._map_send_error(exc)
+            failure = mapped.failure_type or FailureType.REACTION_UNAVAILABLE.value
+            return OperationResult(False, "失败", failure, mapped.detail or str(exc) or "Reaction不可用")
+
+    def send_channel_reaction(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        message_id: int,
+        reaction: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        return self._run(self._send_channel_reaction_async(session_ciphertext, channel_peer_id, message_id, reaction, self._usable_credentials(credentials)))
+
+    async def _reply_channel_message_async(
+        self,
+        session_ciphertext: str | None,
+        channel_peer_id: str,
+        message_id: int,
+        content: str,
+        credentials: DeveloperAppCredentials,
+    ) -> SendResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
+        try:
+            target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
+            entity = await client.get_entity(target)
+            message = await client.send_message(entity, content, comment_to=message_id)
+            return SendResult(True, remote_message_id=str(getattr(message, "id", "")))
+        except Exception as exc:
+            mapped = self._map_send_error(exc)
+            return SendResult(False, failure_type=mapped.failure_type or FailureType.COMMENT_UNAVAILABLE.value, detail=mapped.detail or "频道消息不支持回复")
+
+    def reply_channel_message(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        message_id: int,
+        content: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return self._run(self._reply_channel_message_async(session_ciphertext, channel_peer_id, message_id, content, self._usable_credentials(credentials)))
+
+    def send_message_to_target(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        content: str,
+        target_type: str = "group",
+        segments: list[OutboundSegment] | None = None,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return self.send_message(account_id, 0, content, segments, session_ciphertext, target_peer_id, credentials)
+
+    def probe_target_capabilities(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        target_type: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        return OperationResult(True, detail=f"{target_type}:{target_peer_id}:待真实执行时确认权限")
 
     async def _update_profile_async(
         self,

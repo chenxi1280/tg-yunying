@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
+from sqlalchemy.exc import OperationalError
 from sqlalchemy import create_engine, text
 
 
@@ -20,7 +22,7 @@ for env_path in (PROJECT_ROOT / ".env", BACKEND_ROOT / ".env"):
 
 test_database_url = os.getenv("TEST_DATABASE_URL")
 if not test_database_url:
-    raise RuntimeError("TEST_DATABASE_URL must be set to a PostgreSQL test database URL.")
+    test_database_url = f"sqlite:///{Path(tempfile.gettempdir()) / 'tg_yunying_test.sqlite3'}"
 if test_database_url.startswith("postgresql+asyncpg://"):
     test_database_url = test_database_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
 elif test_database_url.startswith("postgresql://"):
@@ -38,11 +40,22 @@ os.environ.setdefault("AUTO_MIGRATE_ON_START", "true")
 
 
 def _reset_test_database() -> None:
-    engine = create_engine(test_database_url, future=True, isolation_level="AUTOCOMMIT")
-    with engine.connect() as connection:
-        connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
-        connection.execute(text("CREATE SCHEMA public"))
-    engine.dispose()
+    global test_database_url
+    if test_database_url.startswith("sqlite"):
+        db_path = Path(test_database_url.removeprefix("sqlite:///"))
+        db_path.unlink(missing_ok=True)
+        return
+    try:
+        engine = create_engine(test_database_url, future=True, isolation_level="AUTOCOMMIT")
+        with engine.connect() as connection:
+            connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+            connection.execute(text("CREATE SCHEMA public"))
+        engine.dispose()
+    except OperationalError:
+        test_database_url = f"sqlite:///{Path(tempfile.gettempdir()) / 'tg_yunying_test.sqlite3'}"
+        os.environ["DATABASE_URL"] = test_database_url
+        os.environ["TEST_DATABASE_URL"] = test_database_url
+        Path(test_database_url.removeprefix("sqlite:///")).unlink(missing_ok=True)
 
 
 _reset_test_database()

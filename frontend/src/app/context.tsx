@@ -459,11 +459,11 @@ export function AppProvider({ children }: AppProviderProps) {
       const keywordRuleData = settledValue(results[15], [] as ContentKeywordRule[]);
       const developerAppData = me.role === '系统管理员' ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
       const tenantData = me.role === '系统管理员' ? await api<Tenant[]>('/tenants').catch(() => [] as Tenant[]) : [];
-      const subscriptionPlanData = me.role === '系统管理员' ? await api<SubscriptionPlan[]>('/admin/subscription-plans').catch(() => [] as SubscriptionPlan[]) : [];
-      const adminUserData = me.role === '系统管理员' ? await api<AdminUser[]>('/admin/users').catch(() => [] as AdminUser[]) : [];
-      const activationCodeData = me.role === '系统管理员' ? await api<ActivationCodePage>(activationCodeQuery()).catch(() => DEFAULT_ACTIVATION_CODE_PAGE) : DEFAULT_ACTIVATION_CODE_PAGE;
-      const usageLedgerData = me.role === '系统管理员' ? await api<UsageLedger[]>('/admin/usage-ledgers').catch(() => [] as UsageLedger[]) : [];
-      const usageSummaryData = me.role === '系统管理员' ? await api<UsageSummary>('/admin/usage-summary').catch(() => null) : null;
+      const subscriptionPlanData: SubscriptionPlan[] = [];
+      const adminUserData: AdminUser[] = [];
+      const activationCodeData = DEFAULT_ACTIVATION_CODE_PAGE;
+      const usageLedgerData: UsageLedger[] = [];
+      const usageSummaryData: UsageSummary | null = null;
       setRuntime(runtimeData);
       setOverview(overviewData);
       setAccountPools(poolData);
@@ -686,7 +686,7 @@ export function AppProvider({ children }: AppProviderProps) {
     }
     const detail = await api<AccountDetail>(`/tg-accounts/${updated.id}/detail`);
     setAccountDetail(detail);
-    setAccountDetailTab('登录同步');
+    setAccountDetailTab('官方验证码');
     setAccountLoginForm(EMPTY_ACCOUNT_LOGIN_FORM);
     setModal({ type: 'accountDetail' });
     setNotice(`${updated.display_name} 已完成登录，并已同步资料、健康、群聊、联系人和验证码。`);
@@ -1319,7 +1319,8 @@ export function AppProvider({ children }: AppProviderProps) {
   async function syncAccountGroups(account: Account) {
     setBusy('同步账号数据');
     await api<AccountSyncRecord[]>(`/tg-accounts/${account.id}/sync-now`, { method: 'POST' });
-    showResult('同步完成', `${account.display_name} 已同步资料、健康、群聊、云联系人和验证码。`);
+    await api(`/tg-accounts/${account.id}/sync-targets`, { method: 'POST' }).catch(() => undefined);
+    showResult('同步完成', `${account.display_name} 已同步资料、健康、群/频道目标、云联系人和验证码。`);
     await refresh();
     if (accountDetail?.account.id === account.id) await refreshAccountDetail();
     if (accountPoolDetail) await refreshAccountPoolDetail();
@@ -1330,8 +1331,8 @@ export function AppProvider({ children }: AppProviderProps) {
     const primaryGroup = groups.find((group) => group.id === targetIds[0]) ?? selectedGroup;
     if (!primaryGroup || !targetIds.length) return;
     setBusy('创建任务');
-    const modeLabel = campaignMode === 'mirror_forward' ? '监听转发' : campaignMode === 'ai_activity' ? 'AI 活跃' : '多账号对话脚本';
-    const endsAt = campaignMode === 'manual_draft' ? null : campaignEndsAt ? new Date(campaignEndsAt).toISOString() : null;
+    const modeLabel = campaignMode === 'mirror_forward' ? '监听转发' : 'AI 活跃';
+    const endsAt = campaignEndsAt ? new Date(campaignEndsAt).toISOString() : null;
     const campaign = await api<Campaign>('/campaigns', {
       method: 'POST',
       body: JSON.stringify({
@@ -1361,22 +1362,10 @@ export function AppProvider({ children }: AppProviderProps) {
         max_drafts_per_batch: maxDraftsPerBatch,
       }),
     });
-    if (campaignMode === 'manual_draft') {
-      await api(`/campaigns/${campaign.id}/generate-drafts`, {
-        method: 'POST',
-        body: JSON.stringify({
-          count: draftCount,
-          tone,
-          use_ai: true,
-          fallback_to_mock: tenantAiSetting?.fallback_to_mock ?? false,
-          selected_account_ids_by_group: selectedAccountsByGroup,
-        }),
-      });
-    }
     closeModal();
-    showResult('任务已创建', campaignMode === 'manual_draft' ? '系统提示词已自动决策提示词模板，并生成草稿等待人工审核。' : '持续任务已进入排队状态，worker 会按间隔生成或转发并自动入队。');
+    showResult('任务已创建', '持续任务已进入执行中，worker 会按间隔生成或转发并自动入队。');
     goToView('taskManagement');
-    setTaskManagementTab(campaignMode === 'manual_draft' ? '草稿审核' : '任务列表');
+    setTaskManagementTab('任务列表');
     await refresh();
     setSelectedCampaignId(campaign.id);
   }
