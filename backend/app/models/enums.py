@@ -36,6 +36,7 @@ class TaskStatus(StrEnum):
     SENDING = "发送中"
     SENT = "已发送"
     FAILED = "失败"
+    PAUSED = "已暂停"
     CANCELLED = "已取消"
     REJECTED = "已驳回"
     COMPLETED = "已完成"

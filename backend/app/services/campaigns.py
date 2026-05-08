@@ -399,7 +399,14 @@ def prompt_template_label(template: PromptTemplate, decision: PromptDecision) ->
     return f"{business_label} / {decision_label}"[:120]
 
 
-def generate_drafts(session: Session, campaign_id: int, payload: GenerateDraftsRequest, current_user: CurrentUser) -> list[AiDraft]:
+def generate_drafts(
+    session: Session,
+    campaign_id: int,
+    payload: GenerateDraftsRequest,
+    current_user: CurrentUser,
+    *,
+    auto_commit: bool = True,
+) -> list[AiDraft]:
     campaign = session.get(Campaign, campaign_id)
     if not campaign:
         raise ValueError("campaign not found")
@@ -505,7 +512,8 @@ def generate_drafts(session: Session, campaign_id: int, payload: GenerateDraftsR
         )
         if not decision.fallback_to_mock:
             audit(session, tenant_id=campaign.tenant_id, actor="AI服务", action="生成AI草稿失败", target_type="campaign", target_id=str(campaign.id), detail=generation_error)
-            session.commit()
+            if auto_commit:
+                session.commit()
             raise ValueError(generation_error) from exc
         candidates = mock_candidates(payload.count, campaign.topic, payload.tone, payload.persona_set, material_ids, selected_account_ids)
         generation_source = "mock_fallback"
@@ -566,9 +574,10 @@ def generate_drafts(session: Session, campaign_id: int, payload: GenerateDraftsR
     if generation_source != "mock_fallback" and usage.total_tokens > 0:
         session.flush()
         deduct_ai_usage_tokens(session, current_user, usage_ledger)
-    session.commit()
-    for draft in drafts:
-        session.refresh(draft)
+    if auto_commit:
+        session.commit()
+        for draft in drafts:
+            session.refresh(draft)
     return drafts
 
 

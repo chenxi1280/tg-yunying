@@ -9,9 +9,10 @@ interface Props {
   archiveDetail: ArchiveDetail | null;
   onOpenArchiveDetail: (archive: ArchiveItem) => void;
   onExportArchive?: (archive: ArchiveItem) => void;
+  onRerunArchive?: (archive: ArchiveItem) => void;
 }
 
-export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDetail, onExportArchive }: Props) {
+export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDetail, onExportArchive, onRerunArchive }: Props) {
   return (
     <Card className="panel" title="群聊归档" extra={<Typography.Text type="secondary">内容、成员清单与新群初始化方案</Typography.Text>}>
       <div className="cards-grid">
@@ -25,6 +26,7 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
             extra={<StatusBadge status={archive.status} />}
             actions={[
               <Button type="link" onClick={() => onOpenArchiveDetail(archive)}>查看详情</Button>,
+              onRerunArchive ? <Button type="link" onClick={() => onRerunArchive(archive)}>重跑</Button> : null,
               onExportArchive ? <Button type="link" onClick={() => onExportArchive(archive)}>导出</Button> : null,
             ].filter(Boolean)}
           >

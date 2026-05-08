@@ -116,13 +116,14 @@ class MessageTaskAttempt(Base):
 
 class CampaignProcessedMessage(Base):
     __tablename__ = "campaign_processed_messages"
-    __table_args__ = (UniqueConstraint("campaign_id", "source_group_id", "source_remote_message_id"),)
+    __table_args__ = (UniqueConstraint("campaign_id", "source_group_id", "source_remote_message_id", "target_group_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"))
     source_group_id: Mapped[int] = mapped_column(ForeignKey("tg_groups.id"))
     source_remote_message_id: Mapped[str] = mapped_column(String(160))
+    target_group_id: Mapped[int | None] = mapped_column(ForeignKey("tg_groups.id"), nullable=True)
     action: Mapped[str] = mapped_column(String(40), default="queued")
     reason: Mapped[str] = mapped_column(Text, default="")
     content: Mapped[str] = mapped_column(Text, default="")

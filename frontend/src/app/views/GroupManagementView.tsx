@@ -20,6 +20,7 @@ interface Props {
   onOpenGroupDetail: (group: Group) => Promise<void>;
   onOpenArchiveDetail: (archive: ArchiveItem) => Promise<void>;
   onExportArchive: (archive: ArchiveItem) => Promise<void>;
+  onRerunArchive: (archive: ArchiveItem) => Promise<void>;
   onOpenConfirm: (payload: ConfirmPayload) => void;
 }
 
@@ -156,6 +157,7 @@ export default function GroupManagementView(props: Props) {
     onOpenGroupDetail,
     onOpenArchiveDetail,
     onExportArchive,
+    onRerunArchive,
     onOpenConfirm,
   } = props;
 
@@ -184,7 +186,7 @@ export default function GroupManagementView(props: Props) {
         { key: 'coverage', label: '账号覆盖', children: <GroupCoveragePanel selectedGroup={selectedGroup} groupDetail={groupDetail} onOpenGroupDetail={onOpenGroupDetail} /> },
         { key: 'policy', label: '运营策略', children: <OperationPolicyPanel selectedGroup={selectedGroup} onCreateCampaign={onCreateCampaign} onCreateArchive={onCreateArchive} onEditGroupPolicy={onEditGroupPolicy} onOpenConfirm={onOpenConfirm} /> },
         { key: 'listener', label: '监听上下文', children: <ListenerContextPanel selectedGroup={selectedGroup} groupDetail={groupDetail} onOpenGroupDetail={onOpenGroupDetail} /> },
-        { key: 'archives', label: '归档任务', children: <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={onOpenArchiveDetail} onExportArchive={onExportArchive} /> },
+        { key: 'archives', label: '归档任务', children: <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={onOpenArchiveDetail} onExportArchive={onExportArchive} onRerunArchive={onRerunArchive} /> },
         { key: 'library', label: '消息/成员库', children: <MessageMemberLibrary archiveDetail={archiveDetail} /> },
       ]}
     />

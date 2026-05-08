@@ -6,10 +6,8 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser
 from app.models import (
     AccountStatus,
-    AppUser,
     Campaign,
     GroupAuthStatus,
     GroupContextMessage,
@@ -21,7 +19,7 @@ from app.models import (
 )
 from app.schemas import CampaignCreate, GenerateDraftsRequest
 
-from ._common import _now, audit, gateway
+from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, gateway, require_system_user_core_features
 from .campaigns import approve_all_drafts, create_campaign, generate_drafts
 from .developer_apps import credentials_for_account
 
@@ -115,30 +113,12 @@ def _is_managed_sender(snapshot, managed_keys: set[str]) -> bool:
     return sender_peer_id in managed_keys or sender_name in managed_keys
 
 
-def _system_user(session: Session, tenant_id: int) -> CurrentUser:
-    user = session.scalar(
-        select(AppUser)
-        .where((AppUser.tenant_id == tenant_id) | (AppUser.tenant_id.is_(None)))
-        .order_by(AppUser.tenant_id.is_(None), AppUser.id.asc())
-    )
-    if not user:
-        raise ValueError("no app user available for AI usage ledger")
-    return CurrentUser(
-        id=user.id,
-        tenant_id=tenant_id,
-        name="监听AI服务",
-        role=user.role,
-        email=user.email,
-        phone=user.phone,
-        tenant_name=None,
-        subscription_status=user.subscription_status,
-        subscription_started_at=user.subscription_started_at,
-        subscription_expires_at=user.subscription_expires_at,
-        subscription_days_remaining=0,
-        can_use_core_features=True,
-        token_balance=user.token_balance,
-        token_quota_total=user.token_quota_total,
-        menu_permissions=[],
+def _system_user(session: Session, tenant_id: int):
+    return require_system_user_core_features(
+        session,
+        tenant_id,
+        service_name="监听AI服务",
+        missing_message="no tenant app user available for AI usage ledger",
     )
 
 
@@ -255,6 +235,14 @@ def trigger_listener_auto_reply(session: Session, group: TgGroup) -> int:
     )
     if not unprocessed or not group.listener_auto_reply_enabled:
         return 0
+    try:
+        user = _system_user(session, group.tenant_id)
+    except ValueError as exc:
+        if str(exc) != SUBSCRIPTION_INACTIVE_DETAIL:
+            raise
+        group.listener_last_error = SUBSCRIPTION_INACTIVE_DETAIL
+        session.commit()
+        return 0
     account_ids = _send_account_ids(session, group)
     if not account_ids:
         group.listener_last_error = "没有可用于自动续聊的发送账号"
@@ -299,7 +287,6 @@ def trigger_listener_auto_reply(session: Session, group: TgGroup) -> int:
             for item in reversed(contexts)
         ],
     )
-    user = _system_user(session, group.tenant_id)
     drafts = generate_drafts(session, campaign.id, payload, user)
     tasks = approve_all_drafts(session, campaign.id, "监听AI服务")
     with session.no_autoflush:

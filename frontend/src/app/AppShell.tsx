@@ -88,7 +88,7 @@ function AppShell() {
     cancelCampaign,
     dispatchTask, drainQueue, retryTask,
     authorizeSelectedGroup, createArchive, saveGroupPolicy,
-    openArchiveDetail, exportArchive,
+    openArchiveDetail, exportArchive, rerunArchive,
     createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp,
     openTenantEdit, saveTenantQuota,
     createSubscriptionPlan, openSubscriptionPlanEdit, openAdminUserEdit,
@@ -121,6 +121,13 @@ function AppShell() {
   }
   navCandidates.push(['audits', '审计安全', <LockKeyhole size={18} />]);
   const nav = navCandidates.filter(([viewId]) => canSeeMenu(viewId));
+
+  React.useEffect(() => {
+    if (!token || !currentUser || !nav.length) return;
+    if (!nav.some(([viewId]) => viewId === activeView)) {
+      goToView(nav[0][0]);
+    }
+  }, [activeView, currentUser, goToView, nav, token]);
 
   const loginReady = Boolean(loginEmail.trim() && loginPassword && captchaToken && !busy);
   const registerReady = Boolean(registerForm.name.trim() && registerForm.email.trim() && registerForm.password && captchaToken && !busy);
@@ -361,7 +368,7 @@ function AppShell() {
           <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => goToView('systemConfig')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} />
         )}
         {activeView === 'groupManagement' && (
-          <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateCampaign={openCampaignModal} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onOpenConfirm={openConfirm} />
+          <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateCampaign={openCampaignModal} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} />
         )}
         {activeView === 'taskManagement' && (
           <CampaignsView campaigns={campaigns} tasks={tasks} drafts={drafts} groups={groups} accounts={accounts} taskManagementTab={taskManagementTab} setTaskManagementTab={setTaskManagementTab} taskSummary={taskSummary} selectedCampaign={selectedCampaign ?? undefined} selectedCampaignDrafts={selectedCampaignDrafts} selectedCampaignTasks={selectedCampaignTasks} taskStatusFilter={taskStatusFilter} setTaskStatusFilter={setTaskStatusFilter} setSelectedCampaignId={setSelectedCampaignId} onCreateCampaign={() => openCampaignModal()} onCancelCampaign={cancelCampaign} onApproveDraft={approveDraft} onApproveAllDrafts={approveAllDrafts} onDispatchTask={dispatchTask} onRetryTask={retryTask} onDrainQueue={drainQueue} onOpenConfirm={openConfirm} groupName={groupName} accountName={accountName} />

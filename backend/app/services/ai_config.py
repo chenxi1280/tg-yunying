@@ -378,9 +378,9 @@ def deduct_ai_usage_tokens(session: Session, current_user: CurrentUser, usage_le
     user = session.get(AppUser, current_user.id)
     if not user or not user.is_active:
         raise ValueError("user not found")
-    consumed = min(user.token_balance, usage_ledger.total_tokens)
-    if consumed <= 0:
+    if user.token_balance < usage_ledger.total_tokens:
         raise ValueError("Token 余额不足，请先充值或兑换卡密后再使用 AI")
+    consumed = usage_ledger.total_tokens
     user.token_balance -= consumed
     if usage_ledger.campaign_id:
         campaign = session.get(Campaign, usage_ledger.campaign_id)

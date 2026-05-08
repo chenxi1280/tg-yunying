@@ -7,12 +7,10 @@ import random
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser
 from app.models import (
     AccountStatus,
     AiDraft,
     AiUsageLedger,
-    AppUser,
     Campaign,
     CampaignProcessedMessage,
     GroupAuthStatus,
@@ -24,7 +22,7 @@ from app.models import (
 )
 from app.schemas import GenerateDraftsRequest
 
-from ._common import _now, audit
+from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, require_system_user_core_features
 from .ai_config import get_tenant_ai_setting
 from .campaigns import (
     build_message_task_from_draft,
@@ -72,30 +70,12 @@ def build_participation_plan(
     return plan
 
 
-def _system_user(session: Session, tenant_id: int) -> CurrentUser:
-    user = session.scalar(
-        select(AppUser)
-        .where((AppUser.tenant_id == tenant_id) | (AppUser.tenant_id.is_(None)))
-        .order_by(AppUser.tenant_id.is_(None), AppUser.id.asc())
-    )
-    if not user:
-        raise ValueError("no app user available for continuous campaign runner")
-    return CurrentUser(
-        id=user.id,
-        tenant_id=tenant_id,
-        name="持续任务服务",
-        role=user.role,
-        email=user.email,
-        phone=user.phone,
-        tenant_name=None,
-        subscription_status=user.subscription_status,
-        subscription_started_at=user.subscription_started_at,
-        subscription_expires_at=user.subscription_expires_at,
-        subscription_days_remaining=0,
-        can_use_core_features=True,
-        token_balance=user.token_balance,
-        token_quota_total=user.token_quota_total,
-        menu_permissions=[],
+def _system_user(session: Session, tenant_id: int):
+    return require_system_user_core_features(
+        session,
+        tenant_id,
+        service_name="持续任务服务",
+        missing_message="no tenant app user available for continuous campaign runner",
     )
 
 
@@ -138,6 +118,12 @@ def _stop_if_needed(campaign: Campaign) -> bool:
     return False
 
 
+def _pause_for_inactive_subscription(campaign: Campaign) -> None:
+    campaign.status = TaskStatus.PAUSED.value
+    campaign.last_run_at = _now()
+    campaign.last_error = SUBSCRIPTION_INACTIVE_DETAIL
+
+
 def _due_for_run(campaign: Campaign) -> bool:
     if campaign.status != TaskStatus.QUEUED.value or campaign.execution_mode not in CONTINUOUS_MODES:
         return False
@@ -151,6 +137,7 @@ def _record_processed_message(
     *,
     campaign: Campaign,
     message: GroupContextMessage,
+    target_group_id: int,
     action: str,
     reason: str,
     content: str,
@@ -160,6 +147,7 @@ def _record_processed_message(
             CampaignProcessedMessage.campaign_id == campaign.id,
             CampaignProcessedMessage.source_group_id == message.group_id,
             CampaignProcessedMessage.source_remote_message_id == message.remote_message_id,
+            CampaignProcessedMessage.target_group_id == target_group_id,
         )
     )
     if existing:
@@ -170,6 +158,7 @@ def _record_processed_message(
             campaign_id=campaign.id,
             source_group_id=message.group_id,
             source_remote_message_id=message.remote_message_id,
+            target_group_id=target_group_id,
             action=action,
             reason=reason,
             content=content[:2000],
@@ -177,18 +166,24 @@ def _record_processed_message(
     )
 
 
-def _unprocessed_context_messages(session: Session, campaign: Campaign, source_group: TgGroup) -> list[GroupContextMessage]:
+def _is_processed_for_target(session: Session, campaign: Campaign, message: GroupContextMessage, target_group_id: int) -> bool:
+    return bool(
+        session.scalar(
+            select(CampaignProcessedMessage.id).where(
+                CampaignProcessedMessage.campaign_id == campaign.id,
+                CampaignProcessedMessage.source_group_id == message.group_id,
+                CampaignProcessedMessage.source_remote_message_id == message.remote_message_id,
+                CampaignProcessedMessage.target_group_id == target_group_id,
+            )
+        )
+    )
+
+
+def _unprocessed_context_messages(session: Session, campaign: Campaign, source_group: TgGroup, target_group_ids: list[int]) -> list[GroupContextMessage]:
     recent = recent_context_messages(session, source_group, source_group.listener_context_limit)
     rows: list[GroupContextMessage] = []
     for message in reversed(recent):
-        processed = session.scalar(
-            select(CampaignProcessedMessage.id).where(
-                CampaignProcessedMessage.campaign_id == campaign.id,
-                CampaignProcessedMessage.source_group_id == source_group.id,
-                CampaignProcessedMessage.source_remote_message_id == message.remote_message_id,
-            )
-        )
-        if not processed:
+        if any(not _is_processed_for_target(session, campaign, message, target_group_id) for target_group_id in target_group_ids):
             rows.append(message)
     return rows
 
@@ -206,10 +201,17 @@ def run_ai_activity_campaign(session: Session, campaign: Campaign) -> int:
     if _stop_if_needed(campaign):
         session.commit()
         return 0
+    try:
+        user = _system_user(session, campaign.tenant_id)
+    except ValueError as exc:
+        if str(exc) != SUBSCRIPTION_INACTIVE_DETAIL:
+            raise
+        _pause_for_inactive_subscription(campaign)
+        session.commit()
+        return 0
 
     queued = 0
     task_index = 0
-    user = _system_user(session, campaign.tenant_id)
     tenant_setting = get_tenant_ai_setting(session, campaign.tenant_id)
     for group_id in campaign_target_group_ids(campaign):
         group = session.get(TgGroup, group_id)
@@ -245,7 +247,7 @@ def run_ai_activity_campaign(session: Session, campaign: Campaign) -> int:
                 for item in reversed(contexts)
             ],
         )
-        drafts = generate_drafts(session, campaign.id, payload, user)
+        drafts = generate_drafts(session, campaign.id, payload, user, auto_commit=False)
         ensure_task_quota_available(session, campaign.tenant_id, len(drafts))
         for index, draft in enumerate(drafts):
             target_group = session.get(TgGroup, draft.group_id)
@@ -290,6 +292,14 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
     if _stop_if_needed(campaign):
         session.commit()
         return 0
+    try:
+        _system_user(session, campaign.tenant_id)
+    except ValueError as exc:
+        if str(exc) != SUBSCRIPTION_INACTIVE_DETAIL:
+            raise
+        _pause_for_inactive_subscription(campaign)
+        session.commit()
+        return 0
 
     queued = 0
     task_index = 0
@@ -300,17 +310,18 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
         if not source_group or source_group.tenant_id != campaign.tenant_id:
             continue
         collect_group_context(session, source_group)
-        for message in _unprocessed_context_messages(session, campaign, source_group):
-            source_action = "filtered"
-            source_reason = ""
-            queued_for_message = 0
+        for message in _unprocessed_context_messages(session, campaign, source_group, target_group_ids):
             for target_group_id in target_group_ids:
+                if _is_processed_for_target(session, campaign, message, target_group_id):
+                    continue
+                target_action = "filtered"
+                target_reason = ""
                 target_group = session.get(TgGroup, target_group_id)
                 if not target_group or target_group.tenant_id != campaign.tenant_id:
                     continue
                 selected_ids = _active_selected_account_ids(session, campaign, target_group.id)
                 if not selected_ids:
-                    source_reason = "目标群没有可用发送账号"
+                    target_reason = "目标群没有可用发送账号"
                     continue
                 filtered = filter_outbound_content(
                     session,
@@ -321,8 +332,17 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
                     reject_replies=True,
                 )
                 if not filtered.ok:
-                    source_reason = filtered.reason
+                    target_reason = filtered.reason
                     campaign.filtered_count += 1
+                    _record_processed_message(
+                        session,
+                        campaign=campaign,
+                        message=message,
+                        target_group_id=target_group.id,
+                        action=target_action,
+                        reason=target_reason,
+                        content=message.content,
+                    )
                     continue
                 ensure_task_quota_available(session, campaign.tenant_id)
                 draft = AiDraft(
@@ -344,19 +364,16 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
                 session.flush()
                 build_message_task_from_draft(session, draft, "监听转发任务", task_index, target_group.id)
                 queued += 1
-                queued_for_message += 1
                 task_index += 1
-            if queued_for_message:
-                source_action = "queued"
-                source_reason = f"queued={queued_for_message}"
-            _record_processed_message(
-                session,
-                campaign=campaign,
-                message=message,
-                action=source_action,
-                reason=source_reason,
-                content=message.content,
-            )
+                _record_processed_message(
+                    session,
+                    campaign=campaign,
+                    message=message,
+                    target_group_id=target_group.id,
+                    action="queued",
+                    reason="queued=1",
+                    content=message.content,
+                )
     campaign.last_run_at = _now()
     campaign.status = TaskStatus.QUEUED.value
     campaign.last_error = ""

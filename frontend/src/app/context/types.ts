@@ -370,6 +370,7 @@ export interface AppState {
   saveGroupPolicy: () => Promise<void>;
   openArchiveDetail: (archive: ArchiveItem) => Promise<void>;
   exportArchive: (archive: ArchiveItem) => Promise<void>;
+  rerunArchive: (archive: ArchiveItem) => Promise<void>;
   createDeveloperApp: () => Promise<void>;
   openDeveloperAppEdit: (app: DeveloperApp) => void;
   toggleDeveloperApp: (app: DeveloperApp) => Promise<void>;
