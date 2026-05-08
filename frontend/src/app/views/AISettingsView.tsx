@@ -22,6 +22,7 @@ interface Props {
   onCreateMaterial: () => void;
   onCreateKeywordRule: () => void;
   onEditKeywordRule: (rule: ContentKeywordRule) => void;
+  isActionPending: (key: string) => boolean;
 }
 
 export default function AISettingsView({
@@ -42,6 +43,7 @@ export default function AISettingsView({
   onCreateMaterial,
   onCreateKeywordRule,
   onEditKeywordRule,
+  isActionPending,
 }: Props) {
   return (
     <section className="view-grid">
@@ -69,8 +71,8 @@ export default function AISettingsView({
               {provider.last_error && <Typography.Paragraph type={provider.health_status === '健康' ? 'warning' : 'danger'}>{provider.last_error}</Typography.Paragraph>}
               <Space wrap>
                 {currentUserRole === '系统管理员' && <Button size="small" onClick={() => onEditProvider(provider)}>编辑</Button>}
-                <Button size="small" onClick={() => onCheckProvider(provider)}>检查</Button>
-                {currentUserRole === '系统管理员' && <Button size="small" danger={provider.is_active} onClick={() => onToggleProvider(provider)}>{provider.is_active ? '禁用' : '启用'}</Button>}
+                <Button size="small" loading={isActionPending(`ai-provider:${provider.id}:check`)} onClick={() => onCheckProvider(provider)}>检查</Button>
+                {currentUserRole === '系统管理员' && <Button size="small" danger={provider.is_active} loading={isActionPending(`ai-provider:${provider.id}:toggle`)} onClick={() => onToggleProvider(provider)}>{provider.is_active ? '禁用' : '启用'}</Button>}
               </Space>
             </Card>
           ))}

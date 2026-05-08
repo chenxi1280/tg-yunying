@@ -63,7 +63,7 @@ const DEFAULT_ACTIVATION_CODE_FILTERS: ActivationCodeFilters = { search: '', sta
 const DEFAULT_ACTIVATION_CODE_PAGE: ActivationCodePage = { items: [], total: 0, page: 1, page_size: 20 };
 const EMPTY_ACCOUNT_LOGIN_FORM: AccountLoginForm = {
   account: null,
-  step: 'code',
+  step: 'method',
   method: 'code',
   code: '',
   password_2fa: '',
@@ -280,6 +280,7 @@ export function AppProvider({ children }: AppProviderProps) {
   const [modal, setModal] = useState<ModalState>(null);
   const [resultDialog, setResultDialog] = useState<ResultDialogState>(null);
   const [busy, setBusy] = useState('');
+  const [pendingActionKeys, setPendingActionKeys] = useState<string[]>([]);
   const [notice, setNotice] = useState('');
   const [directMessageForm, setDirectMessageForm] = useState({
     target_peer_id: '',
@@ -325,6 +326,25 @@ export function AppProvider({ children }: AppProviderProps) {
     sent: tasks.filter((task) => task.status === '已发送').length,
     failed: tasks.filter((task) => task.status === '失败').length,
   }), [campaigns, drafts, tasks]);
+
+  const isActionPending = React.useCallback((key: string) => pendingActionKeys.includes(key), [pendingActionKeys]);
+
+  const runWithLoading = React.useCallback(async <T,>(key: string, busyLabel: string, task: () => Promise<T>): Promise<T> => {
+    setPendingActionKeys((current) => [...current, key]);
+    setBusy(busyLabel);
+    try {
+      return await task();
+    } finally {
+      setPendingActionKeys((current) => {
+        const index = current.indexOf(key);
+        if (index < 0) return current;
+        const next = [...current];
+        next.splice(index, 1);
+        return next;
+      });
+      setBusy('');
+    }
+  }, []);
 
   useEffect(() => {
     const nextView = viewFromPath(location.pathname);
@@ -646,7 +666,6 @@ export function AppProvider({ children }: AppProviderProps) {
       if (accountDetail?.account.id === account.id) await refreshAccountDetail();
     } catch (error) {
       const message = errorMessage(error);
-      setNotice(message);
       setAccountLoginForm((current) => ({ ...current, error: message }));
     } finally {
       setBusy('');
@@ -670,7 +689,7 @@ export function AppProvider({ children }: AppProviderProps) {
     setAccountDetailTab('登录同步');
     setAccountLoginForm(EMPTY_ACCOUNT_LOGIN_FORM);
     setModal({ type: 'accountDetail' });
-    setNotice(`${updated.display_name} 已完成登录，后台会继续同步群聊、联系人和验证码。`);
+    setNotice(`${updated.display_name} 已完成登录，并已同步资料、健康、群聊、联系人和验证码。`);
   }
 
   async function createAccount() {
@@ -689,6 +708,25 @@ export function AppProvider({ children }: AppProviderProps) {
       setAccountCreateForm({ display_name: '新托管账号', username: '', phone_number: '', pool_id: '', login_method: 'code' });
       await refresh();
       await startOrResumeAccountLogin(created, accountCreateForm.login_method, accountCreateForm.login_method === 'code');
+    } catch (error) {
+      handleActionError(error);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function deleteAccount(account: Account) {
+    setBusy('移除账号');
+    try {
+      const removed = await api<Account>(`/tg-accounts/${account.id}`, { method: 'DELETE' });
+      if (accountLoginForm.account?.id === removed.id) {
+        setAccountLoginForm(EMPTY_ACCOUNT_LOGIN_FORM);
+      }
+      if (accountDetail?.account.id === removed.id) {
+        setAccountDetail(null);
+      }
+      await refresh();
+      setNotice(`${removed.display_name} 已移除，历史任务和归档记录仍会保留。`);
     } catch (error) {
       handleActionError(error);
     } finally {
@@ -797,18 +835,19 @@ export function AppProvider({ children }: AppProviderProps) {
   async function syncAccountContacts() {
     if (!accountDetail) return;
     setBusy('同步联系人');
-    const contacts = await api<Contact[]>(`/tg-accounts/${accountDetail.account.id}/contacts/sync`, { method: 'POST' });
-    setAccountDetail({ ...accountDetail, contacts, stats: { ...accountDetail.stats, contacts: contacts.length } });
-    showResult('联系人已同步', `已同步 ${contacts.length} 个联系人和群友候选，可以直接选中对象创建平台发送任务。`);
+    await api<Contact[]>(`/tg-accounts/${accountDetail.account.id}/contacts/sync`, { method: 'POST' });
+    await refreshAccountDetail();
+    showResult('联系人已同步', '已刷新联系人和群友候选，可以直接选中对象创建平台发送任务。');
     setBusy('');
   }
 
   async function queueAccountSyncNow() {
     if (!accountDetail) return;
-    setBusy('创建同步任务');
+    setBusy('同步账号数据');
     await api<AccountSyncRecord[]>(`/tg-accounts/${accountDetail.account.id}/sync-now`, { method: 'POST' });
-    showResult('同步任务已创建', '群聊、云联系人和 TG 官方验证码会由后台任务同步，完成后在同步记录中查看。');
     await refreshAccountDetail();
+    await refresh();
+    showResult('同步完成', '已同步资料、健康、群聊、云联系人和 TG 官方验证码。');
     setBusy('');
   }
 
@@ -1065,6 +1104,7 @@ export function AppProvider({ children }: AppProviderProps) {
       return;
     }
     setBusy('登录');
+    setNotice('');
     const response = await fetch(`${API_BASE}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1080,6 +1120,7 @@ export function AppProvider({ children }: AppProviderProps) {
     localStorage.setItem('tg_ops_token', data.access_token);
     setToken(data.access_token);
     setCurrentUser(data.user);
+    setNotice('');
     setBusy('');
   }
 
@@ -1089,6 +1130,7 @@ export function AppProvider({ children }: AppProviderProps) {
       return;
     }
     setBusy('注册');
+    setNotice('');
     try {
       const response = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
@@ -1198,7 +1240,18 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   async function verifyAccount(account: Account) {
-    await startOrResumeAccountLogin(account, account.status === '等待扫码' ? 'qr' : 'code');
+    setModal({ type: 'accountLogin' });
+    setAccountLoginForm({
+      ...EMPTY_ACCOUNT_LOGIN_FORM,
+      account,
+      method: account.status === '等待扫码' ? 'qr' : 'code',
+      step: account.status === '等待2FA' ? 'password' : 'method',
+    });
+  }
+
+  async function chooseAccountLoginMethod(method: 'code' | 'qr') {
+    if (!accountLoginForm.account) return;
+    await startOrResumeAccountLogin(accountLoginForm.account, method, false);
   }
 
   async function submitAccountLoginCode() {
@@ -1212,7 +1265,6 @@ export function AppProvider({ children }: AppProviderProps) {
       await completeAccountLogin(updated);
     } catch (error) {
       const message = errorMessage(error);
-      setNotice(message);
       setAccountLoginForm((current) => ({ ...current, error: message }));
     } finally {
       setBusy('');
@@ -1230,7 +1282,6 @@ export function AppProvider({ children }: AppProviderProps) {
       await completeAccountLogin(updated);
     } catch (error) {
       const message = errorMessage(error);
-      setNotice(message);
       setAccountLoginForm((current) => ({ ...current, error: message }));
     } finally {
       setBusy('');
@@ -1250,7 +1301,6 @@ export function AppProvider({ children }: AppProviderProps) {
       await completeAccountLogin(updated);
     } catch (error) {
       const message = errorMessage(error);
-      setNotice(message);
       setAccountLoginForm((current) => ({ ...current, error: message }));
     } finally {
       setBusy('');
@@ -1262,13 +1312,17 @@ export function AppProvider({ children }: AppProviderProps) {
     const result = await api<Account>(`/tg-accounts/${account.id}/health-check`, { method: 'POST' });
     showResult('健康检查完成', `${account.display_name}：${result.status}，健康分 ${result.health_score}`);
     await refresh();
+    if (accountDetail?.account.id === account.id) await refreshAccountDetail();
+    if (accountPoolDetail) await refreshAccountPoolDetail();
   }
 
   async function syncAccountGroups(account: Account) {
-    setBusy('同步群聊');
-    const synced = await api<Group[]>(`/tg-accounts/${account.id}/sync-groups`, { method: 'POST' });
-    showResult('群聊同步完成', `${account.display_name} 已同步 ${synced.length} 个群聊`);
+    setBusy('同步账号数据');
+    await api<AccountSyncRecord[]>(`/tg-accounts/${account.id}/sync-now`, { method: 'POST' });
+    showResult('同步完成', `${account.display_name} 已同步资料、健康、群聊、云联系人和验证码。`);
     await refresh();
+    if (accountDetail?.account.id === account.id) await refreshAccountDetail();
+    if (accountPoolDetail) await refreshAccountPoolDetail();
   }
 
   async function createCampaignAndDrafts() {
@@ -2116,6 +2170,8 @@ export function AppProvider({ children }: AppProviderProps) {
     setResultDialog,
     busy,
     setBusy,
+    pendingActionKeys,
+    isActionPending,
     notice,
     setNotice,
 
@@ -2133,105 +2189,107 @@ export function AppProvider({ children }: AppProviderProps) {
     taskSummary,
 
     // Handler functions
-    refresh,
+    refresh: () => runWithLoading('app:refresh', '刷新数据', refresh),
     showResult,
     closeModal,
     openConfirm,
     openCampaignModal,
     openAccountCreate,
-    openAccountDetail,
-    openAccountPoolDetail,
-    refreshAccountPoolDetail,
-    createAccount,
-    createAccountPool,
-    moveCurrentAccountPool,
-    createClonePlan,
-    confirmClonePlan,
-    retryCloneItem,
-    confirmVerificationTask,
-    dismissVerificationTask,
-    refreshAccountDetail,
-    syncAccountContacts,
-    queueAccountSyncNow,
+    openAccountDetail: (account) => runWithLoading(`account:${account.id}:detail`, '读取账号详情', () => openAccountDetail(account)),
+    openAccountPoolDetail: (pool) => runWithLoading(`account-pool:${pool.id}:detail`, '读取账号分组详情', () => openAccountPoolDetail(pool)),
+    refreshAccountPoolDetail: () => runWithLoading(`account-pool:${accountPoolDetail?.pool.id ?? 'current'}:refresh`, '刷新账号分组', refreshAccountPoolDetail),
+    createAccount: () => runWithLoading('modal:account:create', '添加账号', createAccount),
+    createAccountPool: () => runWithLoading('modal:account-pool:create', '新增账号分组', createAccountPool),
+    moveCurrentAccountPool: (poolId) => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:move-pool`, '移动账号分组', () => moveCurrentAccountPool(poolId)),
+    createClonePlan: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:clone-plan:create`, '创建克隆计划', createClonePlan),
+    confirmClonePlan: (plan) => runWithLoading(`clone-plan:${plan.id}:confirm`, '执行克隆计划', () => confirmClonePlan(plan)),
+    retryCloneItem: (item) => runWithLoading(`clone-item:${item.id}:retry`, '重试克隆项', () => retryCloneItem(item)),
+    confirmVerificationTask: (task) => runWithLoading(`verification:${task.id}:confirm`, '处理验证辅助', () => confirmVerificationTask(task)),
+    dismissVerificationTask: (task) => runWithLoading(`verification:${task.id}:dismiss`, '忽略验证辅助', () => dismissVerificationTask(task)),
+    refreshAccountDetail: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:detail-refresh`, '刷新账号详情', refreshAccountDetail),
+    syncAccountContacts: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:contacts`, '同步联系人', syncAccountContacts),
+    queueAccountSyncNow: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:sync`, '同步账号数据', queueAccountSyncNow),
     startDirectMessageToContact,
-    openGroupDetail,
-    loadCampaignDetail,
+    openGroupDetail: (group) => runWithLoading(`group:${group.id}:detail`, '读取群详情', () => openGroupDetail(group)),
+    loadCampaignDetail: (campaign) => runWithLoading(`campaign:${campaign.id}:detail`, '读取任务详情', () => loadCampaignDetail(campaign)),
     openDraftEdit,
-    saveDraftEdit,
+    saveDraftEdit: () => runWithLoading(`draft:${draftEditTarget?.id ?? 'current'}:save`, '保存草稿', saveDraftEdit),
     avatarUrl,
     openAccountProfileEdit,
-    pollVerificationCodes,
+    pollVerificationCodes: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:codes`, '同步验证码', pollVerificationCodes),
     toggleTargetGroup,
     toggleSourceGroup,
     recommendAccounts,
     toggleRecommendedAccount,
     setGroupAccountsSelected,
-    goCampaignAccountStep,
+    goCampaignAccountStep: () => runWithLoading('campaign:recommend', '推荐账号', goCampaignAccountStep),
     goCampaignContentStep,
-    createDirectMessageTask,
-    saveAccountProfile,
-    retryAccountProfileSync,
-    login,
-    register,
-    changePassword,
-    submitRedeemCode,
-    loadActivationCodes,
-    createActivationCodes,
-    disableActivationCode,
+    createDirectMessageTask: () => runWithLoading('direct-message:create', '创建私发任务', createDirectMessageTask),
+    saveAccountProfile: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:profile:save`, '保存账号资料', saveAccountProfile),
+    retryAccountProfileSync: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:profile-sync`, '重试资料同步', retryAccountProfileSync),
+    login: () => runWithLoading('auth:login', '登录', login),
+    register: () => runWithLoading('auth:register', '注册', register),
+    changePassword: () => runWithLoading('modal:password:change', '修改密码', changePassword),
+    submitRedeemCode: () => runWithLoading('subscription:redeem', '兑换卡密', submitRedeemCode),
+    loadActivationCodes: (filters, page, pageSize) => runWithLoading('activation-codes:load', '读取卡密', () => loadActivationCodes(filters, page, pageSize)),
+    createActivationCodes: () => runWithLoading('activation-codes:create', '生成卡密', createActivationCodes),
+    disableActivationCode: (code) => runWithLoading(`activation-code:${code.id}:disable`, '停用卡密', () => disableActivationCode(code)),
     logout,
     runLogin,
     verifyAccount,
-    submitAccountLoginCode,
-    submitAccountLoginPassword,
-    resendAccountLoginCode,
-    checkAccountQrLogin,
-    healthCheck,
-    syncAccountGroups,
-    createCampaignAndDrafts,
-    cancelCampaign,
-    approveDraft,
-    rejectDraft,
-    approveAllDrafts,
-    cancelTask,
-    dispatchTask,
-    drainQueue,
-    retryTask,
-    authorizeSelectedGroup,
-    createArchive,
-    saveGroupPolicy,
-    openArchiveDetail,
-    exportArchive,
-    rerunArchive,
-    createDeveloperApp,
+    chooseAccountLoginMethod: (method) => runWithLoading(`account-login:${accountLoginForm.account?.id ?? 'current'}:${method}`, method === 'qr' ? '启动扫码登录' : '启动登录', () => chooseAccountLoginMethod(method)),
+    submitAccountLoginCode: () => runWithLoading(`account-login:${accountLoginForm.account?.id ?? 'current'}:code`, '验证登录', submitAccountLoginCode),
+    submitAccountLoginPassword: () => runWithLoading(`account-login:${accountLoginForm.account?.id ?? 'current'}:password`, '验证二步密码', submitAccountLoginPassword),
+    resendAccountLoginCode: () => runWithLoading(`account-login:${accountLoginForm.account?.id ?? 'current'}:resend`, '重新发送验证码', resendAccountLoginCode),
+    checkAccountQrLogin: () => runWithLoading(`account-login:${accountLoginForm.account?.id ?? 'current'}:qr-check`, '检查扫码结果', checkAccountQrLogin),
+    deleteAccount: (account) => runWithLoading(`account:${account.id}:delete`, '移除账号', () => deleteAccount(account)),
+    healthCheck: (account) => runWithLoading(`account:${account.id}:health`, '健康检查', () => healthCheck(account)),
+    syncAccountGroups: (account) => runWithLoading(`account:${account.id}:sync`, '同步账号数据', () => syncAccountGroups(account)),
+    createCampaignAndDrafts: () => runWithLoading('campaign:create', '创建任务', createCampaignAndDrafts),
+    cancelCampaign: (campaign) => runWithLoading(`campaign:${campaign.id}:cancel`, '取消任务', () => cancelCampaign(campaign)),
+    approveDraft: (draft) => runWithLoading(`draft:${draft.id}:approve`, '审核草稿', () => approveDraft(draft)),
+    rejectDraft: (draft) => runWithLoading(`draft:${draft.id}:reject`, '驳回草稿', () => rejectDraft(draft)),
+    approveAllDrafts: () => runWithLoading(`campaign:${selectedCampaign?.id ?? 'current'}:approve-all`, '批量审核', approveAllDrafts),
+    cancelTask: (task) => runWithLoading(`task:${task.id}:cancel`, '取消任务', () => cancelTask(task)),
+    dispatchTask: (task) => runWithLoading(`task:${task.id}:dispatch`, '派发消息', () => dispatchTask(task)),
+    drainQueue: () => runWithLoading('worker:drain', '处理到期发送', drainQueue),
+    retryTask: (task) => runWithLoading(`task:${task.id}:retry`, '重试任务', () => retryTask(task)),
+    authorizeSelectedGroup: (status) => runWithLoading(`group:${selectedGroup?.id ?? 'current'}:authorize:${status}`, '更新授权', () => authorizeSelectedGroup(status)),
+    createArchive: () => runWithLoading(`group:${selectedGroup?.id ?? 'current'}:archive:create`, '创建归档', createArchive),
+    saveGroupPolicy: () => runWithLoading(`group:${selectedGroup?.id ?? 'current'}:policy:save`, '保存群配置', saveGroupPolicy),
+    openArchiveDetail: (archive) => runWithLoading(`archive:${archive.id}:detail`, '读取归档', () => openArchiveDetail(archive)),
+    exportArchive: (archive) => runWithLoading(`archive:${archive.id}:export`, '导出归档', () => exportArchive(archive)),
+    rerunArchive: (archive) => runWithLoading(`archive:${archive.id}:rerun`, '重跑归档', () => rerunArchive(archive)),
+    createDeveloperApp: () => runWithLoading('developer-app:save', developerAppForm.id !== null ? '保存开发者应用' : '新增开发者应用', createDeveloperApp),
     openDeveloperAppEdit,
-    toggleDeveloperApp,
-    checkDeveloperApp,
+    toggleDeveloperApp: (app) => runWithLoading(`developer-app:${app.id}:toggle`, app.is_active ? '禁用开发者应用' : '启用开发者应用', () => toggleDeveloperApp(app)),
+    checkDeveloperApp: (app) => runWithLoading(`developer-app:${app.id}:check`, '检查开发者应用', () => checkDeveloperApp(app)),
     openTenantEdit,
-    saveTenantQuota,
-    createSubscriptionPlan,
+    saveTenantQuota: () => runWithLoading(`tenant:${tenantForm.id ?? 'current'}:save`, '保存租户配额', saveTenantQuota),
+    createSubscriptionPlan: () => runWithLoading('subscription-plan:save', subscriptionPlanForm.id ? '保存套餐' : '新增套餐', createSubscriptionPlan),
     openSubscriptionPlanEdit,
-    saveSubscriptionPlan,
+    saveSubscriptionPlan: () => runWithLoading('subscription-plan:save', subscriptionPlanForm.id ? '保存套餐' : '新增套餐', saveSubscriptionPlan),
     openAdminUserEdit,
-    saveAdminUser,
-    resetAdminUserPassword,
-    adjustAdminUserTokens,
+    saveAdminUser: () => runWithLoading(`admin-user:${adminUserForm.id ?? 'current'}:save`, '保存用户', saveAdminUser),
+    resetAdminUserPassword: (user, newPassword) => runWithLoading(`admin-user:${user.id}:reset-password`, '重置密码', () => resetAdminUserPassword(user, newPassword)),
+    adjustAdminUserTokens: (user) => runWithLoading(`admin-user:${user.id}:adjust-tokens`, '调整 Token', () => adjustAdminUserTokens(user)),
     loadUserTokenLedgers,
-    createAiProvider,
+    createAiProvider: () => runWithLoading('ai-provider:save', aiProviderForm.id !== null ? '保存 AI 供应商' : '新增 AI 供应商', createAiProvider),
     openAiProviderEdit,
-    toggleAiProvider,
-    checkAiProvider,
-    saveTenantAiSetting,
-    saveSchedulingSetting,
-    createPromptTemplate,
-    createMaterial,
-    createContentKeywordRule,
+    toggleAiProvider: (provider) => runWithLoading(`ai-provider:${provider.id}:toggle`, provider.is_active ? '禁用 AI 供应商' : '启用 AI 供应商', () => toggleAiProvider(provider)),
+    checkAiProvider: (provider) => runWithLoading(`ai-provider:${provider.id}:check`, '检查 AI 供应商', () => checkAiProvider(provider)),
+    saveTenantAiSetting: () => runWithLoading('tenant-ai:save', '保存 AI 配置', saveTenantAiSetting),
+    saveSchedulingSetting: () => runWithLoading('scheduling:save', '保存发送节奏', saveSchedulingSetting),
+    createPromptTemplate: () => runWithLoading('prompt-template:create', '新增提示词', createPromptTemplate),
+    createMaterial: () => runWithLoading('material:create', '新增素材', createMaterial),
+    createContentKeywordRule: () => runWithLoading('keyword-rule:create', '新增关键词', createContentKeywordRule),
     openContentKeywordRuleEdit,
-    saveContentKeywordRule,
+    saveContentKeywordRule: () => runWithLoading(`keyword-rule:${keywordRuleForm.id ?? 'create'}:save`, keywordRuleForm.id ? '保存关键词' : '新增关键词', saveContentKeywordRule),
     toggleMaterial,
     accountName,
     groupName,
     choosePoolSendAccount,
-  }), [token, currentUser, authMode, loginEmail, loginPassword, registerForm, changePasswordForm, captchaChallenge, captchaInput, captchaToken, captchaError, captchaLoading, activeView, runtime, overview, accountPools, selectedPoolId, accounts, developerApps, tenants, subscriptionPlans, subscriptionPlanForm, adminUsers, selectedAdminUserId, selectedUserTokenLedgers, adminUserForm, tokenAdjustmentForm, activationCodes, activationCodePage, activationCodeFilters, usageLedgers, usageSummary, redeemCode, activationBatch, aiProviders, promptTemplates, tenantAiSetting, schedulingSetting, materials, contentKeywordRules, groups, campaigns, drafts, tasks, selectedCampaignId, taskManagementTab, archives, archiveDetail, audits, auditFilters, accountDetail, accountContacts, selectedDirectContact, accountDetailTab, accountPoolDetail, poolDirectAccountId, returnAfterVerification, groupDetail, campaignDetail, draftEditTarget, draftEditForm, accountCreateForm, accountPoolForm, cloneForm, loginAfterCreate, accountLoginForm, profileForm, avatarFile, selectedGroupId, campaignStep, campaignMode, selectedTargetGroupIds, selectedSourceGroupIds, recommendedAccounts, selectedAccountsByGroup, topic, sendWindow, intensity, draftCount, tone, selectedAiProviderId, selectedMaterialIds, jitterMinSeconds, jitterMaxSeconds, batchIntervalSeconds, respectSendWindow, campaignEndsAt, maxAiTokens, runIntervalSeconds, participationMinRatio, participationMaxRatio, maxMessagesPerAccount, maxDraftsPerBatch, taskStatusFilter, groupPolicy, developerAppForm, tenantForm, aiProviderForm, promptTemplateForm, materialForm, keywordRuleForm, modal, resultDialog, busy, notice, directMessageForm, selectedPool, selectedGroup, selectedCampaign, selectedCampaignDrafts, selectedCampaignTasks, targetGroupsMissingAccounts, taskSummary, refresh, showResult, closeModal, openConfirm, openCampaignModal, openAccountCreate, openAccountDetail, openAccountPoolDetail, refreshAccountPoolDetail, createAccount, createAccountPool, moveCurrentAccountPool, createClonePlan, confirmClonePlan, retryCloneItem, confirmVerificationTask, dismissVerificationTask, refreshAccountDetail, syncAccountContacts, queueAccountSyncNow, startDirectMessageToContact, openGroupDetail, loadCampaignDetail, openDraftEdit, saveDraftEdit, avatarUrl, openAccountProfileEdit, pollVerificationCodes, toggleTargetGroup, toggleSourceGroup, recommendAccounts, toggleRecommendedAccount, setGroupAccountsSelected, goCampaignAccountStep, goCampaignContentStep, createDirectMessageTask, saveAccountProfile, retryAccountProfileSync, login, register, changePassword, submitRedeemCode, loadActivationCodes, createActivationCodes, disableActivationCode, logout, runLogin, verifyAccount, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, checkAccountQrLogin, healthCheck, syncAccountGroups, createCampaignAndDrafts, cancelCampaign, approveDraft, rejectDraft, approveAllDrafts, cancelTask, dispatchTask, drainQueue, retryTask, authorizeSelectedGroup, createArchive, saveGroupPolicy, openArchiveDetail, exportArchive, rerunArchive, createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp, openTenantEdit, saveTenantQuota, createSubscriptionPlan, openSubscriptionPlanEdit, saveSubscriptionPlan, openAdminUserEdit, saveAdminUser, resetAdminUserPassword, adjustAdminUserTokens, loadUserTokenLedgers, createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider, createPromptTemplate, saveTenantAiSetting, saveSchedulingSetting, createMaterial, createContentKeywordRule, openContentKeywordRuleEdit, saveContentKeywordRule, toggleMaterial, accountName, groupName, choosePoolSendAccount, refreshCaptchaChallenge, verifyCaptcha]);
+  }), [token, currentUser, authMode, loginEmail, loginPassword, registerForm, changePasswordForm, captchaChallenge, captchaInput, captchaToken, captchaError, captchaLoading, activeView, runtime, overview, accountPools, selectedPoolId, accounts, developerApps, tenants, subscriptionPlans, subscriptionPlanForm, adminUsers, selectedAdminUserId, selectedUserTokenLedgers, adminUserForm, tokenAdjustmentForm, activationCodes, activationCodePage, activationCodeFilters, usageLedgers, usageSummary, redeemCode, activationBatch, aiProviders, promptTemplates, tenantAiSetting, schedulingSetting, materials, contentKeywordRules, groups, campaigns, drafts, tasks, selectedCampaignId, taskManagementTab, archives, archiveDetail, audits, auditFilters, accountDetail, accountContacts, selectedDirectContact, accountDetailTab, accountPoolDetail, poolDirectAccountId, returnAfterVerification, groupDetail, campaignDetail, draftEditTarget, draftEditForm, accountCreateForm, accountPoolForm, cloneForm, loginAfterCreate, accountLoginForm, profileForm, avatarFile, selectedGroupId, campaignStep, campaignMode, selectedTargetGroupIds, selectedSourceGroupIds, recommendedAccounts, selectedAccountsByGroup, topic, sendWindow, intensity, draftCount, tone, selectedAiProviderId, selectedMaterialIds, jitterMinSeconds, jitterMaxSeconds, batchIntervalSeconds, respectSendWindow, campaignEndsAt, maxAiTokens, runIntervalSeconds, participationMinRatio, participationMaxRatio, maxMessagesPerAccount, maxDraftsPerBatch, taskStatusFilter, groupPolicy, developerAppForm, tenantForm, aiProviderForm, promptTemplateForm, materialForm, keywordRuleForm, modal, resultDialog, busy, pendingActionKeys, isActionPending, notice, directMessageForm, selectedPool, selectedGroup, selectedCampaign, selectedCampaignDrafts, selectedCampaignTasks, targetGroupsMissingAccounts, taskSummary, runWithLoading, refresh, showResult, closeModal, openConfirm, openCampaignModal, openAccountCreate, openAccountDetail, openAccountPoolDetail, refreshAccountPoolDetail, createAccount, deleteAccount, createAccountPool, moveCurrentAccountPool, createClonePlan, confirmClonePlan, retryCloneItem, confirmVerificationTask, dismissVerificationTask, refreshAccountDetail, syncAccountContacts, queueAccountSyncNow, startDirectMessageToContact, openGroupDetail, loadCampaignDetail, openDraftEdit, saveDraftEdit, avatarUrl, openAccountProfileEdit, pollVerificationCodes, toggleTargetGroup, toggleSourceGroup, recommendAccounts, toggleRecommendedAccount, setGroupAccountsSelected, goCampaignAccountStep, goCampaignContentStep, createDirectMessageTask, saveAccountProfile, retryAccountProfileSync, login, register, changePassword, submitRedeemCode, loadActivationCodes, createActivationCodes, disableActivationCode, logout, runLogin, verifyAccount, chooseAccountLoginMethod, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, checkAccountQrLogin, healthCheck, syncAccountGroups, createCampaignAndDrafts, cancelCampaign, approveDraft, rejectDraft, approveAllDrafts, cancelTask, dispatchTask, drainQueue, retryTask, authorizeSelectedGroup, createArchive, saveGroupPolicy, openArchiveDetail, exportArchive, rerunArchive, createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp, openTenantEdit, saveTenantQuota, createSubscriptionPlan, openSubscriptionPlanEdit, saveSubscriptionPlan, openAdminUserEdit, saveAdminUser, resetAdminUserPassword, adjustAdminUserTokens, loadUserTokenLedgers, createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider, createPromptTemplate, saveTenantAiSetting, saveSchedulingSetting, createMaterial, createContentKeywordRule, openContentKeywordRuleEdit, saveContentKeywordRule, toggleMaterial, accountName, groupName, choosePoolSendAccount, refreshCaptchaChallenge, verifyCaptcha]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

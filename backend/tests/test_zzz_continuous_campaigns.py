@@ -86,7 +86,7 @@ def test_ai_activity_campaign_auto_approves_and_queues_tasks():
             },
         )
         assert campaign.status_code == 200, campaign.text
-        assert campaign.json()["status"] == TaskStatus.QUEUED.value
+        assert campaign.json()["status"] == TaskStatus.RUNNING.value
 
         assert drain_once() >= 1
 
@@ -94,6 +94,7 @@ def test_ai_activity_campaign_auto_approves_and_queues_tasks():
             db_campaign = session.get(Campaign, campaign.json()["id"])
             drafts = session.query(AiDraft).filter_by(campaign_id=db_campaign.id).all()
             tasks = session.query(MessageTask).filter_by(campaign_id=db_campaign.id).all()
+            assert db_campaign.status == TaskStatus.RUNNING.value
             assert drafts
             assert all(draft.status == TaskStatus.APPROVED.value for draft in drafts)
             assert tasks

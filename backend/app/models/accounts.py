@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.security import decrypt_secret
 
 from .enums import AccountStatus, DeveloperAppHealthStatus, now
 
@@ -33,7 +34,6 @@ class TelegramDeveloperApp(Base):
 
 class TgAccount(Base):
     __tablename__ = "tg_accounts"
-    __table_args__ = (UniqueConstraint("tenant_id", "phone_masked"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
@@ -56,6 +56,9 @@ class TgAccount(Base):
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     session_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    deleted_by: Mapped[str] = mapped_column(String(100), default="")
+    delete_reason: Mapped[str] = mapped_column(String(255), default="")
 
     tenant: Mapped[Tenant] = relationship(back_populates="accounts")
     groups: Mapped[list[TgGroupAccount]] = relationship(back_populates="account")
@@ -80,8 +83,22 @@ class TgAccount(Base):
         return f"/media/{self.avatar_object_key}" if self.avatar_object_key else ""
 
     @property
+    def phone_number(self) -> str | None:
+        return decrypt_secret(self.phone_ciphertext) if self.phone_ciphertext else self.phone_masked
+
+    @property
     def pool_name(self) -> str:
         return self.pool.name if self.pool else "默认账号池"
+
+
+Index(
+    "ux_tg_accounts_tenant_phone_active",
+    TgAccount.tenant_id,
+    TgAccount.phone_masked,
+    unique=True,
+    postgresql_where=TgAccount.deleted_at.is_(None),
+    sqlite_where=TgAccount.deleted_at.is_(None),
+)
 
 
 class TgAccountProfileSyncRecord(Base):

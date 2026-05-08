@@ -17,6 +17,7 @@ interface Props {
   onCreateCodes: () => Promise<void>;
   onDisableCode: (code: ActivationCode) => Promise<void>;
   onOpenConfirm: (payload: ConfirmPayload) => void;
+  isActionPending: (key: string) => boolean;
 }
 
 const EMPTY_FILTERS: ActivationCodeFilters = { search: '', status: '', plan_type: '', batch_no: '', start_at: '', end_at: '' };
@@ -58,6 +59,7 @@ export default function ActivationCodesView({
   onCreateCodes,
   onDisableCode,
   onOpenConfirm,
+  isActionPending,
 }: Props) {
   const [createOpen, setCreateOpen] = useState(false);
   const selectedPlan = subscriptionPlans.find((plan) => plan.id === activationBatch.plan_id)
@@ -150,7 +152,7 @@ export default function ActivationCodesView({
         const canDisable = item.status === 'unused' && !item.redeemed_by_user_id;
         if (!canDisable) return <Typography.Text type="secondary">-</Typography.Text>;
         return (
-          <Button danger size="small" icon={<ShieldAlert size={14} />} onClick={() => confirmDisable(item)}>
+          <Button danger size="small" icon={<ShieldAlert size={14} />} loading={isActionPending(`activation-code:${item.id}:disable`)} onClick={() => confirmDisable(item)}>
             停用/废弃
           </Button>
         );
@@ -207,8 +209,8 @@ export default function ActivationCodesView({
         <label>生成开始<Input type="datetime-local" value={activationCodeFilters.start_at} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, start_at: event.target.value }))} /></label>
         <label>生成结束<Input type="datetime-local" value={activationCodeFilters.end_at} onChange={(event) => setActivationCodeFilters((current) => ({ ...current, end_at: event.target.value }))} /></label>
         <Space className="row-actions wide-field">
-          <Button type="primary" icon={<RefreshCcw size={16} />} onClick={applyFilters}>查询</Button>
-          <Button onClick={clearFilters}>清空</Button>
+          <Button type="primary" icon={<RefreshCcw size={16} />} loading={isActionPending('activation-codes:load')} onClick={applyFilters}>查询</Button>
+          <Button loading={isActionPending('activation-codes:load')} onClick={clearFilters}>清空</Button>
         </Space>
       </div>
 
@@ -243,7 +245,7 @@ export default function ActivationCodesView({
             <label className="wide-field">备注<Input value={activationBatch.note} onChange={(event) => setActivationBatch((current) => ({ ...current, note: event.target.value }))} placeholder="批次用途或来源" /></label>
             {selectedPlan && <p className="muted-line wide-field">将快照写入卡密：{selectedPlan.name} / {selectedPlan.duration_days} 天 / {selectedPlan.token_quota.toLocaleString()} Token</p>}
           </div>
-          <FormActions submitLabel="批量生成" onCancel={() => setCreateOpen(false)} onSubmit={submitCreate} disabled={!activationBatch.batch_no.trim() || !activationBatch.serial_prefix.trim() || activationBatch.quantity < 1 || activationBatch.quantity > 200} />
+          <FormActions submitLabel="批量生成" onCancel={() => setCreateOpen(false)} onSubmit={submitCreate} loading={isActionPending('activation-codes:create')} disabled={!activationBatch.batch_no.trim() || !activationBatch.serial_prefix.trim() || activationBatch.quantity < 1 || activationBatch.quantity > 200} />
         </Modal>
       )}
     </Card>

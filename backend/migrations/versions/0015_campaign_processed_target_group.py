@@ -42,6 +42,11 @@ def _drop_processed_unique_constraints() -> None:
 
 
 def upgrade() -> None:
+    if _table_exists("campaigns"):
+        op.execute(
+            "UPDATE campaigns SET status = '执行中' "
+            "WHERE execution_mode IN ('ai_activity', 'mirror_forward') AND status = '排队中'"
+        )
     if not _table_exists("campaign_processed_messages"):
         return
     if not _column_exists("campaign_processed_messages", "target_group_id"):
@@ -62,6 +67,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if _table_exists("campaigns"):
+        op.execute(
+            "UPDATE campaigns SET status = '排队中' "
+            "WHERE execution_mode IN ('ai_activity', 'mirror_forward') AND status = '执行中'"
+        )
     if not _table_exists("campaign_processed_messages"):
         return
     _drop_processed_unique_constraints()

@@ -13,6 +13,7 @@ interface Props {
   onToggle: (app: DeveloperApp) => void;
   onEditTenant: (tenant: Tenant) => void;
   showTenants?: boolean;
+  isActionPending: (key: string) => boolean;
   onOpenConfirm: (payload: {
     title: string;
     message: string;
@@ -22,7 +23,7 @@ interface Props {
   }) => void;
 }
 
-export default function DeveloperAppsView({ developerApps, tenants, onCreateClick, onEdit, onCheck, onToggle, onEditTenant, showTenants = true, onOpenConfirm }: Props) {
+export default function DeveloperAppsView({ developerApps, tenants, onCreateClick, onEdit, onCheck, onToggle, onEditTenant, showTenants = true, isActionPending, onOpenConfirm }: Props) {
   return (
     <>
       <Card
@@ -51,8 +52,8 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
               {app.last_error && <Typography.Paragraph type="danger">{app.last_error}</Typography.Paragraph>}
               <Space wrap>
                 <Button size="small" onClick={() => onEdit(app)}>编辑</Button>
-                <Button size="small" onClick={() => onCheck(app)}>检查</Button>
-                <Button size="small" danger={app.is_active} onClick={() => onOpenConfirm({
+                <Button size="small" loading={isActionPending(`developer-app:${app.id}:check`)} onClick={() => onCheck(app)}>检查</Button>
+                <Button size="small" danger={app.is_active} loading={isActionPending(`developer-app:${app.id}:toggle`)} onClick={() => onOpenConfirm({
                   title: app.is_active ? '禁用开发者应用' : '启用开发者应用',
                   message: `确认${app.is_active ? '禁用' : '启用'}「${app.app_name}」？已绑定账号会继续保留绑定关系。`,
                   confirmLabel: app.is_active ? '确认禁用' : '确认启用',

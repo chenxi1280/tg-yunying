@@ -90,22 +90,33 @@ export function Modal({ title, size = 'medium', children, onClose }: { title: st
   );
 }
 
-export function FormActions({ submitLabel = '保存', onCancel, onSubmit, disabled }: { submitLabel?: string; onCancel: () => void; onSubmit: () => void; disabled?: boolean }) {
+export function FormActions({ submitLabel = '保存', onCancel, onSubmit, disabled, loading = false }: { submitLabel?: string; onCancel: () => void; onSubmit: () => void; disabled?: boolean; loading?: boolean }) {
   return (
     <Space className="modal-actions" align="center">
-      <Button onClick={onCancel}>取消</Button>
-      <Button type="primary" disabled={disabled} onClick={onSubmit}>{submitLabel}</Button>
+      <Button onClick={onCancel} disabled={loading}>取消</Button>
+      <Button type="primary" disabled={disabled} loading={loading} onClick={onSubmit}>{submitLabel}</Button>
     </Space>
   );
 }
 
 export function ConfirmDialog({ payload, onClose }: { payload: ConfirmPayload; onClose: () => void }) {
+  const [confirming, setConfirming] = React.useState(false);
+
+  async function confirm() {
+    setConfirming(true);
+    try {
+      await payload.onConfirm();
+    } finally {
+      setConfirming(false);
+    }
+  }
+
   return (
-    <Modal title={payload.title} size="small" onClose={onClose}>
+    <Modal title={payload.title} size="small" onClose={confirming ? () => undefined : onClose}>
       <p className="dialog-message">{payload.message}</p>
       <Space className="modal-actions" align="center">
-        <Button onClick={onClose}>取消</Button>
-        <Button danger={payload.tone === 'danger'} type="primary" onClick={() => payload.onConfirm()}>{payload.confirmLabel ?? '确认'}</Button>
+        <Button onClick={onClose} disabled={confirming}>取消</Button>
+        <Button danger={payload.tone === 'danger'} type="primary" loading={confirming} onClick={confirm}>{payload.confirmLabel ?? '确认'}</Button>
       </Space>
     </Modal>
   );

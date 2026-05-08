@@ -10,9 +10,10 @@ interface Props {
   onOpenArchiveDetail: (archive: ArchiveItem) => void;
   onExportArchive?: (archive: ArchiveItem) => void;
   onRerunArchive?: (archive: ArchiveItem) => void;
+  isActionPending: (key: string) => boolean;
 }
 
-export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDetail, onExportArchive, onRerunArchive }: Props) {
+export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDetail, onExportArchive, onRerunArchive, isActionPending }: Props) {
   return (
     <Card className="panel" title="群聊归档" extra={<Typography.Text type="secondary">内容、成员清单与新群初始化方案</Typography.Text>}>
       <div className="cards-grid">
@@ -25,9 +26,9 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
             title={archive.title}
             extra={<StatusBadge status={archive.status} />}
             actions={[
-              <Button type="link" onClick={() => onOpenArchiveDetail(archive)}>查看详情</Button>,
-              onRerunArchive ? <Button type="link" onClick={() => onRerunArchive(archive)}>重跑</Button> : null,
-              onExportArchive ? <Button type="link" onClick={() => onExportArchive(archive)}>导出</Button> : null,
+              <Button type="link" loading={isActionPending(`archive:${archive.id}:detail`)} onClick={() => onOpenArchiveDetail(archive)}>查看详情</Button>,
+              onRerunArchive ? <Button type="link" loading={isActionPending(`archive:${archive.id}:rerun`)} onClick={() => onRerunArchive(archive)}>重跑</Button> : null,
+              onExportArchive ? <Button type="link" loading={isActionPending(`archive:${archive.id}:export`)} onClick={() => onExportArchive(archive)}>导出</Button> : null,
             ].filter(Boolean)}
           >
             <Typography.Paragraph>{archive.summary}</Typography.Paragraph>

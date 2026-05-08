@@ -45,6 +45,7 @@ interface Props {
   }) => void;
   groupName: (groupId: number | null | undefined) => string;
   accountName: (accountId: number | null | undefined) => string;
+  isActionPending: (key: string) => boolean;
 }
 
 export default function CampaignsView({
@@ -72,6 +73,7 @@ export default function CampaignsView({
   onOpenConfirm,
   groupName,
   accountName,
+  isActionPending,
 }: Props) {
   const taskColumns: ColumnsType<MessageTask> = [
     {
@@ -97,13 +99,13 @@ export default function CampaignsView({
       fixed: 'right',
       render: (_, task) => (
         <Space wrap>
-          <Button type="primary" size="small" disabled={task.status === '已发送'} onClick={() => onOpenConfirm({
+          <Button type="primary" size="small" loading={isActionPending(`task:${task.id}:dispatch`)} disabled={task.status === '已发送'} onClick={() => onOpenConfirm({
             title: '触发消息调度',
             message: `确认触发发送明细 #${task.id} 的调度发送？`,
             confirmLabel: '触发调度',
             onConfirm: () => onDispatchTask(task),
           })}>触发调度</Button>
-          <Button size="small" disabled={task.status !== '失败'} onClick={() => onOpenConfirm({
+          <Button size="small" loading={isActionPending(`task:${task.id}:retry`)} disabled={task.status !== '失败'} onClick={() => onOpenConfirm({
             title: '重试失败任务',
             message: `确认重试发送明细 #${task.id}？`,
             confirmLabel: '重试',
@@ -145,7 +147,7 @@ export default function CampaignsView({
                 {campaign.last_error && <Typography.Text type="danger">{campaign.last_error}</Typography.Text>}
                 <Space><StatusBadge status="已发送" label={`已发送 ${campaignTasks.filter((task) => task.status === '已发送').length}`} /> <StatusBadge status={campaignTasks.some((task) => task.status === '失败') ? '失败' : '无失败'} label={`失败 ${campaignTasks.filter((task) => task.status === '失败').length}`} /></Space>
                 {campaign.execution_mode !== 'manual_draft' && !['已完成', '已取消'].includes(campaign.status) && (
-                  <Button size="small" danger onClick={(event) => {
+                  <Button size="small" danger loading={isActionPending(`campaign:${campaign.id}:cancel`)} onClick={(event) => {
                     event.stopPropagation();
                     onOpenConfirm({
                       title: '取消持续任务',
@@ -166,7 +168,7 @@ export default function CampaignsView({
         <div>
           <Space className="toolbar-row" wrap>
             <Typography.Text>{selectedCampaign ? `当前任务：${selectedCampaign.title}` : '请先选择任务'}</Typography.Text>
-            <Button type="primary" disabled={!selectedCampaign || !selectedCampaignDrafts.some((draft) => draft.status === '待审核')} onClick={() => onOpenConfirm({
+            <Button type="primary" loading={isActionPending(`campaign:${selectedCampaign?.id ?? 'current'}:approve-all`)} disabled={!selectedCampaign || !selectedCampaignDrafts.some((draft) => draft.status === '待审核')} onClick={() => onOpenConfirm({
               title: '批量通过草稿',
               message: selectedCampaign ? `确认批量通过「${selectedCampaign.title}」的待审核草稿，并生成消息任务？` : '请先选择任务',
               confirmLabel: '批量通过',
@@ -179,7 +181,7 @@ export default function CampaignsView({
             locale={{ emptyText: '当前任务还没有草稿，创建任务后系统会先生成待审核草稿。' }}
             renderItem={(draft) => (
               <List.Item className={`draft-card ${statusAccent(draft.status)}`} actions={[
-                <Button type="primary" size="small" disabled={draft.status === '已审核'} onClick={() => onOpenConfirm({
+                <Button type="primary" size="small" loading={isActionPending(`draft:${draft.id}:approve`)} disabled={draft.status === '已审核'} onClick={() => onOpenConfirm({
                   title: '审核通过草稿',
                   message: `确认通过这条「${draft.persona}」草稿并生成消息任务？`,
                   confirmLabel: '审核通过',
@@ -212,7 +214,7 @@ export default function CampaignsView({
               ]}
             />
             <Typography.Text>{selectedCampaign ? `当前任务：${selectedCampaign.title}` : '请先选择任务'}</Typography.Text>
-            <Button type="primary" disabled={!selectedCampaign} onClick={() => onOpenConfirm({
+            <Button type="primary" loading={isActionPending('worker:drain')} disabled={!selectedCampaign} onClick={() => onOpenConfirm({
               title: '处理到期发送',
               message: '确认处理当前已经到时间的发送任务？',
               confirmLabel: '开始处理',

@@ -22,16 +22,17 @@ interface Props {
   onExportArchive: (archive: ArchiveItem) => Promise<void>;
   onRerunArchive: (archive: ArchiveItem) => Promise<void>;
   onOpenConfirm: (payload: ConfirmPayload) => void;
+  isActionPending: (key: string) => boolean;
 }
 
-function GroupCoveragePanel({ selectedGroup, groupDetail, onOpenGroupDetail }: Pick<Props, 'selectedGroup' | 'groupDetail' | 'onOpenGroupDetail'>) {
+function GroupCoveragePanel({ selectedGroup, groupDetail, onOpenGroupDetail, isActionPending }: Pick<Props, 'selectedGroup' | 'groupDetail' | 'onOpenGroupDetail' | 'isActionPending'>) {
   if (!selectedGroup) return <Card className="panel"><Empty description="暂无群聊资产" /></Card>;
   const currentDetail = groupDetail?.group.id === selectedGroup.id ? groupDetail : null;
   return (
     <Card
       className="panel"
       title="账号覆盖"
-      extra={<Button onClick={() => void onOpenGroupDetail(selectedGroup)}>刷新账号覆盖</Button>}
+      extra={<Button loading={isActionPending(`group:${selectedGroup.id}:detail`)} onClick={() => void onOpenGroupDetail(selectedGroup)}>刷新账号覆盖</Button>}
     >
       <Typography.Text type="secondary">同步群后自动形成群资产，并展示哪些账号在群内、是否可发言和最近状态。</Typography.Text>
       <List
@@ -82,12 +83,12 @@ function OperationPolicyPanel({
   );
 }
 
-function ListenerContextPanel({ selectedGroup, groupDetail, onOpenGroupDetail }: Pick<Props, 'selectedGroup' | 'groupDetail' | 'onOpenGroupDetail'>) {
+function ListenerContextPanel({ selectedGroup, groupDetail, onOpenGroupDetail, isActionPending }: Pick<Props, 'selectedGroup' | 'groupDetail' | 'onOpenGroupDetail' | 'isActionPending'>) {
   if (!selectedGroup) return <Card className="panel"><Empty description="暂无群聊资产" /></Card>;
   const currentDetail = groupDetail?.group.id === selectedGroup.id ? groupDetail : null;
   return (
     <section className="view-grid">
-      <Card className="panel" title="监听上下文" extra={<Button onClick={() => void onOpenGroupDetail(selectedGroup)}>刷新上下文</Button>}>
+      <Card className="panel" title="监听上下文" extra={<Button loading={isActionPending(`group:${selectedGroup.id}:detail`)} onClick={() => void onOpenGroupDetail(selectedGroup)}>刷新上下文</Button>}>
         <Descriptions className="detail-list" column={2} size="small" items={[
           { key: 'enabled', label: '监听', children: <StatusBadge status={selectedGroup.listener_enabled ? '已启用' : '未配置'} /> },
           { key: 'auto', label: '自动续聊', children: selectedGroup.listener_auto_reply_enabled ? '自动排队' : '只采集上下文' },
@@ -159,6 +160,7 @@ export default function GroupManagementView(props: Props) {
     onExportArchive,
     onRerunArchive,
     onOpenConfirm,
+    isActionPending,
   } = props;
 
   return (
@@ -180,13 +182,14 @@ export default function GroupManagementView(props: Props) {
               onAuthorizeGroup={onAuthorizeGroup}
               onEditGroupPolicy={onEditGroupPolicy}
               onOpenConfirm={onOpenConfirm}
+              isActionPending={isActionPending}
             />
           ),
         },
-        { key: 'coverage', label: '账号覆盖', children: <GroupCoveragePanel selectedGroup={selectedGroup} groupDetail={groupDetail} onOpenGroupDetail={onOpenGroupDetail} /> },
+        { key: 'coverage', label: '账号覆盖', children: <GroupCoveragePanel selectedGroup={selectedGroup} groupDetail={groupDetail} onOpenGroupDetail={onOpenGroupDetail} isActionPending={isActionPending} /> },
         { key: 'policy', label: '运营策略', children: <OperationPolicyPanel selectedGroup={selectedGroup} onCreateCampaign={onCreateCampaign} onCreateArchive={onCreateArchive} onEditGroupPolicy={onEditGroupPolicy} onOpenConfirm={onOpenConfirm} /> },
-        { key: 'listener', label: '监听上下文', children: <ListenerContextPanel selectedGroup={selectedGroup} groupDetail={groupDetail} onOpenGroupDetail={onOpenGroupDetail} /> },
-        { key: 'archives', label: '归档任务', children: <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={onOpenArchiveDetail} onExportArchive={onExportArchive} onRerunArchive={onRerunArchive} /> },
+        { key: 'listener', label: '监听上下文', children: <ListenerContextPanel selectedGroup={selectedGroup} groupDetail={groupDetail} onOpenGroupDetail={onOpenGroupDetail} isActionPending={isActionPending} /> },
+        { key: 'archives', label: '归档任务', children: <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={onOpenArchiveDetail} onExportArchive={onExportArchive} onRerunArchive={onRerunArchive} isActionPending={isActionPending} /> },
         { key: 'library', label: '消息/成员库', children: <MessageMemberLibrary archiveDetail={archiveDetail} /> },
       ]}
     />

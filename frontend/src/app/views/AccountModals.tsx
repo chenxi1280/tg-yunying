@@ -9,6 +9,8 @@ import type {
 import { Modal, FormActions, StatusBadge } from '../components/shared';
 import { statusAccent, operationLabel, syncTypeLabel } from '../utils';
 
+const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
+
 // ===== Account Pool Detail Modal =====
 
 interface AccountPoolDetailModalProps {
@@ -34,6 +36,7 @@ interface AccountPoolDetailModalProps {
   onSetReturnAfterVerification: (mode: 'accountDetail' | 'accountPoolDetail') => void;
   onSetModal: (modal: any) => void;
   accountName: (accountId: number | null | undefined) => string;
+  isActionPending: (key: string) => boolean;
 }
 
 export function AccountPoolDetailModal({
@@ -42,7 +45,7 @@ export function AccountPoolDetailModal({
   onClose, onOpenAccountCreate, onOpenAccountDetail,
   onRefreshAccountPoolDetail, onStartDirectMessageToContact,
   onCreateDirectMessageTask, onOpenConfirm, onSetReturnAfterVerification,
-  onSetModal, accountName,
+  onSetModal, accountName, isActionPending,
 }: AccountPoolDetailModalProps) {
   return (
     <Modal title={`${accountPoolDetail.pool.name} 账号分组`} size="large" onClose={onClose}>
@@ -65,17 +68,17 @@ export function AccountPoolDetailModal({
             dataSource={accountPoolDetail.accounts}
             locale={{ emptyText: '这个账号分组还没有账号。' }}
             renderItem={(account) => (
-              <List.Item className={statusAccent(account.status)} actions={[<Button size="small" onClick={() => onOpenAccountDetail(account)}>进入账号</Button>]}>
+              <List.Item className={statusAccent(account.status)} actions={[<Button size="small" loading={isActionPending(`account:${account.id}:detail`)} onClick={() => onOpenAccountDetail(account)}>进入账号</Button>]}>
                 <List.Item.Meta
                   title={<Space><StatusBadge status={account.status} />{account.display_name}</Space>}
-                  description={`${account.phone_masked} / 健康分 ${Math.round(account.health_score)}`}
+                  description={`${accountPhone(account)} / 健康分 ${Math.round(account.health_score)}`}
                 />
               </List.Item>
             )}
           />
         </Card>
 
-        <Card className="sub-panel compact-panel" title="云联系人发送" extra={<Button size="small" onClick={onRefreshAccountPoolDetail}>刷新账号分组</Button>}>
+        <Card className="sub-panel compact-panel" title="云联系人发送" extra={<Button size="small" loading={isActionPending(`account-pool:${accountPoolDetail.pool.id}:refresh`)} onClick={onRefreshAccountPoolDetail}>刷新账号分组</Button>}>
           <Typography.Text type="secondary">先选择发送账号，再从已同步联系人或群友中选择对象。</Typography.Text>
           <div className="policy-grid">
             <label>发送账号<Select value={poolDirectAccountId || ''} onChange={(value) => setPoolDirectAccountId(Number(value) || '')} options={[{ value: '', label: '选择发送账号' }, ...accountPoolDetail.accounts.map((account) => ({ value: account.id, label: `${account.display_name} / ${account.status === '在线' ? '可发送' : account.status}`, disabled: account.status !== '在线' }))]} /></label>
@@ -159,6 +162,7 @@ interface AccountDetailModalProps {
   onClose: () => void;
   onOpenAccountProfileEdit: () => void;
   onQueueAccountSyncNow: () => Promise<void>;
+  onRefreshAccountDetail: () => Promise<void>;
   onPollVerificationCodes: () => Promise<void>;
   onStartDirectMessageToContact: (contact: Contact) => void;
   onCreateDirectMessageTask: () => Promise<void>;
@@ -178,6 +182,7 @@ interface AccountDetailModalProps {
   onSetModal: (modal: any) => void;
   onSetCloneForm: (form: { target_account_ids: number[]; clone_contacts: boolean; clone_groups: boolean }) => void;
   accountName: (accountId: number | null | undefined) => string;
+  isActionPending: (key: string) => boolean;
 }
 
 export function AccountDetailModal({
@@ -185,12 +190,13 @@ export function AccountDetailModal({
   directMessageForm, setDirectMessageForm, selectedDirectContact,
   accountContacts, accounts, avatarUrl, onClose,
   onOpenAccountProfileEdit, onQueueAccountSyncNow, onPollVerificationCodes,
+  onRefreshAccountDetail,
   onStartDirectMessageToContact, onCreateDirectMessageTask,
   onConfirmClonePlan, onRetryCloneItem,
   onRetryAccountProfileSync,
   onDismissVerificationTask, onConfirmVerificationTask,
   onOpenConfirm, onSetReturnAfterVerification, onSetModal,
-  onSetCloneForm, accountName,
+  onSetCloneForm, accountName, isActionPending,
 }: AccountDetailModalProps) {
   const groupColumns: ColumnsType<AccountGroup> = [
     {
@@ -227,19 +233,19 @@ export function AccountDetailModal({
 
   return (
     <Modal title={`${accountDetail.account.display_name} 账号详情`} size="large" onClose={onClose}>
-      <Descriptions
-        className="detail-list"
-        size="small"
-        column={3}
-        items={[
-          { key: 'status', label: '账号状态', children: <StatusBadge status={accountDetail.account.status} /> },
-          { key: 'pool', label: '所属账号分组', children: accountDetail.account.pool_name },
-          { key: 'profile', label: '资料同步', children: <StatusBadge status={accountDetail.account.profile_sync_status} /> },
-          { key: 'groups', label: '加入群聊', children: `${accountDetail.stats.joined_groups ?? 0} 个` },
-          { key: 'records', label: '发送记录', children: `${accountDetail.stats.message_records ?? 0} 条` },
-          { key: 'result', label: '成功/失败', children: <Space><StatusBadge status="已发送" label={accountDetail.stats.sent ?? 0} /><StatusBadge status={(accountDetail.stats.failed ?? 0) > 0 ? '失败' : '无失败'} label={accountDetail.stats.failed ?? 0} /></Space> },
-        ]}
-      />
+      <div className="account-detail-summary">
+        <div><span>账号状态</span><strong><StatusBadge status={accountDetail.account.status} /></strong></div>
+        <div><span>手机号</span><strong>{accountPhone(accountDetail.account)}</strong></div>
+        <div><span>所属账号分组</span><strong>{accountDetail.account.pool_name}</strong></div>
+        <div><span>资料同步</span><strong><StatusBadge status={accountDetail.account.profile_sync_status} /></strong></div>
+        <div><span>加入群聊</span><strong>{accountDetail.stats.joined_groups ?? 0} 个</strong></div>
+        <div><span>发送记录</span><strong>{accountDetail.stats.message_records ?? 0} 条</strong></div>
+        <div><span>待处理验证</span><strong><StatusBadge status={(accountDetail.stats.pending_verification_tasks ?? 0) ? '待处理' : '已完成'} label={accountDetail.stats.pending_verification_tasks ?? 0} /></strong></div>
+        <div>
+          <span>成功/失败</span>
+          <strong><Space size={6}><StatusBadge status="已发送" label={accountDetail.stats.sent ?? 0} /><StatusBadge status={(accountDetail.stats.failed ?? 0) > 0 ? '失败' : '无失败'} label={accountDetail.stats.failed ?? 0} /></Space></strong>
+        </div>
+      </div>
       <Tabs
         className="tabs-row"
         activeKey={accountDetailTab}
@@ -261,7 +267,7 @@ export function AccountDetailModal({
                 onSetCloneForm({ target_account_ids: accounts.filter((item) => item.id !== accountDetail.account.id).slice(0, 2).map((item) => item.id), clone_contacts: true, clone_groups: true });
                 onSetModal({ type: 'accountCloneCreate' });
               }}>克隆到其他账号</Button>
-              <Button size="small" disabled={accountDetail.account.profile_sync_status !== '失败'} onClick={() => onOpenConfirm({
+              <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:profile-sync`)} disabled={accountDetail.account.profile_sync_status !== '失败'} onClick={() => onOpenConfirm({
                 title: '重试资料同步',
                 message: `确认重新同步「${accountDetail.account.display_name}」的 TG 资料？`,
                 confirmLabel: '重新入队',
@@ -304,8 +310,9 @@ export function AccountDetailModal({
               <span>验证码短时展示，查看行为会写入审计</span>
             </div>
             <div className="row-actions">
-              <Button size="small" onClick={onQueueAccountSyncNow}>同步群聊和联系人</Button>
-              <Button size="small" onClick={onPollVerificationCodes}>查看 TG 官方验证码</Button>
+              <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:detail-refresh`)} onClick={onRefreshAccountDetail}>刷新同步状态</Button>
+              <Button size="small" type="primary" loading={isActionPending(`account:${accountDetail.account.id}:sync`)} onClick={onQueueAccountSyncNow}>立即全量同步</Button>
+              <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={onPollVerificationCodes}>查看 TG 官方验证码</Button>
             </div>
           </div>
           <div className="mini-list">
@@ -336,7 +343,7 @@ export function AccountDetailModal({
               </Card>
             ))}
             {accountDetail.next_sync_at && <p className="muted-line">下次自动同步约在 {new Date(accountDetail.next_sync_at).toLocaleString()}</p>}
-            {!accountDetail.sync_records.length && <p className="muted-line">登录成功后会自动同步群聊、云联系人和 TG 官方验证码。</p>}
+            {!accountDetail.sync_records.length && <p className="muted-line">登录成功后会自动同步资料、健康、群聊、云联系人和 TG 官方验证码。</p>}
           </div>
         </Card>
       )}
@@ -360,7 +367,10 @@ export function AccountDetailModal({
               <h2>云联系人</h2>
               <span>从当前账号同步的私聊对象和群友中选择，直接创建平台发送任务。</span>
             </div>
-            <Button size="small" onClick={onQueueAccountSyncNow}>同步对象</Button>
+            <Space>
+              <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:detail-refresh`)} onClick={onRefreshAccountDetail}>刷新</Button>
+              <Button size="small" type="primary" loading={isActionPending(`account:${accountDetail.account.id}:sync`)} onClick={onQueueAccountSyncNow}>同步并刷新</Button>
+            </Space>
           </div>
           <div className="contact-pick-grid">
             {accountContacts.map((contact) => (
@@ -426,7 +436,7 @@ export function AccountDetailModal({
                   {plan.items.slice(0, 8).map((item) => (
                     <span key={item.id} className="inline-status">
                       <StatusBadge status={item.status} label={item.target_display || item.target_peer_id} />
-                      {item.status !== '已完成' && <Button size="small" onClick={() => onRetryCloneItem(item)}>重试</Button>}
+                      {item.status !== '已完成' && <Button size="small" loading={isActionPending(`clone-item:${item.id}:retry`)} onClick={() => onRetryCloneItem(item)}>重试</Button>}
                     </span>
                   ))}
                 </div>
@@ -454,7 +464,7 @@ export function AccountDetailModal({
                 <span>建议操作：{task.suggested_action}</span>
                 <div className="row-actions">
                   <Button size="small" disabled={!['待处理', '失败'].includes(task.status)} onClick={() => { onSetReturnAfterVerification('accountDetail'); onSetModal({ type: 'verificationTaskDetail', payload: task }); }}>处理</Button>
-                  <Button size="small" disabled={task.status !== '待处理'} onClick={() => onDismissVerificationTask(task)}>忽略</Button>
+                  <Button size="small" loading={isActionPending(`verification:${task.id}:dismiss`)} disabled={task.status !== '待处理'} onClick={() => onDismissVerificationTask(task)}>忽略</Button>
                 </div>
               </Card>
             ))}

@@ -14,6 +14,7 @@ interface Props {
   onCreateArchive: () => void;
   onAuthorizeGroup: (status: string) => void;
   onEditGroupPolicy: () => void;
+  isActionPending: (key: string) => boolean;
   onOpenConfirm: (payload: {
     title: string;
     message: string;
@@ -33,6 +34,7 @@ export default function GroupsView({
   onAuthorizeGroup,
   onEditGroupPolicy,
   onOpenConfirm,
+  isActionPending,
 }: Props) {
   return (
     <section className="split-view">
@@ -71,7 +73,7 @@ export default function GroupsView({
               onConfirm: onCreateArchive,
             })}>创建归档</Button>
             {['已授权运营', '只读归档', '禁止操作'].map((status) => (
-              <Button key={status} danger={status === '禁止操作'} onClick={() => onOpenConfirm({
+              <Button key={status} danger={status === '禁止操作'} loading={isActionPending(`group:${selectedGroup.id}:authorize:${status}`)} onClick={() => onOpenConfirm({
                 title: '更新群使用范围',
                 message: `确认将「${selectedGroup.title}」设置为「${operationLabel(status)}」？`,
                 confirmLabel: '确认更新',

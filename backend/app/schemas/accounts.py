@@ -88,6 +88,7 @@ class AccountOut(ApiModel):
     profile_sync_error: str = ""
     profile_synced_at: datetime | None = None
     phone_masked: str
+    phone_number: str | None = None
     status: str
     health_score: float
     last_active_at: datetime | None
@@ -97,6 +98,9 @@ class AccountOut(ApiModel):
     developer_api_id: int | None = None
     developer_app_health_status: str | None = None
     developer_app_version: int
+    deleted_at: datetime | None = None
+    deleted_by: str = ""
+    delete_reason: str = ""
 
 
 class AccountPoolOut(ApiModel):

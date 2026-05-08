@@ -10,7 +10,7 @@ import {
   Smartphone,
   Users,
 } from 'lucide-react';
-import { Alert, Button, Card, Form, Input, Layout, Menu, Space, Tabs, Typography } from 'antd';
+import { Alert, App as AntdApp, Button, Card, Form, Input, Layout, Menu, Space, Tabs, Typography } from 'antd';
 import { AppProvider, useAppContext } from './context';
 import OverviewView from './views/OverviewView';
 import AccountsView from './views/AccountsView';
@@ -24,7 +24,15 @@ import { VIEW_ROUTES } from './routes';
 
 const { Header, Sider, Content } = Layout;
 
+function noticeMessageType(notice: string): 'success' | 'error' | 'warning' | 'info' {
+  if (/失败|异常|错误|过期|未连接|不能|请先|需先/.test(notice)) return 'error';
+  if (/等待|扫码|验证码|二步验证|确认|排队|重试/.test(notice)) return 'warning';
+  if (/成功|已|完成|新增|保存|同步|生成|兑换|提交|通过/.test(notice)) return 'success';
+  return 'info';
+}
+
 function AppShell() {
+  const { message } = AntdApp.useApp();
   const ctx = useAppContext();
   const {
     token, currentUser, authMode, setAuthMode,
@@ -32,7 +40,7 @@ function AppShell() {
     registerForm, setRegisterForm, login, register,
     captchaChallenge, captchaInput, setCaptchaInput,
     captchaToken, captchaError, captchaLoading, refreshCaptchaChallenge, verifyCaptcha,
-    activeView, goToView, busy, notice, setNotice,
+    activeView, goToView, busy, notice, setNotice, isActionPending,
     runtime, overview, redeemCode, setRedeemCode, submitRedeemCode,
     accountPools, selectedPoolId, setSelectedPoolId, accounts, selectedPool,
     developerApps, tenants, subscriptionPlans, adminUsers, groups, selectedGroup, selectedGroupId, setSelectedGroupId,
@@ -96,7 +104,7 @@ function AppShell() {
     saveTenantAiSetting, saveSchedulingSetting,
     createPromptTemplate, createMaterial, toggleMaterial,
     loadActivationCodes, createActivationCodes, disableActivationCode, logout,
-    runLogin, verifyAccount, healthCheck, syncAccountGroups,
+    runLogin, verifyAccount, deleteAccount, healthCheck, syncAccountGroups,
     accountName, groupName,
   } = ctx;
 
@@ -123,20 +131,30 @@ function AppShell() {
   const nav = navCandidates.filter(([viewId]) => canSeeMenu(viewId));
 
   React.useEffect(() => {
+    if (!notice) return;
+    void message.open({
+      type: noticeMessageType(notice),
+      content: notice,
+      duration: 3,
+    });
+    setNotice('');
+  }, [message, notice, setNotice]);
+
+  React.useEffect(() => {
     if (!token || !currentUser || !nav.length) return;
     if (!nav.some(([viewId]) => viewId === activeView)) {
       goToView(nav[0][0]);
     }
   }, [activeView, currentUser, goToView, nav, token]);
 
-  const loginReady = Boolean(loginEmail.trim() && loginPassword && captchaToken && !busy);
-  const registerReady = Boolean(registerForm.name.trim() && registerForm.email.trim() && registerForm.password && captchaToken && !busy);
+  const loginReady = Boolean(loginEmail.trim() && loginPassword && captchaToken && !isActionPending('auth:login'));
+  const registerReady = Boolean(registerForm.name.trim() && registerForm.email.trim() && registerForm.password && captchaToken && !isActionPending('auth:register'));
 
   const captchaControl = (
     <Card className={`captcha-box ${captchaToken ? 'verified' : ''}`} size="small">
       <div className="captcha-head">
         <span>验证码</span>
-        <Button size="small" onClick={refreshCaptchaChallenge} disabled={captchaLoading}>
+        <Button size="small" loading={captchaLoading} onClick={refreshCaptchaChallenge} disabled={captchaLoading}>
           刷新
         </Button>
       </div>
@@ -151,7 +169,7 @@ function AppShell() {
         />
       </div>
       <div className="captcha-actions">
-        <Button size="small" onClick={verifyCaptcha} disabled={!captchaChallenge || captchaLoading || Boolean(captchaToken) || captchaInput.trim().length < 5}>
+        <Button size="small" loading={captchaLoading} onClick={verifyCaptcha} disabled={!captchaChallenge || captchaLoading || Boolean(captchaToken) || captchaInput.trim().length < 5}>
           {captchaToken ? '已通过' : captchaLoading ? '验证中' : '验证'}
         </Button>
         <span className={captchaToken ? 'captcha-ok' : captchaError ? 'captcha-error' : ''}>
@@ -188,7 +206,7 @@ function AppShell() {
                       <Input.Password value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} />
                     </Form.Item>
                     {captchaControl}
-                    <Button type="primary" block onClick={login} disabled={!loginReady}>登录控制台</Button>
+                    <Button type="primary" block onClick={login} loading={isActionPending('auth:login')} disabled={!loginReady}>登录控制台</Button>
                   </Form>
                 ),
               },
@@ -210,13 +228,12 @@ function AppShell() {
                       <Input.Password value={registerForm.password} onChange={(event) => setRegisterForm((current) => ({ ...current, password: event.target.value }))} />
                     </Form.Item>
                     {captchaControl}
-                    <Button type="primary" block onClick={register} disabled={!registerReady}>创建普通用户</Button>
+                    <Button type="primary" block onClick={register} loading={isActionPending('auth:register')} disabled={!registerReady}>创建普通用户</Button>
                   </Form>
                 ),
               },
             ]}
           />
-          {notice && <Alert className="login-error" type="error" message={notice} showIcon />}
         </Card>
       </div>
     );
@@ -259,7 +276,7 @@ function AppShell() {
           </div>
           <Space className="top-actions">
             {busy && <Typography.Text className="busy">{busy}...</Typography.Text>}
-            <Button icon={<RefreshCcw size={18} />} onClick={() => refresh()} />
+            <Button icon={<RefreshCcw size={18} />} loading={isActionPending('app:refresh')} onClick={() => refresh()} />
             <Button onClick={() => setModal({ type: 'changePassword' })}>修改密码</Button>
             <Button onClick={logout}>退出</Button>
           </Space>
@@ -289,7 +306,7 @@ function AppShell() {
                 <strong>订阅 + Token</strong>
                 <Space.Compact>
                   <Input value={redeemCode} onChange={(event) => setRedeemCode(event.target.value)} placeholder="请输入卡密" />
-                  <Button type="primary" onClick={submitRedeemCode}>兑换</Button>
+                  <Button type="primary" loading={isActionPending('subscription:redeem')} onClick={submitRedeemCode}>兑换</Button>
                 </Space.Compact>
               </Card>
             </div>
@@ -303,16 +320,6 @@ function AppShell() {
             showIcon
             message="系统诊断"
             description={`任务通道：${runtime.queue_backend} / TG 连接：${runtime.telethon_configured ? '已配置' : '待配置'} / 应用池：${runtime.developer_app_healthy_count}/${runtime.developer_app_count} 正常 / AI 服务：${runtime.healthy_ai_provider_count}/${runtime.ai_provider_count} 正常${runtime.mock_ai_fallback_enabled ? ' / 可回退' : ''}`}
-          />
-        )}
-
-        {notice && (
-          <Alert
-            className="notice"
-            type="success"
-            showIcon
-            message={notice}
-            action={<Button size="small" onClick={() => setNotice('')}>关闭</Button>}
           />
         )}
 
@@ -361,17 +368,18 @@ function AppShell() {
             onCreateCodes={createActivationCodes}
             onDisableCode={disableActivationCode}
             onOpenConfirm={openConfirm}
+            isActionPending={isActionPending}
           />
         )}
         {activeView === 'usageReports' && <UsageReportsView usageLedgers={usageLedgers} usageSummary={usageSummary} currentUser={currentUser} />}
         {activeView === 'accounts' && (
-          <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => goToView('systemConfig')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} />
+          <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => goToView('systemConfig')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onDeleteAccount={(account) => openConfirm({ title: '移除账号', message: `确认移除 ${account.display_name}？历史任务、群归档和审计记录会保留，手机号可以重新新增。`, confirmLabel: '移除账号', tone: 'danger', onConfirm: () => deleteAccount(account) })} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} isActionPending={isActionPending} />
         )}
         {activeView === 'groupManagement' && (
-          <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateCampaign={openCampaignModal} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} />
+          <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateCampaign={openCampaignModal} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
         )}
         {activeView === 'taskManagement' && (
-          <CampaignsView campaigns={campaigns} tasks={tasks} drafts={drafts} groups={groups} accounts={accounts} taskManagementTab={taskManagementTab} setTaskManagementTab={setTaskManagementTab} taskSummary={taskSummary} selectedCampaign={selectedCampaign ?? undefined} selectedCampaignDrafts={selectedCampaignDrafts} selectedCampaignTasks={selectedCampaignTasks} taskStatusFilter={taskStatusFilter} setTaskStatusFilter={setTaskStatusFilter} setSelectedCampaignId={setSelectedCampaignId} onCreateCampaign={() => openCampaignModal()} onCancelCampaign={cancelCampaign} onApproveDraft={approveDraft} onApproveAllDrafts={approveAllDrafts} onDispatchTask={dispatchTask} onRetryTask={retryTask} onDrainQueue={drainQueue} onOpenConfirm={openConfirm} groupName={groupName} accountName={accountName} />
+          <CampaignsView campaigns={campaigns} tasks={tasks} drafts={drafts} groups={groups} accounts={accounts} taskManagementTab={taskManagementTab} setTaskManagementTab={setTaskManagementTab} taskSummary={taskSummary} selectedCampaign={selectedCampaign ?? undefined} selectedCampaignDrafts={selectedCampaignDrafts} selectedCampaignTasks={selectedCampaignTasks} taskStatusFilter={taskStatusFilter} setTaskStatusFilter={setTaskStatusFilter} setSelectedCampaignId={setSelectedCampaignId} onCreateCampaign={() => openCampaignModal()} onCancelCampaign={cancelCampaign} onApproveDraft={approveDraft} onApproveAllDrafts={approveAllDrafts} onDispatchTask={dispatchTask} onRetryTask={retryTask} onDrainQueue={drainQueue} onOpenConfirm={openConfirm} groupName={groupName} accountName={accountName} isActionPending={isActionPending} />
         )}
         {activeView === 'audits' && <AuditsView audits={audits} />}
 

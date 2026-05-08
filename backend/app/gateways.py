@@ -212,9 +212,6 @@ class TelegramGateway:
     ) -> AccountHealth:
         if not session_ciphertext:
             return AccountHealth(status="需重新登录", health_score=45, detail="账号没有可用 session")
-        simulated = choice(["active", "active", "limited"])
-        if simulated == "limited":
-            return AccountHealth(status="受限", health_score=55, detail="模拟检测到账户近期受限")
         return AccountHealth(status="在线", health_score=95, detail="账号 session 可用")
 
     def list_groups(

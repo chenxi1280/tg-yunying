@@ -10,7 +10,7 @@ from .auth import create_tenant
 
 
 def tenant_usage_snapshot(session: Session, tenant_id: int) -> dict[str, int]:
-    account_used = session.scalar(select(func.count(TgAccount.id)).where(TgAccount.tenant_id == tenant_id)) or 0
+    account_used = session.scalar(select(func.count(TgAccount.id)).where(TgAccount.tenant_id == tenant_id, TgAccount.deleted_at.is_(None))) or 0
     task_used = session.scalar(select(func.count(MessageTask.id)).where(MessageTask.tenant_id == tenant_id)) or 0
     return {"accounts_used": int(account_used), "tasks_used": int(task_used)}
 

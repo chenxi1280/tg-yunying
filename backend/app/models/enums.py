@@ -33,6 +33,7 @@ class TaskStatus(StrEnum):
     PENDING_REVIEW = "待审核"
     APPROVED = "已审核"
     QUEUED = "排队中"
+    RUNNING = "执行中"
     SENDING = "发送中"
     SENT = "已发送"
     FAILED = "失败"

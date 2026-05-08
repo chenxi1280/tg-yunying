@@ -278,6 +278,8 @@ export interface AppState {
   setResultDialog: (dialog: ResultDialogState) => void;
   busy: string;
   setBusy: (busy: string) => void;
+  pendingActionKeys: string[];
+  isActionPending: (key: string) => boolean;
   notice: string;
   setNotice: (notice: string) => void;
 
@@ -350,10 +352,12 @@ export interface AppState {
   logout: () => void;
   runLogin: (account: Account, method: 'code' | 'qr') => Promise<void>;
   verifyAccount: (account: Account) => Promise<void>;
+  chooseAccountLoginMethod: (method: 'code' | 'qr') => Promise<void>;
   submitAccountLoginCode: () => Promise<void>;
   submitAccountLoginPassword: () => Promise<void>;
   resendAccountLoginCode: () => Promise<void>;
   checkAccountQrLogin: () => Promise<void>;
+  deleteAccount: (account: Account) => Promise<void>;
   healthCheck: (account: Account) => Promise<void>;
   syncAccountGroups: (account: Account) => Promise<void>;
   createCampaignAndDrafts: () => Promise<void>;

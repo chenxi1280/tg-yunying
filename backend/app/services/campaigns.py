@@ -209,7 +209,7 @@ def create_campaign(session: Session, payload: CampaignCreate, actor: str = "普
         data["max_ai_tokens"] = 100000
     if execution_mode == "mirror_forward":
         data["max_ai_tokens"] = None
-    campaign_status = TaskStatus.DRAFT.value if execution_mode == "manual_draft" else TaskStatus.QUEUED.value
+    campaign_status = TaskStatus.DRAFT.value if execution_mode == "manual_draft" else TaskStatus.RUNNING.value
     campaign = Campaign(**data, status=campaign_status)
     session.add(campaign)
     session.flush()

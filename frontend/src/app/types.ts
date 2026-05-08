@@ -259,9 +259,13 @@ export type Account = {
   profile_sync_error: string;
   profile_synced_at: string | null;
   phone_masked: string;
+  phone_number: string | null;
   status: string;
   health_score: number;
   last_active_at: string | null;
+  deleted_at?: string | null;
+  deleted_by?: string;
+  delete_reason?: string;
   developer_app_id: number | null;
   developer_app_name: string | null;
   developer_api_id: number | null;

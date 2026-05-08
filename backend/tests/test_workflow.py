@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from app.ai_gateway import AiGenerationResult, AiUsage, mock_candidates
@@ -6,7 +7,7 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.gateways import SendResult
-from app.models import AccountStatus, AiDraft, AppUser, DeveloperAppHealthStatus, Material, MessageTask, TelegramDeveloperApp, TgAccount, TgAccountSyncRecord, TgContact, TgGroupAccount, UserTokenLedger
+from app.models import AccountStatus, AiDraft, AppUser, DeveloperAppHealthStatus, Material, MessageTask, TelegramDeveloperApp, TgAccount, TgAccountSyncRecord, TgContact, TgGroupAccount, TgLoginFlow, UserTokenLedger
 from fastapi.testclient import TestClient
 
 
@@ -145,7 +146,71 @@ def test_login_flow_masks_verification_state():
         account = client.post(f"/api/tg-accounts/{account['id']}/login/verify", headers=headers, json={"code": flow["code_preview"]}).json()
         assert account["status"] == "在线"
         sync_records = client.get(f"/api/tg-accounts/{account['id']}/sync-records", headers=headers).json()
-        assert {"groups", "contacts", "codes"}.issubset({record["sync_type"] for record in sync_records})
+        required_syncs = {"profile_pull", "health", "groups", "contacts", "codes"}
+        relevant_records = [record for record in sync_records if record["sync_type"] in required_syncs]
+        assert required_syncs.issubset({record["sync_type"] for record in relevant_records})
+        assert all(record["status"] != "排队中" for record in relevant_records)
+        detail = client.get(f"/api/tg-accounts/{account['id']}/detail", headers=headers).json()
+        assert detail["account"]["profile_sync_status"] == "已同步"
+        assert detail["contacts"]
+        assert detail["groups"]
+        assert detail["stats"]["pending_verification_tasks"] >= 1
+
+
+def test_unfinished_account_soft_delete_allows_phone_reuse():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ensure_developer_app(client, headers)
+        phone = f"+86139{uuid4().int % 100000000:08d}"
+        created = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={"tenant_id": 1, "display_name": "待移除账号", "phone_number": phone},
+        )
+        assert created.status_code == 200, created.text
+        account = created.json()
+
+        removed = client.delete(f"/api/tg-accounts/{account['id']}", headers=headers)
+        assert removed.status_code == 200, removed.text
+        removed_body = removed.json()
+        assert removed_body["status"] == AccountStatus.DISABLED.value
+        assert removed_body["deleted_at"]
+
+        visible = client.get("/api/tg-accounts", headers=headers).json()
+        assert account["id"] not in {item["id"] for item in visible}
+        with_deleted = client.get("/api/tg-accounts", headers=headers, params={"include_deleted": True}).json()
+        assert account["id"] in {item["id"] for item in with_deleted}
+
+        recreated = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={"tenant_id": 1, "display_name": "重新新增账号", "phone_number": phone},
+        )
+        assert recreated.status_code == 200, recreated.text
+        assert recreated.json()["id"] != account["id"]
+
+
+def test_expired_code_flow_does_not_block_submitted_code():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ensure_developer_app(client, headers)
+        account = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={"tenant_id": 1, "display_name": "验证码登录账号", "phone_number": f"+86137{uuid4().int % 100000000:08d}"},
+        ).json()
+        flow = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code"}).json()
+        with SessionLocal() as session:
+            db_flow = session.get(TgLoginFlow, flow["id"])
+            db_flow.code_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+            session.commit()
+
+        verified = client.post(f"/api/tg-accounts/{account['id']}/login/verify", headers=headers, json={"code": flow["code_preview"]})
+        assert verified.status_code == 200, verified.text
+        assert verified.json()["status"] == AccountStatus.ACTIVE.value
+        sync_records = client.get(f"/api/tg-accounts/{account['id']}/sync-records", headers=headers).json()
+        assert sync_records
+        assert all(record["status"] != "排队中" for record in sync_records if record["sync_type"] in {"profile_pull", "health", "groups", "contacts", "codes"})
 
 
 def test_runtime_login_flows_health_and_group_authorize():
@@ -162,6 +227,11 @@ def test_runtime_login_flows_health_and_group_authorize():
         assert flows
         qr_account = client.post(f"/api/tg-accounts/{account['id']}/login/qr/check", headers=headers).json()
         assert qr_account["status"] == "在线"
+        sync_now = client.post(f"/api/tg-accounts/{account['id']}/sync-now", headers=headers)
+        assert sync_now.status_code == 200, sync_now.text
+        sync_body = sync_now.json()
+        assert {record["sync_type"] for record in sync_body}.issuperset({"profile_pull", "health", "groups", "contacts", "codes"})
+        assert all(record["status"] != "排队中" for record in sync_body)
 
         checked = client.post(f"/api/tg-accounts/{account['id']}/health-check", headers=headers).json()
         assert checked["status"] in {"在线", "受限", "需重新登录"}
@@ -432,7 +502,7 @@ def test_developer_app_round_robin_assignment_and_version_rotation():
                 headers=headers,
                 json={"tenant_id": 1, "display_name": "轮询账号 B", "username": f"rr_b_{suffix}", "phone_number": f"+86138100{phone_tail_b}"},
             ).json()
-            assert "phone_number" not in first_account
+            assert first_account["phone_number"] == f"+86138100{phone_tail_a}"
             assert f"****{phone_tail_a}" in first_account["phone_masked"]
 
             logged_first = client.post(f"/api/tg-accounts/{first_account['id']}/login/start", headers=headers, json={"method": "qr"}).json()

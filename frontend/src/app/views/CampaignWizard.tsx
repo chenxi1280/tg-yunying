@@ -62,6 +62,7 @@ interface Props {
   onToggleMaterial: (materialId: number) => void;
   onCreateCampaignAndDrafts: () => Promise<void>;
   groupName: (groupId: number | null | undefined) => string;
+  isActionPending: (key: string) => boolean;
 }
 
 export default function CampaignWizard({
@@ -122,6 +123,7 @@ export default function CampaignWizard({
   onToggleMaterial,
   onCreateCampaignAndDrafts,
   groupName,
+  isActionPending,
 }: Props) {
   const stepItems = ['任务模式', '选择群聊', '选择账号', '任务内容'].map((title) => ({ title }));
   const groupSelectionReady = selectedTargetGroupIds.length > 0 && (campaignMode !== 'mirror_forward' || selectedSourceGroupIds.length > 0);
@@ -194,7 +196,7 @@ export default function CampaignWizard({
           </div>
           {!selectedTargetGroupIds.length && <p className="muted-line">先选目标群，下一步再选择每个目标群里参与发言的账号。</p>}
           {campaignMode === 'mirror_forward' && !selectedSourceGroupIds.length && <p className="danger-text">监听转发需要至少选择一个源群。</p>}
-          <FormActions submitLabel="下一步：选择账号" onCancel={onClose} onSubmit={onGoAccountStep} disabled={!groupSelectionReady} />
+          <FormActions submitLabel="下一步：选择账号" onCancel={onClose} onSubmit={onGoAccountStep} loading={isActionPending('campaign:recommend')} disabled={!groupSelectionReady} />
         </Card>
       )}
 
@@ -219,7 +221,7 @@ export default function CampaignWizard({
                     );
                   })}
                 </div>
-                {!rows.length && <p className="danger-text">这个群下还没有同步到可参与账号，请先在账号详情同步群聊。</p>}
+                {!rows.length && <p className="danger-text">这个群下还没有同步到可参与账号，请先在账号详情执行全量同步。</p>}
                 {rows.length > 0 && !selectedIds.length && <p className="danger-text">请为「{group?.title ?? groupId}」至少选择一个可发送账号。</p>}
               </Card>
             );
@@ -272,7 +274,7 @@ export default function CampaignWizard({
           {targetGroupsMissingAccounts.length > 0 && <p className="danger-text">这些群还没有选择账号：{targetGroupsMissingAccounts.map((groupId) => groupName(groupId)).join('、')}</p>}
           <Space className="modal-actions">
             <Button onClick={() => setCampaignStep(3)}>上一步</Button>
-            <Button type="primary" disabled={!selectedTargetGroupIds.length || !topic || targetGroupsMissingAccounts.length > 0 || (isContinuous && !campaignEndsAt)} onClick={onCreateCampaignAndDrafts}>{campaignMode === 'manual_draft' ? '创建并生成草稿' : '创建持续任务'}</Button>
+            <Button type="primary" loading={isActionPending('campaign:create')} disabled={!selectedTargetGroupIds.length || !topic || targetGroupsMissingAccounts.length > 0 || (isContinuous && !campaignEndsAt)} onClick={onCreateCampaignAndDrafts}>{campaignMode === 'manual_draft' ? '创建并生成草稿' : '创建持续任务'}</Button>
           </Space>
         </Card>
       )}

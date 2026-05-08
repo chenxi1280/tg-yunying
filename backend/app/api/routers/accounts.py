@@ -32,7 +32,7 @@ from app.services import (
     list_verification_tasks, move_account_pool,
     poll_account_verification_codes, queue_account_sync_now,
     retry_account_clone_item, retry_account_profile_sync,
-    start_login, sync_account_contacts, sync_groups,
+    soft_delete_account, start_login, sync_account_contacts, sync_groups,
     update_account_profile, upload_account_avatar, verify_login,
 )
 
@@ -49,11 +49,12 @@ def list_accounts(
     search: str | None = None,
     status: str | None = None,
     pool_id: int | None = None,
+    include_deleted: bool = False,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Sequence[TgAccount]:
     try:
-        return filter_accounts(session, resolve_tenant_id(current_user, tenant_id), page, page_size, search, status, pool_id)
+        return filter_accounts(session, resolve_tenant_id(current_user, tenant_id), page, page_size, search, status, pool_id, include_deleted)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -70,6 +71,20 @@ def post_account(
         return create_account(session, payload.model_copy(update={"tenant_id": tenant_id}))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/api/tg-accounts/{account_id}", response_model=AccountOut)
+def delete_account(
+    account_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> TgAccount:
+    require_core_feature_access(current_user)
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return soft_delete_account(session, account_id, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
 
 
 @router.post("/api/tg-accounts/{account_id}/move-pool", response_model=AccountOut)

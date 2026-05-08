@@ -68,6 +68,7 @@ interface Props {
   onCreateCodes: () => Promise<void>;
   onDisableCode: (code: ActivationCode) => Promise<void>;
   onOpenConfirm: (payload: ConfirmPayload) => void;
+  isActionPending: (key: string) => boolean;
 }
 
 const MENU_LABELS: Record<string, string> = {
@@ -234,9 +235,10 @@ export default function SystemConfigView(props: Props) {
     onCreateKeywordRule,
     onEditKeywordRule,
     onLoadCodes,
-    onCreateCodes,
-    onDisableCode,
-    onOpenConfirm,
+  onCreateCodes,
+  onDisableCode,
+  onOpenConfirm,
+  isActionPending,
   } = props;
 
   return (
@@ -258,6 +260,7 @@ export default function SystemConfigView(props: Props) {
               onToggle={onToggleDeveloperApp}
               onEditTenant={onEditTenant}
               onOpenConfirm={onOpenConfirm}
+              isActionPending={isActionPending}
             />
           ),
         },
@@ -296,6 +299,7 @@ export default function SystemConfigView(props: Props) {
               onCreateMaterial={onCreateMaterial}
               onCreateKeywordRule={onCreateKeywordRule}
               onEditKeywordRule={onEditKeywordRule}
+              isActionPending={isActionPending}
             />
           ),
         },
@@ -317,6 +321,7 @@ export default function SystemConfigView(props: Props) {
               onCreateCodes={onCreateCodes}
               onDisableCode={onDisableCode}
               onOpenConfirm={onOpenConfirm}
+              isActionPending={isActionPending}
             />
           ),
         },

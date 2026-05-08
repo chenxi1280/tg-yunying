@@ -37,6 +37,7 @@ from .tenants import ensure_task_quota_available
 
 
 CONTINUOUS_MODES = {"ai_activity", "mirror_forward"}
+ACTIVE_CONTINUOUS_STATUSES = {TaskStatus.QUEUED.value, TaskStatus.RUNNING.value}
 
 
 def build_participation_plan(
@@ -125,7 +126,7 @@ def _pause_for_inactive_subscription(campaign: Campaign) -> None:
 
 
 def _due_for_run(campaign: Campaign) -> bool:
-    if campaign.status != TaskStatus.QUEUED.value or campaign.execution_mode not in CONTINUOUS_MODES:
+    if campaign.status not in ACTIVE_CONTINUOUS_STATUSES or campaign.execution_mode not in CONTINUOUS_MODES:
         return False
     if campaign.last_run_at is None:
         return True
@@ -279,7 +280,7 @@ def run_ai_activity_campaign(session: Session, campaign: Campaign) -> int:
             task_index += 1
     _sync_campaign_ai_usage(session, campaign)
     campaign.last_run_at = _now()
-    campaign.status = TaskStatus.QUEUED.value
+    campaign.status = TaskStatus.RUNNING.value
     campaign.last_error = ""
     if _stop_if_needed(campaign):
         campaign.last_run_at = _now()
@@ -375,7 +376,7 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
                     content=message.content,
                 )
     campaign.last_run_at = _now()
-    campaign.status = TaskStatus.QUEUED.value
+    campaign.status = TaskStatus.RUNNING.value
     campaign.last_error = ""
     if _stop_if_needed(campaign):
         campaign.last_run_at = _now()
@@ -400,7 +401,7 @@ def process_continuous_campaign(session: Session, campaign_id: int) -> int:
         if campaign:
             campaign.last_run_at = _now()
             campaign.last_error = str(exc)
-            campaign.status = TaskStatus.QUEUED.value
+            campaign.status = TaskStatus.RUNNING.value
             session.commit()
         return 0
 
@@ -410,7 +411,7 @@ def drain_continuous_campaigns(session_factory, limit: int = 5) -> int:
         rows = list(
             session.scalars(
                 select(Campaign)
-                .where(Campaign.execution_mode.in_(CONTINUOUS_MODES), Campaign.status == TaskStatus.QUEUED.value)
+                .where(Campaign.execution_mode.in_(CONTINUOUS_MODES), Campaign.status.in_(ACTIVE_CONTINUOUS_STATUSES))
                 .order_by(Campaign.last_run_at.asc().nullsfirst(), Campaign.id.asc())
                 .limit(limit)
             )

@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, TgAccount, VerificationTask
+from app.models import AccountStatus, GroupAuthStatus, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 
 from ._common import _now, audit, gateway
 from .developer_apps import credentials_for_account
@@ -87,6 +87,17 @@ def confirm_verification_task(session: Session, task_id: int, actor: str) -> Ver
             result = gateway.resolve_verification_task(account.id, task.suggested_action, task.target_peer_id, account.session_ciphertext, credentials)
             task.status = result.status
             task.failure_detail = result.detail
+            if task.status in {"已处理", "已完成"} and task.group_id:
+                group = session.get(TgGroup, task.group_id)
+                link = session.scalar(
+                    select(TgGroupAccount).where(TgGroupAccount.group_id == task.group_id, TgGroupAccount.account_id == account.id)
+                )
+                if group:
+                    group.auth_status = GroupAuthStatus.AUTHORIZED.value
+                    group.can_send = True
+                if link:
+                    link.can_send = True
+                    link.permission_label = "可发言"
         except Exception as exc:  # noqa: BLE001
             task.status = "失败"
             task.failure_detail = str(exc)

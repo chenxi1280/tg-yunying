@@ -58,7 +58,9 @@ __all__ = [
     "queue_account_sync_now",
     "queue_account_sync_records",
     "retry_account_profile_sync",
+    "run_account_sync_now",
     "start_login",
+    "soft_delete_account",
     "sync_account_contacts",
     "sync_remote_profile",
     "sync_groups",
@@ -87,10 +89,42 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
         data["phone_masked"] = mask_phone(phone_number)
     elif not data.get("phone_masked"):
         raise ValueError("phone_number or phone_masked is required")
+    existing = session.scalar(
+        select(TgAccount).where(
+            TgAccount.tenant_id == payload.tenant_id,
+            TgAccount.phone_masked == data["phone_masked"],
+            TgAccount.deleted_at.is_(None),
+        )
+    )
+    if existing:
+        raise ValueError("同租户下该手机号已存在可用账号，请先移除旧账号或更换手机号")
     account = TgAccount(**data)
     session.add(account)
     session.flush()
     audit(session, tenant_id=account.tenant_id, actor=actor, action="添加TG账号", target_type="tg_account", target_id=str(account.id))
+    session.commit()
+    session.refresh(account)
+    return account
+
+
+def soft_delete_account(session: Session, account_id: int, actor: str = "普通用户", reason: str = "用户移除") -> TgAccount:
+    account = session.get(TgAccount, account_id)
+    if not account:
+        raise ValueError("account not found")
+    if account.deleted_at is None:
+        account.deleted_at = _now()
+        account.deleted_by = actor
+        account.delete_reason = reason
+        account.status = AccountStatus.DISABLED.value
+        audit(
+            session,
+            tenant_id=account.tenant_id,
+            actor=actor,
+            action="移除TG账号",
+            target_type="tg_account",
+            target_id=str(account.id),
+            detail=reason,
+        )
     session.commit()
     session.refresh(account)
     return account
@@ -287,7 +321,7 @@ def queue_account_sync_records(
     sync_types: list[str] | None = None,
     scheduled_at: datetime | None = None,
 ) -> list[TgAccountSyncRecord]:
-    sync_types = sync_types or ["groups", "contacts", "codes", "health", "profile_pull"]
+    sync_types = sync_types or ["profile_pull", "health", "groups", "contacts", "codes"]
     records: list[TgAccountSyncRecord] = []
     for sync_type in sync_types:
         existing = session.scalar(
@@ -331,14 +365,22 @@ def list_account_sync_records(session: Session, account_id: int, limit: int = 30
     )
 
 
-def queue_account_sync_now(session: Session, account_id: int, actor: str, sync_types: list[str] | None = None) -> list[TgAccountSyncRecord]:
+def run_account_sync_now(session: Session, account_id: int, actor: str, trigger_source: str = "manual", sync_types: list[str] | None = None) -> list[TgAccountSyncRecord]:
     account = session.get(TgAccount, account_id)
     if not account:
         raise ValueError("account not found")
-    records = queue_account_sync_records(session, account, trigger_source="manual", sync_types=sync_types)
-    audit(session, tenant_id=account.tenant_id, actor=actor, action="手动同步账号数据", target_type="tg_account", target_id=str(account.id))
+    records = queue_account_sync_records(session, account, trigger_source=trigger_source, sync_types=sync_types)
+    audit(session, tenant_id=account.tenant_id, actor=actor, action="同步账号数据", target_type="tg_account", target_id=str(account.id), detail=f"trigger={trigger_source}")
     session.commit()
-    return list_account_sync_records(session, account.id, limit=len(records) + 5)
+    record_ids = [record.id for record in records]
+    for record_id in record_ids:
+        process_account_sync_record(session, record_id)
+    session.refresh(account)
+    return list_account_sync_records(session, account.id, limit=len(record_ids) + 5)
+
+
+def queue_account_sync_now(session: Session, account_id: int, actor: str, sync_types: list[str] | None = None) -> list[TgAccountSyncRecord]:
+    return run_account_sync_now(session, account_id, actor, trigger_source="manual", sync_types=sync_types)
 
 
 def process_account_sync_record(session: Session, record_id: int) -> TgAccountSyncRecord:
@@ -497,15 +539,17 @@ def verify_login(session: Session, account_id: int, code: str | None, password_2
     if latest_flow and latest_flow.code_preview and _is_expired(latest_flow.code_expires_at) and not password_2fa:
         latest_flow.code_preview = None
         latest_flow.status = "已过期"
-        account.status = AccountStatus.ERROR.value
-        audit(session, tenant_id=account.tenant_id, actor=actor, action="验证TG登录失败", target_type="tg_account", target_id=str(account.id), detail="code expired")
-        session.commit()
-        session.refresh(account)
-        return account
+        if not code:
+            account.status = AccountStatus.ERROR.value
+            audit(session, tenant_id=account.tenant_id, actor=actor, action="验证TG登录失败", target_type="tg_account", target_id=str(account.id), detail="code expired")
+            session.commit()
+            session.refresh(account)
+            return account
 
     credentials = credentials_for_account(session, account)
     status, raw_session = gateway.finish_login(code, password_2fa, account_id=account.id, phone=get_account_phone(account), credentials=credentials)
     account.status = status
+    should_sync = False
     if raw_session:
         account.session_ciphertext = encrypt_session(raw_session)
         account.last_active_at = _now()
@@ -514,10 +558,12 @@ def verify_login(session: Session, account_id: int, code: str | None, password_2
             latest_flow.code_preview = None
             latest_flow.status = status
         if status == AccountStatus.ACTIVE.value:
-            queue_account_sync_records(session, account, trigger_source="login")
+            should_sync = True
 
     audit(session, tenant_id=account.tenant_id, actor=actor, action="验证TG登录", target_type="tg_account", target_id=str(account.id), detail=f"status={status}")
     session.commit()
+    if should_sync:
+        run_account_sync_now(session, account.id, actor, trigger_source="login")
     session.refresh(account)
     return account
 
@@ -539,15 +585,18 @@ def check_qr_login(session: Session, account_id: int, actor: str = "普通用户
     credentials = credentials_for_account(session, account)
     status, raw_session = gateway.finish_login("qr-confirmed", None, account_id=account.id, phone=get_account_phone(account), credentials=credentials)
     account.status = status
+    should_sync = False
     if raw_session:
         account.session_ciphertext = encrypt_session(raw_session)
         account.last_active_at = _now()
         account.health_score = max(account.health_score, 90)
         if status == AccountStatus.ACTIVE.value:
-            queue_account_sync_records(session, account, trigger_source="login")
+            should_sync = True
     latest_flow.status = status
     audit(session, tenant_id=account.tenant_id, actor=actor, action="检查QR登录", target_type="tg_account", target_id=str(account.id), detail=f"status={status}")
     session.commit()
+    if should_sync:
+        run_account_sync_now(session, account.id, actor, trigger_source="login")
     session.refresh(account)
     return account
 
@@ -615,6 +664,7 @@ def sync_groups(session: Session, account_id: int, actor: str = "普通用户") 
                 group_type=snapshot.group_type,
                 member_count=snapshot.member_count,
                 can_send=snapshot.can_send,
+                auth_status=GroupAuthStatus.AUTHORIZED.value if snapshot.can_send else GroupAuthStatus.UNVERIFIED.value,
             )
             session.add(group)
             session.flush()
@@ -622,6 +672,8 @@ def sync_groups(session: Session, account_id: int, actor: str = "普通用户") 
             group.title = snapshot.title
             group.member_count = snapshot.member_count
             group.can_send = snapshot.can_send
+            if snapshot.can_send and group.auth_status == GroupAuthStatus.UNVERIFIED.value:
+                group.auth_status = GroupAuthStatus.AUTHORIZED.value
         groups.append(group)
         exists = session.scalar(
             select(TgGroupAccount).where(TgGroupAccount.group_id == group.id, TgGroupAccount.account_id == account.id)
@@ -890,6 +942,7 @@ def account_detail(session: Session, account_id: int, actor: str) -> dict:
 
     clone_plans = account_clone_plans(session, account.tenant_id, account_id=account.id, limit=8)
     verification_tasks = list_verification_tasks(session, account.tenant_id, account_id=account.id, limit=8)
+    pending_verification_count = sum(1 for task in verification_tasks if task.status == "待处理")
     sent_count = sum(1 for task in records if task.status == TaskStatus.SENT.value)
     failed_count = sum(1 for task in records if task.status == TaskStatus.FAILED.value)
     latest_sync_time = (sync_records[0].finished_at or sync_records[0].created_at) if sync_records else None
@@ -914,14 +967,17 @@ def account_detail(session: Session, account_id: int, actor: str) -> dict:
             "failed": failed_count,
             "clone_plans": len(clone_plans),
             "verification_tasks": len(verification_tasks),
+            "pending_verification_tasks": pending_verification_count,
         },
     }
 
 
-def filter_accounts(session: Session, tenant_id: int, page: int, page_size: int, search: str | None, status: str | None, pool_id: int | None = None) -> list[TgAccount]:
+def filter_accounts(session: Session, tenant_id: int, page: int, page_size: int, search: str | None, status: str | None, pool_id: int | None = None, include_deleted: bool = False) -> list[TgAccount]:
     require_tenant(session, tenant_id)
     seed_account_pools(session)
     stmt = select(TgAccount).where(TgAccount.tenant_id == tenant_id)
+    if not include_deleted:
+        stmt = stmt.where(TgAccount.deleted_at.is_(None))
     if search:
         like = f"%{search}%"
         stmt = stmt.where(or_(TgAccount.display_name.like(like), TgAccount.username.like(like), TgAccount.phone_masked.like(like)))

@@ -36,7 +36,7 @@ def account_pool_snapshot(session: Session, pool: AccountPool) -> dict:
         "name": pool.name,
         "description": pool.description,
         "is_default": pool.is_default,
-        "account_count": session.scalar(select(func.count(TgAccount.id)).where(TgAccount.pool_id == pool.id)) or 0,
+        "account_count": session.scalar(select(func.count(TgAccount.id)).where(TgAccount.pool_id == pool.id, TgAccount.deleted_at.is_(None))) or 0,
         "created_at": pool.created_at,
         "updated_at": pool.updated_at,
     }
@@ -60,7 +60,7 @@ def ensure_default_account_pool(session: Session, tenant_id: int) -> AccountPool
 def seed_account_pools(session: Session) -> None:
     for tenant_id in session.scalars(select(Tenant.id)).all():
         pool = ensure_default_account_pool(session, tenant_id)
-        accounts = session.scalars(select(TgAccount).where(TgAccount.tenant_id == tenant_id, TgAccount.pool_id.is_(None))).all()
+        accounts = session.scalars(select(TgAccount).where(TgAccount.tenant_id == tenant_id, TgAccount.pool_id.is_(None), TgAccount.deleted_at.is_(None))).all()
         for account in accounts:
             account.pool_id = pool.id
 
@@ -77,7 +77,7 @@ def account_pool_contacts(session: Session, pool_id: int, limit: int = 300) -> l
     pool = session.get(AccountPool, pool_id)
     if not pool:
         raise ValueError("account pool not found")
-    account_ids = select(TgAccount.id).where(TgAccount.tenant_id == pool.tenant_id, TgAccount.pool_id == pool.id)
+    account_ids = select(TgAccount.id).where(TgAccount.tenant_id == pool.tenant_id, TgAccount.pool_id == pool.id, TgAccount.deleted_at.is_(None))
     return list(
         session.scalars(
             select(TgContact)
@@ -95,7 +95,7 @@ def account_pool_detail(session: Session, pool_id: int) -> dict:
     accounts = list(
         session.scalars(
             select(TgAccount)
-            .where(TgAccount.tenant_id == pool.tenant_id, TgAccount.pool_id == pool.id)
+            .where(TgAccount.tenant_id == pool.tenant_id, TgAccount.pool_id == pool.id, TgAccount.deleted_at.is_(None))
             .order_by(TgAccount.id.desc())
         )
     )

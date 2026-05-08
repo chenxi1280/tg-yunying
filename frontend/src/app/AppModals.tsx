@@ -1,8 +1,10 @@
 import { useAppContext } from './context';
-import { Button, Checkbox, Input, InputNumber, Select, Space } from 'antd';
+import { Button, Checkbox, Input, InputNumber, QRCode, Select, Space } from 'antd';
 import { Modal, FormActions, ConfirmDialog, ResultDialog, StatusBadge } from './components/shared';
 import { AccountDetailModal, AccountPoolDetailModal } from './views/AccountModals';
 import CampaignWizard from './views/CampaignWizard';
+
+const accountPhone = (account: { phone_number?: string | null; phone_masked: string }) => account.phone_number || account.phone_masked;
 
 /** 从 AppShell 中提取的所有模态框渲染组件。 */
 export function AppModals() {
@@ -29,7 +31,7 @@ export function AppModals() {
     // Account Pool
     accountPoolForm, setAccountPoolForm, createAccountPool, accountPoolDetail, poolDirectAccountId, setPoolDirectAccountId, refreshAccountPoolDetail,
     // Account
-    accountCreateForm, setAccountCreateForm, createAccount, loginAfterCreate, accountLoginForm, setAccountLoginForm, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, checkAccountQrLogin, accountPools, accounts, accountDetail, setAccountDetailTab, accountDetailTab, runtime, cloneForm, setCloneForm, createClonePlan, confirmClonePlan, moveCurrentAccountPool,
+    accountCreateForm, setAccountCreateForm, createAccount, loginAfterCreate, accountLoginForm, setAccountLoginForm, chooseAccountLoginMethod, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, checkAccountQrLogin, accountPools, accounts, accountDetail, setAccountDetailTab, accountDetailTab, runtime, cloneForm, setCloneForm, createClonePlan, confirmClonePlan, moveCurrentAccountPool,
     // Profile
     profileForm, setProfileForm, avatarFile, setAvatarFile, avatarUrl, saveAccountProfile, openAccountProfileEdit, queueAccountSyncNow, pollVerificationCodes, retryAccountProfileSync,
     // Group
@@ -43,7 +45,7 @@ export function AppModals() {
     // Direct Message
     directMessageForm, setDirectMessageForm, selectedDirectContact, startDirectMessageToContact, createDirectMessageTask,
     // Misc
-    openAccountCreate, openAccountDetail, openConfirm, accountContacts, accountName, groupName, busy,
+    openAccountCreate, openAccountDetail, openConfirm, accountContacts, accountName, groupName, busy, isActionPending,
   } = ctx;
 
   if (!modal && !resultDialog) return null;
@@ -60,7 +62,7 @@ export function AppModals() {
             <label className="wide-field">API Hash<Input.Password value={developerAppForm.api_hash} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, api_hash: event.target.value })} placeholder={modal.type === 'developerAppEdit' ? '不填写则保留原凭证' : ''} /></label>
             <Checkbox checked={developerAppForm.is_active} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, is_active: event.target.checked })}>启用应用</Checkbox>
           </div>
-          <FormActions submitLabel={modal.type === 'developerAppEdit' ? '保存应用' : '新增应用'} onCancel={closeModal} onSubmit={createDeveloperApp} disabled={!developerAppForm.app_name.trim() || !developerAppForm.api_id || (modal.type === 'developerAppCreate' && developerAppForm.api_hash.length < 8)} />
+          <FormActions submitLabel={modal.type === 'developerAppEdit' ? '保存应用' : '新增应用'} onCancel={closeModal} onSubmit={createDeveloperApp} loading={isActionPending('developer-app:save')} disabled={!developerAppForm.app_name.trim() || !developerAppForm.api_id || (modal.type === 'developerAppCreate' && developerAppForm.api_hash.length < 8)} />
         </Modal>
       )}
 
@@ -75,7 +77,7 @@ export function AppModals() {
             <label className="wide-field">备注<Input value={aiProviderForm.notes} onChange={(event) => setAiProviderForm({ ...aiProviderForm, notes: event.target.value })} /></label>
             <Checkbox checked={aiProviderForm.is_active} onChange={(event) => setAiProviderForm({ ...aiProviderForm, is_active: event.target.checked })}>启用供应商</Checkbox>
           </div>
-          <FormActions submitLabel={modal.type === 'aiProviderEdit' ? '保存供应商' : '新增供应商'} onCancel={closeModal} onSubmit={createAiProvider} disabled={!aiProviderForm.provider_name.trim() || !aiProviderForm.base_url.trim() || !aiProviderForm.model_name.trim() || (modal.type === 'aiProviderCreate' && aiProviderForm.api_key.length < 4)} />
+          <FormActions submitLabel={modal.type === 'aiProviderEdit' ? '保存供应商' : '新增供应商'} onCancel={closeModal} onSubmit={createAiProvider} loading={isActionPending('ai-provider:save')} disabled={!aiProviderForm.provider_name.trim() || !aiProviderForm.base_url.trim() || !aiProviderForm.model_name.trim() || (modal.type === 'aiProviderCreate' && aiProviderForm.api_key.length < 4)} />
         </Modal>
       )}
 
@@ -87,7 +89,7 @@ export function AppModals() {
             <label>账号配额<InputNumber min={0} value={tenantForm.account_quota} onChange={(value) => setTenantForm({ ...tenantForm, account_quota: Number(value ?? 0) })} /></label>
             <label>任务配额<InputNumber min={0} value={tenantForm.task_quota} onChange={(value) => setTenantForm({ ...tenantForm, task_quota: Number(value ?? 0) })} /></label>
           </div>
-          <FormActions submitLabel="保存配额" onCancel={closeModal} onSubmit={saveTenantQuota} disabled={!tenantForm.name || !tenantForm.plan_name} />
+          <FormActions submitLabel="保存配额" onCancel={closeModal} onSubmit={saveTenantQuota} loading={isActionPending(`tenant:${tenantForm.id ?? 'current'}:save`)} disabled={!tenantForm.name || !tenantForm.plan_name} />
         </Modal>
       )}
 
@@ -101,7 +103,7 @@ export function AppModals() {
             <label className="wide-field">备注<Input value={subscriptionPlanForm.note} onChange={(event) => setSubscriptionPlanForm((current) => ({ ...current, note: event.target.value }))} /></label>
             <Checkbox checked={subscriptionPlanForm.is_active} onChange={(event) => setSubscriptionPlanForm((current) => ({ ...current, is_active: event.target.checked }))}>启用套餐</Checkbox>
           </div>
-          <FormActions submitLabel="保存套餐" onCancel={closeModal} onSubmit={createSubscriptionPlan} disabled={!subscriptionPlanForm.plan_type.trim() || !subscriptionPlanForm.name.trim()} />
+          <FormActions submitLabel="保存套餐" onCancel={closeModal} onSubmit={createSubscriptionPlan} loading={isActionPending('subscription-plan:save')} disabled={!subscriptionPlanForm.plan_type.trim() || !subscriptionPlanForm.name.trim()} />
         </Modal>
       )}
 
@@ -150,15 +152,15 @@ export function AppModals() {
           </div>
           <Space className="modal-actions">
             <Button onClick={closeModal}>取消</Button>
-            <Button onClick={() => {
+            <Button loading={adminUserForm.id ? isActionPending(`admin-user:${adminUserForm.id}:reset-password`) : false} onClick={() => {
               const user = adminUsers.find((item) => item.id === adminUserForm.id);
               if (user) void resetAdminUserPassword(user, 'user123456');
             }}>重置密码</Button>
-            <Button onClick={() => {
+            <Button loading={adminUserForm.id ? isActionPending(`admin-user:${adminUserForm.id}:adjust-tokens`) : false} onClick={() => {
               const user = adminUsers.find((item) => item.id === adminUserForm.id);
               if (user) void adjustAdminUserTokens(user);
             }}>调整 Token</Button>
-            <Button type="primary" onClick={saveAdminUser} disabled={!adminUserForm.name.trim() || !adminUserForm.email.trim()}>保存用户</Button>
+            <Button type="primary" loading={isActionPending(`admin-user:${adminUserForm.id ?? 'current'}:save`)} onClick={saveAdminUser} disabled={!adminUserForm.name.trim() || !adminUserForm.email.trim()}>保存用户</Button>
           </Space>
         </Modal>
       )}
@@ -172,7 +174,7 @@ export function AppModals() {
             <Checkbox checked={tenantAiSetting.ai_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_enabled: event.target.checked })}>启用 AI 草稿</Checkbox>
             <Checkbox checked={tenantAiSetting.fallback_to_mock} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, fallback_to_mock: event.target.checked })}>失败回退模板</Checkbox>
           </div>
-          <FormActions onCancel={closeModal} onSubmit={saveTenantAiSetting} disabled={!aiProviders.length} />
+          <FormActions onCancel={closeModal} onSubmit={saveTenantAiSetting} loading={isActionPending('tenant-ai:save')} disabled={!aiProviders.length} />
         </Modal>
       )}
 
@@ -184,7 +186,7 @@ export function AppModals() {
             <label>批次间隔秒<InputNumber min={0} value={batchIntervalSeconds} onChange={(value) => setBatchIntervalSeconds(Number(value ?? 0))} /></label>
             <Checkbox checked={respectSendWindow} onChange={(event) => setRespectSendWindow(event.target.checked)}>遵守发送时间窗</Checkbox>
           </div>
-          <FormActions onCancel={closeModal} onSubmit={saveSchedulingSetting} />
+          <FormActions onCancel={closeModal} onSubmit={saveSchedulingSetting} loading={isActionPending('scheduling:save')} />
         </Modal>
       )}
 
@@ -195,7 +197,7 @@ export function AppModals() {
             <label className="wide-field">新密码<Input.Password value={changePasswordForm.new_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, new_password: event.target.value }))} /></label>
             <label className="wide-field">确认新密码<Input.Password value={changePasswordForm.confirm_password} onChange={(event) => setChangePasswordForm((current) => ({ ...current, confirm_password: event.target.value }))} /></label>
           </div>
-          <FormActions submitLabel="修改密码" onCancel={closeModal} onSubmit={changePassword} disabled={!changePasswordForm.current_password || changePasswordForm.new_password.length < 6 || changePasswordForm.new_password !== changePasswordForm.confirm_password} />
+          <FormActions submitLabel="修改密码" onCancel={closeModal} onSubmit={changePassword} loading={isActionPending('modal:password:change')} disabled={!changePasswordForm.current_password || changePasswordForm.new_password.length < 6 || changePasswordForm.new_password !== changePasswordForm.confirm_password} />
         </Modal>
       )}
 
@@ -206,7 +208,7 @@ export function AppModals() {
             <label>模板类型<Select value={promptTemplateForm.template_type} onChange={(value) => setPromptTemplateForm({ ...promptTemplateForm, template_type: value })} options={['系统决策提示词', '群活跃草稿', '多账号对话脚本', '素材配文', '风险检查'].map((value) => ({ value, label: value }))} /></label>
             <label className="wide-field">模板内容<Input.TextArea value={promptTemplateForm.content} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, content: event.target.value })} /></label>
           </div>
-          <FormActions submitLabel="新增提示词" onCancel={closeModal} onSubmit={createPromptTemplate} disabled={!promptTemplateForm.name || !promptTemplateForm.content} />
+          <FormActions submitLabel="新增提示词" onCancel={closeModal} onSubmit={createPromptTemplate} loading={isActionPending('prompt-template:create')} disabled={!promptTemplateForm.name || !promptTemplateForm.content} />
         </Modal>
       )}
 
@@ -218,7 +220,7 @@ export function AppModals() {
             <label>标签<Input value={materialForm.tags} onChange={(event) => setMaterialForm({ ...materialForm, tags: event.target.value })} /></label>
             <label className="wide-field">内容/URL<Input.TextArea value={materialForm.content} onChange={(event) => setMaterialForm({ ...materialForm, content: event.target.value })} /></label>
           </div>
-          <FormActions submitLabel="新增素材" onCancel={closeModal} onSubmit={createMaterial} disabled={!materialForm.title || !materialForm.content} />
+          <FormActions submitLabel="新增素材" onCancel={closeModal} onSubmit={createMaterial} loading={isActionPending('material:create')} disabled={!materialForm.title || !materialForm.content} />
         </Modal>
       )}
 
@@ -230,12 +232,12 @@ export function AppModals() {
             <label className="wide-field">备注<Input value={keywordRuleForm.note} onChange={(event) => setKeywordRuleForm({ ...keywordRuleForm, note: event.target.value })} /></label>
             <Checkbox checked={keywordRuleForm.is_active} onChange={(event) => setKeywordRuleForm({ ...keywordRuleForm, is_active: event.target.checked })}>启用关键词</Checkbox>
           </div>
-          <FormActions submitLabel={modal.type === 'keywordRuleEdit' ? '保存关键词' : '新增关键词'} onCancel={closeModal} onSubmit={modal.type === 'keywordRuleEdit' ? saveContentKeywordRule : createContentKeywordRule} disabled={!keywordRuleForm.keyword.trim()} />
+          <FormActions submitLabel={modal.type === 'keywordRuleEdit' ? '保存关键词' : '新增关键词'} onCancel={closeModal} onSubmit={modal.type === 'keywordRuleEdit' ? saveContentKeywordRule : createContentKeywordRule} loading={isActionPending(modal.type === 'keywordRuleEdit' ? `keyword-rule:${keywordRuleForm.id ?? 'create'}:save` : 'keyword-rule:create')} disabled={!keywordRuleForm.keyword.trim()} />
         </Modal>
       )}
 
       {modal?.type === 'accountPoolDetail' && accountPoolDetail && (
-        <AccountPoolDetailModal accountPoolDetail={accountPoolDetail} poolDirectAccountId={poolDirectAccountId} setPoolDirectAccountId={setPoolDirectAccountId} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} onClose={closeModal} onOpenAccountCreate={openAccountCreate} onOpenAccountDetail={openAccountDetail} onRefreshAccountPoolDetail={refreshAccountPoolDetail} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} accountName={accountName} />
+        <AccountPoolDetailModal accountPoolDetail={accountPoolDetail} poolDirectAccountId={poolDirectAccountId} setPoolDirectAccountId={setPoolDirectAccountId} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} onClose={closeModal} onOpenAccountCreate={openAccountCreate} onOpenAccountDetail={openAccountDetail} onRefreshAccountPoolDetail={refreshAccountPoolDetail} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} accountName={accountName} isActionPending={isActionPending} />
       )}
 
       {modal?.type === 'accountPoolCreate' && (
@@ -245,7 +247,7 @@ export function AppModals() {
             <Checkbox checked={accountPoolForm.is_default} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, is_default: event.target.checked })}>设为默认账号分组</Checkbox>
             <label className="wide-field">说明<Input.TextArea value={accountPoolForm.description} onChange={(event) => setAccountPoolForm({ ...accountPoolForm, description: event.target.value })} /></label>
           </div>
-          <FormActions submitLabel="新增账号分组" onCancel={closeModal} onSubmit={createAccountPool} disabled={!accountPoolForm.name.trim()} />
+          <FormActions submitLabel="新增账号分组" onCancel={closeModal} onSubmit={createAccountPool} loading={isActionPending('modal:account-pool:create')} disabled={!accountPoolForm.name.trim()} />
         </Modal>
       )}
 
@@ -259,20 +261,35 @@ export function AppModals() {
             <label className="wide-field">手机号<Input value={accountCreateForm.phone_number} onChange={(event) => setAccountCreateForm({ ...accountCreateForm, phone_number: event.target.value })} placeholder="+8613800000000" /></label>
           </div>
           <p className="muted-line">创建后会进入所选登录方式；验证码和扫码是同级二选一流程。</p>
-          <FormActions submitLabel="创建账号" onCancel={closeModal} onSubmit={createAccount} disabled={!accountCreateForm.display_name.trim() || !accountCreateForm.phone_number.trim()} />
+          <FormActions submitLabel="创建账号" onCancel={closeModal} onSubmit={createAccount} loading={isActionPending('modal:account:create')} disabled={!accountCreateForm.display_name.trim() || !accountCreateForm.phone_number.trim()} />
         </Modal>
       )}
 
       {modal?.type === 'accountLogin' && accountLoginForm.account && (
         <Modal title={`${accountLoginForm.account.display_name} 完成登录`} size="small" onClose={closeModal}>
           <div className="detail-list">
-            <div><dt>账号</dt><dd>{accountLoginForm.account.phone_masked}</dd></div>
+            <div><dt>账号</dt><dd>{accountPhone(accountLoginForm.account)}</dd></div>
             <div><dt>当前状态</dt><dd><StatusBadge status={accountLoginForm.account.status} /></dd></div>
-            <div><dt>登录方式</dt><dd>{accountLoginForm.method === 'qr' ? '二维码扫码' : '手机号验证码'}</dd></div>
+            <div><dt>登录方式</dt><dd>{accountLoginForm.step === 'method' ? '待选择' : accountLoginForm.method === 'qr' ? '二维码扫码' : '手机号验证码'}</dd></div>
             {accountLoginForm.flow?.code_expires_at && <div><dt>验证码有效期</dt><dd>{new Date(accountLoginForm.flow.code_expires_at).toLocaleTimeString()}</dd></div>}
           </div>
+          {accountLoginForm.step === 'method' && (
+            <>
+              <p className="muted-line">请选择登录方式。扫码和验证码是同级二选一流程，选择后才会启动对应登录。</p>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Button type="primary" block loading={isActionPending(`account-login:${accountLoginForm.account.id}:qr`)} onClick={() => chooseAccountLoginMethod('qr')} disabled={Boolean(busy)}>扫码登录</Button>
+                <Button block loading={isActionPending(`account-login:${accountLoginForm.account.id}:code`)} onClick={() => chooseAccountLoginMethod('code')} disabled={Boolean(busy)}>验证码登录</Button>
+              </Space>
+              {accountLoginForm.error && <p className="danger-text">{accountLoginForm.error}</p>}
+            </>
+          )}
           {accountLoginForm.step === 'qr' && (
             <>
+              {accountLoginForm.flow?.qr_payload && (
+                <div style={{ display: 'flex', justifyContent: 'center', margin: '16px 0' }}>
+                  <QRCode value={accountLoginForm.flow.qr_payload} />
+                </div>
+              )}
               <div className="policy-grid">
                 <label className="wide-field">扫码 payload
                   <Input.TextArea value={accountLoginForm.flow?.qr_payload ?? ''} readOnly autoSize={{ minRows: 4, maxRows: 8 }} placeholder="二维码 payload 将在启动扫码登录后展示" />
@@ -280,8 +297,8 @@ export function AppModals() {
               </div>
               {accountLoginForm.error && <p className="danger-text">{accountLoginForm.error}</p>}
               <Space className="modal-actions">
-                <Button onClick={resendAccountLoginCode} disabled={Boolean(busy)}>改用验证码</Button>
-                <Button type="primary" onClick={checkAccountQrLogin} disabled={Boolean(busy)}>检查扫码结果</Button>
+                <Button onClick={() => setAccountLoginForm((current) => ({ ...current, step: 'method', error: '' }))} disabled={Boolean(busy)}>重新选择登录方式</Button>
+                <Button type="primary" loading={isActionPending(`account-login:${accountLoginForm.account.id}:qr-check`)} onClick={checkAccountQrLogin} disabled={Boolean(busy)}>检查扫码结果</Button>
               </Space>
             </>
           )}
@@ -300,8 +317,9 @@ export function AppModals() {
               {accountLoginForm.flow?.code_preview && <p className="muted-line">开发模式验证码：{accountLoginForm.flow.code_preview}</p>}
               {accountLoginForm.error && <p className="danger-text">{accountLoginForm.error}</p>}
               <Space className="modal-actions">
-                <Button onClick={resendAccountLoginCode} disabled={Boolean(busy)}>{accountLoginForm.flow ? '重新发送验证码' : '获取验证码'}</Button>
-                <Button type="primary" onClick={submitAccountLoginCode} disabled={Boolean(busy) || !accountLoginForm.code.trim()}>提交验证码</Button>
+                <Button onClick={() => setAccountLoginForm((current) => ({ ...current, step: 'method', error: '' }))} disabled={Boolean(busy)}>重新选择登录方式</Button>
+                <Button loading={isActionPending(`account-login:${accountLoginForm.account.id}:resend`)} onClick={resendAccountLoginCode} disabled={Boolean(busy)}>{accountLoginForm.flow ? '重新发送验证码' : '获取验证码'}</Button>
+                <Button type="primary" loading={isActionPending(`account-login:${accountLoginForm.account.id}:code`)} onClick={submitAccountLoginCode} disabled={Boolean(busy) || !accountLoginForm.code.trim()}>提交验证码</Button>
               </Space>
             </>
           )}
@@ -319,8 +337,8 @@ export function AppModals() {
               </div>
               {accountLoginForm.error && <p className="danger-text">{accountLoginForm.error}</p>}
               <Space className="modal-actions">
-                <Button onClick={() => setAccountLoginForm((current) => ({ ...current, step: 'code', password_2fa: '', error: '' }))}>返回验证码</Button>
-                <Button type="primary" onClick={submitAccountLoginPassword} disabled={Boolean(busy) || !accountLoginForm.password_2fa}>完成登录</Button>
+                <Button onClick={() => setAccountLoginForm((current) => ({ ...current, step: 'method', password_2fa: '', error: '' }))}>重新选择登录方式</Button>
+                <Button type="primary" loading={isActionPending(`account-login:${accountLoginForm.account.id}:password`)} onClick={submitAccountLoginPassword} disabled={Boolean(busy) || !accountLoginForm.password_2fa}>完成登录</Button>
               </Space>
             </>
           )}
@@ -353,7 +371,7 @@ export function AppModals() {
             <Checkbox checked={cloneForm.clone_groups} onChange={(event) => setCloneForm({ ...cloneForm, clone_groups: event.target.checked })}>克隆群聊和频道清单</Checkbox>
           </div>
           <p className="muted-line">已选择 {cloneForm.target_account_ids.length} 个目标账号。系统会先生成计划，确认后逐项执行。</p>
-          <FormActions submitLabel="生成克隆计划" onCancel={() => ctx.setModal({ type: 'accountDetail' })} onSubmit={createClonePlan} disabled={!cloneForm.target_account_ids.length || (!cloneForm.clone_contacts && !cloneForm.clone_groups)} />
+          <FormActions submitLabel="生成克隆计划" onCancel={() => ctx.setModal({ type: 'accountDetail' })} onSubmit={createClonePlan} loading={isActionPending(`account:${accountDetail.account.id}:clone-plan:create`)} disabled={!cloneForm.target_account_ids.length || (!cloneForm.clone_contacts && !cloneForm.clone_groups)} />
         </Modal>
       )}
 
@@ -369,8 +387,8 @@ export function AppModals() {
           <p className="muted-line">平台只会在你确认后执行可控动作。</p>
           <Space className="modal-actions">
             <Button onClick={() => ctx.setModal({ type: returnAfterVerification })}>返回</Button>
-            <Button onClick={() => dismissVerificationTask(modal.payload)}>忽略</Button>
-            <Button type="primary" disabled={!['待处理', '失败'].includes(modal.payload.status)} onClick={() => confirmVerificationTask(modal.payload)}>确认处理</Button>
+            <Button loading={isActionPending(`verification:${modal.payload.id}:dismiss`)} onClick={() => dismissVerificationTask(modal.payload)}>忽略</Button>
+            <Button type="primary" loading={isActionPending(`verification:${modal.payload.id}:confirm`)} disabled={!['待处理', '失败'].includes(modal.payload.status)} onClick={() => confirmVerificationTask(modal.payload)}>确认处理</Button>
           </Space>
         </Modal>
       )}
@@ -410,7 +428,7 @@ export function AppModals() {
               </div>
             </div>
           </div>
-          <FormActions onCancel={closeModal} onSubmit={saveGroupPolicy} />
+          <FormActions onCancel={closeModal} onSubmit={saveGroupPolicy} loading={isActionPending(`group:${selectedGroup.id}:policy:save`)} />
         </Modal>
       )}
 
@@ -429,7 +447,7 @@ export function AppModals() {
             </div>
           </div>
           <p className="muted-line">头像最大 {Math.round((runtime?.avatar_max_bytes ?? 0) / 1024 / 1024) || 2}MB；保存后会自动进入后台同步处理。</p>
-          <FormActions submitLabel="保存并同步" onCancel={() => ctx.setModal({ type: 'accountDetail' })} onSubmit={saveAccountProfile} disabled={!profileForm.display_name.trim()} />
+          <FormActions submitLabel="保存并同步" onCancel={() => ctx.setModal({ type: 'accountDetail' })} onSubmit={saveAccountProfile} loading={isActionPending(`account:${accountDetail.account.id}:profile:save`)} disabled={!profileForm.display_name.trim()} />
         </Modal>
       )}
 
@@ -440,16 +458,16 @@ export function AppModals() {
             <label>建议账号<Select value={draftEditForm.suggested_account_id || ''} onChange={(value) => setDraftEditForm({ ...draftEditForm, suggested_account_id: Number(value) || '' })} options={[{ value: '', label: '不指定' }, ...accounts.map((account) => ({ value: account.id, label: account.display_name }))]} /></label>
             <label className="wide-field">草稿内容<Input.TextArea value={draftEditForm.content} onChange={(event) => setDraftEditForm({ ...draftEditForm, content: event.target.value })} /></label>
           </div>
-          <FormActions onCancel={closeModal} onSubmit={saveDraftEdit} disabled={!draftEditForm.content.trim()} />
+          <FormActions onCancel={closeModal} onSubmit={saveDraftEdit} loading={isActionPending(`draft:${draftEditTarget.id}:save`)} disabled={!draftEditForm.content.trim()} />
         </Modal>
       )}
 
       {modal?.type === 'accountDetail' && accountDetail && (
-        <AccountDetailModal accountDetail={accountDetail} accountDetailTab={accountDetailTab} setAccountDetailTab={setAccountDetailTab} runtime={runtime} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} accountContacts={accountContacts} accounts={accounts} avatarUrl={avatarUrl} onClose={closeModal} onOpenAccountProfileEdit={openAccountProfileEdit} onQueueAccountSyncNow={queueAccountSyncNow} onPollVerificationCodes={pollVerificationCodes} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onConfirmClonePlan={confirmClonePlan} onRetryCloneItem={ctx.retryCloneItem} onRetryAccountProfileSync={retryAccountProfileSync} onDismissVerificationTask={dismissVerificationTask} onConfirmVerificationTask={confirmVerificationTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} onSetCloneForm={setCloneForm} accountName={accountName} />
+        <AccountDetailModal accountDetail={accountDetail} accountDetailTab={accountDetailTab} setAccountDetailTab={setAccountDetailTab} runtime={runtime} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} accountContacts={accountContacts} accounts={accounts} avatarUrl={avatarUrl} onClose={closeModal} onOpenAccountProfileEdit={openAccountProfileEdit} onQueueAccountSyncNow={queueAccountSyncNow} onRefreshAccountDetail={ctx.refreshAccountDetail} onPollVerificationCodes={pollVerificationCodes} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onConfirmClonePlan={confirmClonePlan} onRetryCloneItem={ctx.retryCloneItem} onRetryAccountProfileSync={retryAccountProfileSync} onDismissVerificationTask={dismissVerificationTask} onConfirmVerificationTask={confirmVerificationTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} onSetCloneForm={setCloneForm} accountName={accountName} isActionPending={isActionPending} />
       )}
 
       {modal?.type === 'campaignCreate' && (
-        <CampaignWizard groups={groups} aiProviders={aiProviders} materials={materials} campaignStep={campaignStep} setCampaignStep={setCampaignStep} campaignMode={campaignMode} setCampaignMode={setCampaignMode} selectedTargetGroupIds={selectedTargetGroupIds} selectedSourceGroupIds={selectedSourceGroupIds} recommendedAccounts={recommendedAccounts} selectedAccountsByGroup={selectedAccountsByGroup} targetGroupsMissingAccounts={targetGroupsMissingAccounts} topic={topic} setTopic={setTopic} sendWindow={sendWindow} setSendWindow={setSendWindow} intensity={intensity} setIntensity={setIntensity} draftCount={draftCount} setDraftCount={setDraftCount} tone={tone} setTone={setTone} selectedAiProviderId={selectedAiProviderId} setSelectedAiProviderId={setSelectedAiProviderId} selectedMaterialIds={selectedMaterialIds} jitterMinSeconds={jitterMinSeconds} setJitterMinSeconds={setJitterMinSeconds} jitterMaxSeconds={jitterMaxSeconds} setJitterMaxSeconds={setJitterMaxSeconds} batchIntervalSeconds={batchIntervalSeconds} setBatchIntervalSeconds={setBatchIntervalSeconds} respectSendWindow={respectSendWindow} setRespectSendWindow={setRespectSendWindow} campaignEndsAt={campaignEndsAt} setCampaignEndsAt={setCampaignEndsAt} maxAiTokens={maxAiTokens} setMaxAiTokens={setMaxAiTokens} runIntervalSeconds={runIntervalSeconds} setRunIntervalSeconds={setRunIntervalSeconds} participationMinRatio={participationMinRatio} setParticipationMinRatio={setParticipationMinRatio} participationMaxRatio={participationMaxRatio} setParticipationMaxRatio={setParticipationMaxRatio} maxMessagesPerAccount={maxMessagesPerAccount} setMaxMessagesPerAccount={setMaxMessagesPerAccount} maxDraftsPerBatch={maxDraftsPerBatch} setMaxDraftsPerBatch={setMaxDraftsPerBatch} onClose={closeModal} onToggleTargetGroup={toggleTargetGroup} onToggleSourceGroup={toggleSourceGroup} onGoAccountStep={goCampaignAccountStep} onGoContentStep={goCampaignContentStep} onToggleRecommendedAccount={toggleRecommendedAccount} onSetGroupAccountsSelected={setGroupAccountsSelected} onToggleMaterial={toggleMaterial} onCreateCampaignAndDrafts={createCampaignAndDrafts} groupName={groupName} />
+        <CampaignWizard groups={groups} aiProviders={aiProviders} materials={materials} campaignStep={campaignStep} setCampaignStep={setCampaignStep} campaignMode={campaignMode} setCampaignMode={setCampaignMode} selectedTargetGroupIds={selectedTargetGroupIds} selectedSourceGroupIds={selectedSourceGroupIds} recommendedAccounts={recommendedAccounts} selectedAccountsByGroup={selectedAccountsByGroup} targetGroupsMissingAccounts={targetGroupsMissingAccounts} topic={topic} setTopic={setTopic} sendWindow={sendWindow} setSendWindow={setSendWindow} intensity={intensity} setIntensity={setIntensity} draftCount={draftCount} setDraftCount={setDraftCount} tone={tone} setTone={setTone} selectedAiProviderId={selectedAiProviderId} setSelectedAiProviderId={setSelectedAiProviderId} selectedMaterialIds={selectedMaterialIds} jitterMinSeconds={jitterMinSeconds} setJitterMinSeconds={setJitterMinSeconds} jitterMaxSeconds={jitterMaxSeconds} setJitterMaxSeconds={setJitterMaxSeconds} batchIntervalSeconds={batchIntervalSeconds} setBatchIntervalSeconds={setBatchIntervalSeconds} respectSendWindow={respectSendWindow} setRespectSendWindow={setRespectSendWindow} campaignEndsAt={campaignEndsAt} setCampaignEndsAt={setCampaignEndsAt} maxAiTokens={maxAiTokens} setMaxAiTokens={setMaxAiTokens} runIntervalSeconds={runIntervalSeconds} setRunIntervalSeconds={setRunIntervalSeconds} participationMinRatio={participationMinRatio} setParticipationMinRatio={setParticipationMinRatio} participationMaxRatio={participationMaxRatio} setParticipationMaxRatio={setParticipationMaxRatio} maxMessagesPerAccount={maxMessagesPerAccount} setMaxMessagesPerAccount={setMaxMessagesPerAccount} maxDraftsPerBatch={maxDraftsPerBatch} setMaxDraftsPerBatch={setMaxDraftsPerBatch} onClose={closeModal} onToggleTargetGroup={toggleTargetGroup} onToggleSourceGroup={toggleSourceGroup} onGoAccountStep={goCampaignAccountStep} onGoContentStep={goCampaignContentStep} onToggleRecommendedAccount={toggleRecommendedAccount} onSetGroupAccountsSelected={setGroupAccountsSelected} onToggleMaterial={toggleMaterial} onCreateCampaignAndDrafts={createCampaignAndDrafts} groupName={groupName} isActionPending={isActionPending} />
       )}
 
       {modal?.type === 'confirmAction' && <ConfirmDialog payload={modal.payload} onClose={closeModal} />}
