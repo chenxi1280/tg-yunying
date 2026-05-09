@@ -4,6 +4,7 @@ export const VIEW_ROUTES: Record<string, string> = {
   overview: '/dashboard',
   systemConfig: '/system-config',
   accounts: '/accounts',
+  messageSending: '/message-sending',
   targetManagement: '/targets',
   taskManagement: '/operation-tasks',
   usageReports: '/usage-reports',

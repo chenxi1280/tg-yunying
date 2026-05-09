@@ -15,11 +15,11 @@ from app.repositories.tenant import require_resource_tenant
 from app.schemas import (
     AiDraftOut, AiDraftUpdate, ApproveAllRequest, ApproveDraftRequest,
     CampaignCreate, CampaignDetailOut, CampaignOut, CampaignRecommendAccountsRequest,
-    GenerateDraftsRequest, MessageTaskOut, RecommendedAccountOut, RetryTaskRequest,
+    GenerateDraftsRequest, MessageSendTaskCreate, MessageTaskOut, RecommendedAccountOut, RetryTaskRequest,
 )
 from app.services import (
     approve_all_drafts, approve_draft, campaign_detail, cancel_message_task,
-    cancel_campaign, create_campaign, dispatch_task, filter_campaigns, filter_tasks,
+    cancel_campaign, create_campaign, create_message_send_task, dispatch_task, filter_campaigns, filter_tasks,
     generate_drafts, list_ai_drafts_for_tenant, recommend_campaign_accounts, reject_ai_draft,
     retry_task, update_ai_draft,
 )
@@ -202,6 +202,22 @@ def list_message_tasks(
         return filter_tasks(session, resolve_tenant_id(current_user, tenant_id), page, page_size, search, status)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
+
+
+@router.post("/api/message-send-tasks", response_model=MessageTaskOut)
+def post_message_send_task(
+    payload: MessageSendTaskCreate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        task = create_message_send_task(session, payload, current_user.name, resolve_tenant_id(current_user, None))
+        if payload.dispatch_now and task.planned_delay_seconds == 0:
+            return dispatch_task(SessionLocal, task.id)
+        return task
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/message-tasks/{task_id}/dispatch", response_model=MessageTaskOut)

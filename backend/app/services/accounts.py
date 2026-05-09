@@ -126,8 +126,50 @@ def soft_delete_account(session: Session, account_id: int, actor: str = "普通�
             target_id=str(account.id),
             detail=reason,
         )
+    for link in session.scalars(select(TgGroupAccount).where(TgGroupAccount.account_id == account.id)):
+        link.can_send = False
+        link.is_listener = False
+    for record in session.scalars(
+        select(TgAccountSyncRecord).where(
+            TgAccountSyncRecord.account_id == account.id,
+            TgAccountSyncRecord.status.in_(["排队中", "同步中"]),
+        )
+    ):
+        record.status = "已取消"
+        record.failure_type = "账号已删除"
+        record.failure_detail = reason
+        record.finished_at = record.finished_at or _now()
+    for record in session.scalars(
+        select(TgAccountProfileSyncRecord).where(
+            TgAccountProfileSyncRecord.account_id == account.id,
+            TgAccountProfileSyncRecord.status.in_(["排队中", "同步中"]),
+        )
+    ):
+        record.status = "已取消"
+        record.failure_type = "账号已删除"
+        record.failure_detail = reason
+        record.synced_at = record.synced_at or _now()
+    for flow in session.scalars(
+        select(TgLoginFlow).where(
+            TgLoginFlow.account_id == account.id,
+            TgLoginFlow.status.in_([
+                AccountStatus.PENDING_LOGIN.value,
+                AccountStatus.WAITING_CODE.value,
+                AccountStatus.WAITING_QR.value,
+                AccountStatus.WAITING_2FA.value,
+            ]),
+        )
+    ):
+        flow.status = "已取消"
+        flow.code_preview = None
     session.commit()
     session.refresh(account)
+    return account
+
+
+def _ensure_account_available(account: TgAccount | None) -> TgAccount:
+    if not account or account.deleted_at is not None:
+        raise ValueError("account not found")
     return account
 
 
@@ -156,9 +198,7 @@ def list_profile_sync_records(session: Session, account_id: int, limit: int = 20
 
 
 def upload_account_avatar(session: Session, account_id: int, filename: str, content_type: str, data: bytes, actor: str) -> dict:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
     settings = get_settings()
     if not data:
         raise ValueError("avatar file is empty")
@@ -181,9 +221,7 @@ def upload_account_avatar(session: Session, account_id: int, filename: str, cont
 
 
 def update_account_profile(session: Session, account_id: int, payload: TgAccountProfileUpdate, actor: str) -> TgAccount:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
     if not payload.display_name.strip():
         raise ValueError("display_name is required")
     if payload.avatar_object_key and not payload.avatar_object_key.startswith(f"avatars/{account.tenant_id}/{account.id}/"):
@@ -216,9 +254,7 @@ def update_account_profile(session: Session, account_id: int, payload: TgAccount
 
 
 def retry_account_profile_sync(session: Session, account_id: int, actor: str) -> TgAccountProfileSyncRecord:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
     latest = session.scalar(
         select(TgAccountProfileSyncRecord)
         .where(TgAccountProfileSyncRecord.tenant_id == account.tenant_id, TgAccountProfileSyncRecord.account_id == account.id)
@@ -254,7 +290,7 @@ def process_profile_sync_record(session: Session, record_id: int) -> TgAccountPr
     if not record:
         raise ValueError("profile sync record not found")
     account = session.get(TgAccount, record.account_id)
-    if not account or account.tenant_id != record.tenant_id:
+    if not account or account.tenant_id != record.tenant_id or account.deleted_at is not None:
         raise ValueError("account not found")
     record.status = "同步中"
     account.profile_sync_status = "同步中"
@@ -367,9 +403,7 @@ def list_account_sync_records(session: Session, account_id: int, limit: int = 30
 
 
 def run_account_sync_now(session: Session, account_id: int, actor: str, trigger_source: str = "manual", sync_types: list[str] | None = None) -> list[TgAccountSyncRecord]:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
     records = queue_account_sync_records(session, account, trigger_source=trigger_source, sync_types=sync_types)
     audit(session, tenant_id=account.tenant_id, actor=actor, action="同步账号数据", target_type="tg_account", target_id=str(account.id), detail=f"trigger={trigger_source}")
     session.commit()
@@ -396,7 +430,7 @@ def process_account_sync_record(session: Session, record_id: int) -> TgAccountSy
     session.commit()
     result_count = 0
     try:
-        if not account:
+        if not account or account.deleted_at is not None:
             raise ValueError("account not found")
         if record.sync_type == "groups":
             result_count = len(sync_groups(session, account.id, actor="tg-worker"))
@@ -436,7 +470,7 @@ def drain_account_sync_records(session_factory, limit: int = 20) -> int:
         active_accounts = list(
             session.scalars(
                 select(TgAccount)
-                .where(TgAccount.status == AccountStatus.ACTIVE.value)
+                .where(TgAccount.status == AccountStatus.ACTIVE.value, TgAccount.deleted_at.is_(None))
                 .order_by(TgAccount.id.asc())
                 .limit(50)
             )
@@ -467,9 +501,7 @@ def drain_account_sync_records(session_factory, limit: int = 20) -> int:
 
 
 def start_login(session: Session, account_id: int, method: str, actor: str = "普通用户", force: bool = False) -> TgLoginFlow:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
     if account.status == AccountStatus.ACTIVE.value and not force:
         raise ValueError("account already online; use force to restart login")
     credentials = credentials_for_account(session, account, assign_if_missing=True)
@@ -504,9 +536,7 @@ def start_login(session: Session, account_id: int, method: str, actor: str = "�
 
 
 def list_login_flows(session: Session, account_id: int) -> list[TgLoginFlow]:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
     flows = list(
         session.scalars(
             select(TgLoginFlow)
@@ -527,9 +557,7 @@ def list_login_flows(session: Session, account_id: int) -> list[TgLoginFlow]:
 
 
 def verify_login(session: Session, account_id: int, code: str | None, password_2fa: str | None, actor: str = "普通用户") -> TgAccount:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
 
     latest_flow = session.scalar(
         select(TgLoginFlow)
@@ -570,9 +598,7 @@ def verify_login(session: Session, account_id: int, code: str | None, password_2
 
 
 def check_qr_login(session: Session, account_id: int, actor: str = "普通用户") -> TgAccount:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
     latest_flow = session.scalar(
         select(TgLoginFlow)
         .where(TgLoginFlow.account_id == account_id, TgLoginFlow.method == "qr")
@@ -603,9 +629,7 @@ def check_qr_login(session: Session, account_id: int, actor: str = "普通用户
 
 
 def health_check_account(session: Session, account_id: int) -> TgAccount:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
     try:
         credentials = credentials_for_account(session, account)
     except ValueError as exc:
@@ -626,9 +650,7 @@ def health_check_account(session: Session, account_id: int) -> TgAccount:
 
 
 def sync_remote_profile(session: Session, account_id: int, actor: str) -> TgAccount:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
     credentials = credentials_for_account(session, account)
     profile = gateway.pull_profile(account.id, account.session_ciphertext, credentials)
     account.tg_first_name = profile.first_name
@@ -646,9 +668,7 @@ def sync_remote_profile(session: Session, account_id: int, actor: str) -> TgAcco
 
 
 def sync_groups(session: Session, account_id: int, actor: str = "普通用户") -> list[TgGroup]:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
 
     credentials = credentials_for_account(session, account)
     snapshots = gateway.list_groups(account.id, account.session_ciphertext, credentials)
@@ -907,9 +927,7 @@ def account_risk_diagnostics(
 
 
 def sync_account_contacts(session: Session, account_id: int, actor: str) -> list[TgContact]:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
     try:
         credentials = credentials_for_account(session, account)
         snapshots = gateway.list_contacts(account.id, account.session_ciphertext, credentials)
@@ -980,9 +998,7 @@ def list_verification_codes(session: Session, account_id: int, actor: str = "普
 
 
 def poll_account_verification_codes(session: Session, account_id: int, actor: str) -> list[TgVerificationCode]:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+    account = _ensure_account_available(session.get(TgAccount, account_id))
     try:
         credentials = credentials_for_account(session, account)
         snapshots = gateway.poll_verification_codes(account.id, account.session_ciphertext, credentials)

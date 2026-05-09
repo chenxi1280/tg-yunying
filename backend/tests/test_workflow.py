@@ -6,8 +6,8 @@ from app.config import get_settings
 from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
-from app.gateways import SendResult
-from app.models import AccountStatus, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, ManualOperationRecord, Material, MessageTask, OperationTaskAttempt, TaskStatus, TelegramDeveloperApp, TgAccount, TgAccountSyncRecord, TgGroupAccount, TgLoginFlow
+from app.gateways import DeveloperAppCredentials, SendResult
+from app.models import AccountStatus, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, ManualOperationRecord, Material, MessageTask, OperationTaskAttempt, TaskStatus, TelegramDeveloperApp, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroupAccount, TgLoginFlow
 from app.services.notifications import NotificationResult
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
@@ -207,6 +207,42 @@ def test_unfinished_account_soft_delete_allows_phone_reuse():
         )
         assert recreated.status_code == 200, recreated.text
         assert recreated.json()["id"] != account["id"]
+
+
+def test_account_soft_delete_cascades_runtime_state():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        login = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code", "force": True}).json()
+        assert login["status"] == AccountStatus.WAITING_CODE.value
+
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            session.add(TgAccountSyncRecord(tenant_id=1, account_id=account["id"], sync_type="health", trigger_source="pytest", status="排队中", scheduled_at=db_account.created_at, created_at=db_account.created_at))
+            session.add(TgAccountProfileSyncRecord(tenant_id=1, account_id=account["id"], actor="pytest", status="排队中"))
+            link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
+            assert link
+            link.can_send = True
+            link.is_listener = True
+            session.commit()
+
+        removed = client.delete(f"/api/tg-accounts/{account['id']}", headers=headers)
+        assert removed.status_code == 200, removed.text
+
+        with SessionLocal() as session:
+            link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
+            assert link.can_send is False
+            assert link.is_listener is False
+            assert session.query(TgAccountSyncRecord).filter_by(account_id=account["id"], status="已取消").count() >= 1
+            assert session.query(TgAccountProfileSyncRecord).filter_by(account_id=account["id"], status="已取消").count() >= 1
+            flow = session.query(TgLoginFlow).filter_by(id=login["id"]).first()
+            assert flow.status == "已取消"
+            assert flow.code_preview is None
+
+        blocked_login = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code"})
+        assert blocked_login.status_code == 404
+        blocked_sync = client.post(f"/api/tg-accounts/{account['id']}/sync-now", headers=headers)
+        assert blocked_sync.status_code == 400
 
 
 def test_expired_code_flow_does_not_block_submitted_code():
@@ -1161,6 +1197,165 @@ def test_operation_targets_manual_send_and_task_lifecycle(monkeypatch):
             assert created.status_code == 200, created.text
 
 
+def test_message_send_workbench_creates_private_group_channel_and_jitter_tasks(monkeypatch):
+    send_calls: list[dict] = []
+
+    def fake_send(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
+        send_calls.append(
+            {
+                "account_id": account_id,
+                "group_id": group_id,
+                "content": content,
+                "peer_id": peer_id,
+                "segments": [(segment.segment_type, segment.source, segment.caption) for segment in outbound_segments],
+            }
+        )
+        return SendResult(True, remote_message_id=f"message-send-{len(send_calls)}")
+
+    monkeypatch.setattr("app.services.messages.gateway.send_message", fake_send)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        contacts = client.post(f"/api/tg-accounts/{account['id']}/contacts/sync", headers=headers).json()
+        contact = next(item for item in contacts if item["username"] == "pytest_target")
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
+            link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
+            if not link:
+                session.add(TgGroupAccount(tenant_id=1, group_id=group["id"], account_id=account["id"], can_send=True, permission_label="普通成员"))
+                session.flush()
+                link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
+            link.can_send = True
+            link.group.daily_limit = 999
+            link.group.group_cooldown_seconds = 0
+            link.group.account_cooldown_seconds = 0
+            link.group.require_review = False
+            session.commit()
+
+        private_task = client.post(
+            "/api/message-send-tasks",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "target_type": "private",
+                "target_peer_id": f"@{contact['username']}",
+                "target_display": contact["display_name"],
+                "content": "个人实时消息",
+                "message_type": "文本",
+                "dispatch_now": True,
+            },
+        )
+        assert private_task.status_code == 200, private_task.text
+        assert private_task.json()["status"] == TaskStatus.SENT.value
+        assert private_task.json()["target_type"] == "private"
+        assert send_calls[-1]["peer_id"] == "@pytest_target"
+
+        group_task = client.post(
+            "/api/message-send-tasks",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "target_type": "group",
+                "group_id": group["id"],
+                "content": "群聊实时消息",
+                "message_type": "文本",
+                "dispatch_now": True,
+            },
+        )
+        assert group_task.status_code == 200, group_task.text
+        assert group_task.json()["status"] == TaskStatus.SENT.value
+        assert group_task.json()["group_id"] == group["id"]
+        assert send_calls[-1]["account_id"] == account["id"]
+
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-channel-{uuid4().hex[:8]}",
+                "title": "消息发送频道",
+                "username": "message_send_channel",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        material = client.post(
+            "/api/materials",
+            headers=headers,
+            json={"tenant_id": 1, "title": "消息发送图片", "material_type": "图片", "content": "https://trusted.example.com/message.png", "tags": "pytest"},
+        ).json()
+        channel_task = client.post(
+            "/api/message-send-tasks",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "target_type": "channel",
+                "operation_target_id": channel_target["id"],
+                "content": "频道配文",
+                "message_type": "图片",
+                "material_id": material["id"],
+                "dispatch_now": True,
+            },
+        )
+        assert channel_task.status_code == 200, channel_task.text
+        assert channel_task.json()["status"] == TaskStatus.SENT.value
+        assert send_calls[-1]["peer_id"] == channel_target["tg_peer_id"]
+        assert send_calls[-1]["segments"] == [("图片", "https://trusted.example.com/message.png", "频道配文")]
+
+        before_jitter_calls = len(send_calls)
+        jittered = client.post(
+            "/api/message-send-tasks",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "target_type": "private",
+                "target_peer_id": f"@{contact['username']}",
+                "content": "抖动消息",
+                "message_type": "文本",
+                "jitter_min_seconds": 10,
+                "jitter_max_seconds": 20,
+                "dispatch_now": True,
+            },
+        )
+        assert jittered.status_code == 200, jittered.text
+        jitter_body = jittered.json()
+        assert jitter_body["status"] == TaskStatus.QUEUED.value
+        assert 10 <= jitter_body["planned_delay_seconds"] <= 20
+        assert len(send_calls) == before_jitter_calls
+
+        missing_material = client.post(
+            "/api/message-send-tasks",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "target_type": "channel",
+                "operation_target_id": channel_target["id"],
+                "message_type": "图片",
+                "content": "",
+            },
+        )
+        assert missing_material.status_code == 400
+        assert "素材" in missing_material.text
+
+        client.delete(f"/api/tg-accounts/{account['id']}", headers=headers)
+        deleted_account_task = client.post(
+            "/api/message-send-tasks",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "target_type": "private",
+                "target_peer_id": f"@{contact['username']}",
+                "content": "删除账号不能发",
+                "message_type": "文本",
+            },
+        )
+        assert deleted_account_task.status_code == 400
+        assert "未删除" in deleted_account_task.text
+
+
 def test_ai_operation_failure_notifies_admin(monkeypatch):
     sent: list[tuple[str, str, str]] = []
 
@@ -1473,6 +1668,70 @@ def test_group_policy_enforcement_material_usage_and_reports(monkeypatch):
         report = client.get("/api/reports", headers=headers).json()
         assert report["groups"]["daily_messages"] >= 1
         assert report["tasks"]["avg_delay_seconds"] >= 0
+
+
+def test_account_deleted_during_dispatch_does_not_send(monkeypatch):
+    send_calls = {"count": 0}
+
+    def fake_credentials(session, account, *, assign_if_missing=False):
+        from app.services.accounts import soft_delete_account
+
+        soft_delete_account(session, account.id, actor="pytest", reason="dispatch race")
+        return DeveloperAppCredentials(app_id=1, api_id=12345, api_hash="test_hash", credentials_version=1)
+
+    def fake_send(*args, **kwargs):
+        send_calls["count"] += 1
+        return SendResult(True, remote_message_id="should-not-send")
+
+    monkeypatch.setattr("app.services.messages.credentials_for_account", fake_credentials)
+    monkeypatch.setattr("app.services.messages.gateway.send_message", fake_send)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
+            link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
+            link.can_send = True
+            target_group = link.group
+            target_group.daily_limit = 999
+            target_group.group_cooldown_seconds = 0
+            target_group.account_cooldown_seconds = 0
+            target_group.require_review = True
+            session.commit()
+
+        campaign = client.post(
+            "/api/campaigns",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "group_id": group["id"],
+                "title": "删除期间不发送",
+                "campaign_type": "定时活跃任务",
+                "topic": "删除账号",
+                "target_group_ids": [group["id"]],
+                "selected_account_ids_by_group": {str(group["id"]): [account["id"]]},
+                "jitter_min_seconds": 0,
+                "jitter_max_seconds": 0,
+                "batch_interval_seconds": 0,
+                "respect_send_window": False,
+            },
+        ).json()
+        draft = client.post(f"/api/campaigns/{campaign['id']}/generate-drafts", headers=headers, json={"count": 1}).json()[0]
+        task = client.post(f"/api/ai-drafts/{draft['id']}/approve", headers=headers, json={"actor": "pytest"}).json()
+
+        dispatched = client.post(f"/api/message-tasks/{task['id']}/dispatch", headers=headers)
+        assert dispatched.status_code == 200, dispatched.text
+        body = dispatched.json()
+        assert body["status"] == TaskStatus.FAILED.value
+        assert body["failure_type"] == FailureType.ACCOUNT_UNAVAILABLE.value
+        assert send_calls["count"] == 0
+
+        with SessionLocal() as session:
+            db_task = session.get(MessageTask, task["id"])
+            assert db_task.sent_at is None
+            assert session.get(TgAccount, account["id"]).deleted_at is not None
 
 
 def test_archive_async_and_extended_sync_types():

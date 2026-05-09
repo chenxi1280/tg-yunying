@@ -1,7 +1,7 @@
 import React from 'react';
-import { Button, Card, Form, Input, InputNumber, Select, Space, Table, Typography } from 'antd';
+import { Alert, Button, Card, Form, Input, InputNumber, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { api } from '../../shared/api/client';
+import { api, ApiError } from '../../shared/api/client';
 import type { Account, ChannelMessage, OperationTarget, OperationTask } from '../types';
 import { StatusBadge, useAntdTableControls } from '../components/shared';
 
@@ -21,11 +21,26 @@ export default function OperationTasksView({ accounts }: Props) {
   const [messages, setMessages] = React.useState<ChannelMessage[]>([]);
   const [tasks, setTasks] = React.useState<OperationTask[]>([]);
   const [loading, setLoading] = React.useState(false);
+  const [actionError, setActionError] = React.useState('');
+  const [busyTaskId, setBusyTaskId] = React.useState<number | null>(null);
   const [form] = Form.useForm();
   const [messageForm] = Form.useForm();
   const taskType = Form.useWatch('task_type', form) ?? 'MESSAGE_SEND';
   const contentMode = Form.useWatch('content_mode', form) ?? 'literal';
   const channelTargets = targets.filter((target) => target.target_type === 'channel');
+
+  function errorMessage(error: unknown) {
+    if (error instanceof ApiError) {
+      try {
+        const parsed = JSON.parse(error.body) as { detail?: unknown };
+        if (typeof parsed.detail === 'string') return parsed.detail;
+      } catch {
+        return error.body || error.message;
+      }
+      return error.body || error.message;
+    }
+    return error instanceof Error ? error.message : String(error);
+  }
 
   async function load() {
     setLoading(true);
@@ -48,40 +63,65 @@ export default function OperationTasksView({ accounts }: Props) {
   }, []);
 
   async function createChannelMessage(values: any) {
-    await api<ChannelMessage>('/channel-messages', { method: 'POST', body: JSON.stringify(values) });
-    messageForm.resetFields();
-    await load();
+    setActionError('');
+    try {
+      await api<ChannelMessage>('/channel-messages', { method: 'POST', body: JSON.stringify(values) });
+      messageForm.resetFields();
+      await load();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    }
   }
 
   async function createTask(values: any) {
-    await api<OperationTask>('/operation-tasks', {
-      method: 'POST',
-      body: JSON.stringify({
-        task_type: values.task_type,
-        target_id: values.task_type === 'MESSAGE_SEND' ? values.target_id : null,
-        channel_message_id: values.task_type === 'MESSAGE_SEND' ? null : values.channel_message_id,
-        title: values.title ?? '',
-        content: values.content ?? '',
-        reaction: values.reaction ?? '',
-        account_ids: values.account_ids ?? [],
-        quantity: values.quantity ?? 1,
-        quantity_jitter_ratio: 0.15,
-        content_mode: values.task_type === 'CHANNEL_REPLY' ? 'ai' : values.content_mode ?? 'literal',
-        interval_seconds: values.interval_seconds ?? 0,
-      }),
-    });
-    form.resetFields();
-    await load();
+    setActionError('');
+    try {
+      await api<OperationTask>('/operation-tasks', {
+        method: 'POST',
+        body: JSON.stringify({
+          task_type: values.task_type,
+          target_id: values.task_type === 'MESSAGE_SEND' ? values.target_id : null,
+          channel_message_id: values.task_type === 'MESSAGE_SEND' ? null : values.channel_message_id,
+          title: values.title ?? '',
+          content: values.content ?? '',
+          reaction: values.reaction ?? '',
+          account_ids: values.account_ids ?? [],
+          quantity: values.quantity ?? 1,
+          quantity_jitter_ratio: 0.15,
+          content_mode: values.task_type === 'CHANNEL_REPLY' ? 'ai' : values.content_mode ?? 'literal',
+          interval_seconds: values.interval_seconds ?? 0,
+        }),
+      });
+      form.resetFields();
+      await load();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    }
   }
 
   async function dispatch(task: OperationTask) {
-    await api<OperationTask>(`/operation-tasks/${task.id}/dispatch`, { method: 'POST' });
-    await load();
+    await runTaskAction(task, 'dispatch');
   }
 
   async function retry(task: OperationTask) {
-    await api<OperationTask>(`/operation-tasks/${task.id}/retry`, { method: 'POST' });
-    await load();
+    await runTaskAction(task, 'retry');
+  }
+
+  async function cancel(task: OperationTask) {
+    await runTaskAction(task, 'cancel');
+  }
+
+  async function runTaskAction(task: OperationTask, action: 'dispatch' | 'retry' | 'cancel') {
+    setBusyTaskId(task.id);
+    setActionError('');
+    try {
+      await api<OperationTask>(`/operation-tasks/${task.id}/${action}`, { method: 'POST' });
+      await load();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setBusyTaskId(null);
+    }
   }
 
   const table = useAntdTableControls<OperationTask>({
@@ -110,10 +150,11 @@ export default function OperationTasksView({ accounts }: Props) {
       width: 180,
       render: (_, task) => (
         <Space>
-          <Button size="small" type="primary" disabled={task.status === '已完成'} onClick={() => dispatch(task)}>执行</Button>
-          <Button size="small" disabled={task.status !== '失败'} onClick={() => retry(task)}>重试</Button>
-        </Space>
-      ),
+              <Button size="small" type="primary" loading={busyTaskId === task.id} disabled={task.status === '已完成'} onClick={() => dispatch(task)}>执行</Button>
+              <Button size="small" disabled={task.status !== '失败' || busyTaskId === task.id} onClick={() => retry(task)}>重试</Button>
+              <Button size="small" danger disabled={['执行中', '已完成', '已取消'].includes(task.status) || busyTaskId === task.id} onClick={() => cancel(task)}>取消</Button>
+            </Space>
+          ),
     },
   ];
 
@@ -121,6 +162,7 @@ export default function OperationTasksView({ accounts }: Props) {
     <section className="view-grid">
       <Card className="panel" title="运营任务">
         <Typography.Text type="secondary">消息发送支持普通文案或 AI 生成；频道查看、点赞、AI 回复分别是独立任务。</Typography.Text>
+        {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         <Space className="toolbar-row" wrap>
           {table.searchInput}
           <Button loading={loading} onClick={load}>刷新</Button>

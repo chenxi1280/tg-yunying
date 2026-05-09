@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -17,6 +18,7 @@ from app.models import (
     GroupAuthStatus,
     MessageTask,
     MessageTaskAttempt,
+    OperationTarget,
     TaskStatus,
     TgAccount,
     TgGroup,
@@ -27,7 +29,7 @@ from app.gateways import DeveloperAppCredentials, OutboundSegment
 from app.task_queue import get_task_queue
 
 from ._common import _as_utc, _now, audit, gateway, require_tenant
-from app.schemas import DirectMessageTaskCreate
+from app.schemas import DirectMessageTaskCreate, MessageSendTaskCreate
 
 from .accounts import find_account_contact
 from .developer_apps import credentials_for_account
@@ -36,37 +38,159 @@ from .verification import create_verification_task
 from .content_filters import tenant_keyword_rules
 
 
-def create_direct_message_task(session: Session, account_id: int, payload: DirectMessageTaskCreate, actor: str) -> MessageTask:
-    account = session.get(TgAccount, account_id)
-    if not account:
-        raise ValueError("account not found")
+def _validate_message_material(session: Session, tenant_id: int, message_type: str, material_id: int | None) -> Material | None:
+    if message_type == "文本":
+        if material_id:
+            material = session.get(Material, material_id)
+            if not material or material.tenant_id != tenant_id:
+                raise ValueError("素材不存在")
+            return material
+        return None
+    if not material_id:
+        raise ValueError(f"{message_type}消息需要选择素材")
+    material = session.get(Material, material_id)
+    if not material or material.tenant_id != tenant_id:
+        raise ValueError("素材不存在")
+    if material.review_status != "已审核":
+        raise ValueError("只能使用已审核素材")
+    if material.material_type != message_type:
+        raise ValueError(f"请选择{message_type}素材")
+    return material
+
+
+def _resolve_operation_target(session: Session, tenant_id: int, target_id: int, expected_type: str) -> OperationTarget:
+    target = session.get(OperationTarget, target_id)
+    if not target or target.tenant_id != tenant_id or target.target_type != expected_type:
+        raise ValueError("目标不存在")
+    if not target.can_send:
+        raise ValueError("目标当前不可发送")
+    if target.auth_status != GroupAuthStatus.AUTHORIZED.value:
+        raise ValueError("目标未授权运营")
+    return target
+
+
+def create_message_send_task(session: Session, payload: MessageSendTaskCreate, actor: str, tenant_id: int | None = None) -> MessageTask:
+    account = session.get(TgAccount, payload.account_id)
+    if not account or account.deleted_at is not None:
+        raise ValueError("请选择在线且未删除的发送账号")
+    if tenant_id is not None and account.tenant_id != tenant_id:
+        raise ValueError("发送账号不属于当前租户")
+    if account.status != AccountStatus.ACTIVE.value:
+        raise ValueError("请选择已在线的发送账号")
+
     ensure_task_quota_available(session, account.tenant_id)
-    contact = find_account_contact(session, account, payload.target_peer_id)
-    if not contact:
-        raise ValueError("请先同步联系人或群友，并从列表中选择发送对象")
+    content = payload.content.strip()
+    if payload.message_type == "文本" and not content:
+        raise ValueError("请输入消息内容")
+    _validate_message_material(session, account.tenant_id, payload.message_type, payload.material_id)
+
+    target_type = payload.target_type
+    target_peer_id = (payload.target_peer_id or "").strip() or None
+    target_display = payload.target_display.strip()
+    group_id: int | None = None
+
+    if target_type == "private":
+        if not target_peer_id:
+            raise ValueError("请选择或输入联系人")
+        target_display = target_display or target_peer_id
+    elif target_type == "group":
+        if payload.group_id:
+            group = session.get(TgGroup, payload.group_id)
+            if not group or group.tenant_id != account.tenant_id:
+                raise ValueError("群聊不存在")
+            if group.auth_status != GroupAuthStatus.AUTHORIZED.value:
+                raise ValueError("群未授权运营")
+            if not group.can_send:
+                raise ValueError("群当前不可发送")
+            link = session.scalar(
+                select(TgGroupAccount).where(
+                    TgGroupAccount.group_id == group.id,
+                    TgGroupAccount.account_id == account.id,
+                    TgGroupAccount.can_send.is_(True),
+                )
+            )
+            if not link:
+                raise ValueError("该账号不可向此群发送")
+            group_id = group.id
+            target_peer_id = group.tg_peer_id
+            target_display = group.title
+        elif payload.operation_target_id:
+            target = _resolve_operation_target(session, account.tenant_id, payload.operation_target_id, "group")
+            target_peer_id = target.tg_peer_id
+            target_display = target.title
+        elif target_peer_id:
+            target_display = target_display or target_peer_id
+        else:
+            raise ValueError("请选择群聊目标")
+    else:
+        if payload.operation_target_id:
+            target = _resolve_operation_target(session, account.tenant_id, payload.operation_target_id, "channel")
+            target_peer_id = target.tg_peer_id
+            target_display = target.title
+        elif target_peer_id:
+            target_display = target_display or target_peer_id
+        else:
+            raise ValueError("请选择频道目标")
+
+    jitter_min = max(payload.jitter_min_seconds, 0)
+    jitter_max = max(payload.jitter_max_seconds, jitter_min)
+    delay_seconds = random.randint(jitter_min, jitter_max) if jitter_max else 0
     task = MessageTask(
         tenant_id=account.tenant_id,
         campaign_id=None,
-        group_id=None,
+        group_id=group_id,
         account_id=account.id,
-        content=payload.content,
+        preferred_account_id=account.id,
+        content=content,
         message_type=payload.message_type,
         material_id=payload.material_id,
-        target_type="private",
-        target_peer_id=f"@{contact.username}" if contact.username else contact.peer_id,
-        target_display=payload.target_display or contact.display_name,
-        planned_delay_seconds=0,
-        scheduled_at=_now(),
+        target_type=target_type,
+        target_peer_id=target_peer_id,
+        target_display=target_display,
+        planned_delay_seconds=delay_seconds,
+        scheduled_at=_now() + timedelta(seconds=delay_seconds),
         status=TaskStatus.QUEUED.value,
-        idempotency_key=f"dm:{account.id}:{uuid4().hex[:12]}",
+        idempotency_key=f"send:{account.id}:{uuid4().hex[:12]}",
     )
     session.add(task)
     session.flush()
     get_task_queue().enqueue(task.id)
-    audit(session, tenant_id=account.tenant_id, actor=actor, action="创建私发消息任务", target_type="message_task", target_id=str(task.id), detail=task.target_display)
+    audit(
+        session,
+        tenant_id=account.tenant_id,
+        actor=actor,
+        action="创建消息发送任务",
+        target_type="message_task",
+        target_id=str(task.id),
+        detail=f"{target_type}:{target_display}",
+    )
     session.commit()
     session.refresh(task)
     return task
+
+
+def create_direct_message_task(session: Session, account_id: int, payload: DirectMessageTaskCreate, actor: str) -> MessageTask:
+    account = session.get(TgAccount, account_id)
+    if not account or account.deleted_at is not None:
+        raise ValueError("account not found")
+    contact = find_account_contact(session, account, payload.target_peer_id)
+    if not contact:
+        raise ValueError("请先同步联系人或群友，并从列表中选择发送对象")
+    return create_message_send_task(
+        session,
+        MessageSendTaskCreate(
+            account_id=account.id,
+            target_type="private",
+            target_peer_id=f"@{contact.username}" if contact.username else contact.peer_id,
+            target_display=payload.target_display or contact.display_name,
+            content=payload.content,
+            material_id=payload.material_id,
+            message_type=payload.message_type,
+            dispatch_now=False,
+        ),
+        actor,
+        account.tenant_id,
+    )
 
 
 def create_pool_direct_message_task(session: Session, pool_id: int, payload: DirectMessageTaskCreate, actor: str) -> MessageTask:
@@ -78,7 +202,7 @@ def create_pool_direct_message_task(session: Session, pool_id: int, payload: Dir
     if not payload.account_id:
         raise ValueError("请选择发送账号")
     account = session.get(TgAccount, payload.account_id)
-    if not account or account.tenant_id != pool.tenant_id or account.pool_id != pool.id:
+    if not account or account.deleted_at is not None or account.tenant_id != pool.tenant_id or account.pool_id != pool.id:
         raise ValueError("发送账号不属于该账号池")
     if account.status != AccountStatus.ACTIVE.value:
         raise ValueError("请选择已在线的发送账号")
@@ -205,10 +329,27 @@ def validate_group_task_policy(session: Session, task: MessageTask, group: TgGro
 
 
 def choose_account(session: Session, task: MessageTask) -> tuple[TgAccount | None, str | None, str | None]:
-    if task.target_type == "private":
-        account = session.get(TgAccount, task.account_id) if task.account_id else None
-        if not account or account.tenant_id != task.tenant_id or account.status != AccountStatus.ACTIVE.value:
-            return None, FailureType.ACCOUNT_UNAVAILABLE.value, "私发任务账号不可用"
+    if task.campaign_id is None and task.target_type in {"private", "group", "channel"} and (task.preferred_account_id or task.account_id):
+        fixed_account_id = task.account_id or task.preferred_account_id
+        account = session.get(TgAccount, fixed_account_id) if fixed_account_id else None
+        if not account or account.deleted_at is not None or account.tenant_id != task.tenant_id or account.status != AccountStatus.ACTIVE.value:
+            return None, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用"
+        if task.group_id:
+            group = session.get(TgGroup, task.group_id)
+            if not group:
+                return None, FailureType.GROUP_PERMISSION_DENIED.value, "群不存在"
+            failure_type, failure_detail = validate_group_task_policy(session, task, group)
+            if failure_type:
+                return None, failure_type, failure_detail
+            link = session.scalar(
+                select(TgGroupAccount).where(
+                    TgGroupAccount.group_id == task.group_id,
+                    TgGroupAccount.account_id == account.id,
+                    TgGroupAccount.can_send.is_(True),
+                )
+            )
+            if not link:
+                return None, FailureType.ACCOUNT_UNAVAILABLE.value, "该账号不可向此群发送"
         return account, None, None
     group = session.get(TgGroup, task.group_id)
     if not group or group.auth_status != GroupAuthStatus.AUTHORIZED.value:
@@ -238,7 +379,7 @@ def choose_account(session: Session, task: MessageTask) -> tuple[TgAccount | Non
             if preferred
             else None
         )
-        if preferred and link and preferred.tenant_id == task.tenant_id and preferred.status == AccountStatus.ACTIVE.value:
+        if preferred and link and preferred.deleted_at is None and preferred.tenant_id == task.tenant_id and preferred.status == AccountStatus.ACTIVE.value:
             if preferred.developer_app and preferred.developer_app.credentials_version > preferred.developer_app_version:
                 preferred.status = AccountStatus.NEED_RELOGIN.value
             elif not link.last_sent_at or (_as_utc(link.last_sent_at) + timedelta(seconds=group.account_cooldown_seconds)) <= now_value:
@@ -252,6 +393,7 @@ def choose_account(session: Session, task: MessageTask) -> tuple[TgAccount | Non
             TgGroupAccount.group_id == task.group_id,
             TgGroupAccount.can_send.is_(True),
             TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.deleted_at.is_(None),
         )
         .order_by(TgAccount.health_score.desc())
     )
@@ -324,10 +466,25 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
         group_id = task.group_id or 0
         account_session = account.session_ciphertext
         developer_credentials = credentials
-        peer_id = task.target_peer_id if task.target_type == "private" else None
+        peer_id = task.target_peer_id
         if not peer_id:
             group = session.get(TgGroup, group_id)
             peer_id = group.tg_peer_id if group else None
+
+    with session_factory() as session:
+        account = session.get(TgAccount, account_id)
+        task = session.get(MessageTask, task_id)
+        if not task:
+            raise ValueError("task not found")
+        if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
+            task.status = TaskStatus.FAILED.value
+            task.failure_type = FailureType.ACCOUNT_UNAVAILABLE.value
+            task.failure_detail = "账号不可用"
+            session.add(MessageTaskAttempt(tenant_id=task.tenant_id, task_id=task.id, account_id=account_id, status=task.status, failure_type=task.failure_type, detail=task.failure_detail))
+            audit(session, tenant_id=task.tenant_id, actor="tg-worker", action="执行消息发送", target_type="message_task", target_id=str(task.id), detail=task.failure_detail)
+            session.commit()
+            session.refresh(task)
+            return task
 
     result = gateway.send_message(
         account_id,
@@ -343,7 +500,13 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
         task = session.get(MessageTask, task_id)
         if not task:
             raise ValueError("task not found")
-        if result.ok:
+        account = session.get(TgAccount, account_id)
+        if result.ok and (not account or account.deleted_at is not None):
+            task.status = TaskStatus.FAILED.value
+            task.failure_type = FailureType.ACCOUNT_UNAVAILABLE.value
+            task.failure_detail = "账号已删除" if account else "账号不可用"
+            detail = task.failure_detail
+        elif result.ok:
             task.status = TaskStatus.SENT.value
             task.sent_at = _now()
             task.failure_type = None
@@ -352,7 +515,6 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
             link = session.scalar(
                 select(TgGroupAccount).where(TgGroupAccount.group_id == task.group_id, TgGroupAccount.account_id == account_id)
             ) if task.group_id else None
-            account = session.get(TgAccount, account_id)
             if link:
                 link.last_sent_at = task.sent_at
             if account:
@@ -458,6 +620,7 @@ def filter_tasks(session: Session, tenant_id: int, page: int, page_size: int, se
 
 
 __all__ = [
+    "create_message_send_task",
     "create_direct_message_task",
     "create_pool_direct_message_task",
     "dispatch_task",

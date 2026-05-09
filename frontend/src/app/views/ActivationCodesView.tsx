@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { CheckCircle2, RefreshCcw, ShieldAlert } from 'lucide-react';
-import { Button, Card, Input, InputNumber, Select, Space, Table, Tag, Typography } from 'antd';
+import { Button, Card, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import type { ActivationCode, ActivationCodeCreateForm, ActivationCodeFilters, ActivationCodePage, ConfirmPayload, SubscriptionPlan } from '../types';
-import { FormActions, Modal } from '../components/shared';
+import { FormActions } from '../components/shared';
 
 interface Props {
   activationCodes: ActivationCode[];
@@ -236,7 +236,8 @@ export default function ActivationCodesView({
       />
 
       {createOpen && (
-        <Modal title="生成卡密" size="medium" onClose={() => setCreateOpen(false)}>
+        <Modal className="tg-modal medium" title="生成卡密" open width={640} onCancel={() => setCreateOpen(false)} footer={null} destroyOnHidden centered>
+          <div className="modal-body">
           <div className="policy-grid">
             <label>套餐<Select<number | ''> value={activationBatch.plan_id} onChange={(value) => {
               const plan = subscriptionPlans.find((item) => item.id === value);
@@ -250,6 +251,7 @@ export default function ActivationCodesView({
             {selectedPlan && <p className="muted-line wide-field">将快照写入卡密：{selectedPlan.name} / {selectedPlan.duration_days} 天 / {selectedPlan.token_quota.toLocaleString()} Token</p>}
           </div>
           <FormActions submitLabel="批量生成" onCancel={() => setCreateOpen(false)} onSubmit={submitCreate} loading={isActionPending('activation-codes:create')} disabled={!activationBatch.batch_no.trim() || !activationBatch.serial_prefix.trim() || activationBatch.quantity < 1 || activationBatch.quantity > 200} />
+          </div>
         </Modal>
       )}
     </Card>

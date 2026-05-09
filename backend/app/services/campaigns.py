@@ -67,7 +67,7 @@ def recommend_campaign_accounts(session: Session, payload: CampaignRecommendAcco
         )
         for link in links:
             account = session.get(TgAccount, link.account_id)
-            if not account:
+            if not account or account.deleted_at is not None:
                 continue
             recent_failures = session.scalar(
                 select(func.count(MessageTask.id)).where(
@@ -152,7 +152,7 @@ def validate_selected_accounts_by_group(
                     TgGroupAccount.account_id == account_id,
                 )
             )
-            if not account or account.tenant_id != tenant_id:
+            if not account or account.deleted_at is not None or account.tenant_id != tenant_id:
                 raise ValueError("selected account not found")
             if not link or not link.can_send:
                 raise ValueError("selected account cannot send in target group")
@@ -430,7 +430,7 @@ def generate_drafts(
             selected_accounts = list(
                 session.scalars(
                     select(TgAccount)
-                    .where(TgAccount.tenant_id == campaign.tenant_id, TgAccount.id.in_(selected_account_ids))
+                    .where(TgAccount.tenant_id == campaign.tenant_id, TgAccount.id.in_(selected_account_ids), TgAccount.deleted_at.is_(None))
                     .order_by(TgAccount.id.asc())
                 )
             )
@@ -444,7 +444,7 @@ def generate_drafts(
                 TgGroupAccount.account_id == payload.listener_account_id,
             )
         )
-        if not listener_account or listener_account.tenant_id != campaign.tenant_id or not listener_link:
+        if not listener_account or listener_account.deleted_at is not None or listener_account.tenant_id != campaign.tenant_id or not listener_link:
             raise ValueError("listener account cannot access target group")
     decision = resolve_prompt_decision(
         session,
@@ -678,7 +678,7 @@ def load_selected_accounts_for_group(session: Session, campaign: Campaign, group
     rows = list(
         session.scalars(
             select(TgAccount)
-            .where(TgAccount.tenant_id == campaign.tenant_id, TgAccount.id.in_(account_ids))
+            .where(TgAccount.tenant_id == campaign.tenant_id, TgAccount.id.in_(account_ids), TgAccount.deleted_at.is_(None))
             .order_by(TgAccount.id.asc())
         )
     )
@@ -797,7 +797,7 @@ def campaign_detail(session: Session, campaign_id: int) -> dict:
         rows = list(
             session.scalars(
                 select(TgAccount)
-                .where(TgAccount.tenant_id == campaign.tenant_id, TgAccount.id.in_(account_ids))
+                .where(TgAccount.tenant_id == campaign.tenant_id, TgAccount.id.in_(account_ids), TgAccount.deleted_at.is_(None))
                 .order_by(TgAccount.id.asc())
             )
         )
@@ -876,7 +876,7 @@ def update_ai_draft(session: Session, draft_id: int, payload, actor: str) -> AiD
         account_id = data["suggested_account_id"]
         if account_id is not None:
             account = session.get(TgAccount, account_id)
-            if not account or account.tenant_id != draft.tenant_id:
+            if not account or account.deleted_at is not None or account.tenant_id != draft.tenant_id:
                 raise ValueError("suggested account not found")
             campaign = session.get(Campaign, draft.campaign_id)
             selected_ids = selected_account_ids_for_group(campaign, draft.group_id) if campaign else []

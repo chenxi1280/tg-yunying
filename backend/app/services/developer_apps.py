@@ -53,14 +53,14 @@ def backfill_account_developer_apps(session: Session) -> None:
     app = first_assignable_developer_app(session)
     if not app:
         return
-    accounts = list(session.scalars(select(TgAccount).where(TgAccount.developer_app_id.is_(None))))
+    accounts = list(session.scalars(select(TgAccount).where(TgAccount.developer_app_id.is_(None), TgAccount.deleted_at.is_(None))))
     for account in accounts:
         account.developer_app_id = app.id
         account.developer_app_version = app.credentials_version
 
 
 def developer_app_snapshot(session: Session, app: TelegramDeveloperApp) -> dict:
-    assigned = session.scalar(select(func.count(TgAccount.id)).where(TgAccount.developer_app_id == app.id)) or 0
+    assigned = session.scalar(select(func.count(TgAccount.id)).where(TgAccount.developer_app_id == app.id, TgAccount.deleted_at.is_(None))) or 0
     return {
         "id": app.id,
         "app_name": app.app_name,
@@ -167,7 +167,7 @@ def assign_developer_app_round_robin(session: Session, account: TgAccount) -> Te
     ).all()
     candidates: list[tuple[float, int, TelegramDeveloperApp]] = []
     for app in apps:
-        assigned = session.scalar(select(func.count(TgAccount.id)).where(TgAccount.developer_app_id == app.id)) or 0
+        assigned = session.scalar(select(func.count(TgAccount.id)).where(TgAccount.developer_app_id == app.id, TgAccount.deleted_at.is_(None))) or 0
         if app.max_accounts > 0 and assigned >= app.max_accounts:
             continue
         assigned_at = app.last_assigned_at
@@ -203,6 +203,8 @@ def credentials_for_developer_app(app: TelegramDeveloperApp) -> DeveloperAppCred
 
 
 def credentials_for_account(session: Session, account: TgAccount, *, assign_if_missing: bool = False) -> DeveloperAppCredentials:
+    if account.deleted_at is not None:
+        raise ValueError("账号已删除")
     app = assign_developer_app_round_robin(session, account) if assign_if_missing or not account.developer_app_id else session.get(TelegramDeveloperApp, account.developer_app_id)
     if not app:
         raise ValueError("账号未绑定开发者应用")

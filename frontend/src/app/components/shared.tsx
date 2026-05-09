@@ -1,7 +1,7 @@
 import React from 'react';
-import { Button, Card, Empty, Input, Modal as AntModal, Segmented, Space, Statistic, Tag, Typography } from 'antd';
+import { Button, Card, Empty, Input, Segmented, Space, Statistic, Tag, Typography } from 'antd';
 import type { TablePaginationConfig } from 'antd/es/table';
-import type { BadgeTone, ConfirmPayload, ResultDialogState } from '../types';
+import type { BadgeTone } from '../types';
 
 export function statusTone(status: string | null | undefined): BadgeTone {
   const value = status || '未配置';
@@ -148,64 +148,12 @@ export function syncTypeLabel(type: string) {
   return type;
 }
 
-export function Modal({ title, size = 'medium', children, onClose }: { title: string; size?: 'small' | 'medium' | 'large'; children: React.ReactNode; onClose: () => void }) {
-  const widthBySize = { small: 480, medium: 640, large: 920 };
-  return (
-    <AntModal
-      className={`tg-modal ${size}`}
-      title={title}
-      open
-      width={widthBySize[size]}
-      onCancel={onClose}
-      footer={null}
-      destroyOnHidden
-      centered
-    >
-      <div className="modal-body">{children}</div>
-    </AntModal>
-  );
-}
-
 export function FormActions({ submitLabel = '保存', onCancel, onSubmit, disabled, loading = false }: { submitLabel?: string; onCancel: () => void; onSubmit: () => void; disabled?: boolean; loading?: boolean }) {
   return (
     <Space className="modal-actions" align="center">
       <Button onClick={onCancel} disabled={loading}>取消</Button>
       <Button type="primary" disabled={disabled} loading={loading} onClick={onSubmit}>{submitLabel}</Button>
     </Space>
-  );
-}
-
-export function ConfirmDialog({ payload, onClose }: { payload: ConfirmPayload; onClose: () => void }) {
-  const [confirming, setConfirming] = React.useState(false);
-
-  async function confirm() {
-    setConfirming(true);
-    try {
-      await payload.onConfirm();
-    } finally {
-      setConfirming(false);
-    }
-  }
-
-  return (
-    <Modal title={payload.title} size="small" onClose={confirming ? () => undefined : onClose}>
-      <p className="dialog-message">{payload.message}</p>
-      <Space className="modal-actions" align="center">
-        <Button onClick={onClose} disabled={confirming}>取消</Button>
-        <Button danger={payload.tone === 'danger'} type="primary" loading={confirming} onClick={confirm}>{payload.confirmLabel ?? '确认'}</Button>
-      </Space>
-    </Modal>
-  );
-}
-
-export function ResultDialog({ dialog, onClose }: { dialog: NonNullable<ResultDialogState>; onClose: () => void }) {
-  return (
-    <Modal title={dialog.title} size="small" onClose={onClose}>
-      <p className="dialog-message">{dialog.message}</p>
-      <Space className="modal-actions" align="center">
-        <Button type="primary" onClick={onClose}>知道了</Button>
-      </Space>
-    </Modal>
   );
 }
 

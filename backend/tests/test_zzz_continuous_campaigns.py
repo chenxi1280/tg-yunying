@@ -123,6 +123,57 @@ def test_ai_activity_campaign_stops_when_token_limit_is_reached():
             assert db_campaign.used_ai_tokens == 10
 
 
+def test_continuous_campaign_failure_backoff_and_success_reset(monkeypatch):
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+
+        campaign = client.post(
+            "/api/campaigns",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "group_id": group["id"],
+                "title": "退避任务",
+                "campaign_type": "AI 活跃",
+                "execution_mode": "ai_activity",
+                "topic": "连续失败退避",
+                "target_group_ids": [group["id"]],
+                "selected_account_ids_by_group": {str(group["id"]): [account["id"]]},
+                "ends_at": _future_iso(),
+                "run_interval_seconds": 2000,
+            },
+        ).json()
+
+        monkeypatch.setattr("app.services.campaign_runs.generate_drafts", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("provider down")))
+        with SessionLocal() as session:
+            assert process_continuous_campaign(session, campaign["id"]) == 0
+        with SessionLocal() as session:
+            db_campaign = session.get(Campaign, campaign["id"])
+            first_delay = (db_campaign.next_run_at - db_campaign.last_run_at).total_seconds()
+            assert db_campaign.consecutive_failure_count == 1
+            assert 1999 <= first_delay <= 2001
+            assert db_campaign.last_error == "provider down"
+
+        with SessionLocal() as session:
+            assert process_continuous_campaign(session, campaign["id"]) == 0
+        with SessionLocal() as session:
+            db_campaign = session.get(Campaign, campaign["id"])
+            second_delay = (db_campaign.next_run_at - db_campaign.last_run_at).total_seconds()
+            assert db_campaign.consecutive_failure_count == 2
+            assert 3599 <= second_delay <= 3601
+
+        monkeypatch.setattr("app.services.campaign_runs.generate_drafts", lambda *args, **kwargs: [])
+        with SessionLocal() as session:
+            assert process_continuous_campaign(session, campaign["id"]) == 0
+        with SessionLocal() as session:
+            db_campaign = session.get(Campaign, campaign["id"])
+            success_delay = (db_campaign.next_run_at - db_campaign.last_run_at).total_seconds()
+            assert db_campaign.consecutive_failure_count == 0
+            assert db_campaign.last_error == ""
+            assert 1999 <= success_delay <= 2001
+
+
 def test_ai_activity_campaign_is_not_subscription_gated():
     with TestClient(app) as client:
         headers = auth_headers(client)

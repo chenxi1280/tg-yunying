@@ -82,6 +82,21 @@ class DirectMessageTaskCreate(BaseModel):
     message_type: str = "文本"
 
 
+class MessageSendTaskCreate(BaseModel):
+    account_id: int
+    target_type: str = Field(pattern="^(private|group|channel)$")
+    target_peer_id: str | None = None
+    target_display: str = ""
+    group_id: int | None = None
+    operation_target_id: int | None = None
+    content: str = ""
+    message_type: str = Field(default="文本", pattern="^(文本|图片|表情包)$")
+    material_id: int | None = None
+    jitter_min_seconds: int = Field(default=0, ge=0)
+    jitter_max_seconds: int = Field(default=0, ge=0)
+    dispatch_now: bool = True
+
+
 class CampaignRecommendAccountsRequest(BaseModel):
     tenant_id: int = 1
     target_group_ids: list[int] = Field(default_factory=list)
@@ -114,6 +129,8 @@ class CampaignOut(ApiModel):
     max_ai_tokens: int | None = None
     used_ai_tokens: int = 0
     last_run_at: datetime | None = None
+    next_run_at: datetime | None = None
+    consecutive_failure_count: int = 0
     last_error: str = ""
     participation_min_ratio: float = 0.6
     participation_max_ratio: float = 1.0
@@ -186,6 +203,6 @@ class CampaignDetailOut(BaseModel):
 __all__ = [
     "CampaignCreate", "ConversationContextMessage", "GenerateDraftsRequest", "ApproveDraftRequest",
     "ApproveAllRequest", "RetryTaskRequest", "AiDraftUpdate",
-    "DirectMessageTaskCreate", "CampaignRecommendAccountsRequest",
+    "DirectMessageTaskCreate", "MessageSendTaskCreate", "CampaignRecommendAccountsRequest",
     "CampaignOut", "AiDraftOut", "MessageTaskOut", "CampaignDetailOut",
 ]

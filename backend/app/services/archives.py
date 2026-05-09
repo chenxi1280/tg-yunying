@@ -23,6 +23,7 @@ def _pick_archive_account(session: Session, group: TgGroup) -> TgAccount:
             TgGroupAccount.group_id == group.id,
             TgGroupAccount.can_send.is_(True),
             TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.deleted_at.is_(None),
         )
         .order_by(TgAccount.health_score.desc())
     )
@@ -32,7 +33,7 @@ def _pick_archive_account(session: Session, group: TgGroup) -> TgAccount:
             return account
     account = session.scalar(
         select(TgAccount)
-        .where(TgAccount.tenant_id == group.tenant_id, TgAccount.status == AccountStatus.ACTIVE.value)
+        .where(TgAccount.tenant_id == group.tenant_id, TgAccount.status == AccountStatus.ACTIVE.value, TgAccount.deleted_at.is_(None))
         .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
     )
     if not account:

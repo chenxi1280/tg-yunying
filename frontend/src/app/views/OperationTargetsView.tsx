@@ -1,14 +1,30 @@
 import React from 'react';
-import { Button, Card, Form, Input, InputNumber, Select, Space, Table, Typography } from 'antd';
+import { Alert, Button, Card, Form, Input, InputNumber, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { api } from '../../shared/api/client';
+import { api, ApiError } from '../../shared/api/client';
 import type { OperationTarget } from '../types';
 import { StatusBadge, useAntdTableControls } from '../components/shared';
 
 export default function OperationTargetsView() {
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
   const [loading, setLoading] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [formError, setFormError] = React.useState('');
+  const [editingTarget, setEditingTarget] = React.useState<OperationTarget | null>(null);
   const [form] = Form.useForm();
+
+  function errorMessage(error: unknown) {
+    if (error instanceof ApiError) {
+      try {
+        const parsed = JSON.parse(error.body) as { detail?: unknown };
+        if (typeof parsed.detail === 'string') return parsed.detail;
+      } catch {
+        return error.body || error.message;
+      }
+      return error.body || error.message;
+    }
+    return error instanceof Error ? error.message : String(error);
+  }
 
   async function load() {
     setLoading(true);
@@ -23,10 +39,11 @@ export default function OperationTargetsView() {
     void load();
   }, []);
 
-  async function createTarget(values: any) {
-    await api<OperationTarget>('/operation-targets', {
-      method: 'POST',
-      body: JSON.stringify({
+  async function saveTarget(values: any) {
+    setSaving(true);
+    setFormError('');
+    try {
+      const body = {
         target_type: values.target_type,
         tg_peer_id: values.tg_peer_id,
         title: values.title,
@@ -34,10 +51,39 @@ export default function OperationTargetsView() {
         member_count: values.member_count ?? 0,
         can_send: values.can_send ?? true,
         auth_status: values.auth_status ?? '已授权运营',
-      }),
+      };
+      await api<OperationTarget>(editingTarget ? `/operation-targets/${editingTarget.id}` : '/operation-targets', {
+        method: editingTarget ? 'PATCH' : 'POST',
+        body: JSON.stringify(body),
+      });
+      setEditingTarget(null);
+      form.resetFields();
+      await load();
+    } catch (error) {
+      setFormError(errorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function startEdit(target: OperationTarget) {
+    setEditingTarget(target);
+    setFormError('');
+    form.setFieldsValue({
+      target_type: target.target_type,
+      tg_peer_id: target.tg_peer_id,
+      title: target.title,
+      username: target.username,
+      member_count: target.member_count,
+      can_send: target.can_send,
+      auth_status: target.auth_status,
     });
+  }
+
+  function cancelEdit() {
+    setEditingTarget(null);
+    setFormError('');
     form.resetFields();
-    await load();
   }
 
   const table = useAntdTableControls<OperationTarget>({
@@ -61,6 +107,7 @@ export default function OperationTargetsView() {
     { title: '使用范围', key: 'auth_status', width: 140, render: (_, target) => <StatusBadge status={target.auth_status} /> },
     { title: '发送能力', key: 'can_send', width: 140, render: (_, target) => <StatusBadge status={target.can_send ? '可发送' : '只读'} /> },
     { title: '最近同步', key: 'last_sync_at', width: 200, render: (_, target) => target.last_sync_at ? new Date(target.last_sync_at).toLocaleString() : '手动创建' },
+    { title: '操作', key: 'actions', width: 100, render: (_, target) => <Button size="small" onClick={() => startEdit(target)}>编辑</Button> },
   ];
 
   return (
@@ -81,8 +128,9 @@ export default function OperationTargetsView() {
           loading={loading}
         />
       </Card>
-      <Card className="panel" title="新增目标">
-        <Form form={form} layout="vertical" onFinish={createTarget} initialValues={{ target_type: 'group', can_send: true, auth_status: '已授权运营', member_count: 0 }}>
+      <Card className="panel" title={editingTarget ? `编辑目标 #${editingTarget.id}` : '新增目标'}>
+        {formError && <Alert className="form-alert" type="error" showIcon message={formError} />}
+        <Form form={form} layout="vertical" onFinish={saveTarget} initialValues={{ target_type: 'group', can_send: true, auth_status: '已授权运营', member_count: 0 }}>
           <Form.Item name="target_type" label="目标类型" rules={[{ required: true }]}>
             <Select options={[{ value: 'group', label: '群聊' }, { value: 'channel', label: '频道' }]} />
           </Form.Item>
@@ -104,7 +152,10 @@ export default function OperationTargetsView() {
           <Form.Item name="can_send" label="发送能力">
             <Select options={[{ value: true, label: '可发送/可发帖' }, { value: false, label: '只读' }]} />
           </Form.Item>
-          <Button type="primary" htmlType="submit">保存目标</Button>
+          <Space>
+            <Button type="primary" htmlType="submit" loading={saving}>保存目标</Button>
+            {editingTarget && <Button onClick={cancelEdit} disabled={saving}>取消编辑</Button>}
+          </Space>
         </Form>
       </Card>
     </section>

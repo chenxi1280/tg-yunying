@@ -41,6 +41,7 @@ from .tenants import ensure_task_quota_available
 
 CONTINUOUS_MODES = {"ai_activity", "mirror_forward"}
 ACTIVE_CONTINUOUS_STATUSES = {TaskStatus.QUEUED.value, TaskStatus.RUNNING.value}
+CAMPAIGN_BACKOFF_CAP_SECONDS = 3600
 
 
 def build_participation_plan(
@@ -114,10 +115,14 @@ def _stop_if_needed(campaign: Campaign) -> bool:
     if campaign.ends_at and campaign.ends_at <= now_value:
         campaign.status = TaskStatus.COMPLETED.value
         campaign.last_error = ""
+        campaign.consecutive_failure_count = 0
+        campaign.next_run_at = None
         return True
     if campaign.execution_mode == "ai_activity" and campaign.max_ai_tokens and campaign.used_ai_tokens >= campaign.max_ai_tokens:
         campaign.status = TaskStatus.COMPLETED.value
         campaign.last_error = "AI Token 上限已达到"
+        campaign.consecutive_failure_count = 0
+        campaign.next_run_at = None
         return True
     return False
 
@@ -126,14 +131,38 @@ def _pause_for_inactive_subscription(campaign: Campaign) -> None:
     campaign.status = TaskStatus.PAUSED.value
     campaign.last_run_at = _now()
     campaign.last_error = SUBSCRIPTION_INACTIVE_DETAIL
+    campaign.next_run_at = None
 
 
 def _due_for_run(campaign: Campaign) -> bool:
     if campaign.status not in ACTIVE_CONTINUOUS_STATUSES or campaign.execution_mode not in CONTINUOUS_MODES:
         return False
+    if campaign.next_run_at is not None:
+        return campaign.next_run_at <= _now()
     if campaign.last_run_at is None:
         return True
     return campaign.last_run_at + timedelta(seconds=max(1, campaign.run_interval_seconds)) <= _now()
+
+
+def _mark_campaign_run_success(campaign: Campaign) -> None:
+    now_value = _now()
+    campaign.last_run_at = now_value
+    campaign.consecutive_failure_count = 0
+    campaign.next_run_at = now_value + timedelta(seconds=max(1, campaign.run_interval_seconds))
+    campaign.status = TaskStatus.RUNNING.value
+    campaign.last_error = ""
+
+
+def _mark_campaign_run_failure(campaign: Campaign, error: str) -> None:
+    now_value = _now()
+    failure_count = max(0, campaign.consecutive_failure_count or 0) + 1
+    base_interval = max(1, campaign.run_interval_seconds)
+    backoff_seconds = min(base_interval * (2 ** (failure_count - 1)), CAMPAIGN_BACKOFF_CAP_SECONDS)
+    campaign.last_run_at = now_value
+    campaign.consecutive_failure_count = failure_count
+    campaign.next_run_at = now_value + timedelta(seconds=backoff_seconds)
+    campaign.last_error = error
+    campaign.status = TaskStatus.RUNNING.value
 
 
 def _record_processed_message(
@@ -341,9 +370,7 @@ def run_ai_activity_campaign(session: Session, campaign: Campaign) -> int:
             )
             task_index += 1
     _sync_campaign_ai_usage(session, campaign)
-    campaign.last_run_at = _now()
-    campaign.status = TaskStatus.RUNNING.value
-    campaign.last_error = ""
+    _mark_campaign_run_success(campaign)
     if _stop_if_needed(campaign):
         campaign.last_run_at = _now()
     audit(session, tenant_id=campaign.tenant_id, actor="持续任务服务", action="执行AI活跃任务", target_type="campaign", target_id=str(campaign.id), detail=f"queued={queued}; tokens={campaign.used_ai_tokens}")
@@ -444,9 +471,7 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
                     reason=f"ai_failed_template_fallback:{rewrite_error[:500]}" if generation_source == "template_fallback" and rewrite_error else "queued=1",
                     content=filtered.content,
                 )
-    campaign.last_run_at = _now()
-    campaign.status = TaskStatus.RUNNING.value
-    campaign.last_error = ""
+    _mark_campaign_run_success(campaign)
     if _stop_if_needed(campaign):
         campaign.last_run_at = _now()
     audit(session, tenant_id=campaign.tenant_id, actor="持续任务服务", action="执行监听转发任务", target_type="campaign", target_id=str(campaign.id), detail=f"queued={queued}; sources={source_group_ids}")
@@ -468,9 +493,7 @@ def process_continuous_campaign(session: Session, campaign_id: int) -> int:
         session.rollback()
         campaign = session.get(Campaign, campaign_id)
         if campaign:
-            campaign.last_run_at = _now()
-            campaign.last_error = str(exc)
-            campaign.status = TaskStatus.RUNNING.value
+            _mark_campaign_run_failure(campaign, str(exc))
             session.commit()
         return 0
 
@@ -481,7 +504,7 @@ def drain_continuous_campaigns(session_factory, limit: int = 5) -> int:
             session.scalars(
                 select(Campaign)
                 .where(Campaign.execution_mode.in_(CONTINUOUS_MODES), Campaign.status.in_(ACTIVE_CONTINUOUS_STATUSES))
-                .order_by(Campaign.last_run_at.asc().nullsfirst(), Campaign.id.asc())
+                .order_by(Campaign.next_run_at.asc().nullsfirst(), Campaign.last_run_at.asc().nullsfirst(), Campaign.id.asc())
                 .limit(limit)
             )
         )
@@ -502,6 +525,7 @@ def cancel_campaign(session: Session, campaign_id: int, actor: str) -> Campaign:
         return campaign
     campaign.status = TaskStatus.CANCELLED.value
     campaign.last_error = ""
+    campaign.next_run_at = None
     audit(session, tenant_id=campaign.tenant_id, actor=actor, action="取消运营任务", target_type="campaign", target_id=str(campaign.id))
     session.commit()
     session.refresh(campaign)

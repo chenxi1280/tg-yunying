@@ -5,6 +5,7 @@ import {
   Database,
   LayoutDashboard,
   LockKeyhole,
+  MessageSquareText,
   RefreshCcw,
   ShieldAlert,
   Smartphone,
@@ -21,6 +22,7 @@ import GroupManagementView from './views/GroupManagementView';
 import AuditsView from './views/AuditsView';
 import OperationTargetsView from './views/OperationTargetsView';
 import OperationTasksView from './views/OperationTasksView';
+import MessageSendingView from './views/MessageSendingView';
 import { AppModals } from './AppModals';
 import { VIEW_ROUTES } from './routes';
 
@@ -67,7 +69,7 @@ function AppShell() {
     promptTemplateForm, setPromptTemplateForm,
     materialForm, setMaterialForm, openContentKeywordRuleEdit,
     groupPolicy, setGroupPolicy,
-    modal, setModal, resultDialog, setResultDialog,
+    setModal,
     selectedTargetGroupIds, recommendedAccounts, selectedAccountsByGroup,
     targetGroupsMissingAccounts,
     campaignStep, setCampaignStep,
@@ -82,13 +84,13 @@ function AppShell() {
     directMessageForm, setDirectMessageForm,
     selectedDirectContact, accountContacts,
     returnAfterVerification, setReturnAfterVerification,
-    refresh, showResult, closeModal, openConfirm,
+    refresh, openConfirm,
     openCampaignModal, openAccountCreate, openAccountDetail, openAccountPoolDetail,
     refreshAccountPoolDetail, createAccount, createAccountPool, moveCurrentAccountPool,
     createClonePlan, confirmClonePlan, retryCloneItem,
     confirmVerificationTask, dismissVerificationTask,
     syncAccountContacts, queueAccountSyncNow,
-    startDirectMessageToContact, createDirectMessageTask,
+    startDirectMessageToContact, createDirectMessageTask, createMessageSendTask,
     openGroupDetail, openDraftEdit, saveDraftEdit,
     avatarUrl, openAccountProfileEdit, pollVerificationCodes,
     saveAccountProfile, retryAccountProfileSync,
@@ -96,7 +98,7 @@ function AppShell() {
     goCampaignAccountStep, goCampaignContentStep,
     createCampaignAndDrafts, approveDraft, approveAllDrafts,
     cancelCampaign,
-    dispatchTask, drainQueue, retryTask,
+    cancelTask, dispatchTask, drainQueue, retryTask,
     authorizeSelectedGroup, createArchive, saveGroupPolicy,
     openArchiveDetail, exportArchive, rerunArchive,
     createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp,
@@ -113,6 +115,7 @@ function AppShell() {
   const navCandidates: Array<[string, string, React.ReactNode]> = [
     ['overview', '运营概览', <LayoutDashboard size={18} />],
     ['accounts', 'TG账号管理', <Smartphone size={18} />],
+    ['messageSending', '消息发送', <MessageSquareText size={18} />],
     ['targetManagement', '群/频道目标', <Users size={18} />],
     ['taskManagement', '任务中心', <Activity size={18} />],
     ['usageReports', '运营数据', <Activity size={18} />],
@@ -301,6 +304,19 @@ function AppShell() {
           <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => goToView('systemConfig')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onDeleteAccount={(account) => openConfirm({ title: '移除账号', message: `确认移除 ${account.display_name}？历史任务、群归档和审计记录会保留，手机号可以重新新增。`, confirmLabel: '移除账号', tone: 'danger', onConfirm: () => deleteAccount(account) })} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} isActionPending={isActionPending} />
         )}
         {activeView === 'targetManagement' && <OperationTargetsView />}
+        {activeView === 'messageSending' && (
+          <MessageSendingView
+            accounts={accounts}
+            materials={materials}
+            tasks={tasks}
+            createMessageSendTask={createMessageSendTask}
+            onCancelTask={cancelTask}
+            onDispatchTask={dispatchTask}
+            onRetryTask={retryTask}
+            onRefresh={refresh}
+            isActionPending={isActionPending}
+          />
+        )}
         {activeView === 'groupManagement' && (
           <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateCampaign={openCampaignModal} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
         )}

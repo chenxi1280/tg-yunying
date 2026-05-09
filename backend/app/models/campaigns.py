@@ -37,6 +37,8 @@ class Campaign(Base):
     max_ai_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=100000)
     used_ai_tokens: Mapped[int] = mapped_column(Integer, default=0)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consecutive_failure_count: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str] = mapped_column(Text, default="")
     participation_min_ratio: Mapped[float] = mapped_column(Float, default=0.6)
     participation_max_ratio: Mapped[float] = mapped_column(Float, default=1.0)

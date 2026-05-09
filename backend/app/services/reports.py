@@ -21,7 +21,7 @@ from app.models import (
 
 
 def build_overview(session: Session, tenant_id: int | None = None) -> dict:
-    account_stmt = select(func.count(TgAccount.id))
+    account_stmt = select(func.count(TgAccount.id)).where(TgAccount.deleted_at.is_(None))
     group_stmt = select(func.count(TgGroup.id))
     campaign_stmt = select(func.count(Campaign.id))
     task_base = []
@@ -39,7 +39,8 @@ def build_overview(session: Session, tenant_id: int | None = None) -> dict:
     failed = session.scalar(select(func.count(MessageTask.id)).where(*task_base, MessageTask.status == TaskStatus.FAILED.value)) or 0
     total_tasks = sent + failed + queued
     success_rate = round(sent / max(sent + failed, 1) * 100, 1)
-    avg_health = session.scalar(select(func.coalesce(func.avg(TgAccount.health_score), 0)).where(*([TgAccount.tenant_id == tenant_id] if tenant_id is not None else []))) or 0
+    account_filters = [TgAccount.deleted_at.is_(None), *([TgAccount.tenant_id == tenant_id] if tenant_id is not None else [])]
+    avg_health = session.scalar(select(func.coalesce(func.avg(TgAccount.health_score), 0)).where(*account_filters)) or 0
     draft_filters = [AiDraft.tenant_id == tenant_id] if tenant_id is not None else []
     review_total = session.scalar(select(func.count(AiDraft.id)).where(*draft_filters)) or 0
     review_done = session.scalar(select(func.count(AiDraft.id)).where(*draft_filters, AiDraft.status == TaskStatus.APPROVED.value)) or 0
@@ -49,7 +50,7 @@ def build_overview(session: Session, tenant_id: int | None = None) -> dict:
     total_usage_cost = session.scalar(select(func.coalesce(func.sum(AiUsageLedger.total_cost), 0)).where(*usage_filters)) or 0
     verification_filters = [VerificationTask.tenant_id == tenant_id] if tenant_id is not None else []
     pending_verifications = session.scalar(select(func.count(VerificationTask.id)).where(*verification_filters, VerificationTask.status == "待处理")) or 0
-    limited_accounts = session.scalar(select(func.count(TgAccount.id)).where(*([TgAccount.tenant_id == tenant_id] if tenant_id is not None else []), TgAccount.status.in_([AccountStatus.LIMITED.value, AccountStatus.NEED_RELOGIN.value]))) or 0
+    limited_accounts = session.scalar(select(func.count(TgAccount.id)).where(*account_filters, TgAccount.status.in_([AccountStatus.LIMITED.value, AccountStatus.NEED_RELOGIN.value]))) or 0
     readonly_groups = session.scalar(select(func.count(TgGroup.id)).where(*([TgGroup.tenant_id == tenant_id] if tenant_id is not None else []), TgGroup.auth_status != GroupAuthStatus.AUTHORIZED.value)) or 0
     risks: list[dict[str, str]] = []
     if pending_verifications:
@@ -84,7 +85,7 @@ def build_overview(session: Session, tenant_id: int | None = None) -> dict:
 
 def build_report(session: Session, tenant_id: int | None = None) -> dict:
     overview = build_overview(session, tenant_id)
-    account_filters = [TgAccount.tenant_id == tenant_id] if tenant_id is not None else []
+    account_filters = [TgAccount.deleted_at.is_(None), *([TgAccount.tenant_id == tenant_id] if tenant_id is not None else [])]
     group_filters = [TgGroup.tenant_id == tenant_id] if tenant_id is not None else []
     task_filters = [MessageTask.tenant_id == tenant_id] if tenant_id is not None else []
     day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)

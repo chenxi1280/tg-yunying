@@ -67,7 +67,7 @@ def group_detail(session: Session, group_id: int) -> dict:
     accounts = []
     for link in links:
         account = session.get(TgAccount, link.account_id)
-        if not account:
+        if not account or account.deleted_at is not None:
             continue
         accounts.append(
             {

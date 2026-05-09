@@ -434,6 +434,8 @@ export type Campaign = {
   max_ai_tokens: number | null;
   used_ai_tokens: number;
   last_run_at: string | null;
+  next_run_at: string | null;
+  consecutive_failure_count: number;
   last_error: string;
   participation_min_ratio: number;
   participation_max_ratio: number;
@@ -484,6 +486,21 @@ export type MessageTask = {
   failure_type: string | null;
   failure_detail: string | null;
   sent_at: string | null;
+};
+
+export type MessageSendTaskCreate = {
+  account_id: number;
+  target_type: 'private' | 'group' | 'channel';
+  target_peer_id?: string | null;
+  target_display?: string;
+  group_id?: number | null;
+  operation_target_id?: number | null;
+  content: string;
+  message_type: '文本' | '图片' | '表情包';
+  material_id?: number | null;
+  jitter_min_seconds: number;
+  jitter_max_seconds: number;
+  dispatch_now: boolean;
 };
 
 export type ArchiveItem = {
@@ -839,9 +856,6 @@ export type ModalState =
   | { type: 'groupDetail' }
   | { type: 'draftEdit' }
   | { type: 'accountProfileEdit' }
-  | { type: 'confirmAction'; payload: ConfirmPayload }
   | null;
-
-export type ResultDialogState = { title: string; message: string } | null;
 
 export type BadgeTone = 'positive' | 'warning' | 'danger' | 'neutral' | 'muted';

@@ -10,7 +10,7 @@ import type {
   ArchiveExport, AuditLog, VerificationCode, AccountSyncRecord, VerificationTask,
   AccountCloneItem, AccountClonePlan, AccountGroup, ProfileSyncRecord,
   AccountDetail, AccountPoolDetail, GroupDetail, CampaignDetail, RecommendedAccount, Tenant,
-  ConfirmPayload, ModalState, ResultDialogState,
+  ConfirmPayload, MessageSendTaskCreate, ModalState,
 } from '../types';
 
 export interface AppState {
@@ -274,8 +274,6 @@ export interface AppState {
   // Modal & Dialog
   modal: ModalState;
   setModal: (modal: ModalState) => void;
-  resultDialog: ResultDialogState;
-  setResultDialog: (dialog: ResultDialogState) => void;
   busy: string;
   setBusy: (busy: string) => void;
   pendingActionKeys: string[];
@@ -340,6 +338,7 @@ export interface AppState {
   goCampaignAccountStep: () => Promise<void>;
   goCampaignContentStep: () => void;
   createDirectMessageTask: () => Promise<void>;
+  createMessageSendTask: (payload: MessageSendTaskCreate) => Promise<MessageTask>;
   saveAccountProfile: () => Promise<void>;
   retryAccountProfileSync: () => Promise<void>;
   login: () => Promise<void>;

@@ -35,7 +35,7 @@ def validate_listener_accounts(session: Session, group: TgGroup, account_ids: li
                 TgGroupAccount.account_id == account_id,
             )
         )
-        if not account or account.tenant_id != group.tenant_id:
+        if not account or account.deleted_at is not None or account.tenant_id != group.tenant_id:
             raise ValueError("listener account not found")
         if account.status != AccountStatus.ACTIVE.value:
             raise ValueError("listener account must be online")
@@ -83,7 +83,7 @@ def listener_account_summaries(session: Session, group: TgGroup) -> list[dict]:
     summaries: list[dict] = []
     for link in rows:
         account = session.get(TgAccount, link.account_id)
-        if account:
+        if account and account.deleted_at is None:
             summaries.append({"id": account.id, "display_name": account.display_name, "username": account.username, "status": account.status})
     return summaries
 
@@ -92,9 +92,9 @@ def _managed_sender_keys(session: Session, group: TgGroup) -> set[str]:
     keys: set[str] = set()
     accounts = list(
         session.scalars(
-            select(TgAccount)
-            .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
-            .where(TgGroupAccount.group_id == group.id, TgAccount.tenant_id == group.tenant_id)
+                select(TgAccount)
+                .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
+                .where(TgGroupAccount.group_id == group.id, TgAccount.tenant_id == group.tenant_id, TgAccount.deleted_at.is_(None))
         )
     )
     for account in accounts:
@@ -147,7 +147,7 @@ def _send_account_ids(session: Session, group: TgGroup) -> list[int]:
             .order_by(TgGroupAccount.id.asc())
         )
     )
-    ids = [link.account_id for link in links if (account := session.get(TgAccount, link.account_id)) and account.status == AccountStatus.ACTIVE.value]
+    ids = [link.account_id for link in links if (account := session.get(TgAccount, link.account_id)) and account.deleted_at is None and account.status == AccountStatus.ACTIVE.value]
     if ids:
         return ids
     fallback_links = list(
@@ -160,7 +160,7 @@ def _send_account_ids(session: Session, group: TgGroup) -> list[int]:
     return [
         link.account_id
         for link in fallback_links
-        if (account := session.get(TgAccount, link.account_id)) and account.status == AccountStatus.ACTIVE.value
+        if (account := session.get(TgAccount, link.account_id)) and account.deleted_at is None and account.status == AccountStatus.ACTIVE.value
     ]
 
 
@@ -182,7 +182,7 @@ def collect_group_context(session: Session, group: TgGroup) -> int:
     inserted = 0
     for link in listener_links:
         account = session.get(TgAccount, link.account_id)
-        if not account or account.status != AccountStatus.ACTIVE.value:
+        if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
             continue
         credentials = credentials_for_account(session, account)
         snapshots = gateway.fetch_group_messages(

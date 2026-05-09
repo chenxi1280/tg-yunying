@@ -291,7 +291,7 @@ def ensure_operation_targets_from_legacy_groups(session: Session, tenant_id: int
 
 def sync_account_targets(session: Session, account_id: int, actor: str) -> list[OperationTarget]:
     account = session.get(TgAccount, account_id)
-    if not account:
+    if not account or account.deleted_at is not None:
         raise ValueError("account not found")
     credentials = credentials_for_account(session, account)
     snapshots = gateway.list_groups(account.id, account.session_ciphertext, credentials)
@@ -464,7 +464,7 @@ def _execute_operation_attempt(
     channel: OperationTarget | None,
 ) -> tuple[bool, str, str]:
     account = session.get(TgAccount, attempt.account_id) if attempt.account_id else None
-    if not account or account.status != AccountStatus.ACTIVE.value:
+    if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         return False, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用"
     try:
         credentials = credentials_for_account(session, account)
@@ -683,7 +683,7 @@ def cancel_operation_task(session: Session, task_id: int, actor: str) -> Operati
 
 def manual_send(session: Session, account_id: int, payload: ManualSendRequest, actor: str) -> ManualOperationRecord:
     account = session.get(TgAccount, account_id)
-    if not account or account.status != AccountStatus.ACTIVE.value:
+    if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         raise ValueError("账号不可用")
     target = session.get(OperationTarget, payload.target_id)
     if not target:

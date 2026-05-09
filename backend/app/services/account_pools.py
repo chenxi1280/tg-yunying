@@ -189,7 +189,7 @@ def update_account_pool(session: Session, pool_id: int, payload: AccountPoolUpda
 def move_account_pool(session: Session, account_id: int, pool_id: int, actor: str) -> TgAccount:
     account = session.get(TgAccount, account_id)
     pool = session.get(AccountPool, pool_id)
-    if not account or not pool or account.tenant_id != pool.tenant_id:
+    if not account or account.deleted_at is not None or not pool or account.tenant_id != pool.tenant_id:
         raise ValueError("account or pool not found")
     account.pool_id = pool.id
     audit(session, tenant_id=account.tenant_id, actor=actor, action="移动账号池", target_type="tg_account", target_id=str(account.id), detail=pool.name)

@@ -1,12 +1,12 @@
 import React from 'react';
-import { Alert, Button, Card, Descriptions, Empty, Input, List, Select, Space, Table, Tabs, Typography } from 'antd';
+import { Alert, Button, Card, Descriptions, Empty, Input, List, Modal, Select, Space, Table, Tabs, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type {
   Account, AccountPool, AccountDetail, AccountPoolDetail,
   AccountClonePlan, AccountCloneItem, VerificationTask, Contact,
   RuntimeConfig, CurrentUser, AccountGroup, MessageTask,
 } from '../types';
-import { Modal, FormActions, StatusBadge, useAntdTableControls } from '../components/shared';
+import { FormActions, StatusBadge, useAntdTableControls } from '../components/shared';
 import { statusAccent, operationLabel, syncTypeLabel } from '../utils';
 import { api } from '../../shared/api/client';
 
@@ -49,7 +49,8 @@ export function AccountPoolDetailModal({
   onSetModal, accountName, isActionPending,
 }: AccountPoolDetailModalProps) {
   return (
-    <Modal title={`${accountPoolDetail.pool.name} 账号分组`} size="large" onClose={onClose}>
+    <Modal className="tg-modal large" title={`${accountPoolDetail.pool.name} 账号分组`} open width={920} onCancel={onClose} footer={null} destroyOnHidden centered>
+      <div className="modal-body">
       <Descriptions
         className="detail-list"
         size="small"
@@ -142,6 +143,7 @@ export function AccountPoolDetailModal({
             )}
           />
         </Card>
+      </div>
       </div>
     </Modal>
   );
@@ -301,7 +303,8 @@ export function AccountDetailModal({
   });
 
   return (
-    <Modal title={`${accountDetail.account.display_name} 账号详情`} size="large" onClose={onClose}>
+    <Modal className="tg-modal large" title={`${accountDetail.account.display_name} 账号详情`} open width={920} onCancel={onClose} footer={null} destroyOnHidden centered>
+      <div className="modal-body">
       <div className="account-detail-summary">
         <div><span>账号状态</span><strong><StatusBadge status={accountDetail.account.status} /></strong></div>
         <div><span>手机号</span><strong>{accountPhone(accountDetail.account)}</strong></div>
@@ -632,6 +635,7 @@ export function AccountDetailModal({
           />
         </>
       )}
+      </div>
     </Modal>
   );
 }

@@ -1,7 +1,7 @@
 import React from 'react';
-import { Button, Card, Checkbox, Input, InputNumber, Select, Space, Steps, Typography } from 'antd';
+import { Button, Card, Checkbox, Input, InputNumber, Modal, Select, Space, Steps, Typography } from 'antd';
 import type { AiProvider, Group, Material, RecommendedAccount } from '../types';
-import { Modal, FormActions, StatusBadge } from '../components/shared';
+import { FormActions, StatusBadge } from '../components/shared';
 import { statusAccent } from '../utils';
 
 interface Props {
@@ -125,7 +125,8 @@ export default function CampaignWizard({
   const groupSelectionReady = selectedTargetGroupIds.length > 0 && (campaignMode !== 'mirror_forward' || selectedSourceGroupIds.length > 0);
 
   return (
-    <Modal title="创建群活跃任务" size="large" onClose={onClose}>
+    <Modal className="tg-modal large" title="创建群活跃任务" open width={920} onCancel={onClose} footer={null} destroyOnHidden centered>
+      <div className="modal-body">
       <Steps
         className="wizard-steps"
         current={campaignStep - 1}
@@ -271,6 +272,7 @@ export default function CampaignWizard({
           </Space>
         </Card>
       )}
+      </div>
     </Modal>
   );
 }

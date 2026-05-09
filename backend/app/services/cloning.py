@@ -83,7 +83,7 @@ def create_account_clone_plan(session: Session, payload: AccountClonePlanCreate,
     source = session.get(TgAccount, payload.source_account_id)
     target_ids = list(dict.fromkeys([*payload.target_account_ids, *([payload.target_account_id] if payload.target_account_id else [])]))
     targets = [session.get(TgAccount, target_id) for target_id in target_ids]
-    if not source or not target_ids or any(target is None or target.tenant_id != payload.tenant_id for target in targets):
+    if not source or source.deleted_at is not None or not target_ids or any(target is None or target.deleted_at is not None or target.tenant_id != payload.tenant_id for target in targets):
         raise ValueError("source or target account not found")
     if source.tenant_id != payload.tenant_id:
         raise ValueError("source or target account not found")
@@ -146,7 +146,7 @@ def execute_clone_item(session: Session, item_id: int, actor: str) -> AccountClo
     if not item:
         raise ValueError("clone item not found")
     target = session.get(TgAccount, item.target_account_id)
-    if not target:
+    if not target or target.deleted_at is not None:
         raise ValueError("target account not found")
     if target.status != AccountStatus.ACTIVE.value:
         item.status = "失败"
