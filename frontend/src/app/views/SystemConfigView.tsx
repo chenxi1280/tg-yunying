@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Card, Descriptions, Space, Table, Tabs, Tag, Typography } from 'antd';
+import { Button, Card, Descriptions, Modal, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type {
   ActivationCode,
@@ -93,6 +93,7 @@ function TenantPlansPanel({
   onEditSubscriptionPlan: (plan: SubscriptionPlan) => void;
   onEditTenant: (tenant: Tenant) => void;
 }) {
+  const [detailTenant, setDetailTenant] = React.useState<Tenant | null>(null);
   const planTable = useAntdTableControls<SubscriptionPlan>({
     rows: subscriptionPlans,
     placeholder: '搜索套餐 / 类型 / 状态',
@@ -141,15 +142,27 @@ function TenantPlansPanel({
                 <Badge tone="neutral">租户 #{tenant.id}</Badge>
                 <Badge tone="positive">{tenant.plan_name}</Badge>
               </Space>
-              <Descriptions size="small" column={2} items={[
-                { key: 'account_quota', label: '账号配额', children: tenant.account_quota },
-                { key: 'task_quota', label: '任务配额', children: tenant.task_quota },
-              ]} />
-              <Button size="small" onClick={() => onEditTenant(tenant)}>编辑配额</Button>
+              <Typography.Paragraph type="secondary">账号 {tenant.account_quota} / 任务 {tenant.task_quota}</Typography.Paragraph>
+              <Space wrap>
+                <Button size="small" onClick={() => setDetailTenant(tenant)}>详情</Button>
+                <Button size="small" onClick={() => onEditTenant(tenant)}>编辑配额</Button>
+              </Space>
             </Card>
           ))}
         </div>
       </Card>
+      <Modal className="tg-modal medium" title={detailTenant?.name ?? '租户详情'} open={Boolean(detailTenant)} width={720} footer={null} destroyOnHidden centered onCancel={() => setDetailTenant(null)}>
+        {detailTenant && (
+          <Descriptions size="small" column={2} items={[
+            { key: 'id', label: '租户 ID', children: detailTenant.id },
+            { key: 'plan', label: '套餐', children: detailTenant.plan_name },
+            { key: 'account_quota', label: '账号配额', children: detailTenant.account_quota },
+            { key: 'task_quota', label: '任务配额', children: detailTenant.task_quota },
+            { key: 'bot', label: 'Bot 配置', children: <StatusBadge status={detailTenant.telegram_bot_configured ? '已配置' : '未配置'} /> },
+            { key: 'notify', label: 'AI 失败通知', children: detailTenant.notify_ai_failures_enabled ? '启用' : '关闭' },
+          ]} />
+        )}
+      </Modal>
     </section>
   );
 }

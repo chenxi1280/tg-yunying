@@ -10,7 +10,7 @@ import type {
   ArchiveExport, AuditLog, VerificationCode, AccountSyncRecord, VerificationTask,
   AccountCloneItem, AccountClonePlan, AccountGroup, ProfileSyncRecord,
   AccountDetail, AccountPoolDetail, GroupDetail, CampaignDetail, RecommendedAccount, Tenant,
-  ConfirmPayload, MessageSendTaskCreate, ModalState,
+  ConfirmPayload, MessageSendBatchCreate, MessageSendTaskCreate, ModalState,
 } from '../types';
 
 export interface AppState {
@@ -309,6 +309,8 @@ export interface AppState {
   openCampaignModal: (groupId?: number) => void;
   openAccountCreate: (loginNow?: boolean) => void;
   openAccountDetail: (account: Account) => Promise<void>;
+  openAccountVerificationCodes: (account: Account) => Promise<void>;
+  openAccountMovePool: (account: Account) => Promise<void>;
   openAccountPoolDetail: (pool: AccountPool) => Promise<void>;
   refreshAccountPoolDetail: () => Promise<void>;
   createAccount: () => Promise<void>;
@@ -329,7 +331,7 @@ export interface AppState {
   saveDraftEdit: () => Promise<void>;
   avatarUrl: (value: string) => string;
   openAccountProfileEdit: () => void;
-  pollVerificationCodes: () => Promise<void>;
+  pollVerificationCodes: (silent?: boolean) => Promise<void>;
   toggleTargetGroup: (groupId: number) => void;
   toggleSourceGroup: (groupId: number) => void;
   recommendAccounts: (groupIds?: number[]) => Promise<void>;
@@ -338,7 +340,7 @@ export interface AppState {
   goCampaignAccountStep: () => Promise<void>;
   goCampaignContentStep: () => void;
   createDirectMessageTask: () => Promise<void>;
-  createMessageSendTask: (payload: MessageSendTaskCreate) => Promise<MessageTask>;
+  createMessageSendTask: (payload: MessageSendTaskCreate | MessageSendBatchCreate) => Promise<MessageTask[]>;
   saveAccountProfile: () => Promise<void>;
   retryAccountProfileSync: () => Promise<void>;
   login: () => Promise<void>;

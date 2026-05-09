@@ -501,6 +501,25 @@ export type MessageSendTaskCreate = {
   jitter_min_seconds: number;
   jitter_max_seconds: number;
   dispatch_now: boolean;
+  scheduled_at?: string | null;
+};
+
+export type MessageSendTarget = {
+  target_type: 'private' | 'group' | 'channel';
+  target_peer_id?: string | null;
+  target_display?: string;
+  group_id?: number | null;
+  operation_target_id?: number | null;
+};
+
+export type MessageSendBatchCreate = {
+  account_id: number;
+  targets: MessageSendTarget[];
+  content: string;
+  message_type: '文本' | '图片';
+  material_id?: number | null;
+  dispatch_now: boolean;
+  scheduled_at?: string | null;
 };
 
 export type ArchiveItem = {
@@ -744,6 +763,8 @@ export type AccountDetail = {
   profile_sync_records: ProfileSyncRecord[];
   sync_records: AccountSyncRecord[];
   next_sync_at: string | null;
+  sync_due: boolean;
+  sync_status_text: string;
   contacts: Contact[];
   groups: AccountGroup[];
   operation_targets: OperationTarget[];

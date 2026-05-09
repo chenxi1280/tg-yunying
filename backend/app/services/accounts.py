@@ -36,6 +36,12 @@ from .tenants import ensure_account_quota_available
 from .verification import list_verification_tasks, create_verification_task
 from .account_pools import account_pool_snapshot, ensure_default_account_pool, seed_account_pools
 
+ACCOUNT_SYNC_INTERVAL = timedelta(hours=6)
+ACCOUNT_SYNC_STALE_AFTER = timedelta(minutes=30)
+ACCOUNT_SYNC_QUEUE_STALE_AFTER = timedelta(hours=6)
+PROFILE_SYNC_STALE_AFTER = timedelta(minutes=30)
+PROFILE_SYNC_QUEUE_STALE_AFTER = timedelta(hours=6)
+
 __all__ = [
     "account_contacts",
     "account_detail",
@@ -197,6 +203,36 @@ def list_profile_sync_records(session: Session, account_id: int, limit: int = 20
     )
 
 
+def _mark_stale_profile_sync_records(session: Session, account_id: int | None = None) -> int:
+    now_value = _now()
+    count = 0
+    stmt = select(TgAccountProfileSyncRecord).where(TgAccountProfileSyncRecord.status.in_(["排队中", "同步中"]))
+    if account_id is not None:
+        stmt = stmt.where(TgAccountProfileSyncRecord.account_id == account_id)
+    for record in session.scalars(stmt):
+        age = now_value - record.created_at
+        if record.status == "同步中" and age < PROFILE_SYNC_STALE_AFTER:
+            continue
+        if record.status == "排队中" and age < PROFILE_SYNC_QUEUE_STALE_AFTER:
+            continue
+        record.status = "失败"
+        record.failure_type = "资料同步超时"
+        record.failure_detail = "资料同步任务长时间未完成，已停止等待，请重新提交同步。"
+        record.synced_at = now_value
+        account = session.get(TgAccount, record.account_id)
+        if account and account.deleted_at is None:
+            latest = session.scalar(
+                select(TgAccountProfileSyncRecord)
+                .where(TgAccountProfileSyncRecord.account_id == account.id)
+                .order_by(TgAccountProfileSyncRecord.id.desc())
+            )
+            if not latest or latest.id == record.id:
+                account.profile_sync_status = "失败"
+                account.profile_sync_error = record.failure_detail
+        count += 1
+    return count
+
+
 def upload_account_avatar(session: Session, account_id: int, filename: str, content_type: str, data: bytes, actor: str) -> dict:
     account = _ensure_account_available(session.get(TgAccount, account_id))
     settings = get_settings()
@@ -335,6 +371,8 @@ def process_profile_sync_record(session: Session, record_id: int) -> TgAccountPr
 def drain_profile_sync_records(session_factory, limit: int = 20) -> int:
     count = 0
     with session_factory() as session:
+        _mark_stale_profile_sync_records(session)
+        session.commit()
         record_ids = list(
             session.scalars(
                 select(TgAccountProfileSyncRecord.id)
@@ -360,6 +398,7 @@ def queue_account_sync_records(
 ) -> list[TgAccountSyncRecord]:
     sync_types = sync_types or ["profile_pull", "health", "groups", "contacts", "codes"]
     records: list[TgAccountSyncRecord] = []
+    now_value = _now()
     for sync_type in sync_types:
         existing = session.scalar(
             select(TgAccountSyncRecord)
@@ -372,8 +411,14 @@ def queue_account_sync_records(
             .order_by(TgAccountSyncRecord.id.desc())
         )
         if existing:
-            records.append(existing)
-            continue
+            scheduled_at = existing.scheduled_at or existing.created_at
+            if scheduled_at > now_value - ACCOUNT_SYNC_QUEUE_STALE_AFTER:
+                records.append(existing)
+                continue
+            existing.status = "失败"
+            existing.failure_type = "排队超时"
+            existing.failure_detail = "同步任务长时间未被消费，已重新创建新任务。"
+            existing.finished_at = now_value
         record = TgAccountSyncRecord(
             tenant_id=account.tenant_id,
             account_id=account.id,
@@ -463,10 +508,29 @@ def process_account_sync_record(session: Session, record_id: int) -> TgAccountSy
     return record
 
 
+def _mark_stale_account_sync_records(session: Session, account_id: int | None = None) -> int:
+    now_value = _now()
+    count = 0
+    stmt = select(TgAccountSyncRecord).where(TgAccountSyncRecord.status == "同步中")
+    if account_id is not None:
+        stmt = stmt.where(TgAccountSyncRecord.account_id == account_id)
+    for record in session.scalars(stmt):
+        started_at = record.started_at or record.created_at
+        if now_value - started_at < ACCOUNT_SYNC_STALE_AFTER:
+            continue
+        record.status = "失败"
+        record.failure_type = "同步超时"
+        record.failure_detail = "同步任务长时间未完成，已停止等待，下一轮会重新同步。"
+        record.finished_at = now_value
+        count += 1
+    return count
+
+
 def drain_account_sync_records(session_factory, limit: int = 20) -> int:
     count = 0
     with session_factory() as session:
-        cutoff = _now() - timedelta(hours=6)
+        _mark_stale_account_sync_records(session)
+        cutoff = _now() - ACCOUNT_SYNC_INTERVAL
         active_accounts = list(
             session.scalars(
                 select(TgAccount)
@@ -489,7 +553,7 @@ def drain_account_sync_records(session_factory, limit: int = 20) -> int:
             session.scalars(
                 select(TgAccountSyncRecord.id)
                 .where(TgAccountSyncRecord.status == "排队中", TgAccountSyncRecord.scheduled_at <= _now())
-                .order_by(TgAccountSyncRecord.scheduled_at.asc(), TgAccountSyncRecord.id.asc())
+                .order_by(TgAccountSyncRecord.scheduled_at.asc(), TgAccountSyncRecord.created_at.asc(), TgAccountSyncRecord.id.asc())
                 .limit(limit)
             )
         )
@@ -1049,6 +1113,11 @@ def account_detail(session: Session, account_id: int, actor: str) -> dict:
     account = session.get(TgAccount, account_id)
     if not account:
         raise ValueError("account not found")
+    stale_profile_count = _mark_stale_profile_sync_records(session, account.id)
+    stale_sync_count = _mark_stale_account_sync_records(session, account.id)
+    if stale_profile_count or stale_sync_count:
+        session.commit()
+        session.refresh(account)
     login_flows = list_login_flows(session, account_id)[:10]
     codes = list_verification_codes(session, account_id, actor)
     profile_records = list_profile_sync_records(session, account_id)
@@ -1079,8 +1148,32 @@ def account_detail(session: Session, account_id: int, actor: str) -> dict:
     pending_verification_count = sum(1 for task in verification_tasks if task.status == "待处理")
     sent_count = sum(1 for task in records if task.status == TaskStatus.SENT.value)
     failed_count = sum(1 for task in records if task.status == TaskStatus.FAILED.value)
-    latest_sync_time = (sync_records[0].finished_at or sync_records[0].created_at) if sync_records else None
-    next_sync_at = latest_sync_time + timedelta(hours=6) if latest_sync_time and account.status == AccountStatus.ACTIVE.value else None
+    now_value = _now()
+    latest_sync_time = next((record.finished_at for record in sync_records if record.status == "已同步" and record.finished_at), None)
+    if not latest_sync_time and sync_records:
+        latest_sync_time = sync_records[0].created_at
+    pending_due = any(record.status == "排队中" and record.scheduled_at <= now_value for record in sync_records)
+    running_sync = any(record.status == "同步中" for record in sync_records)
+    next_sync_at = None
+    sync_due = False
+    sync_status_text = "账号不在线，暂停自动同步"
+    if account.status == AccountStatus.ACTIVE.value:
+        if running_sync:
+            sync_status_text = "同步中"
+        elif pending_due:
+            sync_due = True
+            sync_status_text = "已到同步时间，等待后台执行"
+        elif latest_sync_time:
+            planned_sync_at = latest_sync_time + ACCOUNT_SYNC_INTERVAL
+            if planned_sync_at <= now_value:
+                sync_due = True
+                sync_status_text = "已到同步时间，等待后台执行"
+            else:
+                next_sync_at = planned_sync_at
+                sync_status_text = "自动同步已排程"
+        else:
+            sync_due = True
+            sync_status_text = "尚未同步，等待后台执行"
     return {
         "account": account,
         "risk_diagnostics": risk_diagnostics,
@@ -1089,6 +1182,8 @@ def account_detail(session: Session, account_id: int, actor: str) -> dict:
         "profile_sync_records": profile_records,
         "sync_records": sync_records,
         "next_sync_at": next_sync_at,
+        "sync_due": sync_due,
+        "sync_status_text": sync_status_text,
         "contacts": contacts,
         "groups": groups,
         "operation_targets": operation_targets,

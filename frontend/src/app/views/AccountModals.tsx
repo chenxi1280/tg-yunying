@@ -166,7 +166,7 @@ interface AccountDetailModalProps {
   onOpenAccountProfileEdit: () => void;
   onQueueAccountSyncNow: () => Promise<void>;
   onRefreshAccountDetail: () => Promise<void>;
-  onPollVerificationCodes: () => Promise<void>;
+  onPollVerificationCodes: (silent?: boolean) => Promise<void>;
   onStartDirectMessageToContact: (contact: Contact) => void;
   onCreateDirectMessageTask: () => Promise<void>;
   onConfirmClonePlan: (plan: AccountClonePlan) => Promise<void>;
@@ -208,6 +208,15 @@ export function AccountDetailModal({
   React.useEffect(() => {
     setManualTargetId((current) => current ?? accountDetail.operation_targets[0]?.id ?? null);
   }, [accountDetail.operation_targets]);
+
+  React.useEffect(() => {
+    if (accountDetailTab !== 'TG 官方验证码') return undefined;
+    void onPollVerificationCodes(true);
+    const timer = window.setInterval(() => {
+      void onPollVerificationCodes(true);
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [accountDetail.account.id, accountDetailTab]);
 
   async function syncTargets() {
     await api(`/tg-accounts/${accountDetail.account.id}/sync-targets`, { method: 'POST' });
@@ -302,6 +311,17 @@ export function AccountDetailModal({
     ],
   });
 
+  const riskLevelTone = accountDetail.risk_diagnostics[0]?.level === '高' ? 'error' : accountDetail.risk_diagnostics[0]?.level === '中' ? 'warning' : 'success';
+  const riskSummary = accountDetail.risk_diagnostics[0]
+    ? `${accountDetail.risk_diagnostics[0].level}风险 ${accountDetail.risk_diagnostics[0].title}，共 ${accountDetail.risk_diagnostics.length} 条`
+    : '账号风险正常';
+  const latestLoginAt = accountDetail.login_flows[0]?.created_at ?? null;
+  const latestAnySync = accountDetail.sync_records.find((record) => record.finished_at)?.finished_at ?? accountDetail.sync_records[0]?.created_at ?? null;
+  const latestProfilePull = accountDetail.account.profile_synced_at ?? accountDetail.sync_records.find((record) => record.sync_type === 'profile_pull' && record.finished_at)?.finished_at ?? null;
+  const latestCodeSync = accountDetail.sync_records.find((record) => record.sync_type === 'codes' && record.finished_at)?.finished_at ?? accountDetail.verification_codes[0]?.created_at ?? null;
+  const latestVisibleCode = accountDetail.verification_codes.find((code) => code.code_preview) ?? accountDetail.verification_codes[0] ?? null;
+  const formatTime = (value: string | null | undefined) => value ? new Date(value).toLocaleString() : '暂无记录';
+
   return (
     <Modal className="tg-modal large" title={`${accountDetail.account.display_name} 账号详情`} open width={920} onCancel={onClose} footer={null} destroyOnHidden centered>
       <div className="modal-body">
@@ -318,11 +338,27 @@ export function AccountDetailModal({
           <strong><Space size={6}><StatusBadge status="已发送" label={accountDetail.stats.sent ?? 0} /><StatusBadge status={(accountDetail.stats.failed ?? 0) > 0 ? '失败' : '无失败'} label={accountDetail.stats.failed ?? 0} /></Space></strong>
         </div>
       </div>
+      <Card className="sub-panel compact-panel account-risk-card" size="small">
+        <Space direction="vertical" size={8}>
+          <Alert
+            type={riskLevelTone}
+            showIcon
+            message={riskSummary}
+            description={accountDetail.risk_diagnostics[0]?.detail || '当前没有受限、封禁、FloodWait、目标不可访问或待处理验证信号。'}
+          />
+          <Space wrap>
+            <Button type="primary" size="small" onClick={onOpenAccountProfileEdit}>编辑资料</Button>
+            <Button size="small" onClick={() => onSetModal({ type: 'accountMovePool' })}>移动分组</Button>
+            <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:sync`)} onClick={onQueueAccountSyncNow}>同步</Button>
+            <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={() => { setAccountDetailTab('TG 官方验证码'); void onPollVerificationCodes(); }}>提取验证码</Button>
+          </Space>
+        </Space>
+      </Card>
       <Tabs
         className="tabs-row"
         activeKey={accountDetailTab}
         onChange={setAccountDetailTab}
-        items={['资料', '官方验证码', '群/频道', '立即发送', '云联系人', '克隆', '验证待处理', '执行记录'].map((tabName) => ({ key: tabName, label: tabName }))}
+        items={['资料', 'TG 官方验证码', '验证待处理', '执行记录', '克隆'].map((tabName) => ({ key: tabName, label: tabName }))}
       />
 
       {accountDetailTab === '资料' && (
@@ -334,11 +370,6 @@ export function AccountDetailModal({
             </div>
             <div className="row-actions">
               <Button type="primary" size="small" onClick={onOpenAccountProfileEdit}>编辑资料</Button>
-              <Button size="small" onClick={() => onSetModal({ type: 'accountMovePool' })}>移动账号分组</Button>
-              <Button size="small" onClick={() => {
-                onSetCloneForm({ target_account_ids: accounts.filter((item) => item.id !== accountDetail.account.id).slice(0, 2).map((item) => item.id), clone_contacts: true, clone_groups: true });
-                onSetModal({ type: 'accountCloneCreate' });
-              }}>克隆到其他账号</Button>
               <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:profile-sync`)} disabled={accountDetail.account.profile_sync_status !== '失败'} onClick={() => onOpenConfirm({
                 title: '重试资料同步',
                 message: `确认重新同步「${accountDetail.account.display_name}」的 TG 资料？`,
@@ -347,19 +378,6 @@ export function AccountDetailModal({
                 onConfirm: onRetryAccountProfileSync,
               })}>重试同步</Button>
             </div>
-          </div>
-          <div className="mini-list">
-            {accountDetail.risk_diagnostics.length ? accountDetail.risk_diagnostics.map((risk) => (
-              <Alert
-                key={`${risk.code}-${risk.source}-${risk.title}`}
-                type={risk.level === '高' ? 'error' : risk.level === '中' ? 'warning' : 'info'}
-                showIcon
-                message={`${risk.level}风险：${risk.title}`}
-                description={`${risk.detail} 建议：${risk.action}${risk.occurred_at ? ` / ${new Date(risk.occurred_at).toLocaleString()}` : ''}`}
-              />
-            )) : (
-              <Alert type="success" showIcon message="账号风险正常" description="当前没有受限、封禁、FloodWait、目标不可访问或待处理验证信号。" />
-            )}
           </div>
           <div className="profile-layout">
             <div className="avatar-preview">
@@ -387,151 +405,55 @@ export function AccountDetailModal({
         </Card>
       )}
 
-      {(accountDetailTab === '官方验证码' || accountDetailTab === '登录同步') && (
-        <Card className="sub-panel compact-panel">
-          <div className="section-title">
-            <div>
-              <h2>验证码与登录流程</h2>
-              <span>验证码短时展示，查看行为会写入审计</span>
+      {accountDetailTab === 'TG 官方验证码' && (
+        <div className="flow-sections">
+          <Card className="sub-panel compact-panel" title="账号状态记录">
+            <Descriptions
+              className="detail-list"
+              size="small"
+              column={2}
+              items={[
+                { key: 'latest-sync', label: '最近同步', children: formatTime(latestAnySync) },
+                { key: 'latest-login', label: '最近登录', children: formatTime(latestLoginAt) },
+                { key: 'profile-pull', label: '最近资料拉取', children: formatTime(latestProfilePull) },
+                { key: 'code-sync', label: '最近验证码同步', children: formatTime(latestCodeSync) },
+                { key: 'next-sync', label: '预计下次同步', children: accountDetail.next_sync_at ? formatTime(accountDetail.next_sync_at) : accountDetail.sync_status_text || (accountDetail.sync_due ? '已到同步时间，等待后台执行' : '暂无计划') },
+              ]}
+            />
+            <div className="mini-list">
+              {accountDetail.sync_records.slice(0, 6).map((record) => (
+                <Card key={`sync-${record.id}`} className={statusAccent(record.status)} size="small">
+                  <StatusBadge status={record.status} label={syncTypeLabel(record.sync_type)} />
+                  <strong>{record.status}</strong>
+                  <span>{record.result_count ? `已同步 ${record.result_count} 条` : record.failure_detail || '等待后台处理'}</span>
+                  <span>{formatTime(record.finished_at || record.started_at || record.created_at)}</span>
+                </Card>
+              ))}
+              {!accountDetail.sync_records.length && <p className="muted-line">登录成功后会自动同步资料、健康、群聊、云联系人和 TG 官方验证码。</p>}
             </div>
-            <div className="row-actions">
-              <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:detail-refresh`)} onClick={onRefreshAccountDetail}>刷新同步状态</Button>
-              <Button size="small" type="primary" loading={isActionPending(`account:${accountDetail.account.id}:sync`)} onClick={onQueueAccountSyncNow}>立即全量同步</Button>
-              <Button size="small" onClick={syncTargets}>同步群/频道目标</Button>
-              <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={onPollVerificationCodes}>查看 TG 官方验证码</Button>
+          </Card>
+          <Card className="sub-panel compact-panel" title="TG 官方验证码" extra={<Button size="small" type="primary" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={() => onPollVerificationCodes()}>同步提取官方验证码</Button>}>
+            {latestVisibleCode ? (
+              <div className="verification-code-card">
+                <StatusBadge status={latestVisibleCode.code_preview ? '可查看' : latestVisibleCode.status} label={latestVisibleCode.source === 'login_flow' ? '登录验证码' : 'TG 官方验证码'} />
+                <strong>{latestVisibleCode.code_preview || latestVisibleCode.status || '暂无新验证码'}</strong>
+                <span>{latestVisibleCode.expires_at ? `有效到 ${new Date(latestVisibleCode.expires_at).toLocaleTimeString()}` : '等待新的验证码'}</span>
+                {runtime?.show_advanced_debug && <small>{latestVisibleCode.raw_hint || latestVisibleCode.source}</small>}
+              </div>
+            ) : (
+              <Empty description="暂无 TG 官方验证码" />
+            )}
+            <div className="mini-list">
+              {accountDetail.verification_codes.slice(0, 6).map((code) => (
+                <Card key={code.id} size="small">
+                  <StatusBadge status={code.code_preview ? '可查看' : code.status} label={code.source === 'login_flow' ? '登录验证码' : 'TG 官方验证码'} />
+                  <strong>{code.code_preview ? `验证码 ${code.code_preview}` : code.status}</strong>
+                  <span>{code.expires_at ? `有效到 ${new Date(code.expires_at).toLocaleTimeString()}` : '等待新的验证码'}</span>
+                </Card>
+              ))}
             </div>
-          </div>
-          <div className="mini-list">
-            {accountDetail.verification_codes.map((code) => (
-              <Card key={code.id} size="small">
-                <StatusBadge status={code.code_preview ? '可查看' : code.status} label={code.source === 'login_flow' ? '登录验证码' : 'TG 官方验证码'} />
-                <strong>{code.code_preview ? `TG 官方验证码 ${code.code_preview}` : code.status}</strong>
-                <span>{code.expires_at ? `有效到 ${new Date(code.expires_at).toLocaleTimeString()}` : '等待新的验证码'}</span>
-                {runtime?.show_advanced_debug && <small>{code.raw_hint || code.source}</small>}
-              </Card>
-            ))}
-            {accountDetail.login_flows.map((flow) => (
-              <Card key={`flow-${flow.id}`} size="small">
-                <StatusBadge status={flow.status} />
-                <strong>{flow.method === 'qr' ? '扫码登录' : '验证码登录'}</strong>
-                <span>{flow.code_preview ? `登录验证码 ${flow.code_preview}` : flow.qr_payload ? '等待扫码确认' : flow.status}</span>
-                {runtime?.show_advanced_debug && <small>流程 #{flow.id}</small>}
-              </Card>
-            ))}
-          </div>
-          <div className="mini-list">
-            {accountDetail.sync_records.map((record) => (
-              <Card key={`sync-${record.id}`} className={statusAccent(record.status)} size="small">
-                <StatusBadge status={record.status} label={syncTypeLabel(record.sync_type)} />
-                <strong>{record.status}</strong>
-                <span>{record.result_count ? `已同步 ${record.result_count} 条` : record.failure_detail || '等待后台处理'}</span>
-                <span>{record.finished_at ? new Date(record.finished_at).toLocaleString() : new Date(record.created_at).toLocaleString()}</span>
-              </Card>
-            ))}
-            {accountDetail.next_sync_at && <p className="muted-line">下次自动同步约在 {new Date(accountDetail.next_sync_at).toLocaleString()}</p>}
-            {!accountDetail.sync_records.length && <p className="muted-line">登录成功后会自动同步资料、健康、群聊、云联系人和 TG 官方验证码。</p>}
-          </div>
-        </Card>
-      )}
-
-      {(accountDetailTab === '群/频道' || accountDetailTab === '群聊') && (
-        <>
-          <Space className="toolbar-row" wrap>
-            {groupTable.searchInput}
-            <Button onClick={syncTargets}>同步群/频道目标</Button>
-          </Space>
-          <div className="cards-grid compact-stats">
-            {accountDetail.operation_targets.map((target) => (
-              <Card key={target.id} size="small" className="summary-card">
-                <span>{target.target_type === 'channel' ? '频道' : '群聊'}</span>
-                <strong>{target.title}</strong>
-                <p>{target.tg_peer_id}{target.username ? ` / @${target.username}` : ''}</p>
-                <StatusBadge status={target.can_send ? '可发送' : '只读'} label={target.auth_status} />
-              </Card>
-            ))}
-            {!accountDetail.operation_targets.length && <p className="muted-line">暂无群/频道目标。可以先同步账号目标。</p>}
-          </div>
-          <Table<AccountGroup>
-            className="tg-table"
-            rowKey="id"
-            columns={groupColumns}
-            dataSource={groupTable.filteredRows}
-            pagination={groupTable.pagination}
-            scroll={{ x: 780 }}
-            locale={{ emptyText: '暂无群聊记录。' }}
-          />
-        </>
-      )}
-
-      {accountDetailTab === '立即发送' && (
-        <Card className="sub-panel compact-panel">
-          <div className="section-title">
-            <div>
-              <h2>立即发送</h2>
-              <span>直接使用当前 TG 账号向群聊或频道发送文本，emoji 会按普通 Unicode 文本发送。</span>
-            </div>
-            <Button size="small" onClick={syncTargets}>同步群/频道目标</Button>
-          </div>
-          <div className="policy-grid">
-            <label className="wide-field">
-              目标
-              <Select
-                value={manualTargetId ?? undefined}
-                onChange={(value) => setManualTargetId(value)}
-                options={accountDetail.operation_targets.map((target) => ({ value: target.id, label: `${target.target_type === 'channel' ? '频道' : '群聊'} / ${target.title} / ${target.can_send ? '可发送' : '只读'}`, disabled: !target.can_send }))}
-              />
-            </label>
-            <label className="wide-field">消息内容<Input.TextArea rows={4} value={manualContent} onChange={(event) => setManualContent(event.target.value)} placeholder="支持文本和 emoji，例如：今天活动开始啦 👍🔥" /></label>
-            <div className="wide-field detail-actions">
-              <Button type="primary" loading={manualSending} disabled={!manualTargetId || !manualContent.trim()} onClick={manualSendNow}>立即发送</Button>
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {accountDetailTab === '云联系人' && (
-        <Card className="sub-panel compact-panel">
-          <div className="section-title">
-            <div>
-              <h2>云联系人</h2>
-              <span>从当前账号同步的私聊对象和群友中选择，直接创建平台发送任务。</span>
-            </div>
-            <Space>
-              <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:detail-refresh`)} onClick={onRefreshAccountDetail}>刷新</Button>
-              <Button size="small" type="primary" loading={isActionPending(`account:${accountDetail.account.id}:sync`)} onClick={onQueueAccountSyncNow}>同步并刷新</Button>
-            </Space>
-          </div>
-          <div className="contact-pick-grid">
-            {accountContacts.map((contact) => (
-              <Button key={contact.id} className={selectedDirectContact?.id === contact.id ? 'selected contact-pick' : 'contact-pick'} onClick={() => onStartDirectMessageToContact(contact)}>
-                <strong>{contact.display_name}</strong>
-                <span>{contact.username ? `@${contact.username}` : contact.peer_id}</span>
-                <small>{contact.contact_type === 'group_member' ? '群友候选' : '私聊对象'}{contact.is_mutual ? ' / 双向联系人' : ''}{contact.phone_masked ? ` / ${contact.phone_masked}` : ''}</small>
-              </Button>
-            ))}
-          </div>
-          {!accountContacts.length && <p className="muted-line">还没有可选对象，请先同步云联系人。</p>}
-          <div className="policy-grid">
-            <div className="wide-field selected-recipient-box">
-              <span>当前发送对象</span>
-              {selectedDirectContact ? (
-                <strong>{selectedDirectContact.display_name} {selectedDirectContact.username ? `@${selectedDirectContact.username}` : ''}</strong>
-              ) : (
-                <strong>请先选择联系人或群友</strong>
-              )}
-            </div>
-            <label className="wide-field">消息内容<Input.TextArea value={directMessageForm.content} onChange={(event) => setDirectMessageForm({ ...directMessageForm, content: event.target.value })} /></label>
-            <div className="wide-field detail-actions">
-              <Button type="primary" disabled={!selectedDirectContact || !directMessageForm.content} onClick={() => onOpenConfirm({
-                title: '创建私发消息任务',
-                message: `确认使用「${accountDetail.account.display_name}」向「${selectedDirectContact?.display_name ?? directMessageForm.target_display}」创建平台发送任务？`,
-                confirmLabel: '创建并发送',
-                restoreModalType: 'accountDetail',
-                onConfirm: onCreateDirectMessageTask,
-              })}>创建并发送</Button>
-            </div>
-          </div>
-        </Card>
+          </Card>
+        </div>
       )}
 
       {accountDetailTab === '克隆' && (

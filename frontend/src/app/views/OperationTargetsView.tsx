@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Card, Form, Input, InputNumber, Select, Space, Table, Typography } from 'antd';
+import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api, ApiError } from '../../shared/api/client';
 import type { OperationTarget } from '../types';
@@ -11,6 +11,7 @@ export default function OperationTargetsView() {
   const [saving, setSaving] = React.useState(false);
   const [formError, setFormError] = React.useState('');
   const [editingTarget, setEditingTarget] = React.useState<OperationTarget | null>(null);
+  const [targetModalOpen, setTargetModalOpen] = React.useState(false);
   const [form] = Form.useForm();
 
   function errorMessage(error: unknown) {
@@ -37,6 +38,8 @@ export default function OperationTargetsView() {
 
   React.useEffect(() => {
     void load();
+    const timer = window.setInterval(() => void load(), 60000);
+    return () => window.clearInterval(timer);
   }, []);
 
   async function saveTarget(values: any) {
@@ -57,6 +60,7 @@ export default function OperationTargetsView() {
         body: JSON.stringify(body),
       });
       setEditingTarget(null);
+      setTargetModalOpen(false);
       form.resetFields();
       await load();
     } catch (error) {
@@ -68,6 +72,7 @@ export default function OperationTargetsView() {
 
   function startEdit(target: OperationTarget) {
     setEditingTarget(target);
+    setTargetModalOpen(true);
     setFormError('');
     form.setFieldsValue({
       target_type: target.target_type,
@@ -80,8 +85,16 @@ export default function OperationTargetsView() {
     });
   }
 
-  function cancelEdit() {
+  function openCreate() {
     setEditingTarget(null);
+    setFormError('');
+    form.resetFields();
+    setTargetModalOpen(true);
+  }
+
+  function closeTargetModal() {
+    setEditingTarget(null);
+    setTargetModalOpen(false);
     setFormError('');
     form.resetFields();
   }
@@ -107,12 +120,12 @@ export default function OperationTargetsView() {
     { title: '使用范围', key: 'auth_status', width: 140, render: (_, target) => <StatusBadge status={target.auth_status} /> },
     { title: '发送能力', key: 'can_send', width: 140, render: (_, target) => <StatusBadge status={target.can_send ? '可发送' : '只读'} /> },
     { title: '最近同步', key: 'last_sync_at', width: 200, render: (_, target) => target.last_sync_at ? new Date(target.last_sync_at).toLocaleString() : '手动创建' },
-    { title: '操作', key: 'actions', width: 100, render: (_, target) => <Button size="small" onClick={() => startEdit(target)}>编辑</Button> },
+    { title: '操作', key: 'actions', width: 100, fixed: 'right', render: (_, target) => <Button size="small" onClick={() => startEdit(target)}>编辑</Button> },
   ];
 
   return (
-    <section className="view-grid">
-      <Card className="panel" title="群/频道目标">
+    <>
+      <Card className="panel" title="群/频道目标" extra={<Button type="primary" onClick={openCreate}>新增目标</Button>}>
         <Typography.Text type="secondary">统一维护账号运营目标。群聊用于普通发言，频道用于发帖、查看、点赞和回复任务。</Typography.Text>
         <Space className="toolbar-row" wrap>
           {table.searchInput}
@@ -124,11 +137,21 @@ export default function OperationTargetsView() {
           columns={columns}
           dataSource={table.filteredRows}
           pagination={table.pagination}
-          scroll={{ x: 880 }}
+          scroll={{ x: 960 }}
           loading={loading}
         />
       </Card>
-      <Card className="panel" title={editingTarget ? `编辑目标 #${editingTarget.id}` : '新增目标'}>
+
+      <Modal
+        className="tg-modal medium"
+        title={editingTarget ? `编辑目标 #${editingTarget.id}` : '新增目标'}
+        open={targetModalOpen}
+        width={640}
+        footer={null}
+        destroyOnHidden
+        centered
+        onCancel={closeTargetModal}
+      >
         {formError && <Alert className="form-alert" type="error" showIcon message={formError} />}
         <Form form={form} layout="vertical" onFinish={saveTarget} initialValues={{ target_type: 'group', can_send: true, auth_status: '已授权运营', member_count: 0 }}>
           <Form.Item name="target_type" label="目标类型" rules={[{ required: true }]}>
@@ -154,10 +177,10 @@ export default function OperationTargetsView() {
           </Form.Item>
           <Space>
             <Button type="primary" htmlType="submit" loading={saving}>保存目标</Button>
-            {editingTarget && <Button onClick={cancelEdit} disabled={saving}>取消编辑</Button>}
+            <Button onClick={closeTargetModal} disabled={saving}>取消</Button>
           </Space>
         </Form>
-      </Card>
-    </section>
+      </Modal>
+    </>
   );
 }

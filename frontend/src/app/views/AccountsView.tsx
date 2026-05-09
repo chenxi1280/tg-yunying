@@ -21,6 +21,8 @@ interface Props {
   onCreateAccount: (login: boolean) => void;
   onOpenPoolDetail: (pool: AccountPool) => void;
   onOpenAccountDetail: (account: Account) => void;
+  onExtractCodes: (account: Account) => void;
+  onMovePool: (account: Account) => void;
   onRunLogin: (account: Account, method: 'code' | 'qr') => void;
   onVerifyAccount: (account: Account) => void;
   onDeleteAccount: (account: Account) => void;
@@ -42,6 +44,8 @@ export default function AccountsView({
   onCreateAccount,
   onOpenPoolDetail,
   onOpenAccountDetail,
+  onExtractCodes,
+  onMovePool,
   onRunLogin,
   onVerifyAccount,
   onDeleteAccount,
@@ -74,7 +78,7 @@ export default function AccountsView({
       title: '账号',
       dataIndex: 'display_name',
       key: 'account',
-      width: 280,
+      width: 360,
       fixed: 'left',
       render: (_, account) => (
         <Space>
@@ -135,11 +139,16 @@ export default function AccountsView({
           ) : account.status === '在线' ? (
             <>
               <Button type="primary" size="small" loading={isActionPending(`account:${account.id}:detail`)} onClick={() => onOpenAccountDetail(account)}>详情</Button>
+              <Button size="small" loading={isActionPending(`account:${account.id}:codes`)} onClick={() => onExtractCodes(account)}>提取验证码</Button>
+              <Button size="small" loading={isActionPending(`account:${account.id}:move-pool`)} onClick={() => onMovePool(account)}>移动分组</Button>
               <Button size="small" loading={isActionPending(`account:${account.id}:health`)} onClick={() => onHealthCheck(account)}>检查</Button>
               <Button size="small" loading={isActionPending(`account:${account.id}:sync`)} onClick={() => onSyncGroups(account)}>同步</Button>
             </>
           ) : (
-            <Button type="primary" size="small" loading={isActionPending(`account:${account.id}:detail`)} onClick={() => onOpenAccountDetail(account)}>详情</Button>
+            <>
+              <Button type="primary" size="small" loading={isActionPending(`account:${account.id}:detail`)} onClick={() => onOpenAccountDetail(account)}>详情</Button>
+              <Button size="small" loading={isActionPending(`account:${account.id}:move-pool`)} onClick={() => onMovePool(account)}>移动分组</Button>
+            </>
           )}
         </Space>
       ),
@@ -186,7 +195,7 @@ export default function AccountsView({
         columns={columns}
         dataSource={accountTable.filteredRows}
         pagination={accountTable.pagination}
-        scroll={{ x: 1050 }}
+        scroll={{ x: 1130 }}
         locale={{ emptyText: '暂无 TG 账号。配置开发者应用后，可以通过手机号新增账号并启动真实 TG 登录。' }}
       />
     </Card>

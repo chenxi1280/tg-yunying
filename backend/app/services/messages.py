@@ -19,6 +19,7 @@ from app.models import (
     MessageTask,
     MessageTaskAttempt,
     OperationTarget,
+    SchedulingSetting,
     TaskStatus,
     TgAccount,
     TgGroup,
@@ -29,7 +30,7 @@ from app.gateways import DeveloperAppCredentials, OutboundSegment
 from app.task_queue import get_task_queue
 
 from ._common import _as_utc, _now, audit, gateway, require_tenant
-from app.schemas import DirectMessageTaskCreate, MessageSendTaskCreate
+from app.schemas import DirectMessageTaskCreate, MessageSendBatchCreate, MessageSendTarget, MessageSendTaskCreate
 
 from .accounts import find_account_contact
 from .developer_apps import credentials_for_account
@@ -69,24 +70,21 @@ def _resolve_operation_target(session: Session, tenant_id: int, target_id: int, 
     return target
 
 
-def create_message_send_task(session: Session, payload: MessageSendTaskCreate, actor: str, tenant_id: int | None = None) -> MessageTask:
-    account = session.get(TgAccount, payload.account_id)
+def _resolve_send_account(session: Session, account_id: int, tenant_id: int | None) -> TgAccount:
+    account = session.get(TgAccount, account_id)
     if not account or account.deleted_at is not None:
         raise ValueError("请选择在线且未删除的发送账号")
     if tenant_id is not None and account.tenant_id != tenant_id:
         raise ValueError("发送账号不属于当前租户")
     if account.status != AccountStatus.ACTIVE.value:
         raise ValueError("请选择已在线的发送账号")
+    return account
 
-    ensure_task_quota_available(session, account.tenant_id)
-    content = payload.content.strip()
-    if payload.message_type == "文本" and not content:
-        raise ValueError("请输入消息内容")
-    _validate_message_material(session, account.tenant_id, payload.message_type, payload.material_id)
 
-    target_type = payload.target_type
-    target_peer_id = (payload.target_peer_id or "").strip() or None
-    target_display = payload.target_display.strip()
+def _resolve_message_target(session: Session, account: TgAccount, target: MessageSendTarget | MessageSendTaskCreate) -> tuple[str, str | None, str, int | None]:
+    target_type = target.target_type
+    target_peer_id = (target.target_peer_id or "").strip() or None
+    target_display = target.target_display.strip()
     group_id: int | None = None
 
     if target_type == "private":
@@ -94,8 +92,8 @@ def create_message_send_task(session: Session, payload: MessageSendTaskCreate, a
             raise ValueError("请选择或输入联系人")
         target_display = target_display or target_peer_id
     elif target_type == "group":
-        if payload.group_id:
-            group = session.get(TgGroup, payload.group_id)
+        if target.group_id:
+            group = session.get(TgGroup, target.group_id)
             if not group or group.tenant_id != account.tenant_id:
                 raise ValueError("群聊不存在")
             if group.auth_status != GroupAuthStatus.AUTHORIZED.value:
@@ -114,43 +112,93 @@ def create_message_send_task(session: Session, payload: MessageSendTaskCreate, a
             group_id = group.id
             target_peer_id = group.tg_peer_id
             target_display = group.title
-        elif payload.operation_target_id:
-            target = _resolve_operation_target(session, account.tenant_id, payload.operation_target_id, "group")
-            target_peer_id = target.tg_peer_id
-            target_display = target.title
+        elif target.operation_target_id:
+            operation_target = _resolve_operation_target(session, account.tenant_id, target.operation_target_id, "group")
+            target_peer_id = operation_target.tg_peer_id
+            target_display = operation_target.title
         elif target_peer_id:
             target_display = target_display or target_peer_id
         else:
             raise ValueError("请选择群聊目标")
     else:
-        if payload.operation_target_id:
-            target = _resolve_operation_target(session, account.tenant_id, payload.operation_target_id, "channel")
-            target_peer_id = target.tg_peer_id
-            target_display = target.title
+        if target.operation_target_id:
+            operation_target = _resolve_operation_target(session, account.tenant_id, target.operation_target_id, "channel")
+            target_peer_id = operation_target.tg_peer_id
+            target_display = operation_target.title
         elif target_peer_id:
             target_display = target_display or target_peer_id
         else:
             raise ValueError("请选择频道目标")
+    return target_type, target_peer_id, target_display, group_id
 
-    jitter_min = max(payload.jitter_min_seconds, 0)
-    jitter_max = max(payload.jitter_max_seconds, jitter_min)
-    delay_seconds = random.randint(jitter_min, jitter_max) if jitter_max else 0
-    task = MessageTask(
+
+def _message_task(
+    account: TgAccount,
+    target_type: str,
+    target_peer_id: str | None,
+    target_display: str,
+    group_id: int | None,
+    content: str,
+    message_type: str,
+    material_id: int | None,
+    planned_delay_seconds: int,
+    scheduled_at: datetime,
+) -> MessageTask:
+    return MessageTask(
         tenant_id=account.tenant_id,
         campaign_id=None,
         group_id=group_id,
         account_id=account.id,
         preferred_account_id=account.id,
         content=content,
-        message_type=payload.message_type,
-        material_id=payload.material_id,
+        message_type=message_type,
+        material_id=material_id,
         target_type=target_type,
         target_peer_id=target_peer_id,
         target_display=target_display,
-        planned_delay_seconds=delay_seconds,
-        scheduled_at=_now() + timedelta(seconds=delay_seconds),
+        planned_delay_seconds=planned_delay_seconds,
+        scheduled_at=scheduled_at,
         status=TaskStatus.QUEUED.value,
         idempotency_key=f"send:{account.id}:{uuid4().hex[:12]}",
+    )
+
+
+def _scheduling_setting(session: Session, tenant_id: int) -> SchedulingSetting:
+    setting = session.scalar(select(SchedulingSetting).where(SchedulingSetting.tenant_id == tenant_id))
+    if not setting:
+        setting = session.scalar(select(SchedulingSetting).where(SchedulingSetting.tenant_id.is_(None)))
+    return setting or SchedulingSetting(tenant_id=tenant_id)
+
+
+def _naive_utc(value: datetime) -> datetime:
+    return _as_utc(value).replace(tzinfo=None)
+
+
+def create_message_send_task(session: Session, payload: MessageSendTaskCreate, actor: str, tenant_id: int | None = None) -> MessageTask:
+    account = _resolve_send_account(session, payload.account_id, tenant_id)
+    ensure_task_quota_available(session, account.tenant_id)
+    content = payload.content.strip()
+    if payload.message_type == "文本" and not content:
+        raise ValueError("请输入消息内容")
+    _validate_message_material(session, account.tenant_id, payload.message_type, payload.material_id)
+    target_type, target_peer_id, target_display, group_id = _resolve_message_target(session, account, payload)
+    jitter_min = max(payload.jitter_min_seconds, 0)
+    jitter_max = max(payload.jitter_max_seconds, jitter_min)
+    jitter_seconds = random.randint(jitter_min, jitter_max) if jitter_max else 0
+    base_at = _naive_utc(payload.scheduled_at) if payload.scheduled_at else _now()
+    scheduled_at = base_at + timedelta(seconds=jitter_seconds)
+    planned_delay_seconds = max(0, int((_as_utc(scheduled_at) - _as_utc(_now())).total_seconds()))
+    task = _message_task(
+        account,
+        target_type,
+        target_peer_id,
+        target_display,
+        group_id,
+        content,
+        payload.message_type,
+        payload.material_id,
+        planned_delay_seconds,
+        scheduled_at,
     )
     session.add(task)
     session.flush()
@@ -167,6 +215,58 @@ def create_message_send_task(session: Session, payload: MessageSendTaskCreate, a
     session.commit()
     session.refresh(task)
     return task
+
+
+def create_message_send_tasks_batch(session: Session, payload: MessageSendBatchCreate, actor: str, tenant_id: int | None = None) -> list[MessageTask]:
+    account = _resolve_send_account(session, payload.account_id, tenant_id)
+    ensure_task_quota_available(session, account.tenant_id)
+    content = payload.content.strip()
+    if payload.message_type == "文本" and not content:
+        raise ValueError("请输入消息内容")
+    _validate_message_material(session, account.tenant_id, payload.message_type, payload.material_id)
+    setting = _scheduling_setting(session, account.tenant_id)
+    jitter_min = max(int(setting.jitter_min_seconds), 0)
+    jitter_max = max(int(setting.jitter_max_seconds), jitter_min)
+    batch_interval = max(int(setting.batch_interval_seconds), 0)
+    start_at = _naive_utc(payload.scheduled_at) if payload.scheduled_at else _now()
+    now_value = _as_utc(_now())
+    tasks: list[MessageTask] = []
+
+    for index, target in enumerate(payload.targets):
+        target_type, target_peer_id, target_display, group_id = _resolve_message_target(session, account, target)
+        jitter_seconds = random.randint(jitter_min, jitter_max) if jitter_max else 0
+        scheduled_at = start_at + timedelta(seconds=index * batch_interval + jitter_seconds)
+        planned_delay_seconds = max(0, int((_as_utc(scheduled_at) - now_value).total_seconds()))
+        task = _message_task(
+            account,
+            target_type,
+            target_peer_id,
+            target_display,
+            group_id,
+            content,
+            payload.message_type,
+            payload.material_id,
+            planned_delay_seconds,
+            scheduled_at,
+        )
+        session.add(task)
+        session.flush()
+        get_task_queue().enqueue(task.id)
+        audit(
+            session,
+            tenant_id=account.tenant_id,
+            actor=actor,
+            action="批量创建消息发送任务",
+            target_type="message_task",
+            target_id=str(task.id),
+            detail=f"{target_type}:{target_display}",
+        )
+        tasks.append(task)
+
+    session.commit()
+    for task in tasks:
+        session.refresh(task)
+    return tasks
 
 
 def create_direct_message_task(session: Session, account_id: int, payload: DirectMessageTaskCreate, actor: str) -> MessageTask:
@@ -621,6 +721,7 @@ def filter_tasks(session: Session, tenant_id: int, page: int, page_size: int, se
 
 __all__ = [
     "create_message_send_task",
+    "create_message_send_tasks_batch",
     "create_direct_message_task",
     "create_pool_direct_message_task",
     "dispatch_task",

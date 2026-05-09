@@ -52,6 +52,7 @@ import type {
   CampaignDetail,
   RecommendedAccount,
   ConfirmPayload,
+  MessageSendBatchCreate,
   MessageSendTaskCreate,
   ModalState,
   AccountLoginForm,
@@ -611,6 +612,27 @@ export function AppProvider({ children }: AppProviderProps) {
     setBusy('');
   }
 
+  async function openAccountVerificationCodes(account: Account) {
+    setBusy('提取验证码');
+    const detail = await api<AccountDetail>(`/tg-accounts/${account.id}/detail`);
+    setAccountDetail(detail);
+    setDirectMessageForm({ target_peer_id: '', target_display: '', content: '' });
+    setAccountDetailTab('TG 官方验证码');
+    setModal({ type: 'accountDetail' });
+    const codes = await api<VerificationCode[]>(`/tg-accounts/${account.id}/verification-codes/poll`, { method: 'POST' });
+    setAccountDetail((current) => current?.account.id === account.id ? { ...current, verification_codes: codes } : current);
+    setNotice(`${account.display_name} 已同步提取 TG 官方验证码。`);
+    setBusy('');
+  }
+
+  async function openAccountMovePool(account: Account) {
+    setBusy('移动账号分组');
+    const detail = await api<AccountDetail>(`/tg-accounts/${account.id}/detail`);
+    setAccountDetail(detail);
+    setModal({ type: 'accountMovePool' });
+    setBusy('');
+  }
+
   async function openAccountPoolDetail(pool: AccountPool) {
     setBusy('读取账号分组详情');
     const detail = await api<AccountPoolDetail>(`/account-pools/${pool.id}/detail`);
@@ -700,7 +722,7 @@ export function AppProvider({ children }: AppProviderProps) {
     }
     const detail = await api<AccountDetail>(`/tg-accounts/${updated.id}/detail`);
     setAccountDetail(detail);
-    setAccountDetailTab('官方验证码');
+    setAccountDetailTab('TG 官方验证码');
     setAccountLoginForm(EMPTY_ACCOUNT_LOGIN_FORM);
     setModal({ type: 'accountDetail' });
     setNotice(`${updated.display_name} 已完成登录，并已同步资料、健康、群聊、联系人和验证码。`);
@@ -941,13 +963,16 @@ export function AppProvider({ children }: AppProviderProps) {
     setModal({ type: 'accountProfileEdit' });
   }
 
-  async function pollVerificationCodes() {
+  async function pollVerificationCodes(silent = false) {
     if (!accountDetail) return;
-    setBusy('同步验证码');
-    const codes = await api<VerificationCode[]>(`/tg-accounts/${accountDetail.account.id}/verification-codes/poll`, { method: 'POST' });
-    setAccountDetail({ ...accountDetail, verification_codes: codes });
-    showResult('验证码已同步', '已从 TG 官方服务消息同步最新验证码，验证码会短时展示并写入审计。');
-    setBusy('');
+    const accountId = accountDetail.account.id;
+    if (!silent) setBusy('同步验证码');
+    const codes = await api<VerificationCode[]>(`/tg-accounts/${accountId}/verification-codes/poll`, { method: 'POST' });
+    setAccountDetail((current) => current?.account.id === accountId ? { ...current, verification_codes: codes } : current);
+    if (!silent) {
+      showResult('验证码已同步', '已从 TG 官方服务消息同步最新验证码，验证码会短时展示并写入审计。');
+      setBusy('');
+    }
   }
 
   function toggleTargetGroup(groupId: number) {
@@ -1038,16 +1063,18 @@ export function AppProvider({ children }: AppProviderProps) {
     setBusy('');
   }
 
-  async function createMessageSendTask(payload: MessageSendTaskCreate) {
+  async function createMessageSendTask(payload: MessageSendTaskCreate | MessageSendBatchCreate) {
     setBusy('创建消息发送任务');
     try {
-      const task = await api<MessageTask>('/message-send-tasks', {
+      const isBatch = 'targets' in payload;
+      const result = await api<MessageTask | MessageTask[]>('/message-send-tasks' + (isBatch ? '/batch' : ''), {
         method: 'POST',
         body: JSON.stringify(payload),
       });
-      setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+      const created = Array.isArray(result) ? result : [result];
+      setTasks((current) => [...created, ...current.filter((item) => !created.some((task) => task.id === item.id))]);
       await refresh();
-      return task;
+      return created;
     } finally {
       setBusy('');
     }
@@ -2212,6 +2239,8 @@ export function AppProvider({ children }: AppProviderProps) {
     openCampaignModal,
     openAccountCreate,
     openAccountDetail: (account) => runWithLoading(`account:${account.id}:detail`, '读取账号详情', () => openAccountDetail(account)),
+    openAccountVerificationCodes: (account) => runWithLoading(`account:${account.id}:codes`, '提取验证码', () => openAccountVerificationCodes(account)),
+    openAccountMovePool: (account) => runWithLoading(`account:${account.id}:move-pool`, '移动账号分组', () => openAccountMovePool(account)),
     openAccountPoolDetail: (pool) => runWithLoading(`account-pool:${pool.id}:detail`, '读取账号分组详情', () => openAccountPoolDetail(pool)),
     refreshAccountPoolDetail: () => runWithLoading(`account-pool:${accountPoolDetail?.pool.id ?? 'current'}:refresh`, '刷新账号分组', refreshAccountPoolDetail),
     createAccount: () => runWithLoading('modal:account:create', '添加账号', createAccount),
@@ -2232,7 +2261,7 @@ export function AppProvider({ children }: AppProviderProps) {
     saveDraftEdit: () => runWithLoading(`draft:${draftEditTarget?.id ?? 'current'}:save`, '保存草稿', saveDraftEdit),
     avatarUrl,
     openAccountProfileEdit,
-    pollVerificationCodes: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:codes`, '同步验证码', pollVerificationCodes),
+    pollVerificationCodes: (silent = false) => silent ? pollVerificationCodes(true) : runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:codes`, '同步验证码', () => pollVerificationCodes(false)),
     toggleTargetGroup,
     toggleSourceGroup,
     recommendAccounts,
@@ -2306,7 +2335,7 @@ export function AppProvider({ children }: AppProviderProps) {
     accountName,
     groupName,
     choosePoolSendAccount,
-  }), [token, currentUser, authMode, loginEmail, loginPassword, registerForm, changePasswordForm, captchaChallenge, captchaInput, captchaToken, captchaError, captchaLoading, activeView, runtime, overview, accountPools, selectedPoolId, accounts, developerApps, tenants, subscriptionPlans, subscriptionPlanForm, adminUsers, selectedAdminUserId, selectedUserTokenLedgers, adminUserForm, tokenAdjustmentForm, activationCodes, activationCodePage, activationCodeFilters, usageLedgers, usageSummary, redeemCode, activationBatch, aiProviders, promptTemplates, tenantAiSetting, schedulingSetting, materials, contentKeywordRules, groups, campaigns, drafts, tasks, selectedCampaignId, taskManagementTab, archives, archiveDetail, audits, auditFilters, accountDetail, accountContacts, selectedDirectContact, accountDetailTab, accountPoolDetail, poolDirectAccountId, returnAfterVerification, groupDetail, campaignDetail, draftEditTarget, draftEditForm, accountCreateForm, accountPoolForm, cloneForm, loginAfterCreate, accountLoginForm, profileForm, avatarFile, selectedGroupId, campaignStep, campaignMode, selectedTargetGroupIds, selectedSourceGroupIds, recommendedAccounts, selectedAccountsByGroup, topic, sendWindow, intensity, draftCount, tone, selectedAiProviderId, selectedMaterialIds, jitterMinSeconds, jitterMaxSeconds, batchIntervalSeconds, respectSendWindow, campaignEndsAt, maxAiTokens, runIntervalSeconds, participationMinRatio, participationMaxRatio, maxMessagesPerAccount, maxDraftsPerBatch, taskStatusFilter, groupPolicy, developerAppForm, tenantForm, aiProviderForm, promptTemplateForm, materialForm, keywordRuleForm, modal, busy, pendingActionKeys, isActionPending, notice, directMessageForm, selectedPool, selectedGroup, selectedCampaign, selectedCampaignDrafts, selectedCampaignTasks, targetGroupsMissingAccounts, taskSummary, runWithLoading, refresh, showResult, closeModal, openConfirm, openCampaignModal, openAccountCreate, openAccountDetail, openAccountPoolDetail, refreshAccountPoolDetail, createAccount, deleteAccount, createAccountPool, moveCurrentAccountPool, createClonePlan, confirmClonePlan, retryCloneItem, confirmVerificationTask, dismissVerificationTask, refreshAccountDetail, syncAccountContacts, queueAccountSyncNow, startDirectMessageToContact, openGroupDetail, loadCampaignDetail, openDraftEdit, saveDraftEdit, avatarUrl, openAccountProfileEdit, pollVerificationCodes, toggleTargetGroup, toggleSourceGroup, recommendAccounts, toggleRecommendedAccount, setGroupAccountsSelected, goCampaignAccountStep, goCampaignContentStep, createDirectMessageTask, createMessageSendTask, saveAccountProfile, retryAccountProfileSync, login, register, changePassword, submitRedeemCode, loadActivationCodes, createActivationCodes, disableActivationCode, logout, runLogin, verifyAccount, chooseAccountLoginMethod, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, checkAccountQrLogin, healthCheck, syncAccountGroups, createCampaignAndDrafts, cancelCampaign, approveDraft, rejectDraft, approveAllDrafts, cancelTask, dispatchTask, drainQueue, retryTask, authorizeSelectedGroup, createArchive, saveGroupPolicy, openArchiveDetail, exportArchive, rerunArchive, createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp, openTenantEdit, saveTenantQuota, createSubscriptionPlan, openSubscriptionPlanEdit, saveSubscriptionPlan, openAdminUserEdit, saveAdminUser, resetAdminUserPassword, adjustAdminUserTokens, loadUserTokenLedgers, createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider, createPromptTemplate, saveTenantAiSetting, saveSchedulingSetting, createMaterial, createContentKeywordRule, openContentKeywordRuleEdit, saveContentKeywordRule, toggleMaterial, accountName, groupName, choosePoolSendAccount, refreshCaptchaChallenge, verifyCaptcha, message, modalApi]);
+  }), [token, currentUser, authMode, loginEmail, loginPassword, registerForm, changePasswordForm, captchaChallenge, captchaInput, captchaToken, captchaError, captchaLoading, activeView, runtime, overview, accountPools, selectedPoolId, accounts, developerApps, tenants, subscriptionPlans, subscriptionPlanForm, adminUsers, selectedAdminUserId, selectedUserTokenLedgers, adminUserForm, tokenAdjustmentForm, activationCodes, activationCodePage, activationCodeFilters, usageLedgers, usageSummary, redeemCode, activationBatch, aiProviders, promptTemplates, tenantAiSetting, schedulingSetting, materials, contentKeywordRules, groups, campaigns, drafts, tasks, selectedCampaignId, taskManagementTab, archives, archiveDetail, audits, auditFilters, accountDetail, accountContacts, selectedDirectContact, accountDetailTab, accountPoolDetail, poolDirectAccountId, returnAfterVerification, groupDetail, campaignDetail, draftEditTarget, draftEditForm, accountCreateForm, accountPoolForm, cloneForm, loginAfterCreate, accountLoginForm, profileForm, avatarFile, selectedGroupId, campaignStep, campaignMode, selectedTargetGroupIds, selectedSourceGroupIds, recommendedAccounts, selectedAccountsByGroup, topic, sendWindow, intensity, draftCount, tone, selectedAiProviderId, selectedMaterialIds, jitterMinSeconds, jitterMaxSeconds, batchIntervalSeconds, respectSendWindow, campaignEndsAt, maxAiTokens, runIntervalSeconds, participationMinRatio, participationMaxRatio, maxMessagesPerAccount, maxDraftsPerBatch, taskStatusFilter, groupPolicy, developerAppForm, tenantForm, aiProviderForm, promptTemplateForm, materialForm, keywordRuleForm, modal, busy, pendingActionKeys, isActionPending, notice, directMessageForm, selectedPool, selectedGroup, selectedCampaign, selectedCampaignDrafts, selectedCampaignTasks, targetGroupsMissingAccounts, taskSummary, runWithLoading, refresh, showResult, closeModal, openConfirm, openCampaignModal, openAccountCreate, openAccountDetail, openAccountVerificationCodes, openAccountMovePool, openAccountPoolDetail, refreshAccountPoolDetail, createAccount, deleteAccount, createAccountPool, moveCurrentAccountPool, createClonePlan, confirmClonePlan, retryCloneItem, confirmVerificationTask, dismissVerificationTask, refreshAccountDetail, syncAccountContacts, queueAccountSyncNow, startDirectMessageToContact, openGroupDetail, loadCampaignDetail, openDraftEdit, saveDraftEdit, avatarUrl, openAccountProfileEdit, pollVerificationCodes, toggleTargetGroup, toggleSourceGroup, recommendAccounts, toggleRecommendedAccount, setGroupAccountsSelected, goCampaignAccountStep, goCampaignContentStep, createDirectMessageTask, createMessageSendTask, saveAccountProfile, retryAccountProfileSync, login, register, changePassword, submitRedeemCode, loadActivationCodes, createActivationCodes, disableActivationCode, logout, runLogin, verifyAccount, chooseAccountLoginMethod, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, checkAccountQrLogin, healthCheck, syncAccountGroups, createCampaignAndDrafts, cancelCampaign, approveDraft, rejectDraft, approveAllDrafts, cancelTask, dispatchTask, drainQueue, retryTask, authorizeSelectedGroup, createArchive, saveGroupPolicy, openArchiveDetail, exportArchive, rerunArchive, createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp, openTenantEdit, saveTenantQuota, createSubscriptionPlan, openSubscriptionPlanEdit, saveSubscriptionPlan, openAdminUserEdit, saveAdminUser, resetAdminUserPassword, adjustAdminUserTokens, loadUserTokenLedgers, createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider, createPromptTemplate, saveTenantAiSetting, saveSchedulingSetting, createMaterial, createContentKeywordRule, openContentKeywordRuleEdit, saveContentKeywordRule, toggleMaterial, accountName, groupName, choosePoolSendAccount, refreshCaptchaChallenge, verifyCaptcha, message, modalApi]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

@@ -7,7 +7,7 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.gateways import DeveloperAppCredentials, SendResult
-from app.models import AccountStatus, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, ManualOperationRecord, Material, MessageTask, OperationTaskAttempt, TaskStatus, TelegramDeveloperApp, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroupAccount, TgLoginFlow
+from app.models import AccountStatus, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, ManualOperationRecord, Material, MessageTask, OperationTaskAttempt, SchedulingSetting, TaskStatus, TelegramDeveloperApp, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroupAccount, TgLoginFlow
 from app.services.notifications import NotificationResult
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
@@ -919,6 +919,63 @@ def test_account_profile_upload_save_sync_and_retry():
         assert retry["status"] == "排队中"
 
 
+def test_account_detail_reconciles_stale_sync_state_and_due_time():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _ = ensure_test_workspace(client, headers)
+        old_time = (datetime.now(UTC) - timedelta(hours=7)).replace(tzinfo=None)
+
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.profile_sync_status = "排队中"
+            session.add(
+                TgAccountSyncRecord(
+                    tenant_id=1,
+                    account_id=account["id"],
+                    sync_type="health",
+                    trigger_source="pytest",
+                    status="已同步",
+                    scheduled_at=old_time,
+                    started_at=old_time,
+                    finished_at=old_time,
+                    created_at=old_time,
+                )
+            )
+            session.add(
+                TgAccountSyncRecord(
+                    tenant_id=1,
+                    account_id=account["id"],
+                    sync_type="codes",
+                    trigger_source="pytest",
+                    status="同步中",
+                    scheduled_at=old_time,
+                    started_at=old_time,
+                    created_at=old_time,
+                )
+            )
+            session.add(
+                TgAccountProfileSyncRecord(
+                    tenant_id=1,
+                    account_id=account["id"],
+                    actor="pytest",
+                    status="排队中",
+                    created_at=old_time,
+                )
+            )
+            session.commit()
+
+        detail = client.get(f"/api/tg-accounts/{account['id']}/detail", headers=headers).json()
+        assert detail["next_sync_at"] is None
+        assert detail["sync_due"] is True
+        assert "等待后台执行" in detail["sync_status_text"]
+        assert any(record["status"] == "失败" and record["failure_type"] == "同步超时" for record in detail["sync_records"])
+        assert detail["account"]["profile_sync_status"] == "失败"
+        assert detail["profile_sync_records"][0]["status"] == "失败"
+        assert detail["profile_sync_records"][0]["failure_type"] == "资料同步超时"
+        removed = client.delete(f"/api/tg-accounts/{account['id']}", headers=headers)
+        assert removed.status_code == 200, removed.text
+
+
 def test_account_pool_clone_plan_and_verification_tasks():
     with TestClient(app) as client:
         headers = auth_headers(client)
@@ -1232,6 +1289,13 @@ def test_message_send_workbench_creates_private_group_channel_and_jitter_tasks(m
             link.group.group_cooldown_seconds = 0
             link.group.account_cooldown_seconds = 0
             link.group.require_review = False
+            setting = session.query(SchedulingSetting).filter_by(tenant_id=1).first()
+            if not setting:
+                setting = SchedulingSetting(tenant_id=1)
+                session.add(setting)
+            setting.jitter_min_seconds = 0
+            setting.jitter_max_seconds = 0
+            setting.batch_interval_seconds = 30
             session.commit()
 
         private_task = client.post(
@@ -1304,6 +1368,49 @@ def test_message_send_workbench_creates_private_group_channel_and_jitter_tasks(m
         assert channel_task.json()["status"] == TaskStatus.SENT.value
         assert send_calls[-1]["peer_id"] == channel_target["tg_peer_id"]
         assert send_calls[-1]["segments"] == [("图片", "https://trusted.example.com/message.png", "频道配文")]
+
+        batch_start = (datetime.now(UTC) + timedelta(minutes=10)).replace(microsecond=0)
+        mixed_batch = client.post(
+            "/api/message-send-tasks/batch",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "targets": [
+                    {
+                        "target_type": "private",
+                        "target_peer_id": f"@{contact['username']}",
+                        "target_display": contact["display_name"],
+                    },
+                    {"target_type": "group", "group_id": group["id"]},
+                    {"target_type": "channel", "operation_target_id": channel_target["id"]},
+                ],
+                "content": "混合定时消息",
+                "message_type": "文本",
+                "dispatch_now": False,
+                "scheduled_at": batch_start.isoformat(),
+            },
+        )
+        assert mixed_batch.status_code == 200, mixed_batch.text
+        batch_body = mixed_batch.json()
+        assert [item["target_type"] for item in batch_body] == ["private", "group", "channel"]
+        assert [item["status"] for item in batch_body] == [TaskStatus.QUEUED.value] * 3
+        scheduled_values = [datetime.fromisoformat(item["scheduled_at"]) for item in batch_body]
+        assert scheduled_values[0].replace(tzinfo=UTC) == batch_start
+        assert (scheduled_values[1] - scheduled_values[0]).total_seconds() == 30
+        assert (scheduled_values[2] - scheduled_values[1]).total_seconds() == 30
+        assert batch_body[2]["target_display"] == channel_target["title"]
+
+        missing_targets = client.post(
+            "/api/message-send-tasks/batch",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "targets": [],
+                "content": "没有目标",
+                "message_type": "文本",
+            },
+        )
+        assert missing_targets.status_code == 422
 
         before_jitter_calls = len(send_calls)
         jittered = client.post(

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Card, Descriptions, Empty, Space, Typography } from 'antd';
+import { Button, Card, Descriptions, Empty, Modal, Space, Typography } from 'antd';
 import type { DeveloperApp, Tenant } from '../types';
 import { StatusBadge, Badge } from '../components/shared';
 import { statusAccent } from '../utils';
@@ -24,6 +24,9 @@ interface Props {
 }
 
 export default function DeveloperAppsView({ developerApps, tenants, onCreateClick, onEdit, onCheck, onToggle, onEditTenant, showTenants = true, isActionPending, onOpenConfirm }: Props) {
+  const [detailApp, setDetailApp] = React.useState<DeveloperApp | null>(null);
+  const [detailTenant, setDetailTenant] = React.useState<Tenant | null>(null);
+
   return (
     <>
       <Card
@@ -45,12 +48,9 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
                 <StatusBadge status={app.is_active ? app.health_status : '禁用'} />
                 <Typography.Text type="secondary">API ID {app.api_id}</Typography.Text>
               </Space>
-              <Descriptions size="small" column={2} items={[
-                { key: 'assigned', label: '绑定账号', children: app.assigned_accounts },
-                { key: 'limit', label: '账号上限', children: app.max_accounts || '不限' },
-              ]} />
-              {app.last_error && <Typography.Paragraph type="danger">{app.last_error}</Typography.Paragraph>}
+              <Typography.Paragraph type="secondary">绑定 {app.assigned_accounts} / 上限 {app.max_accounts || '不限'}</Typography.Paragraph>
               <Space wrap>
+                <Button size="small" onClick={() => setDetailApp(app)}>详情</Button>
                 <Button size="small" onClick={() => onEdit(app)}>编辑</Button>
                 <Button size="small" loading={isActionPending(`developer-app:${app.id}:check`)} onClick={() => onCheck(app)}>检查</Button>
                 <Button size="small" danger={app.is_active} loading={isActionPending(`developer-app:${app.id}:toggle`)} onClick={() => onOpenConfirm({
@@ -74,15 +74,44 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
                 <Badge tone="neutral">租户 #{tenant.id}</Badge>
                 <Badge tone="positive">{tenant.plan_name}</Badge>
               </Space>
-              <Descriptions size="small" column={2} items={[
-                { key: 'account_quota', label: '账号配额', children: tenant.account_quota },
-                { key: 'task_quota', label: '任务配额', children: tenant.task_quota },
-              ]} />
-              <Button size="small" onClick={() => onEditTenant(tenant)}>编辑配额</Button>
+              <Typography.Paragraph type="secondary">账号 {tenant.account_quota} / 任务 {tenant.task_quota}</Typography.Paragraph>
+              <Space wrap>
+                <Button size="small" onClick={() => setDetailTenant(tenant)}>详情</Button>
+                <Button size="small" onClick={() => onEditTenant(tenant)}>编辑配额</Button>
+              </Space>
             </Card>
           ))}
         </div>
       </Card>}
+
+      <Modal className="tg-modal medium" title={detailApp?.app_name ?? '开发者应用详情'} open={Boolean(detailApp)} width={720} footer={null} destroyOnHidden centered onCancel={() => setDetailApp(null)}>
+        {detailApp && (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Descriptions size="small" column={2} items={[
+              { key: 'status', label: '状态', children: <StatusBadge status={detailApp.is_active ? detailApp.health_status : '禁用'} /> },
+              { key: 'api_id', label: 'API ID', children: detailApp.api_id },
+              { key: 'assigned', label: '绑定账号', children: detailApp.assigned_accounts },
+              { key: 'limit', label: '账号上限', children: detailApp.max_accounts || '不限' },
+              { key: 'version', label: '凭证版本', children: `v${detailApp.credentials_version}` },
+              { key: 'last_check', label: '最近检查', children: detailApp.last_check_at ? new Date(detailApp.last_check_at).toLocaleString() : '未检查' },
+            ]} />
+            {detailApp.last_error && <Typography.Paragraph type="danger">{detailApp.last_error}</Typography.Paragraph>}
+          </Space>
+        )}
+      </Modal>
+
+      <Modal className="tg-modal medium" title={detailTenant?.name ?? '租户详情'} open={Boolean(detailTenant)} width={720} footer={null} destroyOnHidden centered onCancel={() => setDetailTenant(null)}>
+        {detailTenant && (
+          <Descriptions size="small" column={2} items={[
+            { key: 'id', label: '租户 ID', children: detailTenant.id },
+            { key: 'plan', label: '套餐', children: detailTenant.plan_name },
+            { key: 'account_quota', label: '账号配额', children: detailTenant.account_quota },
+            { key: 'task_quota', label: '任务配额', children: detailTenant.task_quota },
+            { key: 'bot', label: 'Bot 配置', children: <StatusBadge status={detailTenant.telegram_bot_configured ? '已配置' : '未配置'} /> },
+            { key: 'notify', label: 'AI 失败通知', children: detailTenant.notify_ai_failures_enabled ? '启用' : '关闭' },
+          ]} />
+        )}
+      </Modal>
     </>
   );
 }

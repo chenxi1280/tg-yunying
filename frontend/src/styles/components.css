@@ -167,6 +167,25 @@
   justify-content: flex-end;
 }
 
+.account-risk-card .ant-card-body,
+.verification-code-card {
+  display: grid;
+  gap: 10px;
+}
+
+.verification-code-card {
+  margin-bottom: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.verification-code-card strong {
+  font-size: 28px;
+  line-height: 1.1;
+}
+
 .login-panel.ant-card {
   padding: 0;
 }

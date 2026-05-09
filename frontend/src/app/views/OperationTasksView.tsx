@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Card, Form, Input, InputNumber, Select, Space, Table, Typography } from 'antd';
+import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api, ApiError } from '../../shared/api/client';
 import type { Account, ChannelMessage, OperationTarget, OperationTask } from '../types';
@@ -23,6 +23,8 @@ export default function OperationTasksView({ accounts }: Props) {
   const [loading, setLoading] = React.useState(false);
   const [actionError, setActionError] = React.useState('');
   const [busyTaskId, setBusyTaskId] = React.useState<number | null>(null);
+  const [taskModalOpen, setTaskModalOpen] = React.useState(false);
+  const [messageModalOpen, setMessageModalOpen] = React.useState(false);
   const [form] = Form.useForm();
   const [messageForm] = Form.useForm();
   const taskType = Form.useWatch('task_type', form) ?? 'MESSAGE_SEND';
@@ -60,6 +62,8 @@ export default function OperationTasksView({ accounts }: Props) {
 
   React.useEffect(() => {
     void load();
+    const timer = window.setInterval(() => void load(), 60000);
+    return () => window.clearInterval(timer);
   }, []);
 
   async function createChannelMessage(values: any) {
@@ -67,6 +71,7 @@ export default function OperationTasksView({ accounts }: Props) {
     try {
       await api<ChannelMessage>('/channel-messages', { method: 'POST', body: JSON.stringify(values) });
       messageForm.resetFields();
+      setMessageModalOpen(false);
       await load();
     } catch (error) {
       setActionError(errorMessage(error));
@@ -93,6 +98,7 @@ export default function OperationTasksView({ accounts }: Props) {
         }),
       });
       form.resetFields();
+      setTaskModalOpen(false);
       await load();
     } catch (error) {
       setActionError(errorMessage(error));
@@ -134,42 +140,57 @@ export default function OperationTasksView({ accounts }: Props) {
     {
       title: '任务',
       key: 'task',
+      width: 360,
       render: (_, task) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>#{task.id} {TASK_TYPES.find((item) => item.value === task.task_type)?.label ?? task.task_type}</Typography.Text>
-          <Typography.Text type="secondary">{task.title || '未命名'} / 目标 {task.quantity} / 实际 {task.actual_quantity ?? task.quantity} / 完成 {task.completed_count}</Typography.Text>
+          <Typography.Text type="secondary">{task.title || '未命名'} / {task.task_type === 'MESSAGE_SEND' ? `目标 #${task.target_id ?? '-'}` : `频道消息 #${task.channel_message_id ?? '-'}`}</Typography.Text>
           <Typography.Text>{task.task_type === 'CHANNEL_REACTION' ? task.reaction : task.content || '无内容'}</Typography.Text>
         </Space>
       ),
     },
+    { title: '目标/完成', key: 'quantity', width: 140, render: (_, task) => `${task.completed_count}/${task.actual_quantity ?? task.quantity}` },
+    { title: '计划时间', key: 'scheduled_at', width: 180, render: (_, task) => new Date(task.scheduled_at).toLocaleString() },
     { title: '状态', key: 'status', width: 120, render: (_, task) => <StatusBadge status={task.status} /> },
-    { title: '失败', key: 'failure', width: 180, render: (_, task) => task.failure_type ? <StatusBadge status={task.failure_type} label={task.failure_detail || task.failure_type} /> : '无失败' },
+    { title: '失败', key: 'failure', width: 200, render: (_, task) => task.failure_type ? <StatusBadge status={task.failure_type} label={task.failure_detail || task.failure_type} /> : '无失败' },
     {
       title: '操作',
       key: 'actions',
       width: 180,
+      fixed: 'right',
       render: (_, task) => (
-        <Space>
-              <Button size="small" type="primary" loading={busyTaskId === task.id} disabled={task.status === '已完成'} onClick={() => dispatch(task)}>执行</Button>
-              <Button size="small" disabled={task.status !== '失败' || busyTaskId === task.id} onClick={() => retry(task)}>重试</Button>
-              <Button size="small" danger disabled={['执行中', '已完成', '已取消'].includes(task.status) || busyTaskId === task.id} onClick={() => cancel(task)}>取消</Button>
-            </Space>
-          ),
+        <Space wrap>
+          <Button size="small" type="primary" loading={busyTaskId === task.id} disabled={task.status === '已完成'} onClick={() => dispatch(task)}>执行</Button>
+          <Button size="small" disabled={task.status !== '失败' || busyTaskId === task.id} onClick={() => retry(task)}>重试</Button>
+          <Button size="small" danger disabled={['执行中', '已完成', '已取消'].includes(task.status) || busyTaskId === task.id} onClick={() => cancel(task)}>取消</Button>
+        </Space>
+      ),
     },
   ];
 
   return (
-    <section className="view-grid">
-      <Card className="panel" title="运营任务">
+    <>
+      <Card
+        className="panel"
+        title="运营任务"
+        extra={(
+          <Space wrap>
+            <Button onClick={() => { setActionError(''); setMessageModalOpen(true); }}>登记频道消息</Button>
+            <Button type="primary" onClick={() => { setActionError(''); setTaskModalOpen(true); }}>新建任务</Button>
+          </Space>
+        )}
+      >
         <Typography.Text type="secondary">消息发送支持普通文案或 AI 生成；频道查看、点赞、AI 回复分别是独立任务。</Typography.Text>
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         <Space className="toolbar-row" wrap>
           {table.searchInput}
           <Button loading={loading} onClick={load}>刷新</Button>
         </Space>
-        <Table<OperationTask> className="tg-table" rowKey="id" columns={columns} dataSource={table.filteredRows} pagination={table.pagination} scroll={{ x: 960 }} loading={loading} />
+        <Table<OperationTask> className="tg-table" rowKey="id" columns={columns} dataSource={table.filteredRows} pagination={table.pagination} scroll={{ x: 1180 }} loading={loading} />
       </Card>
-      <Card className="panel" title="新建任务">
+
+      <Modal className="tg-modal large" title="新建任务" open={taskModalOpen} width={760} footer={null} destroyOnHidden centered onCancel={() => { setTaskModalOpen(false); form.resetFields(); setActionError(''); }}>
+        {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         <Form form={form} layout="vertical" onFinish={createTask} initialValues={{ task_type: 'MESSAGE_SEND', content_mode: 'literal', quantity: 1, interval_seconds: 0, account_ids: [] }}>
           <Form.Item name="task_type" label="任务类型" rules={[{ required: true }]}>
             <Select options={TASK_TYPES} />
@@ -215,8 +236,10 @@ export default function OperationTasksView({ accounts }: Props) {
           </Form.Item>
           <Button type="primary" htmlType="submit">创建任务</Button>
         </Form>
-      </Card>
-      <Card className="panel" title="登记频道消息">
+      </Modal>
+
+      <Modal className="tg-modal medium" title="登记频道消息" open={messageModalOpen} width={640} footer={null} destroyOnHidden centered onCancel={() => { setMessageModalOpen(false); messageForm.resetFields(); setActionError(''); }}>
+        {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         <Form form={messageForm} layout="vertical" onFinish={createChannelMessage}>
           <Form.Item name="channel_target_id" label="频道" rules={[{ required: true }]}>
             <Select options={channelTargets.map((target) => ({ value: target.id, label: target.title }))} />
@@ -232,7 +255,7 @@ export default function OperationTasksView({ accounts }: Props) {
           </Form.Item>
           <Button htmlType="submit">保存频道消息</Button>
         </Form>
-      </Card>
-    </section>
+      </Modal>
+    </>
   );
 }

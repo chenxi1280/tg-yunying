@@ -15,11 +15,11 @@ from app.repositories.tenant import require_resource_tenant
 from app.schemas import (
     AiDraftOut, AiDraftUpdate, ApproveAllRequest, ApproveDraftRequest,
     CampaignCreate, CampaignDetailOut, CampaignOut, CampaignRecommendAccountsRequest,
-    GenerateDraftsRequest, MessageSendTaskCreate, MessageTaskOut, RecommendedAccountOut, RetryTaskRequest,
+    GenerateDraftsRequest, MessageSendBatchCreate, MessageSendTaskCreate, MessageTaskOut, RecommendedAccountOut, RetryTaskRequest,
 )
 from app.services import (
     approve_all_drafts, approve_draft, campaign_detail, cancel_message_task,
-    cancel_campaign, create_campaign, create_message_send_task, dispatch_task, filter_campaigns, filter_tasks,
+    cancel_campaign, create_campaign, create_message_send_task, create_message_send_tasks_batch, dispatch_task, filter_campaigns, filter_tasks,
     generate_drafts, list_ai_drafts_for_tenant, recommend_campaign_accounts, reject_ai_draft,
     retry_task, update_ai_draft,
 )
@@ -216,6 +216,19 @@ def post_message_send_task(
         if payload.dispatch_now and task.planned_delay_seconds == 0:
             return dispatch_task(SessionLocal, task.id)
         return task
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/message-send-tasks/batch", response_model=list[MessageTaskOut])
+def post_message_send_tasks_batch(
+    payload: MessageSendBatchCreate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        return create_message_send_tasks_batch(session, payload, current_user.name, resolve_tenant_id(current_user, None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

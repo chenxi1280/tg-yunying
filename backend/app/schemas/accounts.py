@@ -279,6 +279,8 @@ class AccountDetailOut(BaseModel):
     profile_sync_records: list[ProfileSyncRecordOut]
     sync_records: list[AccountSyncRecordOut] = []
     next_sync_at: datetime | None = None
+    sync_due: bool = False
+    sync_status_text: str = ""
     contacts: list[ContactOut]
     groups: list[AccountGroupOut]
     operation_targets: list[OperationTargetOut] = []

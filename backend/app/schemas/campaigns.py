@@ -95,6 +95,25 @@ class MessageSendTaskCreate(BaseModel):
     jitter_min_seconds: int = Field(default=0, ge=0)
     jitter_max_seconds: int = Field(default=0, ge=0)
     dispatch_now: bool = True
+    scheduled_at: datetime | None = None
+
+
+class MessageSendTarget(BaseModel):
+    target_type: str = Field(pattern="^(private|group|channel)$")
+    target_peer_id: str | None = None
+    target_display: str = ""
+    group_id: int | None = None
+    operation_target_id: int | None = None
+
+
+class MessageSendBatchCreate(BaseModel):
+    account_id: int
+    targets: list[MessageSendTarget] = Field(default_factory=list, min_length=1)
+    content: str = ""
+    message_type: str = Field(default="文本", pattern="^(文本|图片)$")
+    material_id: int | None = None
+    dispatch_now: bool = True
+    scheduled_at: datetime | None = None
 
 
 class CampaignRecommendAccountsRequest(BaseModel):
@@ -203,6 +222,6 @@ class CampaignDetailOut(BaseModel):
 __all__ = [
     "CampaignCreate", "ConversationContextMessage", "GenerateDraftsRequest", "ApproveDraftRequest",
     "ApproveAllRequest", "RetryTaskRequest", "AiDraftUpdate",
-    "DirectMessageTaskCreate", "MessageSendTaskCreate", "CampaignRecommendAccountsRequest",
+    "DirectMessageTaskCreate", "MessageSendTaskCreate", "MessageSendTarget", "MessageSendBatchCreate", "CampaignRecommendAccountsRequest",
     "CampaignOut", "AiDraftOut", "MessageTaskOut", "CampaignDetailOut",
 ]
