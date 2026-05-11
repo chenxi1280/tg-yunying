@@ -164,18 +164,16 @@ def _send_account_ids(session: Session, group: TgGroup) -> list[int]:
     ]
 
 
-def collect_group_context(session: Session, group: TgGroup) -> int:
-    listener_links = list(
-        session.scalars(
-            select(TgGroupAccount)
-            .where(
-                TgGroupAccount.tenant_id == group.tenant_id,
-                TgGroupAccount.group_id == group.id,
-                TgGroupAccount.is_listener.is_(True),
-            )
-            .order_by(TgGroupAccount.id.asc())
-        )
+def collect_group_context(session: Session, group: TgGroup, account_ids: list[int] | None = None) -> int:
+    stmt = select(TgGroupAccount).where(
+        TgGroupAccount.tenant_id == group.tenant_id,
+        TgGroupAccount.group_id == group.id,
     )
+    if account_ids is None:
+        stmt = stmt.where(TgGroupAccount.is_listener.is_(True))
+    else:
+        stmt = stmt.where(TgGroupAccount.account_id.in_(list(dict.fromkeys(account_ids))))
+    listener_links = list(session.scalars(stmt.order_by(TgGroupAccount.id.asc())))
     if not listener_links:
         return 0
     managed_keys = _managed_sender_keys(session, group)

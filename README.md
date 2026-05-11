@@ -76,12 +76,30 @@ CREATE USER tg_yunying WITH PASSWORD 'tg_yunying';
 CREATE DATABASE tg_yunying OWNER tg_yunying;
 ```
 
-队列 worker 可单独运行：
+开发环境默认在 API 服务启动时内置启动 worker，所以本地只启动后端服务也会持续消费发送队列、AI 活跃群、群监听、账号同步、归档和任务中心动作。
+
+生产环境默认不启用内置 worker，避免多 API 实例重复消费；生产或排查时仍可单独启动 worker：
 
 ```bash
 cd backend
 . .venv/bin/activate
 python -m app.worker
+```
+
+开发排查时如只想消费一次，可使用：
+
+```bash
+python -m app.worker --once
+```
+
+默认 worker 每 2 秒轮询一次；可用 `--interval` 和 `--limit` 调整轮询间隔和每轮处理量。
+
+如需显式控制内置 worker，可通过 `.env` 设置：
+
+```bash
+ENABLE_EMBEDDED_WORKER=true
+EMBEDDED_WORKER_INTERVAL_SECONDS=2
+EMBEDDED_WORKER_LIMIT=100
 ```
 
 ### 前端

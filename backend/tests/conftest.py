@@ -37,6 +37,7 @@ os.environ["ADMIN_BOOTSTRAP_PASSWORD"] = "admin123"
 os.environ["TG_API_ID"] = ""
 os.environ["TG_API_HASH"] = ""
 os.environ.setdefault("AUTO_MIGRATE_ON_START", "true")
+os.environ["ENABLE_EMBEDDED_WORKER"] = "false"
 
 
 def _reset_test_database() -> None:

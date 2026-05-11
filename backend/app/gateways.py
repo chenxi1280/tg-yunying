@@ -116,6 +116,14 @@ class GroupMessageSnapshot:
 
 
 @dataclass(frozen=True)
+class ChannelMessageSnapshot:
+    message_id: int
+    content_preview: str = ""
+    message_url: str = ""
+    published_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class ArchivedMemberSnapshot:
     display_name: str
     username: str | None = None
@@ -404,6 +412,25 @@ class TelegramGateway:
                 content=f"这个 {peer_id} 里的话题现在有人在问，具体怎么参与？",
                 sent_at=now_value,
             )
+        ][:limit]
+
+    def fetch_channel_messages(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        limit: int = 20,
+    ) -> list[ChannelMessageSnapshot]:
+        now_value = datetime.now(UTC).replace(tzinfo=None)
+        return [
+            ChannelMessageSnapshot(
+                message_id=100000 + index,
+                content_preview=f"mock channel {channel_peer_id} message {index + 1}",
+                message_url="",
+                published_at=now_value - timedelta(minutes=index),
+            )
+            for index in range(max(1, limit))
         ][:limit]
 
 
@@ -1264,6 +1291,50 @@ class TelethonTelegramGateway(TelegramGateway):
         limit: int = 20,
     ) -> list[GroupMessageSnapshot]:
         return self._run(self._fetch_group_messages_async(peer_id, session_ciphertext, self._usable_credentials(credentials), limit))
+
+    async def _fetch_channel_messages_async(
+        self,
+        channel_peer_id: str,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        limit: int,
+    ) -> list[ChannelMessageSnapshot]:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            raise RuntimeError("channel message fetch requires a valid session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            raise RuntimeError("session is not authorized")
+        target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
+        entity = await client.get_entity(target)
+        messages_resp = await client.get_messages(entity, limit=limit)
+        snapshots: list[ChannelMessageSnapshot] = []
+        username = getattr(entity, "username", None)
+        for message in list(messages_resp or []):
+            message_id = int(getattr(message, "id", 0) or 0)
+            if message_id <= 0:
+                continue
+            text = (getattr(message, "message", "") or "").strip()
+            message_url = f"https://t.me/{username}/{message_id}" if username else ""
+            snapshots.append(
+                ChannelMessageSnapshot(
+                    message_id=message_id,
+                    content_preview=text[:500],
+                    message_url=message_url,
+                    published_at=getattr(message, "date", None),
+                )
+            )
+        return snapshots
+
+    def fetch_channel_messages(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        limit: int = 20,
+    ) -> list[ChannelMessageSnapshot]:
+        return self._run(self._fetch_channel_messages_async(channel_peer_id, session_ciphertext, self._usable_credentials(credentials), limit))
 
 
 def create_gateway(settings: Settings | None = None) -> TelegramGateway:

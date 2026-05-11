@@ -6,11 +6,32 @@ from app.config import get_settings
 from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
-from app.gateways import DeveloperAppCredentials, SendResult
-from app.models import AccountStatus, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, ManualOperationRecord, Material, MessageTask, OperationTaskAttempt, SchedulingSetting, TaskStatus, TelegramDeveloperApp, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroupAccount, TgLoginFlow
+from app.gateways import ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, OperationResult, SendResult
+from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, Task, TaskStatus, TelegramDeveloperApp, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow
 from app.services.notifications import NotificationResult
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import inspect
+
+
+def skip_legacy_task_center_flow() -> None:
+    pytest.skip("旧 Campaign/Operation 任务中心已下线，由 5 类型 task_center 测试覆盖")
+
+
+@pytest.fixture(autouse=True)
+def cleanup_continuous_task_center_tasks():
+    yield
+    with SessionLocal() as session:
+        if "tasks" not in inspect(session.bind).get_table_names():
+            return
+        for task in session.query(Task).filter(Task.status.in_(["draft", "pending", "running", "paused"])):
+            task.status = "completed"
+            task.next_run_at = None
+        for action in session.query(Action).filter(Action.status.in_(["pending", "executing"])):
+            action.status = "skipped"
+            action.executed_at = datetime.now(UTC).replace(tzinfo=None)
+            action.result = {"success": False, "error_code": "test_cleanup", "error_message": "test cleanup"}
+        session.commit()
 
 
 def auth_headers(client: TestClient, email: str = "admin@demo.local", password: str = "admin123") -> dict[str, str]:
@@ -45,6 +66,49 @@ def login_response(client: TestClient, identifier: str, password: str):
         "/api/auth/login",
         json={"email": identifier, "password": password, "captcha_token": captcha.json()["captcha_token"]},
     )
+
+
+def test_worker_main_once_drains_single_iteration(monkeypatch, capsys):
+    from app import worker
+
+    calls: list[int] = []
+    monkeypatch.setattr(worker, "drain_once", lambda limit=100: calls.append(limit) or 7)
+
+    assert worker.main(["--once", "--limit", "3"]) == 0
+    assert calls == [3]
+    assert "processed=7" in capsys.readouterr().out
+
+
+def test_worker_loop_can_stop_after_iterations(monkeypatch):
+    from app import worker
+
+    calls: list[int] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(worker, "drain_once", lambda limit=100: calls.append(limit) or 0)
+    monkeypatch.setattr(worker.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    worker.run_worker(limit=5, interval_seconds=0.2, max_iterations=2)
+
+    assert calls == [5, 5]
+    assert sleeps == [0.2]
+
+
+def test_worker_loop_can_stop_with_event(monkeypatch):
+    from app import worker
+    import threading
+
+    calls: list[int] = []
+    stop_event = threading.Event()
+
+    def fake_drain_once(limit=100):
+        calls.append(limit)
+        stop_event.set()
+        return 0
+
+    monkeypatch.setattr(worker, "drain_once", fake_drain_once)
+    worker.run_worker(limit=4, interval_seconds=5, stop_event=stop_event)
+
+    assert calls == [4]
 
 
 def ensure_developer_app(client: TestClient, headers: dict[str, str]) -> dict:
@@ -119,6 +183,7 @@ def test_clean_seed_requires_config_before_account_create():
 
 
 def test_campaign_draft_approval_and_dispatch_flow():
+    skip_legacy_task_center_flow()
     with TestClient(app) as client:
         headers = auth_headers(client)
         _, group = ensure_test_workspace(client, headers)
@@ -296,6 +361,7 @@ def test_runtime_login_flows_health_and_group_authorize():
 
 
 def test_approve_all_retry_and_archive_detail_flow():
+    skip_legacy_task_center_flow()
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
@@ -485,6 +551,7 @@ def test_developer_app_round_robin_assignment_and_version_rotation():
 
 
 def test_ai_provider_prompt_material_and_jitter_flow():
+    skip_legacy_task_center_flow()
     with TestClient(app) as client:
         headers = auth_headers(client)
         runtime = client.get("/api/config/runtime").json()
@@ -566,6 +633,7 @@ def test_ai_provider_prompt_material_and_jitter_flow():
 
 
 def test_ai_real_provider_records_campaign_usage_without_user_token_balance(monkeypatch):
+    skip_legacy_task_center_flow()
     with TestClient(app) as client:
         headers = auth_headers(client)
         previous_setting = client.get("/api/tenant-ai-settings?tenant_id=1", headers=headers).json()
@@ -691,6 +759,7 @@ def test_prompt_template_listing_matches_existing_tenant_resolution_rules():
 
 
 def test_ai_drafts_listing_uses_service_and_preserves_desc_order():
+    skip_legacy_task_center_flow()
     with TestClient(app) as client:
         headers = auth_headers(client)
         _, group = ensure_test_workspace(client, headers)
@@ -734,6 +803,7 @@ def test_ai_provider_write_uses_single_admin():
 
 
 def test_system_prompt_decision_seed_and_auto_template_selection():
+    skip_legacy_task_center_flow()
     with TestClient(app) as client:
         headers = auth_headers(client)
         templates = client.get("/api/prompt-templates", headers=headers).json()
@@ -774,6 +844,7 @@ def test_system_prompt_decision_seed_and_auto_template_selection():
 
 
 def test_system_prompt_skips_ai_when_tenant_ai_disabled():
+    skip_legacy_task_center_flow()
     with TestClient(app) as client:
         headers = auth_headers(client)
         original = client.get("/api/tenant-ai-settings", headers=headers).json()
@@ -977,6 +1048,7 @@ def test_account_detail_reconciles_stale_sync_state_and_due_time():
 
 
 def test_account_pool_clone_plan_and_verification_tasks():
+    skip_legacy_task_center_flow()
     with TestClient(app) as client:
         headers = auth_headers(client)
         source, group = ensure_test_workspace(client, headers)
@@ -1090,6 +1162,7 @@ def test_account_pool_clone_plan_and_verification_tasks():
 
 
 def test_multi_group_recommendation_and_approval_expands_tasks():
+    skip_legacy_task_center_flow()
     with TestClient(app) as client:
         headers = auth_headers(client)
         ensure_test_workspace(client, headers)
@@ -1252,6 +1325,1924 @@ def test_operation_targets_manual_send_and_task_lifecycle(monkeypatch):
                 },
             )
             assert created.status_code == 200, created.text
+
+
+def test_operation_target_detail_returns_group_context_messages():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        with SessionLocal() as session:
+            suffix = uuid4().hex[:8]
+            account = TgAccount(
+                tenant_id=1,
+                display_name="pytest 详情账号",
+                username=f"pytest_detail_{suffix}",
+                phone_masked=f"+detail-{suffix}",
+                status=AccountStatus.ACTIVE.value,
+                health_score=98,
+                session_ciphertext="encrypted-session:pytest",
+            )
+            group = TgGroup(
+                tenant_id=1,
+                tg_peer_id=f"pytest-detail-group-{suffix}",
+                title="pytest 目标详情群",
+                group_type="supergroup",
+                member_count=12,
+                auth_status="已授权运营",
+                can_send=True,
+                listener_enabled=True,
+            )
+            session.add_all([account, group])
+            session.flush()
+            target = OperationTarget(
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id=group.tg_peer_id,
+                title=group.title,
+                member_count=group.member_count,
+                can_send=group.can_send,
+                auth_status=group.auth_status,
+            )
+            session.add(target)
+            session.flush()
+            session.add(
+                TgGroupAccount(
+                    tenant_id=1,
+                    group_id=group.id,
+                    account_id=account.id,
+                    permission_label="监听成员",
+                    can_send=True,
+                    is_listener=True,
+                )
+            )
+            session.add(
+                GroupContextMessage(
+                    tenant_id=1,
+                    group_id=group.id,
+                    listener_account_id=account.id,
+                    sender_name="pytest 用户",
+                    content="这是一条目标详情里的群聊记录",
+                    message_type="text",
+                    remote_message_id=f"pytest-detail-{uuid4().hex[:8]}",
+                    sent_at=datetime.now(UTC).replace(tzinfo=None),
+                )
+            )
+            session.commit()
+            target_id = target.id
+            group_id = group.id
+
+        detail = client.get(f"/api/operation-targets/{target_id}/detail", headers=headers)
+        assert detail.status_code == 200, detail.text
+        body = detail.json()
+        assert body["linked_group"]["id"] == group_id
+        assert body["accounts"]
+        assert body["stats"]["listener_accounts"] >= 1
+        assert any(message["content"] == "这是一条目标详情里的群聊记录" for message in body["group_messages"])
+
+
+def test_operation_target_sync_messages_collects_channel_messages(monkeypatch):
+    def fake_fetch_channel_messages(*args, **kwargs):
+        return [
+            ChannelMessageSnapshot(
+                message_id=5101,
+                content_preview="目标详情自动同步频道消息",
+                message_url="https://t.me/pytest_target_detail/5101",
+                published_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+        ]
+
+    monkeypatch.setattr("app.services.operations.gateway.fetch_channel_messages", fake_fetch_channel_messages)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
+            session.commit()
+
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-target-detail-channel-{uuid4().hex[:8]}",
+                "title": "pytest 目标详情频道",
+                "username": "pytest_target_detail",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+
+        synced = client.post(f"/api/operation-targets/{channel_target['id']}/sync-messages", headers=headers)
+        assert synced.status_code == 200, synced.text
+        body = synced.json()
+        assert body["inserted"] == 1
+        assert body["detail"]["sync_error"] == ""
+        assert body["detail"]["channel_messages"][0]["message_id"] == 5101
+
+        detail = client.get(f"/api/operation-targets/{channel_target['id']}/detail", headers=headers).json()
+        assert detail["stats"]["channel_messages"] >= 1
+
+
+def test_operation_target_sync_messages_reports_missing_collect_account(monkeypatch):
+    monkeypatch.setattr("app.services.operations._channel_sync_account", lambda *args, **kwargs: None)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-target-no-account-{uuid4().hex[:8]}",
+                "title": "pytest 无采集账号目标",
+                "username": "pytest_no_collect",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        synced = client.post(f"/api/operation-targets/{channel_target['id']}/sync-messages", headers=headers)
+        assert synced.status_code == 200, synced.text
+        body = synced.json()
+        assert body["inserted"] == 0
+        assert "没有可用于采集频道消息的在线账号" in body["detail"]["sync_error"]
+        assert body["detail"]["channel_messages"] == []
+
+
+def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_message",
+        lambda *args, **kwargs: SendResult(True, remote_message_id="task-center-sent"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
+            session.commit()
+        created = client.post(
+            "/api/tasks/group-ai-chat",
+            headers=headers,
+            json={
+                "name": "5类型 AI 活跃",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "failure_policy": {"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
+                "target_group_id": group["id"],
+                "topic_hint": "测试话题",
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "messages_per_round": 1,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task = created.json()
+        assert task["status"] == "draft"
+
+        started = client.post(f"/api/tasks/{task['id']}/start", headers=headers)
+        assert started.status_code == 200, started.text
+        assert started.json()["status"] == "running"
+
+        drained = client.post("/api/worker/drain-once", headers=headers).json()
+        assert drained["processed"] >= 1
+        detail = client.get(f"/api/tasks/{task['id']}", headers=headers).json()
+        assert detail["task"]["stats"]["total_actions"] >= 1
+        assert detail["task"]["stats"]["success_count"] >= 1
+        assert detail["actions"][0]["action_type"] == "send_message"
+        client.post(f"/api/tasks/{task['id']}/stop", headers=headers)
+
+
+def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
+    from app import worker
+
+    monkeypatch.setattr(worker.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_message",
+        lambda *args, **kwargs: SendResult(True, remote_message_id="worker-loop-sent"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        created = client.post(
+            "/api/tasks/group-ai-chat",
+            headers=headers,
+            json={
+                "name": "worker loop AI 活跃",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "failure_policy": {"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
+                "target_group_id": group["id"],
+                "topic_hint": "worker loop 测试",
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "messages_per_round": 1,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        started = client.post(f"/api/tasks/{task_id}/start", headers=headers)
+        assert started.status_code == 200, started.text
+
+        worker.run_worker(limit=10, interval_seconds=0.1, max_iterations=2)
+
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert detail["task"]["status"] == "running"
+        assert detail["task"]["stats"]["success_count"] >= 1
+        assert detail["actions"][0]["action_type"] == "send_message"
+
+
+def test_task_center_group_ai_chat_continues_only_for_new_context(monkeypatch):
+    messages = [
+        ("ai-context-1", "第一条真人上下文"),
+    ]
+    sends: list[str] = []
+
+    def fake_fetch_group_messages(*args, **kwargs):
+        return [
+            GroupMessageSnapshot(
+                remote_message_id=remote_id,
+                sender_peer_id="pytest-real-user",
+                sender_name="真人用户",
+                content=content,
+                sent_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+            for remote_id, content in messages
+        ]
+
+    monkeypatch.setattr("app.services.group_listeners.gateway.fetch_group_messages", fake_fetch_group_messages)
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_message",
+        lambda *args, **kwargs: sends.append(args[2]) or SendResult(True, remote_message_id=f"ai-continuous-{len(sends)}"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        created = client.post(
+            "/api/tasks/group-ai-chat/create-and-start",
+            headers=headers,
+            json={
+                "name": "pytest AI 持续监听",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "target_group_id": group["id"],
+                "topic_hint": "continuous ai",
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "messages_per_round": 1,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+
+        client.post("/api/worker/drain-once", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers)
+        assert len(sends) == 1
+
+        messages.append(("ai-context-2", "第二条真人上下文"))
+        client.post("/api/worker/drain-once", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers)
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert len(sends) == 2
+        assert detail["task"]["status"] == "running"
+        assert detail["task"]["stats"]["success_count"] == 2
+
+
+def test_legacy_task_write_apis_remain_compatible():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        operation = client.get("/api/operation-tasks", headers=headers)
+        assert operation.status_code == 200
+        assert client.get("/api/v2/tasks", headers=headers).status_code == 404
+        assert client.get("/api/campaigns", headers=headers).status_code == 200
+        assert client.get("/api/campaigns/1/detail", headers=headers).status_code in {200, 404}
+        campaign = client.post(
+            "/api/campaigns",
+            headers=headers,
+            json={"tenant_id": 1, "group_id": 1, "title": "旧任务", "campaign_type": "定时活跃任务", "topic": "旧任务"},
+        )
+        assert campaign.status_code != 410
+
+
+def test_task_center_group_ai_chat_does_not_plan_over_open_actions(monkeypatch):
+    from app.services.task_center.service import drain_task_center
+
+    def unexpected_build_task_plan(*args, **kwargs):
+        raise AssertionError("open actions should block a new AI chat round")
+
+    monkeypatch.setattr("app.services.task_center.service.build_task_plan", unexpected_build_task_plan)
+    with TestClient(app):
+        future = datetime.now(UTC) + timedelta(hours=1)
+        with SessionLocal() as session:
+            task = Task(
+                tenant_id=1,
+                name="pytest open action guard",
+                type="group_ai_chat",
+                status="running",
+                next_run_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1),
+                account_config={},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 60},
+                failure_policy={},
+                type_config={},
+                stats={},
+            )
+            session.add(task)
+            session.flush()
+            session.add(
+                Action(
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type=task.type,
+                    action_type="send_message",
+                    account_id=None,
+                    scheduled_at=future,
+                    status="pending",
+                    payload={"message_text": "还没发完"},
+                    result={},
+                )
+            )
+            session.commit()
+            task_id = task.id
+
+        assert drain_task_center(SessionLocal, 10) == 0
+        with SessionLocal() as session:
+            task = session.get(Task, task_id)
+            assert task.next_run_at == future
+            assert session.query(Action).filter(Action.task_id == task_id).count() == 1
+
+
+def test_relay_filter_only_with_media_blocks_text_messages():
+    from app.services.task_center.executors.group_relay import passes_relay_filters
+
+    assert not passes_relay_filters("纯文本", "user-1", "text", {"only_with_media": True})
+    assert not passes_relay_filters("纯文本", "user-1", "文本", {"only_with_media": True})
+    assert passes_relay_filters("带图消息", "user-1", "photo", {"only_with_media": True})
+
+
+def test_task_center_channel_view_like_comment_execute(monkeypatch):
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.view_channel_message",
+        lambda *args, **kwargs: calls.append("view") or OperationResult(True, detail="viewed"),
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_channel_reaction",
+        lambda *args, **kwargs: calls.append("like") or OperationResult(True, detail="liked"),
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.reply_channel_message",
+        lambda *args, **kwargs: calls.append("comment") or SendResult(True, remote_message_id="comment-sent"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
+            session.commit()
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-channel-{uuid4().hex[:8]}",
+                "title": "pytest 频道增长目标",
+                "username": "pytest_growth",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        channel_message = client.post(
+            "/api/channel-messages",
+            headers=headers,
+            json={
+                "channel_target_id": channel_target["id"],
+                "message_id": 2001,
+                "message_url": "https://t.me/pytest_growth/2001",
+                "content_preview": "频道增长消息",
+            },
+        ).json()
+        task_payloads = [
+            ("channel_view", "/api/tasks/channel-view", {"target_views_per_message": 1, "view_count_jitter": 0}),
+            ("channel_like", "/api/tasks/channel-like", {"target_likes_per_message": 1, "like_count_jitter": 0, "allowed_reactions": ["👍"]}),
+            ("channel_comment", "/api/tasks/channel-comment", {"target_comments_per_message": 1, "comment_count_jitter": 0, "topic_hint": "评论测试"}),
+        ]
+        task_ids: list[str] = []
+        for task_type, endpoint, extra_config in task_payloads:
+            created = client.post(
+                endpoint,
+                headers=headers,
+                json={
+                    "name": f"pytest {task_type}",
+                    "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                    "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                    "failure_policy": {"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
+                    "target_channel_id": channel_target["id"],
+                    "message_scope": "specific",
+                    "message_ids": [channel_message["id"]],
+                    **extra_config,
+                },
+            )
+            assert created.status_code == 200, created.text
+            task_ids.append(created.json()["id"])
+            client.post(f"/api/tasks/{task_ids[-1]}/start", headers=headers)
+
+        processed = 0
+        for _ in range(5):
+            processed += client.post("/api/worker/drain-once", headers=headers).json()["processed"]
+            if len(calls) >= 3:
+                break
+        assert processed >= 3
+        assert sorted(calls) == ["comment", "like", "view"]
+        for task_id in task_ids:
+            detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+            assert detail["task"]["status"] == "running"
+            assert detail["task"]["stats"]["success_count"] >= 1
+            assert detail["accounts"][0]["display_name"] == account["display_name"]
+            assert detail["message_groups"][0]["channel_title"] == "pytest 频道增长目标"
+            assert detail["message_groups"][0]["content_preview"] == "频道增长消息"
+            assert detail["message_groups"][0]["stats"]["success"] >= 1
+        listed = client.get("/api/tasks", headers=headers).json()
+        listed_channel_tasks = [item for item in listed if item["id"] in task_ids]
+        assert listed_channel_tasks
+        assert any("pytest 频道增长目标" in item["search_text"] and "频道增长消息" in item["search_text"] for item in listed_channel_tasks)
+
+        removed = client.delete(f"/api/tasks/{task_ids[0]}", headers=headers)
+        assert removed.status_code == 204, removed.text
+        visible_tasks = client.get("/api/tasks", headers=headers).json()
+        assert task_ids[0] not in {item["id"] for item in visible_tasks}
+        assert client.get(f"/api/tasks/{task_ids[0]}", headers=headers).status_code == 404
+        with SessionLocal() as session:
+            assert session.query(Action).filter(Action.task_id == task_ids[0]).count() >= 1
+            assert session.get(Task, task_ids[0]).deleted_at is not None
+
+
+def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.view_channel_message",
+        lambda *args, **kwargs: OperationResult(True, detail="viewed"),
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_channel_reaction",
+        lambda *args, **kwargs: OperationResult(True, detail="liked"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            first = session.get(TgAccount, account["id"])
+            first.status = AccountStatus.ACTIVE.value
+            second = TgAccount(
+                tenant_id=1,
+                display_name="pytest 第二点赞账号",
+                username=f"pytest_like_second_{uuid4().hex[:8]}",
+                phone_masked=f"+like-second-{uuid4().hex[:8]}",
+                status=AccountStatus.ACTIVE.value,
+                health_score=97,
+                session_ciphertext=first.session_ciphertext,
+                developer_app_id=first.developer_app_id,
+                developer_app_version=first.developer_app_version,
+            )
+            session.add(second)
+            session.commit()
+            account_ids = [first.id, second.id]
+
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-cap-channel-{uuid4().hex[:8]}",
+                "title": "pytest 容量频道",
+                "username": "pytest_capacity_channel",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        channel_message = client.post(
+            "/api/channel-messages",
+            headers=headers,
+            json={
+                "channel_target_id": channel_target["id"],
+                "message_id": 6101,
+                "message_url": "https://t.me/pytest_capacity_channel/6101",
+                "content_preview": "容量去重消息",
+            },
+        ).json()
+
+        capacity = client.post(
+            "/api/tasks/channel-capacity-check",
+            headers=headers,
+            json={
+                "task_type": "channel_like",
+                "account_config": {"selection_mode": "manual", "account_ids": account_ids, "max_concurrent": 2, "cooldown_per_account_minutes": 0},
+                "target_per_message": 50,
+                "target_channel_id": channel_target["id"],
+                "message_scope": "specific",
+                "message_ids": [channel_message["id"]],
+            },
+        )
+        assert capacity.status_code == 200, capacity.text
+        assert capacity.json()["will_shortfall"] is True
+        assert capacity.json()["max_effective_per_message"] == 2
+
+        task_ids: list[str] = []
+        for endpoint, extra_config in [
+            ("/api/tasks/channel-like", {"target_likes_per_message": 50, "like_count_jitter": 0, "allowed_reactions": ["👍"], "max_likes_per_account_per_hour": 999}),
+            ("/api/tasks/channel-view", {"target_views_per_message": 50, "view_count_jitter": 0}),
+        ]:
+            created = client.post(
+                endpoint,
+                headers=headers,
+                json={
+                    "name": f"pytest capacity {endpoint}",
+                    "account_config": {"selection_mode": "manual", "account_ids": account_ids, "max_concurrent": 2, "cooldown_per_account_minutes": 0},
+                    "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                    "target_channel_id": channel_target["id"],
+                    "message_scope": "specific",
+                    "message_ids": [channel_message["id"]],
+                    **extra_config,
+                },
+            )
+            assert created.status_code == 200, created.text
+            task_id = created.json()["id"]
+            task_ids.append(task_id)
+            client.post(f"/api/tasks/{task_id}/start", headers=headers)
+            client.post("/api/worker/drain-once", headers=headers)
+            client.post("/api/worker/drain-once", headers=headers)
+            detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+            rows = detail["actions"]
+            assert len(rows) == 2
+            assert len({row["account_id"] for row in rows}) == 2
+            assert "当前参与账号 2 个" in detail["task"]["stats"]["capacity_warning"]
+            assert detail["task"]["status"] == "running"
+            assert detail["task"]["stats"]["total_actions"] == 2
+
+        client.post("/api/worker/drain-once", headers=headers)
+        with SessionLocal() as session:
+            for task_id in task_ids:
+                assert session.query(Action).filter(Action.task_id == task_id).count() == 2
+
+
+def test_task_center_channel_comment_allows_multiple_replies_per_account(monkeypatch):
+    replies: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.reply_channel_message",
+        lambda *args, **kwargs: replies.append((args[2], args[3])) or SendResult(True, remote_message_id=f"reply-{len(replies)}"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            first = session.get(TgAccount, account["id"])
+            first.status = AccountStatus.ACTIVE.value
+            second = TgAccount(
+                tenant_id=1,
+                display_name="pytest 第二评论账号",
+                username=f"pytest_comment_second_{uuid4().hex[:8]}",
+                phone_masked=f"+comment-second-{uuid4().hex[:8]}",
+                status=AccountStatus.ACTIVE.value,
+                health_score=97,
+                session_ciphertext=first.session_ciphertext,
+                developer_app_id=first.developer_app_id,
+                developer_app_version=first.developer_app_version,
+            )
+            session.add(second)
+            session.commit()
+            account_ids = [first.id, second.id]
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-comment-cap-channel-{uuid4().hex[:8]}",
+                "title": "pytest 评论容量频道",
+                "username": "pytest_comment_capacity",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        channel_message = client.post(
+            "/api/channel-messages",
+            headers=headers,
+            json={
+                "channel_target_id": channel_target["id"],
+                "message_id": 6201,
+                "message_url": "https://t.me/pytest_comment_capacity/6201",
+                "content_preview": "评论可以多条",
+            },
+        ).json()
+        created = client.post(
+            "/api/tasks/channel-comment",
+            headers=headers,
+            json={
+                "name": "pytest comments can repeat accounts",
+                "account_config": {"selection_mode": "manual", "account_ids": account_ids, "max_concurrent": 2, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "target_channel_id": channel_target["id"],
+                "message_scope": "specific",
+                "message_ids": [channel_message["id"]],
+                "target_comments_per_message": 3,
+                "comment_count_jitter": 0,
+                "topic_hint": "评论可以多条",
+                "max_comments_per_account_per_hour": 500,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        client.post(f"/api/tasks/{task_id}/start", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers)
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert len(detail["actions"]) == 3
+        assert detail["task"]["stats"]["total_actions"] == 3
+
+
+def test_task_center_channel_like_auto_collects_latest_messages(monkeypatch):
+    calls: list[int] = []
+
+    def fake_fetch_channel_messages(*args, **kwargs):
+        return [
+            ChannelMessageSnapshot(
+                message_id=4101,
+                content_preview="自动采集频道消息",
+                message_url="https://t.me/pytest_auto_channel/4101",
+                published_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+        ]
+
+    monkeypatch.setattr("app.services.task_center.executors.common.gateway.fetch_channel_messages", fake_fetch_channel_messages)
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_channel_reaction",
+        lambda *args, **kwargs: calls.append(args[2]) or OperationResult(True, detail="liked"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-auto-channel-{uuid4().hex[:8]}",
+                "title": "pytest 自动采集频道",
+                "username": "pytest_auto_channel",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        created = client.post(
+            "/api/tasks/channel-like",
+            headers=headers,
+            json={
+                "name": "pytest auto collect like",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "target_channel_id": channel_target["id"],
+                "message_scope": "latest_n",
+                "message_count": 1,
+                "target_likes_per_message": 1,
+                "like_count_jitter": 0,
+                "allowed_reactions": ["👍"],
+                "max_likes_per_account_per_hour": 999,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        started = client.post(f"/api/tasks/{task_id}/start", headers=headers)
+        assert started.status_code == 200, started.text
+        from app.services.task_center.service import drain_task_center
+
+        first_processed = drain_task_center(SessionLocal, 10)
+        assert first_processed >= 1, client.get(f"/api/tasks/{task_id}", headers=headers).text
+        if not calls:
+            assert drain_task_center(SessionLocal, 10) >= 1
+
+        assert calls == [4101]
+        fetched_ids = [4102]
+        monkeypatch.setattr(
+            "app.services.task_center.executors.common.gateway.fetch_channel_messages",
+            lambda *args, **kwargs: [
+                ChannelMessageSnapshot(
+                    message_id=fetched_ids[-1],
+                    content_preview=f"持续采集频道消息 {fetched_ids[-1]}",
+                    message_url=f"https://t.me/pytest_auto_channel/{fetched_ids[-1]}",
+                    published_at=datetime.now(UTC).replace(tzinfo=None),
+                )
+            ],
+        )
+        assert drain_task_center(SessionLocal, 10) >= 1
+        if calls == [4101]:
+            assert drain_task_center(SessionLocal, 10) >= 1
+        assert calls == [4101, 4102]
+        messages = client.get(f"/api/channel-messages?channel_target_id={channel_target['id']}", headers=headers).json()
+        assert {message["message_id"] for message in messages} >= {4101, 4102}
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert detail["task"]["status"] == "running"
+        assert detail["task"]["last_error"] == ""
+
+
+def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatch):
+    fetched_ids = [4101]
+    reactions: list[int] = []
+
+    def fake_fetch_channel_messages(*args, **kwargs):
+        return [
+            ChannelMessageSnapshot(
+                message_id=fetched_ids[-1],
+                content_preview=f"自动采集频道消息 {fetched_ids[-1]}",
+                message_url=f"https://t.me/pytest_reset_channel/{fetched_ids[-1]}",
+                published_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+        ]
+
+    monkeypatch.setattr("app.services.task_center.executors.common.gateway.fetch_channel_messages", fake_fetch_channel_messages)
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_channel_reaction",
+        lambda *args, **kwargs: reactions.append(args[2]) or OperationResult(True, detail="liked"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-reset-channel-{uuid4().hex[:8]}",
+                "title": "pytest 重置采集频道",
+                "username": "pytest_reset_channel",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        created = client.post(
+            "/api/tasks/channel-like",
+            headers=headers,
+            json={
+                "name": "pytest reset like",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "target_channel_id": channel_target["id"],
+                "message_scope": "latest_n",
+                "message_count": 1,
+                "target_likes_per_message": 1,
+                "like_count_jitter": 0,
+                "allowed_reactions": ["👍"],
+                "max_likes_per_account_per_hour": 999,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        client.post(f"/api/tasks/{task_id}/start", headers=headers)
+        from app.services.task_center.service import drain_task_center
+
+        drain_task_center(SessionLocal, 10)
+        assert reactions == [4101]
+
+        with SessionLocal() as session:
+            old_action_count = session.query(Action).filter(Action.task_id == task_id).count()
+            assert old_action_count == 1
+            action = session.query(Action).filter(Action.task_id == task_id).one()
+            action.status = "failed"
+            action.result = {"success": False, "error_message": "old failure"}
+            session.add(
+                ReviewQueue(
+                    tenant_id=1,
+                    task_id=task_id,
+                    action_id=action.id,
+                    content_preview="old review",
+                    status="pending",
+                    expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1),
+                )
+            )
+            session.commit()
+
+        fetched_ids.append(4202)
+        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
+        assert reset.status_code == 200, reset.text
+        detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert detail_after_reset["actions"] == []
+        assert detail_after_reset["reviews"] == []
+        assert detail_after_reset["task"]["status"] == "running"
+        assert detail_after_reset["task"]["stats"]["total_actions"] == 0
+
+        drain_task_center(SessionLocal, 10)
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert reactions == [4101, 4202]
+        assert len(detail["actions"]) == 1
+        assert detail["actions"][0]["payload"]["message_id"] == 4202
+        assert detail["task"]["stats"]["success_count"] == 1
+
+
+def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatch):
+    fetched_ids = [4301]
+    views: list[int] = []
+
+    def fake_fetch_channel_messages(*args, **kwargs):
+        return [
+            ChannelMessageSnapshot(
+                message_id=fetched_ids[-1],
+                content_preview=f"自动采集浏览消息 {fetched_ids[-1]}",
+                message_url=f"https://t.me/pytest_reset_view/{fetched_ids[-1]}",
+                published_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+        ]
+
+    monkeypatch.setattr("app.services.task_center.executors.common.gateway.fetch_channel_messages", fake_fetch_channel_messages)
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.view_channel_message",
+        lambda *args, **kwargs: views.append(args[2]) or OperationResult(True, detail="viewed"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-reset-view-{uuid4().hex[:8]}",
+                "title": "pytest 重置浏览频道",
+                "username": "pytest_reset_view",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        created = client.post(
+            "/api/tasks/channel-view",
+            headers=headers,
+            json={
+                "name": "pytest reset view",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "target_channel_id": channel_target["id"],
+                "message_scope": "latest_n",
+                "message_count": 1,
+                "target_views_per_message": 1,
+                "view_count_jitter": 0,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        client.post(f"/api/tasks/{task_id}/start", headers=headers)
+        from app.services.task_center.service import drain_task_center
+
+        drain_task_center(SessionLocal, 10)
+        assert views == [4301]
+
+        fetched_ids.append(4302)
+        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
+        assert reset.status_code == 200, reset.text
+        detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert detail_after_reset["actions"] == []
+        assert detail_after_reset["reviews"] == []
+
+        drain_task_center(SessionLocal, 10)
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert views == [4301, 4302]
+        assert len(detail["actions"]) == 1
+        assert detail["actions"][0]["action_type"] == "view_message"
+        assert detail["actions"][0]["payload"]["message_id"] == 4302
+        assert detail["task"]["stats"]["success_count"] == 1
+
+
+def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
+    fetched_ids = [4401]
+    comments: list[tuple[int, str]] = []
+
+    def fake_fetch_channel_messages(*args, **kwargs):
+        return [
+            ChannelMessageSnapshot(
+                message_id=fetched_ids[-1],
+                content_preview=f"自动采集评论消息 {fetched_ids[-1]}",
+                message_url=f"https://t.me/pytest_reset_comment/{fetched_ids[-1]}",
+                published_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+        ]
+
+    monkeypatch.setattr("app.services.task_center.executors.common.gateway.fetch_channel_messages", fake_fetch_channel_messages)
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.reply_channel_message",
+        lambda *args, **kwargs: comments.append((args[2], args[3])) or SendResult(True, remote_message_id=f"comment-{len(comments)}"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-reset-comment-{uuid4().hex[:8]}",
+                "title": "pytest 重置评论频道",
+                "username": "pytest_reset_comment",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        created = client.post(
+            "/api/tasks/channel-comment",
+            headers=headers,
+            json={
+                "name": "pytest reset comment",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "target_channel_id": channel_target["id"],
+                "message_scope": "latest_n",
+                "message_count": 1,
+                "target_comments_per_message": 1,
+                "comment_count_jitter": 0,
+                "topic_hint": "reset comment",
+                "require_review": True,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        client.post(f"/api/tasks/{task_id}/start", headers=headers)
+        from app.services.task_center.service import drain_task_center
+
+        drain_task_center(SessionLocal, 10)
+        old_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert len(old_detail["actions"]) == 1
+        assert old_detail["reviews"] == []
+        assert old_detail["actions"][0]["payload"]["message_id"] == 4401
+        assert comments == [(4401, old_detail["actions"][0]["payload"]["comment_text"])]
+
+        fetched_ids.append(4402)
+        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
+        assert reset.status_code == 200, reset.text
+        detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert detail_after_reset["actions"] == []
+        assert detail_after_reset["reviews"] == []
+
+        drain_task_center(SessionLocal, 10)
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert len(detail["actions"]) == 1
+        assert detail["actions"][0]["action_type"] == "post_comment"
+        assert detail["actions"][0]["payload"]["message_id"] == 4402
+        assert detail["reviews"] == []
+
+        drain_task_center(SessionLocal, 10)
+        final_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert comments[-1] == (4402, detail["actions"][0]["payload"]["comment_text"])
+        assert final_detail["task"]["stats"]["success_count"] == 1
+
+
+def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
+    sends: list[str] = []
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_message",
+        lambda *args, **kwargs: sends.append(args[2]) or SendResult(True, remote_message_id=f"reset-ai-{len(sends)}"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        created = client.post(
+            "/api/tasks/group-ai-chat",
+            headers=headers,
+            json={
+                "name": "pytest reset AI 活跃",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "target_group_id": group["id"],
+                "topic_hint": "reset ai",
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "messages_per_round": 1,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        client.post(f"/api/tasks/{task_id}/start", headers=headers)
+        from app.services.task_center.service import drain_task_center
+
+        drain_task_center(SessionLocal, 10)
+        assert len(sends) == 1
+        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
+        assert reset.status_code == 200, reset.text
+        assert client.get(f"/api/tasks/{task_id}", headers=headers).json()["actions"] == []
+
+        drain_task_center(SessionLocal, 10)
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert len(sends) == 2
+        assert len(detail["actions"]) == 1
+        assert detail["task"]["stats"]["success_count"] == 1
+
+
+def test_task_center_reset_group_relay_clears_source_fingerprints():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        created = client.post(
+            "/api/tasks/group-relay",
+            headers=headers,
+            json={
+                "name": "pytest reset relay",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "source_groups": [{"group_id": group["id"], "group_name": group["title"], "is_active": True}],
+                "target_group_id": group["id"],
+                "content_mode": "raw",
+                "filters": {"keyword_whitelist": ["转发监听消息"]},
+                "dedup_window_minutes": 60,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        with SessionLocal() as session:
+            task = session.get(Task, task_id)
+            session.add(MessageFingerprint(tenant_id=1, source_group_id=f"{task_id}:relay:{group['id']}", fingerprint="pytest-reset", original_text="old"))
+            session.add(Action(tenant_id=1, task_id=task_id, task_type=task.type, action_type="send_message", account_id=account["id"], scheduled_at=datetime.now(UTC).replace(tzinfo=None), status="success", payload={"message_text": "old"}, result={"success": True}))
+            session.commit()
+
+        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
+        assert reset.status_code == 200, reset.text
+        with SessionLocal() as session:
+            assert session.query(Action).filter(Action.task_id == task_id).count() == 0
+            assert session.query(MessageFingerprint).filter(MessageFingerprint.source_group_id == f"{task_id}:relay:{group['id']}").count() == 0
+
+
+def test_task_center_channel_task_reports_no_collect_account():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ensure_test_workspace(client, headers)
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-no-account-channel-{uuid4().hex[:8]}",
+                "title": "pytest 无采集账号频道",
+                "username": "pytest_no_collect_account",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        created = client.post(
+            "/api/tasks/channel-like",
+            headers=headers,
+            json={
+                "name": "pytest no collect account",
+                "account_config": {"selection_mode": "manual", "account_ids": [999999], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "target_channel_id": channel_target["id"],
+                "message_scope": "latest_n",
+                "message_count": 1,
+                "target_likes_per_message": 1,
+                "like_count_jitter": 0,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        client.post(f"/api/tasks/{task_id}/start", headers=headers)
+        from app.services.task_center.service import drain_task_center
+
+        drain_task_center(SessionLocal, 10)
+
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()["task"]
+        assert detail["status"] == "running"
+        assert detail["last_error"] == "没有可用于采集频道消息的账号"
+
+
+def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
+    sends: list[str] = []
+
+    def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
+        sends.append(content)
+        return SendResult(True, remote_message_id=f"relay-{len(sends)}")
+
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", fake_send_message)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
+            session.add(
+                GroupContextMessage(
+                    tenant_id=1,
+                    group_id=group["id"],
+                    listener_account_id=account["id"],
+                    sender_peer_id="pytest-user",
+                    sender_name="pytest",
+                    content="新品上线，适合转发到目标群",
+                    remote_message_id=f"src-{uuid4().hex[:8]}",
+                    sent_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+        created = client.post(
+            "/api/tasks/group-relay",
+            headers=headers,
+            json={
+                "name": "pytest relay review",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "failure_policy": {"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
+                "source_groups": [{"group_id": group["id"], "group_name": group["title"], "is_active": True}],
+                "target_group_id": group["id"],
+                "content_mode": "raw",
+                "filters": {"keyword_whitelist": ["新品"]},
+                "dedup_window_minutes": 60,
+                "require_review": True,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        client.post(f"/api/tasks/{task_id}/start", headers=headers)
+
+        first = client.post("/api/worker/drain-once", headers=headers).json()
+        assert first["processed"] >= 1
+        second = client.post("/api/worker/drain-once", headers=headers).json()
+        third = client.post("/api/worker/drain-once", headers=headers).json()
+        assert second["processed"] >= 0
+        assert third["processed"] == 0
+        assert sends == ["新品上线，适合转发到目标群"]
+        reviews = [item for item in client.get("/api/review-queue", headers=headers).json() if item["task_id"] == task_id]
+        assert reviews == []
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert detail["task"]["stats"]["total_actions"] == 1
+        assert detail["task"]["stats"]["success_count"] == 1
+
+
+def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
+    sends: list[str] = []
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_message",
+        lambda *args, **kwargs: sends.append(args[2]) or SendResult(True, remote_message_id=f"relay-continuous-{len(sends)}"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            session.add(
+                GroupContextMessage(
+                    tenant_id=1,
+                    group_id=group["id"],
+                    listener_account_id=account["id"],
+                    sender_peer_id="pytest-user",
+                    sender_name="pytest",
+                    content="第一条转发监听消息",
+                    remote_message_id=f"relay-src-{uuid4().hex[:8]}",
+                    sent_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+        created = client.post(
+            "/api/tasks/group-relay/create-and-start",
+            headers=headers,
+            json={
+                "name": "pytest relay 持续监听",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "source_groups": [{"group_id": group["id"], "group_name": group["title"], "is_active": True}],
+                "target_group_id": group["id"],
+                "content_mode": "raw",
+                "filters": {"keyword_whitelist": ["转发监听消息"]},
+                "dedup_window_minutes": 60,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+
+        client.post("/api/worker/drain-once", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers)
+        assert sends == ["第一条转发监听消息"]
+
+        with SessionLocal() as session:
+            session.add(
+                GroupContextMessage(
+                    tenant_id=1,
+                    group_id=group["id"],
+                    listener_account_id=account["id"],
+                    sender_peer_id="pytest-user",
+                    sender_name="pytest",
+                    content="第二条转发监听消息",
+                    remote_message_id=f"relay-src-{uuid4().hex[:8]}",
+                    sent_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+        client.post("/api/worker/drain-once", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers)
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert sends == ["第一条转发监听消息", "第二条转发监听消息"]
+        assert detail["task"]["status"] == "running"
+        assert detail["task"]["stats"]["success_count"] == 2
+
+
+def test_task_center_pause_holds_due_actions(monkeypatch):
+    sends: list[str] = []
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_message",
+        lambda *args, **kwargs: sends.append(args[2]) or SendResult(True, remote_message_id="paused-send"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        task = client.post(
+            "/api/tasks/group-ai-chat",
+            headers=headers,
+            json={
+                "name": "pytest paused action",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "target_group_id": group["id"],
+            },
+        ).json()
+        client.post(f"/api/tasks/{task['id']}/start", headers=headers)
+        client.post(f"/api/tasks/{task['id']}/pause", headers=headers)
+        with SessionLocal() as session:
+            action = Action(
+                tenant_id=1,
+                task_id=task["id"],
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=account["id"],
+                scheduled_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1),
+                status="pending",
+                payload={"group_id": group["id"], "chat_id": group["tg_peer_id"], "message_text": "暂停后不应发送", "review_approved": True},
+                result={},
+            )
+            session.add(action)
+            session.commit()
+            action_id = action.id
+
+        client.post("/api/worker/drain-once", headers=headers)
+        with SessionLocal() as session:
+            assert session.get(Action, action_id).status == "pending"
+        assert sends == []
+
+
+def test_task_center_pending_reviews_do_not_starve_other_due_actions(monkeypatch):
+    sends: list[str] = []
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_message",
+        lambda *args, **kwargs: sends.append(args[2]) or SendResult(True, remote_message_id="normal-send"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        now = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+        with SessionLocal() as session:
+            blocked_task = Task(tenant_id=1, name="pytest pending review", type="group_relay", status="running", next_run_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=1), account_config={}, pacing_config={}, failure_policy={}, type_config={}, stats={})
+            normal_task = Task(tenant_id=1, name="pytest normal action", type="group_ai_chat", status="running", next_run_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=1), account_config={}, pacing_config={}, failure_policy={}, type_config={}, stats={})
+            session.add_all([blocked_task, normal_task])
+            session.flush()
+            blocked_action = Action(tenant_id=1, task_id=blocked_task.id, task_type=blocked_task.type, action_type="send_message", account_id=account["id"], scheduled_at=now, status="pending", payload={"group_id": group["id"], "message_text": "待审核内容"}, result={})
+            normal_action = Action(tenant_id=1, task_id=normal_task.id, task_type=normal_task.type, action_type="send_message", account_id=account["id"], scheduled_at=now, status="pending", payload={"group_id": group["id"], "message_text": "普通内容", "review_approved": True}, result={})
+            session.add_all([blocked_action, normal_action])
+            session.flush()
+            session.add(ReviewQueue(tenant_id=1, task_id=blocked_task.id, action_id=blocked_action.id, content_preview="待审核内容", status="pending", expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1)))
+            session.commit()
+            blocked_action_id = blocked_action.id
+            normal_action_id = normal_action.id
+
+        client.post("/api/worker/drain-once", headers=headers)
+        with SessionLocal() as session:
+            assert session.get(Action, blocked_action_id).status == "pending"
+            assert session.get(Action, normal_action_id).status == "success"
+        assert sends == ["普通内容"]
+
+
+def test_task_center_review_terminal_state_cannot_be_approved(monkeypatch):
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", lambda *args, **kwargs: SendResult(True, remote_message_id="should-not-send"))
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            task = Task(tenant_id=1, name="pytest terminal review", type="group_relay", status="running", next_run_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=1), account_config={}, pacing_config={}, failure_policy={}, type_config={}, stats={})
+            session.add(task)
+            session.flush()
+            action = Action(tenant_id=1, task_id=task.id, task_type=task.type, action_type="send_message", account_id=account["id"], scheduled_at=datetime.now(UTC).replace(tzinfo=None), status="pending", payload={"group_id": group["id"], "message_text": "拒绝后不应复活"}, result={})
+            session.add(action)
+            session.flush()
+            review = ReviewQueue(tenant_id=1, task_id=task.id, action_id=action.id, content_preview="拒绝后不应复活", status="pending", expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1))
+            session.add(review)
+            session.commit()
+            review_id = review.id
+            action_id = action.id
+
+        rejected = client.post(f"/api/review/{review_id}/reject", headers=headers, json={"reason": "不通过"})
+        assert rejected.status_code == 200, rejected.text
+        approved = client.post(f"/api/review/{review_id}/approve", headers=headers, json={"edited_content": "复活内容"})
+        assert approved.status_code == 409
+        with SessionLocal() as session:
+            assert session.get(Action, action_id).status == "skipped"
+
+
+def test_task_center_channel_specific_scope_requires_message_ids():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.post(
+            "/api/tasks/channel-view",
+            headers=headers,
+            json={
+                "name": "pytest bad specific scope",
+                "account_config": {"selection_mode": "all"},
+                "pacing_config": {"mode": "template", "template": "moderate_6h"},
+                "target_channel_id": 1,
+                "message_scope": "specific",
+                "message_ids": [],
+                "target_views_per_message": 1,
+            },
+        )
+        assert response.status_code in {400, 422}
+        assert "message_ids" in response.text
+
+
+def test_task_center_create_and_start_rolls_back_when_start_fails(monkeypatch):
+    import app.services.task_center.service as task_center_service
+
+    def fail_start(*args, **kwargs):
+        raise ValueError("启动失败")
+
+    monkeypatch.setattr(task_center_service, "_mark_task_started", fail_start)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-atomic-channel-{uuid4().hex[:8]}",
+                "title": "pytest 原子创建频道",
+                "username": "pytest_atomic_channel",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        response = client.post(
+            "/api/tasks/channel-like/create-and-start",
+            headers=headers,
+            json={
+                "name": "pytest atomic create rollback",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "target_channel_id": channel_target["id"],
+                "message_scope": "latest_n",
+                "message_count": 1,
+                "target_likes_per_message": 1,
+                "like_count_jitter": 0,
+            },
+        )
+        assert response.status_code == 400
+        with SessionLocal() as session:
+            assert session.query(Task).filter(Task.name == "pytest atomic create rollback").count() == 0
+
+
+def test_task_center_type_specific_create_rejects_unrelated_fields():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.post(
+            "/api/tasks/channel-like",
+            headers=headers,
+            json={
+                "name": "pytest mixed fields rejected",
+                "account_config": {"selection_mode": "all"},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0},
+                "target_channel_id": 1,
+                "message_scope": "latest_n",
+                "message_count": 1,
+                "target_likes_per_message": 1,
+                "comment_style": "mixed",
+                "target_comments_per_message": 3,
+            },
+        )
+        assert response.status_code == 422
+        assert "target_comments_per_message" in response.text
+
+
+def test_task_center_common_patch_rejects_type_config_and_typed_patch_checks_task_type():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        task = client.post(
+            "/api/tasks/group-ai-chat",
+            headers=headers,
+            json={
+                "name": "pytest typed patch boundary",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]]},
+                "target_group_id": group["id"],
+            },
+        )
+        assert task.status_code == 200, task.text
+        task_id = task.json()["id"]
+
+        generic = client.patch(f"/api/tasks/{task_id}", headers=headers, json={"type_config": {"target_likes_per_message": 1}})
+        assert generic.status_code == 422
+        assert "type_config" in generic.text
+
+        mismatch = client.patch(
+            f"/api/tasks/{task_id}/channel-like",
+            headers=headers,
+            json={"target_channel_id": 1, "message_scope": "latest_n", "message_count": 1, "target_likes_per_message": 1},
+        )
+        assert mismatch.status_code == 400
+        assert "任务类型不匹配" in mismatch.text
+
+
+def test_task_center_dispatcher_rejects_mixed_action_payload(monkeypatch):
+    def should_not_like(*args, **kwargs):
+        raise AssertionError("invalid like payload must not reach Telegram gateway")
+
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_channel_reaction", should_not_like)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        now = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
+            task = Task(tenant_id=1, name="pytest mixed payload", type="channel_like", status="running", next_run_at=now + timedelta(days=1), account_config={}, pacing_config={}, failure_policy={}, type_config={}, stats={})
+            session.add(task)
+            session.flush()
+            action = Action(
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="like_message",
+                account_id=account["id"],
+                scheduled_at=now,
+                status="pending",
+                payload={"channel_id": "pytest-channel", "message_id": 1, "reaction_emoji": "👍", "message_text": "不该出现在点赞 payload"},
+                result={},
+            )
+            session.add(action)
+            session.commit()
+            action_id = action.id
+
+        client.post("/api/worker/drain-once", headers=headers)
+        with SessionLocal() as session:
+            row = session.get(Action, action_id)
+            assert row.status == "failed"
+            assert "message_text" in row.result["error_message"]
+
+
+def test_task_center_send_message_payload_requires_destination(monkeypatch):
+    def should_not_send(*args, **kwargs):
+        raise AssertionError("payload without destination must not reach Telegram gateway")
+
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", should_not_send)
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message_to_target", should_not_send)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        now = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
+            task = Task(tenant_id=1, name="pytest send payload destination", type="group_ai_chat", status="running", next_run_at=now + timedelta(days=1), account_config={}, pacing_config={}, failure_policy={}, type_config={}, stats={})
+            session.add(task)
+            session.flush()
+            action = Action(
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="send_message",
+                account_id=account["id"],
+                scheduled_at=now,
+                status="pending",
+                payload={"message_text": "没有目的地的消息"},
+                result={},
+            )
+            session.add(action)
+            session.commit()
+            action_id = action.id
+
+        client.post("/api/worker/drain-once", headers=headers)
+        with SessionLocal() as session:
+            row = session.get(Action, action_id)
+            assert row.status == "failed"
+            assert "group_id or chat_id" in row.result["error_message"]
+
+
+def test_task_center_group_send_policy_includes_legacy_message_tasks(monkeypatch):
+    def should_not_send(*args, **kwargs):
+        raise AssertionError("legacy sent message cooldown must block task center sends")
+
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", should_not_send)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        now = datetime.now(UTC).replace(tzinfo=None)
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
+            db_group = session.get(TgGroup, group["id"])
+            db_group.group_cooldown_seconds = 3600
+            legacy = MessageTask(
+                tenant_id=1,
+                group_id=group["id"],
+                account_id=account["id"],
+                content="旧发送记录",
+                status=TaskStatus.SENT.value,
+                idempotency_key=f"pytest-legacy-sent-{uuid4().hex}",
+                scheduled_at=now,
+                sent_at=now,
+            )
+            task = Task(tenant_id=1, name="pytest legacy cooldown", type="group_ai_chat", status="running", next_run_at=now + timedelta(days=1), account_config={}, pacing_config={}, failure_policy={}, type_config={}, stats={})
+            session.add_all([legacy, task])
+            session.flush()
+            action = Action(
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="send_message",
+                account_id=account["id"],
+                scheduled_at=now - timedelta(seconds=1),
+                status="pending",
+                payload={"group_id": group["id"], "message_text": "应被旧任务冷却拦截", "review_approved": True},
+                result={},
+            )
+            session.add(action)
+            session.commit()
+            action_id = action.id
+
+        client.post("/api/worker/drain-once", headers=headers)
+        with SessionLocal() as session:
+            row = session.get(Action, action_id)
+            assert row.status == "failed"
+            assert row.result["error_code"] == FailureType.SLOWMODE.value, row.result
+            assert "群冷却中" in row.result["error_message"]
+
+
+def test_task_center_channel_failed_action_retries_before_task_failed(monkeypatch):
+    calls: list[str] = []
+
+    def flaky_like(*args, **kwargs):
+        calls.append("like")
+        if len(calls) == 1:
+            return OperationResult(False, failure_type=FailureType.UNKNOWN.value, detail="temporary boom")
+        return OperationResult(True, detail="liked")
+
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_channel_reaction", flaky_like)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-retry-channel-{uuid4().hex[:8]}",
+                "title": "pytest 重试频道",
+                "username": "pytest_retry_channel",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        channel_message = client.post(
+            "/api/channel-messages",
+            headers=headers,
+            json={
+                "channel_target_id": channel_target["id"],
+                "message_id": 3101,
+                "message_url": "https://t.me/pytest_retry_channel/3101",
+                "content_preview": "重试消息",
+            },
+        ).json()
+        created = client.post(
+            "/api/tasks/channel-like",
+            headers=headers,
+            json={
+                "name": "pytest channel retry",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "failure_policy": {"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
+                "target_channel_id": channel_target["id"],
+                "message_scope": "specific",
+                "message_ids": [channel_message["id"]],
+                "target_likes_per_message": 1,
+                "like_count_jitter": 0,
+                "allowed_reactions": ["👍"],
+                "max_likes_per_account_per_hour": 999,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        client.post(f"/api/tasks/{task_id}/start", headers=headers)
+
+        client.post("/api/worker/drain-once", headers=headers)
+        with SessionLocal() as session:
+            task = session.get(Task, task_id)
+            action = session.query(Action).filter(Action.task_id == task_id).one()
+            assert task.status == "running"
+            assert action.status == "failed"
+            assert action.retry_count == 0
+
+        client.post("/api/worker/drain-once", headers=headers)
+        with SessionLocal() as session:
+            task = session.get(Task, task_id)
+            action = session.query(Action).filter(Action.task_id == task_id).one()
+            assert task.status == "running", {"task_status": task.status, "action_status": action.status, "retry_count": action.retry_count, "result": action.result}
+            assert action.status == "success"
+            assert action.retry_count == 1
+            assert task.stats["success_count"] == 1
+        assert calls == ["like", "like"]
+
+
+def test_task_center_channel_like_respects_per_account_hour_limit(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.send_channel_reaction",
+        lambda *args, **kwargs: OperationResult(True, detail="liked"),
+    )
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-rate-channel-{uuid4().hex[:8]}",
+                "title": "pytest 频控频道",
+                "username": "pytest_rate_channel",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        channel_messages = [
+            client.post(
+                "/api/channel-messages",
+                headers=headers,
+                json={
+                    "channel_target_id": channel_target["id"],
+                    "message_id": 3001 + index,
+                    "message_url": f"https://t.me/pytest_rate_channel/{3001 + index}",
+                    "content_preview": f"频控消息 {index}",
+                },
+            ).json()
+            for index in range(3)
+        ]
+        created = client.post(
+            "/api/tasks/channel-like",
+            headers=headers,
+            json={
+                "name": "pytest like hour limit",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "target_channel_id": channel_target["id"],
+                "message_scope": "specific",
+                "message_ids": [message["id"] for message in channel_messages],
+                "target_likes_per_message": 1,
+                "like_count_jitter": 0,
+                "allowed_reactions": ["👍"],
+                "max_likes_per_account_per_hour": 1,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        client.post(f"/api/tasks/{task_id}/start", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers)
+        with SessionLocal() as session:
+            rows = list(session.query(Action).filter(Action.task_id == task_id).order_by(Action.scheduled_at.asc(), Action.id.asc()))
+        assert len(rows) == 3
+        scheduled_hours = [row.scheduled_at.replace(minute=0, second=0, microsecond=0) for row in rows]
+        assert scheduled_hours[1] > scheduled_hours[0]
+        assert scheduled_hours[2] > scheduled_hours[1]
+
+
+def test_task_center_max_duration_does_not_stop_continuous_tasks():
+    from app.services.task_center.service import drain_task_center
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with SessionLocal() as session:
+        tasks = [
+            Task(
+                tenant_id=1,
+                name=f"pytest max duration stays running {task_type}",
+                type=task_type,
+                status="running",
+                max_duration_hours=1,
+                next_run_at=now - timedelta(seconds=1),
+                account_config={},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 3600, "interval_seconds_max": 3600},
+                failure_policy={},
+                type_config={},
+                stats={"started_at": (now - timedelta(hours=3)).isoformat()},
+            )
+            for task_type in ["group_ai_chat", "group_relay", "channel_view", "channel_like", "channel_comment"]
+        ]
+        session.add_all(tasks)
+        session.commit()
+        task_ids = [task.id for task in tasks]
+
+    drain_task_center(SessionLocal, 10)
+    with SessionLocal() as session:
+        assert {session.get(Task, task_id).status for task_id in task_ids} == {"running"}
+
+
+def test_task_center_scheduled_end_stops_continuous_task():
+    from app.services.task_center.service import drain_task_center
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with SessionLocal() as session:
+        task = Task(
+            tenant_id=1,
+            name="pytest scheduled end stops",
+            type="channel_like",
+            status="running",
+            scheduled_end=now - timedelta(seconds=1),
+            next_run_at=now - timedelta(seconds=1),
+            account_config={},
+            pacing_config={},
+            failure_policy={},
+            type_config={},
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    drain_task_center(SessionLocal, 10)
+    with SessionLocal() as session:
+        assert session.get(Task, task_id).status == "completed"
+
+
+def test_task_center_no_available_accounts_warns_without_failing():
+    from app.services.task_center.service import drain_task_center
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-offline-channel-{uuid4().hex[:8]}",
+                "title": "pytest 掉线频道",
+                "username": "pytest_offline_channel",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        client.post(
+            "/api/channel-messages",
+            headers=headers,
+            json={
+                "channel_target_id": channel_target["id"],
+                "message_id": 9101,
+                "message_url": "https://t.me/pytest_offline_channel/9101",
+                "content_preview": "账号掉线不应停任务",
+            },
+        )
+        created = client.post(
+            "/api/tasks/channel-like/create-and-start",
+            headers=headers,
+            json={
+                "name": "pytest offline account keeps task running",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "target_channel_id": channel_target["id"],
+                "message_scope": "latest_n",
+                "message_count": 1,
+                "target_likes_per_message": 1,
+                "like_count_jitter": 0,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        with SessionLocal() as session:
+            session.get(TgAccount, account["id"]).status = AccountStatus.NEED_RELOGIN.value
+            session.commit()
+
+        drain_task_center(SessionLocal, 10)
+        with SessionLocal() as session:
+            task = session.get(Task, task_id)
+            assert task.status == "running"
+            assert "没有可用账号" in task.last_error
+
+
+def test_task_center_settings_updates_config_and_rebuilds_unfinished_plan():
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        channel_target = client.post(
+            "/api/operation-targets",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "target_type": "channel",
+                "tg_peer_id": f"pytest-settings-channel-{uuid4().hex[:8]}",
+                "title": "pytest 设置频道",
+                "username": "pytest_settings_channel",
+                "can_send": True,
+                "auth_status": "已授权运营",
+            },
+        ).json()
+        message = client.post(
+            "/api/channel-messages",
+            headers=headers,
+            json={
+                "channel_target_id": channel_target["id"],
+                "message_id": 9201,
+                "message_url": "https://t.me/pytest_settings_channel/9201",
+                "content_preview": "设置变更消息",
+            },
+        ).json()
+        with SessionLocal() as session:
+            task = Task(
+                tenant_id=1,
+                name="pytest settings update",
+                type="channel_like",
+                status="running",
+                next_run_at=now + timedelta(days=1),
+                account_config={"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 60, "interval_seconds_max": 60},
+                failure_policy={"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
+                type_config={
+                    "target_channel_id": channel_target["id"],
+                    "target_channel_name": channel_target["title"],
+                    "message_scope": "specific",
+                    "message_count": None,
+                    "date_from": None,
+                    "date_to": None,
+                    "message_ids": [message["id"]],
+                    "target_likes_per_message": 1,
+                    "like_count_jitter": 0,
+                    "reaction_type": "random",
+                    "allowed_reactions": ["👍"],
+                    "max_likes_per_account_per_hour": 999,
+                },
+                stats={},
+            )
+            session.add(task)
+            session.flush()
+            session.add_all(
+                [
+                    Action(tenant_id=1, task_id=task.id, task_type=task.type, action_type="like_message", account_id=account["id"], scheduled_at=now - timedelta(minutes=5), executed_at=now - timedelta(minutes=4), status="success", payload={"channel_message_id": message["id"], "message_id": 9201}, result={"success": True}),
+                    Action(tenant_id=1, task_id=task.id, task_type=task.type, action_type="like_message", account_id=account["id"], scheduled_at=now + timedelta(minutes=5), status="pending", payload={"channel_message_id": message["id"], "message_id": 9201}, result={}),
+                ]
+            )
+            session.commit()
+            task_id = task.id
+
+        updated = client.patch(
+            f"/api/tasks/{task_id}/settings",
+            headers=headers,
+            json={
+                "name": "pytest settings updated",
+                "scheduled_end": (now + timedelta(days=1)).isoformat(),
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "failure_policy": {"max_retries": 2, "retry_delay_seconds": 0, "retry_backoff": "none"},
+                "target_likes_per_message": 2,
+                "like_count_jitter": 0,
+                "reaction_type": "random",
+                "allowed_reactions": ["👍", "❤️"],
+                "max_likes_per_account_per_hour": 999,
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        body = updated.json()
+        assert body["status"] == "running"
+        assert body["name"] == "pytest settings updated"
+        assert body["type_config"]["target_likes_per_message"] == 2
+        with SessionLocal() as session:
+            rows = list(session.query(Action).filter(Action.task_id == task_id).order_by(Action.created_at.asc()))
+            assert [row.status for row in rows] == ["success"]
+            next_run_at = session.get(Task, task_id).next_run_at
+            if next_run_at.tzinfo:
+                next_run_at = next_run_at.replace(tzinfo=None)
+            assert next_run_at <= datetime.now(UTC).replace(tzinfo=None)
+
+
+def test_task_center_settings_rejects_target_scope_changes():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        created = client.post(
+            "/api/tasks/group-ai-chat/create-and-start",
+            headers=headers,
+            json={
+                "name": "pytest settings reject target",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "target_group_id": group["id"],
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        response = client.patch(f"/api/tasks/{task_id}/settings", headers=headers, json={"target_group_id": group["id"]})
+        assert response.status_code == 422
+        assert "target_group_id" in response.text
 
 
 def test_message_send_workbench_creates_private_group_channel_and_jitter_tasks(monkeypatch):
@@ -1464,6 +3455,7 @@ def test_message_send_workbench_creates_private_group_channel_and_jitter_tasks(m
 
 
 def test_ai_operation_failure_notifies_admin(monkeypatch):
+    skip_legacy_task_center_flow()
     sent: list[tuple[str, str, str]] = []
 
     def fake_bot(token: str, chat_id: str, text: str):
@@ -1526,6 +3518,7 @@ def test_ai_operation_failure_notifies_admin(monkeypatch):
 
 
 def test_ai_failure_notification_error_is_non_blocking(monkeypatch):
+    skip_legacy_task_center_flow()
     monkeypatch.setattr(
         "app.services.notifications.send_telegram_bot_message",
         lambda *args, **kwargs: NotificationResult(False, "bot down"),
@@ -1570,6 +3563,7 @@ def test_ai_failure_notification_error_is_non_blocking(monkeypatch):
 
 
 def test_ai_operation_retry_replans_after_generation_failure(monkeypatch):
+    skip_legacy_task_center_flow()
     generation_should_fail = {"value": True}
 
     def fake_generate(*args, **kwargs):
@@ -1629,6 +3623,7 @@ def test_ai_operation_retry_replans_after_generation_failure(monkeypatch):
 
 
 def test_group_policy_enforcement_material_usage_and_reports(monkeypatch):
+    skip_legacy_task_center_flow()
     monkeypatch.setattr("app.services._common.gateway.send_message", lambda *args, **kwargs: SendResult(True, remote_message_id="pytest-sent"))
     with TestClient(app) as client:
         headers = auth_headers(client)
@@ -1778,6 +3773,7 @@ def test_group_policy_enforcement_material_usage_and_reports(monkeypatch):
 
 
 def test_account_deleted_during_dispatch_does_not_send(monkeypatch):
+    skip_legacy_task_center_flow()
     send_calls = {"count": 0}
 
     def fake_credentials(session, account, *, assign_if_missing=False):

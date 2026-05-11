@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+import argparse
 import logging
+import threading
+import time
 import traceback
 from datetime import UTC, datetime
 
 from .database import SessionLocal
 from .models import MessageTask, TaskStatus
 from .task_queue import get_task_queue
-from .services import dispatch_task, drain_account_sync_records, drain_archives, drain_continuous_campaigns, drain_group_listeners, drain_operation_tasks, drain_profile_sync_records
+from .services import (
+    dispatch_task,
+    drain_account_sync_records,
+    drain_archives,
+    drain_continuous_campaigns,
+    drain_group_listeners,
+    drain_operation_tasks,
+    drain_profile_sync_records,
+    drain_task_center,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +65,55 @@ def drain_once(limit: int = 100) -> int:
     remaining = max(0, remaining - continuous_count)
     operation_count = drain_operation_tasks(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - operation_count)
+    task_center_count = drain_task_center(SessionLocal, max(1, remaining))
+    remaining = max(0, remaining - task_center_count)
     archive_count = drain_archives(SessionLocal, max(1, remaining))
-    return count + profile_count + account_count + listener_count + continuous_count + operation_count + archive_count
+    return count + profile_count + account_count + listener_count + continuous_count + operation_count + task_center_count + archive_count
+
+
+def run_worker(
+    *,
+    limit: int = 100,
+    interval_seconds: float = 2.0,
+    max_iterations: int | None = None,
+    stop_event: threading.Event | None = None,
+) -> None:
+    iterations = 0
+    while (max_iterations is None or iterations < max_iterations) and not (stop_event and stop_event.is_set()):
+        try:
+            processed = drain_once(limit)
+            if processed:
+                logger.info("worker drained processed=%d", processed)
+        except Exception:
+            logger.error("worker drain failed:\n%s", traceback.format_exc())
+        iterations += 1
+        if max_iterations is not None and iterations >= max_iterations:
+            break
+        wait_seconds = max(0.1, interval_seconds)
+        if stop_event:
+            if stop_event.wait(wait_seconds):
+                break
+        else:
+            time.sleep(wait_seconds)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="TG operations background worker")
+    parser.add_argument("--once", action="store_true", help="drain once and exit")
+    parser.add_argument("--limit", type=int, default=100, help="max items to drain per iteration")
+    parser.add_argument("--interval", type=float, default=2.0, help="seconds between drain iterations")
+    parser.add_argument("--iterations", type=int, default=None, help="test/dev helper: stop after N iterations")
+    args = parser.parse_args(argv)
+    if args.once:
+        processed = drain_once(args.limit)
+        print(f"processed={processed}")
+        return 0
+    try:
+        run_worker(limit=args.limit, interval_seconds=args.interval, max_iterations=args.iterations)
+    except KeyboardInterrupt:
+        logger.info("worker stopped by keyboard interrupt")
+    return 0
 
 
 if __name__ == "__main__":
-    processed = drain_once()
-    print(f"processed={processed}")
+    raise SystemExit(main())

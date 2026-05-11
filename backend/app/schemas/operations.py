@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -61,6 +62,55 @@ class ChannelMessageOut(ApiModel):
     content_preview: str
     published_at: datetime | None
     created_at: datetime
+
+
+class OperationTargetAccountOut(BaseModel):
+    id: int
+    display_name: str
+    username: str | None = None
+    status: str
+    health_score: float
+    permission_label: str = ""
+    can_send: bool = False
+    is_listener: bool = False
+    last_sent_at: datetime | None = None
+
+
+class OperationTargetGroupMessageOut(BaseModel):
+    id: int
+    listener_account_id: int
+    sender_name: str
+    content: str
+    message_type: str
+    sent_at: datetime | None = None
+    used_for_ai: bool = False
+
+
+class OperationTargetLinkedGroupOut(BaseModel):
+    id: int
+    title: str
+    group_type: str
+    member_count: int
+    auth_status: str
+    can_send: bool
+    listener_enabled: bool
+    listener_context_limit: int
+    listener_last_error: str = ""
+
+
+class OperationTargetDetailOut(BaseModel):
+    target: OperationTargetOut
+    linked_group: OperationTargetLinkedGroupOut | None = None
+    accounts: list[OperationTargetAccountOut] = []
+    group_messages: list[OperationTargetGroupMessageOut] = []
+    channel_messages: list[ChannelMessageOut] = []
+    sync_error: str = ""
+    stats: dict[str, Any] = {}
+
+
+class OperationTargetMessageSyncOut(BaseModel):
+    inserted: int = 0
+    detail: OperationTargetDetailOut
 
 
 class OperationTaskCreate(BaseModel):
@@ -146,6 +196,11 @@ __all__ = [
     "OperationTargetOut",
     "ChannelMessageCreate",
     "ChannelMessageOut",
+    "OperationTargetAccountOut",
+    "OperationTargetGroupMessageOut",
+    "OperationTargetLinkedGroupOut",
+    "OperationTargetDetailOut",
+    "OperationTargetMessageSyncOut",
     "OperationTaskCreate",
     "OperationTaskOut",
     "OperationTaskAttemptOut",

@@ -5,10 +5,10 @@ import type { BadgeTone } from '../types';
 
 export function statusTone(status: string | null | undefined): BadgeTone {
   const value = status || '未配置';
-  if (['在线', '已发送', '已审核', '已授权运营', '已完成', '已同步', '健康', '账号可发言', '可查看', '可发言', '已处理', 'redeemed'].includes(value)) return 'positive';
-  if (['等待验证码', '等待扫码', '等待2FA', '待审核', '排队中', '发送中', '同步中', '只读归档', '冷却中', '等待处理', '待确认', '执行中', '待处理', '需人工处理', 'unused'].includes(value)) return 'warning';
-  if (['失败', '受限', '异常', '禁止操作', '已驳回', '已取消', '禁用', '账号不可发言', '不可发言', '内容违规', '账号不可用', '账号受限', '群无权限', '群慢速模式', 'FloodWait', '目标无效', '未知错误', '部分失败'].includes(value)) return 'danger';
-  if (['草稿', '未确认', '未配置', '无失败', '未同步', '不可见', '已过期', '已忽略', 'disabled'].includes(value)) return 'muted';
+  if (['在线', '已发送', '已审核', '已授权运营', '已完成', '已同步', '健康', '账号可发言', '可查看', '可发言', '已处理', 'redeemed', 'success', 'completed', 'approved'].includes(value)) return 'positive';
+  if (['等待验证码', '等待扫码', '等待2FA', '待审核', '排队中', '发送中', '同步中', '只读归档', '冷却中', '等待处理', '待确认', '执行中', '待处理', '需人工处理', 'unused', 'pending', 'running', 'executing'].includes(value)) return 'warning';
+  if (['失败', '受限', '异常', '禁止操作', '已驳回', '已取消', '禁用', '账号不可发言', '不可发言', '内容违规', '账号不可用', '账号受限', '群无权限', '群慢速模式', 'FloodWait', '目标无效', '未知错误', '部分失败', 'failed', 'rejected'].includes(value)) return 'danger';
+  if (['草稿', '未确认', '未配置', '无失败', '未同步', '不可见', '已过期', '已忽略', 'disabled', 'draft', 'paused', 'skipped', 'expired'].includes(value)) return 'muted';
   return 'neutral';
 }
 

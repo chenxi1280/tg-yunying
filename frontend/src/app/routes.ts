@@ -6,7 +6,7 @@ export const VIEW_ROUTES: Record<string, string> = {
   accounts: '/accounts',
   messageSending: '/message-sending',
   targetManagement: '/targets',
-  taskManagement: '/operation-tasks',
+  taskManagement: '/task-center',
   usageReports: '/usage-reports',
   audits: '/audit',
 };
@@ -22,6 +22,7 @@ Object.assign(ROUTE_VIEWS, {
   '/groups': 'groupManagement',
   '/group-management': 'targetManagement',
   '/campaigns': 'taskManagement',
+  '/operation-tasks': 'taskManagement',
   '/operation-targets': 'targetManagement',
   '/archives': 'groupManagement',
 });

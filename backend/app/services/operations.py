@@ -20,6 +20,7 @@ from app.models import (
     TaskStatus,
     TgAccount,
     TgGroup,
+    TgGroupAccount,
 )
 from app.schemas import (
     ChannelMessageCreate,
@@ -32,6 +33,7 @@ from app.schemas import (
 from ._common import _now, ai_gateway, audit, gateway
 from .ai_config import ai_provider_credentials, get_tenant_ai_setting
 from .developer_apps import credentials_for_account
+from .group_listeners import collect_group_context, recent_context_messages
 from .notifications import notify_ai_failure
 
 
@@ -348,6 +350,204 @@ def filter_channel_messages(session: Session, tenant_id: int = 1, channel_target
     if channel_target_id:
         stmt = stmt.where(ChannelMessage.channel_target_id == channel_target_id)
     return list(session.scalars(stmt.order_by(ChannelMessage.id.desc())))
+
+
+def _operation_target_for_tenant(session: Session, tenant_id: int, target_id: int) -> OperationTarget:
+    target = session.get(OperationTarget, target_id)
+    if not target or target.tenant_id != tenant_id:
+        raise ValueError("target not found")
+    return target
+
+
+def _linked_group_for_target(session: Session, target: OperationTarget) -> TgGroup | None:
+    return session.scalar(
+        select(TgGroup).where(
+            TgGroup.tenant_id == target.tenant_id,
+            TgGroup.tg_peer_id == target.tg_peer_id,
+        )
+    )
+
+
+def _group_accounts_for_detail(session: Session, group: TgGroup) -> list[dict]:
+    links = list(
+        session.scalars(
+            select(TgGroupAccount)
+            .where(TgGroupAccount.tenant_id == group.tenant_id, TgGroupAccount.group_id == group.id)
+            .order_by(TgGroupAccount.id.asc())
+        )
+    )
+    accounts: list[dict] = []
+    for link in links:
+        account = session.get(TgAccount, link.account_id)
+        if not account or account.deleted_at is not None:
+            continue
+        accounts.append(
+            {
+                "id": account.id,
+                "display_name": account.display_name,
+                "username": account.username,
+                "status": account.status,
+                "health_score": account.health_score,
+                "permission_label": link.permission_label,
+                "can_send": link.can_send,
+                "is_listener": link.is_listener,
+                "last_sent_at": link.last_sent_at,
+            }
+        )
+    return accounts
+
+
+def _group_messages_for_detail(session: Session, group: TgGroup) -> list[dict]:
+    return [
+        {
+            "id": item.id,
+            "listener_account_id": item.listener_account_id,
+            "sender_name": item.sender_name,
+            "content": item.content,
+            "message_type": item.message_type,
+            "sent_at": item.sent_at,
+            "used_for_ai": item.used_for_ai,
+        }
+        for item in recent_context_messages(session, group, group.listener_context_limit)
+    ]
+
+
+def operation_target_detail(session: Session, tenant_id: int, target_id: int, *, sync_error: str = "") -> dict:
+    target = _operation_target_for_tenant(session, tenant_id, target_id)
+    linked_group = _linked_group_for_target(session, target) if target.target_type == "group" else None
+    accounts = _group_accounts_for_detail(session, linked_group) if linked_group else []
+    group_messages = _group_messages_for_detail(session, linked_group) if linked_group else []
+    channel_messages = filter_channel_messages(session, tenant_id, target.id) if target.target_type == "channel" else []
+    return {
+        "target": target,
+        "linked_group": (
+            {
+                "id": linked_group.id,
+                "title": linked_group.title,
+                "group_type": linked_group.group_type,
+                "member_count": linked_group.member_count,
+                "auth_status": linked_group.auth_status,
+                "can_send": linked_group.can_send,
+                "listener_enabled": linked_group.listener_enabled,
+                "listener_context_limit": linked_group.listener_context_limit,
+                "listener_last_error": linked_group.listener_last_error,
+            }
+            if linked_group
+            else None
+        ),
+        "accounts": accounts,
+        "group_messages": group_messages,
+        "channel_messages": channel_messages,
+        "sync_error": sync_error,
+        "stats": {
+            "available_accounts": sum(1 for item in accounts if item["can_send"] and item["status"] == AccountStatus.ACTIVE.value),
+            "listener_accounts": sum(1 for item in accounts if item["is_listener"]),
+            "group_messages": len(group_messages),
+            "channel_messages": len(channel_messages),
+        },
+    }
+
+
+def _channel_message_url(channel: OperationTarget, message_id: int) -> str:
+    if channel.username:
+        return f"https://t.me/{channel.username}/{message_id}"
+    if channel.tg_peer_id.startswith("-100") and channel.tg_peer_id[4:].isdigit():
+        return f"https://t.me/c/{channel.tg_peer_id[4:]}/{message_id}"
+    return ""
+
+
+def _normalize_snapshot_datetime(value) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+    except ValueError:
+        return None
+
+
+def _channel_sync_account(session: Session, tenant_id: int) -> TgAccount | None:
+    return session.scalar(
+        select(TgAccount)
+        .where(
+            TgAccount.tenant_id == tenant_id,
+            TgAccount.deleted_at.is_(None),
+            TgAccount.status == AccountStatus.ACTIVE.value,
+        )
+        .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
+        .limit(1)
+    )
+
+
+def _sync_channel_target_messages(session: Session, target: OperationTarget, *, limit: int = 50) -> int:
+    account = _channel_sync_account(session, target.tenant_id)
+    if not account:
+        raise ValueError("没有可用于采集频道消息的在线账号")
+    snapshots = gateway.fetch_channel_messages(
+        account.id,
+        target.tg_peer_id,
+        account.session_ciphertext,
+        credentials_for_account(session, account),
+        limit=limit,
+    )
+    inserted = 0
+    for snapshot in snapshots:
+        message_id = int(snapshot.message_id or 0)
+        if message_id <= 0:
+            continue
+        existing = session.scalar(
+            select(ChannelMessage).where(
+                ChannelMessage.tenant_id == target.tenant_id,
+                ChannelMessage.channel_target_id == target.id,
+                ChannelMessage.message_id == message_id,
+            )
+        )
+        published_at = _normalize_snapshot_datetime(snapshot.published_at)
+        if existing:
+            existing.content_preview = snapshot.content_preview or existing.content_preview
+            existing.message_url = snapshot.message_url or existing.message_url or _channel_message_url(target, message_id)
+            existing.published_at = published_at or existing.published_at
+            continue
+        session.add(
+            ChannelMessage(
+                tenant_id=target.tenant_id,
+                channel_target_id=target.id,
+                message_id=message_id,
+                message_url=snapshot.message_url or _channel_message_url(target, message_id),
+                content_preview=snapshot.content_preview,
+                published_at=published_at,
+            )
+        )
+        inserted += 1
+    target.last_sync_at = _now()
+    target.updated_at = _now()
+    session.flush()
+    return inserted
+
+
+def sync_operation_target_messages(session: Session, tenant_id: int, target_id: int, actor: str) -> dict:
+    target = _operation_target_for_tenant(session, tenant_id, target_id)
+    inserted = 0
+    sync_error = ""
+    try:
+        if target.target_type == "channel":
+            inserted = _sync_channel_target_messages(session, target)
+        else:
+            group = _linked_group_for_target(session, target)
+            if not group:
+                raise ValueError("未找到关联群聊资产")
+            inserted = collect_group_context(session, group)
+            target.last_sync_at = _now()
+            target.updated_at = _now()
+            session.flush()
+        audit(session, tenant_id=target.tenant_id, actor=actor, action="同步目标消息", target_type="operation_target", target_id=str(target.id), detail=f"inserted={inserted}")
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 - sync should report and preserve cached detail.
+        session.rollback()
+        sync_error = str(exc)
+    return {"inserted": inserted, "detail": operation_target_detail(session, tenant_id, target_id, sync_error=sync_error)}
 
 
 def create_operation_task(session: Session, payload: OperationTaskCreate, actor: str) -> OperationTask:
@@ -784,7 +984,9 @@ __all__ = [
     "list_manual_operations",
     "list_operation_attempts",
     "manual_send",
+    "operation_target_detail",
     "retry_operation_task",
     "sync_account_targets",
+    "sync_operation_target_messages",
     "update_operation_target",
 ]

@@ -15,6 +15,8 @@ from app.schemas import (
     ChannelMessageOut,
     ManualOperationRecordOut,
     OperationTargetCreate,
+    OperationTargetDetailOut,
+    OperationTargetMessageSyncOut,
     OperationTargetOut,
     OperationTargetUpdate,
     OperationTaskAttemptOut,
@@ -32,7 +34,9 @@ from app.services import (
     filter_operation_tasks,
     list_manual_operations,
     list_operation_attempts,
+    operation_target_detail,
     retry_operation_task,
+    sync_operation_target_messages,
     update_operation_target,
 )
 
@@ -46,6 +50,30 @@ def get_operation_targets(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Sequence[OperationTarget]:
     return filter_operation_targets(session, current_user.tenant_id or 1, target_type)
+
+
+@router.get("/api/operation-targets/{target_id}/detail", response_model=OperationTargetDetailOut)
+def get_operation_target_detail(
+    target_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return operation_target_detail(session, current_user.tenant_id or 1, target_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/operation-targets/{target_id}/sync-messages", response_model=OperationTargetMessageSyncOut)
+def post_operation_target_sync_messages(
+    target_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return sync_operation_target_messages(session, current_user.tenant_id or 1, target_id, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
 
 
 @router.post("/api/operation-targets", response_model=OperationTargetOut)
@@ -167,4 +195,3 @@ def get_manual_operation_records(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Sequence[ManualOperationRecord]:
     return list_manual_operations(session, current_user.tenant_id or 1, account_id)
-

@@ -1,17 +1,39 @@
 import React from 'react';
-import { Alert, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Table, Typography } from 'antd';
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, InputNumber, List, Modal, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { MessageSquareText, RefreshCcw } from 'lucide-react';
 import { api, ApiError } from '../../shared/api/client';
-import type { OperationTarget } from '../types';
+import type { ChannelMessage, OperationTarget, OperationTargetDetail, OperationTargetMessageSync, TaskCenterTaskType } from '../types';
 import { StatusBadge, useAntdTableControls } from '../components/shared';
 
-export default function OperationTargetsView() {
+type Props = {
+  onSendToTarget: (target: OperationTarget) => void;
+  onCreateTaskFromTarget: (taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'channel_view' | 'channel_like' | 'channel_comment'>, target: OperationTarget, message?: ChannelMessage) => void;
+};
+
+function formatDateTime(value?: string | null) {
+  return value ? new Date(value).toLocaleString() : '-';
+}
+
+function taskLabel(taskType: TaskCenterTaskType) {
+  if (taskType === 'channel_view') return '浏览';
+  if (taskType === 'channel_like') return '点赞';
+  if (taskType === 'channel_comment') return '评论';
+  return 'AI 活跃';
+}
+
+export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromTarget }: Props) {
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
+  const [detailLoading, setDetailLoading] = React.useState(false);
+  const [syncing, setSyncing] = React.useState(false);
   const [formError, setFormError] = React.useState('');
   const [editingTarget, setEditingTarget] = React.useState<OperationTarget | null>(null);
+  const [detailTarget, setDetailTarget] = React.useState<OperationTarget | null>(null);
+  const [targetDetail, setTargetDetail] = React.useState<OperationTargetDetail | null>(null);
   const [targetModalOpen, setTargetModalOpen] = React.useState(false);
+  const [detailOpen, setDetailOpen] = React.useState(false);
   const [form] = Form.useForm();
 
   function errorMessage(error: unknown) {
@@ -33,6 +55,32 @@ export default function OperationTargetsView() {
       setTargets(await api<OperationTarget[]>('/operation-targets'));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadTargetDetail(target: OperationTarget) {
+    setDetailLoading(true);
+    setFormError('');
+    try {
+      const detail = await api<OperationTargetDetail>(`/operation-targets/${target.id}/detail`);
+      setTargetDetail(detail);
+    } catch (error) {
+      setFormError(errorMessage(error));
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  async function syncTargetMessages(target: OperationTarget) {
+    setSyncing(true);
+    try {
+      const result = await api<OperationTargetMessageSync>(`/operation-targets/${target.id}/sync-messages`, { method: 'POST' });
+      setTargetDetail(result.detail);
+      await load();
+    } catch (error) {
+      setFormError(errorMessage(error));
+    } finally {
+      setSyncing(false);
     }
   }
 
@@ -85,6 +133,14 @@ export default function OperationTargetsView() {
     });
   }
 
+  function openDetail(target: OperationTarget) {
+    setDetailTarget(target);
+    setTargetDetail(null);
+    setDetailOpen(true);
+    setFormError('');
+    void loadTargetDetail(target).then(() => syncTargetMessages(target));
+  }
+
   function openCreate() {
     setEditingTarget(null);
     setFormError('');
@@ -97,6 +153,12 @@ export default function OperationTargetsView() {
     setTargetModalOpen(false);
     setFormError('');
     form.resetFields();
+  }
+
+  function closeDetail() {
+    setDetailOpen(false);
+    setDetailTarget(null);
+    setTargetDetail(null);
   }
 
   const table = useAntdTableControls<OperationTarget>({
@@ -120,7 +182,18 @@ export default function OperationTargetsView() {
     { title: '使用范围', key: 'auth_status', width: 140, render: (_, target) => <StatusBadge status={target.auth_status} /> },
     { title: '发送能力', key: 'can_send', width: 140, render: (_, target) => <StatusBadge status={target.can_send ? '可发送' : '只读'} /> },
     { title: '最近同步', key: 'last_sync_at', width: 200, render: (_, target) => target.last_sync_at ? new Date(target.last_sync_at).toLocaleString() : '手动创建' },
-    { title: '操作', key: 'actions', width: 100, fixed: 'right', render: (_, target) => <Button size="small" onClick={() => startEdit(target)}>编辑</Button> },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 170,
+      fixed: 'right',
+      render: (_, target) => (
+        <Space wrap>
+          <Button size="small" onClick={() => openDetail(target)}>查看详情</Button>
+          <Button size="small" onClick={() => startEdit(target)}>编辑</Button>
+        </Space>
+      ),
+    },
   ];
 
   return (
@@ -181,6 +254,97 @@ export default function OperationTargetsView() {
           </Space>
         </Form>
       </Modal>
+
+      <Drawer
+        title={detailTarget?.title ?? '目标详情'}
+        open={detailOpen}
+        width={980}
+        extra={detailTarget && <Button icon={<RefreshCcw size={16} />} loading={syncing || detailLoading} onClick={() => syncTargetMessages(detailTarget)}>同步最新消息</Button>}
+        onClose={closeDetail}
+      >
+        {formError && <Alert className="form-alert" type="error" showIcon message={formError} />}
+        {targetDetail ? (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            {targetDetail.sync_error && <Alert type="warning" showIcon message="同步未完成" description={targetDetail.sync_error} />}
+            <Descriptions
+              bordered
+              size="small"
+              column={3}
+              items={[
+                { key: 'type', label: '类型', children: targetDetail.target.target_type === 'channel' ? '频道' : '群聊' },
+                { key: 'auth', label: '使用范围', children: <StatusBadge status={targetDetail.target.auth_status} /> },
+                { key: 'send', label: '发送能力', children: <StatusBadge status={targetDetail.target.can_send ? '可发送' : '只读'} /> },
+                { key: 'peer', label: 'Peer', span: 2, children: targetDetail.target.tg_peer_id },
+                { key: 'username', label: 'Username', children: targetDetail.target.username ? `@${targetDetail.target.username}` : '-' },
+                { key: 'members', label: '人数', children: targetDetail.target.member_count },
+                { key: 'sync', label: '最近同步', span: 2, children: formatDateTime(targetDetail.target.last_sync_at) },
+              ]}
+            />
+            <Space wrap>
+              <Button type="primary" icon={<MessageSquareText size={16} />} onClick={() => onSendToTarget(targetDetail.target)}>去发送消息</Button>
+              {targetDetail.target.target_type === 'group' && <Button onClick={() => onCreateTaskFromTarget('group_ai_chat', targetDetail.target)}>创建 AI 活跃群任务</Button>}
+            </Space>
+            {targetDetail.target.target_type === 'group' ? (
+              <Card className="sub-panel compact-panel" title="最近聊天记录">
+                <List
+                  dataSource={targetDetail.group_messages}
+                  loading={detailLoading || syncing}
+                  locale={{ emptyText: <Empty description="暂无群聊上下文，确认已配置监听账号后可同步最新消息" /> }}
+                  renderItem={(message) => (
+                    <List.Item>
+                      <List.Item.Meta
+                        title={<Space><Typography.Text strong>{message.sender_name}</Typography.Text><Typography.Text type="secondary">{formatDateTime(message.sent_at)}</Typography.Text>{message.used_for_ai && <Tag>已用于 AI</Tag>}</Space>}
+                        description={message.content}
+                      />
+                    </List.Item>
+                  )}
+                />
+              </Card>
+            ) : (
+              <Card className="sub-panel compact-panel" title="频道消息">
+                <List
+                  dataSource={targetDetail.channel_messages}
+                  loading={detailLoading || syncing}
+                  locale={{ emptyText: <Empty description="暂无频道消息，同步后可从消息行创建浏览、点赞、评论任务" /> }}
+                  renderItem={(message) => (
+                    <List.Item
+                      actions={[
+                        <Button size="small" onClick={() => onSendToTarget(targetDetail.target)}>发消息</Button>,
+                        <Button size="small" onClick={() => onCreateTaskFromTarget('channel_view', targetDetail.target, message)}>做{taskLabel('channel_view')}任务</Button>,
+                        <Button size="small" onClick={() => onCreateTaskFromTarget('channel_like', targetDetail.target, message)}>做{taskLabel('channel_like')}任务</Button>,
+                        <Button size="small" onClick={() => onCreateTaskFromTarget('channel_comment', targetDetail.target, message)}>做{taskLabel('channel_comment')}任务</Button>,
+                      ]}
+                    >
+                      <List.Item.Meta
+                        title={<Space><Typography.Text strong>#{message.message_id}</Typography.Text><Typography.Text type="secondary">{formatDateTime(message.published_at)}</Typography.Text></Space>}
+                        description={message.content_preview || message.message_url || '无内容预览'}
+                      />
+                    </List.Item>
+                  )}
+                />
+              </Card>
+            )}
+            {targetDetail.target.target_type === 'group' && (
+              <Card className="sub-panel compact-panel" title="账号覆盖">
+                <List
+                  dataSource={targetDetail.accounts}
+                  locale={{ emptyText: <Empty description="暂无账号覆盖" /> }}
+                  renderItem={(account) => (
+                    <List.Item>
+                      <List.Item.Meta
+                        title={<Space><Typography.Text strong>{account.display_name}</Typography.Text><StatusBadge status={account.status} />{account.is_listener && <Tag>监听号</Tag>}</Space>}
+                        description={`@${account.username ?? '未设置'} / ${account.permission_label || '-'} / ${account.can_send ? '可发言' : '不可发言'} / 最近发送 ${formatDateTime(account.last_sent_at)}`}
+                      />
+                    </List.Item>
+                  )}
+                />
+              </Card>
+            )}
+          </Space>
+        ) : (
+          <Card loading={detailLoading}>正在读取目标详情</Card>
+        )}
+      </Drawer>
     </>
   );
 }

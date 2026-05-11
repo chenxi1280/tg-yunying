@@ -46,6 +46,45 @@ class TaskStatus(StrEnum):
     COMPLETED = "已完成"
 
 
+class TaskCenterTaskType(StrEnum):
+    GROUP_AI_CHAT = "group_ai_chat"
+    GROUP_RELAY = "group_relay"
+    CHANNEL_VIEW = "channel_view"
+    CHANNEL_LIKE = "channel_like"
+    CHANNEL_COMMENT = "channel_comment"
+
+
+class TaskCenterStatus(StrEnum):
+    DRAFT = "draft"
+    PENDING = "pending"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class TaskCenterActionType(StrEnum):
+    SEND_MESSAGE = "send_message"
+    VIEW_MESSAGE = "view_message"
+    LIKE_MESSAGE = "like_message"
+    POST_COMMENT = "post_comment"
+
+
+class TaskCenterActionStatus(StrEnum):
+    PENDING = "pending"
+    EXECUTING = "executing"
+    SUCCESS = "success"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class TaskCenterReviewStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
 class FailureType(StrEnum):
     ACCOUNT_UNAVAILABLE = "账号不可用"
     ACCOUNT_LIMITED = "账号受限"
@@ -80,4 +119,9 @@ __all__ = [
     "FailureType",
     "GroupAuthStatus",
     "TaskStatus",
+    "TaskCenterActionStatus",
+    "TaskCenterActionType",
+    "TaskCenterReviewStatus",
+    "TaskCenterStatus",
+    "TaskCenterTaskType",
 ]

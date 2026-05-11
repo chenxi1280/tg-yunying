@@ -15,16 +15,16 @@ import { Alert, App as AntdApp, Button, Card, Form, Input, Layout, Menu, Space, 
 import { AppProvider, useAppContext } from './context';
 import OverviewView from './views/OverviewView';
 import AccountsView from './views/AccountsView';
-import CampaignsView from './views/CampaignsView';
 import SystemConfigView from './views/SystemConfigView';
 import UsageReportsView from './views/UsageReportsView';
 import GroupManagementView from './views/GroupManagementView';
 import AuditsView from './views/AuditsView';
 import OperationTargetsView from './views/OperationTargetsView';
-import OperationTasksView from './views/OperationTasksView';
+import TaskCenterView from './views/TaskCenterView';
 import MessageSendingView from './views/MessageSendingView';
 import { AppModals } from './AppModals';
 import { VIEW_ROUTES } from './routes';
+import type { ChannelMessage, MessageSendingPrefill, OperationTarget, TaskCenterPrefill, TaskCenterTaskType } from './types';
 
 const { Header, Sider, Content } = Layout;
 
@@ -37,6 +37,8 @@ function noticeMessageType(notice: string): 'success' | 'error' | 'warning' | 'i
 
 function AppShell() {
   const { message } = AntdApp.useApp();
+  const [messagePrefill, setMessagePrefill] = React.useState<MessageSendingPrefill | null>(null);
+  const [taskCenterPrefill, setTaskCenterPrefill] = React.useState<TaskCenterPrefill | null>(null);
   const ctx = useAppContext();
   const {
     token, currentUser, authMode, setAuthMode,
@@ -143,6 +145,20 @@ function AppShell() {
 
   const loginReady = Boolean(loginEmail.trim() && loginPassword && captchaToken && !isActionPending('auth:login'));
   const registerReady = Boolean(registerForm.name.trim() && registerForm.email.trim() && registerForm.password && captchaToken && !isActionPending('auth:register'));
+
+  function openSendFromTarget(target: OperationTarget) {
+    setMessagePrefill({ target, nonce: Date.now() });
+    goToView('messageSending');
+  }
+
+  function openTaskFromTarget(
+    taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'channel_view' | 'channel_like' | 'channel_comment'>,
+    target: OperationTarget,
+    channelMessage?: ChannelMessage,
+  ) {
+    setTaskCenterPrefill({ taskType, target, message: channelMessage, nonce: Date.now() });
+    goToView('taskManagement');
+  }
 
   const captchaControl = (
     <Card className={`captcha-box ${captchaToken ? 'verified' : ''}`} size="small">
@@ -303,12 +319,13 @@ function AppShell() {
         {activeView === 'accounts' && (
           <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => goToView('systemConfig')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onExtractCodes={openAccountVerificationCodes} onMovePool={openAccountMovePool} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onDeleteAccount={(account) => openConfirm({ title: '移除账号', message: `确认移除 ${account.display_name}？历史任务、群归档和审计记录会保留，手机号可以重新新增。`, confirmLabel: '移除账号', tone: 'danger', onConfirm: () => deleteAccount(account) })} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} isActionPending={isActionPending} />
         )}
-        {activeView === 'targetManagement' && <OperationTargetsView />}
+        {activeView === 'targetManagement' && <OperationTargetsView onSendToTarget={openSendFromTarget} onCreateTaskFromTarget={openTaskFromTarget} />}
         {activeView === 'messageSending' && (
           <MessageSendingView
             accounts={accounts}
             materials={materials}
             tasks={tasks}
+            prefill={messagePrefill}
             createMessageSendTask={createMessageSendTask}
             onCancelTask={cancelTask}
             onDispatchTask={dispatchTask}
@@ -318,9 +335,9 @@ function AppShell() {
           />
         )}
         {activeView === 'groupManagement' && (
-          <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateCampaign={openCampaignModal} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
+          <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateCampaign={() => goToView('taskManagement')} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
         )}
-        {activeView === 'taskManagement' && <OperationTasksView accounts={accounts} />}
+        {activeView === 'taskManagement' && <TaskCenterView accounts={accounts} accountPools={accountPools} prefill={taskCenterPrefill} />}
         {activeView === 'audits' && <AuditsView audits={audits} />}
 
         {/* ===== Modals ===== */}

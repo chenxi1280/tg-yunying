@@ -431,7 +431,6 @@ export function AppProvider({ children }: AppProviderProps) {
         api<AccountPool[]>('/account-pools'),
         api<Account[]>(accountQuery),
         api<Group[]>('/groups'),
-        api<Campaign[]>('/campaigns'),
         api<Draft[]>('/ai-drafts'),
         api<MessageTask[]>(`/message-tasks${taskStatusFilter ? `?status=${encodeURIComponent(taskStatusFilter)}` : ''}`),
         api<ArchiveItem[]>('/archives'),
@@ -448,17 +447,17 @@ export function AppProvider({ children }: AppProviderProps) {
       const poolData = settledValue(results[2], [] as AccountPool[]);
       const accountData = settledValue(results[3], [] as Account[]);
       const groupData = settledValue(results[4], [] as Group[]);
-      const campaignData = settledValue(results[5], [] as Campaign[]);
-      const draftData = settledValue(results[6], [] as Draft[]);
-      const taskData = settledValue(results[7], [] as MessageTask[]);
-      const archiveData = settledValue(results[8], [] as ArchiveItem[]);
-      const auditData = settledValue(results[9], [] as AuditLog[]);
-      const aiProviderData = settledValue(results[10], [] as AiProvider[]);
-      const promptTemplateData = settledValue(results[11], [] as PromptTemplate[]);
-      const tenantAiData = settledValue(results[12], {} as TenantAiSetting);
-      const schedulingData = settledValue(results[13], {} as SchedulingSetting);
-      const materialData = settledValue(results[14], [] as Material[]);
-      const keywordRuleData = settledValue(results[15], [] as ContentKeywordRule[]);
+      const campaignData: Campaign[] = [];
+      const draftData = settledValue(results[5], [] as Draft[]);
+      const taskData = settledValue(results[6], [] as MessageTask[]);
+      const archiveData = settledValue(results[7], [] as ArchiveItem[]);
+      const auditData = settledValue(results[8], [] as AuditLog[]);
+      const aiProviderData = settledValue(results[9], [] as AiProvider[]);
+      const promptTemplateData = settledValue(results[10], [] as PromptTemplate[]);
+      const tenantAiData = settledValue(results[11], {} as TenantAiSetting);
+      const schedulingData = settledValue(results[12], {} as SchedulingSetting);
+      const materialData = settledValue(results[13], [] as Material[]);
+      const keywordRuleData = settledValue(results[14], [] as ContentKeywordRule[]);
       const developerAppData = me.role === '系统管理员' ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
       const tenantData = me.role === '系统管理员' ? await api<Tenant[]>('/tenants').catch(() => [] as Tenant[]) : [];
       const subscriptionPlanData: SubscriptionPlan[] = [];
@@ -582,7 +581,7 @@ export function AppProvider({ children }: AppProviderProps) {
     setRecommendedAccounts([]);
     setSelectedAccountsByGroup({});
     setCampaignStep(1);
-    setModal({ type: 'campaignCreate' });
+    setModal(null);
   }
 
   function openAccountCreate(loginNow = false) {
@@ -909,11 +908,10 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   async function loadCampaignDetail(campaign: Campaign) {
-    setBusy('读取任务详情');
-    const detail = await api<CampaignDetail>(`/campaigns/${campaign.id}/detail`);
-    setCampaignDetail(detail);
     setSelectedCampaignId(campaign.id);
-    setBusy('');
+    setCampaignDetail(null);
+    goToView('taskManagement');
+    setTaskManagementTab('任务列表');
   }
 
   function openDraftEdit(draft: Draft) {
@@ -994,7 +992,7 @@ export function AppProvider({ children }: AppProviderProps) {
       setSelectedAccountsByGroup({});
       return;
     }
-    const recommendations = await api<RecommendedAccount[]>('/campaigns/recommend-accounts', {
+    const recommendations = await api<RecommendedAccount[]>('/tasks/recommend-accounts', {
       method: 'POST',
       body: JSON.stringify({ tenant_id: currentUser?.tenant_id ?? 1, target_group_ids: groupIds }),
     });
@@ -1383,47 +1381,10 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   async function createCampaignAndDrafts() {
-    const targetIds = selectedTargetGroupIds.length ? selectedTargetGroupIds : selectedGroup ? [selectedGroup.id] : [];
-    const primaryGroup = groups.find((group) => group.id === targetIds[0]) ?? selectedGroup;
-    if (!primaryGroup || !targetIds.length) return;
-    setBusy('创建任务');
-    const modeLabel = campaignMode === 'mirror_forward' ? '监听转发' : 'AI 活跃';
-    const endsAt = campaignEndsAt ? new Date(campaignEndsAt).toISOString() : null;
-    const campaign = await api<Campaign>('/campaigns', {
-      method: 'POST',
-      body: JSON.stringify({
-        tenant_id: currentUser?.tenant_id ?? 1,
-        group_id: primaryGroup.id,
-        title: `${primaryGroup.title}${targetIds.length > 1 ? `等 ${targetIds.length} 个群` : ''} ${modeLabel}`,
-        campaign_type: modeLabel,
-        execution_mode: campaignMode,
-        topic,
-        send_window: sendWindow,
-        intensity,
-        ai_provider_id: selectedAiProviderId || null,
-        jitter_min_seconds: jitterMinSeconds,
-        jitter_max_seconds: jitterMaxSeconds,
-        batch_interval_seconds: batchIntervalSeconds,
-        respect_send_window: respectSendWindow,
-        material_ids: selectedMaterialIds.join(','),
-        target_group_ids: targetIds,
-        source_group_ids: campaignMode === 'mirror_forward' ? selectedSourceGroupIds : [],
-        selected_account_ids_by_group: selectedAccountsByGroup,
-        run_interval_seconds: runIntervalSeconds,
-        ends_at: endsAt,
-        max_ai_tokens: campaignMode === 'ai_activity' ? maxAiTokens : null,
-        participation_min_ratio: participationMinRatio,
-        participation_max_ratio: participationMaxRatio,
-        max_messages_per_account: maxMessagesPerAccount,
-        max_drafts_per_batch: maxDraftsPerBatch,
-      }),
-    });
     closeModal();
-    showResult('任务已创建', '持续任务已进入执行中，worker 会按间隔生成或转发并自动入队。');
+    showResult('请使用新任务中心', '旧任务创建入口已下线，请在任务中心按 5 类型分步创建任务。');
     goToView('taskManagement');
     setTaskManagementTab('任务列表');
-    await refresh();
-    setSelectedCampaignId(campaign.id);
   }
 
   async function approveDraft(draft: Draft) {
@@ -1439,14 +1400,10 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   async function cancelCampaign(campaign: Campaign) {
-    setBusy('取消任务');
-    await api(`/campaigns/${campaign.id}/cancel`, {
-      method: 'POST',
-      body: JSON.stringify({ actor: '普通用户' }),
-    });
-    showResult('任务已取消', `${campaign.title} 已停止后续运行。`);
-    await refresh();
-    setBusy('');
+    setSelectedCampaignId(campaign.id);
+    showResult('旧任务入口已下线', '请在新任务中心管理当前 5 类型任务。');
+    goToView('taskManagement');
+    setTaskManagementTab('任务列表');
   }
 
   async function rejectDraft(draft: Draft) {
@@ -1462,17 +1419,9 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   async function approveAllDrafts() {
-    const campaign = selectedCampaign;
-    if (!campaign) return;
-    setBusy('批量审核');
-    const created = await api<MessageTask[]>(`/campaigns/${campaign.id}/approve-all`, {
-      method: 'POST',
-      body: JSON.stringify({ actor: '普通用户' }),
-    });
-    showResult('批量审核完成', `已审核 ${created.length} 条草稿并生成消息任务。`);
+    showResult('旧批量审核入口已下线', '新任务中心的审核请在审核队列中处理。');
     goToView('taskManagement');
-    setTaskManagementTab('发送进度');
-    await refresh();
+    setTaskManagementTab('任务列表');
   }
 
   async function cancelTask(task: MessageTask) {

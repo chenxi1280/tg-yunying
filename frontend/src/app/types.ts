@@ -387,6 +387,7 @@ export type Contact = {
 
 export type Group = {
   id: number;
+  tg_peer_id: string;
   title: string;
   group_type: string;
   member_count: number;
@@ -673,6 +674,61 @@ export type ChannelMessage = {
   created_at: string;
 };
 
+export type OperationTargetDetail = {
+  target: OperationTarget;
+  linked_group: {
+    id: number;
+    title: string;
+    group_type: string;
+    member_count: number;
+    auth_status: string;
+    can_send: boolean;
+    listener_enabled: boolean;
+    listener_context_limit: number;
+    listener_last_error: string;
+  } | null;
+  accounts: Array<{
+    id: number;
+    display_name: string;
+    username: string | null;
+    status: string;
+    health_score: number;
+    permission_label: string;
+    can_send: boolean;
+    is_listener: boolean;
+    last_sent_at: string | null;
+  }>;
+  group_messages: Array<{
+    id: number;
+    listener_account_id: number;
+    sender_name: string;
+    content: string;
+    message_type: string;
+    sent_at: string | null;
+    used_for_ai: boolean;
+  }>;
+  channel_messages: ChannelMessage[];
+  sync_error: string;
+  stats: Record<string, number>;
+};
+
+export type OperationTargetMessageSync = {
+  inserted: number;
+  detail: OperationTargetDetail;
+};
+
+export type MessageSendingPrefill = {
+  target: OperationTarget;
+  nonce: number;
+};
+
+export type TaskCenterPrefill = {
+  taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'channel_view' | 'channel_like' | 'channel_comment'>;
+  target: OperationTarget;
+  message?: ChannelMessage;
+  nonce: number;
+};
+
 export type OperationTask = {
   id: number;
   tenant_id: number;
@@ -713,6 +769,89 @@ export type OperationTaskAttempt = {
   planned_delay_seconds: number;
   scheduled_at: string;
   executed_at: string | null;
+};
+
+export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment';
+
+export type TaskCenterTask = {
+  id: string;
+  tenant_id: number;
+  name: string;
+  type: TaskCenterTaskType;
+  status: string;
+  priority: number;
+  timezone: string;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  max_duration_hours: number | null;
+  next_run_at: string | null;
+  last_error: string;
+  account_config: Record<string, any>;
+  pacing_config: Record<string, any>;
+  failure_policy: Record<string, any>;
+  type_config: Record<string, any>;
+  stats: Record<string, any>;
+  target_summary?: string;
+  search_text?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskCenterAction = {
+  id: string;
+  tenant_id: number;
+  task_id: string;
+  task_type: string;
+  action_type: string;
+  account_id: number | null;
+  scheduled_at: string;
+  executed_at: string | null;
+  status: string;
+  payload: Record<string, any>;
+  result: Record<string, any>;
+  retry_count: number;
+  created_at: string;
+};
+
+export type ReviewQueueItem = {
+  id: string;
+  tenant_id: number;
+  task_id: string;
+  action_id: string;
+  content_preview: string;
+  source_info: string;
+  status: string;
+  reviewed_by: string;
+  reviewed_at: string | null;
+  reject_reason: string;
+  expires_at: string | null;
+  created_at: string;
+};
+
+export type TaskCenterDetail = {
+  task: TaskCenterTask;
+  actions: TaskCenterAction[];
+  reviews: ReviewQueueItem[];
+  stats: Record<string, any>;
+  accounts: Array<{ id: number; display_name: string; username: string | null; status: string }>;
+  message_groups: Array<{
+    channel_target_id: number | null;
+    channel_title: string;
+    channel_username: string;
+    message_id: number | null;
+    message_url: string;
+    content_preview: string;
+    stats: Record<string, any>;
+    actions: TaskCenterAction[];
+  }>;
+};
+
+export type ChannelCapacityCheck = {
+  effective_account_count: number;
+  target_per_message: number;
+  max_effective_per_message: number;
+  will_shortfall: boolean;
+  warning_message: string;
 };
 
 export type AccountRiskDiagnostic = {
@@ -872,7 +1011,6 @@ export type ModalState =
   | { type: 'schedulingEdit' }
   | { type: 'changePassword' }
   | { type: 'groupPolicyEdit' }
-  | { type: 'campaignCreate' }
   | { type: 'accountDetail' }
   | { type: 'groupDetail' }
   | { type: 'draftEdit' }

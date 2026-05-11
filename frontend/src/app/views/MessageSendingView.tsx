@@ -4,7 +4,7 @@ import { App as AntdApp, Button, Card, Col, DatePicker, Form, Input, Modal, Radi
 import type { ColumnsType } from 'antd/es/table';
 import { MessageSquareText, RefreshCcw, Send, ShieldAlert } from 'lucide-react';
 import { StatusBadge } from '../components/shared';
-import type { Account, AccountGroup, Contact, Material, MessageSendBatchCreate, MessageSendTarget, MessageTask, OperationTarget } from '../types';
+import type { Account, AccountGroup, Contact, Material, MessageSendBatchCreate, MessageSendTarget, MessageSendingPrefill, MessageTask, OperationTarget } from '../types';
 import { api, ApiError } from '../../shared/api/client';
 
 type TargetType = 'private' | 'group' | 'channel';
@@ -14,6 +14,7 @@ type Props = {
   accounts: Account[];
   materials: Material[];
   tasks: MessageTask[];
+  prefill?: MessageSendingPrefill | null;
   createMessageSendTask: (payload: MessageSendBatchCreate) => Promise<MessageTask[]>;
   onCancelTask: (task: MessageTask) => Promise<void>;
   onDispatchTask: (task: MessageTask) => Promise<void>;
@@ -68,6 +69,7 @@ export default function MessageSendingView({
   accounts,
   materials,
   tasks,
+  prefill,
   createMessageSendTask,
   onCancelTask,
   onDispatchTask,
@@ -106,6 +108,22 @@ export default function MessageSendingView({
   const [savingMaterial, setSavingMaterial] = React.useState(false);
 
   React.useEffect(() => setLocalMaterials(materials), [materials]);
+
+  React.useEffect(() => {
+    if (!prefill?.target) return;
+    const target = prefill.target;
+    const key = `operation-target:${target.id}`;
+    const option: TargetOption = {
+      value: key,
+      searchText: `${targetTypeLabels[target.target_type]} ${target.title} ${target.username || ''} ${target.tg_peer_id}`,
+      label: <Space size={6}><Tag color={target.target_type === 'channel' ? 'purple' : 'green'}>{targetTypeLabels[target.target_type]}</Tag><span>{target.title}</span><Typography.Text type="secondary">{target.username || target.tg_peer_id}</Typography.Text></Space>,
+      target: { target_type: target.target_type, operation_target_id: target.id, target_display: target.title },
+    };
+    setManualTargets((current) => [option, ...current.filter((item) => item.value !== key)]);
+    setTargetKeys([key]);
+    setTaskOpen(true);
+    setError('');
+  }, [prefill?.nonce, prefill?.target]);
 
   React.useEffect(() => {
     if (!accountId) {
@@ -415,8 +433,7 @@ export default function MessageSendingView({
                   value={accountId}
                   onChange={(value) => {
                     setAccountId(value);
-                    setTargetKeys([]);
-                    setManualTargets([]);
+                    setTargetKeys((current) => current.filter((key) => key.startsWith('operation-target:') || key.startsWith('manual:')));
                   }}
                   filterOption={optionFilter}
                   options={onlineAccounts.map((account) => ({

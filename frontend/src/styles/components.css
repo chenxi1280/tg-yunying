@@ -194,3 +194,25 @@
   display: grid;
   gap: 12px;
 }
+
+.rhythm-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.rhythm-editor svg {
+  width: 100%;
+  max-width: 520px;
+  height: 150px;
+  cursor: crosshair;
+}
+
+.task-action-bar.ant-space {
+  display: flex;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.task-action-bar .ant-btn {
+  min-width: 48px;
+}

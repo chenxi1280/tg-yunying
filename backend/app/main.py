@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 import logging
+import threading
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,12 +13,14 @@ from .api.routers import router as api_router
 from .config import get_settings
 from .database import SessionLocal, prepare_database
 from .services import ensure_seed_data
+from .worker import run_worker
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
     status = prepare_database()
     logger.info(
         "Database ready: tables=%s was_empty=%s alembic=%s previous_alembic=%s",
@@ -28,7 +31,36 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     )
     with SessionLocal() as session:
         ensure_seed_data(session)
-    yield
+    worker_stop_event: threading.Event | None = None
+    worker_thread: threading.Thread | None = None
+    if settings.enable_embedded_worker:
+        worker_stop_event = threading.Event()
+        worker_thread = threading.Thread(
+            target=run_worker,
+            kwargs={
+                "limit": settings.embedded_worker_limit,
+                "interval_seconds": settings.embedded_worker_interval_seconds,
+                "stop_event": worker_stop_event,
+            },
+            name="tg-yunying-embedded-worker",
+            daemon=True,
+        )
+        worker_thread.start()
+        logger.info(
+            "Embedded worker started: interval=%ss limit=%s",
+            settings.embedded_worker_interval_seconds,
+            settings.embedded_worker_limit,
+        )
+    else:
+        logger.info("Embedded worker disabled; run `python -m app.worker` as a separate process if needed.")
+    try:
+        yield
+    finally:
+        if worker_stop_event:
+            worker_stop_event.set()
+        if worker_thread:
+            worker_thread.join(timeout=max(1.0, settings.embedded_worker_interval_seconds + 1.0))
+            logger.info("Embedded worker stopped")
 
 
 def create_app() -> FastAPI:

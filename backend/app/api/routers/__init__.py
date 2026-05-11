@@ -12,6 +12,7 @@ from .developer_apps import router as developer_apps_router
 from .groups import router as groups_router
 from .operations import router as operations_router
 from .system import router as system_router
+from .task_center import router as task_center_router
 
 
 router = APIRouter()
@@ -25,6 +26,7 @@ for sub_router in (
     operations_router,
     groups_router,
     campaigns_router,
+    task_center_router,
     archives_router,
     audit_router,
 ):

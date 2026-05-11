@@ -778,6 +778,68 @@ def approve_all_drafts(session: Session, campaign_id: int, actor: str) -> list[M
     return tasks
 
 
+def _campaign_group_payload(group: TgGroup) -> dict:
+    return {
+        "id": group.id,
+        "tenant_id": group.tenant_id,
+        "tg_peer_id": group.tg_peer_id,
+        "title": group.title,
+        "group_type": group.group_type,
+        "member_count": group.member_count,
+        "auth_status": group.auth_status,
+        "can_send": group.can_send,
+        "active_window": group.active_window,
+        "daily_limit": group.daily_limit,
+        "account_cooldown_seconds": group.account_cooldown_seconds,
+        "group_cooldown_seconds": group.group_cooldown_seconds,
+        "topic_direction": group.topic_direction,
+        "banned_words": group.banned_words,
+        "link_whitelist": group.link_whitelist,
+        "require_review": group.require_review,
+        "listener_enabled": group.listener_enabled,
+        "listener_auto_reply_enabled": group.listener_auto_reply_enabled,
+        "listener_interval_seconds": group.listener_interval_seconds,
+        "listener_context_limit": group.listener_context_limit,
+        "listener_last_polled_at": group.listener_last_polled_at,
+        "listener_last_reply_at": group.listener_last_reply_at,
+        "listener_last_error": group.listener_last_error,
+        "listener_account_ids": group.listener_account_ids,
+    }
+
+
+def _campaign_account_payload(account: TgAccount) -> dict:
+    return {
+        "id": account.id,
+        "tenant_id": account.tenant_id,
+        "pool_id": account.pool_id,
+        "pool_name": "默认账号池",
+        "display_name": account.display_name,
+        "username": account.username,
+        "tg_first_name": account.tg_first_name,
+        "tg_last_name": account.tg_last_name,
+        "tg_bio": account.tg_bio,
+        "avatar_object_key": account.avatar_object_key,
+        "avatar_preview_url": getattr(account, "avatar_preview_url", ""),
+        "profile_sync_status": account.profile_sync_status,
+        "profile_sync_error": account.profile_sync_error,
+        "profile_synced_at": account.profile_synced_at,
+        "phone_masked": account.phone_masked,
+        "phone_number": getattr(account, "phone_number", None),
+        "status": account.status,
+        "health_score": account.health_score,
+        "last_active_at": account.last_active_at,
+        "created_at": account.created_at,
+        "developer_app_id": account.developer_app_id,
+        "developer_app_name": None,
+        "developer_api_id": None,
+        "developer_app_health_status": None,
+        "developer_app_version": account.developer_app_version,
+        "deleted_at": account.deleted_at,
+        "deleted_by": account.deleted_by,
+        "delete_reason": account.delete_reason,
+    }
+
+
 def campaign_detail(session: Session, campaign_id: int) -> dict:
     campaign = session.get(Campaign, campaign_id)
     if not campaign:
@@ -789,7 +851,7 @@ def campaign_detail(session: Session, campaign_id: int) -> dict:
             .order_by(TgGroup.id.asc())
         )
     )
-    selected: dict[str, list[TgAccount]] = {}
+    selected: dict[str, list[dict]] = {}
     for group_id, account_ids in campaign_selected_accounts(campaign).items():
         if not account_ids:
             selected[group_id] = []
@@ -802,7 +864,7 @@ def campaign_detail(session: Session, campaign_id: int) -> dict:
             )
         )
         by_id = {account.id: account for account in rows}
-        selected[group_id] = [by_id[account_id] for account_id in account_ids if account_id in by_id]
+        selected[group_id] = [_campaign_account_payload(by_id[account_id]) for account_id in account_ids if account_id in by_id]
     drafts = list(
         session.scalars(
             select(AiDraft)
@@ -819,7 +881,7 @@ def campaign_detail(session: Session, campaign_id: int) -> dict:
     )
     return {
         "campaign": campaign,
-        "target_groups": target_groups,
+        "target_groups": [_campaign_group_payload(group) for group in target_groups],
         "selected_accounts_by_group": selected,
         "drafts": drafts,
         "message_tasks": tasks,
