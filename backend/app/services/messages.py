@@ -94,6 +94,14 @@ def _ensure_account_can_send_group(session: Session, account: TgAccount, group: 
         raise ValueError("该账号不可向此运营目标发送")
 
 
+def _ensure_account_can_send_operation_target(session: Session, account: TgAccount, target: OperationTarget) -> TgGroup:
+    linked_group = _linked_group_for_operation_target(session, target)
+    if not linked_group:
+        raise ValueError("该账号不可向此运营目标发送")
+    _ensure_account_can_send_group(session, account, linked_group)
+    return linked_group
+
+
 def _resolve_send_account(session: Session, account_id: int, tenant_id: int | None) -> TgAccount:
     account = session.get(TgAccount, account_id)
     if not account or account.deleted_at is not None:
@@ -126,10 +134,8 @@ def _resolve_message_target(session: Session, account: TgAccount, target: Messag
             target_display = group.title
         elif target.operation_target_id:
             operation_target = _resolve_operation_target(session, account.tenant_id, target.operation_target_id, "group")
-            linked_group = _linked_group_for_operation_target(session, operation_target)
-            if linked_group:
-                _ensure_account_can_send_group(session, account, linked_group)
-                group_id = linked_group.id
+            linked_group = _ensure_account_can_send_operation_target(session, account, operation_target)
+            group_id = linked_group.id
             target_peer_id = operation_target.tg_peer_id
             target_display = operation_target.title
         elif target_peer_id:
@@ -139,6 +145,7 @@ def _resolve_message_target(session: Session, account: TgAccount, target: Messag
     else:
         if target.operation_target_id:
             operation_target = _resolve_operation_target(session, account.tenant_id, target.operation_target_id, "channel")
+            _ensure_account_can_send_operation_target(session, account, operation_target)
             target_peer_id = operation_target.tg_peer_id
             target_display = operation_target.title
         elif target_peer_id:

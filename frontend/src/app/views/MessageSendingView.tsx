@@ -127,13 +127,21 @@ export default function MessageSendingView({
   React.useEffect(() => {
     if (!accountId) {
       setContacts([]);
+      setOperationTargets([]);
+      setLoadingTargets(false);
       return;
     }
     let active = true;
     setLoadingTargets(true);
-    api<Contact[]>(`/tg-accounts/${accountId}/contacts`).catch(() => []).then((nextContacts) => {
+    Promise.all([
+      api<Contact[]>(`/tg-accounts/${accountId}/contacts`).catch(() => []),
+      api<OperationTarget[]>(`/operation-targets?account_id=${accountId}`).catch(() => []),
+    ]).then(([nextContacts, nextTargets]) => {
       if (!active) return;
       setContacts(nextContacts);
+      setOperationTargets(nextTargets);
+      const allowedTargetKeys = new Set(nextTargets.map((target) => `operation-target:${target.id}`));
+      setTargetKeys((current) => current.filter((key) => key.startsWith('manual:') || key.startsWith('private:') || allowedTargetKeys.has(key)));
     }).finally(() => {
       if (active) setLoadingTargets(false);
     });
@@ -141,16 +149,20 @@ export default function MessageSendingView({
   }, [accountId]);
 
   React.useEffect(() => {
+    if (!accountId) return undefined;
     function loadOperationTargets() {
-      api<OperationTarget[]>('/operation-targets')
-        .then((items) => setOperationTargets(items))
+      api<OperationTarget[]>(`/operation-targets?account_id=${accountId}`)
+        .then((items) => {
+          setOperationTargets(items);
+          const allowedTargetKeys = new Set(items.map((target) => `operation-target:${target.id}`));
+          setTargetKeys((current) => current.filter((key) => key.startsWith('manual:') || key.startsWith('private:') || allowedTargetKeys.has(key)));
+        })
         .catch(() => setOperationTargets([]));
     }
 
-    loadOperationTargets();
     const timer = window.setInterval(loadOperationTargets, 60000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [accountId]);
 
   React.useEffect(() => {
     const timer = window.setInterval(() => void onRefresh(), 60000);
@@ -433,7 +445,8 @@ export default function MessageSendingView({
                   value={accountId}
                   onChange={(value) => {
                     setAccountId(value);
-                    setTargetKeys((current) => current.filter((key) => key.startsWith('operation-target:') || key.startsWith('manual:')));
+                    setTargetKeys((current) => current.filter((key) => key.startsWith('manual:')));
+                    setManualTargets((current) => current.filter((option) => option.value.startsWith('manual:')));
                   }}
                   filterOption={optionFilter}
                   options={onlineAccounts.map((account) => ({

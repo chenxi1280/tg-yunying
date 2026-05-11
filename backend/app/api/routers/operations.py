@@ -48,10 +48,14 @@ legacy_operation_task_router = APIRouter()
 @router.get("/api/operation-targets", response_model=list[OperationTargetOut])
 def get_operation_targets(
     target_type: str | None = None,
+    account_id: int | None = None,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Sequence[OperationTarget]:
-    return filter_operation_targets(session, current_user.tenant_id or 1, target_type)
+    try:
+        return filter_operation_targets(session, current_user.tenant_id or 1, target_type, account_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
 
 
 @router.get("/api/operation-targets/{target_id}/detail", response_model=OperationTargetDetailOut)

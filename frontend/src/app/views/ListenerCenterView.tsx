@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Card, Space, Table, Typography } from 'antd';
+import { Alert, Button, Card, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, RefreshCcw, Users } from 'lucide-react';
 import { api } from '../../shared/api/client';
@@ -17,6 +17,24 @@ type ListenerRow = {
   last_event_at: string | null;
   last_error: string;
   task_ids: string[];
+  listener_accounts: ListenerAccount[];
+  subscriber_tasks: ListenerTask[];
+};
+
+type ListenerAccount = {
+  id: number;
+  display_name: string;
+  username: string | null;
+  status: string;
+  roles: string[];
+  task_ids: string[];
+};
+
+type ListenerTask = {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
 };
 
 type ListenerSummary = {
@@ -56,7 +74,18 @@ export default function ListenerCenterView() {
   const table = useAntdTableControls<ListenerRow>({
     rows: summary.items,
     placeholder: '搜索监听对象 / peer / 状态 / 错误',
-    search: [(row) => [row.title, row.peer_id, objectTypeLabel(row.object_type), row.status, row.last_error, row.task_ids.join(' ')]],
+    search: [
+      (row) => [
+        row.title,
+        row.peer_id,
+        objectTypeLabel(row.object_type),
+        row.status,
+        row.last_error,
+        row.task_ids.join(' '),
+        row.listener_accounts.map((account) => `${account.display_name} ${account.username ?? ''} ${account.status}`).join(' '),
+        row.subscriber_tasks.map((task) => `${task.name} ${task.type} ${task.status}`).join(' '),
+      ],
+    ],
   });
 
   const columns: ColumnsType<ListenerRow> = [
@@ -73,7 +102,17 @@ export default function ListenerCenterView() {
     },
     { title: '状态', dataIndex: 'status', width: 130, render: (value) => <StatusBadge status={value} /> },
     { title: '关联任务', dataIndex: 'subscriber_task_count', width: 110 },
-    { title: '监听账号', dataIndex: 'listener_account_count', width: 110, render: (value) => value || '-' },
+    {
+      title: '监听账号',
+      dataIndex: 'listener_account_count',
+      width: 130,
+      render: (value, row) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{value || '-'}</Typography.Text>
+          {!!row.listener_accounts.length && <Typography.Text type="secondary">展开查看</Typography.Text>}
+        </Space>
+      ),
+    },
     { title: '事件积压', dataIndex: 'event_backlog_count', width: 110, render: (value) => value || '-' },
     { title: '最后事件', dataIndex: 'last_event_at', width: 190, render: (value) => value ? new Date(value).toLocaleString() : '-' },
     { title: '最近错误', dataIndex: 'last_error', render: (value) => value || '无' },
@@ -95,11 +134,53 @@ export default function ListenerCenterView() {
           columns={columns}
           dataSource={table.filteredRows}
           pagination={table.pagination}
-          scroll={{ x: 980 }}
+          scroll={{ x: 1080 }}
           loading={loading}
-          locale={{ emptyText: '暂无监听关联。启动频道互动、AI 活跃群或转发监听任务后会出现在这里。' }}
+          expandable={{ expandedRowRender: renderListenerDetail, rowExpandable: (row) => Boolean(row.listener_accounts.length || row.subscriber_tasks.length) }}
+          locale={{ emptyText: '暂无监听关联。启动运行中的频道互动、AI 活跃群或转发监听任务后会出现在这里。' }}
         />
       </Card>
     </section>
+  );
+}
+
+function renderListenerDetail(row: ListenerRow) {
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Typography.Text strong>监听账号</Typography.Text>
+        {row.listener_accounts.length ? (
+          <Space wrap>
+            {row.listener_accounts.map((account) => (
+              <Space key={account.id} className="inline-meta" wrap>
+                <Typography.Text strong>{account.display_name}</Typography.Text>
+                {account.username && <Typography.Text type="secondary">@{account.username}</Typography.Text>}
+                <StatusBadge status={account.status} />
+                {account.roles.map((role) => <Tag key={role}>{role}</Tag>)}
+                <Typography.Text type="secondary">任务 {account.task_ids.length}</Typography.Text>
+              </Space>
+            ))}
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">暂无账号明细</Typography.Text>
+        )}
+      </Space>
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Typography.Text strong>关联任务</Typography.Text>
+        {row.subscriber_tasks.length ? (
+          <Space wrap>
+            {row.subscriber_tasks.map((task) => (
+              <Space key={task.id} className="inline-meta" wrap>
+                <Typography.Text>{task.name}</Typography.Text>
+                <Tag>{task.type}</Tag>
+                <StatusBadge status={task.status} />
+              </Space>
+            ))}
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">暂无任务明细</Typography.Text>
+        )}
+      </Space>
+    </Space>
   );
 }

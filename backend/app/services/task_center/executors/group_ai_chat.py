@@ -44,25 +44,16 @@ def build_plan(session: Session, task: Task) -> int:
         for row in context_rows
         if not fingerprint_exists(session, task.tenant_id, fingerprint_source, _context_fingerprint(row))
     ]
-    if not context_rows:
-        task.last_error = "暂无群上下文，等待监听采集"
-        return 0
     mode, ramp_ratio = ai_cycle_mode(config, task.scheduled_start)
-    jitter = float(config.get("participation_jitter") or 0)
-    rate = float(config.get("participation_rate") or 0.6) * ramp_ratio
-    desired = max(1, round(len(accounts) * rate * random.uniform(max(0.1, 1 - jitter), 1 + jitter)))
-    if mode == "静默期":
-        desired = min(desired, int(config.get("silent_max_accounts") or 5))
-    selected = accounts[: min(desired, len(accounts))]
-    messages_per_round = int(config.get("messages_per_round") or 1)
-    if mode == "静默期":
-        messages_per_round = min(messages_per_round, int(config.get("silent_messages_per_round") or 1))
+    selected, turn_count = _select_cycle_accounts(accounts, config, mode, ramp_ratio, has_context=bool(context_rows))
     history_parts = [f"{row.sender_name}: {row.content}" for row in context_rows[-50:]]
+    if not context_rows:
+        history_parts.append(_bootstrap_history(config, group))
     previous_ai_messages = _recent_ai_messages(session, task, limit=10)
     if previous_ai_messages:
         history_parts.extend(f"上一轮AI发言: {content}" for content in previous_ai_messages)
     history = "\n".join(history_parts)
-    contents, tokens = generate_group_messages(session, task.tenant_id, config, count=len(selected) * messages_per_round, target_label=group.title, history=history)
+    contents, tokens = generate_group_messages(session, task.tenant_id, config, count=turn_count, target_label=group.title, history=history)
     add_tokens(task, tokens)
     times = schedule_times(len(contents), task.pacing_config or {})
     cycle_index = _next_cycle_index(session, task)
@@ -102,9 +93,37 @@ def build_plan(session: Session, task: Task) -> int:
     stats = dict(task.stats or {})
     stats["current_mode"] = mode
     stats["ramp_ratio"] = ramp_ratio
+    stats["context_mode"] = "history" if context_rows else "bootstrap"
+    task.last_error = ""
     task.stats = stats
     stats_inc(task, "total_rounds")
     return created
+
+
+def _select_cycle_accounts(accounts: list, config: dict, mode: str, ramp_ratio: float, *, has_context: bool) -> tuple[list, int]:
+    if str(config.get("messages_per_round_mode") or "auto") == "manual":
+        jitter = float(config.get("participation_jitter") or 0)
+        rate = float(config.get("participation_rate") or 0.6) * ramp_ratio
+        desired = max(1, round(len(accounts) * rate * random.uniform(max(0.1, 1 - jitter), 1 + jitter)))
+        if mode == "静默期":
+            desired = min(desired, int(config.get("silent_max_accounts") or 5))
+        selected = accounts[: min(desired, len(accounts))]
+        messages_per_round = int(config.get("messages_per_round") or 1)
+        if mode == "静默期":
+            messages_per_round = min(messages_per_round, int(config.get("silent_messages_per_round") or 1))
+        return selected, max(1, len(selected) * messages_per_round)
+    limit = 2 if mode == "静默期" else 5
+    if not has_context:
+        limit = min(limit, 3)
+    selected = accounts[: min(limit, len(accounts))]
+    return selected, max(1, len(selected))
+
+
+def _bootstrap_history(config: dict, group: TgGroup) -> str:
+    topic = str(config.get("topic_hint") or group.topic_direction or "").strip()
+    if not topic:
+        topic = "围绕群内日常交流自然开场，轻松抛出一个大家容易接上的话题"
+    return f"当前群暂无可用历史消息。请以“{topic}”为方向，生成自然开场，不要提到系统、任务或 AI。"
 
 
 def ai_cycle_mode(config: dict, scheduled_start: datetime | None = None, now: datetime | None = None) -> tuple[str, float]:

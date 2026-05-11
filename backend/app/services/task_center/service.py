@@ -90,6 +90,7 @@ TYPE_SETTINGS_FIELDS = {
         "participation_jitter",
         "allow_account_repeat",
         "repeat_cooldown_rounds",
+        "messages_per_round_mode",
         "messages_per_round",
         "history_fetch_account_id",
         "silent_mode_enabled",
@@ -539,6 +540,7 @@ def check_channel_capacity(session: Session, tenant_id: int, payload: ChannelCap
 def drain_task_center(session_factory, limit: int = 100) -> int:
     processed = 0
     with session_factory() as session:
+        processed += _recover_continuous_task_states(session)
         processed += expire_reviews(session)
         _activate_pending_tasks(session)
         task_ids = list(
@@ -577,6 +579,46 @@ def drain_task_center(session_factory, limit: int = 100) -> int:
                     refresh_task_stats(session, refresh)
                 session.commit()
     return processed
+
+
+def _recover_continuous_task_states(session: Session) -> int:
+    now = _now()
+    recovered = 0
+    stale_ai_errors = ("暂无群上下文", "等待监听采集")
+    for task in session.scalars(
+        select(Task).where(
+            Task.type == "group_ai_chat",
+            Task.status == "running",
+            Task.deleted_at.is_(None),
+        )
+    ):
+        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id)) or 0
+        if action_count:
+            continue
+        last_error = task.last_error or ""
+        if not any(text in last_error for text in stale_ai_errors):
+            continue
+        task.last_error = ""
+        task.next_run_at = now
+        task.updated_at = now
+        recovered += 1
+    for task in session.scalars(
+        select(Task).where(
+            Task.type == "channel_like",
+            Task.status == "completed",
+            Task.scheduled_end.is_(None),
+            Task.deleted_at.is_(None),
+        )
+    ):
+        config = task.type_config or {}
+        if (config.get("message_scope") or "dynamic_new") == "specific":
+            continue
+        task.status = "running"
+        task.next_run_at = now
+        task.last_error = ""
+        task.updated_at = now
+        recovered += 1
+    return recovered
 
 
 def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:

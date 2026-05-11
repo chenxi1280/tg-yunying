@@ -119,6 +119,7 @@ class GroupAIChatConfig(BaseModel):
     participation_jitter: float = Field(default=0.5, ge=0, le=1)
     allow_account_repeat: bool = True
     repeat_cooldown_rounds: int = Field(default=2, ge=0)
+    messages_per_round_mode: Literal["auto", "manual"] = "auto"
     messages_per_round: int = Field(default=1, ge=1, le=10)
     history_fetch_account_id: int | None = None
     silent_mode_enabled: bool = True
@@ -187,6 +188,7 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
 
 
 class ChannelLikeConfig(ChannelMessageScopeConfig):
+    message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "dynamic_new"
     target_likes_per_message: int = Field(default=50, ge=1, le=10000)
     like_count_jitter: float = Field(default=0.3, ge=0, le=1)
     reaction_type: Literal["random", "specific"] = "random"
@@ -294,6 +296,7 @@ class TaskSettingsUpdate(TaskUpdate):
     participation_jitter: float | None = Field(default=None, ge=0, le=1)
     allow_account_repeat: bool | None = None
     repeat_cooldown_rounds: int | None = Field(default=None, ge=0)
+    messages_per_round_mode: Literal["auto", "manual"] | None = None
     messages_per_round: int | None = Field(default=None, ge=1, le=10)
     history_fetch_account_id: int | None = None
 

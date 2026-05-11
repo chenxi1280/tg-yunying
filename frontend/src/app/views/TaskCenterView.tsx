@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Card, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Steps, Table, Typography } from 'antd';
+import { Alert, Button, Card, Collapse, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Steps, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, RefreshCcw } from 'lucide-react';
 import { api, ApiError } from '../../shared/api/client';
@@ -24,7 +24,7 @@ const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
   channel_comment: '/tasks/channel-comment/create-and-start',
 };
 
-const WIZARD_STEPS = ['基础信息', '目标来源', '类型配置', '账号选择', '节奏与风控', '自动校验'];
+const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号选择', '确认启动'];
 
 const ACTION_LABEL: Record<string, string> = {
   send_message: '发送消息',
@@ -143,6 +143,7 @@ function typeInitialValues(type: TaskCenterTaskType) {
       participation_rate: 0.6,
       participation_jitter: 0.5,
       chat_history_depth: 50,
+      messages_per_round_mode: 'auto',
       messages_per_round: 1,
       silent_mode_enabled: true,
       silent_start: '23:00',
@@ -174,7 +175,7 @@ function typeInitialValues(type: TaskCenterTaskType) {
   }
   if (type === 'channel_like') {
     return {
-      message_scope: 'latest_n',
+      message_scope: 'dynamic_new',
       message_count: 10,
       target_likes_per_message: 50,
       like_count_jitter: 0.3,
@@ -398,11 +399,11 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
   function commonPayload(values: any) {
     return {
       name: values.name,
-      priority: values.priority ?? 3,
+      priority: 3,
       timezone: values.timezone ?? 'Asia/Shanghai',
-      scheduled_start: values.scheduled_start ? new Date(values.scheduled_start).toISOString() : null,
+      scheduled_start: null,
       scheduled_end: values.scheduled_end ? new Date(values.scheduled_end).toISOString() : null,
-      max_duration_hours: values.max_duration_hours ?? null,
+      max_duration_hours: null,
       account_config: accountConfig(values),
       pacing_config: pacingConfig(values),
       failure_policy: failurePolicy(values),
@@ -441,6 +442,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         participation_jitter: values.participation_jitter ?? 0.5,
         allow_account_repeat: values.allow_account_repeat ?? true,
         repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2,
+        messages_per_round_mode: values.messages_per_round_mode ?? 'auto',
         messages_per_round: values.messages_per_round ?? 1,
         history_fetch_account_id: values.history_fetch_account_id ?? null,
         silent_mode_enabled: values.silent_mode_enabled ?? true,
@@ -504,7 +506,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
       failure_policy: failurePolicy(values),
     };
     if (type === 'group_ai_chat') {
-      return { ...base, topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, participation_jitter: values.participation_jitter ?? 0.5, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, messages_per_round: values.messages_per_round ?? 1, history_fetch_account_id: values.history_fetch_account_id ?? null, silent_mode_enabled: values.silent_mode_enabled ?? true, silent_start: values.silent_start ?? '23:00', silent_end: values.silent_end ?? '08:00', silent_max_accounts: values.silent_max_accounts ?? 5, silent_messages_per_round: values.silent_messages_per_round ?? 1, ramp_up_minutes: values.ramp_up_minutes ?? 60, ramp_start_ratio: values.ramp_start_ratio ?? 0.3, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
+      return { ...base, topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, participation_jitter: values.participation_jitter ?? 0.5, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, messages_per_round_mode: values.messages_per_round_mode ?? 'auto', messages_per_round: values.messages_per_round ?? 1, history_fetch_account_id: values.history_fetch_account_id ?? null, silent_mode_enabled: values.silent_mode_enabled ?? true, silent_start: values.silent_start ?? '23:00', silent_end: values.silent_end ?? '08:00', silent_max_accounts: values.silent_max_accounts ?? 5, silent_messages_per_round: values.silent_messages_per_round ?? 1, ramp_up_minutes: values.ramp_up_minutes ?? 60, ramp_start_ratio: values.ramp_start_ratio ?? 0.3, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
     }
     if (type === 'group_relay') {
       return { ...base, source_groups: values.source_groups ?? [], target_group_id: values.target_group_id ?? null, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, monitor_account_ids: csvNumbers(values.monitor_account_ids), target_group_ids: values.target_group_ids ?? [], filters: { keyword_whitelist: words(values.keyword_whitelist), keyword_blacklist: words(values.keyword_blacklist), min_message_length: values.min_message_length ?? null, max_message_length: values.max_message_length ?? null, allowed_media_types: words(values.allowed_media_types), blocked_user_ids: words(values.blocked_user_ids), only_with_media: Boolean(values.only_with_media), only_text: Boolean(values.only_text), language_filter: values.language_filter ?? null }, content_mode: values.content_mode ?? 'light_rewrite', rewrite_prompt: values.rewrite_prompt ?? '', preserve_media: Boolean(values.preserve_media), add_source_attribution: Boolean(values.add_source_attribution), dedup_window_minutes: values.dedup_window_minutes ?? 60, dedup_method: values.dedup_method ?? 'hash', require_review: false };
@@ -636,7 +638,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
   async function nextStep() {
     setActionError('');
     try {
-      await form.validateFields(fieldsForStep(wizardStep, taskType, messageScope));
+      await form.validateFields(fieldsForStep(wizardStep, taskType, messageScope, accountMode));
       setWizardStep((value) => Math.min(value + 1, WIZARD_STEPS.length - 1));
     } catch (error) {
       setActionError(errorMessage(error));
@@ -664,7 +666,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
       render: (_, task) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{task.name}</Typography.Text>
-          <Typography.Text type="secondary">{TYPE_LABEL[task.type]} / 优先级 {task.priority}</Typography.Text>
+          <Typography.Text type="secondary">{TYPE_LABEL[task.type]}</Typography.Text>
         </Space>
       ),
     },
@@ -794,14 +796,14 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         <StatCard label="执行中" value={tasks.filter((task) => task.status === 'running').length} detail="正在调度" icon={<RefreshCcw size={20} />} />
         <StatCard label="失败任务" value={tasks.filter((task) => task.status === 'failed').length} detail="需处理" icon={<Activity size={20} />} />
       </Space>
-      <Card className="panel" title="任务中心" extra={<Button type="primary" onClick={() => { setActionError(''); setTaskType('group_ai_chat'); form.resetFields(); form.setFieldsValue(initialValuesForType('group_ai_chat')); setWizardStep(0); setModalOpen(true); }}>新建任务</Button>}>
+      <Card className="panel" title="任务中心" extra={<Button type="primary" onClick={() => { setActionError(''); setTaskType('group_ai_chat'); form.resetFields(); form.setFieldsValue(initialValuesForType('group_ai_chat')); setWizardStep(0); setModalOpen(true); }}>创建并启动任务</Button>}>
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         {actionWarning && <Alert className="form-alert" type="warning" showIcon message={actionWarning} />}
         <Space className="toolbar-row" wrap>{table.searchInput}<Button loading={loading} onClick={load}>刷新</Button></Space>
-        <Table<TaskCenterTask> className="tg-table" rowKey="id" columns={columns} dataSource={table.filteredRows} pagination={table.pagination} scroll={{ x: 1480 }} loading={loading} />
+        <Table<TaskCenterTask> className="tg-table" rowKey="id" columns={columns} dataSource={table.filteredRows} pagination={table.pagination} scroll={{ x: 1380 }} loading={loading} />
       </Card>
 
-      <Modal className="tg-modal large" title="新建任务" open={modalOpen} width={980} footer={null} destroyOnHidden centered onCancel={() => setModalOpen(false)}>
+      <Modal className="tg-modal large" title="创建并启动任务" open={modalOpen} width={980} footer={null} destroyOnHidden centered onCancel={() => setModalOpen(false)}>
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         {actionWarning && <Alert className="form-alert" type="warning" showIcon message={actionWarning} />}
         <Steps className="wizard-steps" current={wizardStep} items={WIZARD_STEPS.map((title) => ({ title }))} />
@@ -809,9 +811,8 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
           {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
           {wizardStep === 1 && <WizardTarget taskType={taskType} groups={groups} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} />}
           {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} />}
-          {wizardStep === 3 && <WizardAccounts accountMode={accountMode} accounts={accounts} accountPools={accountPools} />}
-          {wizardStep === 4 && <WizardPacing pacingMode={pacingMode} />}
-          {wizardStep === 5 && <WizardReview taskType={taskType} values={formValues} />}
+          {wizardStep === 3 && <WizardAccounts accountMode={accountMode} accounts={accounts} accountPools={accountPools} includeAdvanced pacingMode={pacingMode} />}
+          {wizardStep === 4 && <WizardReview taskType={taskType} values={formValues} />}
           <Space className="modal-actions">
             <Button onClick={() => setModalOpen(false)}>取消</Button>
             <Button disabled={wizardStep === 0} onClick={() => setWizardStep((value) => Math.max(value - 1, 0))}>上一步</Button>
@@ -957,7 +958,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
   );
 }
 
-function fieldsForStep(step: number, taskType: TaskCenterTaskType, messageScope: string): string[] {
+function fieldsForStep(step: number, taskType: TaskCenterTaskType, messageScope: string, accountMode: string): string[] {
   if (step === 0) return ['name'];
   if (step === 1) {
     if (taskType === 'group_ai_chat') return ['target_group_id'];
@@ -968,8 +969,15 @@ function fieldsForStep(step: number, taskType: TaskCenterTaskType, messageScope:
     if (messageScope === 'date_range') fields.push('date_from', 'date_to');
     return fields;
   }
-  if (step === 3) return ['selection_mode'];
+  if (step === 3) return accountSelectionFields(accountMode);
   return [];
+}
+
+function accountSelectionFields(accountMode: string): string[] {
+  const fields = ['selection_mode'];
+  if (accountMode === 'group') fields.push('account_group_id');
+  if (accountMode === 'manual') fields.push('account_ids');
+  return fields;
 }
 
 function accountFields(accountMode: string): string[] {
@@ -996,7 +1004,7 @@ function channelScopeFields(messageScope: string): string[] {
 }
 
 function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, accountMode: string, pacingMode: string): string[] {
-  const commonFields = ['name', 'priority', 'timezone', 'scheduled_start', 'scheduled_end', 'max_duration_hours'];
+  const commonFields = ['name', 'scheduled_end'];
   const baseFields = [...commonFields, ...accountFields(accountMode), ...pacingFields(pacingMode)];
   if (taskType === 'group_ai_chat') {
     return [
@@ -1013,6 +1021,7 @@ function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, acc
       'participation_jitter',
       'allow_account_repeat',
       'repeat_cooldown_rounds',
+      'messages_per_round_mode',
       'messages_per_round',
       'history_fetch_account_id',
       'silent_mode_enabled',
@@ -1061,9 +1070,9 @@ function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, acc
 }
 
 function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
-  const baseFields = ['name', 'priority', 'timezone', 'scheduled_start', 'scheduled_end', ...accountFields(accountMode), ...pacingFields(pacingMode)];
+  const baseFields = ['name', 'scheduled_end', ...accountFields(accountMode), ...pacingFields(pacingMode)];
   if (taskType === 'group_ai_chat') {
-    return [...baseFields, 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'tone', 'language', 'max_message_length', 'participation_rate', 'participation_jitter', 'allow_account_repeat', 'repeat_cooldown_rounds', 'messages_per_round', 'history_fetch_account_id', 'silent_mode_enabled', 'silent_start', 'silent_end', 'silent_max_accounts', 'silent_messages_per_round', 'ramp_up_minutes', 'ramp_start_ratio', 'context_expire_after_messages'];
+    return [...baseFields, 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'tone', 'language', 'max_message_length', 'participation_rate', 'participation_jitter', 'allow_account_repeat', 'repeat_cooldown_rounds', 'messages_per_round_mode', 'messages_per_round', 'history_fetch_account_id', 'silent_mode_enabled', 'silent_start', 'silent_end', 'silent_max_accounts', 'silent_messages_per_round', 'ramp_up_minutes', 'ramp_start_ratio', 'context_expire_after_messages'];
   }
   if (taskType === 'group_relay') {
     return [...baseFields, 'source_groups', 'target_group_id', 'rule_set_id', 'rule_set_version_id', 'monitor_account_ids', 'target_group_ids', 'content_mode', 'rewrite_prompt', 'keyword_whitelist', 'keyword_blacklist', 'min_message_length', 'max_message_length', 'allowed_media_types', 'blocked_user_ids', 'only_with_media', 'only_text', 'language_filter', 'preserve_media', 'add_source_attribution', 'dedup_window_minutes', 'dedup_method'];
@@ -1083,11 +1092,11 @@ function EditBasics() {
       <Typography.Title level={5}>基础信息</Typography.Title>
       <div className="form-grid">
         <Form.Item name="name" label="任务名称" rules={[{ required: true }]}><Input /></Form.Item>
-        <Form.Item name="priority" label="优先级"><InputNumber min={1} max={5} /></Form.Item>
-        <Form.Item name="timezone" label="时区"><Input /></Form.Item>
-        <Form.Item name="scheduled_start" label="开始时间"><Input type="datetime-local" /></Form.Item>
-        <Form.Item name="scheduled_end" label="结束时间"><Input type="datetime-local" /></Form.Item>
+        <Form.Item name="scheduled_end" label="结束时间（可选）"><Input type="datetime-local" placeholder="不填则持续运行" /></Form.Item>
       </div>
+      <Form.Item name="priority" hidden><InputNumber /></Form.Item>
+      <Form.Item name="timezone" hidden><Input /></Form.Item>
+      <Form.Item name="scheduled_start" hidden><Input /></Form.Item>
     </>
   );
 }
@@ -1099,11 +1108,7 @@ function WizardBasics({ taskType, onTypeChange }: { taskType: TaskCenterTaskType
         <Select options={TASK_TYPES} value={taskType} onChange={onTypeChange} />
       </Form.Item>
       <Form.Item name="name" label="任务名称" rules={[{ required: true }]}><Input /></Form.Item>
-      <Form.Item name="priority" label="优先级"><InputNumber min={1} max={5} /></Form.Item>
-      <Form.Item name="timezone" label="时区"><Input /></Form.Item>
-      <Form.Item name="scheduled_start" label="开始时间"><Input type="datetime-local" /></Form.Item>
-      <Form.Item name="scheduled_end" label="结束时间"><Input type="datetime-local" /></Form.Item>
-      <Form.Item name="max_duration_hours" label="最大时长(小时)"><InputNumber min={1} /></Form.Item>
+      <Form.Item name="scheduled_end" label="结束时间（可选）"><Input type="datetime-local" placeholder="不填则持续运行" /></Form.Item>
     </div>
   );
 }
@@ -1131,7 +1136,7 @@ function WizardTarget({ taskType, groups, groupTargets, channelTargets, messages
   return (
     <div className="form-grid">
       <Form.Item name="target_channel_id" label="目标频道" rules={[{ required: true }]}><Select options={channelTargets.map((target) => ({ value: target.id, label: target.title }))} onChange={onTargetChannelChange} /></Form.Item>
-      <Form.Item name="message_scope" label="消息范围"><Select options={[{ value: 'all', label: '所有消息' }, { value: 'latest_n', label: '最新 N 条' }, { value: 'dynamic_new', label: '动态新消息' }, { value: 'date_range', label: '日期范围' }, { value: 'specific', label: '指定消息' }]} /></Form.Item>
+      <Form.Item name="message_scope" label="消息范围"><Select options={[{ value: 'dynamic_new', label: '持续监听新消息' }, { value: 'latest_n', label: '最新 N 条' }, { value: 'all', label: '所有消息' }, { value: 'date_range', label: '日期范围' }, { value: 'specific', label: '指定消息' }]} /></Form.Item>
       {['latest_n', 'dynamic_new'].includes(messageScope) && <Form.Item name="message_count" label={messageScope === 'dynamic_new' ? '每轮采集上限' : '消息数量'} rules={[{ required: true }]}><InputNumber min={1} max={500} /></Form.Item>}
       {messageScope === 'specific' && <Form.Item name="message_ids" label="频道消息" rules={[{ required: true }]}><Select mode="multiple" options={scopedMessages.map((message) => ({ value: message.id, label: `#${message.message_id} / ${message.content_preview || message.message_url || message.id}` }))} /></Form.Item>}
       {messageScope === 'date_range' && <><Form.Item name="date_from" label="开始时间"><Input type="datetime-local" /></Form.Item><Form.Item name="date_to" label="结束时间"><Input type="datetime-local" /></Form.Item></>}
@@ -1142,22 +1147,38 @@ function WizardTarget({ taskType, groups, groupTargets, channelTargets, messages
 function WizardTypeConfig({ taskType, ruleSets = [] }: { taskType: TaskCenterTaskType; ruleSets?: RuleSet[] }) {
   if (taskType === 'group_ai_chat') {
     return (
-      <div className="form-grid">
-        <Form.Item name="topic_hint" label="主题要求"><Input.TextArea rows={2} /></Form.Item>
-        <Form.Item name="tone" label="语气"><Select options={[{ value: 'auto', label: '自动' }, { value: 'casual', label: '口语' }, { value: 'professional', label: '正式' }, { value: 'mixed', label: '混合' }]} /></Form.Item>
-        <Form.Item name="participation_rate" label="参与率"><InputNumber min={0.01} max={1} step={0.05} /></Form.Item>
-        <Form.Item name="participation_jitter" label="参与抖动"><InputNumber min={0} max={1} step={0.05} /></Form.Item>
-        <Form.Item name="messages_per_round" label="每轮发言数"><InputNumber min={1} max={10} /></Form.Item>
-        <Form.Item name="chat_history_depth" label="历史条数"><InputNumber min={1} max={200} /></Form.Item>
-        <Form.Item name="silent_mode_enabled" label="静默期"><Select options={[{ value: true, label: '启用低频模式' }, { value: false, label: '关闭' }]} /></Form.Item>
-        <Form.Item name="silent_start" label="静默开始"><Input /></Form.Item>
-        <Form.Item name="silent_end" label="静默结束"><Input /></Form.Item>
-        <Form.Item name="silent_max_accounts" label="静默最多账号"><InputNumber min={1} max={50} /></Form.Item>
-        <Form.Item name="silent_messages_per_round" label="静默每轮发言"><InputNumber min={1} max={10} /></Form.Item>
-        <Form.Item name="ramp_up_minutes" label="爬坡分钟"><InputNumber min={0} max={1440} /></Form.Item>
-        <Form.Item name="ramp_start_ratio" label="启动比例"><InputNumber min={0.01} max={1} step={0.05} /></Form.Item>
-        <Form.Item name="context_expire_after_messages" label="上下文过期消息数"><InputNumber min={0} max={500} /></Form.Item>
-      </div>
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <div className="form-grid">
+          <Form.Item name="topic_hint" label="话题方向（可选）"><Input.TextArea rows={2} placeholder="不填时系统会按群目标方向或自然开场自动起聊" /></Form.Item>
+        </div>
+        <Collapse
+          ghost
+          items={[
+            {
+              key: 'advanced',
+              label: '高级设置',
+              children: (
+                <div className="form-grid">
+                  <Form.Item name="messages_per_round_mode" label="每轮发言"><Select options={[{ value: 'auto', label: '系统自动判定' }, { value: 'manual', label: '手动指定' }]} /></Form.Item>
+                  <Form.Item name="messages_per_round" label="手动每轮发言数"><InputNumber min={1} max={10} /></Form.Item>
+                  <Form.Item name="tone" label="语气"><Select options={[{ value: 'auto', label: '自动' }, { value: 'casual', label: '口语' }, { value: 'professional', label: '正式' }, { value: 'mixed', label: '混合' }]} /></Form.Item>
+                  <Form.Item name="chat_history_depth" label="历史条数"><InputNumber min={1} max={200} /></Form.Item>
+                  <Form.Item name="participation_rate" label="参与率"><InputNumber min={0.01} max={1} step={0.05} /></Form.Item>
+                  <Form.Item name="participation_jitter" label="参与抖动"><InputNumber min={0} max={1} step={0.05} /></Form.Item>
+                  <Form.Item name="silent_mode_enabled" label="静默期"><Select options={[{ value: true, label: '启用低频模式' }, { value: false, label: '关闭' }]} /></Form.Item>
+                  <Form.Item name="silent_start" label="静默开始"><Input /></Form.Item>
+                  <Form.Item name="silent_end" label="静默结束"><Input /></Form.Item>
+                  <Form.Item name="silent_max_accounts" label="静默最多账号"><InputNumber min={1} max={50} /></Form.Item>
+                  <Form.Item name="silent_messages_per_round" label="静默每轮发言"><InputNumber min={1} max={10} /></Form.Item>
+                  <Form.Item name="ramp_up_minutes" label="爬坡分钟"><InputNumber min={0} max={1440} /></Form.Item>
+                  <Form.Item name="ramp_start_ratio" label="启动比例"><InputNumber min={0.01} max={1} step={0.05} /></Form.Item>
+                  <Form.Item name="context_expire_after_messages" label="上下文过期消息数"><InputNumber min={0} max={500} /></Form.Item>
+                </div>
+              ),
+            },
+          ]}
+        />
+      </Space>
     );
   }
   if (taskType === 'group_relay') {
@@ -1187,16 +1208,36 @@ function WizardTypeConfig({ taskType, ruleSets = [] }: { taskType: TaskCenterTas
   return <div className="form-grid"><Form.Item name="target_comments_per_message" label="每条目标评论/回复"><InputNumber min={1} /></Form.Item><Form.Item name="comment_count_jitter" label="评论抖动"><InputNumber min={0} max={1} step={0.05} /></Form.Item><Form.Item name="comment_style" label="评论风格"><Select options={[{ value: 'mixed', label: '混合' }, { value: 'relevant', label: '相关' }, { value: 'question', label: '提问' }, { value: 'praise', label: '正向' }, { value: 'discussion', label: '讨论' }]} /></Form.Item><Form.Item name="topic_hint" label="主题指导"><Input /></Form.Item><Form.Item name="max_comments_per_account_per_hour" label="每号每小时评论上限"><InputNumber min={1} /></Form.Item></div>;
 }
 
-function WizardAccounts({ accountMode, accounts, accountPools }: { accountMode: string; accounts: Account[]; accountPools: AccountPool[] }) {
+function WizardAccounts({ accountMode, accounts, accountPools, includeAdvanced = false, pacingMode = 'template' }: { accountMode: string; accounts: Account[]; accountPools: AccountPool[]; includeAdvanced?: boolean; pacingMode?: string }) {
   return (
-    <div className="form-grid">
-      <Form.Item name="selection_mode" label="账号选择"><Select options={[{ value: 'all', label: '全部账号' }, { value: 'group', label: '账号分组' }, { value: 'manual', label: '手动选择' }]} /></Form.Item>
-      {accountMode === 'group' && <Form.Item name="account_group_id" label="账号分组" rules={[{ required: true }]}><Select options={accountPools.map((pool) => ({ value: pool.id, label: `${pool.name} (${pool.account_count})` }))} /></Form.Item>}
-      {accountMode === 'manual' && <Form.Item name="account_ids" label="账号" rules={[{ required: true }]}><Select mode="multiple" options={accounts.map((account) => ({ value: account.id, label: `${account.display_name} / ${account.status}` }))} /></Form.Item>}
-      <Form.Item name="max_concurrent" label="最大并发"><InputNumber min={1} max={500} /></Form.Item>
-      <Form.Item name="cooldown_per_account_minutes" label="账号冷却(分钟)"><InputNumber min={0} /></Form.Item>
-      <Form.Item name="ban_policy" label="风控策略"><Select options={[{ value: 'skip', label: '跳过账号' }, { value: 'pause_task', label: '暂停任务' }, { value: 'alert', label: '只告警' }]} /></Form.Item>
-    </div>
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <div className="form-grid">
+        <Form.Item name="selection_mode" label="账号选择"><Select options={[{ value: 'all', label: '全部账号' }, { value: 'group', label: '账号分组' }, { value: 'manual', label: '手动选择' }]} /></Form.Item>
+        {accountMode === 'group' && <Form.Item name="account_group_id" label="账号分组" rules={[{ required: true }]}><Select options={accountPools.map((pool) => ({ value: pool.id, label: `${pool.name} (${pool.account_count})` }))} /></Form.Item>}
+        {accountMode === 'manual' && <Form.Item name="account_ids" label="账号" rules={[{ required: true }]}><Select mode="multiple" options={accounts.map((account) => ({ value: account.id, label: `${account.display_name} / ${account.status}` }))} /></Form.Item>}
+      </div>
+      {includeAdvanced && (
+        <Collapse
+          ghost
+          items={[
+            {
+              key: 'advanced',
+              label: '高级设置',
+              children: (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <div className="form-grid">
+                    <Form.Item name="max_concurrent" label="最大并发"><InputNumber min={1} max={500} /></Form.Item>
+                    <Form.Item name="cooldown_per_account_minutes" label="账号冷却(分钟)"><InputNumber min={0} /></Form.Item>
+                    <Form.Item name="ban_policy" label="异常账号处理"><Select options={[{ value: 'skip', label: '跳过账号' }, { value: 'pause_task', label: '暂停任务' }, { value: 'alert', label: '只告警' }]} /></Form.Item>
+                  </div>
+                  <WizardPacing pacingMode={pacingMode} />
+                </Space>
+              ),
+            },
+          ]}
+        />
+      )}
+    </Space>
   );
 }
 
@@ -1222,6 +1263,7 @@ function WizardReview({ taskType, values }: { taskType: TaskCenterTaskType; valu
     <Descriptions bordered column={2} size="small" items={[
       { key: 'type', label: '任务类型', children: TYPE_LABEL[taskType] },
       { key: 'name', label: '任务名称', children: values.name || '-' },
+      { key: 'end', label: '结束时间', children: values.scheduled_end ? new Date(values.scheduled_end).toLocaleString() : '不限制' },
       { key: 'target', label: '目标', children: values.target_group_ids?.length ? `${values.target_group_id || values.target_channel_id || '-'} + ${values.target_group_ids.length} 个附加目标` : values.target_group_id || values.target_channel_id || '-' },
       { key: 'account', label: '账号方式', children: values.selection_mode || 'all' },
       { key: 'pacing', label: '节奏', children: values.pacing_mode || 'template' },

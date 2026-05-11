@@ -7,10 +7,12 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, AiUsageLedger, ChannelMessage, ContentKeywordRule, GroupArchive, GroupContextMessage, OperationTarget, RuleSet, RuleSetVersion, Task, TgAccount, TgGroup
+from app.models import Action, AiUsageLedger, ChannelMessage, ContentKeywordRule, GroupArchive, GroupContextMessage, OperationTarget, RuleSet, RuleSetVersion, Task, TgAccount, TgGroup, TgGroupAccount
 from app.schemas.operations_center import (
+    ListenerAccountOut,
     ListenerSnapshotOut,
     ListenerSummaryOut,
+    ListenerTaskOut,
     MetricBucketOut,
     OperationMetricsOut,
     RuleCenterSummaryOut,
@@ -25,6 +27,7 @@ from app.services._common import _now, audit
 
 
 ACTIVE_TASK_STATUSES = {"draft", "pending", "running", "paused"}
+LISTENER_TASK_STATUSES = {"pending", "running"}
 
 SYSTEM_RULES = [
     RuleSummaryOut(
@@ -63,7 +66,7 @@ SYSTEM_RULES = [
 
 
 def listener_summary(session: Session, tenant_id: int) -> ListenerSummaryOut:
-    tasks = _active_tasks(session, tenant_id)
+    tasks = _active_tasks(session, tenant_id, statuses=LISTENER_TASK_STATUSES)
     channels = list(
         session.scalars(
             select(OperationTarget).where(
@@ -75,9 +78,11 @@ def listener_summary(session: Session, tenant_id: int) -> ListenerSummaryOut:
     groups = list(session.scalars(select(TgGroup).where(TgGroup.tenant_id == tenant_id)))
     items: list[ListenerSnapshotOut] = []
     for channel in channels:
-        task_ids = [task.id for task in tasks if _task_uses_channel(task, channel.id)]
-        if not task_ids:
+        subscriber_tasks = [task for task in tasks if _task_uses_channel(task, channel.id)]
+        if not subscriber_tasks:
             continue
+        task_ids = [task.id for task in subscriber_tasks]
+        listener_accounts = _listener_accounts_for_object(session, tenant_id, subscriber_tasks, object_type="channel", object_id=channel.id)
         items.append(
             ListenerSnapshotOut(
                 key=f"channel:{channel.id}",
@@ -85,30 +90,36 @@ def listener_summary(session: Session, tenant_id: int) -> ListenerSummaryOut:
                 title=channel.title,
                 peer_id=channel.tg_peer_id,
                 status="聚合监听中",
-                listener_account_count=_listener_account_count_for_tasks(tasks, task_ids),
+                listener_account_count=len(listener_accounts),
                 subscriber_task_count=len(task_ids),
                 event_backlog_count=_task_backlog_count(session, tenant_id, task_ids),
                 last_event_at=_iso(_channel_last_event_at(session, tenant_id, channel.id) or channel.last_sync_at),
                 task_ids=task_ids,
+                listener_accounts=listener_accounts,
+                subscriber_tasks=[_listener_task_out(task) for task in subscriber_tasks],
             )
         )
     for group in groups:
-        task_ids = [task.id for task in tasks if _task_uses_group(task, group.id)]
-        if not task_ids and not group.listener_enabled:
+        subscriber_tasks = [task for task in tasks if _task_uses_group(task, group.id)]
+        if not subscriber_tasks:
             continue
+        task_ids = [task.id for task in subscriber_tasks]
+        listener_accounts = _listener_accounts_for_object(session, tenant_id, subscriber_tasks, object_type="group", object_id=group.id)
         items.append(
             ListenerSnapshotOut(
                 key=f"group:{group.id}",
                 object_type="group",
                 title=group.title,
                 peer_id=group.tg_peer_id,
-                status="聚合监听中" if task_ids or group.listener_enabled else "未关联",
-                listener_account_count=len(group.listener_account_ids),
+                status="聚合监听中",
+                listener_account_count=len(listener_accounts),
                 subscriber_task_count=len(task_ids),
                 event_backlog_count=_task_backlog_count(session, tenant_id, task_ids),
                 last_event_at=_iso(_group_last_event_at(session, tenant_id, group.id) or group.listener_last_polled_at),
                 last_error=group.listener_last_error or "",
                 task_ids=task_ids,
+                listener_accounts=listener_accounts,
+                subscriber_tasks=[_listener_task_out(task) for task in subscriber_tasks],
             )
         )
     return ListenerSummaryOut(
@@ -346,13 +357,13 @@ def _rate(numerator: int | float, denominator: int | float) -> float:
     return round(float(numerator) / float(denominator) * 100, 1)
 
 
-def _active_tasks(session: Session, tenant_id: int) -> list[Task]:
+def _active_tasks(session: Session, tenant_id: int, *, statuses: set[str] | None = None) -> list[Task]:
     return list(
         session.scalars(
             select(Task).where(
                 Task.tenant_id == tenant_id,
                 Task.deleted_at.is_(None),
-                Task.status.in_(ACTIVE_TASK_STATUSES),
+                Task.status.in_(statuses or ACTIVE_TASK_STATUSES),
             )
         )
     )
@@ -369,6 +380,167 @@ def _task_uses_group(task: Task, group_id: int) -> bool:
     if task.type != "group_relay":
         return False
     return any(int(item.get("group_id") or 0) == group_id and item.get("is_active", True) for item in config.get("source_groups") or [])
+
+
+def _listener_accounts_for_object(session: Session, tenant_id: int, tasks: list[Task], *, object_type: str, object_id: int) -> list[ListenerAccountOut]:
+    account_roles: dict[int, list[str]] = {}
+    account_task_ids: dict[int, list[str]] = {}
+    account_rows: dict[int, TgAccount] = {}
+
+    def add_accounts(account_ids: list[int], task: Task, role: str) -> None:
+        accounts = _accounts_by_id(session, tenant_id, account_ids)
+        for account_id in account_ids:
+            account = accounts.get(account_id)
+            if not account:
+                continue
+            account_rows.setdefault(account_id, account)
+            account_roles.setdefault(account_id, [])
+            account_task_ids.setdefault(account_id, [])
+            if role not in account_roles[account_id]:
+                account_roles[account_id].append(role)
+            if task.id not in account_task_ids[account_id]:
+                account_task_ids[account_id].append(task.id)
+
+    for task in tasks:
+        config = task.type_config or {}
+        if object_type == "channel":
+            add_accounts(_configured_task_account_ids(session, tenant_id, task.account_config or {}), task, _task_account_role(task))
+            continue
+        if task.type == "group_ai_chat":
+            add_accounts(_configured_task_account_ids(session, tenant_id, task.account_config or {}, target_group_id=object_id), task, "发言账号")
+            history_fetch_account_id = _as_int(config.get("history_fetch_account_id"))
+            if history_fetch_account_id:
+                add_accounts([history_fetch_account_id], task, "历史采集账号")
+        elif task.type == "group_relay":
+            monitor_account_ids = _as_int_list(config.get("monitor_account_ids"))
+            if monitor_account_ids:
+                add_accounts(monitor_account_ids, task, "监听账号")
+            else:
+                add_accounts(_group_listener_candidate_account_ids(session, tenant_id, object_id), task, "监听账号")
+
+    return [
+        ListenerAccountOut(
+            id=account.id,
+            display_name=account.display_name,
+            username=account.username,
+            status=account.status,
+            roles=account_roles.get(account.id, []),
+            task_ids=account_task_ids.get(account.id, []),
+        )
+        for account in account_rows.values()
+    ]
+
+
+def _configured_task_account_ids(session: Session, tenant_id: int, account_config: dict, *, target_group_id: int | None = None) -> list[int]:
+    mode = account_config.get("selection_mode") or ("manual" if account_config.get("account_ids") else "all")
+    limit = max(1, _as_int(account_config.get("max_concurrent")) or 20)
+    base_conditions = [TgAccount.tenant_id == tenant_id, TgAccount.deleted_at.is_(None)]
+
+    if mode == "manual":
+        account_ids = _as_int_list(account_config.get("account_ids"))
+        if not account_ids:
+            return []
+        stmt = select(TgAccount.id).where(*base_conditions, TgAccount.id.in_(account_ids))
+        if target_group_id:
+            stmt = stmt.join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id).where(
+                TgGroupAccount.group_id == target_group_id,
+                TgGroupAccount.can_send.is_(True),
+            )
+        valid_ids = set(session.scalars(stmt))
+        return [account_id for account_id in account_ids if account_id in valid_ids]
+
+    stmt = select(TgAccount.id).where(*base_conditions).order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
+    if mode == "group":
+        pool_id = _as_int(account_config.get("account_group_id"))
+        if not pool_id:
+            return []
+        stmt = stmt.where(TgAccount.pool_id == pool_id)
+    if target_group_id:
+        stmt = stmt.join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id).where(
+            TgGroupAccount.group_id == target_group_id,
+            TgGroupAccount.can_send.is_(True),
+        )
+    return list(session.scalars(stmt.limit(limit)))
+
+
+def _group_listener_candidate_account_ids(session: Session, tenant_id: int, group_id: int) -> list[int]:
+    listener_ids = list(
+        session.scalars(
+            select(TgGroupAccount.account_id)
+            .join(TgAccount, TgAccount.id == TgGroupAccount.account_id)
+            .where(
+                TgGroupAccount.tenant_id == tenant_id,
+                TgGroupAccount.group_id == group_id,
+                TgGroupAccount.is_listener.is_(True),
+                TgAccount.deleted_at.is_(None),
+            )
+            .order_by(TgGroupAccount.id.asc())
+        )
+    )
+    if listener_ids:
+        return listener_ids
+    return list(
+        session.scalars(
+            select(TgGroupAccount.account_id)
+            .join(TgAccount, TgAccount.id == TgGroupAccount.account_id)
+            .where(
+                TgGroupAccount.tenant_id == tenant_id,
+                TgGroupAccount.group_id == group_id,
+                TgGroupAccount.can_send.is_(True),
+                TgAccount.deleted_at.is_(None),
+            )
+            .order_by(TgGroupAccount.id.asc())
+        )
+    )
+
+
+def _accounts_by_id(session: Session, tenant_id: int, account_ids: list[int]) -> dict[int, TgAccount]:
+    if not account_ids:
+        return {}
+    rows = session.scalars(
+        select(TgAccount).where(
+            TgAccount.tenant_id == tenant_id,
+            TgAccount.id.in_(list(dict.fromkeys(account_ids))),
+            TgAccount.deleted_at.is_(None),
+        )
+    )
+    return {account.id: account for account in rows}
+
+
+def _listener_task_out(task: Task) -> ListenerTaskOut:
+    return ListenerTaskOut(id=task.id, name=task.name, type=task.type, status=task.status)
+
+
+def _task_account_role(task: Task) -> str:
+    return {
+        "channel_view": "浏览账号",
+        "channel_like": "点赞账号",
+        "channel_comment": "评论账号",
+    }.get(task.type, "参与账号")
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int_list(value: Any) -> list[int]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = [value]
+    items: list[int] = []
+    for item in raw_items:
+        parsed = _as_int(item)
+        if parsed is not None and parsed not in items:
+            items.append(parsed)
+    return items
 
 
 def _task_backlog_count(session: Session, tenant_id: int, task_ids: list[str]) -> int:
@@ -402,17 +574,6 @@ def _group_last_event_at(session: Session, tenant_id: int, group_id: int) -> dat
             GroupContextMessage.group_id == group_id,
         )
     )
-
-
-def _listener_account_count_for_tasks(tasks: list[Task], task_ids: list[str]) -> int:
-    selected = {task.id: task for task in tasks if task.id in task_ids}
-    account_ids: set[int] = set()
-    for task in selected.values():
-        account_config = task.account_config or {}
-        for account_id in account_config.get("account_ids") or []:
-            if isinstance(account_id, int):
-                account_ids.add(account_id)
-    return len(account_ids)
 
 
 def _keyword_rule_summary(rule: ContentKeywordRule) -> RuleSummaryOut:

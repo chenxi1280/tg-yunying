@@ -225,7 +225,17 @@ def _create_attempt_plan(session: Session, task: OperationTask, contents: list[s
         )
 
 
-def filter_operation_targets(session: Session, tenant_id: int = 1, target_type: str | None = None) -> list[dict]:
+def filter_operation_targets(
+    session: Session,
+    tenant_id: int = 1,
+    target_type: str | None = None,
+    account_id: int | None = None,
+) -> list[dict]:
+    if account_id:
+        account = session.get(TgAccount, account_id)
+        if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
+            raise ValueError("account not found")
+
     stmt = select(OperationTarget).where(OperationTarget.tenant_id == tenant_id)
     if target_type:
         stmt = stmt.where(OperationTarget.target_type == target_type)
@@ -244,6 +254,18 @@ def filter_operation_targets(session: Session, tenant_id: int = 1, target_type: 
             )
         ):
             links_by_group.setdefault(link.group_id, []).append(link)
+    if account_id:
+        visible_group_ids = {
+            link.group_id
+            for links in links_by_group.values()
+            for link in links
+            if link.account_id == account_id and link.can_send
+        }
+        targets = [
+            target
+            for target in targets
+            if target.tg_peer_id in linked_groups and linked_groups[target.tg_peer_id].id in visible_group_ids
+        ]
     return [_operation_target_list_payload(target, linked_groups.get(target.tg_peer_id), links_by_group) for target in targets]
 
 

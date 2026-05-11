@@ -5,6 +5,22 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class ListenerAccountOut(BaseModel):
+    id: int
+    display_name: str
+    username: str | None = None
+    status: str
+    roles: list[str] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
+
+
+class ListenerTaskOut(BaseModel):
+    id: str
+    name: str
+    type: str
+    status: str
+
+
 class ListenerSnapshotOut(BaseModel):
     key: str
     object_type: Literal["channel", "group"]
@@ -17,6 +33,8 @@ class ListenerSnapshotOut(BaseModel):
     last_event_at: str | None = None
     last_error: str = ""
     task_ids: list[str] = Field(default_factory=list)
+    listener_accounts: list[ListenerAccountOut] = Field(default_factory=list)
+    subscriber_tasks: list[ListenerTaskOut] = Field(default_factory=list)
 
 
 class ListenerSummaryOut(BaseModel):
@@ -126,8 +144,10 @@ class OperationMetricsOut(BaseModel):
 
 
 __all__ = [
+    "ListenerAccountOut",
     "ListenerSnapshotOut",
     "ListenerSummaryOut",
+    "ListenerTaskOut",
     "MetricBucketOut",
     "OperationMetricsOut",
     "RuleCenterSummaryOut",

@@ -31,7 +31,14 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
       const text = await response.text().catch(() => '');
       throw new ApiError(response.status, text);
     }
-    return await response.json() as T;
+    if (response.status === 204) {
+      return undefined as T;
+    }
+    const text = await response.text();
+    if (!text.trim()) {
+      return undefined as T;
+    }
+    return JSON.parse(text) as T;
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new ApiError(408, 'request timeout');

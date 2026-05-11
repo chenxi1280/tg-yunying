@@ -1,19 +1,19 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 import app.services.archives as archive_service
 from app.config import Settings
 from app.database import Base
 from app.models import Action, AiUsageLedger, AuditLog, ChannelMessage, GroupArchive, GroupContextMessage, MessageFingerprint, MessageTask, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
-from app.schemas import ArchiveCreate, MessageSendTaskCreate
+from app.schemas import ArchiveCreate, ChannelLikeTaskCreate, MessageSendTaskCreate
 from app.services.audit import filter_audit_logs
 from app.services.archives import create_archive
 from app.services.messages import create_message_send_task, validate_group_task_policy
 from app.services.operations import filter_operation_targets
-from app.services.task_center.executors.group_ai_chat import ai_cycle_mode
+from app.services.task_center.executors.group_ai_chat import ai_cycle_mode, build_plan as build_group_ai_chat_plan
 from app.services.operations_center import listener_summary, operation_metrics_summary
 from app.services.reports import build_overview
 from app.services.task_center.executors.group_relay import apply_transform_rules, build_plan as build_group_relay_plan, resolve_relay_target_ids
@@ -21,7 +21,7 @@ from app.services.group_listeners import process_group_listener
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache, should_collect_listener
 from app.services.task_center.fingerprints import content_fingerprint
 from app.services.task_center.policies import validate_group_send_policy
-from app.services.task_center.service import _channel_subtask_status, delete_task, reset_task, stop_task
+from app.services.task_center.service import _channel_subtask_status, delete_task, drain_task_center, reset_task, stop_task
 
 
 def test_listener_runtime_deduplicates_same_object_within_window():
@@ -109,10 +109,23 @@ def test_listener_summary_uses_task_subscriptions_events_and_backlog():
                 OperationTarget(id=21, tenant_id=1, target_type="channel", tg_peer_id="-10021", title="频道", can_send=True, auth_status="已授权运营"),
                 ChannelMessage(id=31, tenant_id=1, channel_target_id=21, message_id=1001, content_preview="频道消息", published_at=datetime(2026, 5, 11, 9, 0, 0)),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群", auth_status="已授权运营", listener_enabled=True),
+                TgGroup(id=8, tenant_id=1, tg_peer_id="-1008", title="活跃群", auth_status="已授权运营", listener_enabled=False),
+                TgAccount(id=11, tenant_id=1, display_name="频道账号A", username="channel_a", phone_masked="11", status="在线", health_score=90),
+                TgAccount(id=12, tenant_id=1, display_name="监听账号A", username="listener_a", phone_masked="12", status="在线", health_score=80),
+                TgAccount(id=13, tenant_id=1, display_name="监听账号B", username="listener_b", phone_masked="13", status="离线", health_score=70),
+                TgAccount(id=14, tenant_id=1, display_name="AI账号", username="ai_user", phone_masked="14", status="在线", health_score=95),
+                TgAccount(id=15, tenant_id=1, display_name="草稿账号", username="draft_user", phone_masked="15", status="在线", health_score=60),
                 TgGroupAccount(id=71, tenant_id=1, group_id=7, account_id=12, is_listener=True),
+                TgGroupAccount(id=72, tenant_id=1, group_id=7, account_id=13, is_listener=True),
+                TgGroupAccount(id=81, tenant_id=1, group_id=8, account_id=14, can_send=True),
                 GroupContextMessage(id=41, tenant_id=1, group_id=7, listener_account_id=12, sender_name="用户", content="源群事件", remote_message_id="m1", sent_at=datetime(2026, 5, 11, 10, 0, 0)),
                 Task(id="task-channel", tenant_id=1, name="频道任务", type="channel_like", status="running", account_config={"account_ids": [11]}, type_config={"target_channel_id": 21}),
-                Task(id="task-relay", tenant_id=1, name="转发任务", type="group_relay", status="running", type_config={"source_groups": [{"group_id": 7, "is_active": True}]}),
+                Task(id="task-channel-draft", tenant_id=1, name="草稿频道任务", type="channel_like", status="draft", account_config={"account_ids": [15]}, type_config={"target_channel_id": 21}),
+                Task(id="task-channel-paused", tenant_id=1, name="暂停频道任务", type="channel_like", status="paused", account_config={"account_ids": [15]}, type_config={"target_channel_id": 21}),
+                Task(id="task-channel-completed", tenant_id=1, name="完成频道任务", type="channel_like", status="completed", account_config={"account_ids": [15]}, type_config={"target_channel_id": 21}),
+                Task(id="task-channel-failed", tenant_id=1, name="失败频道任务", type="channel_like", status="failed", account_config={"account_ids": [15]}, type_config={"target_channel_id": 21}),
+                Task(id="task-ai", tenant_id=1, name="AI 活跃任务", type="group_ai_chat", status="pending", account_config={"selection_mode": "manual", "account_ids": [14]}, type_config={"target_group_id": 8, "history_fetch_account_id": 14}),
+                Task(id="task-relay", tenant_id=1, name="转发任务", type="group_relay", status="running", type_config={"source_groups": [{"group_id": 7, "is_active": True}], "monitor_account_ids": [12, 13]}),
                 Action(id="action-channel", tenant_id=1, task_id="task-channel", task_type="channel_like", action_type="like_message", status="pending"),
                 Action(id="action-relay", tenant_id=1, task_id="task-relay", task_type="group_relay", action_type="send_message", status="executing"),
             ]
@@ -124,12 +137,23 @@ def test_listener_summary_uses_task_subscriptions_events_and_backlog():
     rows = {item.key: item for item in summary.items}
     assert rows["channel:21"].subscriber_task_count == 1
     assert rows["channel:21"].listener_account_count == 1
+    assert rows["channel:21"].task_ids == ["task-channel"]
+    assert [task.id for task in rows["channel:21"].subscriber_tasks] == ["task-channel"]
+    assert [(account.id, account.roles, account.task_ids) for account in rows["channel:21"].listener_accounts] == [(11, ["点赞账号"], ["task-channel"])]
     assert rows["channel:21"].event_backlog_count == 1
     assert rows["channel:21"].last_event_at == "2026-05-11T09:00:00"
     assert rows["group:7"].subscriber_task_count == 1
-    assert rows["group:7"].listener_account_count == 1
+    assert rows["group:7"].listener_account_count == 2
+    assert [(account.id, account.status, account.roles, account.task_ids) for account in rows["group:7"].listener_accounts] == [
+        (12, "在线", ["监听账号"], ["task-relay"]),
+        (13, "离线", ["监听账号"], ["task-relay"]),
+    ]
     assert rows["group:7"].event_backlog_count == 1
     assert rows["group:7"].last_event_at == "2026-05-11T10:00:00"
+    assert rows["group:8"].subscriber_task_count == 1
+    assert rows["group:8"].listener_account_count == 1
+    assert rows["group:8"].listener_accounts[0].id == 14
+    assert rows["group:8"].listener_accounts[0].roles == ["发言账号", "历史采集账号"]
 
 
 def test_group_listener_context_collection_does_not_trigger_legacy_campaign_by_default(monkeypatch):
@@ -334,6 +358,12 @@ def test_channel_subtask_status_prefers_capacity_and_progress():
     assert _channel_subtask_status({"target_count": 50, "completed_count": 10, "failed_count": 2, "running_count": 0, "capacity_shortfall": 0}) == "有失败"
 
 
+def test_channel_like_create_defaults_to_dynamic_new_scope():
+    payload = ChannelLikeTaskCreate(name="默认持续点赞", target_channel_id=1)
+
+    assert payload.message_scope == "dynamic_new"
+
+
 def test_ai_cycle_mode_applies_silent_window_and_daily_ramp():
     config = {
         "silent_mode_enabled": True,
@@ -345,6 +375,172 @@ def test_ai_cycle_mode_applies_silent_window_and_daily_ramp():
 
     assert ai_cycle_mode(config, datetime(2026, 5, 11, 9, 0), datetime(2026, 5, 11, 9, 15)) == ("启动期", 0.438)
     assert ai_cycle_mode(config, datetime(2026, 5, 11, 9, 0), datetime(2026, 5, 11, 23, 30)) == ("静默期", 1.0)
+
+
+def test_group_ai_chat_bootstraps_without_history(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    captured: dict[str, object] = {}
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        captured["count"] = count
+        captured["target_label"] = target_label
+        captured["history"] = history
+        return [f"自动开场 {index}" for index in range(1, count + 1)], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="新人欢迎和日常问候"))
+        for account_id in [101, 102, 103, 104]:
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        session.add(
+            Task(
+                id="ai-bootstrap",
+                tenant_id=1,
+                name="AI 无上下文开场",
+                type="group_ai_chat",
+                status="running",
+                account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                type_config={"target_group_id": 7, "messages_per_round_mode": "auto", "topic_hint": ""},
+            )
+        )
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, session.get(Task, "ai-bootstrap"))
+        actions = list(session.scalars(select(Action).where(Action.task_id == "ai-bootstrap").order_by(Action.created_at.asc())))
+        task = session.get(Task, "ai-bootstrap")
+        stats = dict(task.stats or {})
+        last_error = task.last_error
+
+    assert created == 3
+    assert captured["count"] == 3
+    assert "新人欢迎和日常问候" in str(captured["history"])
+    assert stats["context_mode"] == "bootstrap"
+    assert last_error == ""
+    assert [action.account_id for action in actions] == [101, 102, 103]
+    assert all(action.payload["review_approved"] is True for action in actions)
+    assert all(action.payload["context_message_ids"] == [] for action in actions)
+    assert all(action.payload["context_snapshot_message_id"] is None for action in actions)
+
+
+def test_task_center_scheduled_end_marks_running_task_completed():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(
+            tenant_id=1,
+            name="到点自然结束",
+            type="channel_like",
+            status="running",
+            scheduled_end=now - timedelta(seconds=1),
+            next_run_at=now - timedelta(seconds=1),
+            account_config={},
+            pacing_config={},
+            failure_policy={},
+            type_config={},
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+        task_id = task.id
+
+    drain_task_center(SessionFactory, 10)
+
+    with Session(engine) as session:
+        assert session.get(Task, task_id).status == "completed"
+
+
+def test_task_center_recovers_stale_ai_task_waiting_for_context(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    planned: list[str] = []
+
+    def fake_build_task_plan(_session, task):
+        planned.append(task.id)
+        return 0
+
+    monkeypatch.setattr("app.services.task_center.service.build_task_plan", fake_build_task_plan)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            Task(
+                id="ai-stale-context",
+                tenant_id=1,
+                name="AI 卡住任务",
+                type="group_ai_chat",
+                status="running",
+                next_run_at=None,
+                last_error="暂无群上下文，等待监听采集",
+                type_config={"target_group_id": 7},
+                stats={},
+            )
+        )
+        session.commit()
+
+    assert drain_task_center(SessionFactory, 10) >= 1
+    with Session(engine) as session:
+        task = session.get(Task, "ai-stale-context")
+        assert task.status == "running"
+        assert task.last_error == ""
+        assert task.next_run_at is not None
+    assert planned == ["ai-stale-context"]
+
+
+def test_task_center_recovers_completed_channel_like_without_end_time(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+    monkeypatch.setattr("app.services.task_center.service.build_task_plan", lambda *_args, **_kwargs: 0)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                Task(
+                    id="channel-like-continuous",
+                    tenant_id=1,
+                    name="无结束时间点赞",
+                    type="channel_like",
+                    status="completed",
+                    scheduled_end=None,
+                    next_run_at=None,
+                    last_error="旧逻辑误完成",
+                    type_config={"message_scope": "dynamic_new"},
+                    stats={},
+                ),
+                Task(
+                    id="channel-like-specific",
+                    tenant_id=1,
+                    name="指定消息点赞",
+                    type="channel_like",
+                    status="completed",
+                    scheduled_end=None,
+                    next_run_at=None,
+                    type_config={"message_scope": "specific", "message_ids": [1]},
+                    stats={},
+                ),
+            ]
+        )
+        session.commit()
+
+    assert drain_task_center(SessionFactory, 10) >= 1
+    with Session(engine) as session:
+        recovered = session.get(Task, "channel-like-continuous")
+        specific = session.get(Task, "channel-like-specific")
+        assert recovered.status == "running"
+        assert recovered.last_error == ""
+        assert recovered.next_run_at is not None
+        assert specific.status == "completed"
 
 
 def test_operation_metrics_summary_uses_real_task_center_tables():

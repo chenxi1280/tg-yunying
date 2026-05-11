@@ -1359,6 +1359,125 @@ def test_operation_targets_manual_send_and_task_lifecycle(monkeypatch):
             assert created.status_code == 200, created.text
 
 
+def test_message_send_targets_are_scoped_to_selected_account():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        suffix = uuid4().hex[:8]
+        with SessionLocal() as session:
+            account_a = TgAccount(
+                tenant_id=1,
+                display_name=f"pytest 发送账号A {suffix}",
+                username=f"pytest_send_a_{suffix}",
+                phone_masked=f"+a-{suffix}",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="encrypted-session:pytest-a",
+            )
+            account_b = TgAccount(
+                tenant_id=1,
+                display_name=f"pytest 发送账号B {suffix}",
+                username=f"pytest_send_b_{suffix}",
+                phone_masked=f"+b-{suffix}",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="encrypted-session:pytest-b",
+            )
+            session.add_all([account_a, account_b])
+            session.flush()
+            account_a_id = account_a.id
+            account_b_id = account_b.id
+
+            target_ids: dict[str, int] = {}
+            for owner, account, target_type, group_type in [
+                ("a_group", account_a, "group", "supergroup"),
+                ("a_channel", account_a, "channel", "channel"),
+                ("b_group", account_b, "group", "supergroup"),
+                ("b_channel", account_b, "channel", "channel"),
+            ]:
+                peer_id = f"pytest-{owner}-{suffix}"
+                group = TgGroup(
+                    tenant_id=1,
+                    tg_peer_id=peer_id,
+                    title=f"pytest {owner}",
+                    group_type=group_type,
+                    member_count=10,
+                    auth_status="已授权运营",
+                    can_send=True,
+                )
+                session.add(group)
+                session.flush()
+                target = OperationTarget(
+                    tenant_id=1,
+                    target_type=target_type,
+                    tg_peer_id=peer_id,
+                    title=group.title,
+                    member_count=group.member_count,
+                    can_send=True,
+                    auth_status="已授权运营",
+                )
+                session.add(target)
+                session.flush()
+                session.add(
+                    TgGroupAccount(
+                        tenant_id=1,
+                        group_id=group.id,
+                        account_id=account.id,
+                        can_send=True,
+                        permission_label="普通成员",
+                    )
+                )
+                target_ids[owner] = target.id
+            session.commit()
+
+        scoped_a = client.get(f"/api/operation-targets?account_id={account_a_id}", headers=headers)
+        assert scoped_a.status_code == 200, scoped_a.text
+        scoped_a_ids = {item["id"] for item in scoped_a.json()}
+        assert scoped_a_ids >= {target_ids["a_group"], target_ids["a_channel"]}
+        assert target_ids["b_group"] not in scoped_a_ids
+        assert target_ids["b_channel"] not in scoped_a_ids
+
+        scoped_b = client.get(f"/api/operation-targets?account_id={account_b_id}", headers=headers)
+        assert scoped_b.status_code == 200, scoped_b.text
+        scoped_b_ids = {item["id"] for item in scoped_b.json()}
+        assert scoped_b_ids >= {target_ids["b_group"], target_ids["b_channel"]}
+        assert target_ids["a_group"] not in scoped_b_ids
+        assert target_ids["a_channel"] not in scoped_b_ids
+
+        unscoped = client.get("/api/operation-targets", headers=headers)
+        assert unscoped.status_code == 200, unscoped.text
+        unscoped_ids = {item["id"] for item in unscoped.json()}
+        assert {target_ids["a_group"], target_ids["a_channel"], target_ids["b_group"], target_ids["b_channel"]}.issubset(unscoped_ids)
+
+        blocked = client.post(
+            "/api/message-send-tasks/batch",
+            headers=headers,
+            json={
+                "account_id": account_a_id,
+                "targets": [{"target_type": "channel", "operation_target_id": target_ids["b_channel"]}],
+                "content": "不应该跨账号发送",
+                "message_type": "文本",
+                "dispatch_now": False,
+            },
+        )
+        assert blocked.status_code == 400
+        assert "该账号不可向此运营目标发送" in blocked.text
+
+        created = client.post(
+            "/api/message-send-tasks/batch",
+            headers=headers,
+            json={
+                "account_id": account_a_id,
+                "targets": [
+                    {"target_type": "group", "operation_target_id": target_ids["a_group"]},
+                    {"target_type": "channel", "operation_target_id": target_ids["a_channel"]},
+                ],
+                "content": "账号自己的目标可以创建",
+                "message_type": "文本",
+                "dispatch_now": False,
+            },
+        )
+        assert created.status_code == 200, created.text
+        assert [item["account_id"] for item in created.json()] == [account_a_id, account_a_id]
+
+
 def test_operation_target_detail_returns_group_context_messages():
     with TestClient(app) as client:
         headers = auth_headers(client)
@@ -3397,6 +3516,28 @@ def test_message_send_workbench_creates_private_group_channel_and_jitter_tasks(m
                 "auth_status": "已授权运营",
             },
         ).json()
+        with SessionLocal() as session:
+            channel_group = TgGroup(
+                tenant_id=1,
+                tg_peer_id=channel_target["tg_peer_id"],
+                title=channel_target["title"],
+                group_type="channel",
+                member_count=10,
+                auth_status="已授权运营",
+                can_send=True,
+            )
+            session.add(channel_group)
+            session.flush()
+            session.add(
+                TgGroupAccount(
+                    tenant_id=1,
+                    group_id=channel_group.id,
+                    account_id=account["id"],
+                    can_send=True,
+                    permission_label="管理员",
+                )
+            )
+            session.commit()
         material = client.post(
             "/api/materials",
             headers=headers,
