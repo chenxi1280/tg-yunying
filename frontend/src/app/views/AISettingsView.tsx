@@ -56,7 +56,7 @@ export default function AISettingsView({
         <div className="cards-grid developer-grid">
           {!aiProviders.length && (
             <Empty description="还没有 AI 供应商">
-              <Typography.Paragraph type="secondary">请配置真实 OpenAI-Compatible Base URL、模型名和 API Key 后再启用 AI 草稿。</Typography.Paragraph>
+              <Typography.Paragraph type="secondary">请配置真实 OpenAI-Compatible Base URL、模型名和 API Key 后再启用 AI 内容生成。</Typography.Paragraph>
               {currentUserRole === '系统管理员' && <Button type="primary" onClick={onCreateProvider}>新增供应商</Button>}
             </Empty>
           )}
@@ -81,15 +81,15 @@ export default function AISettingsView({
 
       <Card
         className="panel"
-        title="客户 AI 与发送节奏"
+        title="AI 模型与发送节奏"
         extra={<Space><Button size="small" disabled={!aiProviders.length} onClick={onEditTenantAi}>编辑 AI 配置</Button><Button size="small" onClick={onEditScheduling}>编辑发送节奏</Button></Space>}
       >
-        <Typography.Text type="secondary">平台默认可被客户配置覆盖，任务创建时可覆盖发送节奏</Typography.Text>
+        <Typography.Text type="secondary">任务创建时可覆盖默认模型、发送节奏和自动校验策略</Typography.Text>
         <div className="summary-grid">
           <Card className="summary-card" size="small">
             <span>默认模型</span>
             <strong>{aiProviders.find((provider) => provider.id === tenantAiSetting?.default_provider_id)?.provider_name ?? '未配置'}</strong>
-            <p><StatusBadge status={tenantAiSetting?.ai_enabled ? '已启用' : '未配置'} label={tenantAiSetting?.ai_enabled ? 'AI 草稿已启用' : 'AI 已关闭'} /></p>
+            <p><StatusBadge status={tenantAiSetting?.ai_enabled ? '已启用' : '未配置'} label={tenantAiSetting?.ai_enabled ? 'AI 生成已启用' : 'AI 已关闭'} /></p>
           </Card>
           <Card className="summary-card" size="small">
             <span>失败策略</span>
@@ -123,7 +123,7 @@ export default function AISettingsView({
               return (
                 <List.Item>
                   <List.Item.Meta
-                    title={<Space><Badge tone={template.tenant_id ? 'positive' : 'neutral'}>{template.tenant_id ? '客户' : '平台'}</Badge><StatusBadge status={template.is_active ? '已启用' : '禁用'} />{template.name}</Space>}
+                    title={<Space><Badge tone={template.tenant_id ? 'positive' : 'neutral'}>{template.tenant_id ? '运营空间' : '平台'}</Badge><StatusBadge status={template.is_active ? '已启用' : '禁用'} />{template.name}</Space>}
                     description={`${template.template_type} / v${template.version}`}
                   />
                 </List.Item>
@@ -133,7 +133,7 @@ export default function AISettingsView({
             return (
               <List.Item>
                 <List.Item.Meta
-                  title={<Space><Badge tone="warning">{material.material_type}</Badge><StatusBadge status={material.review_status} />{material.title}</Space>}
+                  title={<Space><Badge tone="warning">{material.material_type}</Badge><StatusBadge status={material.review_status} label={material.review_status === '已审核' ? '可用' : material.review_status} />{material.title}</Space>}
                   description={material.tags || '无标签'}
                 />
               </List.Item>
@@ -147,7 +147,7 @@ export default function AISettingsView({
         title="关键词库"
         extra={<Button size="small" onClick={onCreateKeywordRule}>新增关键词</Button>}
       >
-        <Typography.Text type="secondary">持续任务和发送前校验会合并租户关键词与群规则</Typography.Text>
+        <Typography.Text type="secondary">持续任务和发送前校验会合并运营空间关键词与群规则</Typography.Text>
         <List
           className="mini-list"
           dataSource={contentKeywordRules}

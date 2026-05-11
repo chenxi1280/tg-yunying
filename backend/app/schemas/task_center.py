@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .api import ApiModel
 
 TaskTypeValue = Literal["group_ai_chat", "group_relay", "channel_view", "channel_like", "channel_comment"]
-TaskStatusValue = Literal["draft", "pending", "running", "paused", "completed", "failed"]
+TaskStatusValue = Literal["draft", "pending", "running", "paused", "target_reached", "wrapping_up", "completed", "stopped", "failed", "deleted"]
 ActionStatusValue = Literal["pending", "executing", "success", "failed", "skipped"]
 ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
 
@@ -121,15 +121,26 @@ class GroupAIChatConfig(BaseModel):
     repeat_cooldown_rounds: int = Field(default=2, ge=0)
     messages_per_round: int = Field(default=1, ge=1, le=10)
     history_fetch_account_id: int | None = None
+    silent_mode_enabled: bool = True
+    silent_start: str = "23:00"
+    silent_end: str = "08:00"
+    silent_max_accounts: int = Field(default=5, ge=1, le=50)
+    silent_messages_per_round: int = Field(default=1, ge=1, le=10)
+    ramp_up_minutes: int = Field(default=60, ge=0, le=1440)
+    ramp_start_ratio: float = Field(default=0.3, ge=0.01, le=1)
+    context_expire_after_messages: int = Field(default=10, ge=0, le=500)
 
 
 class GroupRelayConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_groups: list[SourceGroup]
+    rule_set_id: int | None = None
+    rule_set_version_id: int | None = None
     monitor_account_ids: list[int] = Field(default_factory=list)
     filters: RelayFilters = Field(default_factory=RelayFilters)
-    target_group_id: int
+    target_group_id: int | None = None
+    target_group_ids: list[int] = Field(default_factory=list)
     send_account_ids: list[int] = Field(default_factory=list)
     content_mode: Literal["raw", "light_rewrite", "ai_rewrite", "summary"] = "light_rewrite"
     rewrite_prompt: str | None = None
@@ -139,13 +150,22 @@ class GroupRelayConfig(BaseModel):
     dedup_method: Literal["hash", "semantic", "both"] = "hash"
     require_review: bool = False
 
+    @model_validator(mode="after")
+    def validate_relay_targets(self) -> "GroupRelayConfig":
+        if not self.target_group_id and not self.target_group_ids:
+            raise ValueError("target_group_id 或 target_group_ids 至少填写一个")
+        if self.target_group_id and self.target_group_id not in self.target_group_ids:
+            self.target_group_ids = [self.target_group_id, *self.target_group_ids]
+        self.require_review = False
+        return self
+
 
 class ChannelMessageScopeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target_channel_id: int
     target_channel_name: str = ""
-    message_scope: Literal["all", "latest_n", "date_range", "specific"] = "latest_n"
+    message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "latest_n"
     message_count: int | None = Field(default=10, ge=1, le=500)
     date_from: datetime | None = None
     date_to: datetime | None = None
@@ -185,6 +205,11 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     max_comment_length: int | None = Field(default=None, ge=1)
     max_comments_per_account_per_hour: int = Field(default=3, ge=1, le=500)
     require_review: bool = False
+
+    @model_validator(mode="after")
+    def disable_manual_review(self) -> "ChannelCommentConfig":
+        self.require_review = False
+        return self
 
 
 class TaskCreateCommon(BaseModel):
@@ -366,19 +391,72 @@ class TaskMessageGroupOut(BaseModel):
     channel_title: str = ""
     channel_username: str = ""
     message_id: int | None = None
+    action_type: str = ""
+    action_label: str = ""
     message_url: str = ""
     content_preview: str = ""
+    target_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    running_count: int = 0
+    skipped_count: int = 0
+    duplicate_count: int = 0
+    capacity_shortfall: int = 0
+    subtask_status: str = ""
     stats: dict[str, Any] = Field(default_factory=dict)
     actions: list[ActionOut] = Field(default_factory=list)
+
+
+class TaskAITurnOut(BaseModel):
+    action_id: str
+    turn_index: int
+    account_id: int | None = None
+    account_role: str = ""
+    intent: str = ""
+    content: str = ""
+    status: str
+    scheduled_at: datetime
+    executed_at: datetime | None = None
+    result: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskAICycleOut(BaseModel):
+    cycle_id: str
+    context_message_ids: list[int] = Field(default_factory=list)
+    stats: dict[str, Any] = Field(default_factory=dict)
+    turns: list[TaskAITurnOut] = Field(default_factory=list)
+
+
+class TaskRelayItemOut(BaseModel):
+    action_id: str
+    relay_event_id: str = ""
+    source_group_id: int | None = None
+    source_info: str = ""
+    original_text: str = ""
+    transformed_text: str = ""
+    rule_set_id: int | None = None
+    rule_set_version_id: int | None = None
+    account_id: int | None = None
+    status: str
+    scheduled_at: datetime
+    executed_at: datetime | None = None
+    result: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskRelayBatchOut(BaseModel):
+    relay_batch_id: str
+    stats: dict[str, Any] = Field(default_factory=dict)
+    items: list[TaskRelayItemOut] = Field(default_factory=list)
 
 
 class TaskDetailOut(BaseModel):
     task: TaskOut
     actions: list[ActionOut]
-    reviews: list[ReviewQueueOut]
     stats: dict[str, Any]
     accounts: list[TaskDetailAccountOut] = Field(default_factory=list)
     message_groups: list[TaskMessageGroupOut] = Field(default_factory=list)
+    ai_cycles: list[TaskAICycleOut] = Field(default_factory=list)
+    relay_batches: list[TaskRelayBatchOut] = Field(default_factory=list)
 
 
 class TaskRetryRequest(BaseModel):
@@ -411,7 +489,7 @@ class ChannelCapacityCheckRequest(BaseModel):
     account_config: AccountConfig = Field(default_factory=AccountConfig)
     target_per_message: int = Field(default=1, ge=1, le=10000)
     target_channel_id: int | None = None
-    message_scope: Literal["all", "latest_n", "date_range", "specific"] = "latest_n"
+    message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "latest_n"
     message_count: int | None = Field(default=1, ge=1, le=500)
     message_ids: list[int] = Field(default_factory=list)
 
@@ -485,9 +563,13 @@ __all__ = [
     "ReviewQueueOut",
     "ReviewRejectRequest",
     "TaskCreateCommon",
+    "TaskAICycleOut",
     "TaskDetailOut",
     "TaskDetailAccountOut",
+    "TaskAITurnOut",
     "TaskMessageGroupOut",
+    "TaskRelayBatchOut",
+    "TaskRelayItemOut",
     "TaskOut",
     "TaskRetryRequest",
     "TaskSettingsUpdate",

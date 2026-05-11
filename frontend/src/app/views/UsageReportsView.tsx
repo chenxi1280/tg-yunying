@@ -1,8 +1,9 @@
 import React from 'react';
-import { Activity, Bot, CheckCircle2, Database } from 'lucide-react';
-import { Card, List, Space, Table, Typography } from 'antd';
+import { Activity, Bot, CheckCircle2, Database, RefreshCcw } from 'lucide-react';
+import { Alert, Button, Card, List, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { CurrentUser, UsageLedger, UsageSummary } from '../types';
+import { api } from '../../shared/api/client';
+import type { CurrentUser, MetricBucket, OperationMetricsSummary, UsageLedger, UsageSummary } from '../types';
 import { StatCard, StatusBadge, useAntdTableControls } from '../components/shared';
 
 interface Props {
@@ -12,6 +13,26 @@ interface Props {
 }
 
 export default function UsageReportsView({ usageLedgers, usageSummary, currentUser }: Props) {
+  const [metrics, setMetrics] = React.useState<OperationMetricsSummary | null>(null);
+  const [loadingMetrics, setLoadingMetrics] = React.useState(false);
+  const [metricsError, setMetricsError] = React.useState('');
+
+  async function loadMetrics() {
+    setLoadingMetrics(true);
+    setMetricsError('');
+    try {
+      setMetrics(await api<OperationMetricsSummary>('/operation-metrics/summary'));
+    } catch (error) {
+      setMetricsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingMetrics(false);
+    }
+  }
+
+  React.useEffect(() => {
+    void loadMetrics();
+  }, []);
+
   const usageTable = useAntdTableControls<UsageLedger>({
     rows: usageLedgers,
     placeholder: '搜索模型 / 任务 / 状态 / 费用',
@@ -38,7 +59,7 @@ export default function UsageReportsView({ usageLedgers, usageSummary, currentUs
       render: (_, item) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{item.provider_name || 'Mock'}</Typography.Text>
-          <Typography.Text type="secondary">{item.model_name} / campaign #{item.campaign_id ?? '-'}</Typography.Text>
+          <Typography.Text type="secondary">{item.model_name} / 关联来源 #{item.campaign_id ?? '-'}</Typography.Text>
         </Space>
       ),
     },
@@ -74,11 +95,22 @@ export default function UsageReportsView({ usageLedgers, usageSummary, currentUs
 
   return (
     <section className="view-grid">
-      <Card className="panel" title="用户用量汇总" extra={<Typography.Text type="secondary">按用户汇总 token 和费用</Typography.Text>}>
+      {metricsError && <Alert className="form-alert" type="error" showIcon message={metricsError} />}
+      <Card className="panel" title="运营数据总览" extra={<Button size="small" icon={<RefreshCcw size={16} />} loading={loadingMetrics} onClick={loadMetrics}>刷新</Button>}>
+        <MetricSection title="账号数据" items={metrics?.accounts ?? []} />
+        <MetricSection title="目标数据" items={metrics?.targets ?? []} />
+        <MetricSection title="消息发送数据" items={metrics?.messages ?? []} />
+        <MetricSection title="频道互动数据" items={metrics?.channel_interactions ?? []} />
+        <MetricSection title="AI 活跃群数据" items={metrics?.ai_activity ?? []} />
+        <MetricSection title="转发监听数据" items={metrics?.relay ?? []} />
+        <MetricSection title="归档数据" items={metrics?.archives ?? []} />
+        <MetricSection title="失败与风险数据" items={metrics?.failures ?? []} />
+      </Card>
+      <Card className="panel" title="AI 用量汇总" extra={<Typography.Text type="secondary">按运营账号汇总 token 和费用</Typography.Text>}>
         <div className="stats-grid">
-          <StatCard label="总请求" value={usageSummary?.total_requests ?? 0} detail="AI 调用次数" icon={<Bot size={22} />} />
-          <StatCard label="总 Token" value={usageSummary?.total_tokens ?? 0} detail="输入输出累计" icon={<Activity size={22} />} />
-          <StatCard label="总费用" value={`${usageSummary?.total_cost ?? 0} ${usageSummary?.currency ?? 'CNY'}`} detail="按模型单价结算" icon={<Database size={22} />} />
+          <StatCard label="总请求" value={metricValue(metrics, 'ai_usage.requests', usageSummary?.total_requests ?? 0)} detail="AI 调用次数" icon={<Bot size={22} />} />
+          <StatCard label="总 Token" value={metricValue(metrics, 'ai_usage.tokens', usageSummary?.total_tokens ?? 0)} detail="输入输出累计" icon={<Activity size={22} />} />
+          <StatCard label="总费用" value={`${metricValue(metrics, 'ai_usage.cost', usageSummary?.total_cost ?? 0)} ${usageSummary?.currency ?? 'CNY'}`} detail="按模型单价结算" icon={<Database size={22} />} />
           <StatCard label="计费请求" value={usageSummary?.billable_requests ?? 0} detail="返回 usage 的真实请求" icon={<CheckCircle2 size={22} />} />
           {currentUser?.role !== '系统管理员' && <StatCard label="我的余额" value={currentUser?.token_balance ?? 0} detail={`累计额度 ${currentUser?.token_quota_total ?? 0}`} icon={<Activity size={22} />} />}
         </div>
@@ -108,5 +140,23 @@ export default function UsageReportsView({ usageLedgers, usageSummary, currentUs
         />
       </Card>
     </section>
+  );
+}
+
+function metricValue(metrics: OperationMetricsSummary | null, key: string, fallback: number | string): number | string {
+  const all = metrics ? Object.values(metrics).flat() : [];
+  return all.find((item) => item.key === key)?.value ?? fallback;
+}
+
+function MetricSection({ title, items }: { title: string; items: MetricBucket[] }) {
+  return (
+    <Space direction="vertical" size={8} style={{ width: '100%', marginBottom: 16 }}>
+      <Typography.Title level={5} style={{ margin: 0 }}>{title}</Typography.Title>
+      <div className="stats-grid">
+        {items.map((item) => (
+          <StatCard key={item.key} label={item.label} value={item.value} detail={item.detail} icon={<Activity size={22} />} />
+        ))}
+      </div>
+    </Space>
   );
 }

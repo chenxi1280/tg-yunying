@@ -97,6 +97,18 @@ class Settings:
     login_code_ttl_seconds: int = int(os.getenv("LOGIN_CODE_TTL_SECONDS", "180"))
     enable_sync_dispatch_fallback: bool = _bool_env("ENABLE_SYNC_DISPATCH_FALLBACK", True)
     enable_embedded_worker: bool = _bool_env("ENABLE_EMBEDDED_WORKER", os.getenv("APP_ENV", "development") == "development")
+    enable_legacy_campaign_worker: bool = _bool_env("ENABLE_LEGACY_CAMPAIGN_WORKER", False)
+    enable_legacy_operation_task_worker: bool = _bool_env("ENABLE_LEGACY_OPERATION_TASK_WORKER", False)
+    enable_legacy_campaign_routes: bool = field(
+        default_factory=lambda: _bool_env("ENABLE_LEGACY_CAMPAIGN_ROUTES", os.getenv("APP_ENV") == "test")
+    )
+    enable_legacy_operation_task_routes: bool = field(
+        default_factory=lambda: _bool_env("ENABLE_LEGACY_OPERATION_TASK_ROUTES", os.getenv("APP_ENV") == "test")
+    )
+    enable_legacy_review_routes: bool = field(
+        default_factory=lambda: _bool_env("ENABLE_LEGACY_REVIEW_ROUTES", os.getenv("APP_ENV") == "test")
+    )
+    enable_legacy_review_dispatch_gate: bool = _bool_env("ENABLE_LEGACY_REVIEW_DISPATCH_GATE", False)
     embedded_worker_interval_seconds: float = float(os.getenv("EMBEDDED_WORKER_INTERVAL_SECONDS", "2.0"))
     embedded_worker_limit: int = int(os.getenv("EMBEDDED_WORKER_LIMIT", "100"))
     auto_migrate_on_start: bool = _bool_env("AUTO_MIGRATE_ON_START", False)

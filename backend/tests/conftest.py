@@ -60,3 +60,15 @@ def _reset_test_database() -> None:
 
 
 _reset_test_database()
+
+
+def pytest_runtest_setup(item):
+    from app.services.task_center.listener_runtime import reset_listener_runtime_cache
+
+    reset_listener_runtime_cache()
+
+
+def pytest_runtest_teardown(item, nextitem):
+    from app.services.task_center.listener_runtime import reset_listener_runtime_cache
+
+    reset_listener_runtime_cache()

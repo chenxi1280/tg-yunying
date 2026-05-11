@@ -11,6 +11,7 @@ from app.services._common import _now, gateway
 from app.services.developer_apps import credentials_for_account
 
 from ..account_pool import select_task_accounts
+from ..listener_runtime import should_collect_listener
 
 
 def quantity_with_jitter(quantity: int, jitter_ratio: float | int = 0.15) -> int:
@@ -52,6 +53,8 @@ def channel_scope(session: Session, task: Task, config: dict) -> tuple[Operation
 
 
 def collect_channel_messages(session: Session, task: Task, channel: OperationTarget, config: dict) -> int:
+    if not should_collect_listener("channel", channel.id, window_seconds=int(config.get("listener_interval_seconds") or 30)):
+        return 0
     limit = channel_fetch_limit(config)
     accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, limit=1)
     if not accounts:
@@ -106,7 +109,7 @@ def collect_channel_messages(session: Session, task: Task, channel: OperationTar
 
 def channel_fetch_limit(config: dict) -> int:
     scope = config.get("message_scope") or "latest_n"
-    if scope == "latest_n":
+    if scope in {"latest_n", "dynamic_new"}:
         return max(1, min(100, int(config.get("message_count") or 10)))
     return 50
 
@@ -206,7 +209,7 @@ def channel_messages(session: Session, tenant_id: int, config: dict) -> list[Cha
         if date_to:
             stmt = stmt.where(ChannelMessage.published_at <= date_to)
     stmt = stmt.order_by(ChannelMessage.published_at.desc().nullslast(), ChannelMessage.id.desc())
-    if scope == "latest_n":
+    if scope in {"latest_n", "dynamic_new"}:
         stmt = stmt.limit(int(config.get("message_count") or 10))
     return list(session.scalars(stmt))
 

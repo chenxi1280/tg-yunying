@@ -23,6 +23,12 @@ def list_audit_logs(
     actor: str | None = None,
     action: str | None = None,
     target_type: str | None = None,
+    target_id: str | None = None,
+    keyword: str | None = None,
+    account_id: str | None = None,
+    operation_target_id: str | None = None,
+    task_id: str | None = None,
+    status: str | None = None,
     start_at: str | None = None,
     end_at: str | None = None,
     session: Session = Depends(get_session),
@@ -34,4 +40,18 @@ def list_audit_logs(
         parsed_end = datetime.fromisoformat(end_at) if end_at else None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid datetime filter") from exc
-    return filter_audit_logs(session, tenant_id, actor=actor, action=action, target_type=target_type, start_at=parsed_start, end_at=parsed_end)
+    return filter_audit_logs(
+        session,
+        tenant_id,
+        actor=actor,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        keyword=keyword,
+        account_id=account_id,
+        operation_target_id=operation_target_id,
+        task_id=task_id,
+        status=status,
+        start_at=parsed_start,
+        end_at=parsed_end,
+    )

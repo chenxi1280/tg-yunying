@@ -1,8 +1,9 @@
 import React from 'react';
-import { Button, Card, Descriptions, Empty, List, Modal, Typography } from 'antd';
-import type { ArchiveItem, ArchiveDetail } from '../types';
+import { App as AntdApp, Button, Card, Descriptions, Empty, Input, List, Modal, Select, Space, Typography } from 'antd';
+import type { ArchiveItem, ArchiveDetail, OperationTarget } from '../types';
 import { StatusBadge } from '../components/shared';
 import { statusAccent } from '../utils';
+import { api } from '../../shared/api/client';
 
 interface Props {
   archives: ArchiveItem[];
@@ -10,22 +11,70 @@ interface Props {
   onOpenArchiveDetail: (archive: ArchiveItem) => void;
   onExportArchive?: (archive: ArchiveItem) => void;
   onRerunArchive?: (archive: ArchiveItem) => void;
+  onRefresh?: () => Promise<void>;
   isActionPending: (key: string) => boolean;
 }
 
-export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDetail, onExportArchive, onRerunArchive, isActionPending }: Props) {
+export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDetail, onExportArchive, onRerunArchive, onRefresh, isActionPending }: Props) {
+  const { message } = AntdApp.useApp();
   const [detailArchiveId, setDetailArchiveId] = React.useState<number | null>(null);
+  const [targets, setTargets] = React.useState<OperationTarget[]>([]);
+  const [createOpen, setCreateOpen] = React.useState(false);
+  const [selectedTargetId, setSelectedTargetId] = React.useState<number | undefined>();
+  const [archiveTitle, setArchiveTitle] = React.useState('');
+  const [creating, setCreating] = React.useState(false);
   const detailArchive = archives.find((archive) => archive.id === detailArchiveId) ?? null;
   const currentDetail = archiveDetail?.archive.id === detailArchiveId ? archiveDetail : null;
+  const archiveTargets = targets.filter((target) => target.target_type === 'group' && target.can_archive && target.linked_group_id);
+
+  React.useEffect(() => {
+    api<OperationTarget[]>('/operation-targets?target_type=group')
+      .then(setTargets)
+      .catch(() => setTargets([]));
+  }, []);
 
   function openDetail(archive: ArchiveItem) {
     setDetailArchiveId(archive.id);
     onOpenArchiveDetail(archive);
   }
 
+  async function createArchiveFromTarget() {
+    const target = targets.find((item) => item.id === selectedTargetId);
+    if (!target) {
+      void message.error('请选择归档运营目标');
+      return;
+    }
+    setCreating(true);
+    try {
+      await api('/archives', {
+        method: 'POST',
+        body: JSON.stringify({
+          operation_target_id: target.id,
+          title: archiveTitle.trim() || `${target.title} 内容与成员归档`,
+        }),
+      });
+      void message.success('归档任务已创建');
+      setCreateOpen(false);
+      setSelectedTargetId(undefined);
+      setArchiveTitle('');
+      await onRefresh?.();
+    } finally {
+      setCreating(false);
+    }
+  }
+
   return (
     <>
-      <Card className="panel" title="群聊归档" extra={<Typography.Text type="secondary">内容、成员清单与新群初始化方案</Typography.Text>}>
+      <Card
+        className="panel"
+        title="群聊归档"
+        extra={(
+          <Space>
+            <Typography.Text type="secondary">内容、成员清单与新群初始化方案</Typography.Text>
+            {onRefresh && <Button type="primary" onClick={() => setCreateOpen(true)}>新建归档</Button>}
+          </Space>
+        )}
+      >
         <div className="cards-grid">
           {!archives.length && <Empty description="暂无群聊归档" />}
           {archives.map((archive) => (
@@ -83,6 +132,37 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
             />
           </div>
         )}
+      </Modal>
+
+      <Modal
+        title="新建归档"
+        open={createOpen}
+        onCancel={() => setCreateOpen(false)}
+        onOk={createArchiveFromTarget}
+        confirmLoading={creating}
+        okText="创建"
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Text type="secondary">归档目标来自已确认的运营目标，并会回查关联群资产。</Typography.Text>
+          <Select
+            showSearch
+            allowClear
+            style={{ width: '100%' }}
+            placeholder="选择可归档运营目标"
+            value={selectedTargetId}
+            onChange={(value) => {
+              setSelectedTargetId(value);
+              const target = targets.find((item) => item.id === value);
+              if (target) setArchiveTitle(`${target.title} 内容与成员归档`);
+            }}
+            options={archiveTargets.map((target) => ({
+              value: target.id,
+              label: `${target.title} / 可发账号 ${target.available_send_account_count} / 监听账号 ${target.listener_account_count}`,
+            }))}
+            filterOption={(input, option) => String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())}
+          />
+          <Input value={archiveTitle} onChange={(event) => setArchiveTitle(event.target.value)} placeholder="归档标题" />
+        </Space>
       </Modal>
     </>
   );

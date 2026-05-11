@@ -17,7 +17,6 @@ export function AppModals() {
     aiProviderForm, setAiProviderForm, createAiProvider,
     // Tenant
     tenantForm, setTenantForm, saveTenantQuota,
-    subscriptionPlanForm, setSubscriptionPlanForm, createSubscriptionPlan,
     adminUserForm, setAdminUserForm, saveAdminUser, tokenAdjustmentForm, setTokenAdjustmentForm, adminUsers, selectedUserTokenLedgers, adjustAdminUserTokens, resetAdminUserPassword,
     // Tenant AI
     tenantAiSetting, setTenantAiSetting, selectedAiProviderId, setSelectedAiProviderId, aiProviders, saveTenantAiSetting,
@@ -35,10 +34,6 @@ export function AppModals() {
     profileForm, setProfileForm, avatarFile, setAvatarFile, avatarUrl, saveAccountProfile, openAccountProfileEdit, queueAccountSyncNow, pollVerificationCodes, retryAccountProfileSync,
     // Group
     selectedGroup, groupPolicy, setGroupPolicy, saveGroupPolicy, groupDetail,
-    // Campaign
-    groups, campaigns, materials, campaignStep, setCampaignStep, campaignMode, setCampaignMode, selectedTargetGroupIds, selectedSourceGroupIds, recommendedAccounts, selectedAccountsByGroup, targetGroupsMissingAccounts, topic, setTopic, sendWindow, setSendWindow, intensity, setIntensity, tone, setTone, selectedMaterialIds, toggleTargetGroup, toggleSourceGroup, goCampaignAccountStep, goCampaignContentStep, toggleRecommendedAccount, setGroupAccountsSelected, toggleMaterial, createCampaignAndDrafts, selectedCampaignId, setSelectedCampaignId, campaignEndsAt, setCampaignEndsAt, maxAiTokens, setMaxAiTokens, runIntervalSeconds, setRunIntervalSeconds, participationMinRatio, setParticipationMinRatio, participationMaxRatio, setParticipationMaxRatio, maxMessagesPerAccount, setMaxMessagesPerAccount, maxDraftsPerBatch, setMaxDraftsPerBatch,
-    // Draft
-    draftEditTarget, draftEditForm, setDraftEditForm, saveDraftEdit,
     // Verification
     returnAfterVerification, setReturnAfterVerification, confirmVerificationTask, dismissVerificationTask,
     // Direct Message
@@ -85,31 +80,15 @@ export function AppModals() {
       )}
 
       {modal?.type === 'tenantEdit' && (
-        <Modal className="tg-modal medium" title="编辑租户配额" open width={640} onCancel={closeModal} footer={null} destroyOnHidden centered>
+        <Modal className="tg-modal medium" title="编辑运营空间配额" open width={640} onCancel={closeModal} footer={null} destroyOnHidden centered>
       <div className="modal-body">
           <div className="policy-grid">
-            <label>租户名称<Input value={tenantForm.name} onChange={(event) => setTenantForm({ ...tenantForm, name: event.target.value })} /></label>
-            <label>套餐名称<Input value={tenantForm.plan_name} onChange={(event) => setTenantForm({ ...tenantForm, plan_name: event.target.value })} /></label>
+            <label>运营空间名称<Input value={tenantForm.name} onChange={(event) => setTenantForm({ ...tenantForm, name: event.target.value })} /></label>
+            <label>运行口径<Input value={tenantForm.plan_name} onChange={(event) => setTenantForm({ ...tenantForm, plan_name: event.target.value })} /></label>
             <label>账号配额<InputNumber min={0} value={tenantForm.account_quota} onChange={(value) => setTenantForm({ ...tenantForm, account_quota: Number(value ?? 0) })} /></label>
             <label>任务配额<InputNumber min={0} value={tenantForm.task_quota} onChange={(value) => setTenantForm({ ...tenantForm, task_quota: Number(value ?? 0) })} /></label>
           </div>
           <FormActions submitLabel="保存配额" onCancel={closeModal} onSubmit={saveTenantQuota} loading={isActionPending(`tenant:${tenantForm.id ?? 'current'}:save`)} disabled={!tenantForm.name || !tenantForm.plan_name} />
-          </div>
-        </Modal>
-      )}
-
-      {(modal?.type === 'subscriptionPlanCreate' || modal?.type === 'subscriptionPlanEdit') && (
-        <Modal className="tg-modal medium" title={modal.type === 'subscriptionPlanEdit' ? '编辑套餐' : '新增套餐'} open width={640} onCancel={closeModal} footer={null} destroyOnHidden centered>
-      <div className="modal-body">
-          <div className="policy-grid">
-            <label>套餐标识<Input disabled={modal.type === 'subscriptionPlanEdit'} value={subscriptionPlanForm.plan_type} onChange={(event) => setSubscriptionPlanForm((current) => ({ ...current, plan_type: event.target.value.trim().toLowerCase() }))} placeholder="monthly" /></label>
-            <label>套餐名称<Input value={subscriptionPlanForm.name} onChange={(event) => setSubscriptionPlanForm((current) => ({ ...current, name: event.target.value }))} /></label>
-            <label>有效天数<InputNumber min={1} value={subscriptionPlanForm.duration_days} onChange={(value) => setSubscriptionPlanForm((current) => ({ ...current, duration_days: Number(value ?? 1) }))} /></label>
-            <label>赠送 Token<InputNumber min={0} value={subscriptionPlanForm.token_quota} onChange={(value) => setSubscriptionPlanForm((current) => ({ ...current, token_quota: Number(value ?? 0) }))} /></label>
-            <label className="wide-field">备注<Input value={subscriptionPlanForm.note} onChange={(event) => setSubscriptionPlanForm((current) => ({ ...current, note: event.target.value }))} /></label>
-            <Checkbox checked={subscriptionPlanForm.is_active} onChange={(event) => setSubscriptionPlanForm((current) => ({ ...current, is_active: event.target.checked }))}>启用套餐</Checkbox>
-          </div>
-          <FormActions submitLabel="保存套餐" onCancel={closeModal} onSubmit={createSubscriptionPlan} loading={isActionPending('subscription-plan:save')} disabled={!subscriptionPlanForm.plan_type.trim() || !subscriptionPlanForm.name.trim()} />
           </div>
         </Modal>
       )}
@@ -122,7 +101,7 @@ export function AppModals() {
             <label>邮箱<Input value={adminUserForm.email} onChange={(event) => setAdminUserForm((current) => ({ ...current, email: event.target.value }))} /></label>
             <label>手机号<Input value={adminUserForm.phone} onChange={(event) => setAdminUserForm((current) => ({ ...current, phone: event.target.value }))} /></label>
             <label>角色<Select value={adminUserForm.role} onChange={(value) => setAdminUserForm((current) => ({ ...current, role: value }))} options={['普通用户', '系统管理员'].map((value) => ({ value, label: value }))} /></label>
-            <label>订阅状态<Select value={adminUserForm.subscription_status} onChange={(value) => setAdminUserForm((current) => ({ ...current, subscription_status: value }))} options={[{ value: 'pending_activation', label: '待激活' }, { value: 'active', label: '已激活' }, { value: 'expired', label: '已过期' }]} /></label>
+            <label>账号状态<Select value={adminUserForm.subscription_status} onChange={(value) => setAdminUserForm((current) => ({ ...current, subscription_status: value }))} options={[{ value: 'pending_activation', label: '待启用' }, { value: 'active', label: '已启用' }, { value: 'expired', label: '已停用' }]} /></label>
             <Checkbox checked={adminUserForm.is_active} onChange={(event) => setAdminUserForm((current) => ({ ...current, is_active: event.target.checked }))}>允许登录</Checkbox>
             <div className="wide-field">
               <span className="field-label">可见菜单</span>
@@ -167,7 +146,7 @@ export function AppModals() {
             <Button loading={adminUserForm.id ? isActionPending(`admin-user:${adminUserForm.id}:adjust-tokens`) : false} onClick={() => {
               const user = adminUsers.find((item) => item.id === adminUserForm.id);
               if (user) void adjustAdminUserTokens(user);
-            }}>调整 Token</Button>
+            }}>调整 AI 用量</Button>
             <Button type="primary" loading={isActionPending(`admin-user:${adminUserForm.id ?? 'current'}:save`)} onClick={saveAdminUser} disabled={!adminUserForm.name.trim() || !adminUserForm.email.trim()}>保存用户</Button>
           </Space>
           </div>
@@ -175,13 +154,13 @@ export function AppModals() {
       )}
 
       {modal?.type === 'tenantAiEdit' && tenantAiSetting && (
-        <Modal className="tg-modal medium" title="编辑客户 AI 配置" open width={640} onCancel={closeModal} footer={null} destroyOnHidden centered>
+        <Modal className="tg-modal medium" title="编辑运营空间 AI 配置" open width={640} onCancel={closeModal} footer={null} destroyOnHidden centered>
       <div className="modal-body">
           <div className="policy-grid">
             <label>默认模型<Select<number | ''> value={selectedAiProviderId || ''} disabled={!aiProviders.length} onChange={(value) => setSelectedAiProviderId(Number(value) || '')} options={aiProviders.length ? aiProviders.map((provider) => ({ value: provider.id, label: `${provider.provider_name} / ${provider.model_name}` })) : [{ value: '', label: '请先新增 AI 供应商' }]} /></label>
             <label>温度<InputNumber min={0} max={2} step={0.1} value={tenantAiSetting.temperature} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, temperature: Number(value ?? 0) })} /></label>
             <label>最大 Token<InputNumber min={128} max={8192} value={tenantAiSetting.max_tokens} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, max_tokens: Number(value ?? 128) })} /></label>
-            <Checkbox checked={tenantAiSetting.ai_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_enabled: event.target.checked })}>启用 AI 草稿</Checkbox>
+            <Checkbox checked={tenantAiSetting.ai_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_enabled: event.target.checked })}>启用 AI 内容生成</Checkbox>
             <Checkbox checked={tenantAiSetting.fallback_to_mock} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, fallback_to_mock: event.target.checked })}>失败回退模板</Checkbox>
           </div>
           <FormActions onCancel={closeModal} onSubmit={saveTenantAiSetting} loading={isActionPending('tenant-ai:save')} disabled={!aiProviders.length} />
@@ -221,7 +200,7 @@ export function AppModals() {
       <div className="modal-body">
           <div className="policy-grid">
             <label>模板名称<Input value={promptTemplateForm.name} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, name: event.target.value })} /></label>
-            <label>模板类型<Select value={promptTemplateForm.template_type} onChange={(value) => setPromptTemplateForm({ ...promptTemplateForm, template_type: value })} options={['系统决策提示词', '群活跃草稿', '多账号对话脚本', '素材配文', '风险检查'].map((value) => ({ value, label: value }))} /></label>
+            <label>模板类型<Select value={promptTemplateForm.template_type} onChange={(value) => setPromptTemplateForm({ ...promptTemplateForm, template_type: value })} options={['系统决策提示词', '群活跃对话计划', '多账号对话脚本', '素材配文', '风险检查'].map((value) => ({ value, label: value }))} /></label>
             <label className="wide-field">模板内容<Input.TextArea value={promptTemplateForm.content} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, content: event.target.value })} /></label>
           </div>
           <FormActions submitLabel="新增提示词" onCancel={closeModal} onSubmit={createPromptTemplate} loading={isActionPending('prompt-template:create')} disabled={!promptTemplateForm.name || !promptTemplateForm.content} />
@@ -437,7 +416,7 @@ export function AppModals() {
             <label>话题方向<Input.TextArea value={groupPolicy.topic_direction} onChange={(event) => setGroupPolicy({ ...groupPolicy, topic_direction: event.target.value })} /></label>
             <label>禁用词<Input.TextArea value={groupPolicy.banned_words} onChange={(event) => setGroupPolicy({ ...groupPolicy, banned_words: event.target.value })} /></label>
             <label>链接白名单<Input.TextArea value={groupPolicy.link_whitelist} onChange={(event) => setGroupPolicy({ ...groupPolicy, link_whitelist: event.target.value })} /></label>
-            <Checkbox checked={groupPolicy.require_review} onChange={(event) => setGroupPolicy({ ...groupPolicy, require_review: event.target.checked })}>需要人工审核</Checkbox>
+            <Checkbox checked={!groupPolicy.require_review} onChange={(event) => setGroupPolicy({ ...groupPolicy, require_review: !event.target.checked })}>规则内自动发送</Checkbox>
             <Checkbox checked={groupPolicy.listener_enabled} onChange={(event) => setGroupPolicy({ ...groupPolicy, listener_enabled: event.target.checked })}>启用监听续聊</Checkbox>
             <Checkbox checked={groupPolicy.listener_auto_reply_enabled} onChange={(event) => setGroupPolicy({ ...groupPolicy, listener_auto_reply_enabled: event.target.checked })}>监听触发后自动发送</Checkbox>
             <label>监听间隔秒<InputNumber min={30} value={groupPolicy.listener_interval_seconds} onChange={(value) => setGroupPolicy({ ...groupPolicy, listener_interval_seconds: Number(value ?? 30) })} /></label>
@@ -484,19 +463,6 @@ export function AppModals() {
           </div>
           <p className="muted-line">头像最大 {Math.round((runtime?.avatar_max_bytes ?? 0) / 1024 / 1024) || 2}MB；保存后会自动进入后台同步处理。</p>
           <FormActions submitLabel="保存并同步" onCancel={() => ctx.setModal({ type: 'accountDetail' })} onSubmit={saveAccountProfile} loading={isActionPending(`account:${accountDetail.account.id}:profile:save`)} disabled={!profileForm.display_name.trim()} />
-          </div>
-        </Modal>
-      )}
-
-      {modal?.type === 'draftEdit' && draftEditTarget && (
-        <Modal className="tg-modal medium" title="编辑草稿" open width={640} onCancel={closeModal} footer={null} destroyOnHidden centered>
-      <div className="modal-body">
-          <div className="policy-grid">
-            <label>风险等级<Select value={draftEditForm.risk_level} onChange={(value) => setDraftEditForm({ ...draftEditForm, risk_level: value })} options={['低', '中', '高'].map((value) => ({ value, label: value }))} /></label>
-            <label>建议账号<Select value={draftEditForm.suggested_account_id || ''} onChange={(value) => setDraftEditForm({ ...draftEditForm, suggested_account_id: Number(value) || '' })} options={[{ value: '', label: '不指定' }, ...accounts.map((account) => ({ value: account.id, label: account.display_name }))]} /></label>
-            <label className="wide-field">草稿内容<Input.TextArea value={draftEditForm.content} onChange={(event) => setDraftEditForm({ ...draftEditForm, content: event.target.value })} /></label>
-          </div>
-          <FormActions onCancel={closeModal} onSubmit={saveDraftEdit} loading={isActionPending(`draft:${draftEditTarget.id}:save`)} disabled={!draftEditForm.content.trim()} />
           </div>
         </Modal>
       )}

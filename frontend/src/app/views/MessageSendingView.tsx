@@ -1,10 +1,10 @@
 import React from 'react';
 import dayjs from 'dayjs';
-import { App as AntdApp, Button, Card, Col, DatePicker, Form, Input, Modal, Radio, Row, Select, Space, Table, Tag, Typography } from 'antd';
+import { Alert, App as AntdApp, Button, Card, Col, DatePicker, Form, Input, Modal, Radio, Row, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { MessageSquareText, RefreshCcw, Send, ShieldAlert } from 'lucide-react';
 import { StatusBadge } from '../components/shared';
-import type { Account, AccountGroup, Contact, Material, MessageSendBatchCreate, MessageSendTarget, MessageSendingPrefill, MessageTask, OperationTarget } from '../types';
+import type { Account, Contact, Material, MessageSendBatchCreate, MessageSendTarget, MessageSendingPrefill, MessageTask, OperationTarget } from '../types';
 import { api, ApiError } from '../../shared/api/client';
 
 type TargetType = 'private' | 'group' | 'channel';
@@ -88,7 +88,6 @@ export default function MessageSendingView({
   const [dispatchNow, setDispatchNow] = React.useState(true);
   const [scheduledAt, setScheduledAt] = React.useState<string | null>(null);
   const [contacts, setContacts] = React.useState<Contact[]>([]);
-  const [accountGroups, setAccountGroups] = React.useState<AccountGroup[]>([]);
   const [operationTargets, setOperationTargets] = React.useState<OperationTarget[]>([]);
   const [localMaterials, setLocalMaterials] = React.useState<Material[]>(materials);
   const [statusFilter, setStatusFilter] = React.useState<string>('');
@@ -128,18 +127,13 @@ export default function MessageSendingView({
   React.useEffect(() => {
     if (!accountId) {
       setContacts([]);
-      setAccountGroups([]);
       return;
     }
     let active = true;
     setLoadingTargets(true);
-    Promise.all([
-      api<Contact[]>(`/tg-accounts/${accountId}/contacts`).catch(() => []),
-      api<AccountGroup[]>(`/tg-accounts/${accountId}/groups`).catch(() => []),
-    ]).then(([nextContacts, nextGroups]) => {
+    api<Contact[]>(`/tg-accounts/${accountId}/contacts`).catch(() => []).then((nextContacts) => {
       if (!active) return;
       setContacts(nextContacts);
-      setAccountGroups(nextGroups);
     }).finally(() => {
       if (active) setLoadingTargets(false);
     });
@@ -148,7 +142,7 @@ export default function MessageSendingView({
 
   React.useEffect(() => {
     function loadOperationTargets() {
-      api<OperationTarget[]>('/operation-targets?target_type=channel')
+      api<OperationTarget[]>('/operation-targets')
         .then((items) => setOperationTargets(items))
         .catch(() => setOperationTargets([]));
     }
@@ -189,25 +183,31 @@ export default function MessageSendingView({
         target: { target_type: 'private', target_peer_id: peer, target_display: title },
       } satisfies TargetOption;
     });
-    const groupOptions = accountGroups
-      .filter((group) => group.account_can_send && group.auth_status === '已授权运营' && group.can_send)
-      .map((group) => ({
-        value: `group:${group.id}`,
-        searchText: `${group.title} ${group.group_type} ${group.auth_status}`,
-        label: <Space size={6}><Tag color="green">群聊</Tag><span>{group.title}</span><Typography.Text type="secondary">{group.group_type}</Typography.Text></Space>,
-        target: { target_type: 'group', group_id: group.id, target_display: group.title },
+    const groupOptions = operationTargets
+      .filter((target) => target.target_type === 'group' && target.can_send && target.auth_status === '已授权运营')
+      .map((target) => ({
+        value: `operation-target:${target.id}`,
+        searchText: `群聊 ${target.title} ${target.username || ''} ${target.tg_peer_id}`,
+        label: (
+          <Space size={6}>
+            <Tag color="green">运营目标</Tag>
+            <span>{target.title}</span>
+            <Typography.Text type="secondary">可发账号 {target.available_send_account_count}</Typography.Text>
+          </Space>
+        ),
+        target: { target_type: 'group', operation_target_id: target.id, target_display: target.title },
       } satisfies TargetOption));
     const channelOptions = operationTargets
       .filter((target) => target.target_type === 'channel' && target.can_send && target.auth_status === '已授权运营')
       .map((target) => ({
-        value: `channel:${target.id}`,
+        value: `operation-target:${target.id}`,
         searchText: `${target.title} ${target.username || ''} ${target.tg_peer_id}`,
-        label: <Space size={6}><Tag color="purple">频道</Tag><span>{target.title}</span><Typography.Text type="secondary">{target.username || target.tg_peer_id}</Typography.Text></Space>,
+        label: <Space size={6}><Tag color="purple">运营目标</Tag><span>{target.title}</span><Typography.Text type="secondary">{target.username || target.tg_peer_id}</Typography.Text></Space>,
         target: { target_type: 'channel', operation_target_id: target.id, target_display: target.title },
       } satisfies TargetOption));
     const builtinValues = new Set([...privateOptions, ...groupOptions, ...channelOptions].map((option) => option.value));
     return [...privateOptions, ...groupOptions, ...channelOptions, ...manualTargets.filter((option) => !builtinValues.has(option.value))];
-  }, [accountGroups, contacts, manualTargets, operationTargets]);
+  }, [contacts, manualTargets, operationTargets]);
 
   const selectedTargets = React.useMemo(
     () => targetKeys.map((key) => targetOptions.find((option) => option.value === key)).filter((option): option is TargetOption => Boolean(option)),
@@ -486,7 +486,7 @@ export default function MessageSendingView({
                   showSearch
                   allowClear
                   style={{ width: '100%' }}
-                  placeholder="选择已审核图片素材"
+                  placeholder="选择可用图片素材"
                   value={materialId}
                   onChange={setMaterialId}
                   filterOption={optionFilter}
@@ -528,6 +528,12 @@ export default function MessageSendingView({
       </Modal>
 
       <Modal title="手动输入目标" open={manualOpen} onCancel={() => setManualOpen(false)} onOk={applyManualTarget} okText="选择">
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="该目标未在系统资产中验证，可能因权限不足、目标不存在、账号限制等原因发送失败。"
+        />
         <Form layout="vertical">
           <Form.Item label="目标类型">
             <Radio.Group value={manualTargetType} onChange={(event) => setManualTargetType(event.target.value)}>

@@ -1,12 +1,5 @@
-import React from 'react';
-import { Button, Card, Descriptions, Modal, Space, Table, Tabs, Tag, Typography } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
+import { Tabs } from 'antd';
 import type {
-  ActivationCode,
-  ActivationCodeCreateForm,
-  ActivationCodeFilters,
-  ActivationCodePage,
-  AdminUser,
   AiProvider,
   ConfirmPayload,
   ContentKeywordRule,
@@ -14,46 +7,27 @@ import type {
   Material,
   PromptTemplate,
   SchedulingSetting,
-  SubscriptionPlan,
   Tenant,
   TenantAiSetting,
-  UsageLedger,
-  UsageSummary,
 } from '../types';
-import { Badge, StatusBadge, useAntdTableControls } from '../components/shared';
-import ActivationCodesView from './ActivationCodesView';
 import AISettingsView from './AISettingsView';
 import DeveloperAppsView from './DeveloperAppsView';
-import UsageReportsView from './UsageReportsView';
 
 interface Props {
   developerApps: DeveloperApp[];
   tenants: Tenant[];
-  subscriptionPlans: SubscriptionPlan[];
-  adminUsers: AdminUser[];
   aiProviders: AiProvider[];
   promptTemplates: PromptTemplate[];
   tenantAiSetting: TenantAiSetting | null;
   schedulingSetting: SchedulingSetting | null;
   materials: Material[];
   contentKeywordRules: ContentKeywordRule[];
-  activationCodes: ActivationCode[];
-  activationCodePage: ActivationCodePage;
-  activationCodeFilters: ActivationCodeFilters;
-  setActivationCodeFilters: React.Dispatch<React.SetStateAction<ActivationCodeFilters>>;
-  activationBatch: ActivationCodeCreateForm;
-  setActivationBatch: React.Dispatch<React.SetStateAction<ActivationCodeCreateForm>>;
-  usageLedgers: UsageLedger[];
-  usageSummary: UsageSummary | null;
   currentUserRole: string | undefined;
   onCreateDeveloperApp: () => void;
   onEditDeveloperApp: (app: DeveloperApp) => void;
   onCheckDeveloperApp: (app: DeveloperApp) => void;
   onToggleDeveloperApp: (app: DeveloperApp) => void;
   onEditTenant: (tenant: Tenant) => void;
-  onCreateSubscriptionPlan: () => void;
-  onEditSubscriptionPlan: (plan: SubscriptionPlan) => void;
-  onEditAdminUser: (user: AdminUser) => void;
   onCreateAiProvider: () => void;
   onEditAiProvider: (provider: AiProvider) => void;
   onToggleAiProvider: (provider: AiProvider) => void;
@@ -64,243 +38,38 @@ interface Props {
   onCreateMaterial: () => void;
   onCreateKeywordRule: () => void;
   onEditKeywordRule: (rule: ContentKeywordRule) => void;
-  onLoadCodes: (filters?: ActivationCodeFilters, page?: number, pageSize?: number) => Promise<void>;
-  onCreateCodes: () => Promise<void>;
-  onDisableCode: (code: ActivationCode) => Promise<void>;
   onOpenConfirm: (payload: ConfirmPayload) => void;
   isActionPending: (key: string) => boolean;
 }
 
-const MENU_LABELS: Record<string, string> = {
-  overview: '运营概览',
-  accounts: '账号管理',
-  taskManagement: '任务管理',
-  groupManagement: '群聊管理',
-  usageReports: '用户用量',
-  audits: '审计安全',
-};
-
-function TenantPlansPanel({
+export default function SystemConfigView({
+  developerApps,
   tenants,
-  subscriptionPlans,
-  onCreateSubscriptionPlan,
-  onEditSubscriptionPlan,
+  aiProviders,
+  promptTemplates,
+  tenantAiSetting,
+  schedulingSetting,
+  materials,
+  contentKeywordRules,
+  currentUserRole,
+  onCreateDeveloperApp,
+  onEditDeveloperApp,
+  onCheckDeveloperApp,
+  onToggleDeveloperApp,
   onEditTenant,
-}: {
-  tenants: Tenant[];
-  subscriptionPlans: SubscriptionPlan[];
-  onCreateSubscriptionPlan: () => void;
-  onEditSubscriptionPlan: (plan: SubscriptionPlan) => void;
-  onEditTenant: (tenant: Tenant) => void;
-}) {
-  const [detailTenant, setDetailTenant] = React.useState<Tenant | null>(null);
-  const planTable = useAntdTableControls<SubscriptionPlan>({
-    rows: subscriptionPlans,
-    placeholder: '搜索套餐 / 类型 / 状态',
-    search: [
-      (plan) => [
-        plan.id,
-        plan.name,
-        plan.plan_type,
-        plan.duration_days,
-        plan.token_quota,
-        plan.is_active ? '已启用' : '禁用',
-      ],
-    ],
-  });
-
-  const planColumns: ColumnsType<SubscriptionPlan> = [
-    { title: '套餐', dataIndex: 'name', key: 'name', render: (_, plan) => <Space><Typography.Text strong>{plan.name}</Typography.Text><Tag>{plan.plan_type}</Tag></Space> },
-    { title: '有效期', dataIndex: 'duration_days', key: 'duration_days', render: (days: number) => `${days} 天` },
-    { title: '默认 Token', dataIndex: 'token_quota', key: 'token_quota', render: (tokens: number) => tokens.toLocaleString() },
-    { title: '状态', dataIndex: 'is_active', key: 'is_active', render: (active: boolean) => <StatusBadge status={active ? '已启用' : '禁用'} /> },
-    { title: '操作', key: 'actions', render: (_, plan) => <Button size="small" onClick={() => onEditSubscriptionPlan(plan)}>编辑</Button> },
-  ];
-
-  return (
-    <section className="view-grid">
-      <Card className="panel" title="套餐配置" extra={<Button type="primary" onClick={onCreateSubscriptionPlan}>新增套餐</Button>}>
-        <Typography.Text type="secondary">卡密生成会复制套餐快照，用户兑换后按快照延长订阅并增加 Token 余额。</Typography.Text>
-        <Space className="toolbar-row" wrap>
-          {planTable.searchInput}
-        </Space>
-        <Table<SubscriptionPlan>
-          className="tg-table"
-          rowKey="id"
-          columns={planColumns}
-          dataSource={planTable.filteredRows}
-          pagination={planTable.pagination}
-          scroll={{ x: 760 }}
-          locale={{ emptyText: '暂无套餐。' }}
-        />
-      </Card>
-      <Card className="panel" title="租户配额" extra={<Typography.Text type="secondary">账号与任务额度仍按租户隔离</Typography.Text>}>
-        <div className="cards-grid developer-grid">
-          {tenants.map((tenant) => (
-            <Card className="developer-card status-accent neutral" key={tenant.id} size="small" title={tenant.name}>
-              <Space>
-                <Badge tone="neutral">租户 #{tenant.id}</Badge>
-                <Badge tone="positive">{tenant.plan_name}</Badge>
-              </Space>
-              <Typography.Paragraph type="secondary">账号 {tenant.account_quota} / 任务 {tenant.task_quota}</Typography.Paragraph>
-              <Space wrap>
-                <Button size="small" onClick={() => setDetailTenant(tenant)}>详情</Button>
-                <Button size="small" onClick={() => onEditTenant(tenant)}>编辑配额</Button>
-              </Space>
-            </Card>
-          ))}
-        </div>
-      </Card>
-      <Modal className="tg-modal medium" title={detailTenant?.name ?? '租户详情'} open={Boolean(detailTenant)} width={720} footer={null} destroyOnHidden centered onCancel={() => setDetailTenant(null)}>
-        {detailTenant && (
-          <Descriptions size="small" column={2} items={[
-            { key: 'id', label: '租户 ID', children: detailTenant.id },
-            { key: 'plan', label: '套餐', children: detailTenant.plan_name },
-            { key: 'account_quota', label: '账号配额', children: detailTenant.account_quota },
-            { key: 'task_quota', label: '任务配额', children: detailTenant.task_quota },
-            { key: 'bot', label: 'Bot 配置', children: <StatusBadge status={detailTenant.telegram_bot_configured ? '已配置' : '未配置'} /> },
-            { key: 'notify', label: 'AI 失败通知', children: detailTenant.notify_ai_failures_enabled ? '启用' : '关闭' },
-          ]} />
-        )}
-      </Modal>
-    </section>
-  );
-}
-
-function AdminUsersPanel({ users, onEditUser }: { users: AdminUser[]; onEditUser: (user: AdminUser) => void }) {
-  const userTable = useAntdTableControls<AdminUser>({
-    rows: users,
-    placeholder: '搜索用户 / 邮箱 / 角色 / 权限',
-    search: [
-      (user) => [
-        user.id,
-        user.name,
-        user.email,
-        user.role,
-        user.subscription_status,
-        user.token_balance,
-        user.menu_permissions.includes('*') ? '全部菜单' : user.menu_permissions.map((item) => MENU_LABELS[item] ?? item).join(' / '),
-        user.is_active ? '已启用' : '禁用',
-      ],
-    ],
-  });
-
-  const columns: ColumnsType<AdminUser> = [
-    {
-      title: '用户',
-      key: 'user',
-      fixed: 'left',
-      width: 260,
-      render: (_, user) => (
-        <Space direction="vertical" size={0}>
-          <Typography.Text strong>{user.name}</Typography.Text>
-          <Typography.Text type="secondary">{user.email}</Typography.Text>
-        </Space>
-      ),
-    },
-    { title: '角色', dataIndex: 'role', key: 'role', width: 120 },
-    { title: '订阅', dataIndex: 'subscription_status', key: 'subscription_status', width: 140, render: (status: string) => <StatusBadge status={status} /> },
-    { title: '剩余 Token', dataIndex: 'token_balance', key: 'token_balance', width: 150, render: (value: number) => value.toLocaleString() },
-    { title: '菜单权限', dataIndex: 'menu_permissions', key: 'menu_permissions', render: (items: string[]) => (items.includes('*') ? '全部菜单' : items.map((item) => MENU_LABELS[item] ?? item).join(' / ')) },
-    { title: '登录', dataIndex: 'is_active', key: 'is_active', width: 100, render: (active: boolean) => <StatusBadge status={active ? '已启用' : '禁用'} /> },
-    { title: '操作', key: 'actions', fixed: 'right', width: 100, render: (_, user) => <Button size="small" onClick={() => onEditUser(user)}>管理</Button> },
-  ];
-  return (
-    <Card className="panel" title="用户管理" extra={<Typography.Text type="secondary">启停用户、菜单权限、Token 调整和密码重置</Typography.Text>}>
-      <Space className="toolbar-row" wrap>
-        {userTable.searchInput}
-      </Space>
-      <Table<AdminUser>
-        className="tg-table"
-        rowKey="id"
-        columns={columns}
-        dataSource={userTable.filteredRows}
-        pagination={userTable.pagination}
-        scroll={{ x: 1050 }}
-        locale={{ emptyText: '暂无用户。普通用户可自行注册，管理员在这里启停与分配权限。' }}
-      />
-    </Card>
-  );
-}
-
-function MenuPermissionsPanel({ users }: { users: AdminUser[] }) {
-  const rows = Object.entries(MENU_LABELS).map(([key, label]) => ({
-    key,
-    label,
-    users: users.filter((user) => user.menu_permissions.includes('*') || user.menu_permissions.includes(key)).length,
-  }));
-  const permissionTable = useAntdTableControls<(typeof rows)[number]>({
-    rows,
-    placeholder: '搜索菜单 / 权限键',
-    search: ['label', 'key', 'users'],
-  });
-
-  return (
-    <Card className="panel" title="菜单权限" extra={<Typography.Text type="secondary">本轮控制前端入口可见与可进入</Typography.Text>}>
-      <Space className="toolbar-row" wrap>
-        {permissionTable.searchInput}
-      </Space>
-      <Table
-        className="tg-table"
-        rowKey="key"
-        columns={[
-          { title: '菜单', dataIndex: 'label', key: 'label' },
-          { title: '权限键', dataIndex: 'key', key: 'key' },
-          { title: '已授权用户数', dataIndex: 'users', key: 'users' },
-        ]}
-        dataSource={permissionTable.filteredRows}
-        pagination={permissionTable.pagination}
-      />
-    </Card>
-  );
-}
-
-export default function SystemConfigView(props: Props) {
-  const {
-    developerApps,
-    tenants,
-    subscriptionPlans,
-    adminUsers,
-    aiProviders,
-    promptTemplates,
-    tenantAiSetting,
-    schedulingSetting,
-    materials,
-    contentKeywordRules,
-    activationCodes,
-    activationCodePage,
-    activationCodeFilters,
-    setActivationCodeFilters,
-    activationBatch,
-    setActivationBatch,
-    usageLedgers,
-    usageSummary,
-    currentUserRole,
-    onCreateDeveloperApp,
-    onEditDeveloperApp,
-    onCheckDeveloperApp,
-    onToggleDeveloperApp,
-    onEditTenant,
-    onCreateSubscriptionPlan,
-    onEditSubscriptionPlan,
-    onEditAdminUser,
-    onCreateAiProvider,
-    onEditAiProvider,
-    onToggleAiProvider,
-    onCheckAiProvider,
-    onEditTenantAi,
-    onEditScheduling,
-    onCreatePromptTemplate,
-    onCreateMaterial,
-    onCreateKeywordRule,
-    onEditKeywordRule,
-    onLoadCodes,
-  onCreateCodes,
-  onDisableCode,
+  onCreateAiProvider,
+  onEditAiProvider,
+  onToggleAiProvider,
+  onCheckAiProvider,
+  onEditTenantAi,
+  onEditScheduling,
+  onCreatePromptTemplate,
+  onCreateMaterial,
+  onCreateKeywordRule,
+  onEditKeywordRule,
   onOpenConfirm,
   isActionPending,
-  } = props;
-
+}: Props) {
   return (
     <Tabs
       className="config-tabs"
@@ -308,7 +77,7 @@ export default function SystemConfigView(props: Props) {
       items={[
         {
           key: 'developer-apps',
-          label: '开发者应用',
+          label: 'TG 开发者应用',
           children: (
             <DeveloperAppsView
               developerApps={developerApps}
@@ -326,7 +95,7 @@ export default function SystemConfigView(props: Props) {
         },
         {
           key: 'ai',
-          label: 'AI 配置',
+          label: 'AI 与规则基础配置',
           children: (
             <AISettingsView
               aiProviders={aiProviders}

@@ -18,6 +18,19 @@ class SendMessagePayload(BaseModel):
     message_text: str = Field(min_length=1)
     original_text: str = ""
     review_approved: bool = False
+    cycle_id: str = ""
+    turn_index: int | None = None
+    account_role: str = ""
+    intent: str = ""
+    context_message_ids: list[int] = Field(default_factory=list)
+    context_snapshot_message_id: int | None = None
+    context_expire_after_messages: int = 0
+    relay_batch_id: str = ""
+    relay_event_id: str = ""
+    source_group_id: int | None = None
+    source_info: str = ""
+    rule_set_id: int | None = None
+    rule_set_version_id: int | None = None
 
     @model_validator(mode="after")
     def require_destination(self) -> "SendMessagePayload":

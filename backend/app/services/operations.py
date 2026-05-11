@@ -13,6 +13,7 @@ from app.models import (
     AccountStatus,
     ChannelMessage,
     FailureType,
+    GroupAuthStatus,
     ManualOperationRecord,
     OperationTarget,
     OperationTask,
@@ -224,11 +225,26 @@ def _create_attempt_plan(session: Session, task: OperationTask, contents: list[s
         )
 
 
-def filter_operation_targets(session: Session, tenant_id: int = 1, target_type: str | None = None) -> list[OperationTarget]:
+def filter_operation_targets(session: Session, tenant_id: int = 1, target_type: str | None = None) -> list[dict]:
     stmt = select(OperationTarget).where(OperationTarget.tenant_id == tenant_id)
     if target_type:
         stmt = stmt.where(OperationTarget.target_type == target_type)
-    return list(session.scalars(stmt.order_by(OperationTarget.id.desc())))
+    targets = list(session.scalars(stmt.order_by(OperationTarget.id.desc())))
+    linked_groups = {
+        group.tg_peer_id: group
+        for group in session.scalars(select(TgGroup).where(TgGroup.tenant_id == tenant_id))
+    }
+    group_ids = [group.id for group in linked_groups.values()]
+    links_by_group: dict[int, list[TgGroupAccount]] = {group_id: [] for group_id in group_ids}
+    if group_ids:
+        for link in session.scalars(
+            select(TgGroupAccount).where(
+                TgGroupAccount.tenant_id == tenant_id,
+                TgGroupAccount.group_id.in_(group_ids),
+            )
+        ):
+            links_by_group.setdefault(link.group_id, []).append(link)
+    return [_operation_target_list_payload(target, linked_groups.get(target.tg_peer_id), links_by_group) for target in targets]
 
 
 def create_operation_target(session: Session, payload: OperationTargetCreate, actor: str) -> OperationTarget:
@@ -366,6 +382,34 @@ def _linked_group_for_target(session: Session, target: OperationTarget) -> TgGro
             TgGroup.tg_peer_id == target.tg_peer_id,
         )
     )
+
+
+def _operation_target_list_payload(
+    target: OperationTarget,
+    linked_group: TgGroup | None,
+    links_by_group: dict[int, list[TgGroupAccount]],
+) -> dict:
+    send_links = [link for link in links_by_group.get(linked_group.id if linked_group else 0, []) if link.can_send]
+    listener_links = [link for link in links_by_group.get(linked_group.id if linked_group else 0, []) if link.is_listener]
+    return {
+        "id": target.id,
+        "tenant_id": target.tenant_id,
+        "target_type": target.target_type,
+        "tg_peer_id": target.tg_peer_id,
+        "title": target.title,
+        "username": target.username,
+        "member_count": target.member_count,
+        "can_send": target.can_send,
+        "auth_status": target.auth_status,
+        "linked_group_id": linked_group.id if linked_group else None,
+        "can_listen": bool(linked_group and (linked_group.listener_enabled or listener_links)),
+        "can_archive": target.target_type == "group" and target.auth_status == GroupAuthStatus.AUTHORIZED.value,
+        "available_send_account_count": len(send_links),
+        "listener_account_count": len(listener_links),
+        "last_sync_at": target.last_sync_at,
+        "created_at": target.created_at,
+        "updated_at": target.updated_at,
+    }
 
 
 def _group_accounts_for_detail(session: Session, group: TgGroup) -> list[dict]:

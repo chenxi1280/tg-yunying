@@ -10,7 +10,7 @@ interface Props {
   selectedGroup: Group | undefined;
   selectedGroupId: number | null;
   setSelectedGroupId: (id: number | null) => void;
-  onCreateCampaign: (groupId?: number) => void;
+  onCreateTask: (groupId?: number) => void;
   onCreateArchive: () => void;
   onAuthorizeGroup: (status: string) => void;
   onEditGroupPolicy: () => void;
@@ -28,7 +28,7 @@ export default function GroupsView({
   groups,
   selectedGroupId,
   setSelectedGroupId,
-  onCreateCampaign,
+  onCreateTask,
   onCreateArchive,
   onAuthorizeGroup,
   onEditGroupPolicy,
@@ -80,14 +80,14 @@ export default function GroupsView({
             { key: 'auth', label: '使用范围', children: <StatusBadge status={detailGroup.auth_status} label={operationLabel(detailGroup.auth_status)} /> },
             { key: 'active_window', label: '活跃时间', children: detailGroup.active_window },
             { key: 'daily_limit', label: '每日上限', children: `${detailGroup.daily_limit} 条` },
-            { key: 'review', label: '审核策略', children: <StatusBadge status={detailGroup.require_review ? '待审核' : '已审核'} label={detailGroup.require_review ? '需要人工审核' : '规则内自动'} /> },
+            { key: 'validation', label: '自动校验', children: <StatusBadge status="已启用" label="规则内自动" /> },
             { key: 'can_send', label: '可发言', children: <StatusBadge status={detailGroup.can_send ? '可发言' : '不可发言'} /> },
             { key: 'listener', label: '监听续聊', children: <StatusBadge status={detailGroup.listener_enabled ? '已启用' : '未配置'} label={detailGroup.listener_enabled ? `${detailGroup.listener_account_ids.length} 个监听号` : '未启用'} /> },
             { key: 'auto_reply', label: '自动发送', children: detailGroup.listener_auto_reply_enabled ? '监听触发后自动排队' : '只采集上下文' },
           ]} />
           {detailGroup.listener_last_error && <Typography.Paragraph type="danger">{detailGroup.listener_last_error}</Typography.Paragraph>}
           <Space className="detail-actions" wrap>
-            <Button type="primary" icon={<MessageSquareText size={18} />} onClick={() => onCreateCampaign(detailGroup.id)}>用此群创建任务</Button>
+            <Button type="primary" icon={<MessageSquareText size={18} />} onClick={() => onCreateTask(detailGroup.id)}>用此群创建任务</Button>
             <Button icon={<Archive size={18} />} onClick={() => onOpenConfirm({
               title: '创建群归档',
               message: `确认归档「${detailGroup.title}」的消息与成员清单？`,
@@ -108,7 +108,7 @@ export default function GroupsView({
             <div className="summary-grid">
               <Card className="summary-card" size="small"><span>冷却规则</span><strong>账号 {detailGroup.account_cooldown_seconds}s</strong><p>群 {detailGroup.group_cooldown_seconds}s</p></Card>
               <Card className="summary-card" size="small"><span>内容边界</span><strong>{detailGroup.banned_words || '未配置禁用词'}</strong><p>{detailGroup.link_whitelist || '未配置链接白名单'}</p></Card>
-              <Card className="summary-card" size="small"><span>话题方向</span><strong>{detailGroup.topic_direction || '未设置'}</strong><p>{detailGroup.require_review ? '需要人工审核' : '规则内自动'}</p></Card>
+              <Card className="summary-card" size="small"><span>话题方向</span><strong>{detailGroup.topic_direction || '未设置'}</strong><p>规则内自动校验</p></Card>
               <Card className="summary-card" size="small"><span>监听配置</span><strong>{detailGroup.listener_enabled ? `${detailGroup.listener_interval_seconds}s 轮询` : '未启用'}</strong><p>上下文 {detailGroup.listener_context_limit} 条</p></Card>
             </div>
           </Card>

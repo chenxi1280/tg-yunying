@@ -39,6 +39,8 @@ from .account_pool import select_task_accounts
 from .ai_generator import generate_channel_comments, generate_group_messages
 from .dispatcher import dispatch_action, due_actions
 from .executors import build_task_plan, reached_daily_action_limit
+from .fingerprints import content_fingerprint
+from .listener_runtime import invalidate_listener_collect
 from .pacing import next_run_after
 from .review import expire_reviews
 
@@ -90,10 +92,21 @@ TYPE_SETTINGS_FIELDS = {
         "repeat_cooldown_rounds",
         "messages_per_round",
         "history_fetch_account_id",
+        "silent_mode_enabled",
+        "silent_start",
+        "silent_end",
+        "silent_max_accounts",
+        "silent_messages_per_round",
+        "ramp_up_minutes",
+        "ramp_start_ratio",
+        "context_expire_after_messages",
     },
     "group_relay": {
+        "rule_set_id",
+        "rule_set_version_id",
         "monitor_account_ids",
         "filters",
+        "target_group_ids",
         "content_mode",
         "rewrite_prompt",
         "preserve_media",
@@ -228,15 +241,15 @@ def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, s
 def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str, Any]:
     task = _get_task(session, tenant_id, task_id)
     actions = list_actions(session, tenant_id, task_id)
-    reviews = list_reviews(session, tenant_id, task_id=task_id)
     stats = refresh_task_stats(session, task)
     return {
         "task": _task_payload(session, task, actions=actions),
         "actions": actions,
-        "reviews": reviews,
         "stats": stats,
         "accounts": _detail_accounts(session, actions),
-        "message_groups": _message_groups(session, actions),
+        "message_groups": _message_groups(session, task, actions),
+        "ai_cycles": _ai_cycles(actions),
+        "relay_batches": _relay_batches(actions),
     }
 
 
@@ -338,7 +351,7 @@ def resume_task(session: Session, tenant_id: int, task_id: str, actor: str) -> T
 
 def stop_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
-    task.status = "completed"
+    task.status = "stopped"
     task.next_run_at = None
     for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")):
         action.status = "skipped"
@@ -358,7 +371,7 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str) -> N
         action.status = "skipped"
         action.result = {"success": False, "error_code": "task_deleted", "error_message": "任务已删除"}
         action.executed_at = now
-    task.status = "completed"
+    task.status = "deleted"
     task.next_run_at = None
     task.deleted_at = now
     task.deleted_by = actor
@@ -392,16 +405,16 @@ def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetr
 def reset_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
     now = _now()
-    session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id))
-    session.execute(delete(Action).where(Action.task_id == task.id))
-    _clear_task_fingerprints(session, task)
     stats = _empty_stats()
     stats["started_at"] = now.isoformat()
     task.stats = stats
+    _clear_unfinished_plan(session, task)
+    _invalidate_task_listener_cache(task)
     task.status = "pending" if task.scheduled_start and task.scheduled_start > now else "running"
     task.next_run_at = task.scheduled_start if task.status == "pending" else now
     task.last_error = ""
     task.updated_at = now
+    refresh_task_stats(session, task)
     audit(session, tenant_id=tenant_id, actor=actor, action="重置任务中心任务", target_type="task", target_id=task.id, detail=task.type)
     session.commit()
     session.refresh(task)
@@ -431,7 +444,7 @@ def list_reviews(session: Session, tenant_id: int, status: str | None = None, ta
 def approve_review(session: Session, tenant_id: int, review_id: str, payload: ReviewApproveRequest, actor: str) -> ReviewQueue:
     review = _get_review(session, tenant_id, review_id)
     if review.status != "pending":
-        raise ReviewStateError("只能通过待审核内容")
+        raise ReviewStateError("只能处理待处理内容")
     action = session.get(Action, review.action_id)
     if not action:
         raise ValueError("action not found")
@@ -453,7 +466,7 @@ def approve_review(session: Session, tenant_id: int, review_id: str, payload: Re
     review.reviewed_at = _now()
     action.status = "pending"
     action.scheduled_at = _now()
-    audit(session, tenant_id=tenant_id, actor=actor, action="审核通过任务动作", target_type="review_queue", target_id=review.id)
+    audit(session, tenant_id=tenant_id, actor=actor, action="处理通过任务动作", target_type="review_queue", target_id=review.id)
     session.commit()
     session.refresh(review)
     return review
@@ -462,7 +475,7 @@ def approve_review(session: Session, tenant_id: int, review_id: str, payload: Re
 def reject_review(session: Session, tenant_id: int, review_id: str, payload: ReviewRejectRequest, actor: str) -> ReviewQueue:
     review = _get_review(session, tenant_id, review_id)
     if review.status != "pending":
-        raise ReviewStateError("只能拒绝待审核内容")
+        raise ReviewStateError("只能跳过待处理内容")
     action = session.get(Action, review.action_id)
     review.status = "rejected"
     review.reviewed_by = actor
@@ -471,8 +484,8 @@ def reject_review(session: Session, tenant_id: int, review_id: str, payload: Rev
     if action:
         action.status = "skipped"
         action.executed_at = _now()
-        action.result = {"success": False, "error_code": "review_rejected", "error_message": payload.reason or "审核拒绝"}
-    audit(session, tenant_id=tenant_id, actor=actor, action="审核拒绝任务动作", target_type="review_queue", target_id=review.id)
+        action.result = {"success": False, "error_code": "review_rejected", "error_message": payload.reason or "内容处理跳过"}
+    audit(session, tenant_id=tenant_id, actor=actor, action="处理跳过任务动作", target_type="review_queue", target_id=review.id)
     session.commit()
     session.refresh(review)
     return review
@@ -733,8 +746,10 @@ def _target_summary(session: Session, task: Task) -> str:
         return str(config.get("target_group_name") or config.get("target_group_id") or "")
     if task.type == "group_relay":
         sources = [str(item.get("group_name") or item.get("group_id") or "") for item in config.get("source_groups") or []]
-        target = str(config.get("target_group_id") or "")
-        return " ".join([*sources, target])
+        targets = [str(item) for item in config.get("target_group_ids") or []]
+        if config.get("target_group_id") and str(config.get("target_group_id")) not in targets:
+            targets.insert(0, str(config.get("target_group_id")))
+        return " ".join([*sources, *targets])
     return ""
 
 
@@ -786,8 +801,8 @@ def _detail_accounts(session: Session, actions: list[Action]) -> list[dict[str, 
     ]
 
 
-def _message_groups(session: Session, actions: list[Action]) -> list[dict[str, Any]]:
-    groups: dict[tuple[int | None, int | None], dict[str, Any]] = {}
+def _message_groups(session: Session, task: Task, actions: list[Action]) -> list[dict[str, Any]]:
+    groups: dict[tuple[int | None, int | None, str], dict[str, Any]] = {}
     message_ids = {
         int(action.payload["channel_message_id"])
         for action in actions
@@ -814,7 +829,9 @@ def _message_groups(session: Session, actions: list[Action]) -> list[dict[str, A
         message = messages_by_id.get(payload.get("channel_message_id"))
         channel_target_id = int(payload.get("channel_target_id") or (message.channel_target_id if message else 0) or 0) or None
         channel = channels_by_id.get(channel_target_id) if channel_target_id else None
-        key = (channel_target_id, int(payload.get("message_id") or 0) or None)
+        action_type = action.action_type
+        key = (channel_target_id, int(payload.get("message_id") or 0) or None, action_type)
+        target_count = _channel_subtask_target_count(task, action_type)
         item = groups.setdefault(
             key,
             {
@@ -822,9 +839,19 @@ def _message_groups(session: Session, actions: list[Action]) -> list[dict[str, A
                 "channel_title": channel.title if channel else str(payload.get("target_display") or ""),
                 "channel_username": channel.username if channel else "",
                 "message_id": key[1],
+                "action_type": action_type,
+                "action_label": _action_label(action_type),
                 "message_url": message.message_url if message else "",
                 "content_preview": message.content_preview if message else str(payload.get("message_content") or ""),
-                "stats": {"total": 0, "pending": 0, "executing": 0, "success": 0, "failed": 0, "skipped": 0},
+                "target_count": target_count,
+                "completed_count": 0,
+                "failed_count": 0,
+                "running_count": 0,
+                "skipped_count": 0,
+                "duplicate_count": 0,
+                "capacity_shortfall": 0,
+                "subtask_status": "运行中",
+                "stats": {"target": target_count, "total": 0, "pending": 0, "executing": 0, "success": 0, "failed": 0, "skipped": 0, "duplicate": 0},
                 "actions": [],
             },
         )
@@ -833,9 +860,144 @@ def _message_groups(session: Session, actions: list[Action]) -> list[dict[str, A
         stats["total"] += 1
         if action.status in stats:
             stats[action.status] += 1
+        if _is_duplicate_action(action):
+            stats["duplicate"] += 1
         if action.result and action.result.get("error_message"):
             stats["last_error"] = action.result["error_message"]
+    for item in groups.values():
+        stats = item["stats"]
+        item["completed_count"] = int(stats.get("success") or 0)
+        item["failed_count"] = int(stats.get("failed") or 0)
+        item["running_count"] = int(stats.get("pending") or 0) + int(stats.get("executing") or 0)
+        item["skipped_count"] = int(stats.get("skipped") or 0)
+        item["duplicate_count"] = int(stats.get("duplicate") or 0)
+        item["capacity_shortfall"] = max(int(item.get("target_count") or 0) - int(stats.get("total") or 0), 0)
+        item["subtask_status"] = _channel_subtask_status(item)
     return sorted(groups.values(), key=lambda item: (item.get("channel_title") or "", -(item.get("message_id") or 0)))
+
+
+def _channel_subtask_target_count(task: Task, action_type: str) -> int:
+    config = task.type_config or {}
+    if action_type == "view_message":
+        return int(config.get("target_views_per_message") or 0)
+    if action_type == "like_message":
+        return int(config.get("target_likes_per_message") or 0)
+    if action_type == "post_comment":
+        return int(config.get("target_comments_per_message") or 0)
+    return 0
+
+
+def _action_label(action_type: str) -> str:
+    return {
+        "view_message": "浏览",
+        "like_message": "点赞",
+        "post_comment": "评论/回复",
+        "send_message": "发送",
+    }.get(action_type, action_type)
+
+
+def _is_duplicate_action(action: Action) -> bool:
+    result = action.result or {}
+    text = " ".join(str(result.get(key) or "") for key in ("error_code", "failure_type", "error_message", "detail")).lower()
+    return "duplicate" in text or "重复" in text
+
+
+def _channel_subtask_status(item: dict[str, Any]) -> str:
+    if item.get("capacity_shortfall"):
+        return "容量不足"
+    if item.get("running_count"):
+        return "运行中"
+    if item.get("target_count") and item.get("completed_count", 0) >= item["target_count"]:
+        return "已达标"
+    if item.get("failed_count"):
+        return "有失败"
+    if item.get("skipped_count"):
+        return "已跳过"
+    return "待规划"
+
+
+def _ai_cycles(actions: list[Action]) -> list[dict[str, Any]]:
+    cycles: dict[str, dict[str, Any]] = {}
+    for action in actions:
+        payload = action.payload or {}
+        if not isinstance(payload, dict):
+            continue
+        cycle_id = str(payload.get("cycle_id") or "")
+        if not cycle_id:
+            continue
+        item = cycles.setdefault(
+            cycle_id,
+            {
+                "cycle_id": cycle_id,
+                "context_message_ids": payload.get("context_message_ids") if isinstance(payload.get("context_message_ids"), list) else [],
+                "stats": {"total": 0, "pending": 0, "executing": 0, "success": 0, "failed": 0, "skipped": 0},
+                "turns": [],
+            },
+        )
+        item["turns"].append(
+            {
+                "action_id": action.id,
+                "turn_index": int(payload.get("turn_index") or len(item["turns"]) + 1),
+                "account_id": action.account_id,
+                "account_role": str(payload.get("account_role") or ""),
+                "intent": str(payload.get("intent") or ""),
+                "content": str(payload.get("message_text") or ""),
+                "status": action.status,
+                "scheduled_at": action.scheduled_at,
+                "executed_at": action.executed_at,
+                "result": action.result or {},
+            }
+        )
+        _group_stats_inc(item["stats"], action.status)
+    for item in cycles.values():
+        item["turns"].sort(key=lambda row: (row["turn_index"], row["scheduled_at"]))
+    return sorted(cycles.values(), key=lambda item: item["cycle_id"])
+
+
+def _relay_batches(actions: list[Action]) -> list[dict[str, Any]]:
+    batches: dict[str, dict[str, Any]] = {}
+    for action in actions:
+        payload = action.payload or {}
+        if not isinstance(payload, dict):
+            continue
+        batch_id = str(payload.get("relay_batch_id") or "")
+        if not batch_id:
+            continue
+        item = batches.setdefault(
+            batch_id,
+            {
+                "relay_batch_id": batch_id,
+                "stats": {"total": 0, "pending": 0, "executing": 0, "success": 0, "failed": 0, "skipped": 0},
+                "items": [],
+            },
+        )
+        item["items"].append(
+            {
+                "action_id": action.id,
+                "relay_event_id": str(payload.get("relay_event_id") or ""),
+                "source_group_id": payload.get("source_group_id") if isinstance(payload.get("source_group_id"), int) else None,
+                "source_info": str(payload.get("source_info") or ""),
+                "original_text": str(payload.get("original_text") or ""),
+                "transformed_text": str(payload.get("message_text") or ""),
+                "rule_set_id": payload.get("rule_set_id") if isinstance(payload.get("rule_set_id"), int) else None,
+                "rule_set_version_id": payload.get("rule_set_version_id") if isinstance(payload.get("rule_set_version_id"), int) else None,
+                "account_id": action.account_id,
+                "status": action.status,
+                "scheduled_at": action.scheduled_at,
+                "executed_at": action.executed_at,
+                "result": action.result or {},
+            }
+        )
+        _group_stats_inc(item["stats"], action.status)
+    for item in batches.values():
+        item["items"].sort(key=lambda row: row["scheduled_at"])
+    return sorted(batches.values(), key=lambda item: item["relay_batch_id"])
+
+
+def _group_stats_inc(stats: dict[str, int], status: str) -> None:
+    stats["total"] = int(stats.get("total") or 0) + 1
+    if status in stats:
+        stats[status] = int(stats.get(status) or 0) + 1
 
 
 def _get_review(session: Session, tenant_id: int, review_id: str) -> ReviewQueue:
@@ -845,30 +1007,53 @@ def _get_review(session: Session, tenant_id: int, review_id: str) -> ReviewQueue
     return review
 
 
-def _clear_task_fingerprints(session: Session, task: Task) -> None:
-    session.execute(
-        delete(MessageFingerprint).where(
-            MessageFingerprint.tenant_id == task.tenant_id,
-            MessageFingerprint.source_group_id.like(f"{task.id}:%"),
-        )
-    )
-
-
 def _clear_unfinished_plan(session: Session, task: Task) -> None:
-    pending_action_ids = list(
-        session.scalars(
-            select(Action.id).where(
-                Action.task_id == task.id,
-                Action.status == "pending",
-            )
-        )
+    pending_actions = list(
+        session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
     )
+    pending_action_ids = [action.id for action in pending_actions]
     if pending_action_ids:
+        _clear_pending_relay_fingerprints(session, task, pending_actions)
         session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.action_id.in_(pending_action_ids)))
         session.execute(delete(Action).where(Action.task_id == task.id, Action.status == "pending"))
     session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.status == "pending"))
+
+
+def _clear_pending_relay_fingerprints(session: Session, task: Task, pending_actions: list[Action]) -> None:
+    for action in pending_actions:
+        if action.task_type != "group_relay" or action.action_type != "send_message":
+            continue
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        source_group_id = payload.get("source_group_id")
+        target_group_id = payload.get("group_id")
+        original_text = str(payload.get("original_text") or "").strip()
+        if not source_group_id or not target_group_id or not original_text:
+            continue
+        session.execute(
+            delete(MessageFingerprint).where(
+                MessageFingerprint.tenant_id == task.tenant_id,
+                MessageFingerprint.source_group_id == f"{task.id}:relay:{source_group_id}:target:{target_group_id}",
+                MessageFingerprint.fingerprint == content_fingerprint(original_text),
+            )
+        )
+
+
+def _invalidate_task_listener_cache(task: Task) -> None:
+    config = task.type_config or {}
+    if task.type in {"channel_view", "channel_like", "channel_comment"}:
+        target_channel_id = int(config.get("target_channel_id") or 0)
+        if target_channel_id:
+            invalidate_listener_collect("channel", target_channel_id)
+        return
     if task.type == "group_ai_chat":
-        _clear_task_fingerprints(session, task)
+        target_group_id = int(config.get("target_group_id") or 0)
+        if target_group_id:
+            invalidate_listener_collect("group", target_group_id)
+        return
+    if task.type == "group_relay":
+        for item in config.get("source_groups") or []:
+            if isinstance(item, dict) and item.get("group_id"):
+                invalidate_listener_collect("group", int(item["group_id"]))
 
 
 def _naive_datetime(value):

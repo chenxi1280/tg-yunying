@@ -13,7 +13,6 @@ from app.main import app
 from app.models import AiDraft, AiUsageLedger, Campaign, CampaignProcessedMessage, ContentKeywordRule, GroupContextMessage, MessageTask, TaskStatus, TgGroup
 from app.services.campaign_runs import build_participation_plan, light_rewrite_message, process_continuous_campaign
 from app.services.content_filters import filter_outbound_content
-from app.worker import drain_once
 from app.models.enums import now
 from tests.test_workflow import auth_headers, ensure_test_workspace
 
@@ -66,7 +65,8 @@ def test_ai_activity_campaign_auto_approves_and_queues_tasks():
         assert campaign.status_code == 200, campaign.text
         assert campaign.json()["status"] == TaskStatus.RUNNING.value
 
-        assert drain_once() >= 1
+        with SessionLocal() as session:
+            assert process_continuous_campaign(session, campaign.json()["id"]) >= 1
 
         with SessionLocal() as session:
             db_campaign = session.get(Campaign, campaign.json()["id"])
@@ -115,7 +115,8 @@ def test_ai_activity_campaign_stops_when_token_limit_is_reached():
             )
             session.commit()
 
-        assert drain_once() >= 0
+        with SessionLocal() as session:
+            assert process_continuous_campaign(session, campaign["id"]) >= 0
 
         with SessionLocal() as session:
             db_campaign = session.get(Campaign, campaign["id"])

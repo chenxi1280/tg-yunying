@@ -22,6 +22,9 @@ import AuditsView from './views/AuditsView';
 import OperationTargetsView from './views/OperationTargetsView';
 import TaskCenterView from './views/TaskCenterView';
 import MessageSendingView from './views/MessageSendingView';
+import ListenerCenterView from './views/ListenerCenterView';
+import RulesCenterView from './views/RulesCenterView';
+import ArchivesView from './views/ArchivesView';
 import { AppModals } from './AppModals';
 import { VIEW_ROUTES } from './routes';
 import type { ChannelMessage, MessageSendingPrefill, OperationTarget, TaskCenterPrefill, TaskCenterTaskType } from './types';
@@ -41,28 +44,22 @@ function AppShell() {
   const [taskCenterPrefill, setTaskCenterPrefill] = React.useState<TaskCenterPrefill | null>(null);
   const ctx = useAppContext();
   const {
-    token, currentUser, authMode, setAuthMode,
+    token, currentUser,
     loginEmail, setLoginEmail, loginPassword, setLoginPassword,
-    registerForm, setRegisterForm, login, register,
+    login,
     captchaChallenge, captchaInput, setCaptchaInput,
     captchaToken, captchaError, captchaLoading, refreshCaptchaChallenge, verifyCaptcha,
     activeView, goToView, busy, notice, setNotice, isActionPending,
-    runtime, overview, redeemCode, setRedeemCode, submitRedeemCode,
+    runtime, overview,
     accountPools, selectedPoolId, setSelectedPoolId, accounts, selectedPool,
-    developerApps, tenants, subscriptionPlans, adminUsers, groups, selectedGroup, selectedGroupId, setSelectedGroupId,
-    campaigns, selectedCampaign, selectedCampaignId, setSelectedCampaignId,
-    drafts, tasks, taskManagementTab, setTaskManagementTab,
-    taskSummary, selectedCampaignDrafts, selectedCampaignTasks,
-    taskStatusFilter, setTaskStatusFilter,
-    archives, archiveDetail, audits, groupDetail,
+    developerApps, tenants, groups, selectedGroup, selectedGroupId, setSelectedGroupId,
+    tasks,
+    archives, archiveDetail, audits, auditFilters, setAuditFilters, groupDetail,
     aiProviders, promptTemplates, tenantAiSetting, setTenantAiSetting, schedulingSetting, materials, contentKeywordRules,
-    activationCodes, activationCodePage, activationCodeFilters, setActivationCodeFilters,
-    activationBatch, setActivationBatch,
     usageLedgers, usageSummary,
     accountDetail, accountDetailTab, setAccountDetailTab,
     accountPoolDetail, poolDirectAccountId, setPoolDirectAccountId,
     cloneForm, setCloneForm, profileForm, setProfileForm, avatarFile, setAvatarFile,
-    draftEditTarget, draftEditForm, setDraftEditForm,
     accountCreateForm, setAccountCreateForm, loginAfterCreate,
     accountPoolForm, setAccountPoolForm,
     developerAppForm, setDeveloperAppForm,
@@ -72,44 +69,28 @@ function AppShell() {
     materialForm, setMaterialForm, openContentKeywordRuleEdit,
     groupPolicy, setGroupPolicy,
     setModal,
-    selectedTargetGroupIds, recommendedAccounts, selectedAccountsByGroup,
-    targetGroupsMissingAccounts,
-    campaignStep, setCampaignStep,
-    topic, setTopic, sendWindow, setSendWindow,
-    intensity, setIntensity, draftCount, setDraftCount,
-    tone, setTone, selectedMaterialIds,
-    jitterMinSeconds, setJitterMinSeconds,
-    jitterMaxSeconds, setJitterMaxSeconds,
-    batchIntervalSeconds, setBatchIntervalSeconds,
-    respectSendWindow, setRespectSendWindow,
-    selectedAiProviderId, setSelectedAiProviderId,
     directMessageForm, setDirectMessageForm,
     selectedDirectContact, accountContacts,
     returnAfterVerification, setReturnAfterVerification,
     refresh, openConfirm,
-    openCampaignModal, openAccountCreate, openAccountDetail, openAccountVerificationCodes, openAccountMovePool, openAccountPoolDetail,
+    openAccountCreate, openAccountDetail, openAccountVerificationCodes, openAccountMovePool, openAccountPoolDetail,
     refreshAccountPoolDetail, createAccount, createAccountPool, moveCurrentAccountPool,
     createClonePlan, confirmClonePlan, retryCloneItem,
     confirmVerificationTask, dismissVerificationTask,
     syncAccountContacts, queueAccountSyncNow,
     startDirectMessageToContact, createDirectMessageTask, createMessageSendTask,
-    openGroupDetail, openDraftEdit, saveDraftEdit,
+    openGroupDetail,
     avatarUrl, openAccountProfileEdit, pollVerificationCodes,
     saveAccountProfile, retryAccountProfileSync,
-    toggleTargetGroup, toggleRecommendedAccount, setGroupAccountsSelected,
-    goCampaignAccountStep, goCampaignContentStep,
-    createCampaignAndDrafts, approveDraft, approveAllDrafts,
-    cancelCampaign,
     cancelTask, dispatchTask, drainQueue, retryTask,
     authorizeSelectedGroup, createArchive, saveGroupPolicy,
     openArchiveDetail, exportArchive, rerunArchive,
     createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp,
     openTenantEdit, saveTenantQuota,
-    createSubscriptionPlan, openSubscriptionPlanEdit, openAdminUserEdit,
     createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider,
     saveTenantAiSetting, saveSchedulingSetting,
-    createPromptTemplate, createMaterial, toggleMaterial,
-    loadActivationCodes, createActivationCodes, disableActivationCode, logout,
+    createPromptTemplate, createMaterial,
+    logout,
     runLogin, verifyAccount, deleteAccount, healthCheck, syncAccountGroups,
     accountName, groupName,
   } = ctx;
@@ -117,12 +98,15 @@ function AppShell() {
   const navCandidates: Array<[string, string, React.ReactNode]> = [
     ['overview', '运营概览', <LayoutDashboard size={18} />],
     ['accounts', 'TG账号管理', <Smartphone size={18} />],
+    ['targetManagement', '运营目标', <Users size={18} />],
     ['messageSending', '消息发送', <MessageSquareText size={18} />],
-    ['targetManagement', '群/频道目标', <Users size={18} />],
     ['taskManagement', '任务中心', <Activity size={18} />],
+    ['listenerCenter', '监听中心', <RefreshCcw size={18} />],
+    ['ruleCenter', '规则中心', <ShieldAlert size={18} />],
+    ['archives', '归档中心', <Database size={18} />],
     ['usageReports', '运营数据', <Activity size={18} />],
     ['systemConfig', '系统设置', <Database size={18} />],
-    ['audits', '执行记录', <LockKeyhole size={18} />],
+    ['audits', '审计记录', <LockKeyhole size={18} />],
   ];
   const nav = navCandidates;
 
@@ -144,8 +128,6 @@ function AppShell() {
   }, [activeView, currentUser, goToView, nav, token]);
 
   const loginReady = Boolean(loginEmail.trim() && loginPassword && captchaToken && !isActionPending('auth:login'));
-  const registerReady = Boolean(registerForm.name.trim() && registerForm.email.trim() && registerForm.password && captchaToken && !isActionPending('auth:register'));
-
   function openSendFromTarget(target: OperationTarget) {
     setMessagePrefill({ target, nonce: Date.now() });
     goToView('messageSending');
@@ -234,7 +216,7 @@ function AppShell() {
         />
         <Card className="side-note" size="small">
           <ShieldAlert size={18} />
-          <span>默认半自动审核，只在可运营群内执行，验证码查看与发送动作都有记录。</span>
+          <span>自动任务通过规则、风控、限速和自动校验执行；发送、跳过、失败和重试都会留痕。</span>
         </Card>
       </Sider>
 
@@ -273,31 +255,18 @@ function AppShell() {
           <SystemConfigView
             developerApps={developerApps}
             tenants={tenants}
-            subscriptionPlans={subscriptionPlans}
-            adminUsers={adminUsers}
             aiProviders={aiProviders}
             promptTemplates={promptTemplates}
             tenantAiSetting={tenantAiSetting}
             schedulingSetting={schedulingSetting}
             materials={materials}
             contentKeywordRules={contentKeywordRules}
-            activationCodes={activationCodes}
-            activationCodePage={activationCodePage}
-            activationCodeFilters={activationCodeFilters}
-            setActivationCodeFilters={setActivationCodeFilters}
-            activationBatch={activationBatch}
-            setActivationBatch={setActivationBatch}
-            usageLedgers={usageLedgers}
-            usageSummary={usageSummary}
             currentUserRole={currentUser?.role}
             onCreateDeveloperApp={() => setModal({ type: 'developerAppCreate' })}
             onEditDeveloperApp={openDeveloperAppEdit}
             onCheckDeveloperApp={checkDeveloperApp}
             onToggleDeveloperApp={toggleDeveloperApp}
             onEditTenant={openTenantEdit}
-            onCreateSubscriptionPlan={() => setModal({ type: 'subscriptionPlanCreate' })}
-            onEditSubscriptionPlan={openSubscriptionPlanEdit}
-            onEditAdminUser={openAdminUserEdit}
             onCreateAiProvider={() => setModal({ type: 'aiProviderCreate' })}
             onEditAiProvider={openAiProviderEdit}
             onToggleAiProvider={toggleAiProvider}
@@ -308,9 +277,6 @@ function AppShell() {
             onCreateMaterial={() => setModal({ type: 'materialCreate' })}
             onCreateKeywordRule={() => setModal({ type: 'keywordRuleCreate' })}
             onEditKeywordRule={openContentKeywordRuleEdit}
-            onLoadCodes={loadActivationCodes}
-            onCreateCodes={createActivationCodes}
-            onDisableCode={disableActivationCode}
             onOpenConfirm={openConfirm}
             isActionPending={isActionPending}
           />
@@ -335,10 +301,13 @@ function AppShell() {
           />
         )}
         {activeView === 'groupManagement' && (
-          <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateCampaign={() => goToView('taskManagement')} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
+          <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateTask={() => goToView('taskManagement')} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
         )}
         {activeView === 'taskManagement' && <TaskCenterView accounts={accounts} accountPools={accountPools} prefill={taskCenterPrefill} />}
-        {activeView === 'audits' && <AuditsView audits={audits} />}
+        {activeView === 'listenerCenter' && <ListenerCenterView />}
+        {activeView === 'ruleCenter' && <RulesCenterView onOpenSystemConfig={() => goToView('systemConfig')} />}
+        {activeView === 'archives' && <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onRefresh={refresh} isActionPending={isActionPending} />}
+        {activeView === 'audits' && <AuditsView audits={audits} filters={auditFilters} setFilters={setAuditFilters} onRefresh={refresh} />}
 
         {/* ===== Modals ===== */}
         <AppModals />

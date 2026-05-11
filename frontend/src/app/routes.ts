@@ -2,12 +2,15 @@
 
 export const VIEW_ROUTES: Record<string, string> = {
   overview: '/dashboard',
-  systemConfig: '/system-config',
   accounts: '/accounts',
-  messageSending: '/message-sending',
   targetManagement: '/targets',
+  messageSending: '/message-sending',
   taskManagement: '/task-center',
+  listenerCenter: '/listeners',
+  ruleCenter: '/rules',
+  archives: '/archives',
   usageReports: '/usage-reports',
+  systemConfig: '/system-config',
   audits: '/audit',
 };
 
@@ -19,12 +22,12 @@ Object.assign(ROUTE_VIEWS, {
   '/developer-apps': 'systemConfig',
   '/ai-config': 'systemConfig',
   '/account-pools': 'accounts',
-  '/groups': 'groupManagement',
+  '/groups': 'targetManagement',
   '/group-management': 'targetManagement',
-  '/campaigns': 'taskManagement',
-  '/operation-tasks': 'taskManagement',
   '/operation-targets': 'targetManagement',
-  '/archives': 'groupManagement',
+  '/group-archives': 'archives',
+  '/rule-center': 'ruleCenter',
+  '/listener-center': 'listenerCenter',
 });
 
 export function viewFromPath(pathname: string): string {

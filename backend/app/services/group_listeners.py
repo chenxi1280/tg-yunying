@@ -6,6 +6,7 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import (
     AccountStatus,
     Campaign,
@@ -325,7 +326,9 @@ def process_group_listener(session: Session, group_id: int) -> int:
         group.listener_last_error = ""
         session.commit()
         if inserted:
-            return inserted + trigger_listener_auto_reply(session, group)
+            if get_settings().enable_legacy_campaign_worker:
+                return inserted + trigger_listener_auto_reply(session, group)
+            return inserted
         return 0
     except Exception as exc:  # noqa: BLE001 - operator-facing listener status.
         session.rollback()

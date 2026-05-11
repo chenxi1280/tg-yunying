@@ -12,11 +12,6 @@ import type {
   AdminUserForm,
   CaptchaChallenge,
   CaptchaVerifyResponse,
-  ActivationCode,
-  ActivationCodeFilters,
-  ActivationCodePage,
-  SubscriptionPlan,
-  SubscriptionPlanForm,
   TokenLedger,
   UsageLedger,
   UsageSummary,
@@ -38,6 +33,7 @@ import type {
   ArchiveItem,
   ArchiveDetail,
   ArchiveExport,
+  AuditFilters,
   AuditLog,
   VerificationCode,
   AccountSyncRecord,
@@ -61,8 +57,6 @@ import { VIEW_ROUTES, viewFromPath } from './routes';
 import type { AppState } from './context/types';
 
 const AppContext = createContext<AppState | null>(null);
-const DEFAULT_ACTIVATION_CODE_FILTERS: ActivationCodeFilters = { search: '', status: '', plan_type: '', batch_no: '', start_at: '', end_at: '' };
-const DEFAULT_ACTIVATION_CODE_PAGE: ActivationCodePage = { items: [], total: 0, page: 1, page_size: 20 };
 const EMPTY_ACCOUNT_LOGIN_FORM: AccountLoginForm = {
   account: null,
   step: 'method',
@@ -109,16 +103,6 @@ export function AppProvider({ children }: AppProviderProps) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [developerApps, setDeveloperApps] = useState<DeveloperApp[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
-  const [subscriptionPlans, setSubscriptionPlans] = useState<SubscriptionPlan[]>([]);
-  const [subscriptionPlanForm, setSubscriptionPlanForm] = useState<SubscriptionPlanForm>({
-    id: null,
-    plan_type: 'monthly',
-    name: '月卡',
-    duration_days: 30,
-    token_quota: 500000,
-    is_active: true,
-    note: '',
-  });
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [selectedAdminUserId, setSelectedAdminUserId] = useState<number | null>(null);
   const [selectedUserTokenLedgers, setSelectedUserTokenLedgers] = useState<TokenLedger[]>([]);
@@ -133,13 +117,8 @@ export function AppProvider({ children }: AppProviderProps) {
     is_active: true,
   });
   const [tokenAdjustmentForm, setTokenAdjustmentForm] = useState({ delta_tokens: 500000, reason: '管理员充值' });
-  const [activationCodes, setActivationCodes] = useState<ActivationCode[]>([]);
-  const [activationCodePage, setActivationCodePage] = useState<ActivationCodePage>(DEFAULT_ACTIVATION_CODE_PAGE);
-  const [activationCodeFilters, setActivationCodeFilters] = useState<ActivationCodeFilters>(DEFAULT_ACTIVATION_CODE_FILTERS);
   const [usageLedgers, setUsageLedgers] = useState<UsageLedger[]>([]);
   const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null);
-  const [redeemCode, setRedeemCode] = useState('');
-  const [activationBatch, setActivationBatch] = useState({ plan_type: 'monthly', plan_id: '' as number | '', quantity: 10, batch_no: '', serial_prefix: '', note: '' });
   const [aiProviders, setAiProviders] = useState<AiProvider[]>([]);
   const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
   const [tenantAiSetting, setTenantAiSetting] = useState<TenantAiSetting | null>(null);
@@ -155,7 +134,7 @@ export function AppProvider({ children }: AppProviderProps) {
   const [archives, setArchives] = useState<ArchiveItem[]>([]);
   const [archiveDetail, setArchiveDetail] = useState<ArchiveDetail | null>(null);
   const [audits, setAudits] = useState<AuditLog[]>([]);
-  const [auditFilters, setAuditFilters] = useState({ actor: '', action: '', target_type: '', start_at: '', end_at: '' });
+  const [auditFilters, setAuditFilters] = useState<AuditFilters>({ actor: '', action: '', target_type: '', target_id: '', keyword: '', account_id: '', operation_target_id: '', task_id: '', status: '', start_at: '', end_at: '' });
   const [accountDetail, setAccountDetail] = useState<AccountDetail | null>(null);
   const [accountDetailTab, setAccountDetailTab] = useState('资料');
   const [accountPoolDetail, setAccountPoolDetail] = useState<AccountPoolDetail | null>(null);
@@ -229,7 +208,7 @@ export function AppProvider({ children }: AppProviderProps) {
     topic_direction: '',
     banned_words: '',
     link_whitelist: '',
-    require_review: true,
+    require_review: false,
     listener_enabled: false,
     listener_auto_reply_enabled: true,
     listener_interval_seconds: 60,
@@ -263,9 +242,9 @@ export function AppProvider({ children }: AppProviderProps) {
     is_active: true,
   });
   const [promptTemplateForm, setPromptTemplateForm] = useState({
-    name: '客户群活跃模板',
-    template_type: '群活跃草稿',
-    content: '请为 {{group_title}} 围绕 {{topic}} 生成 {{count}} 条自然 Telegram 群聊草稿，语气 {{tone}}，素材 {{materials}}，输出 JSON drafts。',
+    name: '运营群活跃模板',
+    template_type: '群活跃对话计划',
+    content: '请为 {{group_title}} 围绕 {{topic}} 生成 {{count}} 条自然 Telegram 群聊发言计划，语气 {{tone}}，素材 {{materials}}，输出 JSON turns，并包含角色、意图、延迟和自动校验建议。',
   });
   const [materialForm, setMaterialForm] = useState({
     title: '活动表情包',
@@ -322,7 +301,7 @@ export function AppProvider({ children }: AppProviderProps) {
   );
   const taskSummary = useMemo(() => ({
     campaigns: campaigns.length,
-    pendingDrafts: drafts.filter((draft) => draft.status === '待审核').length,
+    pendingDrafts: 0,
     queued: tasks.filter((task) => task.status === '排队中').length,
     sending: tasks.filter((task) => task.status === '发送中').length,
     sent: tasks.filter((task) => task.status === '已发送').length,
@@ -399,21 +378,6 @@ export function AppProvider({ children }: AppProviderProps) {
     return query ? `/audit-logs?${query}` : '/audit-logs';
   }
 
-  function activationCodeQuery(filters = activationCodeFilters, page = activationCodePage.page, pageSize = activationCodePage.page_size) {
-    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
-    for (const [key, value] of Object.entries(filters)) {
-      if (value) params.set(key, value);
-    }
-    return `/admin/activation-codes?${params.toString()}`;
-  }
-
-  async function loadActivationCodes(filters = activationCodeFilters, page = activationCodePage.page, pageSize = activationCodePage.page_size) {
-    const data = await api<ActivationCodePage>(activationCodeQuery(filters, page, pageSize));
-    setActivationCodeFilters(filters);
-    setActivationCodePage(data);
-    setActivationCodes(data.items);
-  }
-
   // 从 Promise.allSettled 结果中提取成功值，失败时返回 fallback
   function settledValue<T>(result: PromiseSettledResult<T>, fallback: T): T {
     return result.status === 'fulfilled' ? result.value : fallback;
@@ -431,7 +395,7 @@ export function AppProvider({ children }: AppProviderProps) {
         api<AccountPool[]>('/account-pools'),
         api<Account[]>(accountQuery),
         api<Group[]>('/groups'),
-        api<Draft[]>('/ai-drafts'),
+        Promise.resolve([] as Draft[]),
         api<MessageTask[]>(`/message-tasks${taskStatusFilter ? `?status=${encodeURIComponent(taskStatusFilter)}` : ''}`),
         api<ArchiveItem[]>('/archives'),
         api<AuditLog[]>(auditQuery()),
@@ -460,9 +424,7 @@ export function AppProvider({ children }: AppProviderProps) {
       const keywordRuleData = settledValue(results[14], [] as ContentKeywordRule[]);
       const developerAppData = me.role === '系统管理员' ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
       const tenantData = me.role === '系统管理员' ? await api<Tenant[]>('/tenants').catch(() => [] as Tenant[]) : [];
-      const subscriptionPlanData: SubscriptionPlan[] = [];
       const adminUserData: AdminUser[] = [];
-      const activationCodeData = DEFAULT_ACTIVATION_CODE_PAGE;
       const usageLedgerData: UsageLedger[] = [];
       const usageSummaryData: UsageSummary | null = null;
       setRuntime(runtimeData);
@@ -471,11 +433,8 @@ export function AppProvider({ children }: AppProviderProps) {
       setAccounts(accountData);
       setDeveloperApps(developerAppData);
       setTenants(tenantData);
-      setSubscriptionPlans(subscriptionPlanData);
       setAdminUsers(adminUserData);
       setSelectedAdminUserId((current) => current ?? adminUserData[0]?.id ?? null);
-      setActivationCodes(activationCodeData.items);
-      setActivationCodePage(activationCodeData);
       setUsageLedgers(usageLedgerData);
       setUsageSummary(usageSummaryData);
       setAiProviders(aiProviderData);
@@ -926,21 +885,8 @@ export function AppProvider({ children }: AppProviderProps) {
 
   async function saveDraftEdit() {
     if (!draftEditTarget) return;
-    setBusy('保存草稿');
-    const updated = await api<Draft>(`/ai-drafts/${draftEditTarget.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        content: draftEditForm.content,
-        risk_level: draftEditForm.risk_level,
-        suggested_account_id: draftEditForm.suggested_account_id || null,
-      }),
-    });
-    setDrafts((current) => current.map((draft) => draft.id === updated.id ? updated : draft));
     closeModal();
-    showResult('草稿已更新', '草稿内容、风险等级和建议账号已保存。');
-    await refresh();
-    if (selectedCampaign) await loadCampaignDetail(selectedCampaign);
-    setBusy('');
+    showResult('旧 AI 内容编辑入口已下线', '新版任务中心通过自动校验、执行记录和失败重试追踪内容结果。');
   }
 
   function avatarUrl(value: string) {
@@ -1202,7 +1148,7 @@ export function AppProvider({ children }: AppProviderProps) {
       setToken(data.access_token);
       setCurrentUser(data.user);
       setAuthMode('login');
-      setNotice('注册成功，请先使用卡密激活订阅。');
+      setNotice('注册成功，已进入运营管理平台。');
     } finally {
       setBusy('');
     }
@@ -1226,55 +1172,6 @@ export function AppProvider({ children }: AppProviderProps) {
       setChangePasswordForm({ current_password: '', new_password: '', confirm_password: '' });
       closeModal();
       showResult('密码已修改', '下次登录请使用新密码。');
-    } catch (error) {
-      handleActionError(error);
-    } finally {
-      setBusy('');
-    }
-  }
-
-  async function submitRedeemCode() {
-    if (!redeemCode.trim()) return;
-    setBusy('兑换卡密');
-    const redeemed = await api<{ plan_name: string; token_quota: number; token_balance: number }>('/subscription/redeem', { method: 'POST', body: JSON.stringify({ code: redeemCode.trim() }) });
-    setRedeemCode('');
-    setNotice(`卡密兑换成功：${redeemed.plan_name}，赠送 ${redeemed.token_quota.toLocaleString()} Token，当前余额 ${redeemed.token_balance.toLocaleString()}。`);
-    await refresh();
-    setBusy('');
-  }
-
-  async function createActivationCodes() {
-    if (!activationBatch.batch_no.trim() || !activationBatch.serial_prefix.trim()) {
-      setNotice('请填写批次号和序列号前缀。');
-      throw new Error('activation code batch and serial prefix required');
-    }
-    setBusy('生成卡密');
-    try {
-      const payload = {
-        ...activationBatch,
-        plan_id: activationBatch.plan_id || null,
-        batch_no: activationBatch.batch_no.trim().toUpperCase(),
-        serial_prefix: activationBatch.serial_prefix.trim().toUpperCase(),
-      };
-      const created = await api<ActivationCode[]>('/admin/activation-codes', { method: 'POST', body: JSON.stringify(payload) });
-      const preview = created.map((item) => item.code).join('\n');
-      showResult('卡密已生成', preview || '没有生成新的卡密。');
-      setNotice(`已生成 ${created.length} 个卡密。`);
-      await loadActivationCodes(activationCodeFilters, 1, activationCodePage.page_size).catch(() => undefined);
-    } catch (error) {
-      handleActionError(error);
-      throw error;
-    } finally {
-      setBusy('');
-    }
-  }
-
-  async function disableActivationCode(code: ActivationCode) {
-    setBusy('停用卡密');
-    try {
-      await api<ActivationCode>(`/admin/activation-codes/${code.id}/disable`, { method: 'POST' });
-      setNotice(`已停用卡密 ${code.code}`);
-      await loadActivationCodes();
     } catch (error) {
       handleActionError(error);
     } finally {
@@ -1388,15 +1285,9 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   async function approveDraft(draft: Draft) {
-    setBusy('审核草稿');
-    await api(`/ai-drafts/${draft.id}/approve`, {
-      method: 'POST',
-      body: JSON.stringify({ actor: '普通用户' }),
-    });
-    showResult('草稿已通过', '已生成排队消息任务。');
-    setTaskManagementTab('发送进度');
-    await refresh();
-    setBusy('');
+    showResult('旧处理入口已下线', `AI 内容 #${draft.id} 现在由自动校验、拦截、跳过和发送记录追踪。`);
+    goToView('taskManagement');
+    setTaskManagementTab('任务列表');
   }
 
   async function cancelCampaign(campaign: Campaign) {
@@ -1407,19 +1298,13 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   async function rejectDraft(draft: Draft) {
-    setBusy('驳回草稿');
-    const updated = await api<Draft>(`/ai-drafts/${draft.id}/reject`, {
-      method: 'POST',
-      body: JSON.stringify({ actor: '普通用户' }),
-    });
-    setDrafts((current) => current.map((item) => item.id === updated.id ? updated : item));
-    showResult('草稿已驳回', '这条草稿不会生成消息任务，可重新生成或编辑其他草稿。');
-    await refresh();
-    setBusy('');
+    showResult('旧处理入口已下线', `AI 内容 #${draft.id} 不再走人工处理流程，请查看自动校验结果和发送记录。`);
+    goToView('taskManagement');
+    setTaskManagementTab('任务列表');
   }
 
   async function approveAllDrafts() {
-    showResult('旧批量审核入口已下线', '新任务中心的审核请在审核队列中处理。');
+    showResult('旧批量处理入口已下线', '新任务中心按自动校验、执行记录和失败重试追踪处理结果。');
     goToView('taskManagement');
     setTaskManagementTab('任务列表');
   }
@@ -1494,7 +1379,7 @@ export function AppProvider({ children }: AppProviderProps) {
       body: JSON.stringify(groupPolicy),
     });
     closeModal();
-    showResult('运营配置已保存', `${selectedGroup.title} 的限频、审核和内容规则已更新。`);
+    showResult('运营配置已保存', `${selectedGroup.title} 的限频、自动校验和内容规则已更新。`);
     await refresh();
   }
 
@@ -1589,48 +1474,6 @@ export function AppProvider({ children }: AppProviderProps) {
     closeModal();
     showResult('租户配额已更新', `${tenantForm.name} 的账号和任务配额已保存。`);
     await refresh();
-  }
-
-  async function createSubscriptionPlan() {
-    setBusy(subscriptionPlanForm.id ? '保存套餐' : '新增套餐');
-    try {
-      const payload = {
-        plan_type: subscriptionPlanForm.plan_type,
-        name: subscriptionPlanForm.name,
-        duration_days: subscriptionPlanForm.duration_days,
-        token_quota: subscriptionPlanForm.token_quota,
-        is_active: subscriptionPlanForm.is_active,
-        note: subscriptionPlanForm.note,
-      };
-      const saved = subscriptionPlanForm.id
-        ? await api<SubscriptionPlan>(`/admin/subscription-plans/${subscriptionPlanForm.id}`, { method: 'PATCH', body: JSON.stringify(payload) })
-        : await api<SubscriptionPlan>('/admin/subscription-plans', { method: 'POST', body: JSON.stringify(payload) });
-      closeModal();
-      setNotice(`套餐已保存：${saved.name}`);
-      setSubscriptionPlanForm({ id: null, plan_type: 'monthly', name: '月卡', duration_days: 30, token_quota: 500000, is_active: true, note: '' });
-      await refresh();
-    } catch (error) {
-      handleActionError(error);
-    } finally {
-      setBusy('');
-    }
-  }
-
-  function openSubscriptionPlanEdit(plan: SubscriptionPlan) {
-    setSubscriptionPlanForm({
-      id: plan.id,
-      plan_type: plan.plan_type,
-      name: plan.name,
-      duration_days: plan.duration_days,
-      token_quota: plan.token_quota,
-      is_active: plan.is_active,
-      note: plan.note,
-    });
-    setModal({ type: 'subscriptionPlanEdit' });
-  }
-
-  async function saveSubscriptionPlan() {
-    await createSubscriptionPlan();
   }
 
   function openAdminUserEdit(user: AdminUser) {
@@ -1822,7 +1665,7 @@ export function AppProvider({ children }: AppProviderProps) {
         }),
       });
       closeModal();
-      showResult('AI 配置已保存', '客户默认模型、温度、Token 和回退策略已更新。');
+      showResult('AI 配置已保存', '运营默认模型、温度、Token 和回退策略已更新。');
       await refresh();
     } catch (error) {
       handleActionError(error);
@@ -1855,7 +1698,7 @@ export function AppProvider({ children }: AppProviderProps) {
     });
     closeModal();
     showResult('提示词已新增', `已新增提示词模板：${template.name}`);
-    setPromptTemplateForm({ ...promptTemplateForm, name: '客户群活跃模板' });
+    setPromptTemplateForm({ ...promptTemplateForm, name: '运营群活跃模板' });
     await refresh();
   }
 
@@ -1976,10 +1819,6 @@ export function AppProvider({ children }: AppProviderProps) {
     setDeveloperApps,
     tenants,
     setTenants,
-    subscriptionPlans,
-    setSubscriptionPlans,
-    subscriptionPlanForm,
-    setSubscriptionPlanForm,
     adminUsers,
     setAdminUsers,
     selectedAdminUserId,
@@ -1991,21 +1830,11 @@ export function AppProvider({ children }: AppProviderProps) {
     tokenAdjustmentForm,
     setTokenAdjustmentForm,
 
-    // Activation & Usage
-    activationCodes,
-    setActivationCodes,
-    activationCodePage,
-    setActivationCodePage,
-    activationCodeFilters,
-    setActivationCodeFilters,
+    // Usage
     usageLedgers,
     setUsageLedgers,
     usageSummary,
     setUsageSummary,
-    redeemCode,
-    setRedeemCode,
-    activationBatch,
-    setActivationBatch,
 
     // AI & Templates
     aiProviders,
@@ -2207,7 +2036,7 @@ export function AppProvider({ children }: AppProviderProps) {
     openGroupDetail: (group) => runWithLoading(`group:${group.id}:detail`, '读取群详情', () => openGroupDetail(group)),
     loadCampaignDetail: (campaign) => runWithLoading(`campaign:${campaign.id}:detail`, '读取任务详情', () => loadCampaignDetail(campaign)),
     openDraftEdit,
-    saveDraftEdit: () => runWithLoading(`draft:${draftEditTarget?.id ?? 'current'}:save`, '保存草稿', saveDraftEdit),
+    saveDraftEdit: () => runWithLoading(`draft:${draftEditTarget?.id ?? 'current'}:save`, '保存 AI 内容', saveDraftEdit),
     avatarUrl,
     openAccountProfileEdit,
     pollVerificationCodes: (silent = false) => silent ? pollVerificationCodes(true) : runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:codes`, '同步验证码', () => pollVerificationCodes(false)),
@@ -2225,10 +2054,6 @@ export function AppProvider({ children }: AppProviderProps) {
     login: () => runWithLoading('auth:login', '登录', login),
     register: () => runWithLoading('auth:register', '注册', register),
     changePassword: () => runWithLoading('modal:password:change', '修改密码', changePassword),
-    submitRedeemCode: () => runWithLoading('subscription:redeem', '兑换卡密', submitRedeemCode),
-    loadActivationCodes: (filters, page, pageSize) => runWithLoading('activation-codes:load', '读取卡密', () => loadActivationCodes(filters, page, pageSize)),
-    createActivationCodes: () => runWithLoading('activation-codes:create', '生成卡密', createActivationCodes),
-    disableActivationCode: (code) => runWithLoading(`activation-code:${code.id}:disable`, '停用卡密', () => disableActivationCode(code)),
     logout,
     runLogin,
     verifyAccount,
@@ -2242,9 +2067,9 @@ export function AppProvider({ children }: AppProviderProps) {
     syncAccountGroups: (account) => runWithLoading(`account:${account.id}:sync`, '同步账号数据', () => syncAccountGroups(account)),
     createCampaignAndDrafts: () => runWithLoading('campaign:create', '创建任务', createCampaignAndDrafts),
     cancelCampaign: (campaign) => runWithLoading(`campaign:${campaign.id}:cancel`, '取消任务', () => cancelCampaign(campaign)),
-    approveDraft: (draft) => runWithLoading(`draft:${draft.id}:approve`, '审核草稿', () => approveDraft(draft)),
-    rejectDraft: (draft) => runWithLoading(`draft:${draft.id}:reject`, '驳回草稿', () => rejectDraft(draft)),
-    approveAllDrafts: () => runWithLoading(`campaign:${selectedCampaign?.id ?? 'current'}:approve-all`, '批量审核', approveAllDrafts),
+    approveDraft: (draft) => runWithLoading(`draft:${draft.id}:approve`, '自动校验结果', () => approveDraft(draft)),
+    rejectDraft: (draft) => runWithLoading(`draft:${draft.id}:reject`, '自动校验结果', () => rejectDraft(draft)),
+    approveAllDrafts: () => runWithLoading(`campaign:${selectedCampaign?.id ?? 'current'}:approve-all`, '批量处理', approveAllDrafts),
     cancelTask: (task) => runWithLoading(`task:${task.id}:cancel`, '取消任务', () => cancelTask(task)),
     dispatchTask: (task) => runWithLoading(`task:${task.id}:dispatch`, '派发消息', () => dispatchTask(task)),
     drainQueue: () => runWithLoading('worker:drain', '处理到期发送', drainQueue),
@@ -2261,9 +2086,6 @@ export function AppProvider({ children }: AppProviderProps) {
     checkDeveloperApp: (app) => runWithLoading(`developer-app:${app.id}:check`, '检查开发者应用', () => checkDeveloperApp(app)),
     openTenantEdit,
     saveTenantQuota: () => runWithLoading(`tenant:${tenantForm.id ?? 'current'}:save`, '保存租户配额', saveTenantQuota),
-    createSubscriptionPlan: () => runWithLoading('subscription-plan:save', subscriptionPlanForm.id ? '保存套餐' : '新增套餐', createSubscriptionPlan),
-    openSubscriptionPlanEdit,
-    saveSubscriptionPlan: () => runWithLoading('subscription-plan:save', subscriptionPlanForm.id ? '保存套餐' : '新增套餐', saveSubscriptionPlan),
     openAdminUserEdit,
     saveAdminUser: () => runWithLoading(`admin-user:${adminUserForm.id ?? 'current'}:save`, '保存用户', saveAdminUser),
     resetAdminUserPassword: (user, newPassword) => runWithLoading(`admin-user:${user.id}:reset-password`, '重置密码', () => resetAdminUserPassword(user, newPassword)),
@@ -2284,7 +2106,7 @@ export function AppProvider({ children }: AppProviderProps) {
     accountName,
     groupName,
     choosePoolSendAccount,
-  }), [token, currentUser, authMode, loginEmail, loginPassword, registerForm, changePasswordForm, captchaChallenge, captchaInput, captchaToken, captchaError, captchaLoading, activeView, runtime, overview, accountPools, selectedPoolId, accounts, developerApps, tenants, subscriptionPlans, subscriptionPlanForm, adminUsers, selectedAdminUserId, selectedUserTokenLedgers, adminUserForm, tokenAdjustmentForm, activationCodes, activationCodePage, activationCodeFilters, usageLedgers, usageSummary, redeemCode, activationBatch, aiProviders, promptTemplates, tenantAiSetting, schedulingSetting, materials, contentKeywordRules, groups, campaigns, drafts, tasks, selectedCampaignId, taskManagementTab, archives, archiveDetail, audits, auditFilters, accountDetail, accountContacts, selectedDirectContact, accountDetailTab, accountPoolDetail, poolDirectAccountId, returnAfterVerification, groupDetail, campaignDetail, draftEditTarget, draftEditForm, accountCreateForm, accountPoolForm, cloneForm, loginAfterCreate, accountLoginForm, profileForm, avatarFile, selectedGroupId, campaignStep, campaignMode, selectedTargetGroupIds, selectedSourceGroupIds, recommendedAccounts, selectedAccountsByGroup, topic, sendWindow, intensity, draftCount, tone, selectedAiProviderId, selectedMaterialIds, jitterMinSeconds, jitterMaxSeconds, batchIntervalSeconds, respectSendWindow, campaignEndsAt, maxAiTokens, runIntervalSeconds, participationMinRatio, participationMaxRatio, maxMessagesPerAccount, maxDraftsPerBatch, taskStatusFilter, groupPolicy, developerAppForm, tenantForm, aiProviderForm, promptTemplateForm, materialForm, keywordRuleForm, modal, busy, pendingActionKeys, isActionPending, notice, directMessageForm, selectedPool, selectedGroup, selectedCampaign, selectedCampaignDrafts, selectedCampaignTasks, targetGroupsMissingAccounts, taskSummary, runWithLoading, refresh, showResult, closeModal, openConfirm, openCampaignModal, openAccountCreate, openAccountDetail, openAccountVerificationCodes, openAccountMovePool, openAccountPoolDetail, refreshAccountPoolDetail, createAccount, deleteAccount, createAccountPool, moveCurrentAccountPool, createClonePlan, confirmClonePlan, retryCloneItem, confirmVerificationTask, dismissVerificationTask, refreshAccountDetail, syncAccountContacts, queueAccountSyncNow, startDirectMessageToContact, openGroupDetail, loadCampaignDetail, openDraftEdit, saveDraftEdit, avatarUrl, openAccountProfileEdit, pollVerificationCodes, toggleTargetGroup, toggleSourceGroup, recommendAccounts, toggleRecommendedAccount, setGroupAccountsSelected, goCampaignAccountStep, goCampaignContentStep, createDirectMessageTask, createMessageSendTask, saveAccountProfile, retryAccountProfileSync, login, register, changePassword, submitRedeemCode, loadActivationCodes, createActivationCodes, disableActivationCode, logout, runLogin, verifyAccount, chooseAccountLoginMethod, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, checkAccountQrLogin, healthCheck, syncAccountGroups, createCampaignAndDrafts, cancelCampaign, approveDraft, rejectDraft, approveAllDrafts, cancelTask, dispatchTask, drainQueue, retryTask, authorizeSelectedGroup, createArchive, saveGroupPolicy, openArchiveDetail, exportArchive, rerunArchive, createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp, openTenantEdit, saveTenantQuota, createSubscriptionPlan, openSubscriptionPlanEdit, saveSubscriptionPlan, openAdminUserEdit, saveAdminUser, resetAdminUserPassword, adjustAdminUserTokens, loadUserTokenLedgers, createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider, createPromptTemplate, saveTenantAiSetting, saveSchedulingSetting, createMaterial, createContentKeywordRule, openContentKeywordRuleEdit, saveContentKeywordRule, toggleMaterial, accountName, groupName, choosePoolSendAccount, refreshCaptchaChallenge, verifyCaptcha, message, modalApi]);
+  }), [token, currentUser, authMode, loginEmail, loginPassword, registerForm, changePasswordForm, captchaChallenge, captchaInput, captchaToken, captchaError, captchaLoading, activeView, runtime, overview, accountPools, selectedPoolId, accounts, developerApps, tenants, adminUsers, selectedAdminUserId, selectedUserTokenLedgers, adminUserForm, tokenAdjustmentForm, usageLedgers, usageSummary, aiProviders, promptTemplates, tenantAiSetting, schedulingSetting, materials, contentKeywordRules, groups, campaigns, drafts, tasks, selectedCampaignId, taskManagementTab, archives, archiveDetail, audits, auditFilters, accountDetail, accountContacts, selectedDirectContact, accountDetailTab, accountPoolDetail, poolDirectAccountId, returnAfterVerification, groupDetail, campaignDetail, draftEditTarget, draftEditForm, accountCreateForm, accountPoolForm, cloneForm, loginAfterCreate, accountLoginForm, profileForm, avatarFile, selectedGroupId, campaignStep, campaignMode, selectedTargetGroupIds, selectedSourceGroupIds, recommendedAccounts, selectedAccountsByGroup, topic, sendWindow, intensity, draftCount, tone, selectedAiProviderId, selectedMaterialIds, jitterMinSeconds, jitterMaxSeconds, batchIntervalSeconds, respectSendWindow, campaignEndsAt, maxAiTokens, runIntervalSeconds, participationMinRatio, participationMaxRatio, maxMessagesPerAccount, maxDraftsPerBatch, taskStatusFilter, groupPolicy, developerAppForm, tenantForm, aiProviderForm, promptTemplateForm, materialForm, keywordRuleForm, modal, busy, pendingActionKeys, isActionPending, notice, directMessageForm, selectedPool, selectedGroup, selectedCampaign, selectedCampaignDrafts, selectedCampaignTasks, targetGroupsMissingAccounts, taskSummary, runWithLoading, refresh, showResult, closeModal, openConfirm, openCampaignModal, openAccountCreate, openAccountDetail, openAccountVerificationCodes, openAccountMovePool, openAccountPoolDetail, refreshAccountPoolDetail, createAccount, deleteAccount, createAccountPool, moveCurrentAccountPool, createClonePlan, confirmClonePlan, retryCloneItem, confirmVerificationTask, dismissVerificationTask, refreshAccountDetail, syncAccountContacts, queueAccountSyncNow, startDirectMessageToContact, openGroupDetail, loadCampaignDetail, openDraftEdit, saveDraftEdit, avatarUrl, openAccountProfileEdit, pollVerificationCodes, toggleTargetGroup, toggleSourceGroup, recommendAccounts, toggleRecommendedAccount, setGroupAccountsSelected, goCampaignAccountStep, goCampaignContentStep, createDirectMessageTask, createMessageSendTask, saveAccountProfile, retryAccountProfileSync, login, register, changePassword, logout, runLogin, verifyAccount, chooseAccountLoginMethod, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, checkAccountQrLogin, healthCheck, syncAccountGroups, createCampaignAndDrafts, cancelCampaign, approveDraft, rejectDraft, approveAllDrafts, cancelTask, dispatchTask, drainQueue, retryTask, authorizeSelectedGroup, createArchive, saveGroupPolicy, openArchiveDetail, exportArchive, rerunArchive, createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp, openTenantEdit, saveTenantQuota, openAdminUserEdit, saveAdminUser, resetAdminUserPassword, adjustAdminUserTokens, loadUserTokenLedgers, createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider, createPromptTemplate, saveTenantAiSetting, saveSchedulingSetting, createMaterial, createContentKeywordRule, openContentKeywordRuleEdit, saveContentKeywordRule, toggleMaterial, accountName, groupName, choosePoolSendAccount, refreshCaptchaChallenge, verifyCaptcha, message, modalApi]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import AccountStatus, ArchivedMember, ArchivedMessage, GroupArchive, TgAccount, TgGroup, TgGroupAccount
+from app.models import AccountStatus, ArchivedMember, ArchivedMessage, GroupArchive, GroupAuthStatus, OperationTarget, TgAccount, TgGroup, TgGroupAccount
 from app.schemas import ArchiveCreate
 
 from ._common import _now, audit, gateway
@@ -95,13 +95,13 @@ def _collect_archive(session: Session, archive: GroupArchive, actor: str) -> Gro
 
 
 def create_archive(session: Session, payload: ArchiveCreate, actor: str = "普通用户") -> GroupArchive:
-    group = session.get(TgGroup, payload.group_id)
+    group = _archive_group_for_payload(session, payload)
     if not group:
         raise ValueError("group not found")
 
     archive = GroupArchive(
         tenant_id=payload.tenant_id,
-        group_id=payload.group_id,
+        group_id=group.id,
         title=payload.title,
         status="排队中" if get_settings().tg_gateway_mode == "telethon" else "归档中",
         sync_mode="async" if get_settings().tg_gateway_mode == "telethon" else "sync",
@@ -114,6 +114,24 @@ def create_archive(session: Session, payload: ArchiveCreate, actor: str = "普�
     if archive.sync_mode == "sync":
         return _collect_archive(session, archive, "tg-worker")
     return archive
+
+
+def _archive_group_for_payload(session: Session, payload: ArchiveCreate) -> TgGroup | None:
+    if payload.operation_target_id:
+        target = session.get(OperationTarget, payload.operation_target_id)
+        if not target or target.tenant_id != payload.tenant_id or target.target_type != "group":
+            raise ValueError("运营目标不存在")
+        if target.auth_status not in {GroupAuthStatus.AUTHORIZED.value, GroupAuthStatus.READONLY.value}:
+            raise ValueError("运营目标未授权归档")
+        return session.scalar(
+            select(TgGroup).where(
+                TgGroup.tenant_id == target.tenant_id,
+                TgGroup.tg_peer_id == target.tg_peer_id,
+            )
+        )
+    if payload.group_id:
+        return session.get(TgGroup, payload.group_id)
+    raise ValueError("请选择归档运营目标")
 
 
 def get_archive_detail(session: Session, archive_id: int, message_search: str | None = None, member_search: str | None = None) -> dict:

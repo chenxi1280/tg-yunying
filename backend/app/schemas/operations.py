@@ -39,6 +39,11 @@ class OperationTargetOut(ApiModel):
     member_count: int
     can_send: bool
     auth_status: str
+    linked_group_id: int | None = None
+    can_listen: bool = False
+    can_archive: bool = False
+    available_send_account_count: int = 0
+    listener_account_count: int = 0
     last_sync_at: datetime | None
     created_at: datetime
     updated_at: datetime

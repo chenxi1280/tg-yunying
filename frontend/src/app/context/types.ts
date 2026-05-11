@@ -2,12 +2,11 @@ import React from 'react';
 import type {
   Overview, RuntimeConfig, CurrentUser, CaptchaChallenge, CaptchaVerifyResponse,
   AdminUser, AdminUserForm,
-  ActivationCode, ActivationCodeCreateForm, ActivationCodeFilters, ActivationCodePage,
-  SubscriptionPlan, SubscriptionPlanForm, TokenLedger,
+  TokenLedger,
   UsageLedger, UsageSummary, LoginFlow, Account, AccountPool, AccountLoginForm,
   DeveloperApp, AiProvider, PromptTemplate, TenantAiSetting, SchedulingSetting,
   Material, ContentKeywordRule, Contact, Group, Campaign, Draft, MessageTask, ArchiveItem, ArchiveDetail,
-  ArchiveExport, AuditLog, VerificationCode, AccountSyncRecord, VerificationTask,
+  ArchiveExport, AuditFilters, AuditLog, VerificationCode, AccountSyncRecord, VerificationTask,
   AccountCloneItem, AccountClonePlan, AccountGroup, ProfileSyncRecord,
   AccountDetail, AccountPoolDetail, GroupDetail, CampaignDetail, RecommendedAccount, Tenant,
   ConfirmPayload, MessageSendBatchCreate, MessageSendTaskCreate, ModalState,
@@ -62,10 +61,6 @@ export interface AppState {
   setDeveloperApps: (apps: DeveloperApp[]) => void;
   tenants: Tenant[];
   setTenants: (tenants: Tenant[]) => void;
-  subscriptionPlans: SubscriptionPlan[];
-  setSubscriptionPlans: (plans: SubscriptionPlan[]) => void;
-  subscriptionPlanForm: SubscriptionPlanForm;
-  setSubscriptionPlanForm: React.Dispatch<React.SetStateAction<SubscriptionPlanForm>>;
   adminUsers: AdminUser[];
   setAdminUsers: (users: AdminUser[]) => void;
   selectedAdminUserId: number | null;
@@ -77,22 +72,11 @@ export interface AppState {
   tokenAdjustmentForm: { delta_tokens: number; reason: string };
   setTokenAdjustmentForm: React.Dispatch<React.SetStateAction<{ delta_tokens: number; reason: string }>>;
 
-  // Activation & Usage
-  activationCodes: ActivationCode[];
-  setActivationCodes: (codes: ActivationCode[]) => void;
-  activationCodePage: ActivationCodePage;
-  setActivationCodePage: (page: ActivationCodePage) => void;
-  activationCodeFilters: ActivationCodeFilters;
-  setActivationCodeFilters: React.Dispatch<React.SetStateAction<ActivationCodeFilters>>;
+  // Usage
   usageLedgers: UsageLedger[];
   setUsageLedgers: (ledgers: UsageLedger[]) => void;
   usageSummary: UsageSummary | null;
   setUsageSummary: (summary: UsageSummary | null) => void;
-  redeemCode: string;
-  setRedeemCode: (code: string) => void;
-  activationBatch: ActivationCodeCreateForm;
-  setActivationBatch: React.Dispatch<React.SetStateAction<ActivationCodeCreateForm>>;
-
   // AI & Templates
   aiProviders: AiProvider[];
   setAiProviders: (providers: AiProvider[]) => void;
@@ -130,8 +114,8 @@ export interface AppState {
   // Audits
   audits: AuditLog[];
   setAudits: (logs: AuditLog[]) => void;
-  auditFilters: { actor: string; action: string; target_type: string; start_at: string; end_at: string };
-  setAuditFilters: (filters: { actor: string; action: string; target_type: string; start_at: string; end_at: string }) => void;
+  auditFilters: AuditFilters;
+  setAuditFilters: React.Dispatch<React.SetStateAction<AuditFilters>>;
 
   // Detail states
   accountDetail: AccountDetail | null;
@@ -346,10 +330,6 @@ export interface AppState {
   login: () => Promise<void>;
   register: () => Promise<void>;
   changePassword: () => Promise<void>;
-  submitRedeemCode: () => Promise<void>;
-  loadActivationCodes: (filters?: ActivationCodeFilters, page?: number, pageSize?: number) => Promise<void>;
-  createActivationCodes: () => Promise<void>;
-  disableActivationCode: (code: ActivationCode) => Promise<void>;
   logout: () => void;
   runLogin: (account: Account, method: 'code' | 'qr') => Promise<void>;
   verifyAccount: (account: Account) => Promise<void>;
@@ -382,9 +362,6 @@ export interface AppState {
   checkDeveloperApp: (app: DeveloperApp) => Promise<void>;
   openTenantEdit: (tenant: Tenant) => void;
   saveTenantQuota: () => Promise<void>;
-  createSubscriptionPlan: () => Promise<void>;
-  openSubscriptionPlanEdit: (plan: SubscriptionPlan) => void;
-  saveSubscriptionPlan: () => Promise<void>;
   openAdminUserEdit: (user: AdminUser) => void;
   saveAdminUser: () => Promise<void>;
   resetAdminUserPassword: (user: AdminUser, newPassword: string) => Promise<void>;

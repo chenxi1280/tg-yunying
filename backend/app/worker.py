@@ -7,6 +7,7 @@ import time
 import traceback
 from datetime import UTC, datetime
 
+from .config import get_settings
 from .database import SessionLocal
 from .models import MessageTask, TaskStatus
 from .task_queue import get_task_queue
@@ -34,6 +35,7 @@ def _task_due(task_id: int) -> bool:
 
 
 def drain_once(limit: int = 100) -> int:
+    settings = get_settings()
     queue = get_task_queue()
     scan_limit = max(limit, queue.size())
     deferred: list[int] = []
@@ -61,9 +63,13 @@ def drain_once(limit: int = 100) -> int:
     remaining = max(0, remaining - account_count)
     listener_count = drain_group_listeners(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - listener_count)
-    continuous_count = drain_continuous_campaigns(SessionLocal, max(1, remaining))
+    continuous_count = 0
+    if settings.enable_legacy_campaign_worker:
+        continuous_count = drain_continuous_campaigns(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - continuous_count)
-    operation_count = drain_operation_tasks(SessionLocal, max(1, remaining))
+    operation_count = 0
+    if settings.enable_legacy_operation_task_worker:
+        operation_count = drain_operation_tasks(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - operation_count)
     task_center_count = drain_task_center(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - task_center_count)

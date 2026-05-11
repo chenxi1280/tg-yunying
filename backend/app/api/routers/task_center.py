@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user
+from app.config import get_settings
 from app.common.http import not_found
 from app.database import get_session
 from app.schemas import (
@@ -73,6 +74,7 @@ from app.services.task_center import (
 )
 
 router = APIRouter()
+legacy_review_router = APIRouter()
 
 
 @router.post("/api/tasks/group-ai-chat", response_model=TaskOut)
@@ -341,7 +343,7 @@ def post_channel_comment_generate_preview(
     return generate_channel_comment_preview(session, current_user.tenant_id or 1, payload)
 
 
-@router.get("/api/review-queue", response_model=list[ReviewQueueOut])
+@legacy_review_router.get("/api/review-queue", response_model=list[ReviewQueueOut])
 def get_review_queue(
     status: str | None = "pending",
     session: Session = Depends(get_session),
@@ -350,7 +352,7 @@ def get_review_queue(
     return list_reviews(session, current_user.tenant_id or 1, status)
 
 
-@router.post("/api/review/{review_id}/approve", response_model=ReviewQueueOut)
+@legacy_review_router.post("/api/review/{review_id}/approve", response_model=ReviewQueueOut)
 def post_review_approve(
     review_id: str,
     payload: ReviewApproveRequest | None = None,
@@ -365,7 +367,7 @@ def post_review_approve(
         raise not_found(str(exc)) from exc
 
 
-@router.post("/api/review/{review_id}/reject", response_model=ReviewQueueOut)
+@legacy_review_router.post("/api/review/{review_id}/reject", response_model=ReviewQueueOut)
 def post_review_reject(
     review_id: str,
     payload: ReviewRejectRequest | None = None,
@@ -378,6 +380,10 @@ def post_review_reject(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise not_found(str(exc)) from exc
+
+
+if get_settings().enable_legacy_review_routes:
+    router.include_router(legacy_review_router)
 
 
 __all__ = ["router"]

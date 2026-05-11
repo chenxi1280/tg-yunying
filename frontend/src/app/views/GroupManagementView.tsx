@@ -13,7 +13,7 @@ interface Props {
   setSelectedGroupId: (id: number | null) => void;
   archives: ArchiveItem[];
   archiveDetail: ArchiveDetail | null;
-  onCreateCampaign: (groupId?: number) => void;
+  onCreateTask: (groupId?: number) => void;
   onCreateArchive: () => void;
   onAuthorizeGroup: (status: string) => void;
   onEditGroupPolicy: () => void;
@@ -66,13 +66,13 @@ function GroupCoveragePanel({ selectedGroup, groupDetail, onOpenGroupDetail, isA
 
 function OperationPolicyPanel({
   selectedGroup,
-  onCreateCampaign,
+  onCreateTask,
   onCreateArchive,
   onEditGroupPolicy,
   onAuthorizeGroup,
   onOpenConfirm,
   isActionPending,
-}: Pick<Props, 'selectedGroup' | 'onCreateCampaign' | 'onCreateArchive' | 'onEditGroupPolicy' | 'onAuthorizeGroup' | 'onOpenConfirm' | 'isActionPending'>) {
+}: Pick<Props, 'selectedGroup' | 'onCreateTask' | 'onCreateArchive' | 'onEditGroupPolicy' | 'onAuthorizeGroup' | 'onOpenConfirm' | 'isActionPending'>) {
   const [detailOpen, setDetailOpen] = React.useState(false);
   if (!selectedGroup) return <Card className="panel"><Empty description="暂无群聊资产" /></Card>;
   return (
@@ -81,7 +81,7 @@ function OperationPolicyPanel({
         <div className="stats-grid compact-stats">
           <Card className="summary-card" size="small"><span>授权策略</span><strong>{selectedGroup.auth_status}</strong><p>{selectedGroup.can_send ? '可发言' : '不可发言'}</p></Card>
           <Card className="summary-card" size="small"><span>活跃时间</span><strong>{selectedGroup.active_window}</strong><p>每日 {selectedGroup.daily_limit} 条</p></Card>
-          <Card className="summary-card" size="small"><span>话题方向</span><strong>{selectedGroup.topic_direction || '未设置'}</strong><p>{selectedGroup.require_review ? '需要人工审核' : '规则内自动'}</p></Card>
+          <Card className="summary-card" size="small"><span>话题方向</span><strong>{selectedGroup.topic_direction || '未设置'}</strong><p>规则内自动校验</p></Card>
         </div>
       </Card>
 
@@ -92,10 +92,10 @@ function OperationPolicyPanel({
           { key: 'active_window', label: '活跃时间', children: selectedGroup.active_window },
           { key: 'daily_limit', label: '每日上限', children: `${selectedGroup.daily_limit} 条` },
           { key: 'topic', label: '话题方向', children: selectedGroup.topic_direction || '未设置' },
-          { key: 'review', label: '审核', children: selectedGroup.require_review ? '需要人工审核' : '规则内自动' },
+          { key: 'validation', label: '自动校验', children: '关键词、敏感词、外链、频控和账号状态' },
         ]} />
         <Space className="detail-actions" wrap>
-          <Button type="primary" onClick={() => onCreateCampaign(selectedGroup.id)}>用此群创建任务</Button>
+          <Button type="primary" onClick={() => onCreateTask(selectedGroup.id)}>用此群创建任务</Button>
           <Button onClick={() => onOpenConfirm({
             title: '创建群归档',
             message: `确认归档「${selectedGroup.title}」的消息与成员清单？`,
@@ -208,7 +208,7 @@ export default function GroupManagementView(props: Props) {
     setSelectedGroupId,
     archives,
     archiveDetail,
-    onCreateCampaign,
+    onCreateTask,
     onCreateArchive,
     onAuthorizeGroup,
     onEditGroupPolicy,
@@ -234,7 +234,7 @@ export default function GroupManagementView(props: Props) {
               selectedGroup={selectedGroup}
               selectedGroupId={selectedGroupId}
               setSelectedGroupId={setSelectedGroupId}
-              onCreateCampaign={onCreateCampaign}
+              onCreateTask={onCreateTask}
               onCreateArchive={onCreateArchive}
               onAuthorizeGroup={onAuthorizeGroup}
               onEditGroupPolicy={onEditGroupPolicy}
@@ -244,7 +244,7 @@ export default function GroupManagementView(props: Props) {
           ),
         },
         { key: 'coverage', label: '账号覆盖', children: <GroupCoveragePanel selectedGroup={selectedGroup} groupDetail={groupDetail} onOpenGroupDetail={onOpenGroupDetail} isActionPending={isActionPending} /> },
-        { key: 'policy', label: '运营策略', children: <OperationPolicyPanel selectedGroup={selectedGroup} onCreateCampaign={onCreateCampaign} onCreateArchive={onCreateArchive} onEditGroupPolicy={onEditGroupPolicy} onAuthorizeGroup={onAuthorizeGroup} onOpenConfirm={onOpenConfirm} isActionPending={isActionPending} /> },
+        { key: 'policy', label: '运营策略', children: <OperationPolicyPanel selectedGroup={selectedGroup} onCreateTask={onCreateTask} onCreateArchive={onCreateArchive} onEditGroupPolicy={onEditGroupPolicy} onAuthorizeGroup={onAuthorizeGroup} onOpenConfirm={onOpenConfirm} isActionPending={isActionPending} /> },
         { key: 'listener', label: '监听上下文', children: <ListenerContextPanel selectedGroup={selectedGroup} groupDetail={groupDetail} onOpenGroupDetail={onOpenGroupDetail} isActionPending={isActionPending} /> },
         { key: 'archives', label: '归档任务', children: <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={onOpenArchiveDetail} onExportArchive={onExportArchive} onRerunArchive={onRerunArchive} isActionPending={isActionPending} /> },
         { key: 'library', label: '消息/成员库', children: <MessageMemberLibrary archiveDetail={archiveDetail} /> },

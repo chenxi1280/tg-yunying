@@ -107,8 +107,6 @@ def validate_group_send_policy(session: Session, *, tenant_id: int, group: TgGro
     last_sent_at = _group_last_sent_at(session, tenant_id, group.id)
     if last_sent_at and (_as_utc(_now()) - _as_utc(last_sent_at)).total_seconds() < group.group_cooldown_seconds:
         return FailureType.SLOWMODE.value, f"群冷却中，还需等待 {group.group_cooldown_seconds} 秒"
-    if group.require_review and not review_approved:
-        return FailureType.CONTENT_REJECTED.value, "该群要求先审核后再发送"
     tenant_hit = next((rule.keyword for rule in tenant_keyword_rules(session, tenant_id) if rule.keyword and rule.keyword.lower() in content.lower()), None)
     if tenant_hit:
         return FailureType.CONTENT_REJECTED.value, f"命中租户关键词：{tenant_hit}"

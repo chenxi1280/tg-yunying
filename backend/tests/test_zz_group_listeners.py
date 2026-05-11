@@ -45,7 +45,7 @@ def test_group_listener_config_rejects_invalid_account():
         assert response.status_code == 404
 
 
-def test_group_listener_collects_context_and_auto_queues_reply(monkeypatch):
+def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
     with TestClient(app) as client:
         headers = auth_headers(client)
         ensure_developer_app(client, headers)
@@ -113,22 +113,21 @@ def test_group_listener_collects_context_and_auto_queues_reply(monkeypatch):
             session.commit()
 
         processed = drain_once()
-        assert processed >= 2
+        assert processed >= 1
 
         with SessionLocal() as session:
             contexts = session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-real-1").all()
             assert len(contexts) == 1
             assert contexts[0].content == "这个功能怎么开始参与？"
-            assert contexts[0].used_for_ai is True
+            assert contexts[0].used_for_ai is False
             tasks = session.query(MessageTask).filter_by(group_id=group["id"]).order_by(MessageTask.id.desc()).limit(5).all()
-            assert tasks
-            assert tasks[0].preferred_account_id == sender["id"]
+            assert not any(task.preferred_account_id == sender["id"] and task.content == "这个功能怎么开始参与？" for task in tasks)
 
         drain_once()
         assert drain_once() == 0
 
 
-def test_group_listener_auto_reply_is_not_subscription_gated(monkeypatch):
+def test_group_listener_context_collection_is_not_subscription_gated(monkeypatch):
     with TestClient(app) as client:
         headers = auth_headers(client)
         ensure_developer_app(client, headers)
@@ -174,6 +173,6 @@ def test_group_listener_auto_reply_is_not_subscription_gated(monkeypatch):
             contexts = session.query(GroupContextMessage).filter_by(remote_message_id=snapshots[0].remote_message_id).all()
             assert db_group.listener_last_error == ""
             assert len(contexts) == 1
-            assert contexts[0].used_for_ai is True
-            assert session.query(Campaign).count() >= campaign_count + 1
-            assert session.query(MessageTask).count() >= task_count + 1
+            assert contexts[0].used_for_ai is False
+            assert session.query(Campaign).count() == campaign_count
+            assert session.query(MessageTask).count() == task_count

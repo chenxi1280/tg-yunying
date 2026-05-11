@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import AuditLog
@@ -17,6 +17,12 @@ def filter_audit_logs(
     actor: str | None = None,
     action: str | None = None,
     target_type: str | None = None,
+    target_id: str | None = None,
+    keyword: str | None = None,
+    account_id: str | None = None,
+    operation_target_id: str | None = None,
+    task_id: str | None = None,
+    status: str | None = None,
     start_at: datetime | None = None,
     end_at: datetime | None = None,
     limit: int = 100,
@@ -29,6 +35,30 @@ def filter_audit_logs(
         stmt = stmt.where(AuditLog.action.like(f"%{action}%"))
     if target_type:
         stmt = stmt.where(AuditLog.target_type == target_type)
+    if target_id:
+        stmt = stmt.where(AuditLog.target_id == target_id)
+    if account_id:
+        stmt = stmt.where(AuditLog.target_type.in_(["tg_account", "account_sync_record", "manual_operation"]), AuditLog.target_id == account_id)
+    if operation_target_id:
+        stmt = stmt.where(AuditLog.target_type.in_(["operation_target", "tg_group"]), AuditLog.target_id == operation_target_id)
+    if task_id:
+        stmt = stmt.where(
+            or_(
+                AuditLog.target_id == task_id,
+                AuditLog.detail.like(f"%{task_id}%"),
+            )
+        )
+    if keyword:
+        pattern = f"%{keyword}%"
+        stmt = stmt.where(or_(AuditLog.action.like(pattern), AuditLog.actor.like(pattern), AuditLog.target_type.like(pattern), AuditLog.target_id.like(pattern), AuditLog.detail.like(pattern)))
+    if status:
+        status_map = {
+            "success": ["成功", "完成", "通过", "创建", "新增", "更新", "启动", "发布", "同步", "导出", "发送"],
+            "failed": ["失败", "异常", "错误"],
+            "skipped": ["跳过", "忽略", "取消", "停止", "删除"],
+        }
+        words = status_map.get(status, [status])
+        stmt = stmt.where(or_(*[AuditLog.action.like(f"%{word}%") for word in words], *[AuditLog.detail.like(f"%{word}%") for word in words]))
     if start_at:
         stmt = stmt.where(AuditLog.created_at >= start_at)
     if end_at:

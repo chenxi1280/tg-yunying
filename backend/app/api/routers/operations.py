@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user
+from app.config import get_settings
 from app.database import get_session
 from app.common.http import not_found
 from app.models import ChannelMessage, ManualOperationRecord, OperationTarget, OperationTask, OperationTaskAttempt
@@ -41,6 +42,7 @@ from app.services import (
 )
 
 router = APIRouter()
+legacy_operation_task_router = APIRouter()
 
 
 @router.get("/api/operation-targets", response_model=list[OperationTargetOut])
@@ -122,7 +124,7 @@ def post_channel_message(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/api/operation-tasks", response_model=list[OperationTaskOut])
+@legacy_operation_task_router.get("/api/operation-tasks", response_model=list[OperationTaskOut])
 def get_operation_tasks(
     status: str | None = None,
     session: Session = Depends(get_session),
@@ -131,7 +133,7 @@ def get_operation_tasks(
     return filter_operation_tasks(session, current_user.tenant_id or 1, status)
 
 
-@router.post("/api/operation-tasks", response_model=OperationTaskOut)
+@legacy_operation_task_router.post("/api/operation-tasks", response_model=OperationTaskOut)
 def post_operation_task(
     payload: OperationTaskCreate,
     session: Session = Depends(get_session),
@@ -143,7 +145,7 @@ def post_operation_task(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/api/operation-tasks/{task_id}/dispatch", response_model=OperationTaskOut)
+@legacy_operation_task_router.post("/api/operation-tasks/{task_id}/dispatch", response_model=OperationTaskOut)
 def post_operation_task_dispatch(
     task_id: int,
     session: Session = Depends(get_session),
@@ -155,7 +157,7 @@ def post_operation_task_dispatch(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/api/operation-tasks/{task_id}/retry", response_model=OperationTaskOut)
+@legacy_operation_task_router.post("/api/operation-tasks/{task_id}/retry", response_model=OperationTaskOut)
 def post_operation_task_retry(
     task_id: int,
     session: Session = Depends(get_session),
@@ -167,7 +169,7 @@ def post_operation_task_retry(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/api/operation-tasks/{task_id}/cancel", response_model=OperationTaskOut)
+@legacy_operation_task_router.post("/api/operation-tasks/{task_id}/cancel", response_model=OperationTaskOut)
 def post_operation_task_cancel(
     task_id: int,
     session: Session = Depends(get_session),
@@ -179,7 +181,7 @@ def post_operation_task_cancel(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/api/operation-task-attempts", response_model=list[OperationTaskAttemptOut])
+@legacy_operation_task_router.get("/api/operation-task-attempts", response_model=list[OperationTaskAttemptOut])
 def get_operation_task_attempts(
     task_id: int | None = None,
     session: Session = Depends(get_session),
@@ -195,3 +197,7 @@ def get_manual_operation_records(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Sequence[ManualOperationRecord]:
     return list_manual_operations(session, current_user.tenant_id or 1, account_id)
+
+
+if get_settings().enable_legacy_operation_task_routes:
+    router.include_router(legacy_operation_task_router)

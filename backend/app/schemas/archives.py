@@ -9,7 +9,8 @@ from .api import ApiModel
 
 class ArchiveCreate(BaseModel):
     tenant_id: int = 1
-    group_id: int
+    group_id: int | None = None
+    operation_target_id: int | None = None
     title: str
 
 

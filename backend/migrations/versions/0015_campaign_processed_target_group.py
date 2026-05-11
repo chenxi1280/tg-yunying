@@ -29,6 +29,10 @@ def _column_exists(table: str, column: str) -> bool:
     return column in {item["name"] for item in sa.inspect(_bind()).get_columns(table)}
 
 
+def _is_sqlite() -> bool:
+    return _bind().dialect.name == "sqlite"
+
+
 def _drop_processed_unique_constraints() -> None:
     inspector = sa.inspect(_bind())
     source_unique = {"campaign_id", "source_group_id", "source_remote_message_id"}
@@ -51,6 +55,8 @@ def upgrade() -> None:
         return
     if not _column_exists("campaign_processed_messages", "target_group_id"):
         op.add_column("campaign_processed_messages", sa.Column("target_group_id", sa.Integer(), nullable=True))
+        if _is_sqlite():
+            return
         op.create_foreign_key(
             "fk_campaign_processed_messages_target_group_id",
             "campaign_processed_messages",
@@ -58,6 +64,8 @@ def upgrade() -> None:
             ["target_group_id"],
             ["id"],
         )
+    if _is_sqlite():
+        return
     _drop_processed_unique_constraints()
     op.create_unique_constraint(
         "uq_campaign_processed_messages_target",

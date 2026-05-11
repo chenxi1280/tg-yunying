@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     AccountStatus,
-    AiDraft,
     Campaign,
     FailureType,
     Material,
@@ -70,6 +69,31 @@ def _resolve_operation_target(session: Session, tenant_id: int, target_id: int, 
     return target
 
 
+def _linked_group_for_operation_target(session: Session, target: OperationTarget) -> TgGroup | None:
+    return session.scalar(
+        select(TgGroup).where(
+            TgGroup.tenant_id == target.tenant_id,
+            TgGroup.tg_peer_id == target.tg_peer_id,
+        )
+    )
+
+
+def _ensure_account_can_send_group(session: Session, account: TgAccount, group: TgGroup) -> None:
+    if group.auth_status != GroupAuthStatus.AUTHORIZED.value:
+        raise ValueError("群未授权运营")
+    if not group.can_send:
+        raise ValueError("群当前不可发送")
+    link = session.scalar(
+        select(TgGroupAccount).where(
+            TgGroupAccount.group_id == group.id,
+            TgGroupAccount.account_id == account.id,
+            TgGroupAccount.can_send.is_(True),
+        )
+    )
+    if not link:
+        raise ValueError("该账号不可向此运营目标发送")
+
+
 def _resolve_send_account(session: Session, account_id: int, tenant_id: int | None) -> TgAccount:
     account = session.get(TgAccount, account_id)
     if not account or account.deleted_at is not None:
@@ -96,24 +120,16 @@ def _resolve_message_target(session: Session, account: TgAccount, target: Messag
             group = session.get(TgGroup, target.group_id)
             if not group or group.tenant_id != account.tenant_id:
                 raise ValueError("群聊不存在")
-            if group.auth_status != GroupAuthStatus.AUTHORIZED.value:
-                raise ValueError("群未授权运营")
-            if not group.can_send:
-                raise ValueError("群当前不可发送")
-            link = session.scalar(
-                select(TgGroupAccount).where(
-                    TgGroupAccount.group_id == group.id,
-                    TgGroupAccount.account_id == account.id,
-                    TgGroupAccount.can_send.is_(True),
-                )
-            )
-            if not link:
-                raise ValueError("该账号不可向此群发送")
+            _ensure_account_can_send_group(session, account, group)
             group_id = group.id
             target_peer_id = group.tg_peer_id
             target_display = group.title
         elif target.operation_target_id:
             operation_target = _resolve_operation_target(session, account.tenant_id, target.operation_target_id, "group")
+            linked_group = _linked_group_for_operation_target(session, operation_target)
+            if linked_group:
+                _ensure_account_can_send_group(session, account, linked_group)
+                group_id = linked_group.id
             target_peer_id = operation_target.tg_peer_id
             target_display = operation_target.title
         elif target_peer_id:
@@ -400,12 +416,6 @@ def validate_group_task_policy(session: Session, task: MessageTask, group: TgGro
     group_last_sent_at = _group_last_sent_at(session, task)
     if group_last_sent_at and (now_value - _as_utc(group_last_sent_at)).total_seconds() < group.group_cooldown_seconds:
         return FailureType.SLOWMODE.value, f"群冷却中，还需等待 {group.group_cooldown_seconds} 秒"
-    if group.require_review:
-        if not task.draft_id:
-            return FailureType.CONTENT_REJECTED.value, "该群要求先审核草稿后再发送"
-        draft = session.get(AiDraft, task.draft_id)
-        if not draft or draft.status != TaskStatus.APPROVED.value:
-            return FailureType.CONTENT_REJECTED.value, "该群要求发送已审核草稿"
     segments = build_outbound_segments(session, task)
     text_parts = [task.content]
     for segment in segments:

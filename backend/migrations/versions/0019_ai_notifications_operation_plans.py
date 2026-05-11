@@ -35,6 +35,10 @@ def _column_exists(table: str, column: str) -> bool:
     return column in {item["name"] for item in _inspector().get_columns(table)}
 
 
+def _is_sqlite() -> bool:
+    return _bind().dialect.name == "sqlite"
+
+
 def _add_column_if_missing(table: str, column: sa.Column) -> None:
     if _table_exists(table) and not _column_exists(table, column.name):
         op.add_column(table, column)
@@ -64,7 +68,7 @@ def upgrade() -> None:
     _add_column_if_missing("operation_task_attempts", sa.Column("idempotency_key", sa.String(length=100), nullable=False, server_default=""))
     _add_column_if_missing("operation_task_attempts", sa.Column("planned_delay_seconds", sa.Integer(), nullable=False, server_default="0"))
     _add_column_if_missing("operation_task_attempts", sa.Column("scheduled_at", sa.DateTime(), nullable=False, server_default=sa.func.now()))
-    if _table_exists("operation_task_attempts") and _column_exists("operation_task_attempts", "executed_at"):
+    if not _is_sqlite() and _table_exists("operation_task_attempts") and _column_exists("operation_task_attempts", "executed_at"):
         op.alter_column("operation_task_attempts", "executed_at", existing_type=sa.DateTime(), nullable=True)
     if _table_exists("operation_task_attempts") and _table_exists("operation_tasks"):
         _bind().execute(

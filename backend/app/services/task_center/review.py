@@ -38,7 +38,7 @@ def expire_reviews(session: Session) -> int:
         action = session.get(Action, review.action_id)
         if action and action.status == "pending":
             action.status = "skipped"
-            action.result = {"success": False, "error_code": "review_expired", "error_message": "审核已过期"}
+            action.result = {"success": False, "error_code": "review_expired", "error_message": "内容处理已过期"}
             action.executed_at = _now()
     return len(rows)
 

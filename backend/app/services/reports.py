@@ -10,9 +10,9 @@ from app.models import (
     AiDraft,
     AuditLog,
     AiUsageLedger,
-    Campaign,
     GroupAuthStatus,
     MessageTask,
+    Task,
     TaskStatus,
     TgAccount,
     TgGroup,
@@ -23,17 +23,17 @@ from app.models import (
 def build_overview(session: Session, tenant_id: int | None = None) -> dict:
     account_stmt = select(func.count(TgAccount.id)).where(TgAccount.deleted_at.is_(None))
     group_stmt = select(func.count(TgGroup.id))
-    campaign_stmt = select(func.count(Campaign.id))
+    operation_task_stmt = select(func.count(Task.id)).where(Task.deleted_at.is_(None))
     task_base = []
     if tenant_id is not None:
         account_stmt = account_stmt.where(TgAccount.tenant_id == tenant_id)
         group_stmt = group_stmt.where(TgGroup.tenant_id == tenant_id)
-        campaign_stmt = campaign_stmt.where(Campaign.tenant_id == tenant_id)
+        operation_task_stmt = operation_task_stmt.where(Task.tenant_id == tenant_id)
         task_base.append(MessageTask.tenant_id == tenant_id)
 
     total_accounts = session.scalar(account_stmt) or 0
     total_groups = session.scalar(group_stmt) or 0
-    total_campaigns = session.scalar(campaign_stmt) or 0
+    total_operation_tasks = session.scalar(operation_task_stmt) or 0
     queued = session.scalar(select(func.count(MessageTask.id)).where(*task_base, MessageTask.status == TaskStatus.QUEUED.value)) or 0
     sent = session.scalar(select(func.count(MessageTask.id)).where(*task_base, MessageTask.status == TaskStatus.SENT.value)) or 0
     failed = session.scalar(select(func.count(MessageTask.id)).where(*task_base, MessageTask.status == TaskStatus.FAILED.value)) or 0
@@ -64,7 +64,8 @@ def build_overview(session: Session, tenant_id: int | None = None) -> dict:
         "totals": {
             "accounts": total_accounts,
             "groups": total_groups,
-            "campaigns": total_campaigns,
+            "tasks": total_operation_tasks,
+            "campaigns": total_operation_tasks,
             "message_tasks": total_tasks,
             "ai_tokens": int(total_usage_tokens),
         },

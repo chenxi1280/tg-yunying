@@ -67,75 +67,6 @@ export type CaptchaVerifyResponse = {
   expires_at: string;
 };
 
-export type ActivationCode = {
-  id: number;
-  code: string;
-  plan_id: number | null;
-  plan_type: string;
-  plan_name: string;
-  duration_days: number;
-  token_quota: number;
-  status: string;
-  batch_no: string;
-  serial_prefix: string;
-  created_by: string;
-  created_at: string;
-  redeemed_by_user_id: number | null;
-  redeemed_user_name: string | null;
-  redeemed_user_email: string | null;
-  redeemed_at: string | null;
-  subscription_start_at: string | null;
-  subscription_end_at: string | null;
-  note: string;
-};
-
-export type ActivationCodePage = {
-  items: ActivationCode[];
-  total: number;
-  page: number;
-  page_size: number;
-};
-
-export type ActivationCodeFilters = {
-  search: string;
-  status: string;
-  plan_type: string;
-  batch_no: string;
-  start_at: string;
-  end_at: string;
-};
-
-export type ActivationCodeCreateForm = {
-  plan_type: string;
-  plan_id: number | '';
-  quantity: number;
-  batch_no: string;
-  serial_prefix: string;
-  note: string;
-};
-
-export type SubscriptionPlan = {
-  id: number;
-  plan_type: string;
-  name: string;
-  duration_days: number;
-  token_quota: number;
-  is_active: boolean;
-  note: string;
-  created_at: string;
-  updated_at: string;
-};
-
-export type SubscriptionPlanForm = {
-  id: number | null;
-  plan_type: string;
-  name: string;
-  duration_days: number;
-  token_quota: number;
-  is_active: boolean;
-  note: string;
-};
-
 export type AdminUser = {
   id: number;
   tenant_id: number | null;
@@ -556,11 +487,28 @@ export type ArchiveExport = ArchiveDetail & {
 
 export type AuditLog = {
   id: number;
+  tenant_id: number | null;
   actor: string;
   action: string;
   target_type: string;
+  target_id: string;
   detail: string;
+  ip_address: string;
   created_at: string;
+};
+
+export type AuditFilters = {
+  actor: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  keyword: string;
+  account_id: string;
+  operation_target_id: string;
+  task_id: string;
+  status: string;
+  start_at: string;
+  end_at: string;
 };
 
 export type VerificationCode = {
@@ -658,6 +606,11 @@ export type OperationTarget = {
   member_count: number;
   can_send: boolean;
   auth_status: string;
+  linked_group_id: number | null;
+  can_listen: boolean;
+  can_archive: boolean;
+  available_send_account_count: number;
+  listener_account_count: number;
   last_sync_at: string | null;
   created_at: string;
   updated_at: string;
@@ -813,25 +766,40 @@ export type TaskCenterAction = {
   created_at: string;
 };
 
-export type ReviewQueueItem = {
-  id: string;
+export type RuleSetVersion = {
+  id: number;
   tenant_id: number;
-  task_id: string;
-  action_id: string;
-  content_preview: string;
-  source_info: string;
+  rule_set_id: number;
+  version: number;
   status: string;
-  reviewed_by: string;
-  reviewed_at: string | null;
-  reject_reason: string;
-  expires_at: string | null;
+  filters: Record<string, any>;
+  transforms: Record<string, any>;
+  routing: Record<string, any>;
+  account_strategy: Record<string, any>;
+  rate_limits: Record<string, any>;
+  retry_policy: Record<string, any>;
+  created_by: string;
+  published_by: string;
+  published_at: string | null;
   created_at: string;
+  updated_at: string;
+};
+
+export type RuleSet = {
+  id: number;
+  tenant_id: number;
+  name: string;
+  description: string;
+  status: string;
+  active_version_id: number | null;
+  versions: RuleSetVersion[];
+  created_at: string;
+  updated_at: string;
 };
 
 export type TaskCenterDetail = {
   task: TaskCenterTask;
   actions: TaskCenterAction[];
-  reviews: ReviewQueueItem[];
   stats: Record<string, any>;
   accounts: Array<{ id: number; display_name: string; username: string | null; status: string }>;
   message_groups: Array<{
@@ -839,11 +807,77 @@ export type TaskCenterDetail = {
     channel_title: string;
     channel_username: string;
     message_id: number | null;
+    action_type: string;
+    action_label: string;
     message_url: string;
     content_preview: string;
+    target_count: number;
+    completed_count: number;
+    failed_count: number;
+    running_count: number;
+    skipped_count: number;
+    duplicate_count: number;
+    capacity_shortfall: number;
+    subtask_status: string;
     stats: Record<string, any>;
     actions: TaskCenterAction[];
   }>;
+  ai_cycles: Array<{
+    cycle_id: string;
+    context_message_ids: number[];
+    stats: Record<string, any>;
+    turns: Array<{
+      action_id: string;
+      turn_index: number;
+      account_id: number | null;
+      account_role: string;
+      intent: string;
+      content: string;
+      status: string;
+      scheduled_at: string;
+      executed_at: string | null;
+      result: Record<string, any>;
+    }>;
+  }>;
+  relay_batches: Array<{
+    relay_batch_id: string;
+    stats: Record<string, any>;
+    items: Array<{
+      action_id: string;
+      relay_event_id: string;
+      source_group_id: number | null;
+      source_info: string;
+      original_text: string;
+      transformed_text: string;
+      rule_set_id: number | null;
+      rule_set_version_id: number | null;
+      account_id: number | null;
+      status: string;
+      scheduled_at: string;
+      executed_at: string | null;
+      result: Record<string, any>;
+    }>;
+  }>;
+};
+
+export type MetricBucket = {
+  key: string;
+  label: string;
+  value: number | string;
+  detail: string;
+  status: string;
+};
+
+export type OperationMetricsSummary = {
+  accounts: MetricBucket[];
+  targets: MetricBucket[];
+  messages: MetricBucket[];
+  channel_interactions: MetricBucket[];
+  ai_activity: MetricBucket[];
+  relay: MetricBucket[];
+  archives: MetricBucket[];
+  ai_usage: MetricBucket[];
+  failures: MetricBucket[];
 };
 
 export type ChannelCapacityCheck = {

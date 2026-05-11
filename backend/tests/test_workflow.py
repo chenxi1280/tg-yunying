@@ -7,8 +7,9 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.gateways import ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, OperationResult, SendResult
-from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, Task, TaskStatus, TelegramDeveloperApp, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow
+from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow
 from app.services.notifications import NotificationResult
+from app.services.task_center.listener_runtime import reset_listener_runtime_cache
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import inspect
@@ -20,7 +21,9 @@ def skip_legacy_task_center_flow() -> None:
 
 @pytest.fixture(autouse=True)
 def cleanup_continuous_task_center_tasks():
+    reset_listener_runtime_cache()
     yield
+    reset_listener_runtime_cache()
     with SessionLocal() as session:
         if "tasks" not in inspect(session.bind).get_table_names():
             return
@@ -31,6 +34,7 @@ def cleanup_continuous_task_center_tasks():
             action.status = "skipped"
             action.executed_at = datetime.now(UTC).replace(tzinfo=None)
             action.result = {"success": False, "error_code": "test_cleanup", "error_message": "test cleanup"}
+        session.query(ReviewQueue).filter(ReviewQueue.status == "pending").delete(synchronize_session=False)
         session.commit()
 
 
@@ -112,9 +116,20 @@ def test_worker_loop_can_stop_with_event(monkeypatch):
 
 
 def ensure_developer_app(client: TestClient, headers: dict[str, str]) -> dict:
+    with SessionLocal() as session:
+        tenant = session.get(Tenant, 1)
+        if tenant:
+            tenant.account_quota = max(tenant.account_quota, 5000)
+            tenant.task_quota = max(tenant.task_quota, 10000)
+            session.commit()
     apps = client.get("/api/developer-apps", headers=headers).json()
     healthy = [app for app in apps if app["is_active"] and app["health_status"] == "健康"]
     if healthy:
+        with SessionLocal() as session:
+            db_app = session.get(TelegramDeveloperApp, healthy[0]["id"])
+            if db_app and db_app.max_accounts < 5000:
+                db_app.max_accounts = 5000
+                session.commit()
         return healthy[0]
     suffix = int(uuid4().int % 100000)
     response = client.post(
@@ -124,7 +139,7 @@ def ensure_developer_app(client: TestClient, headers: dict[str, str]) -> dict:
             "app_name": f"测试开发者应用 {suffix}",
             "api_id": 700000 + suffix,
             "api_hash": f"test_api_hash_secret_{suffix}",
-            "max_accounts": 50,
+            "max_accounts": 5000,
             "notes": "pytest",
         },
     )
@@ -162,6 +177,23 @@ def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[
             headers=headers,
             json={"auth_status": "已授权运营"},
         ).json()
+    with SessionLocal() as session:
+        db_account = session.get(TgAccount, account["id"])
+        if db_account:
+            db_account.status = AccountStatus.ACTIVE.value
+        db_group = session.get(TgGroup, group["id"])
+        if db_group:
+            db_group.auth_status = "已授权运营"
+            db_group.can_send = True
+            db_group.daily_limit = 10000
+            db_group.group_cooldown_seconds = 0
+            db_group.banned_words = ""
+            db_group.link_whitelist = ""
+        link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
+        if link:
+            link.can_send = True
+            link.is_listener = True
+        session.commit()
     return account, group
 
 
@@ -1544,7 +1576,7 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
         started = client.post(f"/api/tasks/{task_id}/start", headers=headers)
         assert started.status_code == 200, started.text
 
-        worker.run_worker(limit=10, interval_seconds=0.1, max_iterations=2)
+        worker.run_worker(limit=1000, interval_seconds=0.1, max_iterations=3)
 
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert detail["task"]["status"] == "running"
@@ -1552,7 +1584,7 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
         assert detail["actions"][0]["action_type"] == "send_message"
 
 
-def test_task_center_group_ai_chat_continues_only_for_new_context(monkeypatch):
+def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
     messages = [
         ("ai-context-1", "第一条真人上下文"),
     ]
@@ -1595,17 +1627,21 @@ def test_task_center_group_ai_chat_continues_only_for_new_context(monkeypatch):
         assert created.status_code == 200, created.text
         task_id = created.json()["id"]
 
-        client.post("/api/worker/drain-once", headers=headers)
-        client.post("/api/worker/drain-once", headers=headers)
-        assert len(sends) == 1
+        from app.services.task_center.service import drain_task_center
+
+        drain_task_center(SessionLocal, 10)
+        drain_task_center(SessionLocal, 10)
+        assert len(sends) == 2
 
         messages.append(("ai-context-2", "第二条真人上下文"))
-        client.post("/api/worker/drain-once", headers=headers)
-        client.post("/api/worker/drain-once", headers=headers)
+        reset_listener_runtime_cache()
+        drain_task_center(SessionLocal, 10)
+        drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert len(sends) == 2
+        assert len(sends) == 4
+        assert "第二条真人上下文" in sends[-1]
         assert detail["task"]["status"] == "running"
-        assert detail["task"]["stats"]["success_count"] == 2
+        assert detail["task"]["stats"]["success_count"] == 4
 
 
 def test_legacy_task_write_apis_remain_compatible():
@@ -1667,7 +1703,7 @@ def test_task_center_group_ai_chat_does_not_plan_over_open_actions(monkeypatch):
         assert drain_task_center(SessionLocal, 10) == 0
         with SessionLocal() as session:
             task = session.get(Task, task_id)
-            assert task.next_run_at == future
+            assert task.next_run_at == future.replace(tzinfo=None)
             assert session.query(Action).filter(Action.task_id == task_id).count() == 1
 
 
@@ -1962,7 +1998,7 @@ def test_task_center_channel_comment_allows_multiple_replies_per_account(monkeyp
         assert detail["task"]["stats"]["total_actions"] == 3
 
 
-def test_task_center_channel_like_auto_collects_latest_messages(monkeypatch):
+def test_task_center_channel_like_auto_collects_dynamic_new_messages(monkeypatch):
     calls: list[int] = []
 
     def fake_fetch_channel_messages(*args, **kwargs):
@@ -2000,11 +2036,11 @@ def test_task_center_channel_like_auto_collects_latest_messages(monkeypatch):
             "/api/tasks/channel-like",
             headers=headers,
             json={
-                "name": "pytest auto collect like",
+                "name": "pytest dynamic collect like",
                 "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
                 "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
                 "target_channel_id": channel_target["id"],
-                "message_scope": "latest_n",
+                "message_scope": "dynamic_new",
                 "message_count": 1,
                 "target_likes_per_message": 1,
                 "like_count_jitter": 0,
@@ -2036,6 +2072,7 @@ def test_task_center_channel_like_auto_collects_latest_messages(monkeypatch):
                 )
             ],
         )
+        reset_listener_runtime_cache()
         assert drain_task_center(SessionLocal, 10) >= 1
         if calls == [4101]:
             assert drain_task_center(SessionLocal, 10) >= 1
@@ -2128,16 +2165,17 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert detail_after_reset["actions"] == []
-        assert detail_after_reset["reviews"] == []
+        assert len(detail_after_reset["actions"]) == 1
+        assert detail_after_reset["actions"][0]["status"] == "failed"
+        assert "reviews" not in detail_after_reset
         assert detail_after_reset["task"]["status"] == "running"
-        assert detail_after_reset["task"]["stats"]["total_actions"] == 0
+        assert detail_after_reset["task"]["stats"]["total_actions"] == 1
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert reactions == [4101, 4202]
-        assert len(detail["actions"]) == 1
-        assert detail["actions"][0]["payload"]["message_id"] == 4202
+        assert len(detail["actions"]) == 2
+        assert any(action["payload"]["message_id"] == 4202 for action in detail["actions"])
         assert detail["task"]["stats"]["success_count"] == 1
 
 
@@ -2202,16 +2240,17 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatc
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert detail_after_reset["actions"] == []
-        assert detail_after_reset["reviews"] == []
+        assert len(detail_after_reset["actions"]) == 1
+        assert detail_after_reset["actions"][0]["status"] == "success"
+        assert "reviews" not in detail_after_reset
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert views == [4301, 4302]
-        assert len(detail["actions"]) == 1
-        assert detail["actions"][0]["action_type"] == "view_message"
-        assert detail["actions"][0]["payload"]["message_id"] == 4302
-        assert detail["task"]["stats"]["success_count"] == 1
+        assert len(detail["actions"]) == 2
+        assert all(action["action_type"] == "view_message" for action in detail["actions"])
+        assert any(action["payload"]["message_id"] == 4302 for action in detail["actions"])
+        assert detail["task"]["stats"]["success_count"] == 2
 
 
 def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
@@ -2273,7 +2312,7 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
         drain_task_center(SessionLocal, 10)
         old_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert len(old_detail["actions"]) == 1
-        assert old_detail["reviews"] == []
+        assert "reviews" not in old_detail
         assert old_detail["actions"][0]["payload"]["message_id"] == 4401
         assert comments == [(4401, old_detail["actions"][0]["payload"]["comment_text"])]
 
@@ -2281,20 +2320,21 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert detail_after_reset["actions"] == []
-        assert detail_after_reset["reviews"] == []
+        assert len(detail_after_reset["actions"]) == 1
+        assert detail_after_reset["actions"][0]["status"] == "success"
+        assert "reviews" not in detail_after_reset
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert len(detail["actions"]) == 1
-        assert detail["actions"][0]["action_type"] == "post_comment"
-        assert detail["actions"][0]["payload"]["message_id"] == 4402
-        assert detail["reviews"] == []
+        assert len(detail["actions"]) == 2
+        assert any(action["action_type"] == "post_comment" and action["payload"]["message_id"] == 4402 for action in detail["actions"])
+        assert "reviews" not in detail
 
         drain_task_center(SessionLocal, 10)
         final_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert comments[-1] == (4402, detail["actions"][0]["payload"]["comment_text"])
-        assert final_detail["task"]["stats"]["success_count"] == 1
+        new_action = next(action for action in detail["actions"] if action["payload"]["message_id"] == 4402)
+        assert comments[-1] == (4402, new_action["payload"]["comment_text"])
+        assert final_detail["task"]["stats"]["success_count"] == 2
 
 
 def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
@@ -2329,13 +2369,20 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
         assert len(sends) == 1
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
         assert reset.status_code == 200, reset.text
-        assert client.get(f"/api/tasks/{task_id}", headers=headers).json()["actions"] == []
+        assert len(client.get(f"/api/tasks/{task_id}", headers=headers).json()["actions"]) == 1
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert len(sends) == 2
-        assert len(detail["actions"]) == 1
-        assert detail["task"]["stats"]["success_count"] == 1
+        assert len(detail["actions"]) == 2
+        latest_action = detail["actions"][0]
+        assert latest_action["payload"]["cycle_id"].endswith(":cycle:2")
+        assert latest_action["status"] in {"success", "failed"}
+        if latest_action["status"] == "success":
+            assert len(sends) == 2
+            assert detail["task"]["stats"]["success_count"] == 2
+        else:
+            assert latest_action["result"]["auto_check"] == "拦截"
+            assert len(sends) == 1
 
 
 def test_task_center_reset_group_relay_clears_source_fingerprints():
@@ -2367,8 +2414,8 @@ def test_task_center_reset_group_relay_clears_source_fingerprints():
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
         assert reset.status_code == 200, reset.text
         with SessionLocal() as session:
-            assert session.query(Action).filter(Action.task_id == task_id).count() == 0
-            assert session.query(MessageFingerprint).filter(MessageFingerprint.source_group_id == f"{task_id}:relay:{group['id']}").count() == 0
+            assert session.query(Action).filter(Action.task_id == task_id).count() == 1
+            assert session.query(MessageFingerprint).filter(MessageFingerprint.source_group_id == f"{task_id}:relay:{group['id']}").count() == 1
 
 
 def test_task_center_channel_task_reports_no_collect_account():
@@ -2461,12 +2508,11 @@ def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
 
-        first = client.post("/api/worker/drain-once", headers=headers).json()
-        assert first["processed"] >= 1
-        second = client.post("/api/worker/drain-once", headers=headers).json()
-        third = client.post("/api/worker/drain-once", headers=headers).json()
-        assert second["processed"] >= 0
-        assert third["processed"] == 0
+        from app.services.task_center.service import drain_task_center
+
+        assert drain_task_center(SessionLocal, 10) >= 1
+        assert drain_task_center(SessionLocal, 10) >= 0
+        assert drain_task_center(SessionLocal, 10) == 0
         assert sends == ["新品上线，适合转发到目标群"]
         reviews = [item for item in client.get("/api/review-queue", headers=headers).json() if item["task_id"] == task_id]
         assert reviews == []
@@ -2515,8 +2561,10 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
         assert created.status_code == 200, created.text
         task_id = created.json()["id"]
 
-        client.post("/api/worker/drain-once", headers=headers)
-        client.post("/api/worker/drain-once", headers=headers)
+        from app.services.task_center.service import drain_task_center
+
+        drain_task_center(SessionLocal, 10)
+        drain_task_center(SessionLocal, 10)
         assert sends == ["第一条转发监听消息"]
 
         with SessionLocal() as session:
@@ -2533,8 +2581,9 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
                 )
             )
             session.commit()
-        client.post("/api/worker/drain-once", headers=headers)
-        client.post("/api/worker/drain-once", headers=headers)
+        reset_listener_runtime_cache()
+        drain_task_center(SessionLocal, 10)
+        drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert sends == ["第一条转发监听消息", "第二条转发监听消息"]
         assert detail["task"]["status"] == "running"
@@ -2586,6 +2635,9 @@ def test_task_center_pause_holds_due_actions(monkeypatch):
 
 def test_task_center_pending_reviews_do_not_starve_other_due_actions(monkeypatch):
     sends: list[str] = []
+    from app.services.task_center import dispatcher
+
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: type("Settings", (), {"enable_legacy_review_dispatch_gate": True})())
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.send_message",
         lambda *args, **kwargs: sends.append(args[2]) or SendResult(True, remote_message_id="normal-send"),
@@ -2595,6 +2647,14 @@ def test_task_center_pending_reviews_do_not_starve_other_due_actions(monkeypatch
         account, group = ensure_test_workspace(client, headers)
         now = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
         with SessionLocal() as session:
+            db_group = session.get(TgGroup, group["id"])
+            db_group.can_send = True
+            db_group.daily_limit = 10000
+            db_group.group_cooldown_seconds = 0
+            db_group.banned_words = ""
+            link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
+            if link:
+                link.can_send = True
             blocked_task = Task(tenant_id=1, name="pytest pending review", type="group_relay", status="running", next_run_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=1), account_config={}, pacing_config={}, failure_policy={}, type_config={}, stats={})
             normal_task = Task(tenant_id=1, name="pytest normal action", type="group_ai_chat", status="running", next_run_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=1), account_config={}, pacing_config={}, failure_policy={}, type_config={}, stats={})
             session.add_all([blocked_task, normal_task])

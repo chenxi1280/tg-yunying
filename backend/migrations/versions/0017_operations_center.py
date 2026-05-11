@@ -25,6 +25,10 @@ def _table_exists(name: str) -> bool:
     return sa.inspect(_bind()).has_table(name)
 
 
+def _is_sqlite() -> bool:
+    return _bind().dialect.name == "sqlite"
+
+
 def upgrade() -> None:
     if not _table_exists("operation_targets"):
         op.create_table(
@@ -111,16 +115,18 @@ def upgrade() -> None:
 
     if _table_exists("tg_groups"):
         bind = _bind()
+        insert_prefix = "INSERT OR IGNORE INTO" if _is_sqlite() else "INSERT INTO"
+        conflict_suffix = "" if _is_sqlite() else "ON CONFLICT (tenant_id, tg_peer_id) DO NOTHING"
         bind.execute(
             sa.text(
-                """
-                INSERT INTO operation_targets
+                f"""
+                {insert_prefix} operation_targets
                     (tenant_id, target_type, tg_peer_id, title, member_count, can_send, auth_status, last_sync_at, created_at, updated_at)
                 SELECT tenant_id,
                     CASE WHEN group_type = 'channel' THEN 'channel' ELSE 'group' END,
                     tg_peer_id, title, member_count, can_send, auth_status, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 FROM tg_groups
-                ON CONFLICT (tenant_id, tg_peer_id) DO NOTHING
+                {conflict_suffix}
                 """
             )
         )
