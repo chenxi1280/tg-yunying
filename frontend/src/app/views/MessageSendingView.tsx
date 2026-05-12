@@ -6,6 +6,7 @@ import { MessageSquareText, RefreshCcw, Send, ShieldAlert } from 'lucide-react';
 import { StatusBadge } from '../components/shared';
 import type { Account, Contact, Material, MessageSendBatchCreate, MessageSendTarget, MessageSendingPrefill, MessageTask, OperationTarget } from '../types';
 import { api, ApiError } from '../../shared/api/client';
+import { formatBeijingDateTime, fromBeijingDateTimeLocalValue } from '../time';
 
 type TargetType = 'private' | 'group' | 'channel';
 type MessageType = '文本' | '图片';
@@ -56,9 +57,7 @@ function optionFilter(input: string, option?: { label?: React.ReactNode; searchT
 }
 
 function formatTime(value?: string | null) {
-  if (!value) return '-';
-  const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value}Z`;
-  return new Date(normalized).toLocaleString();
+  return formatBeijingDateTime(value);
 }
 
 function compactText(value?: string | null) {
@@ -525,7 +524,7 @@ export default function MessageSendingView({
                     showTime
                     style={{ width: '100%' }}
                     value={scheduledAt ? dayjs(scheduledAt) : null}
-                    onChange={(value) => setScheduledAt(value ? value.toISOString() : null)}
+                    onChange={(value) => setScheduledAt(value ? fromBeijingDateTimeLocalValue(value.format('YYYY-MM-DDTHH:mm:ss')) : null)}
                     placeholder="选择开始发送时间"
                   />
                 </Form.Item>

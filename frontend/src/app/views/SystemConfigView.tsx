@@ -35,7 +35,9 @@ interface Props {
   onEditTenantAi: () => void;
   onEditScheduling: () => void;
   onCreatePromptTemplate: () => void;
+  onEditPromptTemplate: (template: PromptTemplate) => void;
   onCreateMaterial: () => void;
+  onEditMaterial: (material: Material) => void;
   onCreateKeywordRule: () => void;
   onEditKeywordRule: (rule: ContentKeywordRule) => void;
   onOpenConfirm: (payload: ConfirmPayload) => void;
@@ -64,7 +66,9 @@ export default function SystemConfigView({
   onEditTenantAi,
   onEditScheduling,
   onCreatePromptTemplate,
+  onEditPromptTemplate,
   onCreateMaterial,
+  onEditMaterial,
   onCreateKeywordRule,
   onEditKeywordRule,
   onOpenConfirm,
@@ -94,10 +98,11 @@ export default function SystemConfigView({
           ),
         },
         {
-          key: 'ai',
-          label: 'AI 与规则基础配置',
+          key: 'ai-providers',
+          label: 'AI 供应商',
           children: (
             <AISettingsView
+              section="providers"
               aiProviders={aiProviders}
               promptTemplates={promptTemplates}
               tenantAiSetting={tenantAiSetting}
@@ -112,7 +117,96 @@ export default function SystemConfigView({
               onEditTenantAi={onEditTenantAi}
               onEditScheduling={onEditScheduling}
               onCreatePromptTemplate={onCreatePromptTemplate}
+              onEditPromptTemplate={onEditPromptTemplate}
               onCreateMaterial={onCreateMaterial}
+              onEditMaterial={onEditMaterial}
+              onCreateKeywordRule={onCreateKeywordRule}
+              onEditKeywordRule={onEditKeywordRule}
+              isActionPending={isActionPending}
+            />
+          ),
+        },
+        {
+          key: 'scheduling',
+          label: '发送节奏与风控',
+          children: (
+            <AISettingsView
+              section="scheduling"
+              aiProviders={aiProviders}
+              promptTemplates={promptTemplates}
+              tenantAiSetting={tenantAiSetting}
+              schedulingSetting={schedulingSetting}
+              materials={materials}
+              contentKeywordRules={contentKeywordRules}
+              currentUserRole={currentUserRole}
+              onCreateProvider={onCreateAiProvider}
+              onEditProvider={onEditAiProvider}
+              onToggleProvider={onToggleAiProvider}
+              onCheckProvider={onCheckAiProvider}
+              onEditTenantAi={onEditTenantAi}
+              onEditScheduling={onEditScheduling}
+              onCreatePromptTemplate={onCreatePromptTemplate}
+              onEditPromptTemplate={onEditPromptTemplate}
+              onCreateMaterial={onCreateMaterial}
+              onEditMaterial={onEditMaterial}
+              onCreateKeywordRule={onCreateKeywordRule}
+              onEditKeywordRule={onEditKeywordRule}
+              isActionPending={isActionPending}
+            />
+          ),
+        },
+        {
+          key: 'resources',
+          label: '提示词与素材',
+          children: (
+            <AISettingsView
+              section="resources"
+              aiProviders={aiProviders}
+              promptTemplates={promptTemplates}
+              tenantAiSetting={tenantAiSetting}
+              schedulingSetting={schedulingSetting}
+              materials={materials}
+              contentKeywordRules={contentKeywordRules}
+              currentUserRole={currentUserRole}
+              onCreateProvider={onCreateAiProvider}
+              onEditProvider={onEditAiProvider}
+              onToggleProvider={onToggleAiProvider}
+              onCheckProvider={onCheckAiProvider}
+              onEditTenantAi={onEditTenantAi}
+              onEditScheduling={onEditScheduling}
+              onCreatePromptTemplate={onCreatePromptTemplate}
+              onEditPromptTemplate={onEditPromptTemplate}
+              onCreateMaterial={onCreateMaterial}
+              onEditMaterial={onEditMaterial}
+              onCreateKeywordRule={onCreateKeywordRule}
+              onEditKeywordRule={onEditKeywordRule}
+              isActionPending={isActionPending}
+            />
+          ),
+        },
+        {
+          key: 'keywords',
+          label: '关键词库',
+          children: (
+            <AISettingsView
+              section="keywords"
+              aiProviders={aiProviders}
+              promptTemplates={promptTemplates}
+              tenantAiSetting={tenantAiSetting}
+              schedulingSetting={schedulingSetting}
+              materials={materials}
+              contentKeywordRules={contentKeywordRules}
+              currentUserRole={currentUserRole}
+              onCreateProvider={onCreateAiProvider}
+              onEditProvider={onEditAiProvider}
+              onToggleProvider={onToggleAiProvider}
+              onCheckProvider={onCheckAiProvider}
+              onEditTenantAi={onEditTenantAi}
+              onEditScheduling={onEditScheduling}
+              onCreatePromptTemplate={onCreatePromptTemplate}
+              onEditPromptTemplate={onEditPromptTemplate}
+              onCreateMaterial={onCreateMaterial}
+              onEditMaterial={onEditMaterial}
               onCreateKeywordRule={onCreateKeywordRule}
               onEditKeywordRule={onEditKeywordRule}
               isActionPending={isActionPending}

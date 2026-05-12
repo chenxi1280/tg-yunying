@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, GroupAuthStatus, OperationTarget, RuleSet, RuleSetVersion, Task, TgAccount, TgGroup, TgGroupAccount
+from app.services.account_capacity import available_accounts_by_capacity, next_capacity_window
 from app.services.content_filters import filter_outbound_content
 from app.services.group_listeners import collect_group_context, recent_context_messages
 
@@ -24,7 +25,7 @@ from .common import add_tokens, stats_inc
 def build_plan(session: Session, task: Task) -> int:
     config = effective_relay_config(session, task)
     account_cache: dict[int, list[Any]] = {}
-    candidate_actions: list[tuple[TgGroup, int, int | None, int | None, str, str, str]] = []
+    candidate_actions: list[dict[str, Any]] = []
     monitor_account_ids = [int(account_id) for account_id in config.get("monitor_account_ids") or []]
     for item in [item for item in config.get("source_groups") or [] if item.get("is_active", True)]:
         source = group_from_reference(
@@ -66,15 +67,23 @@ def build_plan(session: Session, task: Task) -> int:
                     stats_inc(task, "failure_count")
                     remember_fingerprint(session, task.tenant_id, source_fingerprint_key, message.content)
                     continue
-                candidate_actions.append((
-                    target,
-                    source.id,
-                    source_operation_target_id,
-                    _operation_target_id_for_group(session, task.tenant_id, target),
-                    message.content,
-                    filtered.content,
-                    f"{source.title} / {message.sender_name}",
-                ))
+                candidate_actions.append(
+                    {
+                        "target": target,
+                        "source_id": source.id,
+                        "source_group_title": source.title,
+                        "source_operation_target_id": source_operation_target_id,
+                        "target_operation_target_id": _operation_target_id_for_group(session, task.tenant_id, target),
+                        "original": message.content,
+                        "content": filtered.content,
+                        "source_info": f"{source.title} / {message.sender_name}",
+                        "source_sender_name": message.sender_name,
+                        "source_sender_peer_id": message.sender_peer_id,
+                        "source_remote_message_id": message.remote_message_id,
+                        "source_message_type": message.message_type,
+                        "source_sent_at": message.sent_at,
+                    }
+                )
                 remember_fingerprint(session, task.tenant_id, source_fingerprint_key, message.content)
     if not candidate_actions:
         return 0
@@ -83,17 +92,40 @@ def build_plan(session: Session, task: Task) -> int:
     relay_batch_id = f"{task.id}:batch:{batch_index}"
     created = 0
     target_offsets: dict[str, int] = {}
-    for index, (target, source_id, source_operation_target_id, target_operation_target_id, original, content, source_info) in enumerate(candidate_actions):
+    for index, candidate in enumerate(candidate_actions):
+        target = candidate["target"]
+        source_id = int(candidate["source_id"])
+        source_operation_target_id = candidate.get("source_operation_target_id")
+        target_operation_target_id = candidate.get("target_operation_target_id")
+        original = str(candidate.get("original") or "")
+        content = str(candidate.get("content") or "")
         accounts = account_cache.get(target.id) or []
         if not accounts:
             stats_inc(task, "failure_count")
             continue
-        account = _pick_relay_account(accounts, target.id, source_id, original, config, target_offsets)
+        planned_at = times[index]
+        available_accounts = available_accounts_by_capacity(
+            session,
+            tenant_id=task.tenant_id,
+            accounts=accounts,
+            scheduled_at=planned_at,
+        )
+        account_pool = available_accounts or accounts
+        account = _pick_relay_account(account_pool, target.id, source_id, original, config, target_offsets)
+        if not available_accounts:
+            decision = next_capacity_window(
+                session,
+                tenant_id=task.tenant_id,
+                account_ids=[item.id for item in accounts],
+                scheduled_at=planned_at,
+            )
+            if decision.defer_until:
+                planned_at = decision.defer_until
         create_send_action(
             session,
             task,
             account.id,
-            times[index],
+            planned_at,
             SendMessagePayload(
                 chat_id=target.tg_peer_id,
                 group_id=target.id,
@@ -106,9 +138,17 @@ def build_plan(session: Session, task: Task) -> int:
                 relay_event_id=f"event:{source_id}:{_content_hash(original)}",
                 source_group_id=source_id,
                 source_operation_target_id=source_operation_target_id,
-                source_info=source_info,
+                source_info=str(candidate.get("source_info") or ""),
+                source_group_title=str(candidate.get("source_group_title") or ""),
+                source_sender_name=str(candidate.get("source_sender_name") or ""),
+                source_sender_peer_id=str(candidate.get("source_sender_peer_id") or ""),
+                source_remote_message_id=str(candidate.get("source_remote_message_id") or ""),
+                source_message_type=str(candidate.get("source_message_type") or ""),
+                source_sent_at=candidate.get("source_sent_at"),
                 rule_set_id=config.get("rule_set_id"),
+                rule_set_name=str(config.get("rule_set_name") or ""),
                 rule_set_version_id=config.get("rule_set_version_id"),
+                rule_set_version=config.get("rule_set_version"),
                 rule_trace=_relay_rule_trace(config, source_id, target.id, original, content, account.id),
             ),
         )
@@ -167,12 +207,15 @@ def effective_relay_config(session: Session, task: Task) -> dict[str, Any]:
     version = _bound_rule_version(session, task)
     if not version:
         return config
+    rule_set = session.get(RuleSet, version.rule_set_id)
     transforms = dict(version.transforms or {})
     routing = dict(version.routing or {})
     account_strategy = dict(version.account_strategy or {})
     retry_policy = dict(version.retry_policy or {})
     config["rule_set_id"] = version.rule_set_id
+    config["rule_set_name"] = rule_set.name if rule_set else ""
     config["rule_set_version_id"] = version.id
+    config["rule_set_version"] = version.version
     config["filters"] = dict(version.filters or {})
     config["transforms"] = transforms
     config["routing"] = routing

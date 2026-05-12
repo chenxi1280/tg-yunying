@@ -7,7 +7,7 @@ from app.models import Task
 from ..account_pool import select_task_accounts
 from ..pacing import schedule_times
 from ..payloads import ViewMessagePayload, create_view_action
-from .common import available_channel_accounts_for_message, channel_message_payload, channel_scope, quantity_with_jitter, record_channel_capacity_warning
+from .common import adjust_for_account_hour_limit, available_channel_accounts_for_message, channel_message_payload, channel_scope, quantity_with_jitter, record_channel_capacity_warning
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -34,7 +34,8 @@ def build_plan(session: Session, task: Task) -> int:
     times = schedule_times(len(actions), task.pacing_config or {})
     created = 0
     for index, (message, account_id) in enumerate(actions):
-        create_view_action(session, task, account_id, times[index], ViewMessagePayload(**channel_message_payload(channel, message)))
+        planned_at = adjust_for_account_hour_limit(session, task, account_id, "view_message", times[index], config)
+        create_view_action(session, task, account_id, planned_at, ViewMessagePayload(**channel_message_payload(channel, message)))
         created += 1
     return created
 

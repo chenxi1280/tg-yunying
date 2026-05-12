@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, Task, TgGroup
 from app.services._common import _now
+from app.services.account_capacity import available_accounts_by_capacity, next_capacity_window
 from app.services.content_filters import filter_outbound_content, looks_like_generated_template_noise, looks_like_operator_ui_content
 from app.services.group_listeners import collect_group_context, recent_context_messages
 
@@ -109,7 +110,18 @@ def build_plan(session: Session, task: Task) -> int:
     context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
     created = 0
     for index, content in enumerate(contents):
-        account = selected[index % len(selected)]
+        planned_at = times[index]
+        available = available_accounts_by_capacity(session, tenant_id=task.tenant_id, accounts=selected, scheduled_at=planned_at)
+        account = available[index % len(available)] if available else selected[index % len(selected)]
+        if not available:
+            decision = next_capacity_window(
+                session,
+                tenant_id=task.tenant_id,
+                account_ids=[item.id for item in selected],
+                scheduled_at=planned_at,
+            )
+            if decision.defer_until:
+                planned_at = decision.defer_until
         filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=group, content=content, reject_mentions=True, reject_replies=True)
         if not filtered.ok:
             stats_inc(task, "failure_count")
@@ -118,7 +130,7 @@ def build_plan(session: Session, task: Task) -> int:
             session,
             task,
             account.id,
-            times[index],
+            planned_at,
             SendMessagePayload(
                 chat_id=group.tg_peer_id,
                 group_id=group.id,

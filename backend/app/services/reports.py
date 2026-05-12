@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -21,6 +19,7 @@ from app.models import (
     TgGroup,
     VerificationTask,
 )
+from app.timezone import beijing_day_bounds
 
 
 def build_overview(session: Session, tenant_id: int | None = None) -> dict:
@@ -123,8 +122,7 @@ def build_report(session: Session, tenant_id: int | None = None) -> dict:
     account_filters = [TgAccount.deleted_at.is_(None), *([TgAccount.tenant_id == tenant_id] if tenant_id is not None else [])]
     group_filters = [TgGroup.tenant_id == tenant_id] if tenant_id is not None else []
     task_filters = [MessageTask.tenant_id == tenant_id] if tenant_id is not None else []
-    day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
-    day_end = (datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).replace(tzinfo=None)
+    day_start, day_end = beijing_day_bounds()
     daily_messages = session.scalar(
         select(func.count(MessageTask.id)).where(
             *task_filters,

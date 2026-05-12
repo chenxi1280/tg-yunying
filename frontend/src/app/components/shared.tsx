@@ -2,6 +2,7 @@ import React from 'react';
 import { Button, Card, Empty, Input, Segmented, Space, Statistic, Tag, Typography } from 'antd';
 import type { TablePaginationConfig } from 'antd/es/table';
 import type { BadgeTone } from '../types';
+import { formatBeijingDateTime } from '../time';
 
 export function statusTone(status: string | null | undefined): BadgeTone {
   const value = status || '未配置';
@@ -61,7 +62,7 @@ type TableSearchAccessor<T> = keyof T | ((row: T) => unknown);
 function valueToSearchText(value: unknown): string {
   if (value == null) return '';
   if (Array.isArray(value)) return value.map(valueToSearchText).join(' ');
-  if (value instanceof Date) return value.toLocaleString();
+  if (value instanceof Date) return formatBeijingDateTime(value);
   if (typeof value === 'object') return Object.values(value as Record<string, unknown>).map(valueToSearchText).join(' ');
   return String(value);
 }

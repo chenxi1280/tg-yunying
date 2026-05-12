@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -23,19 +23,23 @@ from app.models import (
 )
 from app.config import get_settings
 from app.security import decrypt_secret
+from app.timezone import as_beijing_aware, beijing_now
 
 gateway = create_gateway()
 ai_gateway = create_ai_gateway()
 
 
 def _now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    return beijing_now()
+
+
+def _as_beijing(value: datetime) -> datetime:
+    return as_beijing_aware(value)
 
 
 def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
+    """Compatibility alias: business datetimes are normalized to Beijing time."""
+    return _as_beijing(value)
 
 
 def _is_expired(value: datetime | None) -> bool:

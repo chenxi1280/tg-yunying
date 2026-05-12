@@ -7,12 +7,29 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.gateways import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, OperationResult, SendResult
-from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow
+from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import inspect
+
+
+_workspace_phone_suffix = 1000
+
+
+def _next_test_phone(prefix: str = "+8613800") -> str:
+    global _workspace_phone_suffix
+    from app.services.accounts import mask_phone
+
+    for _ in range(10000):
+        _workspace_phone_suffix += 1
+        phone = f"{prefix}{_workspace_phone_suffix:04d}"
+        with SessionLocal() as session:
+            exists = session.query(TgAccount.id).filter(TgAccount.phone_masked == mask_phone(phone)).first()
+        if not exists:
+            return phone
+    raise AssertionError("没有可用的测试手机号后缀")
 
 
 def skip_legacy_task_center_flow() -> None:
@@ -35,6 +52,11 @@ def cleanup_continuous_task_center_tasks():
             action.executed_at = datetime.now(UTC).replace(tzinfo=None)
             action.result = {"success": False, "error_code": "test_cleanup", "error_message": "test cleanup"}
         session.query(ReviewQueue).filter(ReviewQueue.status == "pending").delete(synchronize_session=False)
+        setting = session.query(SchedulingSetting).filter_by(tenant_id=1).first()
+        if setting:
+            setting.default_account_hour_limit = 0
+            setting.default_account_day_limit = 0
+            setting.default_account_cooldown_seconds = 0
         session.commit()
 
 
@@ -171,16 +193,22 @@ def ensure_developer_app(client: TestClient, headers: dict[str, str]) -> dict:
 def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[dict, dict]:
     ensure_developer_app(client, headers)
     suffix = uuid4().hex[:8]
-    account = client.post(
-        "/api/tg-accounts",
-        headers=headers,
-        json={
-            "tenant_id": 1,
-            "display_name": f"本地测试账号 {suffix}",
-            "username": f"local_test_{suffix}",
-            "phone_number": f"+86138{int(uuid4().int % 100000000):08d}",
-        },
-    ).json()
+    for _ in range(20):
+        response = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "display_name": f"本地测试账号 {suffix}",
+                "username": f"local_test_{suffix}",
+                "phone_number": _next_test_phone(),
+            },
+        )
+        if response.status_code == 200:
+            break
+        assert "手机号已存在" in response.text, response.text
+    assert response.status_code == 200, response.text
+    account = response.json()
 
     if account["status"] != AccountStatus.ACTIVE.value:
         client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr"})
@@ -233,6 +261,33 @@ def test_clean_seed_requires_config_before_account_create():
         )
         assert blocked.status_code == 400
         assert "开发者应用" in blocked.text
+
+
+def test_verification_tasks_backfill_group_target_label():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            stale_task = VerificationTask(
+                tenant_id=1,
+                account_id=account["id"],
+                group_id=group["id"],
+                message_task_id=None,
+                verification_type="群发言不可用",
+                detected_reason="pytest target label",
+                suggested_action="人工处理",
+                target_peer_id="",
+                target_display="",
+                status="待处理",
+            )
+            session.add(stale_task)
+            session.commit()
+            stale_task_id = stale_task.id
+
+        tasks = client.get("/api/verification-tasks", headers=headers).json()
+        task = next(item for item in tasks if item["id"] == stale_task_id)
+        assert task["target_display"] == group["title"]
+        assert task["target_peer_id"] == group["tg_peer_id"]
 
 
 def test_campaign_draft_approval_and_dispatch_flow():
@@ -988,13 +1043,28 @@ def test_account_detail_risk_diagnostics_collects_status_and_failures():
                     actor="pytest",
                 )
             )
+            session.add(
+                ManualOperationRecord(
+                    tenant_id=1,
+                    account_id=account["id"],
+                    operation_type="MESSAGE_SEND",
+                    content="limited reason probe",
+                    status=TaskStatus.FAILED.value,
+                    failure_type=FailureType.ACCOUNT_LIMITED.value,
+                    failure_detail="PeerFlood: 该账号被 TG 限制发言",
+                    actor="pytest",
+                    created_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=1),
+                )
+            )
             session.commit()
 
         detail = client.get(f"/api/tg-accounts/{account['id']}/detail", headers=headers).json()
         risks = detail["risk_diagnostics"]
+        account_status_risk = next(risk for risk in risks if risk["code"] == "ACCOUNT_STATUS" and risk["title"] == "账号受限")
         assert detail["stats"]["risk_diagnostics"] >= 2
         assert detail["stats"]["high_risk_diagnostics"] >= 1
-        assert any(risk["code"] == "ACCOUNT_STATUS" and risk["title"] == "账号受限" for risk in risks)
+        assert "PeerFlood" in account_status_risk["detail"]
+        assert "等待 TG" in account_status_risk["detail"]
         assert any(risk["title"] == "触发 FloodWait" and "120" in risk["detail"] for risk in risks)
 
 
@@ -2768,6 +2838,9 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        if len(detail["actions"]) < 2:
+            drain_task_center(SessionLocal, 10)
+            detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert len(detail["actions"]) == 2
         latest_action = detail["actions"][0]
         assert latest_action["payload"]["cycle_id"].endswith(":cycle:2")

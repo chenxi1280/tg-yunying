@@ -41,8 +41,16 @@ class SendMessagePayload(BaseModel):
     source_group_id: int | None = None
     source_operation_target_id: int | None = None
     source_info: str = ""
+    source_group_title: str = ""
+    source_sender_name: str = ""
+    source_sender_peer_id: str = ""
+    source_remote_message_id: str = ""
+    source_message_type: str = ""
+    source_sent_at: datetime | None = None
     rule_set_id: int | None = None
+    rule_set_name: str = ""
     rule_set_version_id: int | None = None
+    rule_set_version: int | None = None
     rule_trace: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -60,6 +68,7 @@ class ViewMessagePayload(BaseModel):
     channel_message_id: int | None = None
     message_id: int = Field(ge=1)
     target_display: str = ""
+    message_content: str = ""
 
 
 class LikeMessagePayload(ViewMessagePayload):

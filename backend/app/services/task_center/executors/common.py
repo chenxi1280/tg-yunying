@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, ChannelMessage, OperationTarget, Task, TgAccount
 from app.services._common import _now, gateway
+from app.services.account_capacity import account_capacity_decision
 from app.services.developer_apps import credentials_for_account
 
 from ..account_pool import select_task_accounts
@@ -136,6 +137,7 @@ def channel_message_payload(channel: OperationTarget, message: ChannelMessage) -
         "channel_message_id": message.id,
         "message_id": message.message_id,
         "target_display": channel.title,
+        "message_content": message.content_preview,
     }
 
 
@@ -228,7 +230,12 @@ def parse_datetime(value) -> datetime | None:
 def pick_channel_account(session: Session, task: Task, accounts, action_type: str, scheduled_at: datetime, config: dict, offset: int):
     for index in range(len(accounts)):
         account = accounts[(offset + index) % len(accounts)]
-        if account_has_hour_capacity(session, task, account.id, action_type, scheduled_at, config):
+        if account_has_hour_capacity(session, task, account.id, action_type, scheduled_at, config) and account_capacity_decision(
+            session,
+            tenant_id=task.tenant_id,
+            account_id=account.id,
+            scheduled_at=scheduled_at,
+        ).available:
             return account
     return accounts[offset % len(accounts)] if accounts else None
 
@@ -236,8 +243,12 @@ def pick_channel_account(session: Session, task: Task, accounts, action_type: st
 def adjust_for_account_hour_limit(session: Session, task: Task, account_id: int, action_type: str, scheduled_at: datetime, config: dict) -> datetime:
     cursor = scheduled_at
     for _ in range(24 * 7):
-        if account_has_hour_capacity(session, task, account_id, action_type, cursor, config):
+        decision = account_capacity_decision(session, tenant_id=task.tenant_id, account_id=account_id, scheduled_at=cursor)
+        if account_has_hour_capacity(session, task, account_id, action_type, cursor, config) and decision.available:
             return cursor
+        if decision.defer_until and decision.defer_until > cursor:
+            cursor = decision.defer_until
+            continue
         cursor += timedelta(hours=1)
     return cursor
 

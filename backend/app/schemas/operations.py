@@ -201,6 +201,19 @@ class OperationTargetMessageSyncOut(BaseModel):
     detail: OperationTargetDetailOut
 
 
+class OperationTargetsSyncFailureOut(BaseModel):
+    account_id: int
+    display_name: str
+    error: str
+
+
+class OperationTargetsSyncOut(BaseModel):
+    synced_accounts: int = 0
+    failed_accounts: list[OperationTargetsSyncFailureOut] = Field(default_factory=list)
+    target_count: int = 0
+    targets: list[OperationTargetOut] = Field(default_factory=list)
+
+
 class OperationTaskCreate(BaseModel):
     tenant_id: int = 1
     task_type: str = Field(pattern="^(MESSAGE_SEND|CHANNEL_VIEW|CHANNEL_REACTION|CHANNEL_REPLY)$")
@@ -292,6 +305,8 @@ __all__ = [
     "OperationTargetLinkedGroupOut",
     "OperationTargetDetailOut",
     "OperationTargetMessageSyncOut",
+    "OperationTargetsSyncFailureOut",
+    "OperationTargetsSyncOut",
     "OperationTaskCreate",
     "OperationTaskOut",
     "OperationTaskAttemptOut",

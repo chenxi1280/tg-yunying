@@ -23,7 +23,29 @@ def list_verification_tasks(session: Session, tenant_id: int, account_id: int | 
         stmt = stmt.where(VerificationTask.account_id == account_id)
     if group_id:
         stmt = stmt.where(VerificationTask.group_id == group_id)
-    return list(session.scalars(stmt.order_by(VerificationTask.id.desc()).limit(limit)))
+    tasks = list(session.scalars(stmt.order_by(VerificationTask.id.desc()).limit(limit)))
+    for task in tasks:
+        _fill_verification_target(session, task)
+    return tasks
+
+
+def _group_target_values(session: Session, tenant_id: int, group_id: int | None) -> tuple[str, str]:
+    if not group_id:
+        return "", ""
+    group = session.get(TgGroup, group_id)
+    if not group or group.tenant_id != tenant_id:
+        return "", ""
+    return group.tg_peer_id or "", group.title or f"群聊 #{group.id}"
+
+
+def _fill_verification_target(session: Session, task: VerificationTask) -> None:
+    if task.target_peer_id and task.target_display:
+        return
+    group_peer_id, group_display = _group_target_values(session, task.tenant_id, task.group_id)
+    if group_peer_id and not task.target_peer_id:
+        task.target_peer_id = group_peer_id
+    if group_display and not task.target_display:
+        task.target_display = group_display
 
 
 def create_verification_task(
@@ -39,6 +61,9 @@ def create_verification_task(
     target_peer_id: str = "",
     target_display: str = "",
 ) -> VerificationTask:
+    group_peer_id, group_display = _group_target_values(session, tenant_id, group_id)
+    target_peer_id = target_peer_id or group_peer_id
+    target_display = target_display or group_display
     existing = session.scalar(
         select(VerificationTask)
         .where(
@@ -51,6 +76,7 @@ def create_verification_task(
         .order_by(VerificationTask.id.desc())
     )
     if existing:
+        _fill_verification_target(session, existing)
         return existing
     task = VerificationTask(
         tenant_id=tenant_id,
@@ -77,6 +103,7 @@ def confirm_verification_task(session: Session, task_id: int, actor: str) -> Ver
         raise ValueError("verification task not found")
     if task.status not in {"待处理", "失败"}:
         return task
+    _fill_verification_target(session, task)
     account = session.get(TgAccount, task.account_id) if task.account_id else None
     if not account or account.status != AccountStatus.ACTIVE.value:
         task.status = "失败"

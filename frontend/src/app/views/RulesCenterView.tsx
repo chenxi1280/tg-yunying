@@ -5,6 +5,7 @@ import { CheckCircle2, Database, RefreshCcw, ShieldAlert } from 'lucide-react';
 import { API_BASE, api } from '../../shared/api/client';
 import { StatCard, StatusBadge, useAntdTableControls } from '../components/shared';
 import type { OperationTarget, RuleSet } from '../types';
+import { formatBeijingDateTime } from '../time';
 
 type RuleRow = {
   key: string;
@@ -356,7 +357,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     { title: '状态', dataIndex: 'status', width: 120, render: (value) => <StatusBadge status={value} /> },
     { title: '活动版本', dataIndex: 'active_version_id', width: 120, render: (_, row) => row.versions.find((version) => version.id === row.active_version_id)?.version ? `v${row.versions.find((version) => version.id === row.active_version_id)?.version}` : '-' },
     { title: '版本数', key: 'versions', width: 100, render: (_, row) => row.versions.length },
-    { title: '更新时间', dataIndex: 'updated_at', width: 180, render: (value) => value ? new Date(value).toLocaleString() : '-' },
+    { title: '更新时间', dataIndex: 'updated_at', width: 180, render: (value) => formatBeijingDateTime(value) },
     { title: '操作', key: 'actions', width: 140, render: (_, row) => <Button size="small" icon={<CheckCircle2 size={14} />} onClick={() => { setVersionTarget(row); versionForm.setFieldsValue(ruleFormValuesFromVersion(row, groupTargets)); }}>新建版本</Button> },
   ];
   const versionOptions = ruleSets.flatMap((ruleSet) => ruleSet.versions.map((version) => ({
@@ -377,7 +378,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     { title: '失败', dataIndex: 'failed_count', width: 90 },
     { title: '跳过', dataIndex: 'skipped_count', width: 90 },
     { title: '待执行', dataIndex: 'pending_count', width: 90 },
-    { title: '最近命中', dataIndex: 'last_used_at', width: 180, render: (value) => value ? new Date(value).toLocaleString() : '-' },
+    { title: '最近命中', dataIndex: 'last_used_at', width: 180, render: (value) => formatBeijingDateTime(value) },
   ];
   const dimensionMetricColumns: ColumnsType<RuleDimensionMetric> = [
     { title: '对象', key: 'name', render: (_, row) => <Space direction="vertical" size={0}><Typography.Text strong>{row.name}</Typography.Text><Typography.Text type="secondary">#{row.related_id}</Typography.Text></Space> },
@@ -386,7 +387,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     { title: '失败', dataIndex: 'failed_count', width: 80 },
     { title: '跳过', dataIndex: 'skipped_count', width: 80 },
     { title: '待执行', dataIndex: 'pending_count', width: 90 },
-    { title: '最近命中', dataIndex: 'last_used_at', width: 170, render: (value) => value ? new Date(value).toLocaleString() : '-' },
+    { title: '最近命中', dataIndex: 'last_used_at', width: 170, render: (value) => formatBeijingDateTime(value) },
   ];
   const trendColumns: ColumnsType<RuleTrendMetric> = [
     { title: '日期', dataIndex: 'date', width: 140 },
@@ -412,7 +413,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     { title: '执行项', dataIndex: 'action_count', width: 90 },
     { title: '成功率', key: 'rate', width: 90, render: (_, row) => row.action_count ? `${row.success_rate}%` : '-' },
     { title: '失败/跳过', key: 'bad', width: 110, render: (_, row) => `${row.failed_count}/${row.skipped_count}` },
-    { title: '最近命中', dataIndex: 'last_used_at', width: 170, render: (value) => value ? new Date(value).toLocaleString() : '-' },
+    { title: '最近命中', dataIndex: 'last_used_at', width: 170, render: (value) => formatBeijingDateTime(value) },
   ];
   const relayMaterialColumns: ColumnsType<RelayMaterialAttribution> = [
     { title: '素材指纹', dataIndex: 'material_fingerprint', width: 150, ellipsis: true },
@@ -423,7 +424,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     { title: '成功率', key: 'success_rate', width: 90, render: (_, row) => row.action_count ? `${row.success_rate}%` : '-' },
     { title: '失败/跳过', key: 'bad', width: 110, render: (_, row) => `${row.failed_count}/${row.skipped_count}` },
     { title: '重试', dataIndex: 'retry_count', width: 80 },
-    { title: '最近使用', dataIndex: 'last_used_at', width: 170, render: (value) => value ? new Date(value).toLocaleString() : '-' },
+    { title: '最近使用', dataIndex: 'last_used_at', width: 170, render: (value) => formatBeijingDateTime(value) },
   ];
 
   return (

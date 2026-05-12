@@ -67,7 +67,7 @@ function AppShell() {
     tenantForm, setTenantForm,
     aiProviderForm, setAiProviderForm,
     promptTemplateForm, setPromptTemplateForm,
-    materialForm, setMaterialForm, openContentKeywordRuleEdit,
+    materialForm, setMaterialForm, openPromptTemplateEdit, openMaterialEdit, openContentKeywordRuleEdit,
     groupPolicy, setGroupPolicy,
     setModal,
     directMessageForm, setDirectMessageForm,
@@ -293,8 +293,28 @@ function AppShell() {
             onCheckAiProvider={checkAiProvider}
             onEditTenantAi={() => setModal({ type: 'tenantAiEdit' })}
             onEditScheduling={() => setModal({ type: 'schedulingEdit' })}
-            onCreatePromptTemplate={() => setModal({ type: 'promptTemplateCreate' })}
-            onCreateMaterial={() => setModal({ type: 'materialCreate' })}
+            onCreatePromptTemplate={() => {
+              setPromptTemplateForm({
+                id: null,
+                name: '运营群活跃模板',
+                template_type: '群活跃对话计划',
+                content: '请为 {{group_title}} 围绕 {{topic}} 生成 {{count}} 条自然 Telegram 群聊发言计划，语气 {{tone}}，素材 {{materials}}，输出 JSON turns，并包含角色、意图、延迟和自动校验建议。',
+                is_active: true,
+              });
+              setModal({ type: 'promptTemplateCreate' });
+            }}
+            onEditPromptTemplate={openPromptTemplateEdit}
+            onCreateMaterial={() => {
+              setMaterialForm({
+                id: null,
+                title: '活动表情包',
+                material_type: '表情包',
+                content: 'https://example.local/stickers/welcome.webp',
+                tags: '表情包,欢迎',
+              });
+              setModal({ type: 'materialCreate' });
+            }}
+            onEditMaterial={openMaterialEdit}
             onCreateKeywordRule={() => setModal({ type: 'keywordRuleCreate' })}
             onEditKeywordRule={openContentKeywordRuleEdit}
             onOpenConfirm={openConfirm}

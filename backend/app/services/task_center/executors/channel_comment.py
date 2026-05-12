@@ -61,7 +61,6 @@ def build_plan(session: Session, task: Task) -> int:
             planned_at,
             PostCommentPayload(
                 **channel_message_payload(channel, message),
-                message_content=message.content_preview,
                 comment_text=content,
                 comment_mode="reply" if reply_to_message_id else "comment",
                 reply_to_message_id=reply_to_message_id,

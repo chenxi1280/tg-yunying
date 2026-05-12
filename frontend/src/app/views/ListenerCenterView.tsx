@@ -4,6 +4,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { Activity, RefreshCcw, Users } from 'lucide-react';
 import { api } from '../../shared/api/client';
 import { StatCard, StatusBadge, useAntdTableControls } from '../components/shared';
+import { formatBeijingDateTime } from '../time';
 
 type ListenerRow = {
   key: string;
@@ -170,7 +171,7 @@ export default function ListenerCenterView() {
         row.backup_account ? <Typography.Text type="secondary">备用：{row.backup_account.display_name}</Typography.Text> : '-'
       ),
     },
-    { title: '最后事件', dataIndex: 'last_event_at', width: 190, render: (value) => value ? new Date(value).toLocaleString() : '-' },
+    { title: '最后事件', dataIndex: 'last_event_at', width: 190, render: (value) => formatBeijingDateTime(value) },
     { title: '最近错误', dataIndex: 'last_error', render: (value) => value || '无' },
   ];
 
@@ -278,7 +279,7 @@ function renderListenerDetail(row: ListenerRow, onSwitch: (row: ListenerRow) => 
               { title: '类型', dataIndex: 'event_type', width: 140 },
               { title: '来源', key: 'source', width: 160, render: (_, event) => event.sender_name || (event.account_id ? `账号 ${event.account_id}` : '-') },
               { title: '内容', dataIndex: 'content', ellipsis: true },
-              { title: '时间', dataIndex: 'occurred_at', width: 190, render: (value) => value ? new Date(value).toLocaleString() : '-' },
+              { title: '时间', dataIndex: 'occurred_at', width: 190, render: (value) => formatBeijingDateTime(value) },
             ]}
           />
         ) : (

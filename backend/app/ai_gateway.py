@@ -134,7 +134,7 @@ class AiGateway:
             temperature,
             max_tokens,
             response_format_json=True,
-            reasoning_retry_max_tokens=max(max_tokens, 2048),
+            reasoning_retry_max_tokens=self._generation_retry_max_tokens(credentials, max_tokens, count),
         )
         return AiGenerationResult(
             candidates=self._parse_candidates(raw, count, persona_set, material_ids),
@@ -239,10 +239,17 @@ class AiGateway:
             "max_tokens": max_tokens,
             "stream": False,
         }
+        if self._is_deepseek(credentials):
+            payload["thinking"] = {"type": "disabled"}
         if response_format_json and self._is_deepseek(credentials):
             payload["response_format"] = {"type": "json_object"}
-            payload["thinking"] = {"type": "disabled"}
         return payload
+
+    def _generation_retry_max_tokens(self, credentials: AiProviderCredentials, max_tokens: int, count: int) -> int:
+        base_retry = max(max_tokens, count * 512, 2048)
+        if self._is_mimo(credentials):
+            return max(base_retry, count * 768, 4096)
+        return base_retry
 
     def _chat_completions_url(self, base_url: str) -> str:
         url = base_url.rstrip("/")
@@ -261,6 +268,9 @@ class AiGateway:
 
     def _is_deepseek_base_url(self, base_url: str) -> bool:
         return "api.deepseek.com" in base_url.lower()
+
+    def _is_mimo(self, credentials: AiProviderCredentials) -> bool:
+        return "mimo" in credentials.model_name.lower() or "mimo" in credentials.provider_name.lower() or "xiaomimimo" in credentials.base_url.lower()
 
     def _extract_message_content(self, data: dict[str, Any]) -> str:
         choice = self._first_choice(data)

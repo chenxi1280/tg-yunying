@@ -5,6 +5,7 @@ import { StatusBadge, Badge } from '../components/shared';
 import { statusAccent } from '../utils';
 
 interface Props {
+  section?: 'all' | 'providers' | 'scheduling' | 'resources' | 'keywords';
   aiProviders: AiProvider[];
   promptTemplates: PromptTemplate[];
   tenantAiSetting: TenantAiSetting | null;
@@ -19,13 +20,16 @@ interface Props {
   onEditTenantAi: () => void;
   onEditScheduling: () => void;
   onCreatePromptTemplate: () => void;
+  onEditPromptTemplate: (template: PromptTemplate) => void;
   onCreateMaterial: () => void;
+  onEditMaterial: (material: Material) => void;
   onCreateKeywordRule: () => void;
   onEditKeywordRule: (rule: ContentKeywordRule) => void;
   isActionPending: (key: string) => boolean;
 }
 
 export default function AISettingsView({
+  section = 'all',
   aiProviders,
   promptTemplates,
   tenantAiSetting,
@@ -40,14 +44,21 @@ export default function AISettingsView({
   onEditTenantAi,
   onEditScheduling,
   onCreatePromptTemplate,
+  onEditPromptTemplate,
   onCreateMaterial,
+  onEditMaterial,
   onCreateKeywordRule,
   onEditKeywordRule,
   isActionPending,
 }: Props) {
+  const showProviders = section === 'all' || section === 'providers';
+  const showScheduling = section === 'all' || section === 'scheduling';
+  const showResources = section === 'all' || section === 'resources';
+  const showKeywords = section === 'all' || section === 'keywords';
+
   return (
     <section className="view-grid">
-      <Card
+      {showProviders && <Card
         className="panel"
         title="AI 供应商"
         extra={currentUserRole === '系统管理员' ? <Button type="primary" onClick={onCreateProvider}>新增供应商</Button> : undefined}
@@ -77,14 +88,14 @@ export default function AISettingsView({
             </Card>
           ))}
         </div>
-      </Card>
+      </Card>}
 
-      <Card
+      {showProviders && <Card
         className="panel"
-        title="AI 模型与发送节奏"
-        extra={<Space><Button size="small" disabled={!aiProviders.length} onClick={onEditTenantAi}>编辑 AI 配置</Button><Button size="small" onClick={onEditScheduling}>编辑发送节奏</Button></Space>}
+        title="AI 默认模型"
+        extra={<Button size="small" disabled={!aiProviders.length} onClick={onEditTenantAi}>编辑 AI 配置</Button>}
       >
-        <Typography.Text type="secondary">任务创建时可覆盖默认模型、发送节奏和自动校验策略</Typography.Text>
+        <Typography.Text type="secondary">任务创建时可覆盖默认模型；AI 不可用时按这里的失败策略处理</Typography.Text>
         <div className="summary-grid">
           <Card className="summary-card" size="small">
             <span>默认模型</span>
@@ -96,6 +107,16 @@ export default function AISettingsView({
             <strong>{tenantAiSetting?.fallback_to_mock ? '允许模板回退' : '失败即报错'}</strong>
             <p>温度 {tenantAiSetting?.temperature ?? '-'} / Token {tenantAiSetting?.max_tokens ?? '-'}</p>
           </Card>
+        </div>
+      </Card>}
+
+      {showScheduling && <Card
+        className="panel"
+        title="发送节奏与全局风控"
+        extra={<Button size="small" onClick={onEditScheduling}>编辑发送节奏</Button>}
+      >
+        <Typography.Text type="secondary">任务与消息发送共用全局账号限额；0 表示不限制，达到上限后优先转派可用账号</Typography.Text>
+        <div className="summary-grid">
           <Card className="summary-card" size="small">
             <span>发送抖动</span>
             <strong>{schedulingSetting?.jitter_min_seconds ?? '-'}-{schedulingSetting?.jitter_max_seconds ?? '-'}s</strong>
@@ -111,10 +132,20 @@ export default function AISettingsView({
             <strong>{schedulingSetting?.default_max_retries ?? 3} 次</strong>
             <p>{schedulingSetting?.default_retry_delay_seconds ?? 60}s / {schedulingSetting?.default_retry_backoff ?? 'exponential'}</p>
           </Card>
+          <Card className="summary-card" size="small">
+            <span>异常处理</span>
+            <strong>{schedulingSetting?.default_on_api_rate_limit ?? 'wait_and_retry'}</strong>
+            <p>账号异常 {schedulingSetting?.default_on_account_banned ?? 'skip_account'} / 内容 {schedulingSetting?.default_on_content_rejected ?? 'skip_message'}</p>
+          </Card>
+          <Card className="summary-card" size="small">
+            <span>账号全局限额</span>
+            <strong>{schedulingSetting?.default_account_hour_limit ?? 0}/小时</strong>
+            <p>{schedulingSetting?.default_account_day_limit ?? 0}/日 / 冷却 {schedulingSetting?.default_account_cooldown_seconds ?? 0}s / 0 不限制</p>
+          </Card>
         </div>
-      </Card>
+      </Card>}
 
-      <Card
+      {showResources && <Card
         className="panel"
         title="提示词与素材"
         extra={<Space><Button size="small" onClick={onCreatePromptTemplate}>新增提示词</Button><Button size="small" onClick={onCreateMaterial}>新增素材</Button></Space>}
@@ -131,7 +162,7 @@ export default function AISettingsView({
             if (entry.kind === 'template') {
               const template = entry.item;
               return (
-                <List.Item>
+                <List.Item actions={[<Button size="small" onClick={() => onEditPromptTemplate(template)}>编辑</Button>]}>
                   <List.Item.Meta
                     title={<Space><Badge tone={template.tenant_id ? 'positive' : 'neutral'}>{template.tenant_id ? '运营空间' : '平台'}</Badge><StatusBadge status={template.is_active ? '已启用' : '禁用'} />{template.name}</Space>}
                     description={`${template.template_type} / v${template.version}`}
@@ -141,7 +172,7 @@ export default function AISettingsView({
             }
             const material = entry.item;
             return (
-              <List.Item>
+              <List.Item actions={[<Button size="small" onClick={() => onEditMaterial(material)}>编辑</Button>]}>
                 <List.Item.Meta
                   title={<Space><Badge tone="warning">{material.material_type}</Badge><StatusBadge status={material.review_status} label={material.review_status === '已审核' ? '可用' : material.review_status} />{material.title}</Space>}
                   description={material.tags || '无标签'}
@@ -150,9 +181,9 @@ export default function AISettingsView({
             );
           }}
         />
-      </Card>
+      </Card>}
 
-      <Card
+      {showKeywords && <Card
         className="panel"
         title="关键词库"
         extra={<Button size="small" onClick={onCreateKeywordRule}>新增关键词</Button>}
@@ -171,7 +202,7 @@ export default function AISettingsView({
             </List.Item>
           )}
         />
-      </Card>
+      </Card>}
     </section>
   );
 }

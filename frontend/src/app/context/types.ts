@@ -176,6 +176,12 @@ export interface AppState {
   setDefaultOnApiRateLimit: (value: string) => void;
   defaultOnContentRejected: string;
   setDefaultOnContentRejected: (value: string) => void;
+  defaultAccountHourLimit: number;
+  setDefaultAccountHourLimit: (value: number) => void;
+  defaultAccountDayLimit: number;
+  setDefaultAccountDayLimit: (value: number) => void;
+  defaultAccountCooldownSeconds: number;
+  setDefaultAccountCooldownSeconds: (value: number) => void;
   taskStatusFilter: string;
   setTaskStatusFilter: (filter: string) => void;
   groupPolicy: {
@@ -216,10 +222,10 @@ export interface AppState {
   setTenantForm: (form: { id: number | null; name: string; plan_name: string; account_quota: number; task_quota: number }) => void;
   aiProviderForm: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; is_active: boolean };
   setAiProviderForm: (form: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; is_active: boolean }) => void;
-  promptTemplateForm: { name: string; template_type: string; content: string };
-  setPromptTemplateForm: (form: { name: string; template_type: string; content: string }) => void;
-  materialForm: { title: string; material_type: string; content: string; tags: string };
-  setMaterialForm: (form: { title: string; material_type: string; content: string; tags: string }) => void;
+  promptTemplateForm: { id: number | null; name: string; template_type: string; content: string; is_active: boolean };
+  setPromptTemplateForm: (form: { id: number | null; name: string; template_type: string; content: string; is_active: boolean }) => void;
+  materialForm: { id: number | null; title: string; material_type: string; content: string; tags: string };
+  setMaterialForm: (form: { id: number | null; title: string; material_type: string; content: string; tags: string }) => void;
   keywordRuleForm: { id: number | null; keyword: string; match_type: string; is_active: boolean; note: string };
   setKeywordRuleForm: (form: { id: number | null; keyword: string; match_type: string; is_active: boolean; note: string }) => void;
 
@@ -320,7 +326,11 @@ export interface AppState {
   saveTenantAiSetting: () => Promise<void>;
   saveSchedulingSetting: () => Promise<void>;
   createPromptTemplate: () => Promise<void>;
+  openPromptTemplateEdit: (template: PromptTemplate) => void;
+  savePromptTemplate: () => Promise<void>;
   createMaterial: () => Promise<void>;
+  openMaterialEdit: (material: Material) => void;
+  saveMaterial: () => Promise<void>;
   createContentKeywordRule: () => Promise<void>;
   openContentKeywordRuleEdit: (rule: ContentKeywordRule) => void;
   saveContentKeywordRule: () => Promise<void>;

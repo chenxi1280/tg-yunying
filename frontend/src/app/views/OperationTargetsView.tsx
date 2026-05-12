@@ -3,8 +3,9 @@ import { Alert, App as AntdApp, Button, Card, Descriptions, Drawer, Empty, Form,
 import type { ColumnsType } from 'antd/es/table';
 import { MessageSquareText, RefreshCcw } from 'lucide-react';
 import { api, ApiError } from '../../shared/api/client';
-import type { ChannelMessage, ChannelMessageCommentSync, OperationTarget, OperationTargetDetail, OperationTargetMessageSync, TaskCenterTaskType } from '../types';
+import type { ChannelMessage, ChannelMessageCommentSync, OperationTarget, OperationTargetDetail, OperationTargetMessageSync, OperationTargetsSync, TaskCenterTaskType } from '../types';
 import { StatusBadge, useAntdTableControls } from '../components/shared';
+import { formatBeijingDateTime } from '../time';
 
 type Props = {
   onSendToTarget: (target: OperationTarget) => void;
@@ -12,7 +13,7 @@ type Props = {
 };
 
 function formatDateTime(value?: string | null) {
-  return value ? new Date(value).toLocaleString() : '-';
+  return formatBeijingDateTime(value);
 }
 
 function taskLabel(taskType: TaskCenterTaskType) {
@@ -41,6 +42,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
   const [accountPolicySaving, setAccountPolicySaving] = React.useState('');
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [syncing, setSyncing] = React.useState(false);
+  const [syncingAllTargets, setSyncingAllTargets] = React.useState(false);
   const [syncingCommentMessageId, setSyncingCommentMessageId] = React.useState<number | null>(null);
   const [creatingArchiveId, setCreatingArchiveId] = React.useState<number | null>(null);
   const [formError, setFormError] = React.useState('');
@@ -125,6 +127,24 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
       setFormError(errorMessage(error));
     } finally {
       setSyncingCommentMessageId(null);
+    }
+  }
+
+  async function syncAllTargets() {
+    setSyncingAllTargets(true);
+    setFormError('');
+    try {
+      const result = await api<OperationTargetsSync>('/operation-targets/sync-all', { method: 'POST' });
+      setTargets(result.targets);
+      if (result.failed_accounts.length) {
+        void message.warning(`已同步 ${result.synced_accounts} 个在线账号，${result.failed_accounts.length} 个账号失败，请查看目标详情或账号同步记录。`);
+      } else {
+        void message.success(`已同步 ${result.synced_accounts} 个在线账号，当前 ${result.target_count} 个群/频道目标。`);
+      }
+    } catch (error) {
+      setFormError(errorMessage(error));
+    } finally {
+      setSyncingAllTargets(false);
     }
   }
 
@@ -294,7 +314,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     { title: '使用范围', key: 'auth_status', width: 140, render: (_, target) => <StatusBadge status={target.auth_status} /> },
     { title: '发送能力', key: 'can_send', width: 140, render: (_, target) => <StatusBadge status={target.can_send ? '可发送' : '只读'} /> },
     { title: '任务能力', key: 'task_capabilities', width: 240, render: (_, target) => capabilityTags(target) },
-    { title: '最近同步', key: 'last_sync_at', width: 200, render: (_, target) => target.last_sync_at ? new Date(target.last_sync_at).toLocaleString() : '手动创建' },
+    { title: '最近同步', key: 'last_sync_at', width: 200, render: (_, target) => target.last_sync_at ? formatDateTime(target.last_sync_at) : '手动创建' },
     {
       title: '操作',
       key: 'actions',
@@ -311,7 +331,16 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
 
   return (
     <>
-      <Card className="panel" title="群/频道目标" extra={<Button type="primary" onClick={openCreate}>新增目标</Button>}>
+      <Card
+        className="panel"
+        title="群/频道目标"
+        extra={(
+          <Space wrap>
+            <Button icon={<RefreshCcw size={16} />} loading={syncingAllTargets} onClick={syncAllTargets}>同步全部账号目标</Button>
+            <Button type="primary" onClick={openCreate}>新增目标</Button>
+          </Space>
+        )}
+      >
         <Typography.Text type="secondary">统一维护账号运营目标。群聊用于普通发言，频道用于发帖、查看、点赞和回复任务。</Typography.Text>
         <Space className="toolbar-row" wrap>
           {table.searchInput}

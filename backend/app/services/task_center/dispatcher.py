@@ -12,10 +12,12 @@ from app.gateways import OutboundSegment
 from app.config import get_settings
 from app.models import AccountStatus, Action, FailureType, GroupContextMessage, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now, gateway
+from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
 from app.services.developer_apps import credentials_for_account
 from app.services.ai_config import get_scheduling_setting
 
+from .account_pool import select_task_accounts
 from .payloads import LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
@@ -28,7 +30,8 @@ def dispatch_action(session: Session, action: Action) -> bool:
     if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
         return True
-    if _defer_for_global_account_policy(session, action, account):
+    account = _account_after_global_policy(session, action, account)
+    if account is None:
         return True
     try:
         payload = validate_action_payload(action.action_type, action.payload or {})
@@ -186,7 +189,7 @@ def _apply_operation_result(action: Action, account: TgAccount, ok: bool, failur
 def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: str = "", failure_type: str = "", detail: str = "") -> None:
     if ok:
         action.status = "success"
-        action.result = {"success": True, "telegram_msg_id": remote_id, "auto_check": "通过", "validation_stage": "sent"}
+        action.result = {**(action.result or {}), "success": True, "telegram_msg_id": remote_id, "auto_check": "通过", "validation_stage": "sent"}
         _clear_action_lease(action)
         account.last_active_at = _now()
     else:
@@ -230,12 +233,53 @@ def _defer(action: Action, scheduled_at, code: str, detail: str) -> None:
     action.result = {"success": False, "error_code": code, "error_message": detail, "auto_check": "延后", "validation_stage": "account_policy"}
 
 
-def _defer_for_global_account_policy(session: Session, action: Action, account: TgAccount) -> bool:
-    deferred_until = _global_account_policy_delay(session, action, account)
-    if not deferred_until:
-        return False
-    _defer(action, deferred_until, "global_account_policy", "账号全局限额或冷却中，已延后执行")
-    return True
+def _account_after_global_policy(session: Session, action: Action, account: TgAccount) -> TgAccount | None:
+    decision = account_capacity_decision(
+        session,
+        tenant_id=action.tenant_id,
+        account_id=account.id,
+        scheduled_at=action.scheduled_at,
+        exclude_action_id=action.id,
+    )
+    if decision.available:
+        return account
+    replacement = _replacement_account_for_action(session, action, account)
+    if replacement:
+        action.result = {
+            **(action.result or {}),
+            "auto_check": "转派",
+            "validation_stage": "account_policy",
+            "account_policy_action": "reassigned",
+            "account_policy_reason": decision.reason,
+            "original_account_id": account.id,
+            "reassigned_account_id": replacement.id,
+        }
+        action.account_id = replacement.id
+        return replacement
+    _defer(
+        action,
+        decision.defer_until or (_now() + timedelta(seconds=60)),
+        "global_account_policy",
+        decision.reason or "账号全局限额或冷却中，已延后执行",
+    )
+    return None
+
+
+def _replacement_account_for_action(session: Session, action: Action, account: TgAccount) -> TgAccount | None:
+    task = session.get(Task, action.task_id)
+    if not task:
+        return None
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    group_id = int(payload.get("group_id") or 0) or None
+    candidates = select_task_accounts(
+        session,
+        action.tenant_id,
+        task.account_config or {},
+        target_group_id=group_id,
+        scheduled_at=action.scheduled_at,
+        limit=10,
+    )
+    return next((candidate for candidate in candidates if candidate.id != account.id), None)
 
 
 def _mark_executing(action: Action, *, lease_seconds: int = 1800) -> None:
@@ -251,56 +295,6 @@ def _clear_action_lease(action: Action) -> None:
 
 def _lease_owner() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
-
-
-def _global_account_policy_delay(session: Session, action: Action, account: TgAccount):
-    setting = get_scheduling_setting(session, action.tenant_id)
-    now_value = _now()
-    candidates = []
-    cooldown = int(setting.default_account_cooldown_seconds or 0)
-    if cooldown > 0:
-        last_success = session.scalar(
-            select(func.max(Action.executed_at)).where(
-                Action.tenant_id == action.tenant_id,
-                Action.account_id == account.id,
-                Action.id != action.id,
-                Action.status == "success",
-                Action.executed_at.is_not(None),
-            )
-        )
-        if last_success and last_success + timedelta(seconds=cooldown) > now_value:
-            candidates.append(last_success + timedelta(seconds=cooldown))
-    hour_limit = int(setting.default_account_hour_limit or 0)
-    if hour_limit > 0:
-        hour_start = now_value.replace(minute=0, second=0, microsecond=0)
-        hour_end = hour_start + timedelta(hours=1)
-        hour_count = _account_action_count(session, action, account.id, hour_start, hour_end)
-        if hour_count >= hour_limit:
-            candidates.append(hour_end)
-    day_limit = int(setting.default_account_day_limit or 0)
-    if day_limit > 0:
-        day_start = now_value.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
-        day_count = _account_action_count(session, action, account.id, day_start, day_end)
-        if day_count >= day_limit:
-            candidates.append(day_end)
-    return max(candidates) if candidates else None
-
-
-def _account_action_count(session: Session, action: Action, account_id: int, start, end) -> int:
-    return int(
-        session.scalar(
-            select(func.count(Action.id)).where(
-                Action.tenant_id == action.tenant_id,
-                Action.account_id == account_id,
-                Action.id != action.id,
-                Action.status.in_(["executing", "success"]),
-                Action.scheduled_at >= start,
-                Action.scheduled_at < end,
-            )
-        )
-        or 0
-    )
 
 
 def _apply_default_failure_policy(action: Action, failure_type: str) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import random
 import re
 from datetime import UTC, datetime, timedelta
@@ -9,6 +10,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.services.account_capacity import account_capacity_decision, available_accounts_by_capacity
 from app.models import (
     AccountStatus,
     Campaign,
@@ -26,6 +28,7 @@ from app.models import (
     VerificationTask,
 )
 from app.gateways import DeveloperAppCredentials, OutboundSegment
+from app.timezone import beijing_day_bounds
 from app.task_queue import get_task_queue
 
 from ._common import _as_utc, _now, audit, gateway, require_tenant
@@ -194,7 +197,9 @@ def _scheduling_setting(session: Session, tenant_id: int) -> SchedulingSetting:
 
 
 def _naive_utc(value: datetime) -> datetime:
-    return _as_utc(value).replace(tzinfo=None)
+    if value.tzinfo is not None:
+        return value.astimezone(UTC).replace(tzinfo=None)
+    return value
 
 
 def create_message_send_task(session: Session, payload: MessageSendTaskCreate, actor: str, tenant_id: int | None = None) -> MessageTask:
@@ -210,7 +215,7 @@ def create_message_send_task(session: Session, payload: MessageSendTaskCreate, a
     jitter_seconds = random.randint(jitter_min, jitter_max) if jitter_max else 0
     base_at = _naive_utc(payload.scheduled_at) if payload.scheduled_at else _now()
     scheduled_at = base_at + timedelta(seconds=jitter_seconds)
-    planned_delay_seconds = max(0, int((_as_utc(scheduled_at) - _as_utc(_now())).total_seconds()))
+    planned_delay_seconds = _planned_delay_seconds(scheduled_at)
     task = _message_task(
         account,
         target_type,
@@ -259,7 +264,7 @@ def create_message_send_tasks_batch(session: Session, payload: MessageSendBatchC
         target_type, target_peer_id, target_display, group_id = _resolve_message_target(session, account, target)
         jitter_seconds = random.randint(jitter_min, jitter_max) if jitter_max else 0
         scheduled_at = start_at + timedelta(seconds=index * batch_interval + jitter_seconds)
-        planned_delay_seconds = max(0, int((_as_utc(scheduled_at) - now_value).total_seconds()))
+        planned_delay_seconds = _planned_delay_seconds(scheduled_at, now_value)
         task = _message_task(
             account,
             target_type,
@@ -332,13 +337,6 @@ def create_pool_direct_message_task(session: Session, pool_id: int, payload: Dir
     return create_direct_message_task(session, account.id, payload, actor)
 
 
-def _utc_day_bounds(value: datetime | None = None) -> tuple[datetime, datetime]:
-    current = (value or _now()).replace(tzinfo=UTC) if (value or _now()).tzinfo is None else (value or _now()).astimezone(UTC)
-    start = current.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=1)
-    return start.replace(tzinfo=None), end.replace(tzinfo=None)
-
-
 def _split_rule_list(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -352,7 +350,7 @@ def _extract_links(text: str) -> list[str]:
 def _group_sent_today(session: Session, task: MessageTask) -> int:
     if not task.group_id:
         return 0
-    day_start, day_end = _utc_day_bounds()
+    day_start, day_end = beijing_day_bounds()
     return session.scalar(
         select(func.count(MessageTask.id)).where(
             MessageTask.tenant_id == task.tenant_id,
@@ -564,6 +562,41 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
             session.refresh(task)
             return task
 
+        capacity_decision = account_capacity_decision(
+            session,
+            tenant_id=task.tenant_id,
+            account_id=account.id,
+            scheduled_at=task.scheduled_at,
+            exclude_message_task_id=task.id,
+        )
+        if not capacity_decision.available:
+            replacement = _replacement_message_account(session, task, account)
+            if replacement:
+                original_account_id = account.id
+                account = replacement
+                task.account_id = replacement.id
+                session.add(
+                    MessageTaskAttempt(
+                        tenant_id=task.tenant_id,
+                        task_id=task.id,
+                        account_id=replacement.id,
+                        status=TaskStatus.QUEUED.value,
+                        failure_type=None,
+                        detail=f"账号达到全局上限，已从 {original_account_id} 转派到 {replacement.id}",
+                    )
+                )
+                audit(
+                    session,
+                    tenant_id=task.tenant_id,
+                    actor="tg-worker",
+                    action="消息任务账号转派",
+                    target_type="message_task",
+                    target_id=str(task.id),
+                    detail=f"{original_account_id}->{replacement.id}; {capacity_decision.reason}",
+                )
+            else:
+                return _defer_message_task_for_capacity(session, task, capacity_decision)
+
         task.account_id = account.id
         task.status = TaskStatus.SENDING.value
         try:
@@ -682,6 +715,79 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
         session.commit()
         session.refresh(task)
         return task
+
+
+def _replacement_message_account(session: Session, task: MessageTask, current_account: TgAccount) -> TgAccount | None:
+    if task.target_type == "private":
+        return None
+    stmt = (
+        select(TgAccount)
+        .where(
+            TgAccount.tenant_id == task.tenant_id,
+            TgAccount.deleted_at.is_(None),
+            TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.id != current_account.id,
+        )
+        .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
+    )
+    group = session.get(TgGroup, task.group_id) if task.group_id else _linked_group_for_peer(session, task)
+    if group:
+        stmt = stmt.join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id).where(
+            TgGroupAccount.group_id == group.id,
+            TgGroupAccount.can_send.is_(True),
+        )
+    candidates = list(session.scalars(stmt.limit(50)))
+    available = available_accounts_by_capacity(
+        session,
+        tenant_id=task.tenant_id,
+        accounts=candidates,
+        scheduled_at=task.scheduled_at,
+        limit=1,
+        exclude_message_task_id=task.id,
+    )
+    return available[0] if available else None
+
+
+def _linked_group_for_peer(session: Session, task: MessageTask) -> TgGroup | None:
+    if not task.target_peer_id:
+        return None
+    return session.scalar(select(TgGroup).where(TgGroup.tenant_id == task.tenant_id, TgGroup.tg_peer_id == task.target_peer_id))
+
+
+def _defer_message_task_for_capacity(session: Session, task: MessageTask, decision) -> MessageTask:
+    defer_until = decision.defer_until or (_now() + timedelta(seconds=60))
+    task.status = TaskStatus.QUEUED.value
+    task.scheduled_at = defer_until
+    task.planned_delay_seconds = _planned_delay_seconds(defer_until)
+    task.failure_type = decision.reason_code or "账号全局限额"
+    task.failure_detail = decision.reason or "账号全局限额或冷却中，已延后执行"
+    session.add(
+        MessageTaskAttempt(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            account_id=task.account_id,
+            status=TaskStatus.QUEUED.value,
+            failure_type=task.failure_type,
+            detail=f"{task.failure_detail}；下次尝试 {defer_until:%Y-%m-%d %H:%M:%S}",
+        )
+    )
+    audit(
+        session,
+        tenant_id=task.tenant_id,
+        actor="tg-worker",
+        action="消息任务账号限额延后",
+        target_type="message_task",
+        target_id=str(task.id),
+        detail=task.failure_detail,
+    )
+    session.commit()
+    get_task_queue().enqueue(task.id)
+    session.refresh(task)
+    return task
+
+
+def _planned_delay_seconds(scheduled_at: datetime, now_value: datetime | None = None) -> int:
+    return max(0, int(math.ceil((_as_utc(scheduled_at) - (now_value or _as_utc(_now()))).total_seconds())))
 
 
 def retry_task(session_factory, task_id: int, actor: str, dispatch_now: bool) -> MessageTask:

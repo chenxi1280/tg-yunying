@@ -3,6 +3,7 @@ import { Button, Card, Descriptions, Empty, Modal, Space, Typography } from 'ant
 import type { DeveloperApp, Tenant } from '../types';
 import { StatusBadge, Badge } from '../components/shared';
 import { statusAccent } from '../utils';
+import { formatBeijingDateTime } from '../time';
 
 interface Props {
   developerApps: DeveloperApp[];
@@ -93,7 +94,7 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
               { key: 'assigned', label: '绑定账号', children: detailApp.assigned_accounts },
               { key: 'limit', label: '账号上限', children: detailApp.max_accounts || '不限' },
               { key: 'version', label: '凭证版本', children: `v${detailApp.credentials_version}` },
-              { key: 'last_check', label: '最近检查', children: detailApp.last_check_at ? new Date(detailApp.last_check_at).toLocaleString() : '未检查' },
+              { key: 'last_check', label: '最近检查', children: detailApp.last_check_at ? formatBeijingDateTime(detailApp.last_check_at) : '未检查' },
             ]} />
             {detailApp.last_error && <Typography.Paragraph type="danger">{detailApp.last_error}</Typography.Paragraph>}
           </Space>

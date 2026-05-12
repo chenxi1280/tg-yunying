@@ -1,21 +1,15 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, FailureType, GroupAuthStatus, MessageTask, TaskStatus, TgGroup
 from app.services._common import _as_utc, _now
+from app.timezone import beijing_day_bounds
 from app.services.content_filters import tenant_keyword_rules
-
-
-def _utc_day_bounds(value: datetime | None = None) -> tuple[datetime, datetime]:
-    current = (value or _now()).replace(tzinfo=UTC) if (value or _now()).tzinfo is None else (value or _now()).astimezone(UTC)
-    start = current.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=1)
-    return start.replace(tzinfo=None), end.replace(tzinfo=None)
 
 
 def _split_rule_list(raw: str | None) -> list[str]:
@@ -29,7 +23,7 @@ def _extract_links(text: str) -> list[str]:
 
 
 def _task_center_group_sent_today(session: Session, tenant_id: int, group_id: int) -> int:
-    day_start, day_end = _utc_day_bounds()
+    day_start, day_end = beijing_day_bounds()
     return session.scalar(
         select(func.count(Action.id)).where(
             Action.tenant_id == tenant_id,
@@ -44,7 +38,7 @@ def _task_center_group_sent_today(session: Session, tenant_id: int, group_id: in
 
 
 def _legacy_group_sent_today(session: Session, tenant_id: int, group_id: int) -> int:
-    day_start, day_end = _utc_day_bounds()
+    day_start, day_end = beijing_day_bounds()
     return session.scalar(
         select(func.count(MessageTask.id)).where(
             MessageTask.tenant_id == tenant_id,

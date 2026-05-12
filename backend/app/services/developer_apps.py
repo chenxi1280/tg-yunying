@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -15,6 +15,7 @@ from app.models import (
 )
 from app.schemas import DeveloperAppCreate, DeveloperAppUpdate
 from app.security import decrypt_secret, encrypt_secret
+from app.timezone import BEIJING_TZ
 
 from ._common import _as_utc, _now, audit
 
@@ -172,7 +173,7 @@ def assign_developer_app_round_robin(session: Session, account: TgAccount) -> Te
             continue
         assigned_at = app.last_assigned_at
         if assigned_at is None:
-            assigned_at = datetime(1970, 1, 1, tzinfo=UTC)
+            assigned_at = datetime(1970, 1, 1, tzinfo=BEIJING_TZ)
         else:
             assigned_at = _as_utc(assigned_at)
         candidates.append((assigned_at.timestamp(), app.id, app))

@@ -396,7 +396,7 @@ def queue_account_sync_records(
     sync_types: list[str] | None = None,
     scheduled_at: datetime | None = None,
 ) -> list[TgAccountSyncRecord]:
-    sync_types = sync_types or ["profile_pull", "health", "groups", "contacts", "codes"]
+    sync_types = sync_types or ["profile_pull", "health", "groups", "targets", "contacts", "codes"]
     records: list[TgAccountSyncRecord] = []
     now_value = _now()
     for sync_type in sync_types:
@@ -479,6 +479,10 @@ def process_account_sync_record(session: Session, record_id: int) -> TgAccountSy
             raise ValueError("account not found")
         if record.sync_type == "groups":
             result_count = len(sync_groups(session, account.id, actor="tg-worker"))
+        elif record.sync_type == "targets":
+            from .operations import sync_account_targets
+
+            result_count = len(sync_account_targets(session, account.id, actor="tg-worker"))
         elif record.sync_type == "contacts":
             result_count = len(sync_account_contacts(session, account.id, "tg-worker"))
         elif record.sync_type == "codes":
@@ -547,7 +551,7 @@ def drain_account_sync_records(session_factory, limit: int = 20) -> int:
                 .limit(1)
             )
             if not latest or latest.created_at <= cutoff:
-                queue_account_sync_records(session, account, trigger_source="scheduled", sync_types=["health", "profile_pull", "groups", "contacts", "codes"])
+                queue_account_sync_records(session, account, trigger_source="scheduled", sync_types=["health", "profile_pull", "groups", "targets", "contacts", "codes"])
         session.commit()
         record_ids = list(
             session.scalars(
@@ -770,12 +774,26 @@ def sync_groups(session: Session, account_id: int, actor: str = "普通用户") 
                     group_id=group.id,
                     account_id=account.id,
                     permission_label=snapshot.permission_label,
-                    can_send=snapshot.can_send and group.auth_status == GroupAuthStatus.AUTHORIZED.value,
+                    can_send=bool(snapshot.can_send),
                 )
             )
         else:
             exists.permission_label = snapshot.permission_label
-            exists.can_send = snapshot.can_send and group.auth_status == GroupAuthStatus.AUTHORIZED.value
+            exists.can_send = bool(snapshot.can_send)
+        session.flush()
+        group_links = list(
+            session.scalars(
+                select(TgGroupAccount).where(
+                    TgGroupAccount.tenant_id == account.tenant_id,
+                    TgGroupAccount.group_id == group.id,
+                )
+            )
+        )
+        group.can_send = any(link.can_send for link in group_links)
+        if group.can_send:
+            group.auth_status = GroupAuthStatus.AUTHORIZED.value
+        elif group.auth_status == GroupAuthStatus.AUTHORIZED.value:
+            group.auth_status = GroupAuthStatus.READONLY.value
         if not snapshot.can_send:
             create_verification_task(
                 session,
@@ -923,34 +941,12 @@ def account_risk_diagnostics(
     operation_targets: list,
 ) -> list[dict]:
     risks: list[dict] = []
-    status_level = {
-        AccountStatus.BANNED.value: ("高", "账号已封禁", "账号状态已标记为封禁，暂停所有发送动作。", "更换账号或重新登录确认。"),
-        AccountStatus.SUSPECTED_BANNED.value: ("高", "疑似封禁", "账号状态已标记为疑似封禁，需要人工确认。", "立即做健康检查，并在 TG 客户端确认账号状态。"),
-        AccountStatus.LIMITED.value: ("高", "账号受限", "账号最近触发受限类错误，系统已降低派单优先级。", "暂停高频任务，等待限制解除后再恢复。"),
-        AccountStatus.SESSION_EXPIRED.value: ("高", "Session 失效", "账号 session 不再可用。", "重新登录账号。"),
-        AccountStatus.NEED_RELOGIN.value: ("中", "需重新登录", "账号缺少可用 session 或开发者应用凭证不可用。", "重新登录账号并检查开发者应用。"),
-        AccountStatus.ERROR.value: ("中", "账号异常", "账号处于异常状态。", "执行健康检查并查看最近失败记录。"),
-        AccountStatus.DISABLED.value: ("中", "账号已禁用", "账号已从可执行池移除。", "需要运营时先恢复或重新添加账号。"),
-    }
-    if account.status in status_level:
-        level, title, detail, action = status_level[account.status]
-        risks.append(_risk_item(level=level, code="ACCOUNT_STATUS", title=title, detail=detail, source="账号状态", action=action, occurred_at=account.last_active_at))
-    if not account.session_ciphertext and account.status not in {AccountStatus.PENDING_LOGIN.value, AccountStatus.WAITING_CODE.value, AccountStatus.WAITING_QR.value, AccountStatus.WAITING_2FA.value}:
-        risks.append(_risk_item(level="中", code="SESSION_MISSING", title="缺少 Session", detail="账号没有可用 session，无法执行真实 TG 操作。", source="账号状态", action="重新登录账号。"))
-    if account.health_score < 60:
-        risks.append(_risk_item(level="中", code="LOW_HEALTH", title="健康分偏低", detail=f"当前健康分 {round(account.health_score)}，建议减少任务量。", source="健康分", action="查看失败记录并执行健康检查。", occurred_at=account.last_active_at))
-    if account.developer_app and account.developer_app.health_status != "健康":
-        risks.append(_risk_item(level="中", code="DEVELOPER_APP_UNHEALTHY", title="开发者应用异常", detail=f"底层开发者应用状态为 {account.developer_app.health_status}。", source="开发者应用", action="检查开发者应用 api_id/api_hash。", occurred_at=account.developer_app.last_check_at))
-    pending_tasks = [task for task in verification_tasks if getattr(task, "status", "") == "待处理"]
-    if pending_tasks:
-        risks.append(_risk_item(level="中", code="PENDING_VERIFICATION", title="存在待处理验证", detail=f"有 {len(pending_tasks)} 个发言验证、按钮或关注频道事项待处理。", source="验证任务", action="进入验证待处理页签逐项处理。", occurred_at=getattr(pending_tasks[0], "created_at", None)))
-
     failure_actions = {
         FailureType.FLOOD_WAIT.value: ("高", "触发 FloodWait", "账号最近触发 Telegram FloodWait。", "暂停该账号任务，等待失败详情中的时间后再重试。"),
-        FailureType.ACCOUNT_LIMITED.value: ("高", "账号受限", "账号最近被判定为受限或不可用。", "暂停发送并做健康检查。"),
+        FailureType.ACCOUNT_LIMITED.value: ("高", "账号受限", "账号最近被判定为受限或不可用。", "暂停发送，等待 TG 官方解除限制后再恢复。"),
         FailureType.ACCOUNT_UNAVAILABLE.value: ("中", "账号不可用", "账号最近执行时不可用。", "重新登录或检查 session。"),
         FailureType.PEER_INVALID.value: ("中", "目标不可访问", "账号最近访问目标失败。", "同步群/频道目标，确认账号仍在目标内。"),
-        FailureType.GROUP_PERMISSION_DENIED.value: ("中", "群无发言权限", "账号最近在群内没有发言权限。", "处理群验证或更换可发言账号。"),
+        FailureType.GROUP_PERMISSION_DENIED.value: ("中", "群无发言权限", "账号最近在群内没有发言权限。", "等待目标群解除限制或完成群内验证后再恢复。"),
         FailureType.CHANNEL_POST_DENIED.value: ("中", "频道无发帖权限", "账号最近没有频道发帖权限。", "使用有频道发帖权限的账号。"),
         FailureType.COMMENT_UNAVAILABLE.value: ("低", "评论区不可用", "频道消息不支持回复或账号无法进入评论区。", "改用查看/点赞任务，或确认频道讨论区设置。"),
         FailureType.REACTION_UNAVAILABLE.value: ("低", "Reaction 不可用", "频道消息不支持该 Reaction。", "更换 Reaction 或跳过点赞任务。"),
@@ -971,8 +967,54 @@ def account_risk_diagnostics(
     for record in profile_records:
         if record.status == "失败":
             failure_events.append((record.synced_at or record.created_at, record.failure_type or "资料同步失败", record.failure_detail, "资料同步"))
+    sorted_failure_events = sorted(failure_events, key=lambda item: item[0] or datetime.min, reverse=True)
+
+    def _recent_failure_detail(*failure_types: str) -> tuple[str, datetime | None, str] | None:
+        for wanted_type in failure_types:
+            for occurred_at, failure_type, detail, source in sorted_failure_events:
+                if failure_type != wanted_type:
+                    continue
+                _, title, fallback_detail, _ = failure_actions.get(failure_type, ("低", failure_type or "未知失败", "账号最近存在失败记录。", "查看执行记录定位原因。"))
+                return detail or fallback_detail, occurred_at, f"{source}：{title}"
+        return None
+
+    status_level = {
+        AccountStatus.BANNED.value: ("高", "账号已封禁", "账号状态已标记为封禁，暂停所有发送动作。", "更换账号或重新登录确认。"),
+        AccountStatus.SUSPECTED_BANNED.value: ("高", "疑似封禁", "账号状态已标记为疑似封禁，需要人工确认。", "立即做健康检查，并在 TG 客户端确认账号状态。"),
+        AccountStatus.LIMITED.value: ("高", "账号受限", "账号最近触发受限类错误，系统已暂停或降低派单优先级。", "暂停该账号相关任务，等待 TG 官方解除限制后再恢复。"),
+        AccountStatus.SESSION_EXPIRED.value: ("高", "Session 失效", "账号 session 不再可用。", "重新登录账号。"),
+        AccountStatus.NEED_RELOGIN.value: ("中", "需重新登录", "账号缺少可用 session 或开发者应用凭证不可用。", "重新登录账号并检查开发者应用。"),
+        AccountStatus.ERROR.value: ("中", "账号异常", "账号处于异常状态。", "执行健康检查并查看最近失败记录。"),
+        AccountStatus.DISABLED.value: ("中", "账号已禁用", "账号已从可执行池移除。", "需要运营时先恢复或重新添加账号。"),
+    }
+    if account.status in status_level:
+        level, title, detail, action = status_level[account.status]
+        source = "账号状态"
+        occurred_at = account.last_active_at
+        if account.status == AccountStatus.LIMITED.value:
+            recent = _recent_failure_detail(
+                FailureType.ACCOUNT_LIMITED.value,
+                FailureType.FLOOD_WAIT.value,
+                FailureType.GROUP_PERMISSION_DENIED.value,
+                FailureType.SLOWMODE.value,
+            )
+            if recent:
+                recent_detail, recent_at, recent_source = recent
+                detail = f"{recent_detail}。系统已暂停或降低该账号派单，需等待 TG 或目标群限制解除后再恢复。"
+                source = recent_source
+                occurred_at = recent_at or occurred_at
+        risks.append(_risk_item(level=level, code="ACCOUNT_STATUS", title=title, detail=detail, source=source, action=action, occurred_at=occurred_at))
+    if not account.session_ciphertext and account.status not in {AccountStatus.PENDING_LOGIN.value, AccountStatus.WAITING_CODE.value, AccountStatus.WAITING_QR.value, AccountStatus.WAITING_2FA.value}:
+        risks.append(_risk_item(level="中", code="SESSION_MISSING", title="缺少 Session", detail="账号没有可用 session，无法执行真实 TG 操作。", source="账号状态", action="重新登录账号。"))
+    if account.health_score < 60:
+        risks.append(_risk_item(level="中", code="LOW_HEALTH", title="健康分偏低", detail=f"当前健康分 {round(account.health_score)}，建议减少任务量。", source="健康分", action="查看失败记录并执行健康检查。", occurred_at=account.last_active_at))
+    if account.developer_app and account.developer_app.health_status != "健康":
+        risks.append(_risk_item(level="中", code="DEVELOPER_APP_UNHEALTHY", title="开发者应用异常", detail=f"底层开发者应用状态为 {account.developer_app.health_status}。", source="开发者应用", action="检查开发者应用 api_id/api_hash。", occurred_at=account.developer_app.last_check_at))
+    pending_tasks = [task for task in verification_tasks if getattr(task, "status", "") == "待处理"]
+    if pending_tasks:
+        risks.append(_risk_item(level="中", code="PENDING_VERIFICATION", title="存在待处理验证", detail=f"有 {len(pending_tasks)} 个发言验证、按钮或关注频道事项待处理；部分验证或冷却需要等待 TG / 目标群解除限制。", source="验证任务", action="进入验证待处理页签查看，能处理的人工处理，官方冷却类等待解除。", occurred_at=getattr(pending_tasks[0], "created_at", None)))
     seen_failure_types: set[str] = set()
-    for occurred_at, failure_type, detail, source in sorted(failure_events, key=lambda item: item[0] or datetime.min, reverse=True):
+    for occurred_at, failure_type, detail, source in sorted_failure_events:
         if failure_type in seen_failure_types:
             continue
         level, title, fallback_detail, action = failure_actions.get(failure_type, ("低", failure_type or "未知失败", "账号最近存在失败记录。", "查看执行记录定位原因。"))
@@ -987,7 +1029,7 @@ def account_risk_diagnostics(
         risks.append(_risk_item(level="低", code="TARGET_READONLY", title="部分目标只读", detail=f"{len(readonly_groups) + len(readonly_targets)} 个群/频道目标当前不可发送。", source="群/频道目标", action="同步目标权限，或选择其他可发送目标。"))
 
     level_order = {"高": 0, "中": 1, "低": 2}
-    return sorted(risks, key=lambda item: (level_order.get(item["level"], 9), item["occurred_at"] or datetime.min), reverse=False)[:12]
+    return sorted(risks, key=lambda item: (level_order.get(item["level"], 9), 0 if item["code"] == "ACCOUNT_STATUS" else 1, item["occurred_at"] or datetime.min))[:12]
 
 
 def sync_account_contacts(session: Session, account_id: int, actor: str) -> list[TgContact]:

@@ -19,6 +19,7 @@ from .config import get_settings
 from .database import get_session
 from .models import AppUser, Tenant
 from .security import get_password_salt, get_token_key
+from .timezone import as_beijing_aware, beijing_now
 
 
 # ---------------------------------------------------------------------------
@@ -285,12 +286,10 @@ def normalize_phone(phone: str | None) -> str | None:
 
 
 def _as_utc(dt: datetime | None) -> datetime | None:
-    """Convert a naive datetime (assumed UTC from DB) to aware UTC, or pass through if already aware."""
+    """Convert a business datetime to an aware Beijing datetime."""
     if dt is None:
         return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
-    return dt
+    return as_beijing_aware(dt)
 
 
 def compute_subscription_status(user: AppUser) -> str:
@@ -299,7 +298,7 @@ def compute_subscription_status(user: AppUser) -> str:
     if user.subscription_status == "pending_activation":
         return "pending_activation"
     expires_at = _as_utc(user.subscription_expires_at)
-    if expires_at is not None and expires_at < datetime.now(UTC):
+    if expires_at is not None and expires_at < as_beijing_aware(beijing_now()):
         return "expired"
     return "active"
 
@@ -308,7 +307,7 @@ def compute_subscription_days_remaining(user: AppUser) -> int:
     expires_at = _as_utc(user.subscription_expires_at)
     if not expires_at:
         return 0
-    remaining = expires_at - datetime.now(UTC)
+    remaining = expires_at - as_beijing_aware(beijing_now())
     return max(0, int((remaining.total_seconds() + 86399) // 86400))
 
 
@@ -475,7 +474,7 @@ def authenticate_user(session: Session, identifier: str, password: str) -> AppUs
         return None
     if not verify_password(password, user.password_hash):
         return None
-    user.last_login_at = datetime.now(UTC)
+    user.last_login_at = beijing_now()
     session.commit()
     return user
 

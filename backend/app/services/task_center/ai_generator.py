@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from difflib import SequenceMatcher
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.ai_gateway import normalize_ai_model_name
 from app.models import AiProvider, AiProviderHealthStatus, TenantAiSetting
 from app.services._common import ai_gateway
 from app.services.ai_config import ai_provider_credentials
@@ -20,13 +22,18 @@ class AiGenerationUnavailable(RuntimeError):
     pass
 
 
-def _provider(session: Session, tenant_id: int, provider_id: int | None = None) -> tuple[AiProvider | None, TenantAiSetting | None]:
+def _provider(session: Session, tenant_id: int, provider_id: int | None = None, model_name: str = "") -> tuple[AiProvider | None, TenantAiSetting | None]:
     setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
     if not setting or not setting.ai_enabled:
         return None, setting
+    normalized_model = normalize_ai_model_name(model_name)
     if provider_id:
         provider = session.get(AiProvider, provider_id)
         if provider and provider.is_active and provider.health_status == AiProviderHealthStatus.HEALTHY.value:
+            return provider, setting
+    if normalized_model:
+        provider = _provider_for_model(session, normalized_model)
+        if provider:
             return provider, setting
     if setting.default_provider_id:
         provider = session.get(AiProvider, setting.default_provider_id)
@@ -40,6 +47,30 @@ def _provider(session: Session, tenant_id: int, provider_id: int | None = None) 
     return provider, setting
 
 
+def _provider_for_model(session: Session, model_name: str) -> AiProvider | None:
+    family = _model_family(model_name)
+    if not family:
+        return None
+    providers = session.scalars(
+        select(AiProvider)
+        .where(AiProvider.is_active.is_(True), AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value)
+        .order_by(AiProvider.id.asc())
+    ).all()
+    exact = next((provider for provider in providers if normalize_ai_model_name(provider.model_name) == model_name), None)
+    if exact:
+        return exact
+    return next((provider for provider in providers if _model_family(provider.model_name) == family or _model_family(provider.provider_name) == family or _model_family(provider.base_url) == family), None)
+
+
+def _model_family(value: str) -> str:
+    normalized = value.lower()
+    if "deepseek" in normalized:
+        return "deepseek"
+    if "mimo" in normalized or "xiaomimimo" in normalized:
+        return "mimo"
+    return ""
+
+
 def generate_contents(
     session: Session,
     tenant_id: int,
@@ -47,14 +78,15 @@ def generate_contents(
     topic: str,
     requirements: str,
     provider_id: int | None = None,
+    model_name: str = "",
     count: int,
     purpose: str,
     target_label: str = "",
 ) -> tuple[list[str], int]:
-    provider, setting = _provider(session, tenant_id, provider_id)
+    provider, setting = _provider(session, tenant_id, provider_id, model_name)
     if not provider or not setting:
         if purpose == GROUP_CHAT_PURPOSE:
-            raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
+            raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{_unavailable_reason(setting)}")
         return _fallback_contents(topic, requirements, purpose, target_label, count), 0
     if purpose == GROUP_CHAT_PURPOSE:
         prompt = _group_chat_prompt(count, target_label, topic, requirements)
@@ -72,8 +104,11 @@ def generate_contents(
         persona_set = ["老用户", "新用户", "活跃成员", "路人"]
         tone = "自然、口语化、不同账号表达不重复"
     try:
+        credentials = ai_provider_credentials(provider)
+        if model_name.strip():
+            credentials = replace(credentials, model_name=normalize_ai_model_name(model_name))
         result = ai_gateway.generate_drafts(
-            ai_provider_credentials(provider),
+            credentials,
             prompt,
             count=count,
             topic=topic or requirements,
@@ -84,7 +119,7 @@ def generate_contents(
         )
     except Exception as exc:
         if purpose == GROUP_CHAT_PURPOSE:
-            raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE) from exc
+            raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
         raise
     contents = [candidate.content.strip() for candidate in result.candidates if candidate.content.strip()]
     if purpose == GROUP_CHAT_PURPOSE:
@@ -111,6 +146,14 @@ def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: 
         "5. 不要让多条消息连续同一个开头，不要互相套话，不要输出引号套引号。\n"
         '只输出 JSON：{"drafts":[{"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低"}]}'
     )
+
+
+def _unavailable_reason(setting: TenantAiSetting | None) -> str:
+    if not setting:
+        return "租户 AI 配置不存在"
+    if not setting.ai_enabled:
+        return "租户 AI 配置未启用"
+    return "没有健康 AI 供应商"
 
 
 def _fallback_contents(topic: str, requirements: str, purpose: str, target_label: str, count: int) -> list[str]:
@@ -250,6 +293,7 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
         topic=config.get("topic_hint") or "群聊日常活跃",
         requirements=requirements,
         provider_id=config.get("ai_provider_id"),
+        model_name=str(config.get("ai_model") or ""),
         count=count,
         purpose="群活跃续聊",
         target_label=target_label,
@@ -271,6 +315,7 @@ def generate_channel_comments(session: Session, tenant_id: int, config: dict, *,
         topic=topic,
         requirements=requirements,
         provider_id=config.get("ai_provider_id"),
+        model_name=str(config.get("ai_model") or ""),
         count=count,
         purpose="频道评论",
         target_label=target_label,

@@ -22,6 +22,7 @@ from app.schemas import (
     OperationTargetDetailOut,
     OperationTargetMessageSyncOut,
     OperationTargetOut,
+    OperationTargetsSyncOut,
     OperationTargetUpdate,
     OperationTaskAttemptOut,
     OperationTaskCreate,
@@ -43,6 +44,7 @@ from app.services import (
     retry_operation_task,
     sync_channel_message_comments,
     sync_operation_target_messages,
+    sync_all_operation_targets,
     update_operation_target_account_policy,
     update_operation_target,
 )
@@ -86,6 +88,14 @@ def post_operation_target_sync_messages(
         return sync_operation_target_messages(session, current_user.tenant_id or 1, target_id, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
+
+
+@router.post("/api/operation-targets/sync-all", response_model=OperationTargetsSyncOut)
+def post_operation_targets_sync_all(
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return sync_all_operation_targets(session, current_user.tenant_id or 1, current_user.name)
 
 
 @router.post("/api/operation-targets", response_model=OperationTargetOut)

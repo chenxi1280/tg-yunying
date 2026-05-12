@@ -9,8 +9,10 @@ import type {
 import { FormActions, StatusBadge, useAntdTableControls } from '../components/shared';
 import { statusAccent, operationLabel, syncTypeLabel } from '../utils';
 import { api } from '../../shared/api/client';
+import { formatBeijingDateTime, parseBeijingDate } from '../time';
 
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
+const verificationTargetLabel = (task: VerificationTask) => task.target_display || task.target_peer_id || (task.group_id ? `群聊 #${task.group_id}` : '未识别目标');
 
 // ===== Account Pool Detail Modal =====
 
@@ -137,7 +139,7 @@ export function AccountPoolDetailModal({
               <List.Item className={statusAccent(task.status)} actions={[<Button size="small" onClick={() => { onSetReturnAfterVerification('accountPoolDetail'); onSetModal({ type: 'verificationTaskDetail', payload: task }); }}>处理</Button>]}>
                 <List.Item.Meta
                   title={<Space><StatusBadge status={task.status} />{task.verification_type}</Space>}
-                  description={task.detected_reason || task.suggested_action}
+                  description={<Space direction="vertical" size={0}><span>目标：{verificationTargetLabel(task)}</span><span>{task.detected_reason || task.suggested_action}</span></Space>}
                 />
               </List.Item>
             )}
@@ -252,7 +254,7 @@ export function AccountDetailModal({
     },
     { title: '使用范围', key: 'auth_status', width: 140, render: (_, group) => <StatusBadge status={group.auth_status} label={operationLabel(group.auth_status)} /> },
     { title: '账号权限', key: 'account_can_send', width: 140, render: (_, group) => <StatusBadge status={group.account_can_send ? '账号可发言' : '账号不可发言'} /> },
-    { title: '最近发送', key: 'last_sent_at', width: 200, render: (_, group) => group.last_sent_at ? new Date(group.last_sent_at).toLocaleString() : '暂无发送' },
+    { title: '最近发送', key: 'last_sent_at', width: 200, render: (_, group) => group.last_sent_at ? formatBeijingDateTime(group.last_sent_at) : '暂无发送' },
   ];
 
   const messageColumns: ColumnsType<MessageTask> = [
@@ -269,7 +271,7 @@ export function AccountDetailModal({
     },
     { title: '状态', key: 'status', width: 120, render: (_, task) => <StatusBadge status={task.status} /> },
     { title: '失败类型', key: 'failure', width: 130, render: (_, task) => <StatusBadge status={task.failure_type ?? '无失败'} /> },
-    { title: '时间', key: 'time', width: 200, render: (_, task) => task.sent_at ? new Date(task.sent_at).toLocaleString() : new Date(task.scheduled_at).toLocaleString() },
+    { title: '时间', key: 'time', width: 200, render: (_, task) => formatBeijingDateTime(task.sent_at ?? task.scheduled_at) },
   ];
 
   const groupTable = useAntdTableControls<AccountGroup>({
@@ -320,7 +322,14 @@ export function AccountDetailModal({
   const latestProfilePull = accountDetail.account.profile_synced_at ?? accountDetail.sync_records.find((record) => record.sync_type === 'profile_pull' && record.finished_at)?.finished_at ?? null;
   const latestCodeSync = accountDetail.sync_records.find((record) => record.sync_type === 'codes' && record.finished_at)?.finished_at ?? accountDetail.verification_codes[0]?.created_at ?? null;
   const latestVisibleCode = accountDetail.verification_codes.find((code) => code.code_preview) ?? accountDetail.verification_codes[0] ?? null;
-  const formatTime = (value: string | null | undefined) => value ? new Date(value).toLocaleString() : '暂无记录';
+  const formatTime = (value: string | null | undefined) => value ? formatBeijingDateTime(value) : '暂无记录';
+  const groupCooldowns = accountDetail.groups
+    .map((group) => {
+      if (!group.last_sent_at || !group.group_cooldown_seconds) return null;
+      const cooldownUntil = new Date((parseBeijingDate(group.last_sent_at)?.getTime() ?? 0) + group.group_cooldown_seconds * 1000);
+      return cooldownUntil.getTime() > Date.now() ? { group, cooldownUntil } : null;
+    })
+    .filter((item): item is { group: AccountGroup; cooldownUntil: Date } => Boolean(item));
 
   return (
     <Modal className="tg-modal large" title={`${accountDetail.account.display_name} 账号详情`} open width={920} onCancel={onClose} footer={null} destroyOnHidden centered>
@@ -358,7 +367,7 @@ export function AccountDetailModal({
         className="tabs-row"
         activeKey={accountDetailTab}
         onChange={setAccountDetailTab}
-        items={['资料', 'TG 官方验证码', '验证待处理', '执行记录', '克隆'].map((tabName) => ({ key: tabName, label: tabName }))}
+        items={['资料', '账号状态记录', 'TG 官方验证码', '验证待处理', '执行记录', '克隆'].map((tabName) => ({ key: tabName, label: tabName }))}
       />
 
       {accountDetailTab === '资料' && (
@@ -387,7 +396,7 @@ export function AccountDetailModal({
               <div><dt>平台备注名</dt><dd>{accountDetail.account.display_name}</dd></div>
               <div><dt>TG 昵称</dt><dd>{[accountDetail.account.tg_first_name, accountDetail.account.tg_last_name].filter(Boolean).join(' ') || '未设置'}</dd></div>
               <div><dt>TG 简介</dt><dd>{accountDetail.account.tg_bio || '未设置'}</dd></div>
-              <div><dt>最近同步</dt><dd>{accountDetail.account.profile_synced_at ? new Date(accountDetail.account.profile_synced_at).toLocaleString() : '暂无成功同步'}</dd></div>
+              <div><dt>最近同步</dt><dd>{accountDetail.account.profile_synced_at ? formatBeijingDateTime(accountDetail.account.profile_synced_at) : '暂无成功同步'}</dd></div>
             </div>
           </div>
           {accountDetail.account.profile_sync_error && <p className="danger-text">{accountDetail.account.profile_sync_error}</p>}
@@ -396,7 +405,7 @@ export function AccountDetailModal({
               <Card key={record.id} size="small">
                 <StatusBadge status={record.status} />
                 <strong>同步记录 #{record.id}</strong>
-                <span>{record.actor || '系统'} / {new Date(record.created_at).toLocaleString()}</span>
+                <span>{record.actor || '系统'} / {formatBeijingDateTime(record.created_at)}</span>
                 <span>{record.remote_detail || record.failure_detail || '等待处理'}</span>
               </Card>
             ))}
@@ -405,9 +414,31 @@ export function AccountDetailModal({
         </Card>
       )}
 
-      {accountDetailTab === 'TG 官方验证码' && (
+      {accountDetailTab === '账号状态记录' && (
         <div className="flow-sections">
-          <Card className="sub-panel compact-panel" title="账号状态记录">
+          <Card className="sub-panel compact-panel" title="风险与等待状态">
+            <div className="mini-list">
+              {accountDetail.risk_diagnostics.map((risk) => (
+                <Card key={`${risk.code}-${risk.source}-${risk.occurred_at ?? risk.title}`} className={statusAccent(risk.level)} size="small">
+                  <StatusBadge status={risk.level} label={risk.title} />
+                  <strong>{risk.source}</strong>
+                  <span>{risk.detail}</span>
+                  <span>建议：{risk.action}</span>
+                  <span>{formatTime(risk.occurred_at)}</span>
+                </Card>
+              ))}
+              {groupCooldowns.map(({ group, cooldownUntil }) => (
+                <Card key={`cooldown-${group.id}`} className={statusAccent('待冷却')} size="small">
+                  <StatusBadge status="待冷却" label="群冷却中" />
+                  <strong>{group.title}</strong>
+                  <span>该目标处于发送冷却，需等待目标群限制解除后再恢复排布。</span>
+                  <span>可恢复时间：{formatBeijingDateTime(cooldownUntil)}</span>
+                </Card>
+              ))}
+              {!accountDetail.risk_diagnostics.length && !groupCooldowns.length && <Empty description="暂无高风险、受限、待验证或冷却状态" />}
+            </div>
+          </Card>
+          <Card className="sub-panel compact-panel" title="同步与登录记录">
             <Descriptions
               className="detail-list"
               size="small"
@@ -432,12 +463,17 @@ export function AccountDetailModal({
               {!accountDetail.sync_records.length && <p className="muted-line">登录成功后会自动同步资料、健康、群聊、云联系人和 TG 官方验证码。</p>}
             </div>
           </Card>
+        </div>
+      )}
+
+      {accountDetailTab === 'TG 官方验证码' && (
+        <div className="flow-sections">
           <Card className="sub-panel compact-panel" title="TG 官方验证码" extra={<Button size="small" type="primary" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={() => onPollVerificationCodes()}>同步提取官方验证码</Button>}>
             {latestVisibleCode ? (
               <div className="verification-code-card">
                 <StatusBadge status={latestVisibleCode.code_preview ? '可查看' : latestVisibleCode.status} label={latestVisibleCode.source === 'login_flow' ? '登录验证码' : 'TG 官方验证码'} />
                 <strong>{latestVisibleCode.code_preview || latestVisibleCode.status || '暂无新验证码'}</strong>
-                <span>{latestVisibleCode.expires_at ? `有效到 ${new Date(latestVisibleCode.expires_at).toLocaleTimeString()}` : '等待新的验证码'}</span>
+                  <span>{latestVisibleCode.expires_at ? `有效到 ${formatBeijingDateTime(latestVisibleCode.expires_at)}` : '等待新的验证码'}</span>
                 {runtime?.show_advanced_debug && <small>{latestVisibleCode.raw_hint || latestVisibleCode.source}</small>}
               </div>
             ) : (
@@ -448,9 +484,10 @@ export function AccountDetailModal({
                 <Card key={code.id} size="small">
                   <StatusBadge status={code.code_preview ? '可查看' : code.status} label={code.source === 'login_flow' ? '登录验证码' : 'TG 官方验证码'} />
                   <strong>{code.code_preview ? `验证码 ${code.code_preview}` : code.status}</strong>
-                  <span>{code.expires_at ? `有效到 ${new Date(code.expires_at).toLocaleTimeString()}` : '等待新的验证码'}</span>
+                  <span>{code.expires_at ? `有效到 ${formatBeijingDateTime(code.expires_at)}` : '等待新的验证码'}</span>
                 </Card>
               ))}
+              {!accountDetail.verification_codes.length && <p className="muted-line">没有读取到新的 TG 官方服务验证码时，保持自动轮询等待即可。</p>}
             </div>
           </Card>
         </div>
@@ -503,7 +540,7 @@ export function AccountDetailModal({
           <div className="section-title">
             <div>
               <h2>验证辅助</h2>
-              <span>遇到关注频道、机器人按钮、发言验证等情况时，平台会生成可确认的处理事项。</span>
+              <span>遇到关注频道、机器人按钮、发言验证等情况时，平台会生成可确认的处理事项；官方冷却或群限制类需要等待 TG / 目标群解除。</span>
             </div>
           </div>
           <div className="mini-list">
@@ -511,6 +548,7 @@ export function AccountDetailModal({
               <Card key={task.id} className={statusAccent(task.status)} size="small">
                 <StatusBadge status={task.status} />
                 <strong>{task.verification_type}</strong>
+                <span>目标：{verificationTargetLabel(task)}</span>
                 <span>{task.detected_reason || '等待处理'}</span>
                 <span>建议操作：{task.suggested_action}</span>
                 <div className="row-actions">
@@ -532,14 +570,14 @@ export function AccountDetailModal({
                 <StatusBadge status={record.status} />
                 <strong>手动发送 #{record.id}</strong>
                 <span>{record.content}</span>
-                <span>{record.remote_message_id || record.failure_detail || new Date(record.created_at).toLocaleString()}</span>
+                <span>{record.remote_message_id || record.failure_detail || formatBeijingDateTime(record.created_at)}</span>
               </Card>
             ))}
             {accountDetail.operation_task_attempts.map((attempt) => (
               <Card key={`attempt-${attempt.id}`} size="small" className={statusAccent(attempt.status)}>
                 <StatusBadge status={attempt.status} />
                 <strong>{attempt.action_type} #{attempt.task_id}</strong>
-                <span>{attempt.remote_message_id || attempt.failure_detail || (attempt.executed_at ? new Date(attempt.executed_at).toLocaleString() : '待执行')}</span>
+                <span>{attempt.remote_message_id || attempt.failure_detail || (attempt.executed_at ? formatBeijingDateTime(attempt.executed_at) : '待执行')}</span>
               </Card>
             ))}
           </div>

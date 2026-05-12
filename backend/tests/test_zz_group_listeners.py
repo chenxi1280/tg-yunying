@@ -10,20 +10,26 @@ from app.main import app
 from app.models import AccountStatus, Campaign, GroupContextMessage, MessageTask, TgGroup, TgGroupAccount
 from app.services.group_listeners import process_group_listener
 from app.worker import drain_once
-from tests.test_workflow import auth_headers, ensure_developer_app, ensure_test_workspace
+from tests.test_workflow import _next_test_phone, auth_headers, ensure_developer_app, ensure_test_workspace
 
 
 def _active_account(client: TestClient, headers: dict[str, str], display_name: str) -> dict:
-    account = client.post(
-        "/api/tg-accounts",
-        headers=headers,
-        json={
-            "tenant_id": 1,
-            "display_name": display_name,
-            "username": f"listener_{uuid4().hex[:8]}",
-            "phone_number": f"+86139{int(uuid4().int % 100000000):08d}",
-        },
-    ).json()
+    for _ in range(20):
+        response = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "display_name": display_name,
+                "username": f"listener_{uuid4().hex[:8]}",
+                "phone_number": _next_test_phone("+8613900"),
+            },
+        )
+        if response.status_code == 200:
+            break
+        assert "手机号已存在" in response.text, response.text
+    assert response.status_code == 200, response.text
+    account = response.json()
     if account["status"] != AccountStatus.ACTIVE.value:
         client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "qr"})
         account = client.post(f"/api/tg-accounts/{account['id']}/login/qr/check", headers=headers).json()
@@ -82,6 +88,13 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
                 content="这个功能怎么开始参与？",
             ),
             GroupMessageSnapshot(
+                remote_message_id="remote-bot-1",
+                sender_peer_id="bot-user-1",
+                sender_name="群机器人",
+                content="机器人公告不应触发转发或续聊。",
+                is_bot=True,
+            ),
+            GroupMessageSnapshot(
                 remote_message_id="remote-managed-1",
                 sender_peer_id=f"account:{sender['id']}",
                 sender_name=sender["display_name"],
@@ -120,6 +133,7 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
             assert len(contexts) == 1
             assert contexts[0].content == "这个功能怎么开始参与？"
             assert contexts[0].used_for_ai is False
+            assert session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-bot-1").count() == 0
             tasks = session.query(MessageTask).filter_by(group_id=group["id"]).order_by(MessageTask.id.desc()).limit(5).all()
             assert not any(task.preferred_account_id == sender["id"] and task.content == "这个功能怎么开始参与？" for task in tasks)
 

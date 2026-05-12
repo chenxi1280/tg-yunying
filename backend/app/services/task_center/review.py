@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Action, ReviewQueue
 from app.services._common import _now
+
+
+def _utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def queue_review(session: Session, action: Action, *, content: str, source_info: str = "", ttl_hours: int = 24) -> ReviewQueue:
@@ -29,7 +33,7 @@ def expire_reviews(session: Session) -> int:
             select(ReviewQueue).where(
                 ReviewQueue.status == "pending",
                 ReviewQueue.expires_at.is_not(None),
-                ReviewQueue.expires_at <= _now(),
+                ReviewQueue.expires_at <= _utc_now_naive(),
             )
         )
     )

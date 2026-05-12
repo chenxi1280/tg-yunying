@@ -1,10 +1,11 @@
 import React from 'react';
-import { Alert, Button, Card, Collapse, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Steps, Table, Typography } from 'antd';
+import { Alert, Button, Card, Checkbox, Collapse, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Steps, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, RefreshCcw } from 'lucide-react';
 import { api, ApiError } from '../../shared/api/client';
-import type { Account, AccountPool, ChannelCapacityCheck, ChannelMessage, ChannelMessageComment, Group, OperationTarget, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType } from '../types';
+import type { Account, AccountPool, ChannelCapacityCheck, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType } from '../types';
 import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
+import { formatBeijingDateTime, fromBeijingDateTimeLocalValue, toBeijingDateTimeLocalValue } from '../time';
 
 const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
   { value: 'group_ai_chat', label: 'AI 活跃群' },
@@ -97,12 +98,11 @@ function csvNumbers(value?: Array<number | string> | string | null): number[] {
 }
 
 function formatDateTime(value?: string | null): string {
-  return value ? new Date(value).toLocaleString() : '-';
+  return formatBeijingDateTime(value);
 }
 
 function toDateTimeLocal(value?: string | null): string | undefined {
-  if (!value) return undefined;
-  return new Date(value).toISOString().slice(0, 16);
+  return toBeijingDateTimeLocalValue(value);
 }
 
 function actionLabel(value: string): string {
@@ -244,9 +244,18 @@ function initialValuesForType(type: TaskCenterTaskType, setting?: SchedulingSett
   return { ...commonInitialValues(setting), ...typeInitialValues(type, setting) };
 }
 
+function defaultRelayRuleSelection(ruleSets: RuleSet[]): { rule_set_id: number; rule_set_version_id: number } | null {
+  const ruleSet = ruleSets.find((item) => item.name === '默认转发监听过滤规则') ?? ruleSets[0];
+  if (!ruleSet) return null;
+  const version = ruleSet.versions.find((item) => item.id === ruleSet.active_version_id)
+    ?? ruleSet.versions.find((item) => item.status === 'published')
+    ?? ruleSet.versions[0];
+  if (!version) return null;
+  return { rule_set_id: ruleSet.id, rule_set_version_id: version.id };
+}
+
 export default function TaskCenterView({ accounts, accountPools, prefill }: { accounts: Account[]; accountPools: AccountPool[]; prefill?: TaskCenterPrefill | null }) {
   const [tasks, setTasks] = React.useState<TaskCenterTask[]>([]);
-  const [groups, setGroups] = React.useState<Group[]>([]);
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
   const [messages, setMessages] = React.useState<ChannelMessage[]>([]);
   const [comments, setComments] = React.useState<ChannelMessageComment[]>([]);
@@ -254,6 +263,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
   const [schedulingSetting, setSchedulingSetting] = React.useState<SchedulingSetting | null>(null);
   const [detail, setDetail] = React.useState<TaskCenterDetail | null>(null);
   const [loading, setLoading] = React.useState(false);
+  const [supportLoading, setSupportLoading] = React.useState(false);
   const [busyId, setBusyId] = React.useState('');
   const [modalOpen, setModalOpen] = React.useState(false);
   const [editOpen, setEditOpen] = React.useState(false);
@@ -281,24 +291,62 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
   async function load() {
     setLoading(true);
     try {
-      const [taskData, groupData, targetData, messageData, commentData, ruleSetData, schedulingData] = await Promise.all([
+      const [taskData, schedulingData] = await Promise.all([
         api<TaskCenterTask[]>('/tasks'),
-        api<Group[]>('/groups'),
-        api<OperationTarget[]>('/operation-targets'),
-        api<ChannelMessage[]>('/channel-messages'),
-        api<ChannelMessageComment[]>('/channel-comments'),
-        api<RuleSet[]>('/rule-sets'),
         api<SchedulingSetting>('/scheduling-settings'),
       ]);
       setTasks(taskData);
-      setGroups(groupData);
-      setTargets(targetData);
-      setMessages(messageData);
-      setComments(commentData);
-      setRuleSets(ruleSetData);
       setSchedulingSetting(schedulingData);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function ensureTargets() {
+    if (targets.length) return targets;
+    const targetData = await api<OperationTarget[]>('/operation-targets');
+    setTargets(targetData);
+    return targetData;
+  }
+
+  async function ensureMessages() {
+    if (messages.length) return messages;
+    const messageData = await api<ChannelMessage[]>('/channel-messages');
+    setMessages(messageData);
+    return messageData;
+  }
+
+  async function ensureComments() {
+    if (comments.length) return comments;
+    const commentData = await api<ChannelMessageComment[]>('/channel-comments');
+    setComments(commentData);
+    return commentData;
+  }
+
+  async function ensureRuleSets() {
+    if (ruleSets.length) return ruleSets;
+    const ruleSetData = await api<RuleSet[]>('/rule-sets');
+    setRuleSets(ruleSetData);
+    return ruleSetData;
+  }
+
+  function applyDefaultRelayRuleSet(loadedRuleSets: RuleSet[]) {
+    const current = form.getFieldsValue(['rule_set_id', 'rule_set_version_id']);
+    if (current.rule_set_id || current.rule_set_version_id) return;
+    const selection = defaultRelayRuleSelection(loadedRuleSets);
+    if (selection) form.setFieldsValue(selection);
+  }
+
+  async function ensureTaskFormData(type: TaskCenterTaskType) {
+    setSupportLoading(true);
+    try {
+      const requests: Array<Promise<unknown>> = [ensureTargets()];
+      if (type === 'group_relay') requests.push(ensureRuleSets());
+      if (type.startsWith('channel_')) requests.push(ensureMessages());
+      if (type === 'channel_comment') requests.push(ensureComments());
+      await Promise.all(requests);
+    } finally {
+      setSupportLoading(false);
     }
   }
 
@@ -309,8 +357,18 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
   }, []);
 
   React.useEffect(() => {
+    if (!modalOpen && !editOpen) return;
+    if (taskType === 'group_relay') void ensureRuleSets();
+    if (taskType.startsWith('channel_')) void ensureMessages();
+    if (taskType === 'channel_comment') void ensureComments();
+  }, [editOpen, modalOpen, messageScope, taskType]);
+
+  React.useEffect(() => {
     if (!prefill || appliedPrefillNonce.current === prefill.nonce) return;
-    if (prefill.target.target_type === 'channel' && !targets.length) return;
+    if (!targets.length) {
+      void ensureTargets();
+      return;
+    }
     if (prefill.message) {
       setMessages((current) => current.some((message) => message.id === prefill.message?.id) ? current : [prefill.message!, ...current]);
     }
@@ -338,6 +396,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     setTaskType(nextType);
     form.resetFields();
     form.setFieldsValue(nextValues);
+    if (nextType === 'group_relay') void ensureRuleSets().then(applyDefaultRelayRuleSet);
     setWizardStep(2);
     setModalOpen(true);
     appliedPrefillNonce.current = prefill.nonce;
@@ -345,6 +404,17 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
 
   async function loadDetail(task: TaskCenterTask) {
     setDetail(await api<TaskCenterDetail>(`/tasks/${task.id}`));
+  }
+
+  async function openCreateTask() {
+    setActionError('');
+    setActionWarning('');
+    setTaskType('group_ai_chat');
+    form.resetFields();
+    form.setFieldsValue(initialValuesForType('group_ai_chat', schedulingSetting));
+    setWizardStep(0);
+    await ensureTaskFormData('group_ai_chat');
+    setModalOpen(true);
   }
 
   function editValuesFromTask(task: TaskCenterTask): Record<string, any> {
@@ -401,10 +471,11 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     };
   }
 
-  function openEditTask(task: TaskCenterTask) {
+  async function openEditTask(task: TaskCenterTask) {
     setActionError('');
     setActionWarning('');
     setTaskType(task.type);
+    await ensureTaskFormData(task.type);
     editForm.resetFields();
     editForm.setFieldsValue(editValuesFromTask(task));
     setEditOpen(true);
@@ -455,7 +526,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
       priority: 3,
       timezone: values.timezone ?? 'Asia/Shanghai',
       scheduled_start: null,
-      scheduled_end: values.scheduled_end ? new Date(values.scheduled_end).toISOString() : null,
+      scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end),
       max_duration_hours: null,
       account_config: accountConfig(values),
       pacing_config: pacingConfig(values),
@@ -470,8 +541,8 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
       target_channel_name: channel?.title ?? '',
       message_scope: values.message_scope ?? 'latest_n',
       message_count: ['latest_n', 'dynamic_new'].includes(values.message_scope) ? values.message_count ?? 10 : null,
-      date_from: values.date_from ? new Date(values.date_from).toISOString() : null,
-      date_to: values.date_to ? new Date(values.date_to).toISOString() : null,
+      date_from: fromBeijingDateTimeLocalValue(values.date_from),
+      date_to: fromBeijingDateTimeLocalValue(values.date_to),
       message_ids: values.message_scope === 'specific' ? csvNumbers(values.message_ids) : [],
     };
   }
@@ -559,8 +630,8 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
       name: values.name,
       priority: values.priority ?? 3,
       timezone: values.timezone ?? 'Asia/Shanghai',
-      scheduled_start: values.scheduled_start ? new Date(values.scheduled_start).toISOString() : null,
-      scheduled_end: values.scheduled_end ? new Date(values.scheduled_end).toISOString() : null,
+      scheduled_start: fromBeijingDateTimeLocalValue(values.scheduled_start),
+      scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end),
       account_config: accountConfig(values),
       pacing_config: pacingConfig(values),
       failure_policy: failurePolicy(values),
@@ -714,6 +785,10 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     setActionError('');
     try {
       await form.validateFields(fieldsForStep(wizardStep, taskType, messageScope, accountMode));
+      if (wizardStep === 0) {
+        await ensureTaskFormData(taskType);
+        if (taskType === 'group_relay') applyDefaultRelayRuleSet(await ensureRuleSets());
+      }
       setWizardStep((value) => Math.min(value + 1, WIZARD_STEPS.length - 1));
     } catch (error) {
       setActionError(errorMessage(error));
@@ -725,6 +800,9 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     form.resetFields();
     form.setFieldsValue(initialValuesForType(nextType, schedulingSetting));
     setWizardStep(0);
+    void ensureTaskFormData(nextType).then(async () => {
+      if (nextType === 'group_relay') applyDefaultRelayRuleSet(await ensureRuleSets());
+    });
   }
 
   const table = useAntdTableControls<TaskCenterTask>({
@@ -747,7 +825,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     },
     { title: '状态', dataIndex: 'status', width: 120, render: (value) => <TaskStatusBadge status={value} /> },
     { title: '执行统计', key: 'stats', width: 180, render: (_, task) => `${task.stats?.success_count ?? 0}/${task.stats?.total_actions ?? 0} 成功，${task.stats?.failure_count ?? 0} 失败` },
-    { title: '下次运行', dataIndex: 'next_run_at', width: 180, render: (value) => value ? new Date(value).toLocaleString() : '-' },
+    { title: '下次运行', dataIndex: 'next_run_at', width: 180, render: (value) => formatDateTime(value) },
     { title: '错误', dataIndex: 'last_error', width: 220, render: (value) => value || '无' },
     {
       title: '操作',
@@ -874,20 +952,42 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     { title: '运行中', key: 'pending', width: 90, render: (_, item) => (item.stats.pending ?? 0) + (item.stats.executing ?? 0) },
   ];
 
+  const operationTargetDisplay = (targetId?: number | null) => {
+    if (!targetId) return '-';
+    const target = targets.find((item) => item.id === targetId);
+    return target ? `${target.title} #${target.id}` : `#${targetId}`;
+  };
+  const relayRuleDisplay = (item: TaskCenterDetail['relay_batches'][number]['items'][number]) => {
+    if (item.rule_set_name || item.rule_set_version || item.rule_set_version_id) {
+      const version = item.rule_set_version ? `v${item.rule_set_version}` : item.rule_set_version_id ? `#${item.rule_set_version_id}` : '';
+      return [item.rule_set_name || (item.rule_set_id ? `规则集 #${item.rule_set_id}` : ''), version].filter(Boolean).join(' / ') || '-';
+    }
+    if (item.rule_set_id) {
+      const ruleSet = ruleSets.find((rule) => rule.id === item.rule_set_id);
+      return ruleSet ? `${ruleSet.name}${ruleSet.active_version_id ? ` / #${ruleSet.active_version_id}` : ''}` : `#${item.rule_set_id}`;
+    }
+    return '系统默认';
+  };
+  const relaySourceDisplay = (item: TaskCenterDetail['relay_batches'][number]['items'][number]) => {
+    const source = item.source_group_title || item.source_info?.split(' / ')[0] || (item.source_group_id ? `源群 #${item.source_group_id}` : '-');
+    const sender = item.source_sender_name || item.source_info?.split(' / ')[1] || '未知成员';
+    return `${source} / ${sender}`;
+  };
+
   const relayItemColumns: ColumnsType<TaskCenterDetail['relay_batches'][number]['items'][number]> = [
-    { title: '源事件', dataIndex: 'relay_event_id', width: 180 },
-    { title: '归因键', dataIndex: 'source_event_key', width: 160 },
-    { title: '来源', dataIndex: 'source_info', width: 180 },
-    { title: '源目标', dataIndex: 'source_operation_target_id', width: 90, render: (value) => value ? `#${value}` : '-' },
-    { title: '运营目标', dataIndex: 'operation_target_id', width: 90, render: (value) => value ? `#${value}` : '-' },
-    { title: '规则版本', key: 'rule', width: 130, render: (_, item) => item.rule_set_version_id ? `#${item.rule_set_version_id}` : '-' },
+    { title: '源群 / 发送人', key: 'source', width: 220, ellipsis: true, render: (_, item) => relaySourceDisplay(item) },
+    { title: '发送人ID', dataIndex: 'source_sender_peer_id', width: 130, ellipsis: true, render: (value) => value || '-' },
+    { title: '源消息ID', dataIndex: 'source_remote_message_id', width: 120, ellipsis: true, render: (value) => value || '-' },
+    { title: '源时间', dataIndex: 'source_sent_at', width: 170, render: (value) => formatDateTime(value) },
+    { title: '规则', key: 'rule', width: 180, ellipsis: true, render: (_, item) => relayRuleDisplay(item) },
     { title: '规则命中', key: 'rule_trace', width: 220, ellipsis: true, render: (_, item) => item.rule_trace?.summary || '-' },
+    { title: '目标', key: 'target', width: 180, ellipsis: true, render: (_, item) => item.target_display || operationTargetDisplay(item.operation_target_id) },
     { title: '账号', dataIndex: 'account_id', width: 170, render: (value) => accountDisplay(detail, value) },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <TaskStatusBadge status={value} /> },
+    { title: '执行时间', dataIndex: 'executed_at', width: 170, render: (value) => formatDateTime(value) },
+    { title: '原文', dataIndex: 'original_text', width: 260, ellipsis: true },
+    { title: '转换后', dataIndex: 'transformed_text', width: 260, ellipsis: true },
     { title: '重试', dataIndex: 'retry_count', width: 80 },
-    { title: '素材指纹', dataIndex: 'material_fingerprint', width: 150, ellipsis: true },
-    { title: '原文', dataIndex: 'original_text', ellipsis: true },
-    { title: '转换后', dataIndex: 'transformed_text', ellipsis: true },
     { title: '结果', key: 'result', width: 220, render: (_, item) => item.result?.error_message || (item.result?.success === true ? '成功' : '-') },
   ];
 
@@ -902,7 +1002,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         <StatCard label="执行中" value={tasks.filter((task) => task.status === 'running').length} detail="正在调度" icon={<RefreshCcw size={20} />} />
         <StatCard label="失败任务" value={tasks.filter((task) => task.status === 'failed').length} detail="需处理" icon={<Activity size={20} />} />
       </Space>
-      <Card className="panel" title="任务中心" extra={<Button type="primary" onClick={() => { setActionError(''); setTaskType('group_ai_chat'); form.resetFields(); form.setFieldsValue(initialValuesForType('group_ai_chat', schedulingSetting)); setWizardStep(0); setModalOpen(true); }}>创建任务</Button>}>
+      <Card className="panel" title="任务中心" extra={<Button type="primary" loading={supportLoading} onClick={() => void openCreateTask()}>创建任务</Button>}>
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         {actionWarning && <Alert className="form-alert" type="warning" showIcon message={actionWarning} />}
         <Space className="toolbar-row" wrap>{table.searchInput}<Button loading={loading} onClick={load}>刷新</Button></Space>
@@ -915,7 +1015,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         <Steps className="wizard-steps" current={wizardStep} items={WIZARD_STEPS.map((title) => ({ title }))} />
         <Form form={form} layout="vertical" initialValues={initialValuesForType(taskType, schedulingSetting)}>
           {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
-          {wizardStep === 1 && <WizardTarget taskType={taskType} groups={groups} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} />}
+          {wizardStep === 1 && <WizardTarget taskType={taskType} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} />}
           {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} comments={comments} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} />}
           {wizardStep === 3 && <WizardAccounts accountMode={accountMode} accounts={accounts} accountPools={accountPools} includeAdvanced pacingMode={pacingMode} />}
           {wizardStep === 4 && <WizardReview taskType={taskType} values={formValues} />}
@@ -941,7 +1041,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
           {detail && ['group_ai_chat', 'group_relay'].includes(detail.task.type) && (
             <>
               <Typography.Title level={5}>目标来源</Typography.Title>
-              <WizardTarget taskType={detail.task.type} groups={groups} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} />
+              <WizardTarget taskType={detail.task.type} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} />
             </>
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>
@@ -953,7 +1053,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         </Form>
       </Modal>
 
-      <Drawer title={detail?.task.name ?? '任务详情'} open={Boolean(detail)} width={1120} extra={detail && <Space><Button onClick={() => openEditTask(detail.task)}>编辑任务</Button><Button onClick={() => loadDetail(detail.task)}>刷新</Button></Space>} onClose={() => setDetail(null)}>
+      <Drawer title={detail?.task.name ?? '任务详情'} open={Boolean(detail)} width={1120} extra={detail && <Space><Button loading={supportLoading} onClick={() => void openEditTask(detail.task)}>编辑任务</Button><Button onClick={() => loadDetail(detail.task)}>刷新</Button></Space>} onClose={() => setDetail(null)}>
         {detail && (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Descriptions
@@ -1037,7 +1137,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
                         dataSource={item.items}
                         pagination={false}
                         size="small"
-                        scroll={{ x: 1280 }}
+                        scroll={{ x: 2200 }}
                       />
                     ),
                   }}
@@ -1254,7 +1354,7 @@ function WizardBasics({ taskType, onTypeChange }: { taskType: TaskCenterTaskType
   );
 }
 
-function WizardTarget({ taskType, groups, groupTargets, channelTargets, messages, messageScope, targetChannelId, onTargetChannelChange }: { taskType: TaskCenterTaskType; groups: Group[]; groupTargets: OperationTarget[]; channelTargets: OperationTarget[]; messages: ChannelMessage[]; messageScope: string; targetChannelId?: number; onTargetChannelChange: () => void }) {
+function WizardTarget({ taskType, groupTargets, channelTargets, messages, messageScope, targetChannelId, onTargetChannelChange }: { taskType: TaskCenterTaskType; groupTargets: OperationTarget[]; channelTargets: OperationTarget[]; messages: ChannelMessage[]; messageScope: string; targetChannelId?: number; onTargetChannelChange: () => void }) {
   const groupTargetOptions = groupTargets
     .filter((target) => target.auth_status === '已授权运营')
     .map((target) => ({
@@ -1347,16 +1447,71 @@ function WizardTypeConfig({
       label: `${ruleSet.name} / v${version.version} / ${version.status === 'published' ? '已发布' : '草稿'}`,
     })));
     return (
-      <div className="form-grid">
-        <Form.Item name="rule_set_id" label="规则集"><Select allowClear options={ruleSets.map((ruleSet) => ({ value: ruleSet.id, label: ruleSet.name }))} /></Form.Item>
-        <Form.Item name="rule_set_version_id" label="规则版本"><Select allowClear options={versionOptions} /></Form.Item>
-        <Form.Item name="content_mode" label="内容处理"><Select options={[{ value: 'raw', label: '原文' }, { value: 'light_rewrite', label: '轻量改写' }, { value: 'ai_rewrite', label: 'AI 改写' }, { value: 'summary', label: '摘要' }]} /></Form.Item>
-        <Form.Item name="keyword_whitelist" label="关键词白名单"><Input /></Form.Item>
-        <Form.Item name="keyword_blacklist" label="关键词黑名单"><Input /></Form.Item>
-        <Form.Item name="min_message_length" label="最小长度"><InputNumber min={0} /></Form.Item>
-        <Form.Item name="max_message_length" label="最大长度"><InputNumber min={1} /></Form.Item>
-        <Form.Item name="dedup_window_minutes" label="去重窗口分钟"><InputNumber min={1} /></Form.Item>
-      </div>
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Alert
+          type="info"
+          showIcon
+          message={ruleSets.length ? '已加载转发监听过滤规则，可直接使用默认规则集。' : '正在初始化默认转发监听过滤规则。'}
+        />
+        <Collapse
+          defaultActiveKey={['rules', 'filters', 'rewrite']}
+          items={[
+            {
+              key: 'rules',
+              label: '规则集',
+              children: (
+                <div className="form-grid">
+                  <Form.Item name="rule_set_id" label="规则集">
+                    <Select allowClear options={ruleSets.map((ruleSet) => ({ value: ruleSet.id, label: ruleSet.name }))} />
+                  </Form.Item>
+                  <Form.Item name="rule_set_version_id" label="规则版本">
+                    <Select allowClear options={versionOptions} />
+                  </Form.Item>
+                </div>
+              ),
+            },
+            {
+              key: 'filters',
+              label: '关键词与内容过滤',
+              children: (
+                <div className="form-grid">
+                  <Form.Item name="keyword_whitelist" label="关键词白名单">
+                    <Input.TextArea rows={2} placeholder="逗号或换行分隔；为空表示不限制" />
+                  </Form.Item>
+                  <Form.Item name="keyword_blacklist" label="关键词黑名单">
+                    <Input.TextArea rows={2} placeholder="逗号或换行分隔；命中后跳过" />
+                  </Form.Item>
+                  <Form.Item name="min_message_length" label="最小长度"><InputNumber min={0} /></Form.Item>
+                  <Form.Item name="max_message_length" label="最大长度"><InputNumber min={1} /></Form.Item>
+                  <Form.Item name="allowed_media_types" label="允许媒体类型"><Input placeholder="photo, video, text" /></Form.Item>
+                  <Form.Item name="blocked_user_ids" label="屏蔽用户 ID"><Input placeholder="逗号或换行分隔" /></Form.Item>
+                  <Form.Item name="language_filter" label="语言过滤"><Input placeholder="如 zh-CN；为空不限制" /></Form.Item>
+                  <Form.Item name="only_text" valuePropName="checked"><Checkbox>只转发文本消息</Checkbox></Form.Item>
+                  <Form.Item name="only_with_media" valuePropName="checked"><Checkbox>只转发带媒体消息</Checkbox></Form.Item>
+                </div>
+              ),
+            },
+            {
+              key: 'rewrite',
+              label: '去重与改写',
+              children: (
+                <div className="form-grid">
+                  <Form.Item name="content_mode" label="内容处理">
+                    <Select options={[{ value: 'raw', label: '原文' }, { value: 'light_rewrite', label: '轻量改写' }, { value: 'ai_rewrite', label: 'AI 改写' }, { value: 'summary', label: '摘要' }]} />
+                  </Form.Item>
+                  <Form.Item name="dedup_window_minutes" label="去重窗口分钟"><InputNumber min={1} /></Form.Item>
+                  <Form.Item name="dedup_method" label="去重方式"><Select options={[{ value: 'hash', label: '文本指纹' }, { value: 'semantic', label: '语义近似' }, { value: 'both', label: '文本+语义' }]} /></Form.Item>
+                  <Form.Item name="preserve_media" valuePropName="checked"><Checkbox>保留原媒体</Checkbox></Form.Item>
+                  <Form.Item name="add_source_attribution" valuePropName="checked"><Checkbox>附加来源标识</Checkbox></Form.Item>
+                  <Form.Item name="rewrite_prompt" label="改写提示词">
+                    <Input.TextArea rows={3} placeholder="仅在 AI 改写或摘要模式下使用；为空则使用系统默认改写策略" />
+                  </Form.Item>
+                </div>
+              ),
+            },
+          ]}
+        />
+      </Space>
     );
   }
   if (taskType === 'channel_view') {
@@ -1467,7 +1622,7 @@ function WizardReview({ taskType, values }: { taskType: TaskCenterTaskType; valu
     <Descriptions bordered column={2} size="small" items={[
       { key: 'type', label: '任务类型', children: TYPE_LABEL[taskType] },
       { key: 'name', label: '任务名称', children: values.name || '-' },
-      { key: 'end', label: '结束时间', children: values.scheduled_end ? new Date(values.scheduled_end).toLocaleString() : '不限制' },
+      { key: 'end', label: '结束时间', children: values.scheduled_end ? formatDateTime(values.scheduled_end) : '不限制' },
       { key: 'target', label: '目标', children: targetSummary },
       { key: 'account', label: '账号方式', children: values.selection_mode || 'all' },
       { key: 'pacing', label: '节奏', children: values.pacing_mode || 'template' },

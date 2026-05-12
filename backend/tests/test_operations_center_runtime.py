@@ -2,7 +2,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 import app.services.archives as archive_service
@@ -10,25 +10,27 @@ from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage
 from app.config import Settings
 from app.database import Base
 from app.gateways import SendResult, _resolve_telethon_target, _telethon_send_target
-from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, MessageFingerprint, MessageTask, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, Task, Tenant, TenantAiSetting, TgAccount, TgGroup, TgGroupAccount, WorkerHeartbeat
-from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetUpdate, SchedulingSettingUpdate, TaskSettingsUpdate
+from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgGroup, TgGroupAccount, WorkerHeartbeat
+from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskSettingsUpdate
 from app.security import encrypt_secret
 from app.services._common import _now
 from app.services.audit import audit_logs_csv, filter_audit_logs
 from app.services.archives import create_archive
-from app.services.ai_config import get_scheduling_setting, update_scheduling_setting
-from app.services.messages import create_message_send_task, validate_group_task_policy
-from app.services.operations import filter_operation_targets, operation_target_detail, update_operation_target, update_operation_target_account_policy
+from app.services.ai_config import create_material, create_prompt_template, get_scheduling_setting, update_material, update_prompt_template, update_scheduling_setting
+from app.services.account_capacity import account_capacity_decision
+from app.services.messages import create_message_send_task, dispatch_task, validate_group_task_policy
+from app.services.operations import filter_operation_targets, operation_target_detail, sync_all_operation_targets, update_operation_target, update_operation_target_account_policy
 from app.services.task_center.executors.group_ai_chat import ai_cycle_mode, build_plan as build_group_ai_chat_plan
-from app.services.operations_center import listener_summary, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, rule_center_summary, switch_listener_account, test_rules as preview_rules
+from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, rule_center_summary, switch_listener_account, test_rules as preview_rules
 from app.services.reports import build_overview
 from app.services.task_center.executors.group_relay import apply_transform_rules, build_plan as build_group_relay_plan, passes_relay_filters, resolve_relay_target_ids
 from app.services.group_listeners import process_group_listener
 from app.services.task_center.listener_runtime import drain_listener_runtime, reset_listener_runtime_cache, should_collect_listener
 from app.services.task_center.fingerprints import content_fingerprint
 from app.services.task_center.policies import validate_group_send_policy
-from app.services.task_center.service import _channel_subtask_status, _recover_stale_executing_actions, _retry_failed_actions, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, reset_task, stop_task, update_task_settings
+from app.services.task_center.service import _channel_subtask_status, _recover_stale_executing_actions, _retry_failed_actions, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
+from app.timezone import BEIJING_TZ, beijing_day_bounds
 
 
 def test_listener_runtime_deduplicates_same_object_within_window():
@@ -85,6 +87,102 @@ def test_legacy_review_routes_are_opt_in_outside_test(monkeypatch):
     assert Settings().enable_legacy_review_routes is False
 
 
+def test_business_clock_and_day_bounds_use_beijing_time():
+    before = datetime.now(BEIJING_TZ).replace(tzinfo=None)
+    current = _now()
+    after = datetime.now(BEIJING_TZ).replace(tzinfo=None)
+    day_start, day_end = beijing_day_bounds(current)
+
+    assert before <= current <= after
+    assert day_start == current.replace(hour=0, minute=0, second=0, microsecond=0)
+    assert day_end == day_start + timedelta(days=1)
+
+
+def test_task_center_list_does_not_load_channel_message_detail():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    statements: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _capture_sql(_conn, _cursor, statement, _parameters, _context, _executemany):  # noqa: ANN001
+        statements.append(statement)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=101, tenant_id=1, target_type="channel", tg_peer_id="-100101", title="频道", username="chan"))
+        session.add(
+            Task(
+                id="task-list-fast",
+                tenant_id=1,
+                name="列表速度",
+                type="channel_like",
+                status="running",
+                type_config={"target_channel_id": 101, "message_ids": []},
+                stats={"success_count": 1},
+            )
+        )
+        session.add(ChannelMessage(tenant_id=1, channel_target_id=101, message_id=55, content_preview="不应进入列表搜索", message_url="https://t.me/chan/55"))
+        session.commit()
+        statements.clear()
+
+        rows = list_tasks(session, 1)
+
+    assert rows[0]["target_summary"] == "频道 @chan"
+    assert "不应进入列表搜索" not in rows[0]["search_text"]
+    assert not any("channel_messages" in statement.lower() for statement in statements)
+
+
+def test_sync_all_operation_targets_collects_every_online_account(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    snapshots_by_account = {
+        11: [
+            SimpleNamespace(tg_peer_id="-100shared", title="共同群", group_type="supergroup", member_count=120, permission_label="可发言", can_send=True, username="shared_group"),
+            SimpleNamespace(tg_peer_id="-100only11", title="账号11独有群", group_type="supergroup", member_count=30, permission_label="可发言", can_send=True, username="only11"),
+        ],
+        12: [
+            SimpleNamespace(tg_peer_id="-100shared", title="共同群", group_type="supergroup", member_count=121, permission_label="只读成员", can_send=False, username="shared_group"),
+            SimpleNamespace(tg_peer_id="-100channel", title="账号12频道", group_type="channel", member_count=800, permission_label="可发帖", can_send=True, username="ops_channel"),
+        ],
+    }
+    seen_accounts: list[int] = []
+
+    def fake_list_groups(account_id: int, *_args, **_kwargs):
+        seen_accounts.append(account_id)
+        return snapshots_by_account[account_id]
+
+    monkeypatch.setattr("app.services.operations.credentials_for_account", lambda *_args, **_kwargs: SimpleNamespace(api_id=1, api_hash="hash"))
+    monkeypatch.setattr("app.services.operations.gateway.list_groups", fake_list_groups)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="账号11", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"),
+                TgAccount(id=12, tenant_id=1, display_name="账号12", phone_masked="12", status=AccountStatus.ACTIVE.value, session_ciphertext="session-12"),
+                TgAccount(id=13, tenant_id=1, display_name="离线账号", phone_masked="13", status=AccountStatus.NEED_RELOGIN.value, session_ciphertext=""),
+            ]
+        )
+        session.commit()
+
+        result = sync_all_operation_targets(session, 1, "pytest")
+        shared_group = session.scalar(select(TgGroup).where(TgGroup.tg_peer_id == "-100shared"))
+        shared_target = session.scalar(select(OperationTarget).where(OperationTarget.tg_peer_id == "-100shared"))
+        shared_links = list(session.scalars(select(TgGroupAccount).where(TgGroupAccount.group_id == shared_group.id).order_by(TgGroupAccount.account_id.asc())))
+        targets = filter_operation_targets(session, 1)
+
+    assert seen_accounts == [11, 12]
+    assert result["synced_accounts"] == 2
+    assert result["failed_accounts"] == []
+    assert result["target_count"] == 3
+    assert {target["tg_peer_id"] for target in targets} == {"-100shared", "-100only11", "-100channel"}
+    assert [link.account_id for link in shared_links] == [11, 12]
+    assert [link.can_send for link in shared_links] == [True, False]
+    assert shared_group.can_send is True
+    assert shared_target.can_send is True
+
+
 def test_scheduling_setting_centralizes_quiet_hours_and_default_failure_policy():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -131,6 +229,216 @@ def test_scheduling_setting_centralizes_quiet_hours_and_default_failure_policy()
     assert loaded.default_account_hour_limit == 12
     assert loaded.default_account_day_limit == 80
     assert loaded.default_account_cooldown_seconds == 45
+
+
+def test_list_rule_sets_initializes_default_relay_filter_rule_set():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+
+        rule_sets = list_rule_sets(session, 1)
+        loaded = list_rule_sets(session, 1)
+
+    assert len(rule_sets) == 1
+    assert len(loaded) == 1
+    assert rule_sets[0].name == "默认转发监听过滤规则"
+    assert rule_sets[0].active_version_id == rule_sets[0].versions[0].id
+    assert rule_sets[0].versions[0].status == "published"
+    assert rule_sets[0].versions[0].filters == {
+        "keyword_whitelist": [],
+        "keyword_blacklist": [],
+        "min_message_length": None,
+        "max_message_length": None,
+        "allowed_media_types": [],
+        "blocked_user_ids": [],
+        "only_with_media": False,
+        "only_text": False,
+        "language_filter": None,
+    }
+
+
+def test_prompt_template_and_material_updates_are_persisted():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        template = create_prompt_template(
+            session,
+            PromptTemplateCreate(tenant_id=1, template_type="群活跃对话计划", name="旧提示词", content="旧内容"),
+            "pytest",
+        )
+        material = create_material(
+            session,
+            MaterialCreate(tenant_id=1, title="旧素材", material_type="图片", content="https://old.example/a.png", tags="旧"),
+            "pytest",
+        )
+
+        updated_template = update_prompt_template(
+            session,
+            template.id,
+            PromptTemplateUpdate(template_type="素材配文", name="新提示词", content="新内容", is_active=False),
+            "pytest",
+        )
+        updated_material = update_material(
+            session,
+            material.id,
+            MaterialUpdate(title="新素材", material_type="链接", content="https://new.example/b", tags="新"),
+            "pytest",
+        )
+        updated_template_snapshot = {
+            "name": updated_template.name,
+            "template_type": updated_template.template_type,
+            "content": updated_template.content,
+            "is_active": updated_template.is_active,
+            "version": updated_template.version,
+        }
+        updated_material_snapshot = {
+            "title": updated_material.title,
+            "material_type": updated_material.material_type,
+            "content": updated_material.content,
+            "tags": updated_material.tags,
+        }
+
+    assert updated_template_snapshot == {
+        "name": "新提示词",
+        "template_type": "素材配文",
+        "content": "新内容",
+        "is_active": False,
+        "version": 2,
+    }
+    assert updated_material_snapshot == {
+        "title": "新素材",
+        "material_type": "链接",
+        "content": "https://new.example/b",
+        "tags": "新",
+    }
+
+
+def test_account_capacity_counts_task_center_and_message_send_records():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        now_value = datetime.now(UTC).replace(tzinfo=None)
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=2, default_account_day_limit=10, jitter_min_seconds=0, jitter_max_seconds=0))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="11", status=AccountStatus.ACTIVE.value))
+        session.add(Task(id="task-capacity", tenant_id=1, name="容量", type="group_ai_chat", status="running"))
+        session.add_all(
+            [
+                Action(id="action-success", tenant_id=1, task_id="task-capacity", task_type="group_ai_chat", action_type="send_message", account_id=11, status="success", scheduled_at=now_value, executed_at=now_value),
+                Action(id="action-failed", tenant_id=1, task_id="task-capacity", task_type="group_ai_chat", action_type="send_message", account_id=11, status="failed", scheduled_at=now_value),
+                MessageTask(tenant_id=1, account_id=11, preferred_account_id=11, content="排队消息", status=TaskStatus.QUEUED.value, scheduled_at=now_value, idempotency_key="queued-11"),
+                MessageTask(tenant_id=1, account_id=11, preferred_account_id=11, content="取消消息", status=TaskStatus.CANCELLED.value, scheduled_at=now_value, idempotency_key="cancelled-11"),
+            ]
+        )
+        session.commit()
+
+        decision = account_capacity_decision(session, tenant_id=1, account_id=11, scheduled_at=now_value)
+
+    assert decision.available is False
+    assert decision.reason_code == "account_hour_limit"
+
+
+def test_task_center_dispatch_reassigns_when_account_limit_reached(monkeypatch):
+    from app.services.task_center import dispatcher
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    sent: dict[str, int] = {}
+
+    def fake_send(account_id, *_args, **_kwargs):  # noqa: ANN001
+        sent["account_id"] = account_id
+        return SendResult(True, remote_message_id="reassigned-ok")
+
+    with Session(engine) as session:
+        now_value = datetime.now(UTC).replace(tzinfo=None)
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1, jitter_min_seconds=0, jitter_max_seconds=0))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="满额号", phone_masked="11", status=AccountStatus.ACTIVE.value, health_score=90),
+                TgAccount(id=12, tenant_id=1, display_name="备用号", phone_masked="12", status=AccountStatus.ACTIVE.value, health_score=80),
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, daily_limit=999),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
+                Task(id="task-reassign", tenant_id=1, name="转派", type="group_ai_chat", status="running", account_config={"selection_mode": "all", "max_concurrent": 2, "cooldown_per_account_minutes": 0}),
+                Action(id="action-used", tenant_id=1, task_id="task-reassign", task_type="group_ai_chat", action_type="send_message", account_id=11, status="success", scheduled_at=now_value, executed_at=now_value),
+                Action(id="action-send", tenant_id=1, task_id="task-reassign", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"group_id": 7, "message_text": "需要转派", "review_approved": True}, result={}),
+            ]
+        )
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "send_message", fake_send)
+        action = session.get(Action, "action-send")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        assert sent["account_id"] == 12
+        assert action.account_id == 12
+        assert action.status == "success"
+        assert action.result["original_account_id"] == 11
+        assert action.result["reassigned_account_id"] == 12
+        assert action.result["telegram_msg_id"] == "reassigned-ok"
+
+
+def test_message_send_reassigns_group_and_defers_private_when_account_limit_reached(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine)
+    sent_accounts: list[int] = []
+
+    def fake_send(account_id, *_args, **_kwargs):  # noqa: ANN001
+        sent_accounts.append(account_id)
+        return SendResult(True, remote_message_id=f"sent-{account_id}")
+
+    monkeypatch.setattr("app.services.messages.credentials_for_account", lambda *args, **kwargs: object())
+    monkeypatch.setattr("app.services.messages.gateway.send_message", fake_send)
+
+    with SessionFactory() as session:
+        now_value = datetime.now(UTC).replace(tzinfo=None)
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1, jitter_min_seconds=0, jitter_max_seconds=0))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="满额号", phone_masked="11", status=AccountStatus.ACTIVE.value, health_score=90, session_ciphertext="s11"),
+                TgAccount(id=12, tenant_id=1, display_name="备用号", phone_masked="12", status=AccountStatus.ACTIVE.value, health_score=80, session_ciphertext="s12"),
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, daily_limit=999),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
+                MessageTask(tenant_id=1, account_id=11, preferred_account_id=11, group_id=7, content="已占用", status=TaskStatus.SENT.value, sent_at=now_value, scheduled_at=now_value, idempotency_key="used-11"),
+            ]
+        )
+        group_task = MessageTask(tenant_id=1, account_id=11, preferred_account_id=11, group_id=7, target_type="group", target_peer_id="-1007", target_display="运营群", content="群消息", status=TaskStatus.QUEUED.value, scheduled_at=now_value, idempotency_key="group-reassign")
+        private_task = MessageTask(tenant_id=1, account_id=11, preferred_account_id=11, target_type="private", target_peer_id="@demo", target_display="联系人", content="私聊消息", status=TaskStatus.QUEUED.value, scheduled_at=now_value, idempotency_key="private-defer")
+        session.add_all([group_task, private_task])
+        session.commit()
+        group_task_id = group_task.id
+        private_task_id = private_task.id
+
+    dispatch_task(SessionFactory, group_task_id)
+    dispatch_task(SessionFactory, private_task_id)
+
+    with SessionFactory() as session:
+        group_task = session.get(MessageTask, group_task_id)
+        private_task = session.get(MessageTask, private_task_id)
+        transfer_attempt = session.scalar(select(MessageTaskAttempt).where(MessageTaskAttempt.task_id == group_task_id, MessageTaskAttempt.status == TaskStatus.QUEUED.value))
+
+    assert sent_accounts == [12]
+    assert group_task.status == TaskStatus.SENT.value
+    assert group_task.account_id == 12
+    assert group_task.preferred_account_id == 11
+    assert group_task.actual_account_changed is True
+    assert transfer_attempt and "转派" in transfer_attempt.detail
+    assert private_task.status == TaskStatus.QUEUED.value
+    assert private_task.scheduled_at > datetime.now(UTC).replace(tzinfo=None)
+    assert private_task.failure_type == "account_hour_limit"
 
 
 def test_telethon_send_target_marks_legacy_basic_group_ids():
@@ -274,6 +582,8 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
         assert action.status == "failed"
         assert task.status == "paused"
         assert task.stats["last_failure_policy"] == "pause_task"
+        assert session.get(TgAccount, 11).status == AccountStatus.LIMITED.value
+        assert action.result["error_message"] == "账号受限"
 
         task.status = "running"
         task.next_run_at = None
@@ -671,6 +981,13 @@ def test_task_center_drain_records_worker_heartbeat():
     assert any(item.category == "进程心跳" and item.related_id == heartbeat.worker_id for item in summary.risk_details)
 
 
+def test_worker_heartbeat_stale_check_accepts_aware_and_naive_datetimes():
+    cutoff = datetime.now(BEIJING_TZ).replace(tzinfo=None) - timedelta(minutes=2)
+
+    assert _is_stale_heartbeat(datetime.now(BEIJING_TZ) - timedelta(minutes=5), cutoff)
+    assert not _is_stale_heartbeat(datetime.now(BEIJING_TZ), cutoff)
+
+
 def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -698,7 +1015,7 @@ def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(mon
 
     with SessionFactory() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        future_run = datetime(2026, 5, 12, 12, 0, 0)
+        future_run = _now() + timedelta(hours=6)
         session.add_all(
             [
                 TgAccount(id=101, tenant_id=1, display_name="备用监听号", phone_masked="101", status="在线", health_score=90),
@@ -1167,6 +1484,14 @@ def test_group_relay_rule_account_strategy_controls_sender(monkeypatch):
     assert account_id == 102
     assert payload["source_operation_target_id"] == 21
     assert payload["operation_target_id"] == 22
+    assert payload["source_group_title"] == "源群"
+    assert payload["source_sender_name"] == "用户"
+    assert payload["source_sender_peer_id"] == "user-1"
+    assert payload["source_remote_message_id"] == "src-1"
+    assert payload["source_message_type"] == "text"
+    assert payload["source_sent_at"].startswith("2026-05-11T10:00:00")
+    assert payload["rule_set_name"] == "固定账号规则"
+    assert payload["rule_set_version"] == 1
     assert "白名单 公告" in payload["rule_trace"]["summary"]
     assert payload["rule_trace"]["routing"] == "默认路由->9"
     assert payload["rule_trace"]["account_strategy"] == {"mode": "fixed", "account_id": 102}
@@ -1175,6 +1500,12 @@ def test_group_relay_rule_account_strategy_controls_sender(monkeypatch):
     assert detail["relay_batches"][0]["rule_version_count"] == 1
     assert detail["relay_batches"][0]["items"][0]["retry_count"] == 2
     assert detail["relay_batches"][0]["items"][0]["source_event_key"] == f"21:{payload['relay_event_id']}"
+    assert detail["relay_batches"][0]["items"][0]["source_group_title"] == "源群"
+    assert detail["relay_batches"][0]["items"][0]["source_sender_name"] == "用户"
+    assert detail["relay_batches"][0]["items"][0]["source_remote_message_id"] == "src-1"
+    assert detail["relay_batches"][0]["items"][0]["target_display"] == "目标群"
+    assert detail["relay_batches"][0]["items"][0]["rule_set_name"] == "固定账号规则"
+    assert detail["relay_batches"][0]["items"][0]["rule_set_version"] == 1
     assert detail["relay_batches"][0]["items"][0]["material_fingerprint"] == content_fingerprint("公告：今晚活动开始")
     assert detail["relay_batches"][0]["items"][0]["rule_trace"]["filters"] == ["白名单 公告"]
     assert "relay_batch_id,relay_event_id,source_event_key" in attribution_csv
@@ -1577,6 +1908,166 @@ def test_group_ai_chat_uses_recent_account_memory(monkeypatch):
     assert generated_cycle["turns"][0]["topic_plan"] == new_actions[0].payload["topic_plan"]
 
 
+def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    captured: dict[str, object] = {}
+
+    def fake_generate_drafts(credentials, prompt, *, count, topic, tone, persona_set, temperature, max_tokens, **_kwargs):  # noqa: ANN001
+        captured["provider_name"] = credentials.provider_name
+        captured["model_name"] = credentials.model_name
+        captured["prompt"] = prompt
+        captured["count"] = count
+        captured["topic"] = topic
+        captured["tone"] = tone
+        captured["temperature"] = temperature
+        captured["max_tokens"] = max_tokens
+        return AiGenerationResult(
+            candidates=[AiDraftCandidate(persona="A", content="这个话题可以继续自然接一句。", risk_level="低")],
+            usage=AiUsage(total_tokens=88, billable=True),
+        )
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="MiMo 活跃群", auth_status="已授权运营"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="MiMo",
+                provider_type="openai_compatible",
+                base_url="https://api.xiaomimimo.com/v1",
+                model_name="mimo-v2.5",
+                api_key_ciphertext=encrypt_secret("test-key"),
+                is_active=True,
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, temperature=0.6, max_tokens=1024))
+        session.add(
+            Task(
+                id="ai-provider-model",
+                tenant_id=1,
+                name="AI 模型覆盖",
+                type="group_ai_chat",
+                status="running",
+                account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                type_config={
+                    "target_group_id": 7,
+                    "topic_hint": "MiMo 续聊",
+                    "ai_model": "MiMo-V2.5",
+                    "messages_per_round_mode": "manual",
+                    "messages_per_round": 1,
+                    "silent_mode_enabled": False,
+                },
+            )
+        )
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, session.get(Task, "ai-provider-model"))
+        action = session.scalar(select(Action).where(Action.task_id == "ai-provider-model"))
+        task = session.get(Task, "ai-provider-model")
+
+    assert created == 1
+    assert captured["provider_name"] == "MiMo"
+    assert captured["model_name"] == "mimo-v2.5"
+    assert captured["topic"] == "MiMo 续聊"
+    assert captured["temperature"] == 0.75
+    assert captured["max_tokens"] == 1024
+    assert "MiMo 活跃群" in str(captured["prompt"])
+    assert action is not None
+    assert action.payload["message_text"] == "这个话题可以继续自然接一句。"
+    assert action.payload["ai_generation_tokens"] == 88
+    assert task.last_error == ""
+
+
+def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    captured: dict[str, object] = {}
+
+    def fake_generate_drafts(credentials, prompt, *, count, topic, tone, persona_set, temperature, max_tokens, **_kwargs):  # noqa: ANN001
+        captured["provider_name"] = credentials.provider_name
+        captured["base_url"] = credentials.base_url
+        captured["model_name"] = credentials.model_name
+        captured["prompt"] = prompt
+        return AiGenerationResult(
+            candidates=[AiDraftCandidate(persona="A", content="DeepSeek 这轮也能正常接话。", risk_level="低")],
+            usage=AiUsage(total_tokens=66, billable=True),
+        )
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="DeepSeek 活跃群", auth_status="已授权运营"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="Xiaomi MiMo",
+                provider_type="openai_compatible",
+                base_url="https://token-plan-cn.xiaomimimo.com/v1",
+                model_name="mimo-v2.5",
+                api_key_ciphertext=encrypt_secret("mimo-key"),
+                is_active=True,
+                health_status="健康",
+            )
+        )
+        session.add(
+            AiProvider(
+                id=2,
+                provider_name="DeepSeek",
+                provider_type="openai_compatible",
+                base_url="https://api.deepseek.com",
+                model_name="deepseek-v4-flash",
+                api_key_ciphertext=encrypt_secret("deepseek-key"),
+                is_active=True,
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, temperature=0.6, max_tokens=1024))
+        session.add(
+            Task(
+                id="ai-deepseek-provider-model",
+                tenant_id=1,
+                name="DeepSeek 模型覆盖",
+                type="group_ai_chat",
+                status="running",
+                account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                type_config={
+                    "target_group_id": 7,
+                    "topic_hint": "DeepSeek V4 续聊",
+                    "ai_model": "DeepSeek V4 Flash",
+                    "messages_per_round_mode": "manual",
+                    "messages_per_round": 1,
+                    "silent_mode_enabled": False,
+                },
+            )
+        )
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, session.get(Task, "ai-deepseek-provider-model"))
+        action = session.scalar(select(Action).where(Action.task_id == "ai-deepseek-provider-model"))
+
+    assert created == 1
+    assert captured["provider_name"] == "DeepSeek"
+    assert captured["base_url"] == "https://api.deepseek.com"
+    assert captured["model_name"] == "deepseek-v4-flash"
+    assert "DeepSeek 活跃群" in str(captured["prompt"])
+    assert action is not None
+    assert action.payload["message_text"] == "DeepSeek 这轮也能正常接话。"
+    assert action.payload["ai_generation_tokens"] == 66
+
+
 def test_group_ai_chat_without_ai_provider_does_not_create_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1609,7 +2100,7 @@ def test_group_ai_chat_without_ai_provider_does_not_create_actions(monkeypatch):
     assert created == 0
     assert action_count is None
     assert task.status == "running"
-    assert task.last_error == "AI 生成不可用，等待恢复后继续执行"
+    assert task.last_error == "AI 生成不可用，等待恢复后继续执行：租户 AI 配置不存在"
 
 
 def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeypatch):
@@ -1968,6 +2459,8 @@ def test_rule_center_summary_reports_rule_conflicts_and_missing_bindings():
                 type_config={"rule_set_id": 31, "rule_set_version_id": 999, "source_groups": [{"group_id": 7, "is_active": True}]},
             )
         )
+        now_value = datetime.now(UTC).replace(tzinfo=None)
+        previous_value = now_value - timedelta(days=8)
         session.add_all(
             [
                 RuleSetVersion(
@@ -1993,6 +2486,9 @@ def test_rule_center_summary_reports_rule_conflicts_and_missing_bindings():
                     action_type="send_message",
                     status="success",
                     account_id=11,
+                    created_at=now_value,
+                    scheduled_at=now_value,
+                    executed_at=now_value,
                     payload={"rule_set_id": 31, "rule_set_version_id": 32, "group_id": 9, "original_text": "公告：今晚活动"},
                 ),
                 Action(
@@ -2003,6 +2499,8 @@ def test_rule_center_summary_reports_rule_conflicts_and_missing_bindings():
                     action_type="send_message",
                     status="failed",
                     account_id=11,
+                    created_at=now_value,
+                    scheduled_at=now_value,
                     payload={"rule_set_id": 31, "rule_set_version_id": 32, "group_id": 9, "original_text": "公告：活动延期"},
                 ),
                 Action(
@@ -2013,8 +2511,9 @@ def test_rule_center_summary_reports_rule_conflicts_and_missing_bindings():
                     action_type="send_message",
                     status="success",
                     account_id=11,
-                    executed_at=datetime.now(UTC) - timedelta(days=8),
-                    scheduled_at=datetime.now(UTC) - timedelta(days=8),
+                    created_at=previous_value,
+                    executed_at=previous_value,
+                    scheduled_at=previous_value,
                     payload={"rule_set_id": 31, "rule_set_version_id": 32, "group_id": 9, "original_text": "公告：上周活动"},
                 ),
             ]

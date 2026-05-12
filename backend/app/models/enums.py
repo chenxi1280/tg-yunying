@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
+
+from app.timezone import beijing_now
 
 
 def now() -> datetime:
-    """Return a UTC-naive datetime representing the current time. Used as a default for DB columns."""
-    return datetime.now(UTC).replace(tzinfo=None)
+    """Return a UTC-naive datetime whose wall-clock value is Beijing time."""
+    return beijing_now()
 
 
 class AccountStatus(StrEnum):

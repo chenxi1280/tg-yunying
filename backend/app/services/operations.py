@@ -395,6 +395,86 @@ def ensure_operation_targets_from_legacy_groups(session: Session, tenant_id: int
     return inserted
 
 
+def _target_type_from_group_type(group_type: str) -> str:
+    return "channel" if group_type == "channel" else "group"
+
+
+def _upsert_group_target_from_snapshot(session: Session, account: TgAccount, snapshot) -> OperationTarget:
+    now_value = _now()
+    group = session.scalar(
+        select(TgGroup).where(
+            TgGroup.tenant_id == account.tenant_id,
+            TgGroup.tg_peer_id == snapshot.tg_peer_id,
+        )
+    )
+    if group is None:
+        group = TgGroup(
+            tenant_id=account.tenant_id,
+            tg_peer_id=snapshot.tg_peer_id,
+            title=snapshot.title,
+            group_type=snapshot.group_type,
+            member_count=snapshot.member_count,
+        )
+        session.add(group)
+        session.flush()
+    group.title = snapshot.title
+    group.group_type = snapshot.group_type
+    group.member_count = snapshot.member_count
+
+    link = session.scalar(
+        select(TgGroupAccount).where(
+            TgGroupAccount.tenant_id == account.tenant_id,
+            TgGroupAccount.group_id == group.id,
+            TgGroupAccount.account_id == account.id,
+        )
+    )
+    if link is None:
+        link = TgGroupAccount(
+            tenant_id=account.tenant_id,
+            group_id=group.id,
+            account_id=account.id,
+        )
+        session.add(link)
+    link.permission_label = snapshot.permission_label
+    link.can_send = bool(snapshot.can_send)
+
+    all_links = list(
+        session.scalars(
+            select(TgGroupAccount).where(
+                TgGroupAccount.tenant_id == account.tenant_id,
+                TgGroupAccount.group_id == group.id,
+            )
+        )
+    )
+    group.can_send = any(item.can_send for item in all_links)
+    if group.can_send:
+        group.auth_status = GroupAuthStatus.AUTHORIZED.value
+    elif group.auth_status == GroupAuthStatus.AUTHORIZED.value:
+        group.auth_status = GroupAuthStatus.READONLY.value
+
+    target = session.scalar(
+        select(OperationTarget).where(
+            OperationTarget.tenant_id == account.tenant_id,
+            OperationTarget.tg_peer_id == snapshot.tg_peer_id,
+        )
+    )
+    if target is None:
+        target = OperationTarget(
+            tenant_id=account.tenant_id,
+            tg_peer_id=snapshot.tg_peer_id,
+        )
+        session.add(target)
+    target.target_type = _target_type_from_group_type(snapshot.group_type)
+    target.title = snapshot.title
+    target.username = snapshot.username or ""
+    target.member_count = snapshot.member_count
+    target.can_send = group.can_send
+    target.auth_status = GroupAuthStatus.AUTHORIZED.value if group.can_send else GroupAuthStatus.READONLY.value
+    target.last_sync_at = now_value
+    target.updated_at = now_value
+    return target
+
+
 def sync_account_targets(session: Session, account_id: int, actor: str) -> list[OperationTarget]:
     account = session.get(TgAccount, account_id)
     if not account or account.deleted_at is not None:
@@ -403,28 +483,54 @@ def sync_account_targets(session: Session, account_id: int, actor: str) -> list[
     snapshots = gateway.list_groups(account.id, account.session_ciphertext, credentials)
     targets: list[OperationTarget] = []
     for snapshot in snapshots:
-        target_type = "channel" if snapshot.group_type == "channel" else "group"
-        target = session.scalar(
-            select(OperationTarget).where(
-                OperationTarget.tenant_id == account.tenant_id,
-                OperationTarget.tg_peer_id == snapshot.tg_peer_id,
-            )
-        )
-        if target is None:
-            target = OperationTarget(tenant_id=account.tenant_id, tg_peer_id=snapshot.tg_peer_id, title=snapshot.title)
-            session.add(target)
-        target.target_type = target_type
-        target.title = snapshot.title
-        target.username = snapshot.username or ""
-        target.member_count = snapshot.member_count
-        target.can_send = snapshot.can_send
-        target.auth_status = "已授权运营" if snapshot.can_send else "只读归档"
-        target.last_sync_at = _now()
-        target.updated_at = _now()
-        targets.append(target)
+        targets.append(_upsert_group_target_from_snapshot(session, account, snapshot))
     audit(session, tenant_id=account.tenant_id, actor=actor, action="同步群频道目标", target_type="tg_account", target_id=str(account.id), detail=f"targets={len(targets)}")
     session.commit()
     return filter_operation_targets(session, account.tenant_id)
+
+
+def sync_all_operation_targets(session: Session, tenant_id: int, actor: str) -> dict:
+    accounts = list(
+        session.scalars(
+            select(TgAccount)
+            .where(
+                TgAccount.tenant_id == tenant_id,
+                TgAccount.deleted_at.is_(None),
+                TgAccount.status == AccountStatus.ACTIVE.value,
+            )
+            .order_by(TgAccount.id.asc())
+        )
+    )
+    synced_accounts = 0
+    failures: list[dict] = []
+    target_total = 0
+    for account in accounts:
+        try:
+            before_count = len(filter_operation_targets(session, tenant_id))
+            targets = sync_account_targets(session, account.id, actor)
+            target_total = len(targets)
+            synced_accounts += 1
+            after_count = len(targets)
+            audit(
+                session,
+                tenant_id=tenant_id,
+                actor=actor,
+                action="全量同步账号目标",
+                target_type="tg_account",
+                target_id=str(account.id),
+                detail=f"targets_before={before_count}; targets_after={after_count}",
+            )
+            session.commit()
+        except Exception as exc:  # noqa: BLE001 - keep syncing the remaining accounts.
+            session.rollback()
+            failures.append({"account_id": account.id, "display_name": account.display_name, "error": str(exc)})
+    targets = filter_operation_targets(session, tenant_id)
+    return {
+        "synced_accounts": synced_accounts,
+        "failed_accounts": failures,
+        "target_count": target_total or len(targets),
+        "targets": targets,
+    }
 
 
 def create_channel_message(session: Session, payload: ChannelMessageCreate, actor: str) -> ChannelMessage:
@@ -1395,6 +1501,7 @@ __all__ = [
     "operation_target_detail",
     "retry_operation_task",
     "sync_account_targets",
+    "sync_all_operation_targets",
     "sync_channel_message_comments",
     "sync_operation_target_messages",
     "update_operation_target_account_policy",

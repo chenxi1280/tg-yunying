@@ -6,6 +6,8 @@ services:
       POSTGRES_DB: tg_yunying
       POSTGRES_USER: tg_yunying
       POSTGRES_PASSWORD: tg_yunying
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
     ports:
       - "5432:5432"
     volumes:

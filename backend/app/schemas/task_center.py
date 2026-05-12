@@ -495,14 +495,25 @@ class TaskAIAccountProfileOut(BaseModel):
 class TaskRelayItemOut(BaseModel):
     action_id: str
     relay_event_id: str = ""
+    source_event_key: str = ""
     source_group_id: int | None = None
     source_operation_target_id: int | None = None
     operation_target_id: int | None = None
     source_info: str = ""
+    source_group_title: str = ""
+    source_sender_name: str = ""
+    source_sender_peer_id: str = ""
+    source_remote_message_id: str = ""
+    source_message_type: str = ""
+    source_sent_at: datetime | None = None
+    target_display: str = ""
     original_text: str = ""
     transformed_text: str = ""
+    material_fingerprint: str = ""
     rule_set_id: int | None = None
+    rule_set_name: str = ""
     rule_set_version_id: int | None = None
+    rule_set_version: int | None = None
     rule_trace: dict[str, Any] = Field(default_factory=dict)
     account_id: int | None = None
     status: str
@@ -515,6 +526,9 @@ class TaskRelayItemOut(BaseModel):
 class TaskRelayBatchOut(BaseModel):
     relay_batch_id: str
     stats: dict[str, Any] = Field(default_factory=dict)
+    source_event_count: int = 0
+    material_count: int = 0
+    rule_version_count: int = 0
     items: list[TaskRelayItemOut] = Field(default_factory=list)
 
 

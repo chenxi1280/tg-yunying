@@ -177,6 +177,9 @@ export function AppProvider({ children }: AppProviderProps) {
   const [defaultOnAccountBanned, setDefaultOnAccountBanned] = useState('skip_account');
   const [defaultOnApiRateLimit, setDefaultOnApiRateLimit] = useState('wait_and_retry');
   const [defaultOnContentRejected, setDefaultOnContentRejected] = useState('skip_message');
+  const [defaultAccountHourLimit, setDefaultAccountHourLimit] = useState(0);
+  const [defaultAccountDayLimit, setDefaultAccountDayLimit] = useState(0);
+  const [defaultAccountCooldownSeconds, setDefaultAccountCooldownSeconds] = useState(0);
   const [taskStatusFilter, setTaskStatusFilter] = useState('');
   const [groupPolicy, setGroupPolicy] = useState({
     active_window: '09:00-23:00',
@@ -220,11 +223,14 @@ export function AppProvider({ children }: AppProviderProps) {
     is_active: true,
   });
   const [promptTemplateForm, setPromptTemplateForm] = useState({
+    id: null as number | null,
     name: '运营群活跃模板',
     template_type: '群活跃对话计划',
     content: '请为 {{group_title}} 围绕 {{topic}} 生成 {{count}} 条自然 Telegram 群聊发言计划，语气 {{tone}}，素材 {{materials}}，输出 JSON turns，并包含角色、意图、延迟和自动校验建议。',
+    is_active: true,
   });
   const [materialForm, setMaterialForm] = useState({
+    id: null as number | null,
     title: '活动表情包',
     material_type: '表情包',
     content: 'https://example.local/stickers/welcome.webp',
@@ -413,6 +419,9 @@ export function AppProvider({ children }: AppProviderProps) {
       setDefaultOnAccountBanned(schedulingData.default_on_account_banned || 'skip_account');
       setDefaultOnApiRateLimit(schedulingData.default_on_api_rate_limit || 'wait_and_retry');
       setDefaultOnContentRejected(schedulingData.default_on_content_rejected || 'skip_message');
+      setDefaultAccountHourLimit(schedulingData.default_account_hour_limit ?? 0);
+      setDefaultAccountDayLimit(schedulingData.default_account_day_limit ?? 0);
+      setDefaultAccountCooldownSeconds(schedulingData.default_account_cooldown_seconds ?? 0);
     } catch (error) {
       throw error;
     } finally {
@@ -1517,6 +1526,9 @@ export function AppProvider({ children }: AppProviderProps) {
         default_on_account_banned: defaultOnAccountBanned,
         default_on_api_rate_limit: defaultOnApiRateLimit,
         default_on_content_rejected: defaultOnContentRejected,
+        default_account_hour_limit: defaultAccountHourLimit,
+        default_account_day_limit: defaultAccountDayLimit,
+        default_account_cooldown_seconds: defaultAccountCooldownSeconds,
       }),
     });
     closeModal();
@@ -1526,24 +1538,76 @@ export function AppProvider({ children }: AppProviderProps) {
 
   async function createPromptTemplate() {
     setBusy('新增提示词');
+    const { id: _id, ...payload } = promptTemplateForm;
     const template = await api<PromptTemplate>('/prompt-templates', {
       method: 'POST',
-      body: JSON.stringify({ ...promptTemplateForm, tenant_id: currentUser?.tenant_id ?? 1 }),
+      body: JSON.stringify({ ...payload, tenant_id: currentUser?.tenant_id ?? 1 }),
     });
     closeModal();
     showResult('提示词已新增', `已新增提示词模板：${template.name}`);
-    setPromptTemplateForm({ ...promptTemplateForm, name: '运营群活跃模板' });
+    setPromptTemplateForm({ ...promptTemplateForm, id: null, name: '运营群活跃模板', is_active: true });
+    await refresh();
+  }
+
+  function openPromptTemplateEdit(template: PromptTemplate) {
+    setPromptTemplateForm({
+      id: template.id,
+      name: template.name,
+      template_type: template.template_type,
+      content: template.content,
+      is_active: template.is_active,
+    });
+    setModal({ type: 'promptTemplateEdit' });
+  }
+
+  async function savePromptTemplate() {
+    if (!promptTemplateForm.id) return createPromptTemplate();
+    setBusy('保存提示词');
+    const { id, ...payload } = promptTemplateForm;
+    const template = await api<PromptTemplate>(`/prompt-templates/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+    setPromptTemplates((current) => current.map((item) => item.id === template.id ? template : item));
+    closeModal();
+    showResult('提示词已保存', `已更新提示词模板：${template.name}`);
     await refresh();
   }
 
   async function createMaterial() {
     setBusy('新增素材');
+    const { id: _id, ...payload } = materialForm;
     const material = await api<Material>('/materials', {
       method: 'POST',
-      body: JSON.stringify({ ...materialForm, tenant_id: currentUser?.tenant_id ?? 1 }),
+      body: JSON.stringify({ ...payload, tenant_id: currentUser?.tenant_id ?? 1 }),
     });
     closeModal();
     showResult('素材已新增', `已新增素材：${material.title}`);
+    await refresh();
+  }
+
+  function openMaterialEdit(material: Material) {
+    setMaterialForm({
+      id: material.id,
+      title: material.title,
+      material_type: material.material_type,
+      content: material.content,
+      tags: material.tags,
+    });
+    setModal({ type: 'materialEdit' });
+  }
+
+  async function saveMaterial() {
+    if (!materialForm.id) return createMaterial();
+    setBusy('保存素材');
+    const { id, ...payload } = materialForm;
+    const material = await api<Material>(`/materials/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+    setMaterials((current) => current.map((item) => item.id === material.id ? material : item));
+    closeModal();
+    showResult('素材已保存', `已更新素材：${material.title}`);
     await refresh();
   }
 
@@ -1764,6 +1828,12 @@ export function AppProvider({ children }: AppProviderProps) {
     setDefaultOnApiRateLimit,
     defaultOnContentRejected,
     setDefaultOnContentRejected,
+    defaultAccountHourLimit,
+    setDefaultAccountHourLimit,
+    defaultAccountDayLimit,
+    setDefaultAccountDayLimit,
+    defaultAccountCooldownSeconds,
+    setDefaultAccountCooldownSeconds,
     taskStatusFilter,
     setTaskStatusFilter,
     groupPolicy,
@@ -1875,7 +1945,11 @@ export function AppProvider({ children }: AppProviderProps) {
     saveTenantAiSetting: () => runWithLoading('tenant-ai:save', '保存 AI 配置', saveTenantAiSetting),
     saveSchedulingSetting: () => runWithLoading('scheduling:save', '保存发送节奏', saveSchedulingSetting),
     createPromptTemplate: () => runWithLoading('prompt-template:create', '新增提示词', createPromptTemplate),
+    openPromptTemplateEdit,
+    savePromptTemplate: () => runWithLoading(`prompt-template:${promptTemplateForm.id ?? 'create'}:save`, promptTemplateForm.id ? '保存提示词' : '新增提示词', savePromptTemplate),
     createMaterial: () => runWithLoading('material:create', '新增素材', createMaterial),
+    openMaterialEdit,
+    saveMaterial: () => runWithLoading(`material:${materialForm.id ?? 'create'}:save`, materialForm.id ? '保存素材' : '新增素材', saveMaterial),
     createContentKeywordRule: () => runWithLoading('keyword-rule:create', '新增关键词', createContentKeywordRule),
     openContentKeywordRuleEdit,
     saveContentKeywordRule: () => runWithLoading(`keyword-rule:${keywordRuleForm.id ?? 'create'}:save`, keywordRuleForm.id ? '保存关键词' : '新增关键词', saveContentKeywordRule),

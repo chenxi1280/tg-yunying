@@ -5,6 +5,7 @@ import type { ColumnsType } from 'antd/es/table';
 import type { AuditFilters, AuditLog } from '../types';
 import { StatusBadge, useAntdTableControls } from '../components/shared';
 import { API_BASE } from '../../shared/api/client';
+import { formatBeijingDateTime } from '../time';
 
 interface Props {
   audits: AuditLog[];
@@ -77,7 +78,7 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh }: P
       dataIndex: 'created_at',
       key: 'created_at',
       width: 180,
-      render: (value: string) => new Date(value).toLocaleString(),
+      render: (value: string) => formatBeijingDateTime(value),
     },
     {
       title: '操作',
@@ -150,7 +151,7 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh }: P
             column={1}
             items={[
               { key: 'status', label: '状态', children: <StatusBadge status={selectedAudit.action.includes('失败') ? '失败' : selectedAudit.action.includes('取消') || selectedAudit.action.includes('停止') ? '已停止' : '已完成'} /> },
-              { key: 'time', label: '时间', children: new Date(selectedAudit.created_at).toLocaleString() },
+              { key: 'time', label: '时间', children: formatBeijingDateTime(selectedAudit.created_at) },
               { key: 'actor', label: '操作人', children: selectedAudit.actor },
               { key: 'ip', label: '来源 IP', children: selectedAudit.ip_address || '-' },
               { key: 'action', label: '动作', children: selectedAudit.action },

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from random import choice, randint
 from typing import Any
 from uuid import uuid4
@@ -11,6 +11,7 @@ from uuid import uuid4
 from .config import Settings, get_settings
 from .models import FailureType
 from .security import decrypt_session
+from .timezone import BEIJING_TZ, beijing_now
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,7 @@ class GroupMessageSnapshot:
     sender_peer_id: str = ""
     message_type: str = "text"
     sent_at: datetime | None = None
+    is_bot: bool = False
 
 
 @dataclass(frozen=True)
@@ -180,7 +182,7 @@ class TelegramGateway:
         return LoginChallenge(
             status="等待验证码",
             code_preview=str(randint(10000, 99999)),
-            code_expires_at=datetime.now(UTC) + timedelta(seconds=self.settings.login_code_ttl_seconds),
+            code_expires_at=datetime.now(BEIJING_TZ) + timedelta(seconds=self.settings.login_code_ttl_seconds),
         )
 
     def finish_login(
@@ -317,7 +319,7 @@ class TelegramGateway:
             VerificationCodeSnapshot(
                 code=str(randint(10000, 99999)),
                 raw_hint="TG 官方服务消息验证码",
-                expires_at=datetime.now(UTC) + timedelta(seconds=self.settings.login_code_ttl_seconds),
+                expires_at=datetime.now(BEIJING_TZ) + timedelta(seconds=self.settings.login_code_ttl_seconds),
             )
         ]
 
@@ -392,9 +394,9 @@ class TelegramGateway:
     ) -> ArchiveSnapshot:
         title = f"群 {peer_id}"
         messages = [
-            ArchivedMessageSnapshot(sender_name="活跃成员A", content=f"{title} 最近在讨论使用体验和新手 FAQ。", sent_at=datetime.now(UTC).replace(tzinfo=None)),
-            ArchivedMessageSnapshot(sender_name="客服小助手", content="欢迎语和活动规则需要整理成固定话术。", sent_at=datetime.now(UTC).replace(tzinfo=None)),
-            ArchivedMessageSnapshot(sender_name="老用户B", content="建议把高频问题和入群引导做成置顶。", sent_at=datetime.now(UTC).replace(tzinfo=None)),
+            ArchivedMessageSnapshot(sender_name="活跃成员A", content=f"{title} 最近在讨论使用体验和新手 FAQ。", sent_at=beijing_now()),
+            ArchivedMessageSnapshot(sender_name="客服小助手", content="欢迎语和活动规则需要整理成固定话术。", sent_at=beijing_now()),
+            ArchivedMessageSnapshot(sender_name="老用户B", content="建议把高频问题和入群引导做成置顶。", sent_at=beijing_now()),
         ]
         members = [
             ArchivedMemberSnapshot(display_name="活跃成员A", username="active_a", activity_score=95, tags="高活跃,可邀请"),
@@ -417,7 +419,7 @@ class TelegramGateway:
         credentials: DeveloperAppCredentials | None = None,
         limit: int = 20,
     ) -> list[GroupMessageSnapshot]:
-        now_value = datetime.now(UTC).replace(tzinfo=None)
+        now_value = beijing_now()
         return [
             GroupMessageSnapshot(
                 remote_message_id=f"mock:{peer_id}:real-user-context",
@@ -436,7 +438,7 @@ class TelegramGateway:
         credentials: DeveloperAppCredentials | None = None,
         limit: int = 20,
     ) -> list[ChannelMessageSnapshot]:
-        now_value = datetime.now(UTC).replace(tzinfo=None)
+        now_value = beijing_now()
         return [
             ChannelMessageSnapshot(
                 message_id=100000 + index,
@@ -559,7 +561,7 @@ class TelethonTelegramGateway(TelegramGateway):
         return LoginChallenge(
             status="等待验证码",
             code_preview=None,
-            code_expires_at=datetime.now(UTC) + timedelta(seconds=self.settings.login_code_ttl_seconds),
+            code_expires_at=datetime.now(BEIJING_TZ) + timedelta(seconds=self.settings.login_code_ttl_seconds),
         )
 
     def start_login(
@@ -726,7 +728,7 @@ class TelethonTelegramGateway(TelegramGateway):
                     VerificationCodeSnapshot(
                         code=match.group(1),
                         raw_hint="TG 官方服务消息验证码",
-                        expires_at=datetime.now(UTC) + timedelta(seconds=self.settings.login_code_ttl_seconds),
+                        expires_at=datetime.now(BEIJING_TZ) + timedelta(seconds=self.settings.login_code_ttl_seconds),
                     )
                 )
                 break
@@ -1257,6 +1259,7 @@ class TelethonTelegramGateway(TelegramGateway):
                     content=text or "[media]",
                     message_type="media" if getattr(message, "media", None) else "text",
                     sent_at=getattr(message, "date", None),
+                    is_bot=bool(getattr(sender, "bot", False)),
                 )
             )
         participants: list[ArchivedMemberSnapshot] = []

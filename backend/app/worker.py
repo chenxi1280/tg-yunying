@@ -5,14 +5,12 @@ import logging
 import threading
 import time
 import traceback
-from datetime import UTC, datetime
-
 from .config import get_settings
 from .database import SessionLocal
 from .models import MessageTask, TaskStatus
+from .services._common import _as_utc, _now
 from .task_queue import get_task_queue
 from .services import (
-    dispatch_task,
     drain_account_sync_records,
     drain_archives,
     drain_continuous_campaigns,
@@ -20,6 +18,7 @@ from .services import (
     drain_operation_tasks,
     drain_profile_sync_records,
     drain_task_center,
+    dispatch_task,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,8 +29,7 @@ def _task_due(task_id: int) -> bool:
         task = session.get(MessageTask, task_id)
         if not task or task.status != TaskStatus.QUEUED.value:
             return True
-        scheduled_at = task.scheduled_at.replace(tzinfo=UTC) if task.scheduled_at.tzinfo is None else task.scheduled_at
-        return scheduled_at <= datetime.now(UTC)
+        return _as_utc(task.scheduled_at) <= _as_utc(_now())
 
 
 def drain_once(limit: int = 100) -> int:

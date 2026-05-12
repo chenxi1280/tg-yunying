@@ -214,6 +214,42 @@ def test_deepseek_uses_official_chat_completion_path_and_json_mode(monkeypatch):
     assert AiGateway()._chat_completions_url("https://api.deepseek.com/v1") == "https://api.deepseek.com/chat/completions"
 
 
+def test_deepseek_health_check_also_disables_thinking(monkeypatch):
+    requests: list[dict[str, Any]] = []
+    responses = [
+        {"choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}]},
+        {
+            "choices": [
+                {
+                    "message": {"content": '{"drafts":[{"content":"OK"}]}'},
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+    ]
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        requests.append(json.loads(request.data.decode("utf-8")))
+        return FakeResponse(responses.pop(0))
+
+    deepseek_credentials = AiProviderCredentials(
+        provider_name="DeepSeek V4",
+        provider_type="openai_compatible",
+        base_url="https://api.deepseek.com/v1",
+        model_name="deepseek-v4-pro",
+        api_key="test-key",
+    )
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    ok, detail = AiGateway().check(deepseek_credentials)
+
+    assert ok is True
+    assert detail == "provider ready; chat capability ready"
+    assert [request["thinking"] for request in requests] == [{"type": "disabled"}, {"type": "disabled"}]
+    assert "response_format" not in requests[0]
+    assert requests[1]["response_format"] == {"type": "json_object"}
+
+
 def test_generate_drafts_retries_reasoning_only_empty_content(monkeypatch):
     requests: list[dict[str, Any]] = []
     responses = [
@@ -254,7 +290,7 @@ def test_generate_drafts_retries_reasoning_only_empty_content(monkeypatch):
         max_tokens=512,
     )
 
-    assert [request["max_tokens"] for request in requests] == [512, 2048]
+    assert [request["max_tokens"] for request in requests] == [512, 4096]
     assert result.candidates[0].content == "继续接话。"
     assert result.usage.total_tokens == 30
 

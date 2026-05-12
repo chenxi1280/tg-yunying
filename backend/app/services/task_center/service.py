@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, delete, func, or_, select
@@ -334,7 +334,7 @@ def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, s
     if status:
         stmt = stmt.where(Task.status == status)
     tasks = list(session.scalars(stmt.order_by(Task.priority.asc(), Task.created_at.desc())))
-    return [_task_payload(session, task) for task in tasks]
+    return [_task_payload(session, task, actions=_search_actions(session, task), include_detail_search=False) for task in tasks]
 
 
 def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str, Any]:
@@ -395,7 +395,7 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
         task.type_config = _validated_type_config(task.type, next_config)
     _clear_unfinished_plan(session, task)
     if task.status not in {"completed", "failed"}:
-        now = _now()
+        now = _utc_now_naive()
         scheduled_start = _naive_datetime(task.scheduled_start)
         task.status = "pending" if scheduled_start and scheduled_start > now else "running"
         task.next_run_at = scheduled_start if task.status == "pending" else now
@@ -799,7 +799,7 @@ def _next_run_after_task(task: Task):
     config = task.type_config or {}
     if task.type in CHANNEL_DYNAMIC_TASK_TYPES and (config.get("message_scope") or "latest_n") == "dynamic_new":
         interval = int(config.get("listener_interval_seconds") or 30)
-        return _now() + timedelta(seconds=max(1, interval))
+        return _utc_now_naive() + timedelta(seconds=max(1, interval))
     return next_run_after(task.pacing_config or {})
 
 
@@ -918,7 +918,7 @@ def _get_task(session: Session, tenant_id: int, task_id: str) -> Task:
     return task
 
 
-def _task_payload(session: Session, task: Task, actions: list[Action] | None = None) -> dict[str, Any]:
+def _task_payload(session: Session, task: Task, actions: list[Action] | None = None, *, include_detail_search: bool = True) -> dict[str, Any]:
     target_summary = _target_summary(session, task)
     search_parts = [
         task.id,
@@ -927,8 +927,9 @@ def _task_payload(session: Session, task: Task, actions: list[Action] | None = N
         task.status,
         task.last_error,
         target_summary,
-        _task_config_search_text(session, task),
     ]
+    if include_detail_search:
+        search_parts.append(_task_config_search_text(session, task))
     if actions:
         for action in actions:
             payload = action.payload or {}
@@ -1033,6 +1034,17 @@ def _task_config_search_text(session: Session, task: Task) -> str:
         for message in session.scalars(stmt):
             parts.extend([str(message.message_id), message.content_preview, message.message_url])
     return " ".join(part for part in parts if part)
+
+
+def _search_actions(session: Session, task: Task) -> list[Action]:
+    return list(
+        session.scalars(
+            select(Action)
+            .where(Action.task_id == task.id)
+            .order_by(Action.created_at.desc())
+            .limit(20)
+        )
+    )
 
 
 def _channel_for_config(session: Session, task: Task) -> OperationTarget | None:
@@ -1337,6 +1349,12 @@ def _relay_batches(actions: list[Action]) -> list[dict[str, Any]]:
         original_text = str(payload.get("original_text") or "")
         transformed_text = str(payload.get("message_text") or "")
         material_text = original_text or transformed_text
+        source_info = str(payload.get("source_info") or "")
+        source_group_title = str(payload.get("source_group_title") or "")
+        source_sender_name = str(payload.get("source_sender_name") or "")
+        if (not source_group_title or not source_sender_name) and " / " in source_info:
+            source_group_title = source_group_title or source_info.split(" / ", 1)[0].strip()
+            source_sender_name = source_sender_name or source_info.split(" / ", 1)[1].strip()
         source_event_key = f"{source_operation_target_id or source_group_id or '-'}:{relay_event_id or '-'}"
         item["items"].append(
             {
@@ -1346,12 +1364,21 @@ def _relay_batches(actions: list[Action]) -> list[dict[str, Any]]:
                 "source_group_id": source_group_id,
                 "source_operation_target_id": source_operation_target_id,
                 "operation_target_id": payload.get("operation_target_id") if isinstance(payload.get("operation_target_id"), int) else None,
-                "source_info": str(payload.get("source_info") or ""),
+                "source_info": source_info,
+                "source_group_title": source_group_title,
+                "source_sender_name": source_sender_name,
+                "source_sender_peer_id": str(payload.get("source_sender_peer_id") or ""),
+                "source_remote_message_id": str(payload.get("source_remote_message_id") or ""),
+                "source_message_type": str(payload.get("source_message_type") or ""),
+                "source_sent_at": payload.get("source_sent_at"),
+                "target_display": str(payload.get("target_display") or ""),
                 "original_text": original_text,
                 "transformed_text": transformed_text,
                 "material_fingerprint": content_fingerprint(material_text) if material_text else "",
                 "rule_set_id": payload.get("rule_set_id") if isinstance(payload.get("rule_set_id"), int) else None,
+                "rule_set_name": str(payload.get("rule_set_name") or ""),
                 "rule_set_version_id": payload.get("rule_set_version_id") if isinstance(payload.get("rule_set_version_id"), int) else None,
+                "rule_set_version": payload.get("rule_set_version") if isinstance(payload.get("rule_set_version"), int) else None,
                 "rule_trace": payload.get("rule_trace") if isinstance(payload.get("rule_trace"), dict) else {},
                 "account_id": action.account_id,
                 "status": action.status,
@@ -1447,8 +1474,18 @@ def _has_open_actions(session: Session, task: Task) -> bool:
     )
     if not earliest:
         return False
-    task.next_run_at = earliest
+    task.next_run_at = _absolute_naive_datetime(earliest)
     return True
+
+
+def _absolute_naive_datetime(value: datetime) -> datetime:
+    if value.tzinfo is not None:
+        return value.astimezone(UTC).replace(tzinfo=None)
+    return value
+
+
+def _utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _empty_stats() -> dict[str, Any]:

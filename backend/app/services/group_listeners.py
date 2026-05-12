@@ -199,7 +199,7 @@ def collect_group_context(session: Session, group: TgGroup, account_ids: list[in
         )
         for snapshot in snapshots:
             content = str(snapshot.content or "").strip()
-            if not content or _is_managed_sender(snapshot, managed_keys):
+            if not content or bool(getattr(snapshot, "is_bot", False)) or _is_managed_sender(snapshot, managed_keys):
                 continue
             exists = session.scalar(
                 select(GroupContextMessage.id).where(

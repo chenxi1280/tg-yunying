@@ -2,8 +2,13 @@ import { useAppContext } from './context';
 import { Button, Checkbox, Input, InputNumber, Modal, QRCode, Select, Space } from 'antd';
 import { FormActions, StatusBadge } from './components/shared';
 import { AccountDetailModal, AccountPoolDetailModal } from './views/AccountModals';
+import { formatBeijingDateTime } from './time';
 
 const accountPhone = (account: { phone_number?: string | null; phone_masked: string }) => account.phone_number || account.phone_masked;
+
+const verificationTargetLabel = (task: { target_display?: string | null; target_peer_id?: string | null; group_id?: number | null }) => (
+  task.target_display || task.target_peer_id || (task.group_id ? `群聊 #${task.group_id}` : '未识别目标')
+);
 
 /** 从 AppShell 中提取的所有模态框渲染组件。 */
 export function AppModals() {
@@ -25,11 +30,12 @@ export function AppModals() {
     quietHoursEnabled, setQuietHoursEnabled, quietStart, setQuietStart, quietEnd, setQuietEnd, quietTimezone, setQuietTimezone,
     defaultMaxRetries, setDefaultMaxRetries, defaultRetryDelaySeconds, setDefaultRetryDelaySeconds, defaultRetryBackoff, setDefaultRetryBackoff,
     defaultOnAccountBanned, setDefaultOnAccountBanned, defaultOnApiRateLimit, setDefaultOnApiRateLimit, defaultOnContentRejected, setDefaultOnContentRejected,
+    defaultAccountHourLimit, setDefaultAccountHourLimit, defaultAccountDayLimit, setDefaultAccountDayLimit, defaultAccountCooldownSeconds, setDefaultAccountCooldownSeconds,
     saveSchedulingSetting,
     // Prompt Template
-    promptTemplateForm, setPromptTemplateForm, createPromptTemplate,
+    promptTemplateForm, setPromptTemplateForm, createPromptTemplate, savePromptTemplate,
     // Material
-    materialForm, setMaterialForm, createMaterial, keywordRuleForm, setKeywordRuleForm, createContentKeywordRule, saveContentKeywordRule,
+    materialForm, setMaterialForm, createMaterial, saveMaterial, keywordRuleForm, setKeywordRuleForm, createContentKeywordRule, saveContentKeywordRule,
     // Account Pool
     accountPoolForm, setAccountPoolForm, createAccountPool, accountPoolDetail, poolDirectAccountId, setPoolDirectAccountId, refreshAccountPoolDetail,
     // Account
@@ -190,6 +196,9 @@ export function AppModals() {
             <label>账号异常<Select value={defaultOnAccountBanned} onChange={setDefaultOnAccountBanned} options={[{ value: 'skip_account', label: '跳过账号' }, { value: 'pause_task', label: '暂停任务' }, { value: 'stop_task', label: '停止任务' }]} /></label>
             <label>API 限流<Select value={defaultOnApiRateLimit} onChange={setDefaultOnApiRateLimit} options={[{ value: 'wait_and_retry', label: '等待重试' }, { value: 'skip', label: '跳过' }, { value: 'pause', label: '暂停' }]} /></label>
             <label>内容拦截<Select value={defaultOnContentRejected} onChange={setDefaultOnContentRejected} options={[{ value: 'skip_message', label: '跳过消息' }, { value: 'rewrite_and_retry', label: '改写重试' }, { value: 'pause', label: '暂停' }]} /></label>
+            <label>账号每小时上限(0不限制)<InputNumber min={0} value={defaultAccountHourLimit} onChange={(value) => setDefaultAccountHourLimit(Number(value ?? 0))} /></label>
+            <label>账号每日上限(0不限制)<InputNumber min={0} value={defaultAccountDayLimit} onChange={(value) => setDefaultAccountDayLimit(Number(value ?? 0))} /></label>
+            <label>账号全局冷却秒(0不限制)<InputNumber min={0} value={defaultAccountCooldownSeconds} onChange={(value) => setDefaultAccountCooldownSeconds(Number(value ?? 0))} /></label>
           </div>
           <FormActions onCancel={closeModal} onSubmit={saveSchedulingSetting} loading={isActionPending('scheduling:save')} />
           </div>
@@ -209,21 +218,22 @@ export function AppModals() {
         </Modal>
       )}
 
-      {modal?.type === 'promptTemplateCreate' && (
-        <Modal className="tg-modal large" title="新增提示词模板" open width={920} onCancel={closeModal} footer={null} destroyOnHidden centered>
+      {(modal?.type === 'promptTemplateCreate' || modal?.type === 'promptTemplateEdit') && (
+        <Modal className="tg-modal large" title={modal.type === 'promptTemplateEdit' ? '编辑提示词模板' : '新增提示词模板'} open width={920} onCancel={closeModal} footer={null} destroyOnHidden centered>
       <div className="modal-body">
           <div className="policy-grid">
             <label>模板名称<Input value={promptTemplateForm.name} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, name: event.target.value })} /></label>
             <label>模板类型<Select value={promptTemplateForm.template_type} onChange={(value) => setPromptTemplateForm({ ...promptTemplateForm, template_type: value })} options={['系统决策提示词', '群活跃对话计划', '多账号对话脚本', '素材配文', '风险检查'].map((value) => ({ value, label: value }))} /></label>
             <label className="wide-field">模板内容<Input.TextArea value={promptTemplateForm.content} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, content: event.target.value })} /></label>
+            <Checkbox checked={promptTemplateForm.is_active} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, is_active: event.target.checked })}>启用提示词</Checkbox>
           </div>
-          <FormActions submitLabel="新增提示词" onCancel={closeModal} onSubmit={createPromptTemplate} loading={isActionPending('prompt-template:create')} disabled={!promptTemplateForm.name || !promptTemplateForm.content} />
+          <FormActions submitLabel={modal.type === 'promptTemplateEdit' ? '保存提示词' : '新增提示词'} onCancel={closeModal} onSubmit={modal.type === 'promptTemplateEdit' ? savePromptTemplate : createPromptTemplate} loading={isActionPending(modal.type === 'promptTemplateEdit' ? `prompt-template:${promptTemplateForm.id ?? 'create'}:save` : 'prompt-template:create')} disabled={!promptTemplateForm.name || !promptTemplateForm.content} />
           </div>
         </Modal>
       )}
 
-      {modal?.type === 'materialCreate' && (
-        <Modal className="tg-modal medium" title="新增素材" open width={640} onCancel={closeModal} footer={null} destroyOnHidden centered>
+      {(modal?.type === 'materialCreate' || modal?.type === 'materialEdit') && (
+        <Modal className="tg-modal medium" title={modal.type === 'materialEdit' ? '编辑素材' : '新增素材'} open width={640} onCancel={closeModal} footer={null} destroyOnHidden centered>
       <div className="modal-body">
           <div className="policy-grid">
             <label>素材标题<Input value={materialForm.title} onChange={(event) => setMaterialForm({ ...materialForm, title: event.target.value })} /></label>
@@ -231,7 +241,7 @@ export function AppModals() {
             <label>标签<Input value={materialForm.tags} onChange={(event) => setMaterialForm({ ...materialForm, tags: event.target.value })} /></label>
             <label className="wide-field">内容/URL<Input.TextArea value={materialForm.content} onChange={(event) => setMaterialForm({ ...materialForm, content: event.target.value })} /></label>
           </div>
-          <FormActions submitLabel="新增素材" onCancel={closeModal} onSubmit={createMaterial} loading={isActionPending('material:create')} disabled={!materialForm.title || !materialForm.content} />
+          <FormActions submitLabel={modal.type === 'materialEdit' ? '保存素材' : '新增素材'} onCancel={closeModal} onSubmit={modal.type === 'materialEdit' ? saveMaterial : createMaterial} loading={isActionPending(modal.type === 'materialEdit' ? `material:${materialForm.id ?? 'create'}:save` : 'material:create')} disabled={!materialForm.title || !materialForm.content} />
           </div>
         </Modal>
       )}
@@ -290,7 +300,7 @@ export function AppModals() {
             <div><dt>账号</dt><dd>{accountPhone(accountLoginForm.account)}</dd></div>
             <div><dt>当前状态</dt><dd><StatusBadge status={accountLoginForm.account.status} /></dd></div>
             <div><dt>登录方式</dt><dd>{accountLoginForm.step === 'method' ? '待选择' : accountLoginForm.method === 'qr' ? '二维码扫码' : '手机号验证码'}</dd></div>
-            {accountLoginForm.flow?.code_expires_at && <div><dt>验证码有效期</dt><dd>{new Date(accountLoginForm.flow.code_expires_at).toLocaleTimeString()}</dd></div>}
+            {accountLoginForm.flow?.code_expires_at && <div><dt>验证码有效期</dt><dd>{formatBeijingDateTime(accountLoginForm.flow.code_expires_at)}</dd></div>}
           </div>
           {accountLoginForm.step === 'method' && (
             <>
@@ -406,7 +416,7 @@ export function AppModals() {
             <div><dt>状态</dt><dd><StatusBadge status={modal.payload.status} /></dd></div>
             <div><dt>验证类型</dt><dd>{modal.payload.verification_type}</dd></div>
             <div><dt>建议操作</dt><dd>{modal.payload.suggested_action}</dd></div>
-            <div><dt>目标</dt><dd>{modal.payload.target_display || modal.payload.target_peer_id || '当前群聊'}</dd></div>
+            <div><dt>目标</dt><dd>{verificationTargetLabel(modal.payload)}</dd></div>
           </div>
           <p className="dialog-message">{modal.payload.detected_reason || '平台检测到当前账号在该群可能需要完成验证后才能发言。'}</p>
           <p className="muted-line">平台只会在你确认后执行可控动作。</p>

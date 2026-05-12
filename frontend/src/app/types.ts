@@ -690,6 +690,17 @@ export type OperationTargetMessageSync = {
   detail: OperationTargetDetail;
 };
 
+export type OperationTargetsSync = {
+  synced_accounts: number;
+  failed_accounts: Array<{
+    account_id: number;
+    display_name: string;
+    error: string;
+  }>;
+  target_count: number;
+  targets: OperationTarget[];
+};
+
 export type MessageSendingPrefill = {
   target: OperationTarget;
   nonce: number;
@@ -898,11 +909,20 @@ export type TaskCenterDetail = {
       source_operation_target_id: number | null;
       operation_target_id: number | null;
       source_info: string;
+      source_group_title: string;
+      source_sender_name: string;
+      source_sender_peer_id: string;
+      source_remote_message_id: string;
+      source_message_type: string;
+      source_sent_at: string | null;
+      target_display: string;
       original_text: string;
       transformed_text: string;
       material_fingerprint: string;
       rule_set_id: number | null;
+      rule_set_name: string;
       rule_set_version_id: number | null;
+      rule_set_version: number | null;
       rule_trace: Record<string, any>;
       account_id: number | null;
       status: string;
@@ -1082,7 +1102,9 @@ export type ModalState =
   | { type: 'aiProviderCreate' }
   | { type: 'aiProviderEdit' }
   | { type: 'promptTemplateCreate' }
+  | { type: 'promptTemplateEdit' }
   | { type: 'materialCreate' }
+  | { type: 'materialEdit' }
   | { type: 'keywordRuleCreate' }
   | { type: 'keywordRuleEdit' }
   | { type: 'tenantAiEdit' }

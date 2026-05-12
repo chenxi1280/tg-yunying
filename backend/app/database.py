@@ -15,7 +15,7 @@ class Base(DeclarativeBase):
     pass
 
 
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {"options": "-c timezone=utc"}
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {"options": "-c timezone=Asia/Shanghai"}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
@@ -47,11 +47,13 @@ def database_status() -> dict[str, object]:
         version = None
         if "alembic_version" in tables:
             version = connection.execute(text("SELECT version_num FROM alembic_version LIMIT 1")).scalar()
+        timezone = "Asia/Shanghai" if DATABASE_URL.startswith("sqlite") else connection.execute(text("SHOW timezone")).scalar()
         return {
             "url": DATABASE_URL,
             "is_empty": not tables,
             "table_count": len(tables),
             "alembic_version": version,
+            "timezone": timezone,
         }
 
 

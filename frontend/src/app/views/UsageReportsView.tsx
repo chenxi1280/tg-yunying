@@ -5,6 +5,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { api } from '../../shared/api/client';
 import type { ContentKeywordRule, CurrentUser, MetricBucket, OperationMetricDetail, OperationMetricsSummary, SchedulingSetting, UsageLedger, UsageSummary } from '../types';
 import { StatCard, StatusBadge, useAntdTableControls } from '../components/shared';
+import { formatBeijingDateTime } from '../time';
 
 interface Props {
   usageLedgers: UsageLedger[];
@@ -246,7 +247,7 @@ export default function UsageReportsView({ usageLedgers, usageSummary, currentUs
     },
     { title: '状态', dataIndex: 'status', width: 130, render: (value) => <StatusBadge status={value} /> },
     { title: '详情', dataIndex: 'detail', ellipsis: true },
-    { title: '时间', dataIndex: 'occurred_at', width: 190, render: (value) => value ? new Date(value).toLocaleString() : '-' },
+    { title: '时间', dataIndex: 'occurred_at', width: 190, render: (value) => formatBeijingDateTime(value) },
   ];
 
   return (
@@ -305,7 +306,7 @@ export default function UsageReportsView({ usageLedgers, usageSummary, currentUs
       </Card>
       <Drawer title="全局风控策略" open={policyOpen} width={720} onClose={() => setPolicyOpen(false)} extra={<Button type="primary" loading={policySaving} onClick={saveRiskPolicy}>保存策略</Button>}>
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <Alert type="info" showIcon message="这里编辑的是任务默认风控。已存在任务仍可在任务配置里覆盖自己的节奏和失败处理。" />
+          <Alert type="info" showIcon message="这里编辑的是任务和消息发送共用的账号风控；账号上限填 0 表示不限制，达到上限后优先转派可用账号。" />
           <Card size="small" title="静默时段与默认失败策略">
             <div className="form-grid">
               <label>最小发送抖动秒<InputNumber min={0} value={policyForm.jitter_min_seconds} onChange={(value) => setPolicyForm((current) => ({ ...current, jitter_min_seconds: Number(value ?? 0) }))} /></label>
@@ -322,9 +323,9 @@ export default function UsageReportsView({ usageLedgers, usageSummary, currentUs
               <label>账号异常<Select value={policyForm.default_on_account_banned} onChange={(value) => setPolicyForm((current) => ({ ...current, default_on_account_banned: value }))} options={[{ value: 'skip_account', label: '跳过账号' }, { value: 'pause_task', label: '暂停任务' }, { value: 'stop_task', label: '停止任务' }]} /></label>
               <label>API 限流<Select value={policyForm.default_on_api_rate_limit} onChange={(value) => setPolicyForm((current) => ({ ...current, default_on_api_rate_limit: value }))} options={[{ value: 'wait_and_retry', label: '等待重试' }, { value: 'skip', label: '跳过' }, { value: 'pause', label: '暂停' }]} /></label>
               <label>内容拦截<Select value={policyForm.default_on_content_rejected} onChange={(value) => setPolicyForm((current) => ({ ...current, default_on_content_rejected: value }))} options={[{ value: 'skip_message', label: '跳过消息' }, { value: 'rewrite_and_retry', label: '改写重试' }, { value: 'pause', label: '暂停' }]} /></label>
-              <label>账号每小时上限<InputNumber min={0} value={policyForm.default_account_hour_limit} onChange={(value) => setPolicyForm((current) => ({ ...current, default_account_hour_limit: Number(value ?? 0) }))} /></label>
-              <label>账号每日上限<InputNumber min={0} value={policyForm.default_account_day_limit} onChange={(value) => setPolicyForm((current) => ({ ...current, default_account_day_limit: Number(value ?? 0) }))} /></label>
-              <label>账号全局冷却秒<InputNumber min={0} value={policyForm.default_account_cooldown_seconds} onChange={(value) => setPolicyForm((current) => ({ ...current, default_account_cooldown_seconds: Number(value ?? 0) }))} /></label>
+              <label>账号每小时上限(0不限制)<InputNumber min={0} value={policyForm.default_account_hour_limit} onChange={(value) => setPolicyForm((current) => ({ ...current, default_account_hour_limit: Number(value ?? 0) }))} /></label>
+              <label>账号每日上限(0不限制)<InputNumber min={0} value={policyForm.default_account_day_limit} onChange={(value) => setPolicyForm((current) => ({ ...current, default_account_day_limit: Number(value ?? 0) }))} /></label>
+              <label>账号全局冷却秒(0不限制)<InputNumber min={0} value={policyForm.default_account_cooldown_seconds} onChange={(value) => setPolicyForm((current) => ({ ...current, default_account_cooldown_seconds: Number(value ?? 0) }))} /></label>
             </div>
           </Card>
           <Card size="small" title="敏感词规则" extra={<Typography.Text type="secondary">{keywordRules.filter((rule) => rule.is_active).length}/{keywordRules.length} 启用</Typography.Text>}>

@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import re
 from io import StringIO
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from sqlalchemy import func, select
@@ -36,13 +36,33 @@ from app.schemas.operations_center import (
     RuleTestRouteOut,
     RuleTrendMetricOut,
 )
-from app.services._common import _now, audit
+from app.services._common import _as_utc, _now, audit
 from app.services.task_center.executors.group_relay import apply_transform_rules, passes_relay_filters, relay_filter_expression_reason, resolve_relay_target_ids
 from app.services.task_center.fingerprints import content_fingerprint
 
 
 ACTIVE_TASK_STATUSES = {"draft", "pending", "running", "paused"}
 LISTENER_TASK_STATUSES = {"pending", "running"}
+DEFAULT_RELAY_RULE_SET_NAME = "默认转发监听过滤规则"
+DEFAULT_RELAY_RULE_SET_DESCRIPTION = "系统初始化的转发监听过滤规则，默认不拦截内容，可按任务绑定后继续扩展。"
+DEFAULT_RELAY_FILTERS = {
+    "keyword_whitelist": [],
+    "keyword_blacklist": [],
+    "min_message_length": None,
+    "max_message_length": None,
+    "allowed_media_types": [],
+    "blocked_user_ids": [],
+    "only_with_media": False,
+    "only_text": False,
+    "language_filter": None,
+}
+
+
+def _default_relay_filters() -> dict[str, Any]:
+    return {
+        key: list(value) if isinstance(value, list) else value
+        for key, value in DEFAULT_RELAY_FILTERS.items()
+    }
 
 SYSTEM_RULES = [
     RuleSummaryOut(
@@ -474,7 +494,7 @@ def rule_center_summary(session: Session, tenant_id: int) -> RuleCenterSummaryOu
 
 
 def operation_metrics_summary(session: Session, tenant_id: int) -> OperationMetricsOut:
-    today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+    today_start = _now().replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
 
     total_accounts = _count(session, TgAccount, TgAccount.tenant_id == tenant_id, TgAccount.deleted_at.is_(None))
@@ -596,7 +616,7 @@ def operation_metrics_summary(session: Session, tenant_id: int) -> OperationMetr
 def list_rule_sets(session: Session, tenant_id: int) -> list[RuleSetOut]:
     rule_sets = list(session.scalars(select(RuleSet).where(RuleSet.tenant_id == tenant_id).order_by(RuleSet.id.asc())))
     if not rule_sets:
-        return []
+        rule_sets = [_ensure_default_relay_rule_set(session, tenant_id)]
     versions = list(
         session.scalars(
             select(RuleSetVersion)
@@ -608,6 +628,56 @@ def list_rule_sets(session: Session, tenant_id: int) -> list[RuleSetOut]:
     for version in versions:
         by_set.setdefault(version.rule_set_id, []).append(version)
     return [_rule_set_out(rule_set, by_set.get(rule_set.id, [])) for rule_set in rule_sets]
+
+
+def _ensure_default_relay_rule_set(session: Session, tenant_id: int) -> RuleSet:
+    existing = session.scalar(
+        select(RuleSet).where(
+            RuleSet.tenant_id == tenant_id,
+            RuleSet.name == DEFAULT_RELAY_RULE_SET_NAME,
+        )
+    )
+    if existing:
+        return existing
+    rule_set = RuleSet(
+        tenant_id=tenant_id,
+        name=DEFAULT_RELAY_RULE_SET_NAME,
+        description=DEFAULT_RELAY_RULE_SET_DESCRIPTION,
+        status="active",
+    )
+    session.add(rule_set)
+    session.flush()
+    version = RuleSetVersion(
+        tenant_id=tenant_id,
+        rule_set_id=rule_set.id,
+        version=1,
+        status="published",
+        filters=_default_relay_filters(),
+        transforms={},
+        routing={},
+        account_strategy={},
+        rate_limits={},
+        retry_policy={},
+        created_by="system",
+        published_by="system",
+        published_at=_now(),
+    )
+    session.add(version)
+    session.flush()
+    rule_set.active_version_id = version.id
+    rule_set.updated_at = _now()
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor="system",
+        action="初始化默认转发监听规则集",
+        target_type="rule_set",
+        target_id=str(rule_set.id),
+        detail=rule_set.name,
+    )
+    session.commit()
+    session.refresh(rule_set)
+    return rule_set
 
 
 def create_rule_set(session: Session, tenant_id: int, payload: RuleSetCreate, actor: str) -> RuleSetOut:
@@ -976,7 +1046,7 @@ def _risk_control_metrics(session: Session, tenant_id: int) -> list[MetricBucket
     tasks_with_rate_limits = [task for task in tasks if _task_has_rate_limit(task)]
     risk_counts = _risk_action_counts(session, tenant_id)
     fingerprint_total = _count(session, MessageFingerprint, MessageFingerprint.tenant_id == tenant_id)
-    today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+    today_start = _now().replace(hour=0, minute=0, second=0, microsecond=0)
     fingerprints_today = _count(
         session,
         MessageFingerprint,
@@ -1148,8 +1218,9 @@ def _task_rate_limit_details(session: Session, tenant_id: int) -> list[Operation
             )
         )
     heartbeats = list(session.scalars(select(WorkerHeartbeat).order_by(WorkerHeartbeat.last_seen_at.desc()).limit(8)))
+    heartbeat_cutoff = _now() - timedelta(minutes=2)
     for heartbeat in heartbeats:
-        stale = heartbeat.last_seen_at < (_now() - timedelta(minutes=2))
+        stale = _is_stale_heartbeat(heartbeat.last_seen_at, heartbeat_cutoff)
         details.append(
             _metric_detail(
                 f"risk:worker:{heartbeat.worker_id}",
@@ -1162,6 +1233,10 @@ def _task_rate_limit_details(session: Session, tenant_id: int) -> list[Operation
             )
         )
     return details
+
+
+def _is_stale_heartbeat(last_seen_at: datetime, cutoff: datetime) -> bool:
+    return _as_utc(last_seen_at) < _as_utc(cutoff)
 
 
 def _recent_risk_action_details(session: Session, tenant_id: int) -> list[OperationMetricDetailOut]:
@@ -1836,7 +1911,7 @@ def _rule_dimension_metrics(session: Session, tenant_id: int, keyword_rules: lis
 
 
 def _rule_trend_metrics(session: Session, tenant_id: int, days: int = 14) -> list[RuleTrendMetricOut]:
-    end_date = datetime.now(UTC).date()
+    end_date = _now().date()
     start_date = end_date - timedelta(days=days - 1)
     buckets = {
         (start_date + timedelta(days=offset)).isoformat(): RuleTrendMetricOut(date=(start_date + timedelta(days=offset)).isoformat())
@@ -1876,7 +1951,7 @@ def _rule_trend_metrics(session: Session, tenant_id: int, days: int = 14) -> lis
 
 
 def _rule_conversion_metrics(session: Session, tenant_id: int, days: int = 7) -> list[RuleConversionMetricOut]:
-    today = datetime.now(UTC).date()
+    today = _now().date()
     current_start = today - timedelta(days=days - 1)
     previous_start = current_start - timedelta(days=days)
     versions = {
