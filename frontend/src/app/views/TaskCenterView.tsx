@@ -3,7 +3,7 @@ import { Alert, Button, Card, Collapse, Descriptions, Drawer, Form, Input, Input
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, RefreshCcw } from 'lucide-react';
 import { api, ApiError } from '../../shared/api/client';
-import type { Account, AccountPool, ChannelCapacityCheck, ChannelMessage, Group, OperationTarget, RuleSet, TaskCenterAction, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType } from '../types';
+import type { Account, AccountPool, ChannelCapacityCheck, ChannelMessage, ChannelMessageComment, Group, OperationTarget, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType } from '../types';
 import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
 
 const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
@@ -17,6 +17,14 @@ const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
 const TYPE_LABEL: Record<string, string> = Object.fromEntries(TASK_TYPES.map((item) => [item.value, item.label]));
 
 const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
+  group_ai_chat: '/tasks/group-ai-chat',
+  group_relay: '/tasks/group-relay',
+  channel_view: '/tasks/channel-view',
+  channel_like: '/tasks/channel-like',
+  channel_comment: '/tasks/channel-comment',
+};
+
+const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
   group_ai_chat: '/tasks/group-ai-chat/create-and-start',
   group_relay: '/tasks/group-relay/create-and-start',
   channel_view: '/tasks/channel-view/create-and-start',
@@ -24,7 +32,7 @@ const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
   channel_comment: '/tasks/channel-comment/create-and-start',
 };
 
-const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号选择', '确认启动'];
+const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号选择', '确认提交'];
 
 const ACTION_LABEL: Record<string, string> = {
   send_message: '发送消息',
@@ -57,8 +65,35 @@ function words(value?: string): string[] {
   return (value ?? '').split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
 }
 
-function csvNumbers(value?: number[]): number[] {
-  return Array.isArray(value) ? value : [];
+function parseKeyValueMap(value?: string | Record<string, string>): Record<string, string> {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  return value
+    .split(/\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .reduce<Record<string, string>>((result, line) => {
+      const [rawKey, ...rawValue] = line.split(/[:：=]/);
+      const key = rawKey?.trim();
+      const role = rawValue.join('=').trim();
+      if (key && role) result[key] = role;
+      return result;
+    }, {});
+}
+
+function formatKeyValueMap(value?: Record<string, string>): string {
+  return value ? Object.entries(value).map(([key, role]) => `${key}=${role}`).join('\n') : '';
+}
+
+function csvNumbers(value?: Array<number | string> | string | null): number[] {
+  if (Array.isArray(value)) return value.map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0);
+  if (typeof value === 'string') {
+    return value
+      .split(/[,，\n\s]+/)
+      .map((item) => Number(item.trim()))
+      .filter((item) => Number.isFinite(item) && item > 0);
+  }
+  return [];
 }
 
 function formatDateTime(value?: string | null): string {
@@ -120,7 +155,7 @@ function isPlannedAction(action: TaskCenterAction): boolean {
   return ['pending', 'executing'].includes(action.status) && !action.executed_at;
 }
 
-function commonInitialValues() {
+function commonInitialValues(setting?: SchedulingSetting | null) {
   return {
     priority: 3,
     timezone: 'Asia/Shanghai',
@@ -130,14 +165,20 @@ function commonInitialValues() {
     ban_policy: 'skip',
     pacing_mode: 'template',
     template: 'moderate_6h',
-    jitter_percent: 30,
-    max_retries: 3,
-    retry_delay_seconds: 60,
-    retry_backoff: 'exponential',
+    jitter_percent: setting ? Math.min(100, Math.round(((setting.jitter_min_seconds + setting.jitter_max_seconds) / 2 / Math.max(setting.batch_interval_seconds, 1)) * 100)) : 30,
+    quiet_enabled: Boolean(setting?.quiet_hours_enabled),
+    quiet_start: setting?.quiet_start ?? '02:00',
+    quiet_end: setting?.quiet_end ?? '08:00',
+    max_retries: setting?.default_max_retries ?? 3,
+    retry_delay_seconds: setting?.default_retry_delay_seconds ?? 60,
+    retry_backoff: setting?.default_retry_backoff ?? 'exponential',
+    on_account_banned: setting?.default_on_account_banned ?? 'skip_account',
+    on_api_rate_limit: setting?.default_on_api_rate_limit ?? 'wait_and_retry',
+    on_content_rejected: setting?.default_on_content_rejected ?? 'skip_message',
   };
 }
 
-function typeInitialValues(type: TaskCenterTaskType) {
+function typeInitialValues(type: TaskCenterTaskType, setting?: SchedulingSetting | null) {
   if (type === 'group_ai_chat') {
     return {
       participation_rate: 0.6,
@@ -145,14 +186,16 @@ function typeInitialValues(type: TaskCenterTaskType) {
       chat_history_depth: 50,
       messages_per_round_mode: 'auto',
       messages_per_round: 1,
-      silent_mode_enabled: true,
-      silent_start: '23:00',
-      silent_end: '08:00',
+      silent_mode_enabled: setting?.quiet_hours_enabled ?? true,
+      silent_start: setting?.quiet_start ?? '23:00',
+      silent_end: setting?.quiet_end ?? '08:00',
       silent_max_accounts: 5,
       silent_messages_per_round: 1,
       ramp_up_minutes: 60,
       ramp_start_ratio: 0.3,
       context_expire_after_messages: 10,
+      account_memory_depth: 3,
+      account_personas: '',
       tone: 'auto',
       language: 'zh-CN',
     };
@@ -166,7 +209,7 @@ function typeInitialValues(type: TaskCenterTaskType) {
   }
   if (type === 'channel_view') {
     return {
-      message_scope: 'latest_n',
+      message_scope: 'dynamic_new',
       message_count: 10,
       target_views_per_message: 50,
       view_count_jitter: 0.2,
@@ -185,18 +228,20 @@ function typeInitialValues(type: TaskCenterTaskType) {
     };
   }
   return {
-    message_scope: 'latest_n',
+    message_scope: 'dynamic_new',
     message_count: 10,
     target_comments_per_message: 10,
     comment_count_jitter: 0.3,
+    comment_mode: 'comment',
+    reply_to_message_ids: '',
     language: 'zh-CN',
     comment_style: 'mixed',
     max_comments_per_account_per_hour: 3,
   };
 }
 
-function initialValuesForType(type: TaskCenterTaskType) {
-  return { ...commonInitialValues(), ...typeInitialValues(type) };
+function initialValuesForType(type: TaskCenterTaskType, setting?: SchedulingSetting | null) {
+  return { ...commonInitialValues(setting), ...typeInitialValues(type, setting) };
 }
 
 export default function TaskCenterView({ accounts, accountPools, prefill }: { accounts: Account[]; accountPools: AccountPool[]; prefill?: TaskCenterPrefill | null }) {
@@ -204,7 +249,9 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
   const [groups, setGroups] = React.useState<Group[]>([]);
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
   const [messages, setMessages] = React.useState<ChannelMessage[]>([]);
+  const [comments, setComments] = React.useState<ChannelMessageComment[]>([]);
   const [ruleSets, setRuleSets] = React.useState<RuleSet[]>([]);
+  const [schedulingSetting, setSchedulingSetting] = React.useState<SchedulingSetting | null>(null);
   const [detail, setDetail] = React.useState<TaskCenterDetail | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [busyId, setBusyId] = React.useState('');
@@ -222,6 +269,10 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
   const pacingMode = Form.useWatch('pacing_mode', form) ?? 'template';
   const editAccountMode = Form.useWatch('selection_mode', editForm) ?? 'all';
   const editPacingMode = Form.useWatch('pacing_mode', editForm) ?? 'template';
+  const editMessageScope = Form.useWatch('message_scope', editForm) ?? 'latest_n';
+  const editTargetChannelId = Form.useWatch('target_channel_id', editForm);
+  const messageIds = Form.useWatch('message_ids', form);
+  const editMessageIds = Form.useWatch('message_ids', editForm);
   const messageScope = Form.useWatch('message_scope', form) ?? 'latest_n';
   const targetChannelId = Form.useWatch('target_channel_id', form);
   const channelTargets = targets.filter((target) => target.target_type === 'channel');
@@ -230,18 +281,22 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
   async function load() {
     setLoading(true);
     try {
-      const [taskData, groupData, targetData, messageData, ruleSetData] = await Promise.all([
+      const [taskData, groupData, targetData, messageData, commentData, ruleSetData, schedulingData] = await Promise.all([
         api<TaskCenterTask[]>('/tasks'),
         api<Group[]>('/groups'),
         api<OperationTarget[]>('/operation-targets'),
         api<ChannelMessage[]>('/channel-messages'),
+        api<ChannelMessageComment[]>('/channel-comments'),
         api<RuleSet[]>('/rule-sets'),
+        api<SchedulingSetting>('/scheduling-settings'),
       ]);
       setTasks(taskData);
       setGroups(groupData);
       setTargets(targetData);
       setMessages(messageData);
+      setComments(commentData);
       setRuleSets(ruleSetData);
+      setSchedulingSetting(schedulingData);
     } finally {
       setLoading(false);
     }
@@ -255,7 +310,6 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
 
   React.useEffect(() => {
     if (!prefill || appliedPrefillNonce.current === prefill.nonce) return;
-    if (prefill.target.target_type === 'group' && !groups.length) return;
     if (prefill.target.target_type === 'channel' && !targets.length) return;
     if (prefill.message) {
       setMessages((current) => current.some((message) => message.id === prefill.message?.id) ? current : [prefill.message!, ...current]);
@@ -263,21 +317,15 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
 
     const nextType = prefill.taskType;
     const nextValues: Record<string, any> = {
-      ...initialValuesForType(nextType),
+      ...initialValuesForType(nextType, schedulingSetting),
       name: `${prefill.target.title} ${TYPE_LABEL[nextType] ?? '任务'}`,
     };
     if (prefill.target.target_type === 'group') {
-      const linkedGroupId = prefill.target.linked_group_id;
-      const group = linkedGroupId
-        ? groups.find((item) => item.id === linkedGroupId)
-        : groups.find((item) => item.tg_peer_id === prefill.target.tg_peer_id || item.title === prefill.target.title);
-      if (!group) {
-        setActionError(`未找到关联群聊：${prefill.target.title}`);
-        setActionWarning('');
-        appliedPrefillNonce.current = prefill.nonce;
-        return;
+      nextValues.target_operation_target_id = prefill.target.id;
+      if (nextType === 'group_relay') {
+        nextValues.source_operation_target_ids = [prefill.target.id];
+        nextValues.source_groups = [{ operation_target_id: prefill.target.id, group_name: prefill.target.title, is_active: true }];
       }
-      nextValues.target_group_id = group.id;
     } else {
       nextValues.target_channel_id = prefill.target.id;
       if (prefill.message) {
@@ -293,7 +341,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     setWizardStep(2);
     setModalOpen(true);
     appliedPrefillNonce.current = prefill.nonce;
-  }, [form, groups, messages, prefill, targets]);
+  }, [form, messages, prefill, schedulingSetting, targets]);
 
   async function loadDetail(task: TaskCenterTask) {
     setDetail(await api<TaskCenterDetail>(`/tasks/${task.id}`));
@@ -306,7 +354,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     const failure = task.failure_policy || {};
     const filters = config.filters || {};
     return {
-      ...initialValuesForType(task.type),
+      ...initialValuesForType(task.type, schedulingSetting),
       name: task.name,
       priority: task.priority,
       timezone: task.timezone,
@@ -334,7 +382,12 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
       on_api_rate_limit: failure.on_api_rate_limit ?? 'wait_and_retry',
       on_content_rejected: failure.on_content_rejected ?? 'skip_message',
       ...config,
+      source_operation_target_ids: Array.isArray(config.source_groups)
+        ? config.source_groups.map((item: any) => item?.operation_target_id).filter(Boolean)
+        : [],
+      account_personas: formatKeyValueMap(config.account_personas),
       allowed_reactions: Array.isArray(config.allowed_reactions) ? config.allowed_reactions.join(',') : config.allowed_reactions,
+      reply_to_message_ids: Array.isArray(config.reply_to_message_ids) ? config.reply_to_message_ids : csvNumbers(config.reply_to_message_ids),
       monitor_account_ids: config.monitor_account_ids ?? [],
       keyword_whitelist: Array.isArray(filters.keyword_whitelist) ? filters.keyword_whitelist.join(',') : '',
       keyword_blacklist: Array.isArray(filters.keyword_blacklist) ? filters.keyword_blacklist.join(',') : '',
@@ -426,11 +479,11 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
   function createPayload(values: any): Record<string, any> {
     const base = commonPayload(values);
     if (taskType === 'group_ai_chat') {
-      const group = groups.find((item) => item.id === values.target_group_id);
+      const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
       return {
         ...base,
-        target_group_id: values.target_group_id,
-        target_group_name: group?.title ?? '',
+        target_operation_target_id: values.target_operation_target_id,
+        target_group_name: target?.title ?? '',
         topic_hint: values.topic_hint ?? '',
         chat_history_depth: values.chat_history_depth ?? 50,
         ai_model: values.ai_model ?? '',
@@ -442,6 +495,8 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         participation_jitter: values.participation_jitter ?? 0.5,
         allow_account_repeat: values.allow_account_repeat ?? true,
         repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2,
+        account_personas: parseKeyValueMap(values.account_personas),
+        account_memory_depth: values.account_memory_depth ?? 3,
         messages_per_round_mode: values.messages_per_round_mode ?? 'auto',
         messages_per_round: values.messages_per_round ?? 1,
         history_fetch_account_id: values.history_fetch_account_id ?? null,
@@ -456,9 +511,14 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
       };
     }
     if (taskType === 'group_relay') {
+      const sourceTargetIds = csvNumbers(values.source_operation_target_ids);
+      const targetOperationIds = csvNumbers(values.target_operation_target_ids);
       return {
         ...base,
-        source_groups: csvNumbers(values.source_group_ids).map((id) => ({ group_id: id, group_name: groups.find((item) => item.id === id)?.title ?? '', is_active: true })),
+        source_groups: sourceTargetIds.map((id) => {
+          const target = groupTargets.find((item) => item.id === id);
+          return { operation_target_id: id, group_name: target?.title ?? '', is_active: true };
+        }),
         rule_set_id: values.rule_set_id ?? null,
         rule_set_version_id: values.rule_set_version_id ?? null,
         monitor_account_ids: csvNumbers(values.monitor_account_ids),
@@ -473,8 +533,8 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
           only_text: Boolean(values.only_text),
           language_filter: values.language_filter ?? null,
         },
-        target_group_id: values.target_group_id,
-        target_group_ids: values.target_group_ids ?? [],
+        target_operation_target_id: values.target_operation_target_id,
+        target_operation_target_ids: targetOperationIds,
         send_account_ids: [],
         content_mode: values.content_mode ?? 'light_rewrite',
         rewrite_prompt: values.rewrite_prompt ?? '',
@@ -491,7 +551,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     if (taskType === 'channel_like') {
       return { ...base, ...channelScopePayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? 0.3, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
     }
-    return { ...base, ...channelScopePayload(values), target_comments_per_message: values.target_comments_per_message ?? 10, comment_count_jitter: values.comment_count_jitter ?? 0.3, ai_model: values.ai_model ?? '', comment_style: values.comment_style ?? 'mixed', topic_hint: values.topic_hint ?? '', system_prompt_override: values.system_prompt_override ?? '', language: values.language ?? 'zh-CN', max_comment_length: values.max_comment_length ?? null, max_comments_per_account_per_hour: values.max_comments_per_account_per_hour ?? 3, require_review: false };
+    return { ...base, ...channelScopePayload(values), target_comments_per_message: values.target_comments_per_message ?? 10, comment_count_jitter: values.comment_count_jitter ?? 0.3, comment_mode: values.comment_mode ?? 'comment', reply_to_message_ids: csvNumbers(values.reply_to_message_ids), ai_model: values.ai_model ?? '', comment_style: values.comment_style ?? 'mixed', topic_hint: values.topic_hint ?? '', system_prompt_override: values.system_prompt_override ?? '', language: values.language ?? 'zh-CN', max_comment_length: values.max_comment_length ?? null, max_comments_per_account_per_hour: values.max_comments_per_account_per_hour ?? 3, require_review: false };
   }
 
   function settingsPayload(type: TaskCenterTaskType, values: any): Record<string, any> {
@@ -506,10 +566,16 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
       failure_policy: failurePolicy(values),
     };
     if (type === 'group_ai_chat') {
-      return { ...base, topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, participation_jitter: values.participation_jitter ?? 0.5, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, messages_per_round_mode: values.messages_per_round_mode ?? 'auto', messages_per_round: values.messages_per_round ?? 1, history_fetch_account_id: values.history_fetch_account_id ?? null, silent_mode_enabled: values.silent_mode_enabled ?? true, silent_start: values.silent_start ?? '23:00', silent_end: values.silent_end ?? '08:00', silent_max_accounts: values.silent_max_accounts ?? 5, silent_messages_per_round: values.silent_messages_per_round ?? 1, ramp_up_minutes: values.ramp_up_minutes ?? 60, ramp_start_ratio: values.ramp_start_ratio ?? 0.3, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
+      const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
+      return { ...base, target_operation_target_id: values.target_operation_target_id ?? null, target_group_name: target?.title ?? '', topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, participation_jitter: values.participation_jitter ?? 0.5, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, account_personas: parseKeyValueMap(values.account_personas), account_memory_depth: values.account_memory_depth ?? 3, messages_per_round_mode: values.messages_per_round_mode ?? 'auto', messages_per_round: values.messages_per_round ?? 1, history_fetch_account_id: values.history_fetch_account_id ?? null, silent_mode_enabled: values.silent_mode_enabled ?? true, silent_start: values.silent_start ?? '23:00', silent_end: values.silent_end ?? '08:00', silent_max_accounts: values.silent_max_accounts ?? 5, silent_messages_per_round: values.silent_messages_per_round ?? 1, ramp_up_minutes: values.ramp_up_minutes ?? 60, ramp_start_ratio: values.ramp_start_ratio ?? 0.3, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
     }
     if (type === 'group_relay') {
-      return { ...base, source_groups: values.source_groups ?? [], target_group_id: values.target_group_id ?? null, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, monitor_account_ids: csvNumbers(values.monitor_account_ids), target_group_ids: values.target_group_ids ?? [], filters: { keyword_whitelist: words(values.keyword_whitelist), keyword_blacklist: words(values.keyword_blacklist), min_message_length: values.min_message_length ?? null, max_message_length: values.max_message_length ?? null, allowed_media_types: words(values.allowed_media_types), blocked_user_ids: words(values.blocked_user_ids), only_with_media: Boolean(values.only_with_media), only_text: Boolean(values.only_text), language_filter: values.language_filter ?? null }, content_mode: values.content_mode ?? 'light_rewrite', rewrite_prompt: values.rewrite_prompt ?? '', preserve_media: Boolean(values.preserve_media), add_source_attribution: Boolean(values.add_source_attribution), dedup_window_minutes: values.dedup_window_minutes ?? 60, dedup_method: values.dedup_method ?? 'hash', require_review: false };
+      const sourceTargetIds = csvNumbers(values.source_operation_target_ids);
+      const targetOperationIds = csvNumbers(values.target_operation_target_ids);
+      return { ...base, source_groups: sourceTargetIds.length ? sourceTargetIds.map((id) => {
+        const target = groupTargets.find((item) => item.id === id);
+        return { operation_target_id: id, group_name: target?.title ?? '', is_active: true };
+      }) : values.source_groups ?? [], target_operation_target_id: values.target_operation_target_id ?? null, target_operation_target_ids: targetOperationIds, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, monitor_account_ids: csvNumbers(values.monitor_account_ids), filters: { keyword_whitelist: words(values.keyword_whitelist), keyword_blacklist: words(values.keyword_blacklist), min_message_length: values.min_message_length ?? null, max_message_length: values.max_message_length ?? null, allowed_media_types: words(values.allowed_media_types), blocked_user_ids: words(values.blocked_user_ids), only_with_media: Boolean(values.only_with_media), only_text: Boolean(values.only_text), language_filter: values.language_filter ?? null }, content_mode: values.content_mode ?? 'light_rewrite', rewrite_prompt: values.rewrite_prompt ?? '', preserve_media: Boolean(values.preserve_media), add_source_attribution: Boolean(values.add_source_attribution), dedup_window_minutes: values.dedup_window_minutes ?? 60, dedup_method: values.dedup_method ?? 'hash', require_review: false };
     }
     if (type === 'channel_view') {
       return { ...base, target_views_per_message: values.target_views_per_message ?? 50, view_count_jitter: values.view_count_jitter ?? 0.2, execution_mode: values.execution_mode ?? 'distribute' };
@@ -517,7 +583,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     if (type === 'channel_like') {
       return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? 0.3, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
     }
-    return { ...base, target_comments_per_message: values.target_comments_per_message ?? 10, comment_count_jitter: values.comment_count_jitter ?? 0.3, ai_model: values.ai_model ?? '', comment_style: values.comment_style ?? 'mixed', topic_hint: values.topic_hint ?? '', system_prompt_override: values.system_prompt_override ?? '', language: values.language ?? 'zh-CN', max_comment_length: values.max_comment_length ?? null, max_comments_per_account_per_hour: values.max_comments_per_account_per_hour ?? 3, require_review: false };
+    return { ...base, target_comments_per_message: values.target_comments_per_message ?? 10, comment_count_jitter: values.comment_count_jitter ?? 0.3, comment_mode: values.comment_mode ?? 'comment', reply_to_message_ids: csvNumbers(values.reply_to_message_ids), ai_model: values.ai_model ?? '', comment_style: values.comment_style ?? 'mixed', topic_hint: values.topic_hint ?? '', system_prompt_override: values.system_prompt_override ?? '', language: values.language ?? 'zh-CN', max_comment_length: values.max_comment_length ?? null, max_comments_per_account_per_hour: values.max_comments_per_account_per_hour ?? 3, require_review: false };
   }
 
   function capacityCheckPayload(values: any) {
@@ -537,26 +603,35 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         ...channelScopePayload(values),
       };
     }
+    if (taskType === 'channel_comment') {
+      return {
+        task_type: taskType,
+        account_config: accountConfig(values),
+        target_per_message: values.target_comments_per_message ?? 10,
+        ...channelScopePayload(values),
+      };
+    }
     return null;
   }
 
-  async function createTask(skipCapacityCheck = false) {
+  async function createTask(options: { start?: boolean; skipCapacityCheck?: boolean } = {}) {
+    const start = options.start ?? true;
     setActionError('');
     setActionWarning('');
     try {
       await form.validateFields(fieldsForSubmit(taskType, messageScope, accountMode, pacingMode));
       const values = form.getFieldsValue(true);
       const checkPayload = capacityCheckPayload(values);
-      if (!skipCapacityCheck && checkPayload) {
+      if (!options.skipCapacityCheck && checkPayload) {
         const capacity = await api<ChannelCapacityCheck>('/tasks/channel-capacity-check', { method: 'POST', body: JSON.stringify(checkPayload) });
         if (capacity.will_shortfall) {
           setActionWarning(capacity.warning_message || `当前参与账号 ${capacity.max_effective_per_message} 个，任务会继续运行。`);
         }
       }
-      await api<TaskCenterTask>(CREATE_ENDPOINT[taskType], { method: 'POST', body: JSON.stringify(createPayload(values)) });
+      await api<TaskCenterTask>((start ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType], { method: 'POST', body: JSON.stringify(createPayload(values)) });
       form.resetFields();
       setTaskType('group_ai_chat');
-      form.setFieldsValue(initialValuesForType('group_ai_chat'));
+      form.setFieldsValue(initialValuesForType('group_ai_chat', schedulingSetting));
       setWizardStep(0);
       setModalOpen(false);
       await load();
@@ -648,7 +723,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
   function resetTypeFields(nextType: TaskCenterTaskType) {
     setTaskType(nextType);
     form.resetFields();
-    form.setFieldsValue(initialValuesForType(nextType));
+    form.setFieldsValue(initialValuesForType(nextType, schedulingSetting));
     setWizardStep(0);
   }
 
@@ -760,15 +835,40 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     { title: 'Turn', dataIndex: 'turn_index', width: 80 },
     { title: '账号', dataIndex: 'account_id', width: 170, render: (value) => accountDisplay(detail, value) },
     { title: '角色', dataIndex: 'account_role', width: 140 },
+    { title: '账号记忆', dataIndex: 'account_memory', width: 260, ellipsis: true, render: (value) => value || '-' },
+    { title: '长期画像', dataIndex: 'account_profile', width: 260, ellipsis: true, render: (value) => value || '-' },
+    { title: '话题脉络', dataIndex: 'topic_thread', width: 280, ellipsis: true, render: (value) => value || '-' },
+    { title: '话题计划', dataIndex: 'topic_plan', width: 280, ellipsis: true, render: (value) => value || '-' },
     { title: '意图', dataIndex: 'intent', width: 140 },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <TaskStatusBadge status={value} /> },
     { title: '内容', dataIndex: 'content', ellipsis: true },
     { title: '结果', key: 'result', width: 220, render: (_, turn) => turn.result?.error_message || (turn.result?.success === true ? '成功' : '-') },
   ];
 
+  const aiGenerationColumns: ColumnsType<TaskCenterDetail['ai_generation_records'][number]> = [
+    { title: '生成记录', dataIndex: 'generation_id', width: 260 },
+    { title: '生成状态', dataIndex: 'status', width: 110, render: (value) => <TaskStatusBadge status={value || 'success'} /> },
+    { title: '生成条数', dataIndex: 'generated_count', width: 100 },
+    { title: 'Token', dataIndex: 'token_count', width: 100 },
+    { title: '上下文', dataIndex: 'context_message_count', width: 90 },
+    { title: '账号记忆', dataIndex: 'account_memory_count', width: 100 },
+    { title: '生成时间', dataIndex: 'created_at', width: 190, render: (value) => formatDateTime(value) },
+  ];
+
+  const aiAccountProfileColumns: ColumnsType<TaskCenterDetail['ai_account_profiles'][number]> = [
+    { title: '账号', dataIndex: 'account_id', width: 170, render: (value) => accountDisplay(detail, value) },
+    { title: '总成功', dataIndex: 'total_success_count', width: 90 },
+    { title: '当前任务', dataIndex: 'current_task_success_count', width: 90 },
+    { title: '跨任务', dataIndex: 'cross_task_success_count', width: 90 },
+    { title: '画像摘要', dataIndex: 'profile_summary', ellipsis: true },
+  ];
+
   const relayBatchColumns: ColumnsType<TaskCenterDetail['relay_batches'][number]> = [
     { title: '转发批次', dataIndex: 'relay_batch_id', width: 280 },
     { title: '发送项', key: 'items', width: 90, render: (_, item) => item.stats.total ?? item.items.length },
+    { title: '源事件', dataIndex: 'source_event_count', width: 90 },
+    { title: '素材', dataIndex: 'material_count', width: 80 },
+    { title: '规则版本', dataIndex: 'rule_version_count', width: 100 },
     { title: '成功', key: 'success', width: 80, render: (_, item) => item.stats.success ?? 0 },
     { title: '失败', key: 'failed', width: 80, render: (_, item) => item.stats.failed ?? 0 },
     { title: '运行中', key: 'pending', width: 90, render: (_, item) => (item.stats.pending ?? 0) + (item.stats.executing ?? 0) },
@@ -776,10 +876,16 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
 
   const relayItemColumns: ColumnsType<TaskCenterDetail['relay_batches'][number]['items'][number]> = [
     { title: '源事件', dataIndex: 'relay_event_id', width: 180 },
+    { title: '归因键', dataIndex: 'source_event_key', width: 160 },
     { title: '来源', dataIndex: 'source_info', width: 180 },
+    { title: '源目标', dataIndex: 'source_operation_target_id', width: 90, render: (value) => value ? `#${value}` : '-' },
+    { title: '运营目标', dataIndex: 'operation_target_id', width: 90, render: (value) => value ? `#${value}` : '-' },
     { title: '规则版本', key: 'rule', width: 130, render: (_, item) => item.rule_set_version_id ? `#${item.rule_set_version_id}` : '-' },
+    { title: '规则命中', key: 'rule_trace', width: 220, ellipsis: true, render: (_, item) => item.rule_trace?.summary || '-' },
     { title: '账号', dataIndex: 'account_id', width: 170, render: (value) => accountDisplay(detail, value) },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <TaskStatusBadge status={value} /> },
+    { title: '重试', dataIndex: 'retry_count', width: 80 },
+    { title: '素材指纹', dataIndex: 'material_fingerprint', width: 150, ellipsis: true },
     { title: '原文', dataIndex: 'original_text', ellipsis: true },
     { title: '转换后', dataIndex: 'transformed_text', ellipsis: true },
     { title: '结果', key: 'result', width: 220, render: (_, item) => item.result?.error_message || (item.result?.success === true ? '成功' : '-') },
@@ -796,27 +902,34 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         <StatCard label="执行中" value={tasks.filter((task) => task.status === 'running').length} detail="正在调度" icon={<RefreshCcw size={20} />} />
         <StatCard label="失败任务" value={tasks.filter((task) => task.status === 'failed').length} detail="需处理" icon={<Activity size={20} />} />
       </Space>
-      <Card className="panel" title="任务中心" extra={<Button type="primary" onClick={() => { setActionError(''); setTaskType('group_ai_chat'); form.resetFields(); form.setFieldsValue(initialValuesForType('group_ai_chat')); setWizardStep(0); setModalOpen(true); }}>创建并启动任务</Button>}>
+      <Card className="panel" title="任务中心" extra={<Button type="primary" onClick={() => { setActionError(''); setTaskType('group_ai_chat'); form.resetFields(); form.setFieldsValue(initialValuesForType('group_ai_chat', schedulingSetting)); setWizardStep(0); setModalOpen(true); }}>创建任务</Button>}>
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         {actionWarning && <Alert className="form-alert" type="warning" showIcon message={actionWarning} />}
         <Space className="toolbar-row" wrap>{table.searchInput}<Button loading={loading} onClick={load}>刷新</Button></Space>
         <Table<TaskCenterTask> className="tg-table" rowKey="id" columns={columns} dataSource={table.filteredRows} pagination={table.pagination} scroll={{ x: 1380 }} loading={loading} />
       </Card>
 
-      <Modal className="tg-modal large" title="创建并启动任务" open={modalOpen} width={980} footer={null} destroyOnHidden centered onCancel={() => setModalOpen(false)}>
+      <Modal className="tg-modal large" title="创建任务" open={modalOpen} width={980} footer={null} destroyOnHidden centered onCancel={() => setModalOpen(false)}>
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         {actionWarning && <Alert className="form-alert" type="warning" showIcon message={actionWarning} />}
         <Steps className="wizard-steps" current={wizardStep} items={WIZARD_STEPS.map((title) => ({ title }))} />
-        <Form form={form} layout="vertical" initialValues={initialValuesForType(taskType)}>
+        <Form form={form} layout="vertical" initialValues={initialValuesForType(taskType, schedulingSetting)}>
           {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
-          {wizardStep === 1 && <WizardTarget taskType={taskType} groups={groups} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} />}
-          {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} />}
+          {wizardStep === 1 && <WizardTarget taskType={taskType} groups={groups} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} />}
+          {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} comments={comments} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} />}
           {wizardStep === 3 && <WizardAccounts accountMode={accountMode} accounts={accounts} accountPools={accountPools} includeAdvanced pacingMode={pacingMode} />}
           {wizardStep === 4 && <WizardReview taskType={taskType} values={formValues} />}
           <Space className="modal-actions">
             <Button onClick={() => setModalOpen(false)}>取消</Button>
             <Button disabled={wizardStep === 0} onClick={() => setWizardStep((value) => Math.max(value - 1, 0))}>上一步</Button>
-            {wizardStep < WIZARD_STEPS.length - 1 ? <Button type="primary" onClick={nextStep}>下一步</Button> : <Button type="primary" onClick={() => createTask()}>创建并启动</Button>}
+            {wizardStep < WIZARD_STEPS.length - 1 ? (
+              <Button type="primary" onClick={nextStep}>下一步</Button>
+            ) : (
+              <>
+                <Button onClick={() => createTask({ start: false })}>保存草稿</Button>
+                <Button type="primary" onClick={() => createTask({ start: true })}>创建并启动</Button>
+              </>
+            )}
           </Space>
         </Form>
       </Modal>
@@ -825,8 +938,14 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         <Form form={editForm} layout="vertical">
           <EditBasics />
+          {detail && ['group_ai_chat', 'group_relay'].includes(detail.task.type) && (
+            <>
+              <Typography.Title level={5}>目标来源</Typography.Title>
+              <WizardTarget taskType={detail.task.type} groups={groups} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} />
+            </>
+          )}
           <Typography.Title level={5}>类型参数</Typography.Title>
-          <WizardTypeConfig taskType={detail?.task.type ?? taskType} ruleSets={ruleSets} />
+          <WizardTypeConfig taskType={detail?.task.type ?? taskType} ruleSets={ruleSets} comments={comments} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} />
           <Typography.Title level={5}>账号选择</Typography.Title>
           <WizardAccounts accountMode={editAccountMode} accounts={accounts} accountPools={accountPools} />
           <Typography.Title level={5}>节奏策略</Typography.Title>
@@ -860,6 +979,26 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
             {detail.ai_cycles.length > 0 && (
               <Space direction="vertical" size={8} style={{ width: '100%' }}>
                 <Typography.Title level={5} style={{ margin: 0 }}>AI 活跃循环 Cycle / Turn</Typography.Title>
+                {detail.ai_generation_records.length > 0 && (
+                  <Table<TaskCenterDetail['ai_generation_records'][number]>
+                    rowKey="generation_id"
+                    columns={aiGenerationColumns}
+                    dataSource={detail.ai_generation_records}
+                    pagination={false}
+                    size="small"
+                    scroll={{ x: 950 }}
+                  />
+                )}
+                {detail.ai_account_profiles.length > 0 && (
+                  <Table<TaskCenterDetail['ai_account_profiles'][number]>
+                    rowKey="account_id"
+                    columns={aiAccountProfileColumns}
+                    dataSource={detail.ai_account_profiles}
+                    pagination={false}
+                    size="small"
+                    scroll={{ x: 900 }}
+                  />
+                )}
                 <Table<TaskCenterDetail['ai_cycles'][number]>
                   rowKey="cycle_id"
                   columns={aiCycleColumns}
@@ -874,7 +1013,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
                         dataSource={item.turns}
                         pagination={false}
                         size="small"
-                        scroll={{ x: 1080 }}
+                        scroll={{ x: 1540 }}
                       />
                     ),
                   }}
@@ -961,8 +1100,8 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
 function fieldsForStep(step: number, taskType: TaskCenterTaskType, messageScope: string, accountMode: string): string[] {
   if (step === 0) return ['name'];
   if (step === 1) {
-    if (taskType === 'group_ai_chat') return ['target_group_id'];
-    if (taskType === 'group_relay') return ['source_group_ids', 'target_group_id'];
+    if (taskType === 'group_ai_chat') return ['target_operation_target_id'];
+    if (taskType === 'group_relay') return ['source_operation_target_ids', 'target_operation_target_id'];
     const fields = ['target_channel_id', 'message_scope'];
     if (['latest_n', 'dynamic_new'].includes(messageScope)) fields.push('message_count');
     if (messageScope === 'specific') fields.push('message_ids');
@@ -988,7 +1127,7 @@ function accountFields(accountMode: string): string[] {
 }
 
 function pacingFields(pacingMode: string): string[] {
-  const fields = ['pacing_mode', 'jitter_percent', 'max_actions_per_hour', 'max_actions_per_day', 'max_retries', 'retry_delay_seconds', 'retry_backoff'];
+  const fields = ['pacing_mode', 'jitter_percent', 'max_actions_per_hour', 'max_actions_per_day', 'quiet_enabled', 'quiet_start', 'quiet_end', 'max_retries', 'retry_delay_seconds', 'retry_backoff', 'on_account_banned', 'on_api_rate_limit', 'on_content_rejected'];
   if (pacingMode === 'template') fields.push('template');
   if (pacingMode === 'fixed') fields.push('interval_seconds_min', 'interval_seconds_max');
   if (pacingMode === 'curve') fields.push('curve_type', 'curve_duration_hours');
@@ -1009,7 +1148,7 @@ function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, acc
   if (taskType === 'group_ai_chat') {
     return [
       ...baseFields,
-      'target_group_id',
+      'target_operation_target_id',
       'topic_hint',
       'chat_history_depth',
       'ai_model',
@@ -1021,6 +1160,8 @@ function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, acc
       'participation_jitter',
       'allow_account_repeat',
       'repeat_cooldown_rounds',
+      'account_personas',
+      'account_memory_depth',
       'messages_per_round_mode',
       'messages_per_round',
       'history_fetch_account_id',
@@ -1037,12 +1178,12 @@ function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, acc
   if (taskType === 'group_relay') {
     return [
       ...baseFields,
-      'source_group_ids',
+      'source_operation_target_ids',
       'rule_set_id',
       'rule_set_version_id',
       'monitor_account_ids',
-      'target_group_id',
-      'target_group_ids',
+      'target_operation_target_id',
+      'target_operation_target_ids',
       'content_mode',
       'rewrite_prompt',
       'keyword_whitelist',
@@ -1066,16 +1207,16 @@ function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, acc
   if (taskType === 'channel_like') {
     return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions', 'max_likes_per_account_per_hour'];
   }
-  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'comment_count_jitter', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];
+  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'comment_count_jitter', 'comment_mode', 'reply_to_message_ids', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];
 }
 
 function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
   const baseFields = ['name', 'scheduled_end', ...accountFields(accountMode), ...pacingFields(pacingMode)];
   if (taskType === 'group_ai_chat') {
-    return [...baseFields, 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'tone', 'language', 'max_message_length', 'participation_rate', 'participation_jitter', 'allow_account_repeat', 'repeat_cooldown_rounds', 'messages_per_round_mode', 'messages_per_round', 'history_fetch_account_id', 'silent_mode_enabled', 'silent_start', 'silent_end', 'silent_max_accounts', 'silent_messages_per_round', 'ramp_up_minutes', 'ramp_start_ratio', 'context_expire_after_messages'];
+    return [...baseFields, 'target_operation_target_id', 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'tone', 'language', 'max_message_length', 'participation_rate', 'participation_jitter', 'allow_account_repeat', 'repeat_cooldown_rounds', 'account_personas', 'account_memory_depth', 'messages_per_round_mode', 'messages_per_round', 'history_fetch_account_id', 'silent_mode_enabled', 'silent_start', 'silent_end', 'silent_max_accounts', 'silent_messages_per_round', 'ramp_up_minutes', 'ramp_start_ratio', 'context_expire_after_messages'];
   }
   if (taskType === 'group_relay') {
-    return [...baseFields, 'source_groups', 'target_group_id', 'rule_set_id', 'rule_set_version_id', 'monitor_account_ids', 'target_group_ids', 'content_mode', 'rewrite_prompt', 'keyword_whitelist', 'keyword_blacklist', 'min_message_length', 'max_message_length', 'allowed_media_types', 'blocked_user_ids', 'only_with_media', 'only_text', 'language_filter', 'preserve_media', 'add_source_attribution', 'dedup_window_minutes', 'dedup_method'];
+    return [...baseFields, 'source_operation_target_ids', 'source_groups', 'target_operation_target_id', 'target_operation_target_ids', 'rule_set_id', 'rule_set_version_id', 'monitor_account_ids', 'content_mode', 'rewrite_prompt', 'keyword_whitelist', 'keyword_blacklist', 'min_message_length', 'max_message_length', 'allowed_media_types', 'blocked_user_ids', 'only_with_media', 'only_text', 'language_filter', 'preserve_media', 'add_source_attribution', 'dedup_window_minutes', 'dedup_method'];
   }
   if (taskType === 'channel_view') {
     return [...baseFields, 'target_views_per_message', 'view_count_jitter', 'execution_mode'];
@@ -1083,7 +1224,7 @@ function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, 
   if (taskType === 'channel_like') {
     return [...baseFields, 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions', 'max_likes_per_account_per_hour'];
   }
-  return [...baseFields, 'target_comments_per_message', 'comment_count_jitter', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];
+  return [...baseFields, 'target_comments_per_message', 'comment_count_jitter', 'comment_mode', 'reply_to_message_ids', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];
 }
 
 function EditBasics() {
@@ -1117,18 +1258,19 @@ function WizardTarget({ taskType, groups, groupTargets, channelTargets, messages
   const groupTargetOptions = groupTargets
     .filter((target) => target.auth_status === '已授权运营')
     .map((target) => ({
-      value: target.linked_group_id as number,
+      value: target.id,
       label: `${target.title} / 可发账号 ${target.available_send_account_count} / 监听账号 ${target.listener_account_count}`,
     }));
+  const sendableGroupTargetOptions = groupTargetOptions.filter((option) => groupTargets.find((target) => target.id === option.value)?.can_send);
   if (taskType === 'group_ai_chat') {
-    return <div className="form-grid"><Form.Item name="target_group_id" label="运营目标群" rules={[{ required: true }]}><Select options={groupTargetOptions} /></Form.Item></div>;
+    return <div className="form-grid"><Form.Item name="target_operation_target_id" label="运营目标群" rules={[{ required: true }]}><Select options={sendableGroupTargetOptions} /></Form.Item></div>;
   }
   if (taskType === 'group_relay') {
     return (
       <div className="form-grid">
-        <Form.Item name="source_group_ids" label="源群运营目标" rules={[{ required: true }]}><Select mode="multiple" options={groupTargetOptions} /></Form.Item>
-        <Form.Item name="target_group_id" label="默认目标群" rules={[{ required: true }]}><Select options={groupTargetOptions.filter((option) => groupTargets.find((target) => target.linked_group_id === option.value)?.can_send)} /></Form.Item>
-        <Form.Item name="target_group_ids" label="附加目标群"><Select mode="multiple" allowClear options={groupTargetOptions.filter((option) => groupTargets.find((target) => target.linked_group_id === option.value)?.can_send)} /></Form.Item>
+        <Form.Item name="source_operation_target_ids" label="源群运营目标" rules={[{ required: true }]}><Select mode="multiple" options={groupTargetOptions} /></Form.Item>
+        <Form.Item name="target_operation_target_id" label="默认目标群" rules={[{ required: true }]}><Select options={sendableGroupTargetOptions} /></Form.Item>
+        <Form.Item name="target_operation_target_ids" label="附加目标群"><Select mode="multiple" allowClear options={sendableGroupTargetOptions} /></Form.Item>
       </div>
     );
   }
@@ -1144,7 +1286,21 @@ function WizardTarget({ taskType, groups, groupTargets, channelTargets, messages
   );
 }
 
-function WizardTypeConfig({ taskType, ruleSets = [] }: { taskType: TaskCenterTaskType; ruleSets?: RuleSet[] }) {
+function WizardTypeConfig({
+  taskType,
+  ruleSets = [],
+  comments = [],
+  targetChannelId,
+  messageScope = 'latest_n',
+  messageIds,
+}: {
+  taskType: TaskCenterTaskType;
+  ruleSets?: RuleSet[];
+  comments?: ChannelMessageComment[];
+  targetChannelId?: number;
+  messageScope?: string;
+  messageIds?: Array<number | string> | string | null;
+}) {
   if (taskType === 'group_ai_chat') {
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
@@ -1163,8 +1319,12 @@ function WizardTypeConfig({ taskType, ruleSets = [] }: { taskType: TaskCenterTas
                   <Form.Item name="messages_per_round" label="手动每轮发言数"><InputNumber min={1} max={10} /></Form.Item>
                   <Form.Item name="tone" label="语气"><Select options={[{ value: 'auto', label: '自动' }, { value: 'casual', label: '口语' }, { value: 'professional', label: '正式' }, { value: 'mixed', label: '混合' }]} /></Form.Item>
                   <Form.Item name="chat_history_depth" label="历史条数"><InputNumber min={1} max={200} /></Form.Item>
+                  <Form.Item name="account_memory_depth" label="账号记忆条数"><InputNumber min={0} max={20} /></Form.Item>
                   <Form.Item name="participation_rate" label="参与率"><InputNumber min={0.01} max={1} step={0.05} /></Form.Item>
                   <Form.Item name="participation_jitter" label="参与抖动"><InputNumber min={0} max={1} step={0.05} /></Form.Item>
+                  <Form.Item name="account_personas" label="账号角色">
+                    <Input.TextArea rows={3} placeholder={'101=提问型账号\n102=补充细节账号'} />
+                  </Form.Item>
                   <Form.Item name="silent_mode_enabled" label="静默期"><Select options={[{ value: true, label: '启用低频模式' }, { value: false, label: '关闭' }]} /></Form.Item>
                   <Form.Item name="silent_start" label="静默开始"><Input /></Form.Item>
                   <Form.Item name="silent_end" label="静默结束"><Input /></Form.Item>
@@ -1205,7 +1365,36 @@ function WizardTypeConfig({ taskType, ruleSets = [] }: { taskType: TaskCenterTas
   if (taskType === 'channel_like') {
     return <div className="form-grid"><Form.Item name="target_likes_per_message" label="每条目标点赞"><InputNumber min={1} /></Form.Item><Form.Item name="like_count_jitter" label="点赞抖动"><InputNumber min={0} max={1} step={0.05} /></Form.Item><Form.Item name="allowed_reactions" label="Emoji"><Input /></Form.Item><Form.Item name="max_likes_per_account_per_hour" label="每号每小时点赞上限"><InputNumber min={1} /></Form.Item></div>;
   }
-  return <div className="form-grid"><Form.Item name="target_comments_per_message" label="每条目标评论/回复"><InputNumber min={1} /></Form.Item><Form.Item name="comment_count_jitter" label="评论抖动"><InputNumber min={0} max={1} step={0.05} /></Form.Item><Form.Item name="comment_style" label="评论风格"><Select options={[{ value: 'mixed', label: '混合' }, { value: 'relevant', label: '相关' }, { value: 'question', label: '提问' }, { value: 'praise', label: '正向' }, { value: 'discussion', label: '讨论' }]} /></Form.Item><Form.Item name="topic_hint" label="主题指导"><Input /></Form.Item><Form.Item name="max_comments_per_account_per_hour" label="每号每小时评论上限"><InputNumber min={1} /></Form.Item></div>;
+  const selectedMessageIds = new Set(csvNumbers(messageIds));
+  const commentOptions = comments
+    .filter((comment) => {
+      if (targetChannelId && comment.channel_target_id !== targetChannelId) return false;
+      if (messageScope === 'specific') return selectedMessageIds.size > 0 && selectedMessageIds.has(comment.channel_message_id);
+      return true;
+    })
+    .map((comment) => ({
+      value: comment.comment_message_id,
+      label: `消息#${comment.channel_message_id} / 评论#${comment.comment_message_id} / ${comment.author_name || '未知用户'} / ${comment.content_preview || '无内容预览'}`,
+    }));
+  return (
+    <div className="form-grid">
+      <Form.Item name="target_comments_per_message" label="每条目标评论/回复"><InputNumber min={1} /></Form.Item>
+      <Form.Item name="comment_count_jitter" label="评论抖动"><InputNumber min={0} max={1} step={0.05} /></Form.Item>
+      <Form.Item name="comment_mode" label="互动方式"><Select options={[{ value: 'comment', label: '评论频道消息' }, { value: 'reply', label: '回复指定评论' }, { value: 'mixed', label: '评论+回复' }]} /></Form.Item>
+      <Form.Item name="reply_to_message_ids" label="回复对象">
+        <Select
+          mode="multiple"
+          allowClear
+          showSearch
+          placeholder="选择当前频道消息下已采集评论"
+          options={commentOptions}
+        />
+      </Form.Item>
+      <Form.Item name="comment_style" label="评论风格"><Select options={[{ value: 'mixed', label: '混合' }, { value: 'relevant', label: '相关' }, { value: 'question', label: '提问' }, { value: 'praise', label: '正向' }, { value: 'discussion', label: '讨论' }]} /></Form.Item>
+      <Form.Item name="topic_hint" label="主题指导"><Input /></Form.Item>
+      <Form.Item name="max_comments_per_account_per_hour" label="每号每小时评论上限"><InputNumber min={1} /></Form.Item>
+    </div>
+  );
 }
 
 function WizardAccounts({ accountMode, accounts, accountPools, includeAdvanced = false, pacingMode = 'template' }: { accountMode: string; accounts: Account[]; accountPools: AccountPool[]; includeAdvanced?: boolean; pacingMode?: string }) {
@@ -1251,20 +1440,35 @@ function WizardPacing({ pacingMode }: { pacingMode: string }) {
       <Form.Item name="jitter_percent" label="抖动百分比"><InputNumber min={0} max={100} /></Form.Item>
       <Form.Item name="max_actions_per_hour" label="每小时上限"><InputNumber min={1} /></Form.Item>
       <Form.Item name="max_actions_per_day" label="每日上限"><InputNumber min={1} /></Form.Item>
+      <Form.Item name="quiet_enabled" label="全局静默"><Select options={[{ value: true, label: '启用' }, { value: false, label: '关闭' }]} /></Form.Item>
+      <Form.Item name="quiet_start" label="静默开始"><Input /></Form.Item>
+      <Form.Item name="quiet_end" label="静默结束"><Input /></Form.Item>
       <Form.Item name="max_retries" label="重试次数"><InputNumber min={0} max={10} /></Form.Item>
       <Form.Item name="retry_delay_seconds" label="重试间隔秒"><InputNumber min={0} /></Form.Item>
       <Form.Item name="retry_backoff" label="退避"><Select options={[{ value: 'none', label: '固定' }, { value: 'linear', label: '线性' }, { value: 'exponential', label: '指数' }]} /></Form.Item>
+      <Form.Item name="on_account_banned" label="账号异常"><Select options={[{ value: 'skip_account', label: '跳过账号' }, { value: 'pause_task', label: '暂停任务' }, { value: 'stop_task', label: '停止任务' }]} /></Form.Item>
+      <Form.Item name="on_api_rate_limit" label="API 限流"><Select options={[{ value: 'wait_and_retry', label: '等待重试' }, { value: 'skip', label: '跳过' }, { value: 'pause', label: '暂停' }]} /></Form.Item>
+      <Form.Item name="on_content_rejected" label="内容拦截"><Select options={[{ value: 'skip_message', label: '跳过消息' }, { value: 'rewrite_and_retry', label: '改写重试' }, { value: 'pause', label: '暂停' }]} /></Form.Item>
     </div>
   );
 }
 
 function WizardReview({ taskType, values }: { taskType: TaskCenterTaskType; values: Record<string, any> }) {
+  const targetSummary = taskType === 'group_relay'
+    ? values.target_operation_target_ids?.length
+      ? `运营目标 #${values.target_operation_target_id || '-'} + ${values.target_operation_target_ids.length} 个附加目标`
+      : `运营目标 #${values.target_operation_target_id || '-'}`
+    : values.target_operation_target_id
+      ? `运营目标 #${values.target_operation_target_id}`
+      : values.target_channel_id
+        ? `频道 #${values.target_channel_id}`
+        : '-';
   return (
     <Descriptions bordered column={2} size="small" items={[
       { key: 'type', label: '任务类型', children: TYPE_LABEL[taskType] },
       { key: 'name', label: '任务名称', children: values.name || '-' },
       { key: 'end', label: '结束时间', children: values.scheduled_end ? new Date(values.scheduled_end).toLocaleString() : '不限制' },
-      { key: 'target', label: '目标', children: values.target_group_ids?.length ? `${values.target_group_id || values.target_channel_id || '-'} + ${values.target_group_ids.length} 个附加目标` : values.target_group_id || values.target_channel_id || '-' },
+      { key: 'target', label: '目标', children: targetSummary },
       { key: 'account', label: '账号方式', children: values.selection_mode || 'all' },
       { key: 'pacing', label: '节奏', children: values.pacing_mode || 'template' },
       { key: 'rule', label: '规则版本', children: taskType === 'group_relay' ? (values.rule_set_version_id || values.rule_set_id || '系统默认') : '-' },

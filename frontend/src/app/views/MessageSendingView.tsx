@@ -95,7 +95,6 @@ export default function MessageSendingView({
   const [targetQuery, setTargetQuery] = React.useState('');
   const [contentQuery, setContentQuery] = React.useState('');
   const [manualOpen, setManualOpen] = React.useState(false);
-  const [manualTargetType, setManualTargetType] = React.useState<TargetType>('private');
   const [manualPeer, setManualPeer] = React.useState('');
   const [manualDisplay, setManualDisplay] = React.useState('');
   const [materialOpen, setMaterialOpen] = React.useState(false);
@@ -314,6 +313,7 @@ export default function MessageSendingView({
       void message.error('请输入 peer id 或 username');
       return;
     }
+    const manualTargetType: TargetType = 'private';
     const display = manualDisplay.trim() || peer;
     const key = `manual:${manualTargetType}:${peer}`;
     const option: TargetOption = {
@@ -545,16 +545,9 @@ export default function MessageSendingView({
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message="该目标未在系统资产中验证，可能因权限不足、目标不存在、账号限制等原因发送失败。"
+          message="手动输入只用于个人目标；群聊和频道请从已授权运营目标中选择。"
         />
         <Form layout="vertical">
-          <Form.Item label="目标类型">
-            <Radio.Group value={manualTargetType} onChange={(event) => setManualTargetType(event.target.value)}>
-              <Radio.Button value="private">个人</Radio.Button>
-              <Radio.Button value="group">群聊</Radio.Button>
-              <Radio.Button value="channel">频道</Radio.Button>
-            </Radio.Group>
-          </Form.Item>
           <Form.Item label="Peer ID / username">
             <Input value={manualPeer} onChange={(event) => setManualPeer(event.target.value)} placeholder="@username 或 peer id" />
           </Form.Item>

@@ -5,10 +5,10 @@ import type {
   TokenLedger,
   UsageLedger, UsageSummary, LoginFlow, Account, AccountPool, AccountLoginForm,
   DeveloperApp, AiProvider, PromptTemplate, TenantAiSetting, SchedulingSetting,
-  Material, ContentKeywordRule, Contact, Group, Campaign, Draft, MessageTask, ArchiveItem, ArchiveDetail,
+  Material, ContentKeywordRule, Contact, Group, MessageTask, ArchiveItem, ArchiveDetail,
   ArchiveExport, AuditFilters, AuditLog, VerificationCode, AccountSyncRecord, VerificationTask,
   AccountCloneItem, AccountClonePlan, AccountGroup, ProfileSyncRecord,
-  AccountDetail, AccountPoolDetail, GroupDetail, CampaignDetail, RecommendedAccount, Tenant,
+  AccountDetail, AccountPoolDetail, GroupDetail, Tenant,
   ConfirmPayload, MessageSendBatchCreate, MessageSendTaskCreate, ModalState,
 } from '../types';
 
@@ -84,6 +84,8 @@ export interface AppState {
   setPromptTemplates: (templates: PromptTemplate[]) => void;
   tenantAiSetting: TenantAiSetting | null;
   setTenantAiSetting: (setting: TenantAiSetting | null) => void;
+  selectedAiProviderId: number | '';
+  setSelectedAiProviderId: (id: number | '') => void;
   schedulingSetting: SchedulingSetting | null;
   setSchedulingSetting: (setting: SchedulingSetting | null) => void;
   materials: Material[];
@@ -91,17 +93,11 @@ export interface AppState {
   contentKeywordRules: ContentKeywordRule[];
   setContentKeywordRules: (rules: ContentKeywordRule[]) => void;
 
-  // Groups & Campaigns
+  // Groups & tasks
   groups: Group[];
   setGroups: (groups: Group[]) => void;
-  campaigns: Campaign[];
-  setCampaigns: (campaigns: Campaign[]) => void;
-  drafts: Draft[];
-  setDrafts: (drafts: Draft[]) => void;
   tasks: MessageTask[];
   setTasks: (tasks: MessageTask[]) => void;
-  selectedCampaignId: number | null;
-  setSelectedCampaignId: (id: number | null) => void;
   taskManagementTab: string;
   setTaskManagementTab: (tab: string) => void;
 
@@ -132,14 +128,6 @@ export interface AppState {
   setReturnAfterVerification: (mode: 'accountDetail' | 'accountPoolDetail') => void;
   groupDetail: GroupDetail | null;
   setGroupDetail: (detail: GroupDetail | null) => void;
-  campaignDetail: CampaignDetail | null;
-  setCampaignDetail: (detail: CampaignDetail | null) => void;
-
-  // Draft edit
-  draftEditTarget: Draft | null;
-  setDraftEditTarget: (draft: Draft | null) => void;
-  draftEditForm: { content: string; risk_level: string; suggested_account_id: number | '' };
-  setDraftEditForm: (form: { content: string; risk_level: string; suggested_account_id: number | '' }) => void;
 
   // Account forms
   accountCreateForm: { display_name: string; username: string; phone_number: string; pool_id: number | ''; login_method: 'code' | 'qr' };
@@ -157,35 +145,9 @@ export interface AppState {
   avatarFile: File | null;
   setAvatarFile: (file: File | null) => void;
 
-  // Group & Campaign state
+  // Group state
   selectedGroupId: number | null;
   setSelectedGroupId: (id: number | null) => void;
-  campaignStep: number;
-  setCampaignStep: (step: number) => void;
-  selectedTargetGroupIds: number[];
-  setSelectedTargetGroupIds: (ids: number[]) => void;
-  selectedSourceGroupIds: number[];
-  setSelectedSourceGroupIds: (ids: number[]) => void;
-  campaignMode: string;
-  setCampaignMode: (mode: string) => void;
-  recommendedAccounts: RecommendedAccount[];
-  setRecommendedAccounts: (accounts: RecommendedAccount[]) => void;
-  selectedAccountsByGroup: Record<string, number[]>;
-  setSelectedAccountsByGroup: (accounts: Record<string, number[]>) => void;
-  topic: string;
-  setTopic: (topic: string) => void;
-  sendWindow: string;
-  setSendWindow: (window: string) => void;
-  intensity: string;
-  setIntensity: (intensity: string) => void;
-  draftCount: number;
-  setDraftCount: (count: number) => void;
-  tone: string;
-  setTone: (tone: string) => void;
-  selectedAiProviderId: number | '';
-  setSelectedAiProviderId: (id: number | '') => void;
-  selectedMaterialIds: number[];
-  setSelectedMaterialIds: (ids: number[]) => void;
   jitterMinSeconds: number;
   setJitterMinSeconds: (seconds: number) => void;
   jitterMaxSeconds: number;
@@ -194,20 +156,26 @@ export interface AppState {
   setBatchIntervalSeconds: (seconds: number) => void;
   respectSendWindow: boolean;
   setRespectSendWindow: (respect: boolean) => void;
-  campaignEndsAt: string;
-  setCampaignEndsAt: (value: string) => void;
-  maxAiTokens: number;
-  setMaxAiTokens: (tokens: number) => void;
-  runIntervalSeconds: number;
-  setRunIntervalSeconds: (seconds: number) => void;
-  participationMinRatio: number;
-  setParticipationMinRatio: (value: number) => void;
-  participationMaxRatio: number;
-  setParticipationMaxRatio: (value: number) => void;
-  maxMessagesPerAccount: number;
-  setMaxMessagesPerAccount: (value: number) => void;
-  maxDraftsPerBatch: number;
-  setMaxDraftsPerBatch: (value: number) => void;
+  quietHoursEnabled: boolean;
+  setQuietHoursEnabled: (enabled: boolean) => void;
+  quietStart: string;
+  setQuietStart: (value: string) => void;
+  quietEnd: string;
+  setQuietEnd: (value: string) => void;
+  quietTimezone: string;
+  setQuietTimezone: (value: string) => void;
+  defaultMaxRetries: number;
+  setDefaultMaxRetries: (value: number) => void;
+  defaultRetryDelaySeconds: number;
+  setDefaultRetryDelaySeconds: (value: number) => void;
+  defaultRetryBackoff: string;
+  setDefaultRetryBackoff: (value: string) => void;
+  defaultOnAccountBanned: string;
+  setDefaultOnAccountBanned: (value: string) => void;
+  defaultOnApiRateLimit: string;
+  setDefaultOnApiRateLimit: (value: string) => void;
+  defaultOnContentRejected: string;
+  setDefaultOnContentRejected: (value: string) => void;
   taskStatusFilter: string;
   setTaskStatusFilter: (filter: string) => void;
   groupPolicy: {
@@ -272,13 +240,7 @@ export interface AppState {
   // Computed values
   selectedPool: AccountPool | null;
   selectedGroup: Group | null;
-  selectedCampaign: Campaign | null;
-  selectedCampaignDrafts: Draft[];
-  selectedCampaignTasks: MessageTask[];
-  targetGroupsMissingAccounts: number[];
   taskSummary: {
-    campaigns: number;
-    pendingDrafts: number;
     queued: number;
     sending: number;
     sent: number;
@@ -290,7 +252,6 @@ export interface AppState {
   showResult: (title: string, message: string) => void;
   closeModal: () => void;
   openConfirm: (payload: ConfirmPayload) => void;
-  openCampaignModal: (groupId?: number) => void;
   openAccountCreate: (loginNow?: boolean) => void;
   openAccountDetail: (account: Account) => Promise<void>;
   openAccountVerificationCodes: (account: Account) => Promise<void>;
@@ -310,19 +271,9 @@ export interface AppState {
   queueAccountSyncNow: () => Promise<void>;
   startDirectMessageToContact: (contact: Contact) => void;
   openGroupDetail: (group: Group) => Promise<void>;
-  loadCampaignDetail: (campaign: Campaign) => Promise<void>;
-  openDraftEdit: (draft: Draft) => void;
-  saveDraftEdit: () => Promise<void>;
   avatarUrl: (value: string) => string;
   openAccountProfileEdit: () => void;
   pollVerificationCodes: (silent?: boolean) => Promise<void>;
-  toggleTargetGroup: (groupId: number) => void;
-  toggleSourceGroup: (groupId: number) => void;
-  recommendAccounts: (groupIds?: number[]) => Promise<void>;
-  toggleRecommendedAccount: (groupId: number, accountId: number) => void;
-  setGroupAccountsSelected: (groupId: number, accountIds: number[]) => void;
-  goCampaignAccountStep: () => Promise<void>;
-  goCampaignContentStep: () => void;
   createDirectMessageTask: () => Promise<void>;
   createMessageSendTask: (payload: MessageSendTaskCreate | MessageSendBatchCreate) => Promise<MessageTask[]>;
   saveAccountProfile: () => Promise<void>;
@@ -341,11 +292,6 @@ export interface AppState {
   deleteAccount: (account: Account) => Promise<void>;
   healthCheck: (account: Account) => Promise<void>;
   syncAccountGroups: (account: Account) => Promise<void>;
-  createCampaignAndDrafts: () => Promise<void>;
-  cancelCampaign: (campaign: Campaign) => Promise<void>;
-  approveDraft: (draft: Draft) => Promise<void>;
-  rejectDraft: (draft: Draft) => Promise<void>;
-  approveAllDrafts: () => Promise<void>;
   cancelTask: (task: MessageTask) => Promise<void>;
   dispatchTask: (task: MessageTask) => Promise<void>;
   drainQueue: () => Promise<void>;
@@ -378,7 +324,6 @@ export interface AppState {
   createContentKeywordRule: () => Promise<void>;
   openContentKeywordRuleEdit: (rule: ContentKeywordRule) => void;
   saveContentKeywordRule: () => Promise<void>;
-  toggleMaterial: (materialId: number) => void;
   accountName: (accountId: number | null | undefined) => string;
   groupName: (groupId: number | null | undefined) => string;
   choosePoolSendAccount: (detail: AccountPoolDetail) => Account | undefined;

@@ -54,6 +54,8 @@ class Action(Base):
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
+    lease_owner: Mapped[str] = mapped_column(String(120), default="")
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     result: Mapped[dict] = mapped_column(JSON, default=dict)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -89,4 +91,18 @@ class MessageFingerprint(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
-__all__ = ["Action", "MessageFingerprint", "ReviewQueue", "Task", "new_uuid"]
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    worker_id: Mapped[str] = mapped_column(String(160), unique=True)
+    process_type: Mapped[str] = mapped_column(String(60), default="task_center")
+    hostname: Mapped[str] = mapped_column(String(120), default="")
+    pid: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(30), default="active")
+    heartbeat_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+__all__ = ["Action", "MessageFingerprint", "ReviewQueue", "Task", "WorkerHeartbeat", "new_uuid"]

@@ -14,6 +14,7 @@ class SendMessagePayload(BaseModel):
 
     chat_id: str = ""
     group_id: int | None = None
+    operation_target_id: int | None = None
     target_display: str = ""
     message_text: str = Field(min_length=1)
     original_text: str = ""
@@ -21,16 +22,28 @@ class SendMessagePayload(BaseModel):
     cycle_id: str = ""
     turn_index: int | None = None
     account_role: str = ""
+    account_memory: str = ""
+    account_profile: str = ""
+    topic_thread: str = ""
+    topic_plan: str = ""
     intent: str = ""
     context_message_ids: list[int] = Field(default_factory=list)
     context_snapshot_message_id: int | None = None
     context_expire_after_messages: int = 0
+    ai_generation_id: str = ""
+    ai_generation_status: str = ""
+    ai_generation_tokens: int = 0
+    ai_generation_count: int = 0
+    ai_generation_context_count: int = 0
+    ai_generation_memory_count: int = 0
     relay_batch_id: str = ""
     relay_event_id: str = ""
     source_group_id: int | None = None
+    source_operation_target_id: int | None = None
     source_info: str = ""
     rule_set_id: int | None = None
     rule_set_version_id: int | None = None
+    rule_trace: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def require_destination(self) -> "SendMessagePayload":
@@ -56,6 +69,9 @@ class LikeMessagePayload(ViewMessagePayload):
 class PostCommentPayload(ViewMessagePayload):
     message_content: str = ""
     comment_text: str = Field(min_length=1)
+    comment_mode: str = "comment"
+    reply_to_message_id: int | None = None
+    reply_target_label: str = ""
     review_approved: bool = False
 
 

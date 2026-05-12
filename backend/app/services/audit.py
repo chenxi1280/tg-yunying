@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+from io import StringIO
 from datetime import datetime
 
 from sqlalchemy import or_, select
@@ -66,4 +68,23 @@ def filter_audit_logs(
     return list(session.scalars(stmt.order_by(AuditLog.id.desc()).limit(limit)))
 
 
-__all__ = ["filter_audit_logs"]
+def audit_logs_csv(logs: list[AuditLog]) -> str:
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "tenant_id", "actor", "action", "target_type", "target_id", "detail", "ip_address", "created_at"])
+    for item in logs:
+        writer.writerow([
+            item.id,
+            item.tenant_id,
+            item.actor,
+            item.action,
+            item.target_type,
+            item.target_id,
+            item.detail,
+            item.ip_address,
+            item.created_at.isoformat() if item.created_at else "",
+        ])
+    return output.getvalue()
+
+
+__all__ = ["audit_logs_csv", "filter_audit_logs"]

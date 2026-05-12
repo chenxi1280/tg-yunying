@@ -10,12 +10,15 @@ from app.auth import CurrentUser, get_current_user
 from app.config import get_settings
 from app.database import get_session
 from app.common.http import not_found
-from app.models import ChannelMessage, ManualOperationRecord, OperationTarget, OperationTask, OperationTaskAttempt
+from app.models import ChannelMessage, ChannelMessageComment, ManualOperationRecord, OperationTarget, OperationTask, OperationTaskAttempt
 from app.schemas import (
     ChannelMessageCreate,
+    ChannelMessageCommentOut,
+    ChannelMessageCommentSyncOut,
     ChannelMessageOut,
     ManualOperationRecordOut,
     OperationTargetCreate,
+    OperationTargetAccountUpdate,
     OperationTargetDetailOut,
     OperationTargetMessageSyncOut,
     OperationTargetOut,
@@ -30,6 +33,7 @@ from app.services import (
     create_operation_target,
     create_operation_task,
     dispatch_operation_task,
+    filter_channel_message_comments,
     filter_channel_messages,
     filter_operation_targets,
     filter_operation_tasks,
@@ -37,7 +41,9 @@ from app.services import (
     list_operation_attempts,
     operation_target_detail,
     retry_operation_task,
+    sync_channel_message_comments,
     sync_operation_target_messages,
+    update_operation_target_account_policy,
     update_operation_target,
 )
 
@@ -102,7 +108,21 @@ def patch_operation_target(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> OperationTarget:
     try:
-        return update_operation_target(session, target_id, payload, current_user.name)
+        return update_operation_target(session, current_user.tenant_id or 1, target_id, payload, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.patch("/api/operation-targets/{target_id}/accounts/{account_id}", response_model=OperationTargetDetailOut)
+def patch_operation_target_account_policy(
+    target_id: int,
+    account_id: int,
+    payload: OperationTargetAccountUpdate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return update_operation_target_account_policy(session, current_user.tenant_id or 1, target_id, account_id, payload, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -126,6 +146,28 @@ def post_channel_message(
         return create_channel_message(session, payload.model_copy(update={"tenant_id": current_user.tenant_id or 1}), current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/channel-comments", response_model=list[ChannelMessageCommentOut])
+def get_channel_comments(
+    channel_target_id: int | None = None,
+    channel_message_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> Sequence[ChannelMessageComment]:
+    return filter_channel_message_comments(session, current_user.tenant_id or 1, channel_target_id, channel_message_id)
+
+
+@router.post("/api/channel-messages/{channel_message_id}/sync-comments", response_model=ChannelMessageCommentSyncOut)
+def post_channel_message_sync_comments(
+    channel_message_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return sync_channel_message_comments(session, current_user.tenant_id or 1, channel_message_id, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
 
 
 @legacy_operation_task_router.get("/api/operation-tasks", response_model=list[OperationTaskOut])

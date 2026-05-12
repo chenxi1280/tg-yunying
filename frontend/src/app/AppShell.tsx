@@ -28,6 +28,7 @@ import ArchivesView from './views/ArchivesView';
 import { AppModals } from './AppModals';
 import { VIEW_ROUTES } from './routes';
 import type { ChannelMessage, MessageSendingPrefill, OperationTarget, TaskCenterPrefill, TaskCenterTaskType } from './types';
+import { api } from '../shared/api/client';
 
 const { Header, Sider, Content } = Layout;
 
@@ -134,11 +135,30 @@ function AppShell() {
   }
 
   function openTaskFromTarget(
-    taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'channel_view' | 'channel_like' | 'channel_comment'>,
+    taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment'>,
     target: OperationTarget,
     channelMessage?: ChannelMessage,
   ) {
     setTaskCenterPrefill({ taskType, target, message: channelMessage, nonce: Date.now() });
+    goToView('taskManagement');
+  }
+
+  async function openTaskFromGroup(groupId?: number) {
+    if (!groupId) {
+      goToView('taskManagement');
+      return;
+    }
+    try {
+      const targets = await api<OperationTarget[]>('/operation-targets?target_type=group');
+      const target = targets.find((item) => item.linked_group_id === groupId);
+      if (target) {
+        openTaskFromTarget('group_ai_chat', target);
+        return;
+      }
+      void message.warning('该群还没有对应的运营目标，请先在运营目标中心同步或创建。');
+    } catch {
+      void message.warning('读取运营目标失败，请在任务中心手动选择目标。');
+    }
     goToView('taskManagement');
   }
 
@@ -301,7 +321,7 @@ function AppShell() {
           />
         )}
         {activeView === 'groupManagement' && (
-          <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateTask={() => goToView('taskManagement')} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
+          <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateTask={openTaskFromGroup} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
         )}
         {activeView === 'taskManagement' && <TaskCenterView accounts={accounts} accountPools={accountPools} prefill={taskCenterPrefill} />}
         {activeView === 'listenerCenter' && <ListenerCenterView />}

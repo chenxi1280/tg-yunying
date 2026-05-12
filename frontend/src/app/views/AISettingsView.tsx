@@ -101,6 +101,16 @@ export default function AISettingsView({
             <strong>{schedulingSetting?.jitter_min_seconds ?? '-'}-{schedulingSetting?.jitter_max_seconds ?? '-'}s</strong>
             <p>批次 {schedulingSetting?.batch_interval_seconds ?? '-'}s / {schedulingSetting?.respect_send_window ? '遵守时间窗' : '忽略时间窗'}</p>
           </Card>
+          <Card className="summary-card" size="small">
+            <span>全局静默</span>
+            <strong>{schedulingSetting?.quiet_hours_enabled ? `${schedulingSetting.quiet_start}-${schedulingSetting.quiet_end}` : '未启用'}</strong>
+            <p>{schedulingSetting?.quiet_timezone ?? 'Asia/Shanghai'}</p>
+          </Card>
+          <Card className="summary-card" size="small">
+            <span>默认重试</span>
+            <strong>{schedulingSetting?.default_max_retries ?? 3} 次</strong>
+            <p>{schedulingSetting?.default_retry_delay_seconds ?? 60}s / {schedulingSetting?.default_retry_backoff ?? 'exponential'}</p>
+          </Card>
         </div>
       </Card>
 

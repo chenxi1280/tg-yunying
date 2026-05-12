@@ -288,7 +288,25 @@ def get_scheduling_setting(session: Session, tenant_id: int | None) -> Schedulin
 def update_scheduling_setting(session: Session, tenant_id: int | None, payload: SchedulingSettingUpdate, actor: str) -> SchedulingSetting:
     setting = get_scheduling_setting(session, tenant_id)
     data = payload.model_dump(exclude_unset=True)
-    for field in ["jitter_min_seconds", "jitter_max_seconds", "batch_interval_seconds", "respect_send_window"]:
+    for field in [
+        "jitter_min_seconds",
+        "jitter_max_seconds",
+        "batch_interval_seconds",
+        "respect_send_window",
+        "quiet_hours_enabled",
+        "quiet_start",
+        "quiet_end",
+        "quiet_timezone",
+        "default_max_retries",
+        "default_retry_delay_seconds",
+        "default_retry_backoff",
+        "default_on_account_banned",
+        "default_on_api_rate_limit",
+        "default_on_content_rejected",
+        "default_account_hour_limit",
+        "default_account_day_limit",
+        "default_account_cooldown_seconds",
+    ]:
         if data.get(field) is not None:
             setattr(setting, field, data[field])
     if setting.jitter_max_seconds < setting.jitter_min_seconds:

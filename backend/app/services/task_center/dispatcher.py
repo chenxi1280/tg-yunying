@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import socket
+from datetime import timedelta
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
@@ -8,7 +12,9 @@ from app.gateways import OutboundSegment
 from app.config import get_settings
 from app.models import AccountStatus, Action, FailureType, GroupContextMessage, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now, gateway
+from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
 from app.services.developer_apps import credentials_for_account
+from app.services.ai_config import get_scheduling_setting
 
 from .payloads import LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
@@ -20,7 +26,9 @@ def dispatch_action(session: Session, action: Action) -> bool:
         return False
     account = session.get(TgAccount, action.account_id) if action.account_id else None
     if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
-        _fail(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
+        _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
+        return True
+    if _defer_for_global_account_policy(session, action, account):
         return True
     try:
         payload = validate_action_payload(action.action_type, action.payload or {})
@@ -85,11 +93,21 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
             select(TgGroupAccount).where(TgGroupAccount.group_id == group.id, TgGroupAccount.account_id == account.id, TgGroupAccount.can_send.is_(True))
         )
         if not link:
-            _fail(action, FailureType.ACCOUNT_UNAVAILABLE.value, "该账号不可向此群发送", auto_check="拦截", validation_stage="account_target_permission")
+            _fail_with_policy(
+                action,
+                FailureType.ACCOUNT_UNAVAILABLE.value,
+                "该账号不可向此群发送",
+                auto_check="拦截",
+                validation_stage="account_target_permission",
+            )
             return True
         failure_type, failure_detail = validate_group_send_policy(session, tenant_id=action.tenant_id, group=group, content=content, review_approved=payload.review_approved)
         if failure_type:
-            _fail(action, failure_type, failure_detail or failure_type, auto_check="拦截", validation_stage="content_policy")
+            _fail_with_policy(action, failure_type, failure_detail or failure_type, auto_check="拦截", validation_stage="content_policy")
+            return True
+        filtered = filter_outbound_content(session, tenant_id=action.tenant_id, group=group, content=content)
+        if not filtered.ok:
+            _fail_with_policy(action, FailureType.CONTENT_REJECTED.value, filtered.reason, auto_check="拦截", validation_stage="content_policy")
             return True
         if _context_expired(session, payload):
             _skip(action, "context_expired", "上下文已过期，跳过本轮剩余发言")
@@ -98,7 +116,7 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
         group_peer = group.tg_peer_id
         group_pk = group.id
         session_ciphertext = account.session_ciphertext
-        action.status = "executing"
+        _mark_executing(action)
         session.commit()
         result = gateway.send_message(
             account_id,
@@ -116,7 +134,7 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
     target_peer = payload.chat_id
     account_id = account.id
     session_ciphertext = account.session_ciphertext
-    action.status = "executing"
+    _mark_executing(action)
     session.commit()
     result = gateway.send_message_to_target(account_id, target_peer, content, "channel", None, session_ciphertext, credentials)
     _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "")
@@ -128,7 +146,7 @@ def _dispatch_view(action: Action, account: TgAccount, credentials, session: Ses
     session_ciphertext = account.session_ciphertext
     channel_peer = payload.channel_id
     message_id = payload.message_id
-    action.status = "executing"
+    _mark_executing(action)
     session.commit()
     result = gateway.view_channel_message(account_id, channel_peer, message_id, session_ciphertext, credentials)
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail)
@@ -141,7 +159,7 @@ def _dispatch_like(action: Action, account: TgAccount, credentials, session: Ses
     channel_peer = payload.channel_id
     message_id = payload.message_id
     reaction = payload.reaction_emoji
-    action.status = "executing"
+    _mark_executing(action)
     session.commit()
     result = gateway.send_channel_reaction(account_id, channel_peer, message_id, reaction, session_ciphertext, credentials)
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail)
@@ -154,9 +172,9 @@ def _dispatch_comment(action: Action, account: TgAccount, credentials, session: 
     channel_peer = payload.channel_id
     message_id = payload.message_id
     content = payload.comment_text
-    action.status = "executing"
+    _mark_executing(action)
     session.commit()
-    result = gateway.reply_channel_message(account_id, channel_peer, message_id, content, session_ciphertext, credentials)
+    result = gateway.reply_channel_message(account_id, channel_peer, message_id, content, session_ciphertext, credentials, reply_to_message_id=payload.reply_to_message_id)
     _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "")
     return True
 
@@ -169,17 +187,20 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
     if ok:
         action.status = "success"
         action.result = {"success": True, "telegram_msg_id": remote_id, "auto_check": "通过", "validation_stage": "sent"}
+        _clear_action_lease(action)
         account.last_active_at = _now()
     else:
         _fail(action, failure_type or FailureType.UNKNOWN.value, detail or "执行失败", auto_check="失败", validation_stage="telegram_api")
         if failure_type == FailureType.ACCOUNT_LIMITED.value:
             account.status = AccountStatus.LIMITED.value
             account.health_score = min(account.health_score, 55)
-    action.executed_at = _now()
+        _apply_default_failure_policy(action, failure_type or FailureType.UNKNOWN.value)
+    action.executed_at = None if action.status == "pending" else _now()
 
 
 def _fail(action: Action, failure_type: str, detail: str, *, auto_check: str = "失败", validation_stage: str = "") -> None:
     action.status = "failed"
+    _clear_action_lease(action)
     action.result = {
         "success": False,
         "error_code": failure_type,
@@ -190,10 +211,209 @@ def _fail(action: Action, failure_type: str, detail: str, *, auto_check: str = "
     action.executed_at = _now()
 
 
+def _fail_with_policy(action: Action, failure_type: str, detail: str, *, auto_check: str = "失败", validation_stage: str = "") -> None:
+    _fail(action, failure_type, detail, auto_check=auto_check, validation_stage=validation_stage)
+    _apply_default_failure_policy(action, failure_type)
+
+
 def _skip(action: Action, code: str, detail: str) -> None:
     action.status = "skipped"
+    _clear_action_lease(action)
     action.result = {"success": False, "error_code": code, "error_message": detail, "auto_check": "跳过", "validation_stage": "context"}
     action.executed_at = _now()
+
+
+def _defer(action: Action, scheduled_at, code: str, detail: str) -> None:
+    action.status = "pending"
+    action.scheduled_at = scheduled_at
+    _clear_action_lease(action)
+    action.result = {"success": False, "error_code": code, "error_message": detail, "auto_check": "延后", "validation_stage": "account_policy"}
+
+
+def _defer_for_global_account_policy(session: Session, action: Action, account: TgAccount) -> bool:
+    deferred_until = _global_account_policy_delay(session, action, account)
+    if not deferred_until:
+        return False
+    _defer(action, deferred_until, "global_account_policy", "账号全局限额或冷却中，已延后执行")
+    return True
+
+
+def _mark_executing(action: Action, *, lease_seconds: int = 1800) -> None:
+    action.status = "executing"
+    action.lease_owner = _lease_owner()
+    action.lease_expires_at = _now() + timedelta(seconds=max(60, int(lease_seconds or 1800)))
+
+
+def _clear_action_lease(action: Action) -> None:
+    action.lease_owner = ""
+    action.lease_expires_at = None
+
+
+def _lease_owner() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
+def _global_account_policy_delay(session: Session, action: Action, account: TgAccount):
+    setting = get_scheduling_setting(session, action.tenant_id)
+    now_value = _now()
+    candidates = []
+    cooldown = int(setting.default_account_cooldown_seconds or 0)
+    if cooldown > 0:
+        last_success = session.scalar(
+            select(func.max(Action.executed_at)).where(
+                Action.tenant_id == action.tenant_id,
+                Action.account_id == account.id,
+                Action.id != action.id,
+                Action.status == "success",
+                Action.executed_at.is_not(None),
+            )
+        )
+        if last_success and last_success + timedelta(seconds=cooldown) > now_value:
+            candidates.append(last_success + timedelta(seconds=cooldown))
+    hour_limit = int(setting.default_account_hour_limit or 0)
+    if hour_limit > 0:
+        hour_start = now_value.replace(minute=0, second=0, microsecond=0)
+        hour_end = hour_start + timedelta(hours=1)
+        hour_count = _account_action_count(session, action, account.id, hour_start, hour_end)
+        if hour_count >= hour_limit:
+            candidates.append(hour_end)
+    day_limit = int(setting.default_account_day_limit or 0)
+    if day_limit > 0:
+        day_start = now_value.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        day_count = _account_action_count(session, action, account.id, day_start, day_end)
+        if day_count >= day_limit:
+            candidates.append(day_end)
+    return max(candidates) if candidates else None
+
+
+def _account_action_count(session: Session, action: Action, account_id: int, start, end) -> int:
+    return int(
+        session.scalar(
+            select(func.count(Action.id)).where(
+                Action.tenant_id == action.tenant_id,
+                Action.account_id == account_id,
+                Action.id != action.id,
+                Action.status.in_(["executing", "success"]),
+                Action.scheduled_at >= start,
+                Action.scheduled_at < end,
+            )
+        )
+        or 0
+    )
+
+
+def _apply_default_failure_policy(action: Action, failure_type: str) -> None:
+    task = action and getattr(action, "task", None)
+    # Action is usually loaded without relationship state in this project, so look up via the attached session.
+    from sqlalchemy.orm import object_session
+
+    session = object_session(action)
+    task = session.get(Task, action.task_id) if session and action.task_id else task
+    if not session or not task:
+        return
+    setting = get_scheduling_setting(session, action.tenant_id)
+    stats = dict(task.stats or {})
+    if failure_type in {FailureType.ACCOUNT_LIMITED.value, FailureType.ACCOUNT_UNAVAILABLE.value}:
+        policy = setting.default_on_account_banned
+        stats["last_failure_policy"] = policy
+        if policy == "pause_task":
+            _pause_task(task, action, failure_type)
+        elif policy == "stop_task":
+            _stop_task(session, task, action, failure_type)
+    elif failure_type in {FailureType.FLOOD_WAIT.value, FailureType.SLOWMODE.value}:
+        policy = setting.default_on_api_rate_limit
+        stats["last_failure_policy"] = policy
+        if policy == "pause":
+            _pause_task(task, action, failure_type)
+        elif policy == "wait_and_retry":
+            retry_after = _retry_after_seconds(action.result.get("error_message") or "")
+            if retry_after > 0:
+                action.status = "pending"
+                action.scheduled_at = _now() + timedelta(seconds=retry_after)
+                _clear_action_lease(action)
+                action.result = {
+                    **(action.result or {}),
+                    "auto_check": "延后",
+                    "validation_stage": "failure_policy",
+                    "retry_after_seconds": retry_after,
+                }
+    elif failure_type == FailureType.CONTENT_REJECTED.value:
+        policy = setting.default_on_content_rejected
+        stats["last_failure_policy"] = policy
+        if policy == "pause":
+            _pause_task(task, action, failure_type)
+        elif policy == "rewrite_and_retry":
+            rewritten = _rewrite_rejected_action_content(session, action)
+            if rewritten:
+                action.status = "pending"
+                action.scheduled_at = _now() + timedelta(seconds=max(1, int(setting.default_retry_delay_seconds or 1)))
+                action.executed_at = None
+                action.retry_count = int(action.retry_count or 0) + 1
+                _clear_action_lease(action)
+                action.result = {
+                    **(action.result or {}),
+                    "validation_stage": "failure_policy",
+                    "failure_policy_action": "rewrite_and_retry",
+                    "auto_check": "延后",
+                    "rewritten_content_preview": rewritten[:120],
+                }
+            else:
+                task.last_error = action.result.get("error_message") or failure_type
+                action.result = {
+                    **(action.result or {}),
+                    "validation_stage": "failure_policy",
+                    "failure_policy_action": "rewrite_and_retry_required",
+                    "auto_check": "待改写",
+                }
+    task.stats = stats
+
+
+def _rewrite_rejected_action_content(session: Session, action: Action) -> str:
+    payload = dict(action.payload or {})
+    group_id = payload.get("group_id")
+    content = str(payload.get("message_text") or "")
+    group = session.get(TgGroup, group_id) if group_id else None
+    if not group or not content:
+        return ""
+    rewritten = rewrite_rejected_content(session, tenant_id=action.tenant_id, group=group, content=content)
+    if not rewritten.ok or not rewritten.content:
+        return ""
+    payload["message_text"] = rewritten.content
+    action.payload = payload
+    return rewritten.content
+
+
+def _pause_task(task: Task, action: Action, failure_type: str) -> None:
+    task.status = "paused"
+    task.next_run_at = None
+    task.last_error = action.result.get("error_message") or failure_type
+
+
+def _stop_task(session: Session, task: Task, action: Action, failure_type: str) -> None:
+    task.status = "stopped"
+    task.next_run_at = None
+    task.last_error = action.result.get("error_message") or failure_type
+    for pending in session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending", Action.id != action.id)):
+        pending.status = "skipped"
+        pending.executed_at = _now()
+        _clear_action_lease(pending)
+        pending.result = {
+            "success": False,
+            "error_code": "task_stopped_by_failure_policy",
+            "error_message": "任务已按默认失败策略停止，待执行项已跳过",
+            "auto_check": "跳过",
+            "validation_stage": "failure_policy",
+        }
+
+
+def _retry_after_seconds(detail: str) -> int:
+    import re
+
+    match = re.search(r"(\d+)", detail or "")
+    if not match:
+        return 0
+    return max(1, min(24 * 60 * 60, int(match.group(1))))
 
 
 def _context_expired(session: Session, payload: SendMessagePayload) -> bool:

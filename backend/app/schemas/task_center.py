@@ -98,15 +98,23 @@ class RelayFilters(BaseModel):
 class SourceGroup(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    group_id: int
+    group_id: int | None = None
+    operation_target_id: int | None = None
     group_name: str = ""
     is_active: bool = True
+
+    @model_validator(mode="after")
+    def validate_group_reference(self) -> "SourceGroup":
+        if not self.group_id and not self.operation_target_id:
+            raise ValueError("source group requires group_id or operation_target_id")
+        return self
 
 
 class GroupAIChatConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    target_group_id: int
+    target_group_id: int | None = None
+    target_operation_target_id: int | None = None
     target_group_name: str = ""
     topic_hint: str | None = None
     chat_history_depth: int = Field(default=50, ge=1, le=200)
@@ -119,6 +127,8 @@ class GroupAIChatConfig(BaseModel):
     participation_jitter: float = Field(default=0.5, ge=0, le=1)
     allow_account_repeat: bool = True
     repeat_cooldown_rounds: int = Field(default=2, ge=0)
+    account_personas: dict[str, str] = Field(default_factory=dict)
+    account_memory_depth: int = Field(default=3, ge=0, le=20)
     messages_per_round_mode: Literal["auto", "manual"] = "auto"
     messages_per_round: int = Field(default=1, ge=1, le=10)
     history_fetch_account_id: int | None = None
@@ -131,6 +141,12 @@ class GroupAIChatConfig(BaseModel):
     ramp_start_ratio: float = Field(default=0.3, ge=0.01, le=1)
     context_expire_after_messages: int = Field(default=10, ge=0, le=500)
 
+    @model_validator(mode="after")
+    def validate_target_reference(self) -> "GroupAIChatConfig":
+        if not self.target_group_id and not self.target_operation_target_id:
+            raise ValueError("target_group_id 或 target_operation_target_id 至少填写一个")
+        return self
+
 
 class GroupRelayConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -141,7 +157,9 @@ class GroupRelayConfig(BaseModel):
     monitor_account_ids: list[int] = Field(default_factory=list)
     filters: RelayFilters = Field(default_factory=RelayFilters)
     target_group_id: int | None = None
+    target_operation_target_id: int | None = None
     target_group_ids: list[int] = Field(default_factory=list)
+    target_operation_target_ids: list[int] = Field(default_factory=list)
     send_account_ids: list[int] = Field(default_factory=list)
     content_mode: Literal["raw", "light_rewrite", "ai_rewrite", "summary"] = "light_rewrite"
     rewrite_prompt: str | None = None
@@ -153,10 +171,12 @@ class GroupRelayConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_relay_targets(self) -> "GroupRelayConfig":
-        if not self.target_group_id and not self.target_group_ids:
-            raise ValueError("target_group_id 或 target_group_ids 至少填写一个")
+        if not self.target_group_id and not self.target_group_ids and not self.target_operation_target_id and not self.target_operation_target_ids:
+            raise ValueError("target_group_id、target_group_ids 或运营目标至少填写一个")
         if self.target_group_id and self.target_group_id not in self.target_group_ids:
             self.target_group_ids = [self.target_group_id, *self.target_group_ids]
+        if self.target_operation_target_id and self.target_operation_target_id not in self.target_operation_target_ids:
+            self.target_operation_target_ids = [self.target_operation_target_id, *self.target_operation_target_ids]
         self.require_review = False
         return self
 
@@ -182,6 +202,7 @@ class ChannelMessageScopeConfig(BaseModel):
 
 
 class ChannelViewConfig(ChannelMessageScopeConfig):
+    message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "dynamic_new"
     target_views_per_message: int = Field(default=50, ge=1, le=10000)
     view_count_jitter: float = Field(default=0.2, ge=0, le=1)
     execution_mode: Literal["distribute", "burst"] = "distribute"
@@ -197,8 +218,11 @@ class ChannelLikeConfig(ChannelMessageScopeConfig):
 
 
 class ChannelCommentConfig(ChannelMessageScopeConfig):
+    message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "dynamic_new"
     target_comments_per_message: int = Field(default=10, ge=1, le=1000)
     comment_count_jitter: float = Field(default=0.3, ge=0, le=1)
+    comment_mode: Literal["comment", "reply", "mixed"] = "comment"
+    reply_to_message_ids: list[int] = Field(default_factory=list)
     ai_model: str = ""
     comment_style: Literal["relevant", "question", "praise", "discussion", "mixed"] = "mixed"
     topic_hint: str | None = None
@@ -210,6 +234,8 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
 
     @model_validator(mode="after")
     def disable_manual_review(self) -> "ChannelCommentConfig":
+        if self.comment_mode == "reply" and not self.reply_to_message_ids:
+            raise ValueError("comment_mode=reply 时 reply_to_message_ids 必填")
         self.require_review = False
         return self
 
@@ -296,10 +322,18 @@ class TaskSettingsUpdate(TaskUpdate):
     participation_jitter: float | None = Field(default=None, ge=0, le=1)
     allow_account_repeat: bool | None = None
     repeat_cooldown_rounds: int | None = Field(default=None, ge=0)
+    account_personas: dict[str, str] | None = None
+    account_memory_depth: int | None = Field(default=None, ge=0, le=20)
     messages_per_round_mode: Literal["auto", "manual"] | None = None
     messages_per_round: int | None = Field(default=None, ge=1, le=10)
     history_fetch_account_id: int | None = None
 
+    source_groups: list[SourceGroup] | None = None
+    target_group_id: int | None = None
+    target_operation_target_id: int | None = None
+    target_group_name: str | None = None
+    target_group_ids: list[int] | None = None
+    target_operation_target_ids: list[int] | None = None
     monitor_account_ids: list[int] | None = None
     filters: RelayFilters | None = None
     content_mode: Literal["raw", "light_rewrite", "ai_rewrite", "summary"] | None = None
@@ -322,6 +356,8 @@ class TaskSettingsUpdate(TaskUpdate):
 
     target_comments_per_message: int | None = Field(default=None, ge=1, le=1000)
     comment_count_jitter: float | None = Field(default=None, ge=0, le=1)
+    comment_mode: Literal["comment", "reply", "mixed"] | None = None
+    reply_to_message_ids: list[int] | None = None
     comment_style: Literal["relevant", "question", "praise", "discussion", "mixed"] | None = None
     max_comment_length: int | None = Field(default=None, ge=1)
     max_comments_per_account_per_hour: int | None = Field(default=None, ge=1, le=500)
@@ -415,6 +451,9 @@ class TaskAITurnOut(BaseModel):
     turn_index: int
     account_id: int | None = None
     account_role: str = ""
+    account_memory: str = ""
+    account_profile: str = ""
+    topic_thread: str = ""
     intent: str = ""
     content: str = ""
     status: str
@@ -430,17 +469,44 @@ class TaskAICycleOut(BaseModel):
     turns: list[TaskAITurnOut] = Field(default_factory=list)
 
 
+class TaskAIGenerationRecordOut(BaseModel):
+    generation_id: str
+    cycle_id: str
+    status: str = ""
+    generated_count: int = 0
+    token_count: int = 0
+    context_message_count: int = 0
+    account_memory_count: int = 0
+    scheduled_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+class TaskAIAccountProfileOut(BaseModel):
+    account_id: int
+    display_name: str = ""
+    username: str | None = None
+    status: str = ""
+    total_success_count: int = 0
+    current_task_success_count: int = 0
+    cross_task_success_count: int = 0
+    profile_summary: str = ""
+
+
 class TaskRelayItemOut(BaseModel):
     action_id: str
     relay_event_id: str = ""
     source_group_id: int | None = None
+    source_operation_target_id: int | None = None
+    operation_target_id: int | None = None
     source_info: str = ""
     original_text: str = ""
     transformed_text: str = ""
     rule_set_id: int | None = None
     rule_set_version_id: int | None = None
+    rule_trace: dict[str, Any] = Field(default_factory=dict)
     account_id: int | None = None
     status: str
+    retry_count: int = 0
     scheduled_at: datetime
     executed_at: datetime | None = None
     result: dict[str, Any] = Field(default_factory=dict)
@@ -459,6 +525,8 @@ class TaskDetailOut(BaseModel):
     accounts: list[TaskDetailAccountOut] = Field(default_factory=list)
     message_groups: list[TaskMessageGroupOut] = Field(default_factory=list)
     ai_cycles: list[TaskAICycleOut] = Field(default_factory=list)
+    ai_generation_records: list[TaskAIGenerationRecordOut] = Field(default_factory=list)
+    ai_account_profiles: list[TaskAIAccountProfileOut] = Field(default_factory=list)
     relay_batches: list[TaskRelayBatchOut] = Field(default_factory=list)
 
 
@@ -492,8 +560,11 @@ class ChannelCapacityCheckRequest(BaseModel):
     account_config: AccountConfig = Field(default_factory=AccountConfig)
     target_per_message: int = Field(default=1, ge=1, le=10000)
     target_channel_id: int | None = None
+    target_channel_name: str = ""
     message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "latest_n"
     message_count: int | None = Field(default=1, ge=1, le=500)
+    date_from: datetime | None = None
+    date_to: datetime | None = None
     message_ids: list[int] = Field(default_factory=list)
 
 
@@ -566,7 +637,9 @@ __all__ = [
     "ReviewQueueOut",
     "ReviewRejectRequest",
     "TaskCreateCommon",
+    "TaskAIAccountProfileOut",
     "TaskAICycleOut",
+    "TaskAIGenerationRecordOut",
     "TaskDetailOut",
     "TaskDetailAccountOut",
     "TaskAITurnOut",

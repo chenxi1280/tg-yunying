@@ -42,6 +42,24 @@ class ChannelMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class ChannelMessageComment(Base):
+    __tablename__ = "channel_message_comments"
+    __table_args__ = (UniqueConstraint("tenant_id", "channel_target_id", "channel_message_id", "comment_message_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    channel_target_id: Mapped[int] = mapped_column(ForeignKey("operation_targets.id"))
+    channel_message_id: Mapped[int] = mapped_column(ForeignKey("channel_messages.id"))
+    comment_message_id: Mapped[int] = mapped_column(Integer)
+    parent_comment_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    author_peer_id: Mapped[str] = mapped_column(String(120), default="")
+    author_name: Mapped[str] = mapped_column(String(180), default="")
+    content_preview: Mapped[str] = mapped_column(Text, default="")
+    reply_count: Mapped[int] = mapped_column(Integer, default=0)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class OperationTask(Base):
     __tablename__ = "operation_tasks"
 
@@ -108,6 +126,7 @@ class ManualOperationRecord(Base):
 __all__ = [
     "OperationTarget",
     "ChannelMessage",
+    "ChannelMessageComment",
     "OperationTask",
     "OperationTaskAttempt",
     "ManualOperationRecord",

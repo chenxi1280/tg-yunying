@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, MessageFingerprint, OperationTarget, ReviewQueue, Task, TgAccount
+from app.models import Action, ChannelMessage, GroupAuthStatus, MessageFingerprint, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, WorkerHeartbeat
 from app.schemas.task_center import (
     ChannelCapacityCheckRequest,
     ChannelCommentConfig,
@@ -39,8 +40,10 @@ from .account_pool import select_task_accounts
 from .ai_generator import generate_channel_comments, generate_group_messages
 from .dispatcher import dispatch_action, due_actions
 from .executors import build_task_plan, reached_daily_action_limit
+from .executors.group_ai_chat import account_profile_summaries
 from .fingerprints import content_fingerprint
-from .listener_runtime import invalidate_listener_collect
+from .heartbeat import record_worker_heartbeat
+from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
 from .pacing import next_run_after
 from .review import expire_reviews
 
@@ -52,6 +55,7 @@ TYPE_CONFIG_MODELS = {
     "channel_like": ChannelLikeConfig,
     "channel_comment": ChannelCommentConfig,
 }
+CHANNEL_DYNAMIC_TASK_TYPES = {"channel_view", "channel_like", "channel_comment"}
 
 COMMON_CREATE_FIELDS = {
     "name",
@@ -79,6 +83,9 @@ COMMON_SETTINGS_FIELDS = {
 
 TYPE_SETTINGS_FIELDS = {
     "group_ai_chat": {
+        "target_group_id",
+        "target_operation_target_id",
+        "target_group_name",
         "topic_hint",
         "chat_history_depth",
         "ai_model",
@@ -90,6 +97,7 @@ TYPE_SETTINGS_FIELDS = {
         "participation_jitter",
         "allow_account_repeat",
         "repeat_cooldown_rounds",
+        "account_personas",
         "messages_per_round_mode",
         "messages_per_round",
         "history_fetch_account_id",
@@ -103,11 +111,15 @@ TYPE_SETTINGS_FIELDS = {
         "context_expire_after_messages",
     },
     "group_relay": {
+        "source_groups",
         "rule_set_id",
         "rule_set_version_id",
         "monitor_account_ids",
         "filters",
+        "target_group_id",
+        "target_operation_target_id",
         "target_group_ids",
+        "target_operation_target_ids",
         "content_mode",
         "rewrite_prompt",
         "preserve_media",
@@ -131,6 +143,8 @@ TYPE_SETTINGS_FIELDS = {
     "channel_comment": {
         "target_comments_per_message",
         "comment_count_jitter",
+        "comment_mode",
+        "reply_to_message_ids",
         "ai_model",
         "comment_style",
         "topic_hint",
@@ -189,6 +203,7 @@ def create_and_start_channel_comment_task(session: Session, tenant_id: int, payl
 
 def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task:
     raw_type_config = payload.model_dump(mode="json", exclude=COMMON_CREATE_FIELDS)
+    raw_type_config = _normalize_operation_target_references(session, tenant_id, task_type, raw_type_config)
     type_config = _validated_type_config(task_type, raw_type_config)
     task = Task(
         tenant_id=tenant_id,
@@ -209,6 +224,89 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     session.add(task)
     session.flush()
     return task
+
+
+def _normalize_operation_target_references(session: Session, tenant_id: int, task_type: str, config: dict[str, Any]) -> dict[str, Any]:
+    next_config = dict(config)
+    if task_type == "group_ai_chat":
+        target_id = _as_int(next_config.get("target_operation_target_id"))
+        if target_id:
+            target, group = _group_for_operation_target(session, tenant_id, target_id, require_can_send=True)
+            next_config["target_operation_target_id"] = target.id
+            next_config["target_group_id"] = group.id
+            next_config["target_group_name"] = next_config.get("target_group_name") or target.title or group.title
+    elif task_type == "group_relay":
+        normalized_sources: list[dict[str, Any]] = []
+        for item in next_config.get("source_groups") or []:
+            source = dict(item)
+            target_id = _as_int(source.get("operation_target_id"))
+            if target_id:
+                target, group = _group_for_operation_target(session, tenant_id, target_id, require_can_send=False)
+                source["operation_target_id"] = target.id
+                source["group_id"] = group.id
+                source["group_name"] = source.get("group_name") or target.title or group.title
+            normalized_sources.append(source)
+        next_config["source_groups"] = normalized_sources
+
+        target_id = _as_int(next_config.get("target_operation_target_id"))
+        target_group_ids = _as_int_list(next_config.get("target_group_ids"))
+        target_operation_target_ids = _as_int_list(next_config.get("target_operation_target_ids"))
+        if target_id and target_id not in target_operation_target_ids:
+            target_operation_target_ids.insert(0, target_id)
+        resolved_target_group_ids: list[int] = []
+        for operation_target_id in target_operation_target_ids:
+            target, group = _group_for_operation_target(session, tenant_id, operation_target_id, require_can_send=True)
+            resolved_target_group_ids.append(group.id)
+        if resolved_target_group_ids:
+            next_config["target_operation_target_ids"] = target_operation_target_ids
+            next_config["target_operation_target_id"] = target_operation_target_ids[0]
+            next_config["target_group_id"] = resolved_target_group_ids[0]
+            target_group_ids = [*resolved_target_group_ids, *target_group_ids]
+        if target_group_ids:
+            next_config["target_group_ids"] = list(dict.fromkeys(target_group_ids))
+    return next_config
+
+
+def _group_for_operation_target(session: Session, tenant_id: int, target_id: int, *, require_can_send: bool) -> tuple[OperationTarget, TgGroup]:
+    target = session.get(OperationTarget, target_id)
+    if not target or target.tenant_id != tenant_id or target.target_type != "group":
+        raise ValueError("运营目标不存在")
+    if target.auth_status != GroupAuthStatus.AUTHORIZED.value:
+        raise ValueError("运营目标未授权")
+    if require_can_send and not target.can_send:
+        raise ValueError("运营目标不可发送")
+    group = session.scalar(
+        select(TgGroup).where(
+            TgGroup.tenant_id == tenant_id,
+            TgGroup.tg_peer_id == target.tg_peer_id,
+        )
+    )
+    if not group:
+        raise ValueError("运营目标未关联群资产")
+    return target, group
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number or None
+
+
+def _as_int_list(value: Any) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, (str, int)):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    items: list[int] = []
+    for item in value:
+        number = _as_int(item)
+        if number:
+            items.append(number)
+    return items
 
 
 def _create_task(session: Session, tenant_id: int, task_type: str, payload, actor: str) -> Task:
@@ -250,6 +348,8 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
         "accounts": _detail_accounts(session, actions),
         "message_groups": _message_groups(session, task, actions),
         "ai_cycles": _ai_cycles(actions),
+        "ai_generation_records": _ai_generation_records(actions),
+        "ai_account_profiles": _ai_account_profiles(session, task, actions),
         "relay_batches": _relay_batches(actions),
     }
 
@@ -291,6 +391,7 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
     if type_updates:
         next_config = dict(task.type_config or {})
         next_config.update(type_updates)
+        next_config = _normalize_operation_target_references(session, tenant_id, task.type, next_config)
         task.type_config = _validated_type_config(task.type, next_config)
     _clear_unfinished_plan(session, task)
     if task.status not in {"completed", "failed"}:
@@ -408,6 +509,8 @@ def reset_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Ta
     now = _now()
     stats = _empty_stats()
     stats["started_at"] = now.isoformat()
+    if task.type == "group_ai_chat":
+        stats["force_bootstrap_once"] = True
     task.stats = stats
     _clear_unfinished_plan(session, task)
     _invalidate_task_listener_cache(task)
@@ -523,7 +626,7 @@ def check_channel_capacity(session: Session, tenant_id: int, payload: ChannelCap
         limit=payload.target_per_message,
     )
     effective_count = len(accounts)
-    action_label = "浏览" if payload.task_type == "channel_view" else "点赞"
+    action_label = {"channel_view": "浏览", "channel_like": "点赞", "channel_comment": "评论"}.get(payload.task_type, "互动")
     will_shortfall = payload.target_per_message > effective_count
     warning = ""
     if will_shortfall:
@@ -539,8 +642,11 @@ def check_channel_capacity(session: Session, tenant_id: int, payload: ChannelCap
 
 def drain_task_center(session_factory, limit: int = 100) -> int:
     processed = 0
+    processed += drain_listener_runtime(session_factory, limit=limit).processed_count
     with session_factory() as session:
+        record_worker_heartbeat(session, metadata={"limit": limit})
         processed += _recover_continuous_task_states(session)
+        processed += _recover_stale_executing_actions(session)
         processed += expire_reviews(session)
         _activate_pending_tasks(session)
         task_ids = list(
@@ -566,7 +672,7 @@ def drain_task_center(session_factory, limit: int = 100) -> int:
                 session.commit()
                 continue
             created = build_task_plan(session, task)
-            task.next_run_at = next_run_after(task.pacing_config or {})
+            task.next_run_at = _next_run_after_task(task)
             refresh_task_stats(session, task)
             session.commit()
             processed += created
@@ -604,7 +710,7 @@ def _recover_continuous_task_states(session: Session) -> int:
         recovered += 1
     for task in session.scalars(
         select(Task).where(
-            Task.type == "channel_like",
+            Task.type.in_(CHANNEL_DYNAMIC_TASK_TYPES),
             Task.status == "completed",
             Task.scheduled_end.is_(None),
             Task.deleted_at.is_(None),
@@ -619,6 +725,82 @@ def _recover_continuous_task_states(session: Session) -> int:
         task.updated_at = now
         recovered += 1
     return recovered
+
+
+def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int = 30) -> int:
+    now = _now()
+    cutoff = now - timedelta(minutes=max(1, int(timeout_minutes or 30)))
+    heartbeat_cutoff = now - timedelta(minutes=2)
+    stale_worker_ids = set(
+        session.scalars(
+            select(WorkerHeartbeat.worker_id).where(
+                WorkerHeartbeat.last_seen_at < heartbeat_cutoff,
+            )
+        )
+    )
+    recovery_conditions = [
+        and_(Action.lease_expires_at.is_not(None), Action.lease_expires_at <= now),
+        and_(Action.lease_expires_at.is_(None), Action.scheduled_at <= cutoff),
+    ]
+    if stale_worker_ids:
+        recovery_conditions.append(Action.lease_owner.in_(stale_worker_ids))
+    recovered = 0
+    rows = session.execute(
+        select(Action, Task)
+        .join(Task, Task.id == Action.task_id)
+        .where(
+            Action.status == "executing",
+            or_(*recovery_conditions),
+            Task.status == "running",
+            Task.deleted_at.is_(None),
+        )
+        .order_by(Action.scheduled_at.asc())
+    ).all()
+    for action, task in rows:
+        previous_result = dict(action.result or {})
+        previous_lease_owner = action.lease_owner or ""
+        previous_lease_expires_at = action.lease_expires_at
+        recovery_reason = "stale_worker" if previous_lease_owner in stale_worker_ids else "lease_expired" if previous_lease_expires_at else "execution_timeout"
+        action.status = "failed"
+        action.executed_at = now
+        action.lease_owner = ""
+        action.lease_expires_at = None
+        action.result = {
+            "success": False,
+            "error_code": "execution_timeout",
+            "error_message": "执行项长时间处于执行中，已由投递守护标记为超时",
+            "validation_stage": "execution_recovery",
+            "auto_check": "超时恢复",
+            "recovery_reason": recovery_reason,
+            "recovered_at": now.isoformat(),
+            "previous_lease_owner": previous_lease_owner,
+            "previous_lease_expires_at": previous_lease_expires_at.isoformat() if previous_lease_expires_at else "",
+        }
+        if previous_result:
+            action.result["previous_result"] = previous_result
+        task.last_error = action.result["error_message"]
+        stats = dict(task.stats or {})
+        recovered_action_ids = list(stats.get("stale_executing_recovered_action_ids") or [])
+        recovered_action_ids.append(action.id)
+        stats["last_error"] = task.last_error
+        stats["stale_executing_recovered_at"] = now.isoformat()
+        stats["stale_executing_last_action_id"] = action.id
+        stats["stale_executing_last_lease_owner"] = previous_lease_owner
+        stats["stale_executing_last_recovery_reason"] = recovery_reason
+        stats["stale_executing_recovered_action_ids"] = recovered_action_ids[-20:]
+        stats["recovered_execution_timeout_count"] = int(stats.get("recovered_execution_timeout_count") or 0) + 1
+        stats["last_recovery_stage"] = "execution_recovery"
+        task.stats = stats
+        recovered += 1
+    return recovered
+
+
+def _next_run_after_task(task: Task):
+    config = task.type_config or {}
+    if task.type in CHANNEL_DYNAMIC_TASK_TYPES and (config.get("message_scope") or "latest_n") == "dynamic_new":
+        interval = int(config.get("listener_interval_seconds") or 30)
+        return _now() + timedelta(seconds=max(1, interval))
+    return next_run_after(task.pacing_config or {})
 
 
 def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
@@ -653,6 +835,7 @@ def _retry_failed_actions(session: Session, task: Task) -> int:
     backoff = policy.get("retry_backoff") or "none"
     count = 0
     for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "failed", Action.retry_count < max_retries)):
+        previous_result = dict(action.result or {})
         action.retry_count += 1
         delay = retry_delay
         if backoff == "linear":
@@ -662,7 +845,14 @@ def _retry_failed_actions(session: Session, task: Task) -> int:
         action.status = "pending"
         action.scheduled_at = _now() + timedelta(seconds=delay)
         action.executed_at = None
-        action.result = {}
+        action.lease_owner = ""
+        action.lease_expires_at = None
+        action.result = {
+            "retry_scheduled": True,
+            "retry_count": int(action.retry_count or 0),
+            "retry_after_seconds": max(0, int(delay)),
+            "last_failure": previous_result,
+        }
         count += 1
     return count
 
@@ -713,7 +903,7 @@ def _update_type_config(session: Session, tenant_id: int, task_id: str, expected
     task = _get_task(session, tenant_id, task_id)
     if task.type != expected_type:
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
-    task.type_config = payload.model_dump(mode="json")
+    task.type_config = _normalize_operation_target_references(session, tenant_id, expected_type, payload.model_dump(mode="json"))
     task.updated_at = _now()
     audit(session, tenant_id=tenant_id, actor=actor, action="更新任务类型配置", target_type="task", target_id=task.id, detail=expected_type)
     session.commit()
@@ -785,14 +975,44 @@ def _target_summary(session: Session, task: Task) -> str:
             return f"{channel.title} @{channel.username}" if channel.username else channel.title
         return str(config.get("target_channel_name") or "")
     if task.type == "group_ai_chat":
-        return str(config.get("target_group_name") or config.get("target_group_id") or "")
+        return str(
+            config.get("target_group_name")
+            or _operation_target_title(session, task.tenant_id, config.get("target_operation_target_id"))
+            or config.get("target_group_id")
+            or ""
+        )
     if task.type == "group_relay":
-        sources = [str(item.get("group_name") or item.get("group_id") or "") for item in config.get("source_groups") or []]
-        targets = [str(item) for item in config.get("target_group_ids") or []]
+        sources = [
+            str(item.get("group_name") or _operation_target_title(session, task.tenant_id, item.get("operation_target_id")) or item.get("group_id") or "")
+            for item in config.get("source_groups") or []
+            if isinstance(item, dict)
+        ]
+        targets = [
+            _operation_target_title(session, task.tenant_id, item) or f"运营目标#{item}"
+            for item in config.get("target_operation_target_ids") or []
+        ]
+        targets.extend(str(item) for item in config.get("target_group_ids") or [])
+        if config.get("target_operation_target_id"):
+            label = _operation_target_title(session, task.tenant_id, config.get("target_operation_target_id")) or f"运营目标#{config.get('target_operation_target_id')}"
+            if label not in targets:
+                targets.insert(0, label)
         if config.get("target_group_id") and str(config.get("target_group_id")) not in targets:
             targets.insert(0, str(config.get("target_group_id")))
         return " ".join([*sources, *targets])
     return ""
+
+
+def _operation_target_title(session: Session, tenant_id: int, target_id: Any) -> str:
+    try:
+        parsed_id = int(target_id or 0)
+    except (TypeError, ValueError):
+        return ""
+    if not parsed_id:
+        return ""
+    target = session.get(OperationTarget, parsed_id)
+    if not target or target.tenant_id != tenant_id:
+        return ""
+    return target.title
 
 
 def _task_config_search_text(session: Session, task: Task) -> str:
@@ -982,6 +1202,10 @@ def _ai_cycles(actions: list[Action]) -> list[dict[str, Any]]:
                 "turn_index": int(payload.get("turn_index") or len(item["turns"]) + 1),
                 "account_id": action.account_id,
                 "account_role": str(payload.get("account_role") or ""),
+                "account_memory": str(payload.get("account_memory") or ""),
+                "account_profile": str(payload.get("account_profile") or ""),
+                "topic_thread": str(payload.get("topic_thread") or ""),
+                "topic_plan": str(payload.get("topic_plan") or ""),
                 "intent": str(payload.get("intent") or ""),
                 "content": str(payload.get("message_text") or ""),
                 "status": action.status,
@@ -994,6 +1218,97 @@ def _ai_cycles(actions: list[Action]) -> list[dict[str, Any]]:
     for item in cycles.values():
         item["turns"].sort(key=lambda row: (row["turn_index"], row["scheduled_at"]))
     return sorted(cycles.values(), key=lambda item: item["cycle_id"])
+
+
+def _ai_generation_records(actions: list[Action]) -> list[dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+    for action in actions:
+        payload = action.payload or {}
+        if not isinstance(payload, dict):
+            continue
+        generation_id = str(payload.get("ai_generation_id") or "")
+        if not generation_id:
+            continue
+        record = records.setdefault(
+            generation_id,
+            {
+                "generation_id": generation_id,
+                "cycle_id": str(payload.get("cycle_id") or generation_id),
+                "status": str(payload.get("ai_generation_status") or ""),
+                "generated_count": int(payload.get("ai_generation_count") or 0),
+                "token_count": int(payload.get("ai_generation_tokens") or 0),
+                "context_message_count": int(payload.get("ai_generation_context_count") or 0),
+                "account_memory_count": int(payload.get("ai_generation_memory_count") or 0),
+                "scheduled_at": action.scheduled_at,
+                "created_at": action.created_at,
+            },
+        )
+        record["generated_count"] = max(record["generated_count"], int(payload.get("ai_generation_count") or 0))
+        record["token_count"] = max(record["token_count"], int(payload.get("ai_generation_tokens") or 0))
+        record["context_message_count"] = max(record["context_message_count"], int(payload.get("ai_generation_context_count") or 0))
+        record["account_memory_count"] = max(record["account_memory_count"], int(payload.get("ai_generation_memory_count") or 0))
+        if action.created_at < record["created_at"]:
+            record["created_at"] = action.created_at
+        if action.scheduled_at < record["scheduled_at"]:
+            record["scheduled_at"] = action.scheduled_at
+    return sorted(records.values(), key=lambda item: item["created_at"], reverse=True)
+
+
+def _ai_account_profiles(session: Session, task: Task, actions: list[Action]) -> list[dict[str, Any]]:
+    if task.type != "group_ai_chat":
+        return []
+    account_ids = {int(action.account_id) for action in actions if action.account_id}
+    account_config = task.account_config if isinstance(task.account_config, dict) else {}
+    for account_id in account_config.get("account_ids") or []:
+        try:
+            account_ids.add(int(account_id))
+        except (TypeError, ValueError):
+            continue
+    if not account_ids:
+        return []
+    summaries = account_profile_summaries(session, task, sorted(account_ids), recent_limit=5)
+    if not summaries:
+        return []
+    current_counts = dict(
+        session.execute(
+            select(Action.account_id, func.count(Action.id))
+            .where(
+                Action.task_id == task.id,
+                Action.task_type == "group_ai_chat",
+                Action.action_type == "send_message",
+                Action.status == "success",
+                Action.account_id.in_(account_ids),
+            )
+            .group_by(Action.account_id)
+        ).all()
+    )
+    accounts = {account.id: account for account in session.scalars(select(TgAccount).where(TgAccount.id.in_(account_ids)))}
+    rows: list[dict[str, Any]] = []
+    for account_id in sorted(account_ids):
+        summary = summaries.get(str(account_id))
+        if not summary:
+            continue
+        current_count = int(current_counts.get(account_id) or 0)
+        total = _profile_total_success(summary)
+        account = accounts.get(account_id)
+        rows.append(
+            {
+                "account_id": account_id,
+                "display_name": account.display_name if account else f"账号 #{account_id}",
+                "username": account.username if account else None,
+                "status": account.status if account else "未知",
+                "total_success_count": total,
+                "current_task_success_count": current_count,
+                "cross_task_success_count": max(0, total - current_count),
+                "profile_summary": summary,
+            }
+        )
+    return sorted(rows, key=lambda item: (-item["total_success_count"], item["account_id"]))
+
+
+def _profile_total_success(summary: str) -> int:
+    match = re.search(r"历史成功发言\s+(\d+)\s+次", summary or "")
+    return int(match.group(1)) if match else 0
 
 
 def _relay_batches(actions: list[Action]) -> list[dict[str, Any]]:
@@ -1010,21 +1325,37 @@ def _relay_batches(actions: list[Action]) -> list[dict[str, Any]]:
             {
                 "relay_batch_id": batch_id,
                 "stats": {"total": 0, "pending": 0, "executing": 0, "success": 0, "failed": 0, "skipped": 0},
+                "source_event_count": 0,
+                "material_count": 0,
+                "rule_version_count": 0,
                 "items": [],
             },
         )
+        relay_event_id = str(payload.get("relay_event_id") or "")
+        source_group_id = payload.get("source_group_id") if isinstance(payload.get("source_group_id"), int) else None
+        source_operation_target_id = payload.get("source_operation_target_id") if isinstance(payload.get("source_operation_target_id"), int) else None
+        original_text = str(payload.get("original_text") or "")
+        transformed_text = str(payload.get("message_text") or "")
+        material_text = original_text or transformed_text
+        source_event_key = f"{source_operation_target_id or source_group_id or '-'}:{relay_event_id or '-'}"
         item["items"].append(
             {
                 "action_id": action.id,
-                "relay_event_id": str(payload.get("relay_event_id") or ""),
-                "source_group_id": payload.get("source_group_id") if isinstance(payload.get("source_group_id"), int) else None,
+                "relay_event_id": relay_event_id,
+                "source_event_key": source_event_key,
+                "source_group_id": source_group_id,
+                "source_operation_target_id": source_operation_target_id,
+                "operation_target_id": payload.get("operation_target_id") if isinstance(payload.get("operation_target_id"), int) else None,
                 "source_info": str(payload.get("source_info") or ""),
-                "original_text": str(payload.get("original_text") or ""),
-                "transformed_text": str(payload.get("message_text") or ""),
+                "original_text": original_text,
+                "transformed_text": transformed_text,
+                "material_fingerprint": content_fingerprint(material_text) if material_text else "",
                 "rule_set_id": payload.get("rule_set_id") if isinstance(payload.get("rule_set_id"), int) else None,
                 "rule_set_version_id": payload.get("rule_set_version_id") if isinstance(payload.get("rule_set_version_id"), int) else None,
+                "rule_trace": payload.get("rule_trace") if isinstance(payload.get("rule_trace"), dict) else {},
                 "account_id": action.account_id,
                 "status": action.status,
+                "retry_count": int(action.retry_count or 0),
                 "scheduled_at": action.scheduled_at,
                 "executed_at": action.executed_at,
                 "result": action.result or {},
@@ -1033,6 +1364,9 @@ def _relay_batches(actions: list[Action]) -> list[dict[str, Any]]:
         _group_stats_inc(item["stats"], action.status)
     for item in batches.values():
         item["items"].sort(key=lambda row: row["scheduled_at"])
+        item["source_event_count"] = len({row["source_event_key"] for row in item["items"] if row.get("source_event_key") and not str(row.get("source_event_key")).endswith(":-")})
+        item["material_count"] = len({row["material_fingerprint"] for row in item["items"] if row.get("material_fingerprint")})
+        item["rule_version_count"] = len({row["rule_set_version_id"] for row in item["items"] if row.get("rule_set_version_id")})
     return sorted(batches.values(), key=lambda item: item["relay_batch_id"])
 
 

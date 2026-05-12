@@ -124,6 +124,17 @@ class ChannelMessageSnapshot:
 
 
 @dataclass(frozen=True)
+class ChannelCommentSnapshot:
+    comment_message_id: int
+    parent_comment_message_id: int | None = None
+    author_peer_id: str = ""
+    author_name: str = ""
+    content_preview: str = ""
+    reply_count: int = 0
+    published_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class ArchivedMemberSnapshot:
     display_name: str
     username: str | None = None
@@ -278,10 +289,13 @@ class TelegramGateway:
         content: str,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        *,
+        reply_to_message_id: int | None = None,
     ) -> SendResult:
         if "无评论" in content:
             return SendResult(False, failure_type=FailureType.COMMENT_UNAVAILABLE.value, detail="频道消息不支持回复")
-        return SendResult(True, remote_message_id=f"reply-{account_id}-{message_id}-{uuid4().hex[:8]}")
+        target_id = reply_to_message_id or message_id
+        return SendResult(True, remote_message_id=f"reply-{account_id}-{target_id}-{uuid4().hex[:8]}")
 
     def probe_target_capabilities(
         self,
@@ -432,6 +446,17 @@ class TelegramGateway:
             )
             for index in range(max(1, limit))
         ][:limit]
+
+    def fetch_channel_comments(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        message_id: int,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        limit: int = 100,
+    ) -> list[ChannelCommentSnapshot]:
+        return []
 
 
 class TelethonTelegramGateway(TelegramGateway):
@@ -634,21 +659,33 @@ class TelethonTelegramGateway(TelegramGateway):
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
             raise RuntimeError("session is not authorized")
+        from telethon import utils
         snapshots: list[GroupSnapshot] = []
+        seen_peer_ids: set[str] = set()
         async for dialog in client.iter_dialogs():
             entity = dialog.entity
             if not (dialog.is_group or dialog.is_channel):
                 continue
-            peer_id = str(getattr(entity, "id", dialog.id))
-            if dialog.is_channel:
-                peer_id = f"-100{abs(int(peer_id))}"
+            resolved_entity = getattr(entity, "migrated_to", None) or entity
+            peer_id = str(utils.get_peer_id(resolved_entity))
+            if peer_id in seen_peer_ids:
+                continue
+            seen_peer_ids.add(peer_id)
             default_banned = getattr(entity, "default_banned_rights", None)
             can_send = not bool(default_banned and getattr(default_banned, "send_messages", False))
             snapshots.append(
                 GroupSnapshot(
                     tg_peer_id=peer_id,
                     title=dialog.name or "未命名群聊",
-                    group_type="channel" if dialog.is_channel and not dialog.is_group else "supergroup" if dialog.is_channel else "group",
+                    group_type=(
+                        "supergroup"
+                        if getattr(entity, "migrated_to", None)
+                        else "channel"
+                        if dialog.is_channel and not dialog.is_group
+                        else "supergroup"
+                        if dialog.is_channel
+                        else "group"
+                    ),
                     member_count=int(getattr(entity, "participants_count", 0) or 0),
                     permission_label="可发言" if can_send else "不可发言",
                     can_send=can_send,
@@ -782,6 +819,9 @@ class TelethonTelegramGateway(TelegramGateway):
     def _map_send_error(exc: Exception) -> SendResult:
         from telethon import errors
 
+        detail = str(exc) or exc.__class__.__name__
+        if "Could not find the input entity" in detail:
+            return SendResult(False, failure_type=FailureType.PEER_INVALID.value, detail="目标实体无法解析，请重新同步账号群聊/运营目标后再试")
         if isinstance(exc, errors.FloodWaitError):
             return SendResult(False, failure_type=FailureType.FLOOD_WAIT.value, detail=f"FloodWait {exc.seconds} 秒")
         if isinstance(exc, getattr(errors, "SlowModeWaitError", ())):
@@ -811,7 +851,7 @@ class TelethonTelegramGateway(TelegramGateway):
             return SendResult(False, failure_type=FailureType.ACCOUNT_LIMITED.value, detail="账号受限或不可用")
         if invalid_target_errors and isinstance(exc, invalid_target_errors):
             return SendResult(False, failure_type=FailureType.PEER_INVALID.value, detail="目标群无效或不可访问")
-        return SendResult(False, failure_type=FailureType.UNKNOWN.value, detail=str(exc) or exc.__class__.__name__)
+        return SendResult(False, failure_type=FailureType.UNKNOWN.value, detail=detail)
 
     async def _send_async(
         self,
@@ -820,6 +860,8 @@ class TelethonTelegramGateway(TelegramGateway):
         content: str,
         segments: list[OutboundSegment] | None,
         credentials: DeveloperAppCredentials,
+        *,
+        group_id: int = 0,
     ) -> SendResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -831,7 +873,7 @@ class TelethonTelegramGateway(TelegramGateway):
         if not await client.is_user_authorized():
             return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
         try:
-            target: int | str = int(peer_id) if peer_id.lstrip("-").isdigit() else peer_id
+            target = await _resolve_telethon_target(client, peer_id, group_id=group_id)
             remote_message_id: str | None = None
             if segments:
                 for segment in segments:
@@ -867,7 +909,7 @@ class TelethonTelegramGateway(TelegramGateway):
         peer_id: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
     ) -> SendResult:
-        return self._run(self._send_async(session_ciphertext, peer_id, content, segments, self._usable_credentials(credentials)))
+        return self._run(self._send_async(session_ciphertext, peer_id, content, segments, self._usable_credentials(credentials), group_id=group_id))
 
     async def _view_channel_message_async(
         self,
@@ -953,6 +995,7 @@ class TelethonTelegramGateway(TelegramGateway):
         message_id: int,
         content: str,
         credentials: DeveloperAppCredentials,
+        reply_to_message_id: int | None = None,
     ) -> SendResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -963,7 +1006,10 @@ class TelethonTelegramGateway(TelegramGateway):
         try:
             target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
             entity = await client.get_entity(target)
-            message = await client.send_message(entity, content, comment_to=message_id)
+            send_kwargs = {"comment_to": message_id}
+            if reply_to_message_id:
+                send_kwargs["reply_to"] = reply_to_message_id
+            message = await client.send_message(entity, content, **send_kwargs)
             return SendResult(True, remote_message_id=str(getattr(message, "id", "")))
         except Exception as exc:
             mapped = self._map_send_error(exc)
@@ -977,8 +1023,10 @@ class TelethonTelegramGateway(TelegramGateway):
         content: str,
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        *,
+        reply_to_message_id: int | None = None,
     ) -> SendResult:
-        return self._run(self._reply_channel_message_async(session_ciphertext, channel_peer_id, message_id, content, self._usable_credentials(credentials)))
+        return self._run(self._reply_channel_message_async(session_ciphertext, channel_peer_id, message_id, content, self._usable_credentials(credentials), reply_to_message_id))
 
     def send_message_to_target(
         self,
@@ -1192,7 +1240,7 @@ class TelethonTelegramGateway(TelegramGateway):
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
             raise RuntimeError("session is not authorized")
-        target: int | str = int(peer_id) if peer_id.lstrip("-").isdigit() else peer_id
+        target = await _resolve_telethon_target(client, peer_id, group_id=1)
         messages_resp = await client.get_messages(target, limit=50)
         messages: list[ArchivedMessageSnapshot] = []
         for message in list(messages_resp or []):
@@ -1254,7 +1302,7 @@ class TelethonTelegramGateway(TelegramGateway):
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
             raise RuntimeError("session is not authorized")
-        target: int | str = int(peer_id) if peer_id.lstrip("-").isdigit() else peer_id
+        target = await _resolve_telethon_target(client, peer_id, group_id=1)
         messages_resp = await client.get_messages(target, limit=limit)
         snapshots: list[GroupMessageSnapshot] = []
         for message in list(messages_resp or []):
@@ -1335,6 +1383,85 @@ class TelethonTelegramGateway(TelegramGateway):
         limit: int = 20,
     ) -> list[ChannelMessageSnapshot]:
         return self._run(self._fetch_channel_messages_async(channel_peer_id, session_ciphertext, self._usable_credentials(credentials), limit))
+
+    async def _fetch_channel_comments_async(
+        self,
+        channel_peer_id: str,
+        message_id: int,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        limit: int,
+    ) -> list[ChannelCommentSnapshot]:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            raise RuntimeError("channel comment fetch requires a valid session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            raise RuntimeError("session is not authorized")
+        target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
+        entity = await client.get_entity(target)
+        snapshots: list[ChannelCommentSnapshot] = []
+        async for comment in client.iter_messages(entity, reply_to=message_id, limit=limit):
+            comment_id = int(getattr(comment, "id", 0) or 0)
+            if comment_id <= 0:
+                continue
+            sender = getattr(comment, "sender", None)
+            author_name = " ".join(
+                item for item in [getattr(sender, "first_name", "") or "", getattr(sender, "last_name", "") or ""] if item
+            ).strip() or getattr(sender, "title", "") or getattr(sender, "username", "") or ""
+            replies = getattr(comment, "replies", None)
+            snapshots.append(
+                ChannelCommentSnapshot(
+                    comment_message_id=comment_id,
+                    parent_comment_message_id=getattr(getattr(comment, "reply_to", None), "reply_to_msg_id", None),
+                    author_peer_id=str(getattr(sender, "id", "") or ""),
+                    author_name=author_name,
+                    content_preview=(getattr(comment, "message", "") or "").strip()[:500],
+                    reply_count=int(getattr(replies, "replies", 0) or 0),
+                    published_at=getattr(comment, "date", None),
+                )
+            )
+        return snapshots
+
+    def fetch_channel_comments(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        message_id: int,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        limit: int = 100,
+    ) -> list[ChannelCommentSnapshot]:
+        return self._run(self._fetch_channel_comments_async(channel_peer_id, message_id, session_ciphertext, self._usable_credentials(credentials), limit))
+
+
+def _telethon_send_target(peer_id: str, *, group_id: int = 0) -> int | str:
+    if not peer_id.lstrip("-").isdigit():
+        return peer_id
+    raw_peer_id = int(peer_id)
+    if group_id and raw_peer_id > 0:
+        return -raw_peer_id
+    return raw_peer_id
+
+
+async def _resolve_telethon_target(client, peer_id: str, *, group_id: int = 0):
+    from telethon import utils
+
+    target = _telethon_send_target(peer_id, group_id=group_id)
+    try:
+        entity = await client.get_entity(target)
+        return getattr(entity, "migrated_to", None) or entity
+    except Exception:
+        expected_peer_id = str(target)
+        async for dialog in client.iter_dialogs():
+            entity = dialog.entity
+            resolved_entity = getattr(entity, "migrated_to", None) or entity
+            if (
+                str(utils.get_peer_id(entity)) == expected_peer_id
+                or str(utils.get_peer_id(resolved_entity)) == expected_peer_id
+            ):
+                return resolved_entity
+        raise
 
 
 def create_gateway(settings: Settings | None = None) -> TelegramGateway:

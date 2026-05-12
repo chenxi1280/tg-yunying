@@ -9,6 +9,30 @@ from sqlalchemy.orm import Session
 from app.models import ContentKeywordRule, TgGroup
 
 
+GENERATED_TEMPLATE_MARKERS = (
+    "刚看到大家提到",
+    "刚看到有人聊这个",
+    "顺着这个话题说",
+    "顺着刚才说的",
+    "这个点挺有意思",
+    "这个点我也留意到了",
+    "可以继续聊聊",
+    "感觉可以继续聊聊",
+    "大家怎么看",
+    "有经验的朋友也可以补充下",
+    "这个方向可以展开一下",
+)
+
+OPERATOR_UI_MARKERS = (
+    "点击底部按钮",
+    "点击查看",
+    "积分商城",
+    "提交报告",
+    "约课记录",
+    "口令现金",
+)
+
+
 @dataclass(frozen=True)
 class ContentFilterResult:
     ok: bool
@@ -62,6 +86,31 @@ def _hit_keyword(text: str, rules: list[ContentKeywordRule]) -> str | None:
     return None
 
 
+def _looks_like_internal_prompt(text: str) -> bool:
+    markers = (
+        "当前群暂无可用历史消息",
+        "不要提到系统、任务或 AI",
+        "不要提到系统、任务或AI",
+        "生成自然开场",
+        "只输出 JSON",
+        "risk_level",
+        "persona",
+        "刚看到大家提到“刚看到大家提到",
+        "[已撤回的内部提示词",
+    )
+    return any(marker in text for marker in markers)
+
+
+def looks_like_generated_template_noise(text: str) -> bool:
+    cleaned = str(text or "")
+    return any(marker in cleaned for marker in GENERATED_TEMPLATE_MARKERS)
+
+
+def looks_like_operator_ui_content(text: str) -> bool:
+    cleaned = str(text or "")
+    return any(marker in cleaned for marker in OPERATOR_UI_MARKERS)
+
+
 def filter_outbound_content(
     session: Session,
     *,
@@ -74,6 +123,12 @@ def filter_outbound_content(
     cleaned = re.sub(r"\s+", " ", str(content or "")).strip()
     if not cleaned:
         return ContentFilterResult(False, "", "内容为空")
+    if _looks_like_internal_prompt(cleaned):
+        return ContentFilterResult(False, "", "拦截内部提示词")
+    if looks_like_generated_template_noise(cleaned):
+        return ContentFilterResult(False, "", "拦截模板化生成内容")
+    if looks_like_operator_ui_content(cleaned):
+        return ContentFilterResult(False, "", "拦截后台/按钮说明内容")
     if reject_replies and _looks_like_reply(cleaned):
         return ContentFilterResult(False, "", "过滤回复消息")
     if reject_mentions and "@" in cleaned:
@@ -98,4 +153,34 @@ def filter_outbound_content(
     return ContentFilterResult(True, cleaned[:2000], "")
 
 
-__all__ = ["ContentFilterResult", "extract_links", "filter_outbound_content", "split_rule_list", "tenant_keyword_rules"]
+def rewrite_rejected_content(session: Session, *, tenant_id: int, group: TgGroup, content: str) -> ContentFilterResult:
+    cleaned = re.sub(r"\s+", " ", str(content or "")).strip()
+    for rule in tenant_keyword_rules(session, tenant_id):
+        keyword = rule.keyword.strip()
+        if keyword:
+            cleaned = re.sub(re.escape(keyword), "", cleaned, flags=re.IGNORECASE)
+    for word in split_rule_list(group.banned_words):
+        if word:
+            cleaned = cleaned.replace(word, "")
+    whitelist = split_rule_list(group.link_whitelist)
+    if whitelist:
+        for link in extract_links(cleaned):
+            normalized = link.lower()
+            if not any(rule.lower() in normalized for rule in whitelist):
+                cleaned = cleaned.replace(link, "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ，,。；;、")
+    if cleaned == str(content or "").strip():
+        return ContentFilterResult(False, "", "内容未产生可用改写")
+    return filter_outbound_content(session, tenant_id=tenant_id, group=group, content=cleaned)
+
+
+__all__ = [
+    "ContentFilterResult",
+    "extract_links",
+    "filter_outbound_content",
+    "looks_like_generated_template_noise",
+    "looks_like_operator_ui_content",
+    "rewrite_rejected_content",
+    "split_rule_list",
+    "tenant_keyword_rules",
+]

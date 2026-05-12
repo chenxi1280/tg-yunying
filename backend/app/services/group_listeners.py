@@ -102,6 +102,12 @@ def _managed_sender_keys(session: Session, group: TgGroup) -> set[str]:
         keys.add(str(account.id))
         keys.add(f"account:{account.id}")
         keys.add(account.display_name.lower())
+        first_name = (account.tg_first_name or "").strip().lower()
+        last_name = (account.tg_last_name or "").strip().lower()
+        full_name = f"{first_name} {last_name}".strip()
+        for name in (first_name, last_name, full_name):
+            if name:
+                keys.add(name)
         if account.username:
             keys.add(account.username.lower().lstrip("@"))
             keys.add(f"@{account.username.lower().lstrip('@')}")

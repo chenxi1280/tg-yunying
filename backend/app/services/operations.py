@@ -12,12 +12,16 @@ from app.models import (
     AiProviderHealthStatus,
     AccountStatus,
     ChannelMessage,
+    ChannelMessageComment,
     FailureType,
+    GroupArchive,
     GroupAuthStatus,
     ManualOperationRecord,
+    MessageTask,
     OperationTarget,
     OperationTask,
     OperationTaskAttempt,
+    Task,
     TaskStatus,
     TgAccount,
     TgGroup,
@@ -27,6 +31,7 @@ from app.schemas import (
     ChannelMessageCreate,
     ManualSendRequest,
     OperationTargetCreate,
+    OperationTargetAccountUpdate,
     OperationTargetUpdate,
     OperationTaskCreate,
 )
@@ -287,17 +292,78 @@ def create_operation_target(session: Session, payload: OperationTargetCreate, ac
     return target
 
 
-def update_operation_target(session: Session, target_id: int, payload: OperationTargetUpdate, actor: str) -> OperationTarget:
+TARGET_FIELDS = {"target_type", "tg_peer_id", "title", "username", "member_count", "can_send", "auth_status"}
+GROUP_RISK_FIELDS = {
+    "active_window",
+    "daily_limit",
+    "account_cooldown_seconds",
+    "group_cooldown_seconds",
+    "banned_words",
+    "link_whitelist",
+    "require_review",
+}
+
+
+def update_operation_target(session: Session, tenant_id: int, target_id: int, payload: OperationTargetUpdate, actor: str) -> OperationTarget:
     target = session.get(OperationTarget, target_id)
-    if not target:
+    if not target or target.tenant_id != tenant_id:
         raise ValueError("target not found")
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    for key, value in data.items():
+        if key not in TARGET_FIELDS:
+            continue
         setattr(target, key, value)
+    if any(key in data for key in GROUP_RISK_FIELDS):
+        linked_group = _linked_group_for_target(session, target)
+        if not linked_group or linked_group.tenant_id != tenant_id or target.target_type != "group":
+            raise ValueError("target group policy not found")
+        for key in GROUP_RISK_FIELDS:
+            if key in data:
+                setattr(linked_group, key, data[key])
+        linked_group.can_send = bool(target.can_send)
+        linked_group.auth_status = target.auth_status
     target.updated_at = _now()
     audit(session, tenant_id=target.tenant_id, actor=actor, action="更新运营目标", target_type="operation_target", target_id=str(target.id), detail=target.title)
     session.commit()
     session.refresh(target)
     return target
+
+
+def update_operation_target_account_policy(session: Session, tenant_id: int, target_id: int, account_id: int, payload: OperationTargetAccountUpdate, actor: str) -> dict:
+    target = _operation_target_for_tenant(session, tenant_id, target_id)
+    linked_group = _linked_group_for_target(session, target)
+    if not linked_group or target.target_type != "group":
+        raise ValueError("target group account policy not found")
+    account = session.get(TgAccount, account_id)
+    if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
+        raise ValueError("account not found")
+    link = session.scalar(
+        select(TgGroupAccount).where(
+            TgGroupAccount.tenant_id == tenant_id,
+            TgGroupAccount.group_id == linked_group.id,
+            TgGroupAccount.account_id == account.id,
+        )
+    )
+    if not link:
+        raise ValueError("account not linked to target group")
+    data = payload.model_dump(exclude_unset=True)
+    if "permission_label" in data and data["permission_label"] is not None:
+        link.permission_label = data["permission_label"]
+    if "can_send" in data and data["can_send"] is not None:
+        link.can_send = bool(data["can_send"])
+    if "is_listener" in data and data["is_listener"] is not None:
+        link.is_listener = bool(data["is_listener"])
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="更新目标账号风控",
+        target_type="operation_target",
+        target_id=str(target.id),
+        detail=f"account={account.id}; can_send={link.can_send}; is_listener={link.is_listener}",
+    )
+    session.commit()
+    return operation_target_detail(session, tenant_id, target_id)
 
 
 def ensure_operation_targets_from_legacy_groups(session: Session, tenant_id: int = 1) -> int:
@@ -390,6 +456,20 @@ def filter_channel_messages(session: Session, tenant_id: int = 1, channel_target
     return list(session.scalars(stmt.order_by(ChannelMessage.id.desc())))
 
 
+def filter_channel_message_comments(
+    session: Session,
+    tenant_id: int = 1,
+    channel_target_id: int | None = None,
+    channel_message_id: int | None = None,
+) -> list[ChannelMessageComment]:
+    stmt = select(ChannelMessageComment).where(ChannelMessageComment.tenant_id == tenant_id)
+    if channel_target_id:
+        stmt = stmt.where(ChannelMessageComment.channel_target_id == channel_target_id)
+    if channel_message_id:
+        stmt = stmt.where(ChannelMessageComment.channel_message_id == channel_message_id)
+    return list(session.scalars(stmt.order_by(ChannelMessageComment.published_at.desc().nullslast(), ChannelMessageComment.id.desc())))
+
+
 def _operation_target_for_tenant(session: Session, tenant_id: int, target_id: int) -> OperationTarget:
     target = session.get(OperationTarget, target_id)
     if not target or target.tenant_id != tenant_id:
@@ -413,6 +493,7 @@ def _operation_target_list_payload(
 ) -> dict:
     send_links = [link for link in links_by_group.get(linked_group.id if linked_group else 0, []) if link.can_send]
     listener_links = [link for link in links_by_group.get(linked_group.id if linked_group else 0, []) if link.is_listener]
+    task_capabilities = _operation_target_task_capabilities(target, linked_group, send_links, listener_links)
     return {
         "id": target.id,
         "tenant_id": target.tenant_id,
@@ -425,13 +506,32 @@ def _operation_target_list_payload(
         "auth_status": target.auth_status,
         "linked_group_id": linked_group.id if linked_group else None,
         "can_listen": bool(linked_group and (linked_group.listener_enabled or listener_links)),
-        "can_archive": target.target_type == "group" and target.auth_status == GroupAuthStatus.AUTHORIZED.value,
+        "can_archive": bool(linked_group and target.target_type == "group" and target.auth_status == GroupAuthStatus.AUTHORIZED.value),
+        "can_task": bool(task_capabilities),
+        "task_capabilities": task_capabilities,
         "available_send_account_count": len(send_links),
         "listener_account_count": len(listener_links),
         "last_sync_at": target.last_sync_at,
         "created_at": target.created_at,
         "updated_at": target.updated_at,
     }
+
+
+def _operation_target_task_capabilities(target: OperationTarget, linked_group: TgGroup | None, send_links: list[TgGroupAccount], listener_links: list[TgGroupAccount]) -> list[str]:
+    if target.auth_status != GroupAuthStatus.AUTHORIZED.value:
+        return []
+    if target.target_type == "channel":
+        return ["频道浏览", "频道点赞", "频道评论/回复"]
+    capabilities: list[str] = []
+    if linked_group and target.can_send and send_links:
+        capabilities.append("AI 活跃群")
+    if linked_group and listener_links:
+        capabilities.append("转发监听源群")
+    if linked_group and target.can_send and send_links:
+        capabilities.append("转发目标群")
+    if target.target_type == "group":
+        capabilities.append("群归档")
+    return capabilities
 
 
 def _group_accounts_for_detail(session: Session, group: TgGroup) -> list[dict]:
@@ -478,14 +578,141 @@ def _group_messages_for_detail(session: Session, group: TgGroup) -> list[dict]:
     ]
 
 
+def _task_targets_target(task: Task, target: OperationTarget, linked_group: TgGroup | None) -> bool:
+    config = task.type_config or {}
+    if target.target_type == "channel":
+        return int(config.get("target_channel_id") or 0) == target.id
+    if not linked_group:
+        return False
+    group_id = linked_group.id
+    if int(config.get("target_group_id") or 0) == group_id:
+        return True
+    target_ids = {int(item) for item in config.get("target_group_ids") or [] if str(item).isdigit()}
+    source_groups = config.get("source_groups") or []
+    return group_id in target_ids or any(int(item.get("group_id") or 0) == group_id for item in source_groups if isinstance(item, dict))
+
+
+def _task_history_for_detail(session: Session, target: OperationTarget, linked_group: TgGroup | None) -> list[dict]:
+    rows = list(
+        session.scalars(
+            select(Task)
+            .where(Task.tenant_id == target.tenant_id, Task.deleted_at.is_(None))
+            .order_by(Task.updated_at.desc())
+            .limit(100)
+        )
+    )
+    result = []
+    for task in rows:
+        if not _task_targets_target(task, target, linked_group):
+            continue
+        stats = task.stats or {}
+        result.append(
+            {
+                "id": task.id,
+                "name": task.name,
+                "type": task.type,
+                "status": task.status,
+                "success_count": int(stats.get("success_count") or 0),
+                "failure_count": int(stats.get("failure_count") or 0),
+                "updated_at": task.updated_at,
+            }
+        )
+        if len(result) >= 10:
+            break
+    return result
+
+
+def _send_records_for_detail(session: Session, target: OperationTarget) -> list[dict]:
+    rows = list(
+        session.scalars(
+            select(MessageTask)
+            .where(
+                MessageTask.tenant_id == target.tenant_id,
+                MessageTask.target_peer_id == target.tg_peer_id,
+            )
+            .order_by(MessageTask.created_at.desc())
+            .limit(10)
+        )
+    )
+    return [
+        {
+            "id": item.id,
+            "content": item.content,
+            "status": item.status,
+            "account_id": item.account_id,
+            "failure_detail": item.failure_detail or "",
+            "sent_at": item.sent_at,
+            "created_at": item.created_at,
+        }
+        for item in rows
+    ]
+
+
+def _archive_records_for_detail(session: Session, target: OperationTarget, linked_group: TgGroup | None) -> list[dict]:
+    if not linked_group:
+        return []
+    rows = list(
+        session.scalars(
+            select(GroupArchive)
+            .where(GroupArchive.tenant_id == target.tenant_id, GroupArchive.group_id == linked_group.id)
+            .order_by(GroupArchive.created_at.desc())
+            .limit(10)
+        )
+    )
+    return [
+        {
+            "id": item.id,
+            "title": item.title,
+            "status": item.status,
+            "message_count": item.message_count,
+            "member_count": item.member_count,
+            "failure_detail": item.failure_detail,
+            "created_at": item.created_at,
+        }
+        for item in rows
+    ]
+
+
+def _risk_for_detail(target: OperationTarget, accounts: list[dict], linked_group: TgGroup | None) -> dict:
+    messages: list[str] = []
+    if not target.can_send:
+        messages.append("目标当前标记为只读，发送类任务会受限。")
+    if target.auth_status != GroupAuthStatus.AUTHORIZED.value:
+        messages.append(f"授权状态为 {target.auth_status}，需要确认是否允许运营。")
+    send_accounts = [item for item in accounts if item["can_send"] and item["status"] == AccountStatus.ACTIVE.value]
+    if target.target_type == "group" and not send_accounts:
+        messages.append("没有可用发送账号覆盖该群。")
+    if linked_group and linked_group.listener_enabled and not any(item["is_listener"] for item in accounts):
+        messages.append("群已启用监听，但未找到监听账号。")
+    level = "高风险" if any("没有" in item or "只读" in item for item in messages) else ("需关注" if messages else "正常")
+    return {"level": level, "messages": messages}
+
+
 def operation_target_detail(session: Session, tenant_id: int, target_id: int, *, sync_error: str = "") -> dict:
     target = _operation_target_for_tenant(session, tenant_id, target_id)
     linked_group = _linked_group_for_target(session, target) if target.target_type == "group" else None
+    group_links = (
+        list(
+            session.scalars(
+                select(TgGroupAccount).where(
+                    TgGroupAccount.tenant_id == tenant_id,
+                    TgGroupAccount.group_id == linked_group.id,
+                )
+            )
+        )
+        if linked_group
+        else []
+    )
     accounts = _group_accounts_for_detail(session, linked_group) if linked_group else []
     group_messages = _group_messages_for_detail(session, linked_group) if linked_group else []
     channel_messages = filter_channel_messages(session, tenant_id, target.id) if target.target_type == "channel" else []
+    channel_comments = filter_channel_message_comments(session, tenant_id, target.id) if target.target_type == "channel" else []
+    task_history = _task_history_for_detail(session, target, linked_group)
+    send_records = _send_records_for_detail(session, target)
+    archive_records = _archive_records_for_detail(session, target, linked_group)
+    risk = _risk_for_detail(target, accounts, linked_group)
     return {
-        "target": target,
+        "target": _operation_target_list_payload(target, linked_group, {linked_group.id: group_links} if linked_group else {}),
         "linked_group": (
             {
                 "id": linked_group.id,
@@ -494,6 +721,13 @@ def operation_target_detail(session: Session, tenant_id: int, target_id: int, *,
                 "member_count": linked_group.member_count,
                 "auth_status": linked_group.auth_status,
                 "can_send": linked_group.can_send,
+                "active_window": linked_group.active_window,
+                "daily_limit": linked_group.daily_limit,
+                "account_cooldown_seconds": linked_group.account_cooldown_seconds,
+                "group_cooldown_seconds": linked_group.group_cooldown_seconds,
+                "banned_words": linked_group.banned_words,
+                "link_whitelist": linked_group.link_whitelist,
+                "require_review": linked_group.require_review,
                 "listener_enabled": linked_group.listener_enabled,
                 "listener_context_limit": linked_group.listener_context_limit,
                 "listener_last_error": linked_group.listener_last_error,
@@ -504,12 +738,21 @@ def operation_target_detail(session: Session, tenant_id: int, target_id: int, *,
         "accounts": accounts,
         "group_messages": group_messages,
         "channel_messages": channel_messages,
+        "channel_comments": channel_comments,
+        "task_history": task_history,
+        "send_records": send_records,
+        "archive_records": archive_records,
+        "risk": risk,
         "sync_error": sync_error,
         "stats": {
             "available_accounts": sum(1 for item in accounts if item["can_send"] and item["status"] == AccountStatus.ACTIVE.value),
             "listener_accounts": sum(1 for item in accounts if item["is_listener"]),
             "group_messages": len(group_messages),
             "channel_messages": len(channel_messages),
+            "channel_comments": len(channel_comments),
+            "task_history": len(task_history),
+            "send_records": len(send_records),
+            "archive_records": len(archive_records),
         },
     }
 
@@ -591,6 +834,104 @@ def _sync_channel_target_messages(session: Session, target: OperationTarget, *, 
     target.updated_at = _now()
     session.flush()
     return inserted
+
+
+def _sync_channel_message_comments(session: Session, message: ChannelMessage, *, limit: int = 100) -> int:
+    target = session.get(OperationTarget, message.channel_target_id)
+    if not target or target.tenant_id != message.tenant_id or target.target_type != "channel":
+        raise ValueError("channel target not found")
+    account = _channel_sync_account(session, message.tenant_id)
+    if not account:
+        raise ValueError("没有可用于采集频道评论的在线账号")
+    snapshots = gateway.fetch_channel_comments(
+        account.id,
+        target.tg_peer_id,
+        message.message_id,
+        account.session_ciphertext,
+        credentials_for_account(session, account),
+        limit=limit,
+    )
+    snapshot_comment_ids = {int(snapshot.comment_message_id or 0) for snapshot in snapshots if int(snapshot.comment_message_id or 0) > 0}
+    known_comment_ids = snapshot_comment_ids | set(
+        session.scalars(
+            select(ChannelMessageComment.comment_message_id).where(
+                ChannelMessageComment.tenant_id == message.tenant_id,
+                ChannelMessageComment.channel_target_id == message.channel_target_id,
+                ChannelMessageComment.channel_message_id == message.id,
+            )
+        )
+    )
+    inserted = 0
+    for snapshot in snapshots:
+        comment_message_id = int(snapshot.comment_message_id or 0)
+        if comment_message_id <= 0:
+            continue
+        raw_parent_id = int(snapshot.parent_comment_message_id or 0)
+        parent_comment_message_id = raw_parent_id if raw_parent_id in known_comment_ids and raw_parent_id != comment_message_id else None
+        existing = session.scalar(
+            select(ChannelMessageComment).where(
+                ChannelMessageComment.tenant_id == message.tenant_id,
+                ChannelMessageComment.channel_target_id == message.channel_target_id,
+                ChannelMessageComment.channel_message_id == message.id,
+                ChannelMessageComment.comment_message_id == comment_message_id,
+            )
+        )
+        published_at = _normalize_snapshot_datetime(snapshot.published_at)
+        if existing:
+            existing.parent_comment_message_id = parent_comment_message_id
+            existing.author_peer_id = snapshot.author_peer_id or existing.author_peer_id
+            existing.author_name = snapshot.author_name or existing.author_name
+            existing.content_preview = snapshot.content_preview or existing.content_preview
+            existing.reply_count = int(snapshot.reply_count or existing.reply_count or 0)
+            existing.published_at = published_at or existing.published_at
+            continue
+        session.add(
+            ChannelMessageComment(
+                tenant_id=message.tenant_id,
+                channel_target_id=message.channel_target_id,
+                channel_message_id=message.id,
+                comment_message_id=comment_message_id,
+                parent_comment_message_id=parent_comment_message_id,
+                author_peer_id=snapshot.author_peer_id,
+                author_name=snapshot.author_name,
+                content_preview=snapshot.content_preview,
+                reply_count=int(snapshot.reply_count or 0),
+                published_at=published_at,
+            )
+        )
+        inserted += 1
+    target.last_sync_at = _now()
+    target.updated_at = _now()
+    session.flush()
+    return inserted
+
+
+def sync_channel_message_comments(session: Session, tenant_id: int, channel_message_id: int, actor: str, *, limit: int = 100) -> dict:
+    message = session.get(ChannelMessage, channel_message_id)
+    if not message or message.tenant_id != tenant_id:
+        raise ValueError("channel message not found")
+    inserted = 0
+    sync_error = ""
+    try:
+        inserted = _sync_channel_message_comments(session, message, limit=limit)
+        audit(
+            session,
+            tenant_id=message.tenant_id,
+            actor=actor,
+            action="同步频道评论",
+            target_type="channel_message",
+            target_id=str(message.id),
+            detail=f"message_id={message.message_id}; inserted={inserted}",
+        )
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 - sync should report and preserve cached comments.
+        session.rollback()
+        sync_error = str(exc)
+    return {
+        "inserted": inserted,
+        "comments": filter_channel_message_comments(session, tenant_id, message.channel_target_id, message.id),
+        "sync_error": sync_error,
+    }
 
 
 def sync_operation_target_messages(session: Session, tenant_id: int, target_id: int, actor: str) -> dict:
@@ -1044,6 +1385,7 @@ __all__ = [
     "dispatch_operation_task",
     "drain_operation_tasks",
     "ensure_operation_targets_from_legacy_groups",
+    "filter_channel_message_comments",
     "filter_channel_messages",
     "filter_operation_targets",
     "filter_operation_tasks",
@@ -1053,6 +1395,8 @@ __all__ = [
     "operation_target_detail",
     "retry_operation_task",
     "sync_account_targets",
+    "sync_channel_message_comments",
     "sync_operation_target_messages",
+    "update_operation_target_account_policy",
     "update_operation_target",
 ]

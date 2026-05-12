@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -116,6 +116,19 @@ class SchedulingSettingUpdate(BaseModel):
     jitter_max_seconds: int | None = Field(default=None, ge=0)
     batch_interval_seconds: int | None = Field(default=None, ge=0)
     respect_send_window: bool | None = None
+    quiet_hours_enabled: bool | None = None
+    quiet_start: str | None = None
+    quiet_end: str | None = None
+    quiet_timezone: str | None = None
+    default_max_retries: int | None = Field(default=None, ge=0, le=10)
+    default_retry_delay_seconds: int | None = Field(default=None, ge=0)
+    default_retry_backoff: Literal["none", "linear", "exponential"] | None = None
+    default_on_account_banned: Literal["skip_account", "pause_task", "stop_task"] | None = None
+    default_on_api_rate_limit: Literal["wait_and_retry", "skip", "pause"] | None = None
+    default_on_content_rejected: Literal["skip_message", "rewrite_and_retry", "pause"] | None = None
+    default_account_hour_limit: int | None = Field(default=None, ge=0)
+    default_account_day_limit: int | None = Field(default=None, ge=0)
+    default_account_cooldown_seconds: int | None = Field(default=None, ge=0)
 
 
 class SchedulingSettingOut(ApiModel):
@@ -125,6 +138,19 @@ class SchedulingSettingOut(ApiModel):
     jitter_max_seconds: int
     batch_interval_seconds: int
     respect_send_window: bool
+    quiet_hours_enabled: bool
+    quiet_start: str
+    quiet_end: str
+    quiet_timezone: str
+    default_max_retries: int
+    default_retry_delay_seconds: int
+    default_retry_backoff: str
+    default_on_account_banned: str
+    default_on_api_rate_limit: str
+    default_on_content_rejected: str
+    default_account_hour_limit: int
+    default_account_day_limit: int
+    default_account_cooldown_seconds: int
     updated_at: datetime
 
 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, Send, Smartphone, Users } from 'lucide-react';
+import { Activity, CheckCircle2, Database, Send, ShieldAlert, Smartphone, Users } from 'lucide-react';
 import { Card, List, Steps, Typography } from 'antd';
 import type { Overview, RuntimeConfig } from '../types';
 import { StatCard, Badge, StatusBadge } from '../components/shared';
@@ -15,9 +15,13 @@ export default function OverviewView({ overview, runtime }: Props) {
     <section className="view-grid">
       <div className="stats-grid">
         <StatCard label="TG 账号" value={overview.totals.accounts} detail="在线与待登录账号" icon={<Smartphone size={22} />} />
-        <StatCard label="可运营群" value={overview.totals.groups} detail="同步群与归档群" icon={<Users size={22} />} />
-        <StatCard label="活跃任务" value={overview.totals.tasks ?? overview.totals.campaigns ?? 0} detail="任务中心总数" icon={<Activity size={22} />} />
+        <StatCard label="运营目标" value={overview.totals.targets ?? overview.totals.groups} detail={`群/频道资产 ${overview.totals.groups}`} icon={<Users size={22} />} />
+        <StatCard label="运行中任务" value={overview.queue.running_tasks ?? 0} detail={`总任务 ${overview.totals.tasks ?? 0}`} icon={<Activity size={22} />} />
         <StatCard label="发送成功率" value={`${overview.rates.send_success}%`} detail="基于已执行消息" icon={<Send size={22} />} />
+        <StatCard label="待执行项" value={overview.queue.pending_actions ?? overview.queue.queued ?? 0} detail="pending/executing 动作" icon={<Activity size={22} />} />
+        <StatCard label="失败任务" value={overview.queue.failed_tasks ?? 0} detail={`失败执行项 ${overview.queue.failed_actions ?? overview.queue.failed ?? 0}`} icon={<ShieldAlert size={22} />} />
+        <StatCard label="监听异常" value={overview.queue.listener_errors ?? 0} detail="群/频道监听错误" icon={<Database size={22} />} />
+        <StatCard label="启用规则" value={overview.totals.rules ?? 0} detail="关键词/敏感词规则" icon={<CheckCircle2 size={22} />} />
       </div>
       <Card className="panel workflow-panel" title="新版运营闭环" extra={<Typography.Text type="secondary">账号接入 &gt; 目标确认 &gt; 规则配置 &gt; 任务执行 &gt; 数据复盘 &gt; 审计留痕</Typography.Text>}>
         <Steps

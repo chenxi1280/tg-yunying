@@ -280,6 +280,19 @@ export type SchedulingSetting = {
   jitter_max_seconds: number;
   batch_interval_seconds: number;
   respect_send_window: boolean;
+  quiet_hours_enabled: boolean;
+  quiet_start: string;
+  quiet_end: string;
+  quiet_timezone: string;
+  default_max_retries: number;
+  default_retry_delay_seconds: number;
+  default_retry_backoff: 'none' | 'linear' | 'exponential';
+  default_on_account_banned: 'skip_account' | 'pause_task' | 'stop_task';
+  default_on_api_rate_limit: 'wait_and_retry' | 'skip' | 'pause';
+  default_on_content_rejected: 'skip_message' | 'rewrite_and_retry' | 'pause';
+  default_account_hour_limit: number;
+  default_account_day_limit: number;
+  default_account_cooldown_seconds: number;
 };
 
 export type Material = {
@@ -340,61 +353,6 @@ export type Group = {
   listener_last_reply_at: string | null;
   listener_last_error: string;
   listener_account_ids: number[];
-};
-
-export type Campaign = {
-  id: number;
-  group_id: number;
-  title: string;
-  campaign_type: string;
-  topic: string;
-  execution_mode: string;
-  send_window: string;
-  intensity: string;
-  ai_provider_id: number | null;
-  prompt_template_id: number | null;
-  jitter_min_seconds: number | null;
-  jitter_max_seconds: number | null;
-  batch_interval_seconds: number | null;
-  respect_send_window: boolean | null;
-  material_ids: string;
-  target_group_ids: string;
-  source_group_ids: string;
-  selected_account_ids_by_group: string;
-  run_interval_seconds: number;
-  ends_at: string | null;
-  max_ai_tokens: number | null;
-  used_ai_tokens: number;
-  last_run_at: string | null;
-  next_run_at: string | null;
-  consecutive_failure_count: number;
-  last_error: string;
-  participation_min_ratio: number;
-  participation_max_ratio: number;
-  max_messages_per_account: number;
-  max_drafts_per_batch: number;
-  filtered_count: number;
-  status: string;
-};
-
-export type Draft = {
-  id: number;
-  campaign_id: number;
-  group_id: number;
-  persona: string;
-  content: string;
-  risk_level: string;
-  provider_name: string;
-  model_name: string;
-  prompt_template_name: string;
-  material_id: number | null;
-  suggested_account_id: number | null;
-  suggested_account_name?: string | null;
-  sequence_index: number;
-  reply_to_draft_id: number | null;
-  generation_source: string;
-  generation_error: string;
-  status: string;
 };
 
 export type MessageTask = {
@@ -609,6 +567,8 @@ export type OperationTarget = {
   linked_group_id: number | null;
   can_listen: boolean;
   can_archive: boolean;
+  can_task: boolean;
+  task_capabilities: string[];
   available_send_account_count: number;
   listener_account_count: number;
   last_sync_at: string | null;
@@ -627,6 +587,27 @@ export type ChannelMessage = {
   created_at: string;
 };
 
+export type ChannelMessageComment = {
+  id: number;
+  tenant_id: number;
+  channel_target_id: number;
+  channel_message_id: number;
+  comment_message_id: number;
+  parent_comment_message_id: number | null;
+  author_peer_id: string;
+  author_name: string;
+  content_preview: string;
+  reply_count: number;
+  published_at: string | null;
+  created_at: string;
+};
+
+export type ChannelMessageCommentSync = {
+  inserted: number;
+  comments: ChannelMessageComment[];
+  sync_error: string;
+};
+
 export type OperationTargetDetail = {
   target: OperationTarget;
   linked_group: {
@@ -636,6 +617,13 @@ export type OperationTargetDetail = {
     member_count: number;
     auth_status: string;
     can_send: boolean;
+    active_window: string;
+    daily_limit: number;
+    account_cooldown_seconds: number;
+    group_cooldown_seconds: number;
+    banned_words: string;
+    link_whitelist: string;
+    require_review: boolean;
     listener_enabled: boolean;
     listener_context_limit: number;
     listener_last_error: string;
@@ -661,6 +649,38 @@ export type OperationTargetDetail = {
     used_for_ai: boolean;
   }>;
   channel_messages: ChannelMessage[];
+  channel_comments: ChannelMessageComment[];
+  task_history: Array<{
+    id: string;
+    name: string;
+    type: TaskCenterTaskType;
+    status: string;
+    success_count: number;
+    failure_count: number;
+    updated_at: string;
+  }>;
+  send_records: Array<{
+    id: number;
+    content: string;
+    status: string;
+    account_id: number | null;
+    failure_detail: string;
+    sent_at: string | null;
+    created_at: string;
+  }>;
+  archive_records: Array<{
+    id: number;
+    title: string;
+    status: string;
+    message_count: number;
+    member_count: number;
+    failure_detail: string;
+    created_at: string;
+  }>;
+  risk: {
+    level: string;
+    messages: string[];
+  };
   sync_error: string;
   stats: Record<string, number>;
 };
@@ -676,7 +696,7 @@ export type MessageSendingPrefill = {
 };
 
 export type TaskCenterPrefill = {
-  taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'channel_view' | 'channel_like' | 'channel_comment'>;
+  taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment'>;
   target: OperationTarget;
   message?: ChannelMessage;
   nonce: number;
@@ -831,6 +851,10 @@ export type TaskCenterDetail = {
       turn_index: number;
       account_id: number | null;
       account_role: string;
+      account_memory: string;
+      account_profile: string;
+      topic_thread: string;
+      topic_plan: string;
       intent: string;
       content: string;
       status: string;
@@ -839,20 +863,50 @@ export type TaskCenterDetail = {
       result: Record<string, any>;
     }>;
   }>;
+  ai_generation_records: Array<{
+    generation_id: string;
+    cycle_id: string;
+    status: string;
+    generated_count: number;
+    token_count: number;
+    context_message_count: number;
+    account_memory_count: number;
+    scheduled_at: string | null;
+    created_at: string | null;
+  }>;
+  ai_account_profiles: Array<{
+    account_id: number;
+    display_name: string;
+    username: string | null;
+    status: string;
+    total_success_count: number;
+    current_task_success_count: number;
+    cross_task_success_count: number;
+    profile_summary: string;
+  }>;
   relay_batches: Array<{
     relay_batch_id: string;
     stats: Record<string, any>;
+    source_event_count: number;
+    material_count: number;
+    rule_version_count: number;
     items: Array<{
       action_id: string;
       relay_event_id: string;
+      source_event_key: string;
       source_group_id: number | null;
+      source_operation_target_id: number | null;
+      operation_target_id: number | null;
       source_info: string;
       original_text: string;
       transformed_text: string;
+      material_fingerprint: string;
       rule_set_id: number | null;
       rule_set_version_id: number | null;
+      rule_trace: Record<string, any>;
       account_id: number | null;
       status: string;
+      retry_count: number;
       scheduled_at: string;
       executed_at: string | null;
       result: Record<string, any>;
@@ -868,6 +922,16 @@ export type MetricBucket = {
   status: string;
 };
 
+export type OperationMetricDetail = {
+  key: string;
+  title: string;
+  category: string;
+  status: string;
+  detail: string;
+  related_id: string;
+  occurred_at: string | null;
+};
+
 export type OperationMetricsSummary = {
   accounts: MetricBucket[];
   targets: MetricBucket[];
@@ -878,6 +942,12 @@ export type OperationMetricsSummary = {
   archives: MetricBucket[];
   ai_usage: MetricBucket[];
   failures: MetricBucket[];
+  risk_control: MetricBucket[];
+  account_details: OperationMetricDetail[];
+  target_details: OperationMetricDetail[];
+  task_details: OperationMetricDetail[];
+  failure_details: OperationMetricDetail[];
+  risk_details: OperationMetricDetail[];
 };
 
 export type ChannelCapacityCheck = {
@@ -982,34 +1052,10 @@ export type GroupDetail = {
     sent_at: string | null;
     used_for_ai: boolean;
   }>;
-  recent_campaigns: Campaign[];
+  recent_campaigns: Array<Record<string, unknown>>;
   recent_archives: ArchiveItem[];
   verification_tasks: VerificationTask[];
   stats: Record<string, number>;
-};
-
-export type CampaignDetail = {
-  campaign: Campaign;
-  target_groups: Group[];
-  selected_accounts_by_group: Record<string, Account[]>;
-  drafts: Draft[];
-  message_tasks: MessageTask[];
-  stats: Record<string, number>;
-};
-
-export type RecommendedAccount = {
-  group_id: number;
-  group_title: string;
-  account_id: number;
-  account_name: string;
-  username: string | null;
-  health_score: number;
-  can_send: boolean;
-  is_selectable: boolean;
-  unavailable_reason: string | null;
-  cooldown_until: string | null;
-  recommended: boolean;
-  reason: string;
 };
 
 export type ConfirmPayload = {
@@ -1032,8 +1078,6 @@ export type ModalState =
   | { type: 'developerAppCreate' }
   | { type: 'developerAppEdit' }
   | { type: 'tenantEdit' }
-  | { type: 'subscriptionPlanCreate' }
-  | { type: 'subscriptionPlanEdit' }
   | { type: 'adminUserEdit' }
   | { type: 'aiProviderCreate' }
   | { type: 'aiProviderEdit' }

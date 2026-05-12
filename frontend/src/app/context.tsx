@@ -27,8 +27,6 @@ import type {
   ContentKeywordRule,
   Contact,
   Group,
-  Campaign,
-  Draft,
   MessageTask,
   ArchiveItem,
   ArchiveDetail,
@@ -45,8 +43,6 @@ import type {
   AccountDetail,
   AccountPoolDetail,
   GroupDetail,
-  CampaignDetail,
-  RecommendedAccount,
   ConfirmPayload,
   MessageSendBatchCreate,
   MessageSendTaskCreate,
@@ -126,10 +122,7 @@ export function AppProvider({ children }: AppProviderProps) {
   const [materials, setMaterials] = useState<Material[]>([]);
   const [contentKeywordRules, setContentKeywordRules] = useState<ContentKeywordRule[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [drafts, setDrafts] = useState<Draft[]>([]);
   const [tasks, setTasks] = useState<MessageTask[]>([]);
-  const [selectedCampaignId, setSelectedCampaignId] = useState<number | null>(null);
   const [taskManagementTab, setTaskManagementTab] = useState('任务列表');
   const [archives, setArchives] = useState<ArchiveItem[]>([]);
   const [archiveDetail, setArchiveDetail] = useState<ArchiveDetail | null>(null);
@@ -141,9 +134,6 @@ export function AppProvider({ children }: AppProviderProps) {
   const [poolDirectAccountId, setPoolDirectAccountId] = useState<number | ''>('');
   const [returnAfterVerification, setReturnAfterVerification] = useState<'accountDetail' | 'accountPoolDetail'>('accountDetail');
   const [groupDetail, setGroupDetail] = useState<GroupDetail | null>(null);
-  const [campaignDetail, setCampaignDetail] = useState<CampaignDetail | null>(null);
-  const [draftEditTarget, setDraftEditTarget] = useState<Draft | null>(null);
-  const [draftEditForm, setDraftEditForm] = useState({ content: '', risk_level: '低', suggested_account_id: '' as number | '' });
   const [accountCreateForm, setAccountCreateForm] = useState({
     display_name: '新托管账号',
     username: '',
@@ -172,33 +162,21 @@ export function AppProvider({ children }: AppProviderProps) {
   });
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
-  const [campaignStep, setCampaignStep] = useState(1);
-  const [campaignMode, setCampaignMode] = useState('ai_activity');
-  const [selectedTargetGroupIds, setSelectedTargetGroupIds] = useState<number[]>([]);
-  const [selectedSourceGroupIds, setSelectedSourceGroupIds] = useState<number[]>([]);
-  const [recommendedAccounts, setRecommendedAccounts] = useState<RecommendedAccount[]>([]);
-  const [selectedAccountsByGroup, setSelectedAccountsByGroup] = useState<Record<string, number[]>>({});
-  const [topic, setTopic] = useState('围绕新品体验做一轮自然讨论');
-  const [sendWindow, setSendWindow] = useState('10:00-22:00');
-  const [intensity, setIntensity] = useState('轻度');
-  const [draftCount, setDraftCount] = useState(4);
-  const [tone, setTone] = useState('自然、像真实群成员聊天');
   const [selectedAiProviderId, setSelectedAiProviderId] = useState<number | ''>('');
-  const [selectedMaterialIds, setSelectedMaterialIds] = useState<number[]>([]);
   const [jitterMinSeconds, setJitterMinSeconds] = useState(15);
   const [jitterMaxSeconds, setJitterMaxSeconds] = useState(180);
   const [batchIntervalSeconds, setBatchIntervalSeconds] = useState(45);
   const [respectSendWindow, setRespectSendWindow] = useState(true);
-  const [campaignEndsAt, setCampaignEndsAt] = useState(() => {
-    const value = new Date(Date.now() + 2 * 60 * 60 * 1000);
-    return value.toISOString().slice(0, 16);
-  });
-  const [maxAiTokens, setMaxAiTokens] = useState(100000);
-  const [runIntervalSeconds, setRunIntervalSeconds] = useState(300);
-  const [participationMinRatio, setParticipationMinRatio] = useState(0.6);
-  const [participationMaxRatio, setParticipationMaxRatio] = useState(1);
-  const [maxMessagesPerAccount, setMaxMessagesPerAccount] = useState(2);
-  const [maxDraftsPerBatch, setMaxDraftsPerBatch] = useState(50);
+  const [quietHoursEnabled, setQuietHoursEnabled] = useState(false);
+  const [quietStart, setQuietStart] = useState('02:00');
+  const [quietEnd, setQuietEnd] = useState('08:00');
+  const [quietTimezone, setQuietTimezone] = useState('Asia/Shanghai');
+  const [defaultMaxRetries, setDefaultMaxRetries] = useState(3);
+  const [defaultRetryDelaySeconds, setDefaultRetryDelaySeconds] = useState(60);
+  const [defaultRetryBackoff, setDefaultRetryBackoff] = useState('exponential');
+  const [defaultOnAccountBanned, setDefaultOnAccountBanned] = useState('skip_account');
+  const [defaultOnApiRateLimit, setDefaultOnApiRateLimit] = useState('wait_and_retry');
+  const [defaultOnContentRejected, setDefaultOnContentRejected] = useState('skip_message');
   const [taskStatusFilter, setTaskStatusFilter] = useState('');
   const [groupPolicy, setGroupPolicy] = useState({
     active_window: '09:00-23:00',
@@ -281,32 +259,17 @@ export function AppProvider({ children }: AppProviderProps) {
   );
   const selectedPool = useMemo(() => accountPools.find((pool) => pool.id === selectedPoolId) ?? accountPools.find((pool) => pool.is_default) ?? accountPools[0] ?? null, [accountPools, selectedPoolId]);
   const selectedGroup = useMemo(() => groups.find((group) => group.id === selectedGroupId) ?? groups[0], [groups, selectedGroupId]);
-  const selectedCampaign = useMemo(() => campaigns.find((campaign) => campaign.id === selectedCampaignId) ?? campaigns[0] ?? null, [campaigns, selectedCampaignId]);
   const choosePoolSendAccount = (detail: AccountPoolDetail) => (
     detail.accounts.find((account) => account.status === '在线' && detail.contacts.some((contact) => contact.account_id === account.id))
     ?? detail.accounts.find((account) => account.status === '在线')
     ?? detail.accounts[0]
   );
-  const selectedCampaignDrafts = useMemo(
-    () => selectedCampaign ? drafts.filter((draft) => draft.campaign_id === selectedCampaign.id).sort((left, right) => (left.sequence_index || 0) - (right.sequence_index || 0) || left.id - right.id) : [],
-    [drafts, selectedCampaign],
-  );
-  const selectedCampaignTasks = useMemo(
-    () => selectedCampaign ? tasks.filter((task) => task.campaign_id === selectedCampaign.id).sort((left, right) => new Date(left.scheduled_at).getTime() - new Date(right.scheduled_at).getTime() || left.id - right.id) : [],
-    [tasks, selectedCampaign],
-  );
-  const targetGroupsMissingAccounts = useMemo(
-    () => selectedTargetGroupIds.filter((groupId) => !(selectedAccountsByGroup[String(groupId)] ?? []).length),
-    [selectedTargetGroupIds, selectedAccountsByGroup],
-  );
   const taskSummary = useMemo(() => ({
-    campaigns: campaigns.length,
-    pendingDrafts: 0,
     queued: tasks.filter((task) => task.status === '排队中').length,
     sending: tasks.filter((task) => task.status === '发送中').length,
     sent: tasks.filter((task) => task.status === '已发送').length,
     failed: tasks.filter((task) => task.status === '失败').length,
-  }), [campaigns, drafts, tasks]);
+  }), [tasks]);
 
   const isActionPending = React.useCallback((key: string) => pendingActionKeys.includes(key), [pendingActionKeys]);
 
@@ -354,16 +317,6 @@ export function AppProvider({ children }: AppProviderProps) {
   }, [selectedGroup?.id]);
 
   useEffect(() => {
-    if (!campaigns.length) {
-      setSelectedCampaignId(null);
-      return;
-    }
-    if (!selectedCampaignId || !campaigns.some((campaign) => campaign.id === selectedCampaignId)) {
-      setSelectedCampaignId(campaigns[0].id);
-    }
-  }, [campaigns, selectedCampaignId]);
-
-  useEffect(() => {
     if (!token) {
       void refreshCaptchaChallenge();
     }
@@ -395,7 +348,6 @@ export function AppProvider({ children }: AppProviderProps) {
         api<AccountPool[]>('/account-pools'),
         api<Account[]>(accountQuery),
         api<Group[]>('/groups'),
-        Promise.resolve([] as Draft[]),
         api<MessageTask[]>(`/message-tasks${taskStatusFilter ? `?status=${encodeURIComponent(taskStatusFilter)}` : ''}`),
         api<ArchiveItem[]>('/archives'),
         api<AuditLog[]>(auditQuery()),
@@ -411,17 +363,15 @@ export function AppProvider({ children }: AppProviderProps) {
       const poolData = settledValue(results[2], [] as AccountPool[]);
       const accountData = settledValue(results[3], [] as Account[]);
       const groupData = settledValue(results[4], [] as Group[]);
-      const campaignData: Campaign[] = [];
-      const draftData = settledValue(results[5], [] as Draft[]);
-      const taskData = settledValue(results[6], [] as MessageTask[]);
-      const archiveData = settledValue(results[7], [] as ArchiveItem[]);
-      const auditData = settledValue(results[8], [] as AuditLog[]);
-      const aiProviderData = settledValue(results[9], [] as AiProvider[]);
-      const promptTemplateData = settledValue(results[10], [] as PromptTemplate[]);
-      const tenantAiData = settledValue(results[11], {} as TenantAiSetting);
-      const schedulingData = settledValue(results[12], {} as SchedulingSetting);
-      const materialData = settledValue(results[13], [] as Material[]);
-      const keywordRuleData = settledValue(results[14], [] as ContentKeywordRule[]);
+      const taskData = settledValue(results[5], [] as MessageTask[]);
+      const archiveData = settledValue(results[6], [] as ArchiveItem[]);
+      const auditData = settledValue(results[7], [] as AuditLog[]);
+      const aiProviderData = settledValue(results[8], [] as AiProvider[]);
+      const promptTemplateData = settledValue(results[9], [] as PromptTemplate[]);
+      const tenantAiData = settledValue(results[10], {} as TenantAiSetting);
+      const schedulingData = settledValue(results[11], {} as SchedulingSetting);
+      const materialData = settledValue(results[12], [] as Material[]);
+      const keywordRuleData = settledValue(results[13], [] as ContentKeywordRule[]);
       const developerAppData = me.role === '系统管理员' ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
       const tenantData = me.role === '系统管理员' ? await api<Tenant[]>('/tenants').catch(() => [] as Tenant[]) : [];
       const adminUserData: AdminUser[] = [];
@@ -444,8 +394,6 @@ export function AppProvider({ children }: AppProviderProps) {
       setMaterials(materialData);
       setContentKeywordRules(keywordRuleData);
       setGroups(groupData);
-      setCampaigns(campaignData);
-      setDrafts(draftData);
       setTasks(taskData);
       setArchives(archiveData);
       setAudits(auditData);
@@ -455,6 +403,16 @@ export function AppProvider({ children }: AppProviderProps) {
       setJitterMaxSeconds((current) => current || schedulingData.jitter_max_seconds);
       setBatchIntervalSeconds((current) => current || schedulingData.batch_interval_seconds);
       setRespectSendWindow(schedulingData.respect_send_window);
+      setQuietHoursEnabled(Boolean(schedulingData.quiet_hours_enabled));
+      setQuietStart(schedulingData.quiet_start || '02:00');
+      setQuietEnd(schedulingData.quiet_end || '08:00');
+      setQuietTimezone(schedulingData.quiet_timezone || 'Asia/Shanghai');
+      setDefaultMaxRetries(schedulingData.default_max_retries ?? 3);
+      setDefaultRetryDelaySeconds(schedulingData.default_retry_delay_seconds ?? 60);
+      setDefaultRetryBackoff(schedulingData.default_retry_backoff || 'exponential');
+      setDefaultOnAccountBanned(schedulingData.default_on_account_banned || 'skip_account');
+      setDefaultOnApiRateLimit(schedulingData.default_on_api_rate_limit || 'wait_and_retry');
+      setDefaultOnContentRejected(schedulingData.default_on_content_rejected || 'skip_message');
     } catch (error) {
       throw error;
     } finally {
@@ -527,20 +485,6 @@ export function AppProvider({ children }: AppProviderProps) {
         }
       },
     });
-  }
-
-  function openCampaignModal(groupId?: number) {
-    const targetIds = groupId ? [groupId] : selectedTargetGroupIds.length ? selectedTargetGroupIds : [selectedGroupId ?? groups[0]?.id].filter(Boolean) as number[];
-    if (groupId) setSelectedGroupId(groupId);
-    goToView('taskManagement');
-    setTaskManagementTab('任务列表');
-    setCampaignMode('ai_activity');
-    setSelectedTargetGroupIds(targetIds);
-    setSelectedSourceGroupIds([]);
-    setRecommendedAccounts([]);
-    setSelectedAccountsByGroup({});
-    setCampaignStep(1);
-    setModal(null);
   }
 
   function openAccountCreate(loginNow = false) {
@@ -866,29 +810,6 @@ export function AppProvider({ children }: AppProviderProps) {
     setBusy('');
   }
 
-  async function loadCampaignDetail(campaign: Campaign) {
-    setSelectedCampaignId(campaign.id);
-    setCampaignDetail(null);
-    goToView('taskManagement');
-    setTaskManagementTab('任务列表');
-  }
-
-  function openDraftEdit(draft: Draft) {
-    setDraftEditTarget(draft);
-    setDraftEditForm({
-      content: draft.content,
-      risk_level: draft.risk_level,
-      suggested_account_id: draft.suggested_account_id ?? '',
-    });
-    setModal({ type: 'draftEdit' });
-  }
-
-  async function saveDraftEdit() {
-    if (!draftEditTarget) return;
-    closeModal();
-    showResult('旧 AI 内容编辑入口已下线', '新版任务中心通过自动校验、执行记录和失败重试追踪内容结果。');
-  }
-
   function avatarUrl(value: string) {
     if (!value) return '';
     return value.startsWith('http') ? value : `${API_ORIGIN}${value}`;
@@ -917,71 +838,6 @@ export function AppProvider({ children }: AppProviderProps) {
       showResult('验证码已同步', '已从 TG 官方服务消息同步最新验证码，验证码会短时展示并写入审计。');
       setBusy('');
     }
-  }
-
-  function toggleTargetGroup(groupId: number) {
-    setSelectedTargetGroupIds((current) => {
-      const next = current.includes(groupId) ? current.filter((id) => id !== groupId) : [...current, groupId];
-      setRecommendedAccounts([]);
-      setSelectedAccountsByGroup({});
-      return next;
-    });
-  }
-
-  function toggleSourceGroup(groupId: number) {
-    setSelectedSourceGroupIds((current) => current.includes(groupId) ? current.filter((id) => id !== groupId) : [...current, groupId]);
-  }
-
-  async function recommendAccounts(groupIds = selectedTargetGroupIds) {
-    if (!groupIds.length) {
-      setRecommendedAccounts([]);
-      setSelectedAccountsByGroup({});
-      return;
-    }
-    const recommendations = await api<RecommendedAccount[]>('/tasks/recommend-accounts', {
-      method: 'POST',
-      body: JSON.stringify({ tenant_id: currentUser?.tenant_id ?? 1, target_group_ids: groupIds }),
-    });
-    setRecommendedAccounts(recommendations);
-    const selected: Record<string, number[]> = {};
-    for (const item of recommendations) {
-      if (!selected[String(item.group_id)]) selected[String(item.group_id)] = [];
-      if (item.recommended && (item.is_selectable ?? item.can_send)) selected[String(item.group_id)].push(item.account_id);
-    }
-    setSelectedAccountsByGroup(selected);
-  }
-
-  function toggleRecommendedAccount(groupId: number, accountId: number) {
-    setSelectedAccountsByGroup((current) => {
-      const key = String(groupId);
-      const existing = current[key] ?? [];
-      return {
-        ...current,
-        [key]: existing.includes(accountId) ? existing.filter((id) => id !== accountId) : [...existing, accountId],
-      };
-    });
-  }
-
-  function setGroupAccountsSelected(groupId: number, accountIds: number[]) {
-    setSelectedAccountsByGroup((current) => ({ ...current, [String(groupId)]: accountIds }));
-  }
-
-  async function goCampaignAccountStep() {
-    if (!selectedTargetGroupIds.length) return;
-    setBusy('推荐账号');
-    try {
-      await recommendAccounts(selectedTargetGroupIds);
-      setCampaignStep(3);
-    } catch (error) {
-      setNotice(`推荐账号失败：${error instanceof Error ? error.message : '未知错误'}`);
-    } finally {
-      setBusy('');
-    }
-  }
-
-  function goCampaignContentStep() {
-    if (targetGroupsMissingAccounts.length) return;
-    setCampaignStep(4);
   }
 
   async function createDirectMessageTask() {
@@ -1275,38 +1131,6 @@ export function AppProvider({ children }: AppProviderProps) {
     await refresh();
     if (accountDetail?.account.id === account.id) await refreshAccountDetail();
     if (accountPoolDetail) await refreshAccountPoolDetail();
-  }
-
-  async function createCampaignAndDrafts() {
-    closeModal();
-    showResult('请使用新任务中心', '旧任务创建入口已下线，请在任务中心按 5 类型分步创建任务。');
-    goToView('taskManagement');
-    setTaskManagementTab('任务列表');
-  }
-
-  async function approveDraft(draft: Draft) {
-    showResult('旧处理入口已下线', `AI 内容 #${draft.id} 现在由自动校验、拦截、跳过和发送记录追踪。`);
-    goToView('taskManagement');
-    setTaskManagementTab('任务列表');
-  }
-
-  async function cancelCampaign(campaign: Campaign) {
-    setSelectedCampaignId(campaign.id);
-    showResult('旧任务入口已下线', '请在新任务中心管理当前 5 类型任务。');
-    goToView('taskManagement');
-    setTaskManagementTab('任务列表');
-  }
-
-  async function rejectDraft(draft: Draft) {
-    showResult('旧处理入口已下线', `AI 内容 #${draft.id} 不再走人工处理流程，请查看自动校验结果和发送记录。`);
-    goToView('taskManagement');
-    setTaskManagementTab('任务列表');
-  }
-
-  async function approveAllDrafts() {
-    showResult('旧批量处理入口已下线', '新任务中心按自动校验、执行记录和失败重试追踪处理结果。');
-    goToView('taskManagement');
-    setTaskManagementTab('任务列表');
   }
 
   async function cancelTask(task: MessageTask) {
@@ -1683,6 +1507,16 @@ export function AppProvider({ children }: AppProviderProps) {
         jitter_max_seconds: jitterMaxSeconds,
         batch_interval_seconds: batchIntervalSeconds,
         respect_send_window: respectSendWindow,
+        quiet_hours_enabled: quietHoursEnabled,
+        quiet_start: quietStart,
+        quiet_end: quietEnd,
+        quiet_timezone: quietTimezone,
+        default_max_retries: defaultMaxRetries,
+        default_retry_delay_seconds: defaultRetryDelaySeconds,
+        default_retry_backoff: defaultRetryBackoff,
+        default_on_account_banned: defaultOnAccountBanned,
+        default_on_api_rate_limit: defaultOnApiRateLimit,
+        default_on_content_rejected: defaultOnContentRejected,
       }),
     });
     closeModal();
@@ -1710,7 +1544,6 @@ export function AppProvider({ children }: AppProviderProps) {
     });
     closeModal();
     showResult('素材已新增', `已新增素材：${material.title}`);
-    setSelectedMaterialIds((current) => [...current, material.id]);
     await refresh();
   }
 
@@ -1749,10 +1582,6 @@ export function AppProvider({ children }: AppProviderProps) {
     await refresh();
   }
 
-  function toggleMaterial(materialId: number) {
-    setSelectedMaterialIds((current) => current.includes(materialId) ? current.filter((id) => id !== materialId) : [...current, materialId]);
-  }
-
   function accountName(accountId: number | null | undefined) {
     if (!accountId) return '未指定';
     const account = accounts.find((item) => item.id === accountId);
@@ -1770,7 +1599,7 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   // 使用 useMemo 稳定 context value 引用，避免消费者不必要的重渲染
-  const value: AppState = useMemo(() => ({
+  const value: AppState = {
     // Auth state
     token,
     setToken,
@@ -1843,6 +1672,8 @@ export function AppProvider({ children }: AppProviderProps) {
     setPromptTemplates,
     tenantAiSetting,
     setTenantAiSetting,
+    selectedAiProviderId,
+    setSelectedAiProviderId,
     schedulingSetting,
     setSchedulingSetting,
     materials,
@@ -1850,17 +1681,11 @@ export function AppProvider({ children }: AppProviderProps) {
     contentKeywordRules,
     setContentKeywordRules,
 
-    // Groups & Campaigns
+    // Groups & tasks
     groups,
     setGroups,
-    campaigns,
-    setCampaigns,
-    drafts,
-    setDrafts,
     tasks,
     setTasks,
-    selectedCampaignId,
-    setSelectedCampaignId,
     taskManagementTab,
     setTaskManagementTab,
 
@@ -1891,14 +1716,6 @@ export function AppProvider({ children }: AppProviderProps) {
     setReturnAfterVerification,
     groupDetail,
     setGroupDetail,
-    campaignDetail,
-    setCampaignDetail,
-
-    // Draft edit
-    draftEditTarget,
-    setDraftEditTarget,
-    draftEditForm,
-    setDraftEditForm,
 
     // Account forms
     accountCreateForm,
@@ -1916,35 +1733,9 @@ export function AppProvider({ children }: AppProviderProps) {
     avatarFile,
     setAvatarFile,
 
-    // Group & Campaign state
+    // Group state
     selectedGroupId,
     setSelectedGroupId,
-    campaignStep,
-    setCampaignStep,
-    campaignMode,
-    setCampaignMode,
-    selectedTargetGroupIds,
-    setSelectedTargetGroupIds,
-    selectedSourceGroupIds,
-    setSelectedSourceGroupIds,
-    recommendedAccounts,
-    setRecommendedAccounts,
-    selectedAccountsByGroup,
-    setSelectedAccountsByGroup,
-    topic,
-    setTopic,
-    sendWindow,
-    setSendWindow,
-    intensity,
-    setIntensity,
-    draftCount,
-    setDraftCount,
-    tone,
-    setTone,
-    selectedAiProviderId,
-    setSelectedAiProviderId,
-    selectedMaterialIds,
-    setSelectedMaterialIds,
     jitterMinSeconds,
     setJitterMinSeconds,
     jitterMaxSeconds,
@@ -1953,20 +1744,26 @@ export function AppProvider({ children }: AppProviderProps) {
     setBatchIntervalSeconds,
     respectSendWindow,
     setRespectSendWindow,
-    campaignEndsAt,
-    setCampaignEndsAt,
-    maxAiTokens,
-    setMaxAiTokens,
-    runIntervalSeconds,
-    setRunIntervalSeconds,
-    participationMinRatio,
-    setParticipationMinRatio,
-    participationMaxRatio,
-    setParticipationMaxRatio,
-    maxMessagesPerAccount,
-    setMaxMessagesPerAccount,
-    maxDraftsPerBatch,
-    setMaxDraftsPerBatch,
+    quietHoursEnabled,
+    setQuietHoursEnabled,
+    quietStart,
+    setQuietStart,
+    quietEnd,
+    setQuietEnd,
+    quietTimezone,
+    setQuietTimezone,
+    defaultMaxRetries,
+    setDefaultMaxRetries,
+    defaultRetryDelaySeconds,
+    setDefaultRetryDelaySeconds,
+    defaultRetryBackoff,
+    setDefaultRetryBackoff,
+    defaultOnAccountBanned,
+    setDefaultOnAccountBanned,
+    defaultOnApiRateLimit,
+    setDefaultOnApiRateLimit,
+    defaultOnContentRejected,
+    setDefaultOnContentRejected,
     taskStatusFilter,
     setTaskStatusFilter,
     groupPolicy,
@@ -2003,10 +1800,6 @@ export function AppProvider({ children }: AppProviderProps) {
     // Computed values
     selectedPool,
     selectedGroup,
-    selectedCampaign,
-    selectedCampaignDrafts,
-    selectedCampaignTasks,
-    targetGroupsMissingAccounts,
     taskSummary,
 
     // Handler functions
@@ -2014,7 +1807,6 @@ export function AppProvider({ children }: AppProviderProps) {
     showResult,
     closeModal,
     openConfirm,
-    openCampaignModal,
     openAccountCreate,
     openAccountDetail: (account) => runWithLoading(`account:${account.id}:detail`, '读取账号详情', () => openAccountDetail(account)),
     openAccountVerificationCodes: (account) => runWithLoading(`account:${account.id}:codes`, '提取验证码', () => openAccountVerificationCodes(account)),
@@ -2034,19 +1826,9 @@ export function AppProvider({ children }: AppProviderProps) {
     queueAccountSyncNow: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:sync`, '同步账号数据', queueAccountSyncNow),
     startDirectMessageToContact,
     openGroupDetail: (group) => runWithLoading(`group:${group.id}:detail`, '读取群详情', () => openGroupDetail(group)),
-    loadCampaignDetail: (campaign) => runWithLoading(`campaign:${campaign.id}:detail`, '读取任务详情', () => loadCampaignDetail(campaign)),
-    openDraftEdit,
-    saveDraftEdit: () => runWithLoading(`draft:${draftEditTarget?.id ?? 'current'}:save`, '保存 AI 内容', saveDraftEdit),
     avatarUrl,
     openAccountProfileEdit,
     pollVerificationCodes: (silent = false) => silent ? pollVerificationCodes(true) : runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:codes`, '同步验证码', () => pollVerificationCodes(false)),
-    toggleTargetGroup,
-    toggleSourceGroup,
-    recommendAccounts,
-    toggleRecommendedAccount,
-    setGroupAccountsSelected,
-    goCampaignAccountStep: () => runWithLoading('campaign:recommend', '推荐账号', goCampaignAccountStep),
-    goCampaignContentStep,
     createDirectMessageTask: () => runWithLoading('direct-message:create', '创建私发任务', createDirectMessageTask),
     createMessageSendTask: (payload) => runWithLoading('message-send:create', '创建消息发送任务', () => createMessageSendTask(payload)),
     saveAccountProfile: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:profile:save`, '保存账号资料', saveAccountProfile),
@@ -2065,11 +1847,6 @@ export function AppProvider({ children }: AppProviderProps) {
     deleteAccount: (account) => runWithLoading(`account:${account.id}:delete`, '移除账号', () => deleteAccount(account)),
     healthCheck: (account) => runWithLoading(`account:${account.id}:health`, '健康检查', () => healthCheck(account)),
     syncAccountGroups: (account) => runWithLoading(`account:${account.id}:sync`, '同步账号数据', () => syncAccountGroups(account)),
-    createCampaignAndDrafts: () => runWithLoading('campaign:create', '创建任务', createCampaignAndDrafts),
-    cancelCampaign: (campaign) => runWithLoading(`campaign:${campaign.id}:cancel`, '取消任务', () => cancelCampaign(campaign)),
-    approveDraft: (draft) => runWithLoading(`draft:${draft.id}:approve`, '自动校验结果', () => approveDraft(draft)),
-    rejectDraft: (draft) => runWithLoading(`draft:${draft.id}:reject`, '自动校验结果', () => rejectDraft(draft)),
-    approveAllDrafts: () => runWithLoading(`campaign:${selectedCampaign?.id ?? 'current'}:approve-all`, '批量处理', approveAllDrafts),
     cancelTask: (task) => runWithLoading(`task:${task.id}:cancel`, '取消任务', () => cancelTask(task)),
     dispatchTask: (task) => runWithLoading(`task:${task.id}:dispatch`, '派发消息', () => dispatchTask(task)),
     drainQueue: () => runWithLoading('worker:drain', '处理到期发送', drainQueue),
@@ -2102,11 +1879,10 @@ export function AppProvider({ children }: AppProviderProps) {
     createContentKeywordRule: () => runWithLoading('keyword-rule:create', '新增关键词', createContentKeywordRule),
     openContentKeywordRuleEdit,
     saveContentKeywordRule: () => runWithLoading(`keyword-rule:${keywordRuleForm.id ?? 'create'}:save`, keywordRuleForm.id ? '保存关键词' : '新增关键词', saveContentKeywordRule),
-    toggleMaterial,
     accountName,
     groupName,
     choosePoolSendAccount,
-  }), [token, currentUser, authMode, loginEmail, loginPassword, registerForm, changePasswordForm, captchaChallenge, captchaInput, captchaToken, captchaError, captchaLoading, activeView, runtime, overview, accountPools, selectedPoolId, accounts, developerApps, tenants, adminUsers, selectedAdminUserId, selectedUserTokenLedgers, adminUserForm, tokenAdjustmentForm, usageLedgers, usageSummary, aiProviders, promptTemplates, tenantAiSetting, schedulingSetting, materials, contentKeywordRules, groups, campaigns, drafts, tasks, selectedCampaignId, taskManagementTab, archives, archiveDetail, audits, auditFilters, accountDetail, accountContacts, selectedDirectContact, accountDetailTab, accountPoolDetail, poolDirectAccountId, returnAfterVerification, groupDetail, campaignDetail, draftEditTarget, draftEditForm, accountCreateForm, accountPoolForm, cloneForm, loginAfterCreate, accountLoginForm, profileForm, avatarFile, selectedGroupId, campaignStep, campaignMode, selectedTargetGroupIds, selectedSourceGroupIds, recommendedAccounts, selectedAccountsByGroup, topic, sendWindow, intensity, draftCount, tone, selectedAiProviderId, selectedMaterialIds, jitterMinSeconds, jitterMaxSeconds, batchIntervalSeconds, respectSendWindow, campaignEndsAt, maxAiTokens, runIntervalSeconds, participationMinRatio, participationMaxRatio, maxMessagesPerAccount, maxDraftsPerBatch, taskStatusFilter, groupPolicy, developerAppForm, tenantForm, aiProviderForm, promptTemplateForm, materialForm, keywordRuleForm, modal, busy, pendingActionKeys, isActionPending, notice, directMessageForm, selectedPool, selectedGroup, selectedCampaign, selectedCampaignDrafts, selectedCampaignTasks, targetGroupsMissingAccounts, taskSummary, runWithLoading, refresh, showResult, closeModal, openConfirm, openCampaignModal, openAccountCreate, openAccountDetail, openAccountVerificationCodes, openAccountMovePool, openAccountPoolDetail, refreshAccountPoolDetail, createAccount, deleteAccount, createAccountPool, moveCurrentAccountPool, createClonePlan, confirmClonePlan, retryCloneItem, confirmVerificationTask, dismissVerificationTask, refreshAccountDetail, syncAccountContacts, queueAccountSyncNow, startDirectMessageToContact, openGroupDetail, loadCampaignDetail, openDraftEdit, saveDraftEdit, avatarUrl, openAccountProfileEdit, pollVerificationCodes, toggleTargetGroup, toggleSourceGroup, recommendAccounts, toggleRecommendedAccount, setGroupAccountsSelected, goCampaignAccountStep, goCampaignContentStep, createDirectMessageTask, createMessageSendTask, saveAccountProfile, retryAccountProfileSync, login, register, changePassword, logout, runLogin, verifyAccount, chooseAccountLoginMethod, submitAccountLoginCode, submitAccountLoginPassword, resendAccountLoginCode, checkAccountQrLogin, healthCheck, syncAccountGroups, createCampaignAndDrafts, cancelCampaign, approveDraft, rejectDraft, approveAllDrafts, cancelTask, dispatchTask, drainQueue, retryTask, authorizeSelectedGroup, createArchive, saveGroupPolicy, openArchiveDetail, exportArchive, rerunArchive, createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp, openTenantEdit, saveTenantQuota, openAdminUserEdit, saveAdminUser, resetAdminUserPassword, adjustAdminUserTokens, loadUserTokenLedgers, createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider, createPromptTemplate, saveTenantAiSetting, saveSchedulingSetting, createMaterial, createContentKeywordRule, openContentKeywordRuleEdit, saveContentKeywordRule, toggleMaterial, accountName, groupName, choosePoolSendAccount, refreshCaptchaChallenge, verifyCaptcha, message, modalApi]);
+  };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

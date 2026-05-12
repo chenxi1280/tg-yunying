@@ -1,14 +1,14 @@
 import React from 'react';
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, InputNumber, List, Modal, Select, Space, Table, Tag, Typography } from 'antd';
+import { Alert, App as AntdApp, Button, Card, Descriptions, Drawer, Empty, Form, Input, InputNumber, List, Modal, Select, Space, Switch, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { MessageSquareText, RefreshCcw } from 'lucide-react';
 import { api, ApiError } from '../../shared/api/client';
-import type { ChannelMessage, OperationTarget, OperationTargetDetail, OperationTargetMessageSync, TaskCenterTaskType } from '../types';
+import type { ChannelMessage, ChannelMessageCommentSync, OperationTarget, OperationTargetDetail, OperationTargetMessageSync, TaskCenterTaskType } from '../types';
 import { StatusBadge, useAntdTableControls } from '../components/shared';
 
 type Props = {
   onSendToTarget: (target: OperationTarget) => void;
-  onCreateTaskFromTarget: (taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'channel_view' | 'channel_like' | 'channel_comment'>, target: OperationTarget, message?: ChannelMessage) => void;
+  onCreateTaskFromTarget: (taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment'>, target: OperationTarget, message?: ChannelMessage) => void;
 };
 
 function formatDateTime(value?: string | null) {
@@ -19,15 +19,30 @@ function taskLabel(taskType: TaskCenterTaskType) {
   if (taskType === 'channel_view') return '浏览';
   if (taskType === 'channel_like') return '点赞';
   if (taskType === 'channel_comment') return '评论';
+  if (taskType === 'group_relay') return '转发监听';
   return 'AI 活跃';
 }
 
+function capabilityTags(target: OperationTarget) {
+  if (!target.task_capabilities.length) return <Typography.Text type="secondary">暂无可创建任务</Typography.Text>;
+  return (
+    <Space size={[4, 4]} wrap>
+      {target.task_capabilities.map((item) => <Tag color="blue" key={item}>{item}</Tag>)}
+    </Space>
+  );
+}
+
 export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromTarget }: Props) {
+  const { message } = AntdApp.useApp();
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
+  const [riskSaving, setRiskSaving] = React.useState(false);
+  const [accountPolicySaving, setAccountPolicySaving] = React.useState('');
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [syncing, setSyncing] = React.useState(false);
+  const [syncingCommentMessageId, setSyncingCommentMessageId] = React.useState<number | null>(null);
+  const [creatingArchiveId, setCreatingArchiveId] = React.useState<number | null>(null);
   const [formError, setFormError] = React.useState('');
   const [editingTarget, setEditingTarget] = React.useState<OperationTarget | null>(null);
   const [detailTarget, setDetailTarget] = React.useState<OperationTarget | null>(null);
@@ -35,6 +50,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
   const [targetModalOpen, setTargetModalOpen] = React.useState(false);
   const [detailOpen, setDetailOpen] = React.useState(false);
   const [form] = Form.useForm();
+  const [riskForm] = Form.useForm();
 
   function errorMessage(error: unknown) {
     if (error instanceof ApiError) {
@@ -64,6 +80,17 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     try {
       const detail = await api<OperationTargetDetail>(`/operation-targets/${target.id}/detail`);
       setTargetDetail(detail);
+      if (detail.linked_group) {
+        riskForm.setFieldsValue({
+          active_window: detail.linked_group.active_window,
+          daily_limit: detail.linked_group.daily_limit,
+          account_cooldown_seconds: detail.linked_group.account_cooldown_seconds,
+          group_cooldown_seconds: detail.linked_group.group_cooldown_seconds,
+          banned_words: detail.linked_group.banned_words,
+          link_whitelist: detail.linked_group.link_whitelist,
+          require_review: detail.linked_group.require_review,
+        });
+      }
     } catch (error) {
       setFormError(errorMessage(error));
     } finally {
@@ -81,6 +108,23 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
       setFormError(errorMessage(error));
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function syncMessageComments(channelMessage: ChannelMessage) {
+    if (!targetDetail) return;
+    setSyncingCommentMessageId(channelMessage.id);
+    setFormError('');
+    try {
+      const result = await api<ChannelMessageCommentSync>(`/channel-messages/${channelMessage.id}/sync-comments`, { method: 'POST' });
+      if (result.sync_error) {
+        setFormError(result.sync_error);
+      }
+      await loadTargetDetail(targetDetail.target);
+    } catch (error) {
+      setFormError(errorMessage(error));
+    } finally {
+      setSyncingCommentMessageId(null);
     }
   }
 
@@ -115,6 +159,74 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
       setFormError(errorMessage(error));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function createArchiveFromTarget(target: OperationTarget) {
+    setCreatingArchiveId(target.id);
+    setFormError('');
+    try {
+      await api('/archives', {
+        method: 'POST',
+        body: JSON.stringify({
+          operation_target_id: target.id,
+          title: `${target.title} 内容与成员归档`,
+        }),
+      });
+      void message.success('归档任务已创建');
+      await loadTargetDetail(target);
+      await load();
+    } catch (error) {
+      setFormError(errorMessage(error));
+    } finally {
+      setCreatingArchiveId(null);
+    }
+  }
+
+  async function saveRiskPolicy() {
+    if (!targetDetail?.linked_group) return;
+    setRiskSaving(true);
+    setFormError('');
+    try {
+      const values = await riskForm.validateFields();
+      await api<OperationTarget>(`/operation-targets/${targetDetail.target.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          active_window: values.active_window ?? '09:00-23:00',
+          daily_limit: values.daily_limit ?? 0,
+          account_cooldown_seconds: values.account_cooldown_seconds ?? 0,
+          group_cooldown_seconds: values.group_cooldown_seconds ?? 0,
+          banned_words: values.banned_words ?? '',
+          link_whitelist: values.link_whitelist ?? '',
+          require_review: values.require_review ?? true,
+        }),
+      });
+      void message.success('目标风控策略已保存');
+      await loadTargetDetail(targetDetail.target);
+      await load();
+    } catch (error) {
+      setFormError(errorMessage(error));
+    } finally {
+      setRiskSaving(false);
+    }
+  }
+
+  async function saveAccountPolicy(accountId: number, patch: { can_send?: boolean; is_listener?: boolean }) {
+    if (!targetDetail) return;
+    setAccountPolicySaving(`${accountId}:${Object.keys(patch)[0] ?? 'policy'}`);
+    setFormError('');
+    try {
+      const detail = await api<OperationTargetDetail>(`/operation-targets/${targetDetail.target.id}/accounts/${accountId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      });
+      setTargetDetail(detail);
+      void message.success('账号风控已保存');
+      await load();
+    } catch (error) {
+      setFormError(errorMessage(error));
+    } finally {
+      setAccountPolicySaving('');
     }
   }
 
@@ -181,6 +293,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     { title: '人数', dataIndex: 'member_count', key: 'member_count', width: 110 },
     { title: '使用范围', key: 'auth_status', width: 140, render: (_, target) => <StatusBadge status={target.auth_status} /> },
     { title: '发送能力', key: 'can_send', width: 140, render: (_, target) => <StatusBadge status={target.can_send ? '可发送' : '只读'} /> },
+    { title: '任务能力', key: 'task_capabilities', width: 240, render: (_, target) => capabilityTags(target) },
     { title: '最近同步', key: 'last_sync_at', width: 200, render: (_, target) => target.last_sync_at ? new Date(target.last_sync_at).toLocaleString() : '手动创建' },
     {
       title: '操作',
@@ -274,6 +387,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
                 { key: 'type', label: '类型', children: targetDetail.target.target_type === 'channel' ? '频道' : '群聊' },
                 { key: 'auth', label: '使用范围', children: <StatusBadge status={targetDetail.target.auth_status} /> },
                 { key: 'send', label: '发送能力', children: <StatusBadge status={targetDetail.target.can_send ? '可发送' : '只读'} /> },
+                { key: 'task', label: '任务能力', span: 3, children: capabilityTags(targetDetail.target) },
                 { key: 'peer', label: 'Peer', span: 2, children: targetDetail.target.tg_peer_id },
                 { key: 'username', label: 'Username', children: targetDetail.target.username ? `@${targetDetail.target.username}` : '-' },
                 { key: 'members', label: '人数', children: targetDetail.target.member_count },
@@ -283,7 +397,36 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
             <Space wrap>
               <Button type="primary" icon={<MessageSquareText size={16} />} onClick={() => onSendToTarget(targetDetail.target)}>去发送消息</Button>
               {targetDetail.target.target_type === 'group' && <Button onClick={() => onCreateTaskFromTarget('group_ai_chat', targetDetail.target)}>创建 AI 活跃群任务</Button>}
+              {targetDetail.target.target_type === 'group' && <Button onClick={() => onCreateTaskFromTarget('group_relay', targetDetail.target)}>创建转发监听任务</Button>}
+              {targetDetail.target.target_type === 'group' && targetDetail.target.can_archive && (
+                <Button loading={creatingArchiveId === targetDetail.target.id} onClick={() => createArchiveFromTarget(targetDetail.target)}>创建归档</Button>
+              )}
             </Space>
+            <Card className="sub-panel compact-panel" title="风险状态">
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <StatusBadge status={targetDetail.risk.level} />
+                {targetDetail.risk.messages.length ? (
+                  targetDetail.risk.messages.map((item) => <Alert key={item} type="warning" showIcon message={item} />)
+                ) : (
+                  <Typography.Text type="secondary">当前未发现目标能力风险。</Typography.Text>
+                )}
+              </Space>
+            </Card>
+            {targetDetail.linked_group && (
+              <Card className="sub-panel compact-panel" title="目标风控策略" extra={<Button type="primary" size="small" loading={riskSaving} onClick={saveRiskPolicy}>保存</Button>}>
+                <Form form={riskForm} layout="vertical">
+                  <div className="form-grid">
+                    <Form.Item name="active_window" label="可发送时间窗"><Input placeholder="09:00-23:00" /></Form.Item>
+                    <Form.Item name="daily_limit" label="群每日上限"><InputNumber min={0} style={{ width: '100%' }} /></Form.Item>
+                    <Form.Item name="account_cooldown_seconds" label="账号冷却秒"><InputNumber min={0} style={{ width: '100%' }} /></Form.Item>
+                    <Form.Item name="group_cooldown_seconds" label="群冷却秒"><InputNumber min={0} style={{ width: '100%' }} /></Form.Item>
+                    <Form.Item name="require_review" label="发送前校验"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
+                    <Form.Item name="banned_words" label="目标敏感词"><Input.TextArea rows={2} placeholder="一行或逗号分隔" /></Form.Item>
+                    <Form.Item name="link_whitelist" label="链接白名单"><Input.TextArea rows={2} placeholder="example.com, t.me/xxx" /></Form.Item>
+                  </div>
+                </Form>
+              </Card>
+            )}
             {targetDetail.target.target_type === 'group' ? (
               <Card className="sub-panel compact-panel" title="最近聊天记录">
                 <List
@@ -310,6 +453,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
                     <List.Item
                       actions={[
                         <Button size="small" onClick={() => onSendToTarget(targetDetail.target)}>发消息</Button>,
+                        <Button size="small" loading={syncingCommentMessageId === message.id} onClick={() => syncMessageComments(message)}>同步评论</Button>,
                         <Button size="small" onClick={() => onCreateTaskFromTarget('channel_view', targetDetail.target, message)}>做{taskLabel('channel_view')}任务</Button>,
                         <Button size="small" onClick={() => onCreateTaskFromTarget('channel_like', targetDetail.target, message)}>做{taskLabel('channel_like')}任务</Button>,
                         <Button size="small" onClick={() => onCreateTaskFromTarget('channel_comment', targetDetail.target, message)}>做{taskLabel('channel_comment')}任务</Button>,
@@ -317,7 +461,12 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
                     >
                       <List.Item.Meta
                         title={<Space><Typography.Text strong>#{message.message_id}</Typography.Text><Typography.Text type="secondary">{formatDateTime(message.published_at)}</Typography.Text></Space>}
-                        description={message.content_preview || message.message_url || '无内容预览'}
+                        description={
+                          <Space direction="vertical" size={4}>
+                            <Typography.Text>{message.content_preview || message.message_url || '无内容预览'}</Typography.Text>
+                            <Typography.Text type="secondary">已采集评论 {targetDetail.channel_comments.filter((comment) => comment.channel_message_id === message.id).length} 条</Typography.Text>
+                          </Space>
+                        }
                       />
                     </List.Item>
                   )}
@@ -330,10 +479,59 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
                   dataSource={targetDetail.accounts}
                   locale={{ emptyText: <Empty description="暂无账号覆盖" /> }}
                   renderItem={(account) => (
-                    <List.Item>
+                    <List.Item
+                      actions={[
+                        <Space key="send" size={6}><Typography.Text type="secondary">发言</Typography.Text><Switch size="small" checked={account.can_send} loading={accountPolicySaving === `${account.id}:can_send`} onChange={(checked) => saveAccountPolicy(account.id, { can_send: checked })} /></Space>,
+                        <Space key="listener" size={6}><Typography.Text type="secondary">监听</Typography.Text><Switch size="small" checked={account.is_listener} loading={accountPolicySaving === `${account.id}:is_listener`} onChange={(checked) => saveAccountPolicy(account.id, { is_listener: checked })} /></Space>,
+                      ]}
+                    >
                       <List.Item.Meta
                         title={<Space><Typography.Text strong>{account.display_name}</Typography.Text><StatusBadge status={account.status} />{account.is_listener && <Tag>监听号</Tag>}</Space>}
                         description={`@${account.username ?? '未设置'} / ${account.permission_label || '-'} / ${account.can_send ? '可发言' : '不可发言'} / 最近发送 ${formatDateTime(account.last_sent_at)}`}
+                      />
+                    </List.Item>
+                  )}
+                />
+              </Card>
+            )}
+            <Card className="sub-panel compact-panel" title="历史任务">
+              <List
+                dataSource={targetDetail.task_history}
+                locale={{ emptyText: <Empty description="暂无关联任务" /> }}
+                renderItem={(task) => (
+                  <List.Item>
+                    <List.Item.Meta
+                      title={<Space><Typography.Text strong>{task.name}</Typography.Text><Tag>{taskLabel(task.type)}</Tag><StatusBadge status={task.status} /></Space>}
+                      description={`成功 ${task.success_count} / 失败 ${task.failure_count} / 更新时间 ${formatDateTime(task.updated_at)}`}
+                    />
+                  </List.Item>
+                )}
+              />
+            </Card>
+            <Card className="sub-panel compact-panel" title="发送记录">
+              <List
+                dataSource={targetDetail.send_records}
+                locale={{ emptyText: <Empty description="暂无发送记录" /> }}
+                renderItem={(record) => (
+                  <List.Item>
+                    <List.Item.Meta
+                      title={<Space><Typography.Text strong>#{record.id}</Typography.Text><StatusBadge status={record.status} /><Typography.Text type="secondary">{formatDateTime(record.sent_at ?? record.created_at)}</Typography.Text></Space>}
+                      description={record.failure_detail ? `${record.content} / 失败原因：${record.failure_detail}` : record.content}
+                    />
+                  </List.Item>
+                )}
+              />
+            </Card>
+            {targetDetail.target.target_type === 'group' && (
+              <Card className="sub-panel compact-panel" title="归档记录">
+                <List
+                  dataSource={targetDetail.archive_records}
+                  locale={{ emptyText: <Empty description="暂无归档记录" /> }}
+                  renderItem={(archive) => (
+                    <List.Item>
+                      <List.Item.Meta
+                        title={<Space><Typography.Text strong>{archive.title}</Typography.Text><StatusBadge status={archive.status} /></Space>}
+                        description={`消息 ${archive.message_count} / 成员 ${archive.member_count} / 创建 ${formatDateTime(archive.created_at)}${archive.failure_detail ? ` / ${archive.failure_detail}` : ''}`}
                       />
                     </List.Item>
                   )}

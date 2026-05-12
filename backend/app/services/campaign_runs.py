@@ -228,16 +228,7 @@ def light_rewrite_message(content: str) -> str:
     text = re.sub(r"(?im)^\s*(回复|reply)\s*[:：].*$", "", text)
     text = re.sub(r"([！？!?。,.，])\1+", r"\1", text)
     text = re.sub(r"\s+", " ", text).strip(" -_，,。")
-    if not text:
-        return "这个点挺值得聊的，大家可以接着说说看法。"
-    prefixes = ["刚看到有人聊这个，", "顺着这个话题说，", "这个点我也留意到了，", ""]
-    suffixes = ["大家怎么看？", "感觉可以继续聊聊。", "有经验的朋友也可以补充下。", ""]
-    prefix = random.choice(prefixes)
-    suffix = random.choice(suffixes)
-    rewritten = f"{prefix}{text}"
-    if suffix and len(rewritten) < 180:
-        rewritten = f"{rewritten}，{suffix}"
-    return rewritten[:1000]
+    return text[:1000]
 
 
 def _rewrite_mirror_content(

@@ -27,6 +27,13 @@ class OperationTargetUpdate(BaseModel):
     member_count: int | None = Field(default=None, ge=0)
     can_send: bool | None = None
     auth_status: str | None = None
+    active_window: str | None = Field(default=None, max_length=80)
+    daily_limit: int | None = Field(default=None, ge=0)
+    account_cooldown_seconds: int | None = Field(default=None, ge=0)
+    group_cooldown_seconds: int | None = Field(default=None, ge=0)
+    banned_words: str | None = None
+    link_whitelist: str | None = None
+    require_review: bool | None = None
 
 
 class OperationTargetOut(ApiModel):
@@ -42,6 +49,8 @@ class OperationTargetOut(ApiModel):
     linked_group_id: int | None = None
     can_listen: bool = False
     can_archive: bool = False
+    can_task: bool = False
+    task_capabilities: list[str] = Field(default_factory=list)
     available_send_account_count: int = 0
     listener_account_count: int = 0
     last_sync_at: datetime | None
@@ -69,6 +78,27 @@ class ChannelMessageOut(ApiModel):
     created_at: datetime
 
 
+class ChannelMessageCommentOut(ApiModel):
+    id: int
+    tenant_id: int
+    channel_target_id: int
+    channel_message_id: int
+    comment_message_id: int
+    parent_comment_message_id: int | None
+    author_peer_id: str
+    author_name: str
+    content_preview: str
+    reply_count: int
+    published_at: datetime | None
+    created_at: datetime
+
+
+class ChannelMessageCommentSyncOut(BaseModel):
+    inserted: int = 0
+    comments: list[ChannelMessageCommentOut] = Field(default_factory=list)
+    sync_error: str = ""
+
+
 class OperationTargetAccountOut(BaseModel):
     id: int
     display_name: str
@@ -79,6 +109,12 @@ class OperationTargetAccountOut(BaseModel):
     can_send: bool = False
     is_listener: bool = False
     last_sent_at: datetime | None = None
+
+
+class OperationTargetAccountUpdate(BaseModel):
+    permission_label: str | None = Field(default=None, max_length=80)
+    can_send: bool | None = None
+    is_listener: bool | None = None
 
 
 class OperationTargetGroupMessageOut(BaseModel):
@@ -98,9 +134,51 @@ class OperationTargetLinkedGroupOut(BaseModel):
     member_count: int
     auth_status: str
     can_send: bool
+    active_window: str = ""
+    daily_limit: int = 0
+    account_cooldown_seconds: int = 0
+    group_cooldown_seconds: int = 0
+    banned_words: str = ""
+    link_whitelist: str = ""
+    require_review: bool = True
     listener_enabled: bool
     listener_context_limit: int
     listener_last_error: str = ""
+
+
+class OperationTargetTaskHistoryOut(BaseModel):
+    id: str
+    name: str
+    type: str
+    status: str
+    success_count: int = 0
+    failure_count: int = 0
+    updated_at: datetime
+
+
+class OperationTargetSendRecordOut(BaseModel):
+    id: int
+    content: str
+    status: str
+    account_id: int | None = None
+    failure_detail: str = ""
+    sent_at: datetime | None = None
+    created_at: datetime
+
+
+class OperationTargetArchiveRecordOut(BaseModel):
+    id: int
+    title: str
+    status: str
+    message_count: int = 0
+    member_count: int = 0
+    failure_detail: str = ""
+    created_at: datetime
+
+
+class OperationTargetRiskOut(BaseModel):
+    level: str = "正常"
+    messages: list[str] = Field(default_factory=list)
 
 
 class OperationTargetDetailOut(BaseModel):
@@ -109,6 +187,11 @@ class OperationTargetDetailOut(BaseModel):
     accounts: list[OperationTargetAccountOut] = []
     group_messages: list[OperationTargetGroupMessageOut] = []
     channel_messages: list[ChannelMessageOut] = []
+    channel_comments: list[ChannelMessageCommentOut] = []
+    task_history: list[OperationTargetTaskHistoryOut] = Field(default_factory=list)
+    send_records: list[OperationTargetSendRecordOut] = Field(default_factory=list)
+    archive_records: list[OperationTargetArchiveRecordOut] = Field(default_factory=list)
+    risk: OperationTargetRiskOut = Field(default_factory=OperationTargetRiskOut)
     sync_error: str = ""
     stats: dict[str, Any] = {}
 
@@ -200,8 +283,11 @@ __all__ = [
     "OperationTargetUpdate",
     "OperationTargetOut",
     "ChannelMessageCreate",
+    "ChannelMessageCommentOut",
+    "ChannelMessageCommentSyncOut",
     "ChannelMessageOut",
     "OperationTargetAccountOut",
+    "OperationTargetAccountUpdate",
     "OperationTargetGroupMessageOut",
     "OperationTargetLinkedGroupOut",
     "OperationTargetDetailOut",

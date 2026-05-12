@@ -1,9 +1,10 @@
 import React from 'react';
 import { Database } from 'lucide-react';
-import { Button, Card, Input, Select, Space, Table, Typography } from 'antd';
+import { Button, Card, Descriptions, Drawer, Input, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { AuditFilters, AuditLog } from '../types';
 import { StatusBadge, useAntdTableControls } from '../components/shared';
+import { API_BASE } from '../../shared/api/client';
 
 interface Props {
   audits: AuditLog[];
@@ -23,6 +24,8 @@ const TARGET_TYPE_OPTIONS = [
 ];
 
 export default function AuditsView({ audits, filters, setFilters, onRefresh }: Props) {
+  const [selectedAudit, setSelectedAudit] = React.useState<AuditLog | null>(null);
+  const [exporting, setExporting] = React.useState(false);
   const auditTable = useAntdTableControls<AuditLog>({
     rows: audits,
     placeholder: '搜索动作 / 操作人 / 对象 / 详情',
@@ -76,35 +79,96 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh }: P
       width: 180,
       render: (value: string) => new Date(value).toLocaleString(),
     },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 100,
+      fixed: 'right',
+      render: (_, log) => <Button size="small" onClick={() => setSelectedAudit(log)}>详情</Button>,
+    },
   ];
 
+  async function exportCsv() {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value) params.set(key, value);
+      });
+      const token = localStorage.getItem('tg_ops_token');
+      const response = await fetch(`${API_BASE}/audit-logs/export?${params.toString()}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
-    <Card className="panel" title="审计记录" extra={<Typography.Text type="secondary">登录、验证码、自动生成、规则命中、发送、跳过、失败和归档都留痕</Typography.Text>}>
-      <Space className="toolbar-row" wrap>
-        {auditTable.searchInput}
-        <Input placeholder="操作人" value={filters.actor} onChange={(event) => setFilters((current) => ({ ...current, actor: event.target.value }))} style={{ width: 130 }} />
-        <Input placeholder="动作" value={filters.action} onChange={(event) => setFilters((current) => ({ ...current, action: event.target.value }))} style={{ width: 150 }} />
-        <Select allowClear placeholder="对象类型" value={filters.target_type || undefined} onChange={(value) => setFilters((current) => ({ ...current, target_type: value ?? '' }))} options={TARGET_TYPE_OPTIONS} style={{ width: 150 }} />
-        <Input placeholder="对象 ID" value={filters.target_id} onChange={(event) => setFilters((current) => ({ ...current, target_id: event.target.value }))} style={{ width: 120 }} />
-        <Input placeholder="账号 ID" value={filters.account_id} onChange={(event) => setFilters((current) => ({ ...current, account_id: event.target.value }))} style={{ width: 120 }} />
-        <Input placeholder="目标 ID" value={filters.operation_target_id} onChange={(event) => setFilters((current) => ({ ...current, operation_target_id: event.target.value }))} style={{ width: 120 }} />
-        <Input placeholder="任务 ID" value={filters.task_id} onChange={(event) => setFilters((current) => ({ ...current, task_id: event.target.value }))} style={{ width: 160 }} />
-        <Select allowClear placeholder="状态" value={filters.status || undefined} onChange={(value) => setFilters((current) => ({ ...current, status: value ?? '' }))} options={[{ value: 'success', label: '成功/完成' }, { value: 'failed', label: '失败/异常' }, { value: 'skipped', label: '跳过/停止' }]} style={{ width: 140 }} />
-        <Input placeholder="关键词" value={filters.keyword} onChange={(event) => setFilters((current) => ({ ...current, keyword: event.target.value }))} style={{ width: 160 }} />
-        <Input type="datetime-local" value={filters.start_at} onChange={(event) => setFilters((current) => ({ ...current, start_at: event.target.value }))} style={{ width: 190 }} />
-        <Input type="datetime-local" value={filters.end_at} onChange={(event) => setFilters((current) => ({ ...current, end_at: event.target.value }))} style={{ width: 190 }} />
-        <Button type="primary" onClick={onRefresh}>应用筛选</Button>
-        <Button onClick={() => setFilters({ actor: '', action: '', target_type: '', target_id: '', keyword: '', account_id: '', operation_target_id: '', task_id: '', status: '', start_at: '', end_at: '' })}>清空</Button>
-      </Space>
-      <Table<AuditLog>
-        className="tg-table"
-        rowKey="id"
-        columns={columns}
-        dataSource={auditTable.filteredRows}
-        pagination={auditTable.pagination}
-        scroll={{ x: 900 }}
-        locale={{ emptyText: '暂无审计记录。配置、登录、任务、规则、发送和账号池操作会写入这里。' }}
-      />
-    </Card>
+    <>
+      <Card className="panel" title="审计记录" extra={<Typography.Text type="secondary">登录、验证码、自动生成、规则命中、发送、跳过、失败和归档都留痕</Typography.Text>}>
+        <Space className="toolbar-row" wrap>
+          {auditTable.searchInput}
+          <Input placeholder="操作人" value={filters.actor} onChange={(event) => setFilters((current) => ({ ...current, actor: event.target.value }))} style={{ width: 130 }} />
+          <Input placeholder="动作" value={filters.action} onChange={(event) => setFilters((current) => ({ ...current, action: event.target.value }))} style={{ width: 150 }} />
+          <Select allowClear placeholder="对象类型" value={filters.target_type || undefined} onChange={(value) => setFilters((current) => ({ ...current, target_type: value ?? '' }))} options={TARGET_TYPE_OPTIONS} style={{ width: 150 }} />
+          <Input placeholder="对象 ID" value={filters.target_id} onChange={(event) => setFilters((current) => ({ ...current, target_id: event.target.value }))} style={{ width: 120 }} />
+          <Input placeholder="账号 ID" value={filters.account_id} onChange={(event) => setFilters((current) => ({ ...current, account_id: event.target.value }))} style={{ width: 120 }} />
+          <Input placeholder="目标 ID" value={filters.operation_target_id} onChange={(event) => setFilters((current) => ({ ...current, operation_target_id: event.target.value }))} style={{ width: 120 }} />
+          <Input placeholder="任务 ID" value={filters.task_id} onChange={(event) => setFilters((current) => ({ ...current, task_id: event.target.value }))} style={{ width: 160 }} />
+          <Select allowClear placeholder="状态" value={filters.status || undefined} onChange={(value) => setFilters((current) => ({ ...current, status: value ?? '' }))} options={[{ value: 'success', label: '成功/完成' }, { value: 'failed', label: '失败/异常' }, { value: 'skipped', label: '跳过/停止' }]} style={{ width: 140 }} />
+          <Input placeholder="关键词" value={filters.keyword} onChange={(event) => setFilters((current) => ({ ...current, keyword: event.target.value }))} style={{ width: 160 }} />
+          <Input type="datetime-local" value={filters.start_at} onChange={(event) => setFilters((current) => ({ ...current, start_at: event.target.value }))} style={{ width: 190 }} />
+          <Input type="datetime-local" value={filters.end_at} onChange={(event) => setFilters((current) => ({ ...current, end_at: event.target.value }))} style={{ width: 190 }} />
+          <Button type="primary" onClick={onRefresh}>应用筛选</Button>
+          <Button loading={exporting} onClick={exportCsv}>导出 CSV</Button>
+          <Button onClick={() => setFilters({ actor: '', action: '', target_type: '', target_id: '', keyword: '', account_id: '', operation_target_id: '', task_id: '', status: '', start_at: '', end_at: '' })}>清空</Button>
+        </Space>
+        <Table<AuditLog>
+          className="tg-table"
+          rowKey="id"
+          columns={columns}
+          dataSource={auditTable.filteredRows}
+          pagination={auditTable.pagination}
+          scroll={{ x: 1000 }}
+          locale={{ emptyText: '暂无审计记录。配置、登录、任务、规则、发送和账号池操作会写入这里。' }}
+        />
+      </Card>
+      <Drawer title={selectedAudit ? `审计详情 #${selectedAudit.id}` : '审计详情'} open={Boolean(selectedAudit)} size="large" onClose={() => setSelectedAudit(null)}>
+        {selectedAudit && (
+          <Descriptions
+            bordered
+            size="small"
+            column={1}
+            items={[
+              { key: 'status', label: '状态', children: <StatusBadge status={selectedAudit.action.includes('失败') ? '失败' : selectedAudit.action.includes('取消') || selectedAudit.action.includes('停止') ? '已停止' : '已完成'} /> },
+              { key: 'time', label: '时间', children: new Date(selectedAudit.created_at).toLocaleString() },
+              { key: 'actor', label: '操作人', children: selectedAudit.actor },
+              { key: 'ip', label: '来源 IP', children: selectedAudit.ip_address || '-' },
+              { key: 'action', label: '动作', children: selectedAudit.action },
+              { key: 'target', label: '关联对象', children: `${selectedAudit.target_type} / ${selectedAudit.target_id}` },
+              { key: 'detail', label: '记录详情', children: selectedAudit.detail || '无补充详情' },
+              { key: 'trace', label: '追溯口径', children: auditTraceText(selectedAudit) },
+            ]}
+          />
+        )}
+      </Drawer>
+    </>
   );
+}
+
+function auditTraceText(log: AuditLog): string {
+  if (log.target_type === 'task') return `可使用任务 ID ${log.target_id} 回到任务中心查看执行项、失败原因和重试记录。`;
+  if (log.target_type === 'operation_target') return `可使用目标 ID ${log.target_id} 回到运营目标详情查看账号覆盖、历史任务和发送记录。`;
+  if (log.target_type === 'rule_set') return `可使用规则集 ID ${log.target_id} 回到规则中心查看版本、过滤、转换、路由和发布记录。`;
+  if (log.target_type === 'tg_account') return `可使用账号 ID ${log.target_id} 回到账号中心查看登录、同步、健康和群频道覆盖。`;
+  return '该记录保留了动作、对象、操作人、时间和详情，可配合对象 ID 在对应模块继续追溯。';
 }

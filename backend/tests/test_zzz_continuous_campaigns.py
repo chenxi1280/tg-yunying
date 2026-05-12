@@ -342,4 +342,6 @@ def test_light_rewrite_message_filters_mentions_links_and_empty_text():
     assert "@" not in rewritten
     assert "http" not in rewritten
     assert "回复 Bob" not in rewritten
-    assert light_rewrite_message("https://bad.example @alice").strip()
+    assert light_rewrite_message("https://bad.example @alice") == ""
+    assert "大家怎么看" not in light_rewrite_message("这个话题")
+    assert "有经验的朋友" not in light_rewrite_message("这个话题")

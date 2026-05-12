@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import re
+from difflib import SequenceMatcher
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import AiProvider, AiProviderHealthStatus, TenantAiSetting
 from app.services._common import ai_gateway
 from app.services.ai_config import ai_provider_credentials
+from app.services.content_filters import looks_like_generated_template_noise, looks_like_operator_ui_content
+
+
+AI_GENERATION_UNAVAILABLE_MESSAGE = "AI 生成不可用，等待恢复后继续执行"
+GROUP_CHAT_PURPOSE = "群活跃续聊"
+
+
+class AiGenerationUnavailable(RuntimeError):
+    pass
 
 
 def _provider(session: Session, tenant_id: int, provider_id: int | None = None) -> tuple[AiProvider | None, TenantAiSetting | None]:
@@ -41,34 +53,197 @@ def generate_contents(
 ) -> tuple[list[str], int]:
     provider, setting = _provider(session, tenant_id, provider_id)
     if not provider or not setting:
-        text = (requirements or topic or "这个话题挺值得继续聊聊。").strip()
-        return ([text] * count)[:count], 0
-    prompt = (
-        f"请生成 {count} 条 Telegram {purpose}内容。\n"
-        f"目标：{target_label}\n"
-        f"主题：{topic}\n"
-        f"要求：{requirements}\n"
-        "每条都要自然、口语化、不要编号，不要暴露 AI 或运营任务。\n"
-        '只输出 JSON：{"drafts":[{"persona":"自然用户","content":"内容","risk_level":"低"}]}'
-    )
-    result = ai_gateway.generate_drafts(
-        ai_provider_credentials(provider),
-        prompt,
-        count=count,
-        topic=topic or requirements,
-        tone="自然、口语化、不同账号表达不重复",
-        persona_set=["老用户", "新用户", "活跃成员", "路人"],
-        temperature=setting.temperature,
-        max_tokens=max(setting.max_tokens, 1024),
-    )
+        if purpose == GROUP_CHAT_PURPOSE:
+            raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
+        return _fallback_contents(topic, requirements, purpose, target_label, count), 0
+    if purpose == GROUP_CHAT_PURPOSE:
+        prompt = _group_chat_prompt(count, target_label, topic, requirements)
+        persona_set = ["爱提问的群友", "补充细节的群友", "轻松接话的群友", "有经验的群友", "随口吐槽的群友"]
+        tone = "像真实 Telegram 群成员聊天，短句、差异化、不要复读"
+    else:
+        prompt = (
+            f"请生成 {count} 条 Telegram {purpose}内容。\n"
+            f"目标：{target_label}\n"
+            f"主题：{topic}\n"
+            f"要求：{requirements}\n"
+            "每条都要自然、口语化、不要编号，不要暴露 AI 或运营任务。\n"
+            '只输出 JSON：{"drafts":[{"persona":"自然用户","content":"内容","risk_level":"低"}]}'
+        )
+        persona_set = ["老用户", "新用户", "活跃成员", "路人"]
+        tone = "自然、口语化、不同账号表达不重复"
+    try:
+        result = ai_gateway.generate_drafts(
+            ai_provider_credentials(provider),
+            prompt,
+            count=count,
+            topic=topic or requirements,
+            tone=tone,
+            persona_set=persona_set,
+            temperature=max(float(setting.temperature or 0.7), 0.75) if purpose == GROUP_CHAT_PURPOSE else setting.temperature,
+            max_tokens=max(setting.max_tokens, 1024),
+        )
+    except Exception as exc:
+        if purpose == GROUP_CHAT_PURPOSE:
+            raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE) from exc
+        raise
     contents = [candidate.content.strip() for candidate in result.candidates if candidate.content.strip()]
+    if purpose == GROUP_CHAT_PURPOSE:
+        contents = _dedupe_group_chat_contents(contents)
+        if not contents:
+            raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
     usage = getattr(result, "usage", None)
     tokens = int(getattr(usage, "total_tokens", 0) or 0)
+    if purpose == GROUP_CHAT_PURPOSE:
+        return contents, tokens
     return contents[:count], tokens
 
 
+def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: str) -> str:
+    return (
+        f"请为 Telegram 群“{target_label}”生成 {count} 条多账号自然聊天消息。\n"
+        f"话题方向：{topic or '群聊日常活跃'}\n"
+        f"上下文材料：\n{requirements or '暂无真人上下文'}\n\n"
+        "写法要求：\n"
+        "1. 像真实群成员临场聊天，不要像运营文案，不要解释任务，不要暴露 AI。\n"
+        "2. 每条消息必须由不同性格的人说出来，句式、长度、语气都要明显不同。\n"
+        "3. 不要复述或整段引用上下文；短词上下文要自然扩展，例如聊学校、校区、专业、活动、经历。\n"
+        "4. 禁止使用这些模板句：刚看到大家提到、刚看到有人聊这个、顺着这个话题说、这个点挺有意思、这个点我也留意到了、可以继续聊聊、大家怎么看、有经验的朋友也可以补充下。\n"
+        "5. 不要让多条消息连续同一个开头，不要互相套话，不要输出引号套引号。\n"
+        '只输出 JSON：{"drafts":[{"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低"}]}'
+    )
+
+
+def _fallback_contents(topic: str, requirements: str, purpose: str, target_label: str, count: int) -> list[str]:
+    topic_text = _fallback_topic(topic, requirements, target_label)
+    if purpose == "群活跃续聊":
+        context_text = _fallback_recent_context(requirements)
+        if context_text:
+            templates = [
+                f"刚看到大家提到“{context_text}”，这个点挺有意思，可以继续聊聊。",
+                f"顺着刚才说的“{context_text}”，大家怎么看？",
+                f"“{context_text}”这个方向可以展开一下，感觉还有不少细节能聊。",
+                f"我也注意到“{context_text}”了，想听听大家有没有不同看法。",
+            ]
+        else:
+            templates = [
+                f"最近大家有在聊{topic_text}吗？感觉这个方向挺适合展开说说。",
+                f"我刚看了一下{topic_text}，想听听大家有没有什么新的想法。",
+                f"{topic_text}这个话题其实挺容易接上，大家平时更关注哪一块？",
+                f"要不今天就围绕{topic_text}随便聊聊，看看有没有新的思路。",
+            ]
+    elif purpose == "频道评论":
+        templates = [
+            "这个内容挺有参考价值，先收藏一下。",
+            "说得比较实在，后面可以继续展开看看。",
+            "这个角度不错，值得再讨论一下。",
+        ]
+    else:
+        templates = [(requirements or topic or "这个话题挺值得继续聊聊。").strip()]
+    return [templates[index % len(templates)] for index in range(max(1, count))][:count]
+
+
+def _fallback_topic(topic: str, requirements: str, target_label: str) -> str:
+    for pattern in (r"请以“([^”]+)”为方向", r"请以\"([^\"]+)\"为方向"):
+        match = re.search(pattern, requirements or "")
+        if match:
+            return match.group(1).strip()
+    if topic and topic != "群聊日常活跃":
+        return topic.strip()
+    if target_label:
+        return f"{target_label}里的日常交流"
+    return "群里的日常交流"
+
+
+def _fallback_recent_context(requirements: str) -> str:
+    skip_prefixes = (
+        "当前群暂无可用历史消息",
+        "请以",
+        "上一轮AI发言",
+        "上一轮 AI 发言",
+    )
+    for line in reversed((requirements or "").splitlines()):
+        text = line.strip()
+        if ":" in text:
+            label, text = text.split(":", 1)
+            if label.strip().startswith(("上一轮AI发言", "上一轮 AI 发言")):
+                continue
+            text = text.strip()
+        if not text or text.startswith(skip_prefixes):
+            continue
+        if "当前群暂无可用历史消息" in text or "不要提到系统、任务或 AI" in text:
+            continue
+        if text:
+            return text[:80]
+    return ""
+
+
+def _dedupe_group_chat_contents(contents: list[str]) -> list[str]:
+    accepted: list[str] = []
+    starts: set[str] = set()
+    for content in contents:
+        cleaned = _clean_generated_content(content)
+        if not cleaned or _looks_like_bad_group_chat_content(cleaned):
+            continue
+        normalized = _normalize_for_similarity(cleaned)
+        if len(normalized) < 2:
+            continue
+        start_key = normalized[:8]
+        if start_key in starts:
+            continue
+        if any(SequenceMatcher(None, normalized, _normalize_for_similarity(item)).ratio() >= 0.68 for item in accepted):
+            continue
+        starts.add(start_key)
+        accepted.append(cleaned)
+    return accepted
+
+
+def _clean_generated_content(content: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(content or "")).strip()
+    cleaned = re.sub(r"^(?:[-*\d.、\s]+)", "", cleaned).strip()
+    return cleaned[:2000]
+
+
+def _normalize_for_similarity(content: str) -> str:
+    return re.sub(r"[\s，。！？!?、,.；;：:\"'“”‘’（）()\[\]【】]+", "", content.lower())
+
+
+def _looks_like_bad_group_chat_content(content: str) -> bool:
+    markers = (
+        "当前群暂无可用历史消息",
+        "不要提到系统",
+        "不要提到系统、任务或 AI",
+        "不要提到系统、任务或AI",
+        "生成自然开场",
+        "只输出 JSON",
+        "risk_level",
+        "persona",
+        "[已撤回的内部提示词",
+    )
+    if any(marker in content for marker in markers):
+        return True
+    if looks_like_generated_template_noise(content) or looks_like_operator_ui_content(content):
+        return True
+    return content.count("“") + content.count("”") >= 4
+
+
 def generate_group_messages(session: Session, tenant_id: int, config: dict, *, count: int, target_label: str, history: str = "") -> tuple[list[str], int]:
-    requirements = "\n".join(part for part in [config.get("topic_hint") or "", history, config.get("system_prompt_override") or ""] if part)
+    personas = config.get("account_personas") if isinstance(config.get("account_personas"), dict) else {}
+    persona_prompt = ""
+    if personas:
+        persona_prompt = "账号角色设定：\n" + "\n".join(f"- 账号 {account_id}: {role}" for account_id, role in personas.items() if str(role).strip())
+    memories = config.get("account_memories") if isinstance(config.get("account_memories"), dict) else {}
+    memory_prompt = ""
+    if memories:
+        memory_prompt = "账号历史记忆：\n" + "\n".join(f"- 账号 {account_id}: {memory}" for account_id, memory in memories.items() if str(memory).strip())
+    profiles = config.get("account_profiles") if isinstance(config.get("account_profiles"), dict) else {}
+    profile_prompt = ""
+    if profiles:
+        profile_prompt = "账号长期画像：\n" + "\n".join(f"- 账号 {account_id}: {profile}" for account_id, profile in profiles.items() if str(profile).strip())
+    topic_thread = str(config.get("topic_thread") or "").strip()
+    topic_thread_prompt = f"话题脉络：\n{topic_thread}" if topic_thread else ""
+    topic_plan = str(config.get("topic_plan") or "").strip()
+    topic_plan_prompt = f"本轮话题计划：\n{topic_plan}" if topic_plan else ""
+    requirements = "\n".join(part for part in [config.get("topic_hint") or "", topic_thread_prompt, topic_plan_prompt, persona_prompt, memory_prompt, profile_prompt, history, config.get("system_prompt_override") or ""] if part)
     contents, tokens = generate_contents(
         session,
         tenant_id,
@@ -130,4 +305,10 @@ def _trim(contents: list[str], max_length: int | None) -> list[str]:
     return [item[: int(max_length)] for item in contents]
 
 
-__all__ = ["generate_channel_comments", "generate_group_messages", "rewrite_relay_content"]
+__all__ = [
+    "AI_GENERATION_UNAVAILABLE_MESSAGE",
+    "AiGenerationUnavailable",
+    "generate_channel_comments",
+    "generate_group_messages",
+    "rewrite_relay_content",
+]
