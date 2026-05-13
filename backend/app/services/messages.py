@@ -33,12 +33,14 @@ from app.task_queue import get_task_queue
 
 from ._common import _as_utc, _now, audit, gateway, require_tenant
 from app.schemas import DirectMessageTaskCreate, MessageSendBatchCreate, MessageSendTarget, MessageSendTaskCreate
+from app.schemas.risk_control import RiskPreflightRequest
 
 from .accounts import find_account_contact
 from .developer_apps import credentials_for_account
 from .tenants import ensure_task_quota_available
 from .verification import create_verification_task
 from .content_filters import tenant_keyword_rules
+from .risk_control import risk_preflight
 
 
 def _validate_message_material(session: Session, tenant_id: int, message_type: str, material_id: int | None) -> Material | None:
@@ -209,6 +211,7 @@ def create_message_send_task(session: Session, payload: MessageSendTaskCreate, a
     if payload.message_type == "文本" and not content:
         raise ValueError("请输入消息内容")
     _validate_message_material(session, account.tenant_id, payload.message_type, payload.material_id)
+    _ensure_risk_preflight_passed(session, account, [payload], content, payload.scheduled_at)
     target_type, target_peer_id, target_display, group_id = _resolve_message_target(session, account, payload)
     jitter_min = max(payload.jitter_min_seconds, 0)
     jitter_max = max(payload.jitter_max_seconds, jitter_min)
@@ -252,6 +255,7 @@ def create_message_send_tasks_batch(session: Session, payload: MessageSendBatchC
     if payload.message_type == "文本" and not content:
         raise ValueError("请输入消息内容")
     _validate_message_material(session, account.tenant_id, payload.message_type, payload.material_id)
+    _ensure_risk_preflight_passed(session, account, payload.targets, content, payload.scheduled_at)
     setting = _scheduling_setting(session, account.tenant_id)
     jitter_min = max(int(setting.jitter_min_seconds), 0)
     jitter_max = max(int(setting.jitter_max_seconds), jitter_min)
@@ -295,6 +299,31 @@ def create_message_send_tasks_batch(session: Session, payload: MessageSendBatchC
     for task in tasks:
         session.refresh(task)
     return tasks
+
+
+def _ensure_risk_preflight_passed(
+    session: Session,
+    account: TgAccount,
+    targets: list[MessageSendTarget | MessageSendTaskCreate],
+    content: str,
+    scheduled_at: datetime | None,
+) -> None:
+    result = risk_preflight(
+        session,
+        account.tenant_id,
+        RiskPreflightRequest(
+            scenario="message_send",
+            account_ids=[account.id],
+            proxy_ids=[account.proxy_id] if account.proxy_id else [],
+            target_ids=[int(target.operation_target_id) for target in targets if target.operation_target_id],
+            content_preview=content,
+            task_type="message_send",
+            scheduled_at=scheduled_at,
+        ),
+    )
+    if result["decision"] == "block":
+        reasons = [*result.get("suggested_actions", []), *result.get("decision_reasons", [])]
+        raise ValueError("风控预检未通过：" + "；".join(str(reason) for reason in reasons if reason))
 
 
 def create_direct_message_task(session: Session, account_id: int, payload: DirectMessageTaskCreate, actor: str) -> MessageTask:

@@ -28,16 +28,19 @@ from app.schemas.operations_center import (
     RuleDimensionMetricOut,
     RuleExecutionMetricOut,
     RuleSetCreate,
+    RuleSetBoundTaskOut,
     RuleSetOut,
     RuleSetVersionCreate,
     RuleSummaryOut,
+    RuleTestCandidateOut,
     RuleTestHitOut,
     RuleTestOut,
     RuleTestRouteOut,
     RuleTrendMetricOut,
 )
 from app.services._common import _as_utc, _now, audit
-from app.services.task_center.executors.group_relay import apply_transform_rules, passes_relay_filters, relay_filter_expression_reason, resolve_relay_target_ids
+from app.services.rule_engine import apply_output_policy, evaluate_input_filter, task_type_labels
+from app.services.task_center.executors.group_relay import apply_transform_rules, relay_filter_expression_reason, resolve_relay_target_ids
 from app.services.task_center.fingerprints import content_fingerprint
 
 
@@ -56,6 +59,20 @@ DEFAULT_RELAY_FILTERS = {
     "only_text": False,
     "language_filter": None,
 }
+DEFAULT_RELAY_OUTPUT_CHECKS = {
+    "forbidden_keywords": [],
+    "forbid_links": False,
+    "forbid_mentions": True,
+    "max_length": None,
+    "failure_strategy": "transform_once_drop",
+}
+
+
+def _default_relay_output_checks() -> dict[str, Any]:
+    return {
+        key: list(value) if isinstance(value, list) else value
+        for key, value in DEFAULT_RELAY_OUTPUT_CHECKS.items()
+    }
 
 
 def _default_relay_filters() -> dict[str, Any]:
@@ -463,7 +480,6 @@ def _switch_channel_listener_account(session: Session, tenant_id: int, object_id
 
 
 def rule_center_summary(session: Session, tenant_id: int) -> RuleCenterSummaryOut:
-    keyword_rules = list(session.scalars(select(ContentKeywordRule).where(ContentKeywordRule.tenant_id == tenant_id)))
     rule_sets = list_rule_sets(session, tenant_id)
     relay_tasks = [
         task
@@ -473,16 +489,15 @@ def rule_center_summary(session: Session, tenant_id: int) -> RuleCenterSummaryOu
     items = [
         *SYSTEM_RULES,
         *[_rule_set_summary(rule_set) for rule_set in rule_sets],
-        *[_keyword_rule_summary(rule) for rule in keyword_rules],
         *[_relay_task_rule_summary(task) for task in relay_tasks],
     ]
-    target_metrics, account_metrics, keyword_metrics = _rule_dimension_metrics(session, tenant_id, keyword_rules)
+    target_metrics, account_metrics, keyword_metrics = _rule_dimension_metrics(session, tenant_id)
     return RuleCenterSummaryOut(
         system_rule_count=len(SYSTEM_RULES),
-        keyword_rule_count=len(keyword_rules),
+        keyword_rule_count=0,
         relay_task_rule_count=len(relay_tasks),
         items=items,
-        conflicts=_rule_conflicts(keyword_rules, rule_sets, relay_tasks),
+        conflicts=_rule_conflicts([], rule_sets, relay_tasks),
         execution_metrics=_rule_execution_metrics(session, tenant_id),
         target_metrics=target_metrics,
         account_metrics=account_metrics,
@@ -644,6 +659,8 @@ def _ensure_default_relay_rule_set(session: Session, tenant_id: int) -> RuleSet:
         name=DEFAULT_RELAY_RULE_SET_NAME,
         description=DEFAULT_RELAY_RULE_SET_DESCRIPTION,
         status="active",
+        task_types=["group_relay"],
+        default_policy={"input_failure": "skip", "output_failure": "transform_once_drop", "version_binding": "follow_current"},
     )
     session.add(rule_set)
     session.flush()
@@ -653,6 +670,7 @@ def _ensure_default_relay_rule_set(session: Session, tenant_id: int) -> RuleSet:
         version=1,
         status="published",
         filters=_default_relay_filters(),
+        output_checks=_default_relay_output_checks(),
         transforms={},
         routing={},
         account_strategy={},
@@ -683,7 +701,14 @@ def _ensure_default_relay_rule_set(session: Session, tenant_id: int) -> RuleSet:
 def create_rule_set(session: Session, tenant_id: int, payload: RuleSetCreate, actor: str) -> RuleSetOut:
     if session.scalar(select(RuleSet.id).where(RuleSet.tenant_id == tenant_id, RuleSet.name == payload.name).limit(1)):
         raise ValueError("同名规则集已存在")
-    rule_set = RuleSet(tenant_id=tenant_id, name=payload.name, description=payload.description, status="active")
+    rule_set = RuleSet(
+        tenant_id=tenant_id,
+        name=payload.name,
+        description=payload.description,
+        status="active",
+        task_types=payload.task_types,
+        default_policy=payload.default_policy,
+    )
     session.add(rule_set)
     session.flush()
     version = _new_rule_set_version(session, tenant_id, rule_set.id, 1, payload, actor)
@@ -707,11 +732,21 @@ def create_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, 
     return _rule_set_out(rule_set, list(session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()))))
 
 
+def copy_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, version_id: int, actor: str) -> RuleSetOut:
+    rule_set = _get_rule_set(session, tenant_id, rule_set_id)
+    source = _get_rule_set_version(session, tenant_id, rule_set.id, version_id)
+    latest = session.scalar(select(RuleSetVersion.version).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()).limit(1)) or 0
+    payload = _version_payload_from_row(source, version_note=f"复制自 v{source.version}")
+    version = _new_rule_set_version(session, tenant_id, rule_set.id, int(latest) + 1, payload, actor)
+    audit(session, tenant_id=tenant_id, actor=actor, action="复制规则集版本为草稿", target_type="rule_set", target_id=str(rule_set.id), detail=f"v{source.version}->v{version.version}")
+    session.commit()
+    session.refresh(rule_set)
+    return _rule_set_out(rule_set, list(session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()))))
+
+
 def publish_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, version_id: int, actor: str) -> RuleSetOut:
     rule_set = _get_rule_set(session, tenant_id, rule_set_id)
-    version = session.get(RuleSetVersion, version_id)
-    if not version or version.tenant_id != tenant_id or version.rule_set_id != rule_set.id:
-        raise ValueError("规则集版本不存在")
+    version = _get_rule_set_version(session, tenant_id, rule_set.id, version_id)
     for old_version in session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id, RuleSetVersion.status == "published")):
         old_version.status = "archived"
     version.status = "published"
@@ -726,35 +761,97 @@ def publish_rule_set_version(session: Session, tenant_id: int, rule_set_id: int,
     return _rule_set_out(rule_set, list(session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()))))
 
 
+def rollback_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, version_id: int, actor: str) -> RuleSetOut:
+    rule_set = _get_rule_set(session, tenant_id, rule_set_id)
+    source = _get_rule_set_version(session, tenant_id, rule_set.id, version_id)
+    latest = session.scalar(select(RuleSetVersion.version).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()).limit(1)) or 0
+    payload = _version_payload_from_row(source, version_note=f"回滚自 v{source.version}")
+    version = _new_rule_set_version(session, tenant_id, rule_set.id, int(latest) + 1, payload, actor)
+    for old_version in session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id, RuleSetVersion.status == "published")):
+        old_version.status = "archived"
+    version.status = "published"
+    version.published_by = actor
+    version.published_at = _now()
+    version.updated_at = _now()
+    rule_set.active_version_id = version.id
+    rule_set.updated_at = _now()
+    audit(session, tenant_id=tenant_id, actor=actor, action="回滚规则集版本", target_type="rule_set", target_id=str(rule_set.id), detail=f"v{source.version}->v{version.version}")
+    session.commit()
+    session.refresh(rule_set)
+    return _rule_set_out(rule_set, list(session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()))))
+
+
+def list_rule_set_bound_tasks(session: Session, tenant_id: int, rule_set_id: int) -> list[RuleSetBoundTaskOut]:
+    rule_set = _get_rule_set(session, tenant_id, rule_set_id)
+    version_ids = {
+        version_id
+        for version_id in session.scalars(select(RuleSetVersion.id).where(RuleSetVersion.tenant_id == tenant_id, RuleSetVersion.rule_set_id == rule_set.id))
+    }
+    tasks = list(session.scalars(select(Task).where(Task.tenant_id == tenant_id, Task.deleted_at.is_(None)).order_by(Task.updated_at.desc())))
+    rows: list[RuleSetBoundTaskOut] = []
+    for task in tasks:
+        config = task.type_config or {}
+        config_rule_set_id = _as_int(config.get("rule_set_id"))
+        config_version_id = _as_int(config.get("rule_set_version_id"))
+        if config_rule_set_id != rule_set.id and config_version_id not in version_ids:
+            continue
+        resolved = config_version_id or rule_set.active_version_id
+        rows.append(
+            RuleSetBoundTaskOut(
+                id=task.id,
+                name=task.name,
+                type=task.type,
+                status=task.status,
+                binding_mode="fixed_version" if config_version_id else "follow_current",
+                rule_set_id=config_rule_set_id or rule_set.id,
+                rule_set_version_id=config_version_id,
+                resolved_rule_set_version_id=resolved,
+                created_at=_iso(task.created_at) or "",
+                updated_at=_iso(task.updated_at) or "",
+            )
+        )
+    return rows
+
+
 def test_rules(
     session: Session,
     tenant_id: int,
     text: str,
+    test_type: str = "group_relay",
+    test_mode: str = "rules_only",
+    candidates: list[str] | None = None,
+    context: str = "",
     rule_set_version_id: int | None = None,
     source_group_id: int | None = None,
     sender_id: str = "",
     message_type: str = "text",
 ) -> RuleTestOut:
-    hits = [
-        RuleTestHitOut(rule_id=rule.id, keyword=rule.keyword, match_type=rule.match_type, note=rule.note or "")
-        for rule in session.scalars(
-            select(ContentKeywordRule).where(
-                ContentKeywordRule.tenant_id == tenant_id,
-                ContentKeywordRule.is_active.is_(True),
-            )
-        )
-        if _keyword_matches(rule, text)
-    ]
-    keyword_block_reason = "；".join(f"{hit.keyword}({hit.match_type})" for hit in hits)
     version = session.get(RuleSetVersion, rule_set_version_id) if rule_set_version_id else None
     if version and version.tenant_id != tenant_id:
         version = None
     rule_set = session.get(RuleSet, version.rule_set_id) if version else None
     if version:
         filters = dict(version.filters or {})
-        filter_passed = passes_relay_filters(text, sender_id, message_type or "text", filters)
-        filter_reason = "" if filter_passed else _relay_filter_reason(text, sender_id, message_type or "text", filters)
+        input_text = "\n".join(item for item in [context, text] if item)
+        input_result = evaluate_input_filter(input_text, sender_id, message_type or "text", filters)
+        filter_passed = input_result.passed
+        filter_reason = "" if filter_passed else input_result.reason or _relay_filter_reason(input_text, sender_id, message_type or "text", filters)
         transformed_text = apply_transform_rules(text, dict(version.transforms or {})) if filter_passed else text
+        output_candidates: list[RuleTestCandidateOut] = []
+        if test_type in {"group_ai_chat", "channel_comment", "message_send"}:
+            raw_candidates = candidates or ([text] if text else [])
+            for index, candidate in enumerate(raw_candidates, start=1):
+                policy_result = apply_output_policy(candidate, version.output_checks or {}, version.transforms or {})
+                output_candidates.append(
+                    RuleTestCandidateOut(
+                        index=index,
+                        original_text=candidate,
+                        passed=policy_result.allowed,
+                        action=policy_result.action,
+                        reason=policy_result.reason,
+                        transformed_text=policy_result.content,
+                    )
+                )
         route_config = {
             "routing": dict(version.routing or {}),
             "target_group_ids": (version.routing or {}).get("target_group_ids") or (version.routing or {}).get("default_target_group_ids") or [],
@@ -766,12 +863,16 @@ def test_rules(
         target_summary = "、".join(route.title for route in routes) if routes else "未解析到目标群，请检查 routing.target_group_ids / routes / keyword_routes"
         account_summary = _rule_test_account_summary(routes, version.account_strategy or {})
         rate_summary = _rule_test_rate_summary(version.rate_limits or {})
-        block_reasons = [keyword_block_reason] if keyword_block_reason else []
+        block_reasons: list[str] = []
         if not filter_passed:
             block_reasons.append(filter_reason or "未通过规则集过滤")
         return RuleTestOut(
             result="规则版本预览：通过过滤，已计算转换和路由" if filter_passed else "规则版本预览：未通过过滤",
-            hits=hits,
+            test_mode=test_mode,
+            is_test_data=True,
+            hits=[],
+            input_hits=input_result.hits,
+            output_candidates=output_candidates,
             should_block=bool(block_reasons),
             block_reason="；".join(block_reasons),
             filter_passed=filter_passed,
@@ -784,12 +885,13 @@ def test_rules(
             account_strategy=account_summary,
             rate_limit_summary=rate_summary,
         )
-    should_block = bool(hits)
     return RuleTestOut(
-        result="命中规则，进入后续拦截/转换判断" if hits else "未命中关键词规则",
-        hits=hits,
-        should_block=should_block,
-        block_reason=keyword_block_reason,
+        result="未命中规则条件",
+        test_mode=test_mode,
+        is_test_data=True,
+        hits=[],
+        should_block=False,
+        block_reason="",
         transformed_text=text,
         target_summary="规则测试只验证内容规则；实际目标由任务绑定的路由配置决定",
         account_strategy="规则测试不占用账号；执行时按任务账号池、冷却和目标粘性策略选择",
@@ -1690,15 +1792,16 @@ def _keyword_rule_summary(rule: ContentKeywordRule) -> RuleSummaryOut:
 
 def _rule_set_summary(rule_set: RuleSetOut) -> RuleSummaryOut:
     active = next((version for version in rule_set.versions if version.id == rule_set.active_version_id), None)
+    task_scope = " / ".join(task_type_labels(rule_set.task_types)) if rule_set.task_types else "未限定任务"
     return RuleSummaryOut(
         key=f"rule-set:{rule_set.id}",
         category="系统级规则集",
         name=rule_set.name,
         status=rule_set.status,
-        detail=f"当前版本 v{active.version if active else '-'} / {rule_set.description or '过滤、转换、路由、账号策略、限速、重试'}",
+        detail=f"{task_scope} / 当前版本 v{active.version if active else '-'} / {rule_set.description or '过滤、输出校验、转换、路由、账号策略、限速、重试'}",
         version=f"v{active.version if active else '-'}",
         source="rule_set",
-        metadata={"rule_set_id": rule_set.id, "active_version_id": rule_set.active_version_id},
+        metadata={"rule_set_id": rule_set.id, "active_version_id": rule_set.active_version_id, "task_types": rule_set.task_types},
     )
 
 
@@ -1806,7 +1909,7 @@ def _rule_execution_metrics(session: Session, tenant_id: int) -> list[RuleExecut
     task_ids: dict[str, set[str]] = {}
     for action in actions:
         payload = action.payload or {}
-        version_id = _as_int(payload.get("rule_set_version_id"))
+        version_id = _as_int(payload.get("resolved_rule_set_version_id")) or _as_int(payload.get("rule_set_version_id"))
         rule_set_id = _as_int(payload.get("rule_set_id"))
         if not version_id and not rule_set_id:
             continue
@@ -1844,7 +1947,7 @@ def _rule_execution_metrics(session: Session, tenant_id: int) -> list[RuleExecut
     return sorted(metrics.values(), key=lambda item: item.last_used_at or "", reverse=True)[:100]
 
 
-def _rule_dimension_metrics(session: Session, tenant_id: int, keyword_rules: list[ContentKeywordRule]) -> tuple[list[RuleDimensionMetricOut], list[RuleDimensionMetricOut], list[RuleDimensionMetricOut]]:
+def _rule_dimension_metrics(session: Session, tenant_id: int) -> tuple[list[RuleDimensionMetricOut], list[RuleDimensionMetricOut], list[RuleDimensionMetricOut]]:
     actions = list(
         session.scalars(
             select(Action)
@@ -1868,7 +1971,6 @@ def _rule_dimension_metrics(session: Session, tenant_id: int, keyword_rules: lis
     target_metrics: dict[str, RuleDimensionMetricOut] = {}
     account_metrics: dict[str, RuleDimensionMetricOut] = {}
     keyword_metrics: dict[str, RuleDimensionMetricOut] = {}
-    active_keywords = [rule for rule in keyword_rules if rule.is_active]
     for action in actions:
         payload = action.payload or {}
         target_id = _as_int(payload.get("group_id"))
@@ -1891,17 +1993,6 @@ def _rule_dimension_metrics(session: Session, tenant_id: int, keyword_rules: lis
                 related_id=str(account_id),
                 action=action,
             )
-        text = f"{payload.get('original_text') or ''}\n{payload.get('message_text') or ''}"
-        for rule in active_keywords:
-            if _keyword_matches(rule, text):
-                _touch_rule_dimension_metric(
-                    keyword_metrics,
-                    key=f"keyword:{rule.id}",
-                    dimension="keyword",
-                    name=rule.keyword,
-                    related_id=str(rule.id),
-                    action=action,
-                )
     sort_key = lambda item: (item.last_used_at or "", item.action_count)
     return (
         sorted(target_metrics.values(), key=sort_key, reverse=True)[:100],
@@ -1985,7 +2076,7 @@ def _rule_conversion_metrics(session: Session, tenant_id: int, days: int = 7) ->
         if not period:
             continue
         payload = action.payload if isinstance(action.payload, dict) else {}
-        version_id = _as_int(payload.get("rule_set_version_id"))
+        version_id = _as_int(payload.get("resolved_rule_set_version_id")) or _as_int(payload.get("rule_set_version_id"))
         rule_set_id = _as_int(payload.get("rule_set_id"))
         if not version_id and not rule_set_id:
             continue
@@ -2051,7 +2142,7 @@ def _rule_cross_metrics(session: Session, tenant_id: int) -> list[RuleCrossMetri
     )
     for action in actions:
         payload = action.payload if isinstance(action.payload, dict) else {}
-        version_id = _as_int(payload.get("rule_set_version_id"))
+        version_id = _as_int(payload.get("resolved_rule_set_version_id")) or _as_int(payload.get("rule_set_version_id"))
         rule_set_id = _as_int(payload.get("rule_set_id"))
         target_id = _as_int(payload.get("group_id"))
         account_id = int(action.account_id or 0)
@@ -2144,13 +2235,35 @@ def _get_rule_set(session: Session, tenant_id: int, rule_set_id: int) -> RuleSet
     return rule_set
 
 
+def _get_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, version_id: int) -> RuleSetVersion:
+    version = session.get(RuleSetVersion, version_id)
+    if not version or version.tenant_id != tenant_id or version.rule_set_id != rule_set_id:
+        raise ValueError("规则集版本不存在")
+    return version
+
+
+def _version_payload_from_row(version: RuleSetVersion, *, version_note: str) -> RuleSetVersionCreate:
+    return RuleSetVersionCreate(
+        version_note=version_note,
+        filters=dict(version.filters or {}),
+        output_checks=dict(version.output_checks or {}),
+        transforms=dict(version.transforms or {}),
+        routing=dict(version.routing or {}),
+        account_strategy=dict(version.account_strategy or {}),
+        rate_limits=dict(version.rate_limits or {}),
+        retry_policy=dict(version.retry_policy or {}),
+    )
+
+
 def _new_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, version: int, payload: RuleSetVersionCreate, actor: str) -> RuleSetVersion:
     row = RuleSetVersion(
         tenant_id=tenant_id,
         rule_set_id=rule_set_id,
         version=version,
         status="draft",
+        version_note=payload.version_note,
         filters=payload.filters,
+        output_checks=payload.output_checks,
         transforms=payload.transforms,
         routing=payload.routing,
         account_strategy=payload.account_strategy,
@@ -2170,6 +2283,8 @@ def _rule_set_out(rule_set: RuleSet, versions: list[RuleSetVersion]) -> RuleSetO
         name=rule_set.name,
         description=rule_set.description,
         status=rule_set.status,
+        task_types=rule_set.task_types or [],
+        default_policy=rule_set.default_policy or {},
         active_version_id=rule_set.active_version_id,
         versions=[
             {
@@ -2178,7 +2293,9 @@ def _rule_set_out(rule_set: RuleSet, versions: list[RuleSetVersion]) -> RuleSetO
                 "rule_set_id": version.rule_set_id,
                 "version": version.version,
                 "status": version.status,
+                "version_note": version.version_note,
                 "filters": version.filters or {},
+                "output_checks": version.output_checks or {},
                 "transforms": version.transforms or {},
                 "routing": version.routing or {},
                 "account_strategy": version.account_strategy or {},
@@ -2198,14 +2315,17 @@ def _rule_set_out(rule_set: RuleSet, versions: list[RuleSetVersion]) -> RuleSetO
 
 
 __all__ = [
+    "copy_rule_set_version",
     "create_rule_set",
     "create_rule_set_version",
     "listener_summary",
+    "list_rule_set_bound_tasks",
     "list_rule_sets",
     "operation_metrics_summary",
     "publish_rule_set_version",
     "relay_attribution_csv",
     "relay_attribution_report",
+    "rollback_rule_set_version",
     "rule_center_summary",
     "test_rules",
 ]

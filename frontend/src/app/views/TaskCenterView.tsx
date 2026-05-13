@@ -194,6 +194,8 @@ function typeInitialValues(type: TaskCenterTaskType, setting?: SchedulingSetting
       ramp_up_minutes: 60,
       ramp_start_ratio: 0.3,
       context_expire_after_messages: 10,
+      idle_continuation_enabled: true,
+      idle_continuation_seconds: 300,
       account_memory_depth: 3,
       account_personas: '',
       tone: 'auto',
@@ -244,12 +246,13 @@ function initialValuesForType(type: TaskCenterTaskType, setting?: SchedulingSett
   return { ...commonInitialValues(setting), ...typeInitialValues(type, setting) };
 }
 
-function defaultRelayRuleSelection(ruleSets: RuleSet[]): { rule_set_id: number; rule_set_version_id: number } | null {
-  const ruleSet = ruleSets.find((item) => item.name === '默认转发监听过滤规则') ?? ruleSets[0];
+function defaultRuleSelection(ruleSets: RuleSet[], taskType: TaskCenterTaskType): { rule_set_id: number; rule_set_version_id: number } | null {
+  const ruleSet = ruleSets.find((item) => (item.task_types ?? []).includes(taskType))
+    ?? (taskType === 'group_relay' ? ruleSets.find((item) => item.name === '默认转发监听过滤规则') : null)
+    ?? ruleSets[0];
   if (!ruleSet) return null;
-  const version = ruleSet.versions.find((item) => item.id === ruleSet.active_version_id)
-    ?? ruleSet.versions.find((item) => item.status === 'published')
-    ?? ruleSet.versions[0];
+  const version = ruleSet.versions.find((item) => item.id === ruleSet.active_version_id && item.status === 'published')
+    ?? ruleSet.versions.find((item) => item.status === 'published');
   if (!version) return null;
   return { rule_set_id: ruleSet.id, rule_set_version_id: version.id };
 }
@@ -330,10 +333,10 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     return ruleSetData;
   }
 
-  function applyDefaultRelayRuleSet(loadedRuleSets: RuleSet[]) {
+  function applyDefaultRuleSet(loadedRuleSets: RuleSet[], type: TaskCenterTaskType = taskType) {
     const current = form.getFieldsValue(['rule_set_id', 'rule_set_version_id']);
     if (current.rule_set_id || current.rule_set_version_id) return;
-    const selection = defaultRelayRuleSelection(loadedRuleSets);
+    const selection = defaultRuleSelection(loadedRuleSets, type);
     if (selection) form.setFieldsValue(selection);
   }
 
@@ -341,7 +344,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     setSupportLoading(true);
     try {
       const requests: Array<Promise<unknown>> = [ensureTargets()];
-      if (type === 'group_relay') requests.push(ensureRuleSets());
+      if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(type)) requests.push(ensureRuleSets());
       if (type.startsWith('channel_')) requests.push(ensureMessages());
       if (type === 'channel_comment') requests.push(ensureComments());
       await Promise.all(requests);
@@ -358,7 +361,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
 
   React.useEffect(() => {
     if (!modalOpen && !editOpen) return;
-    if (taskType === 'group_relay') void ensureRuleSets();
+    if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType)) void ensureRuleSets();
     if (taskType.startsWith('channel_')) void ensureMessages();
     if (taskType === 'channel_comment') void ensureComments();
   }, [editOpen, modalOpen, messageScope, taskType]);
@@ -396,7 +399,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     setTaskType(nextType);
     form.resetFields();
     form.setFieldsValue(nextValues);
-    if (nextType === 'group_relay') void ensureRuleSets().then(applyDefaultRelayRuleSet);
+    if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(nextType)) void ensureRuleSets().then((loaded) => applyDefaultRuleSet(loaded, nextType));
     setWizardStep(2);
     setModalOpen(true);
     appliedPrefillNonce.current = prefill.nonce;
@@ -554,6 +557,8 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
       return {
         ...base,
         target_operation_target_id: values.target_operation_target_id,
+        rule_set_id: values.rule_set_id ?? null,
+        rule_set_version_id: values.rule_set_version_id ?? null,
         target_group_name: target?.title ?? '',
         topic_hint: values.topic_hint ?? '',
         chat_history_depth: values.chat_history_depth ?? 50,
@@ -579,6 +584,8 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         ramp_up_minutes: values.ramp_up_minutes ?? 60,
         ramp_start_ratio: values.ramp_start_ratio ?? 0.3,
         context_expire_after_messages: values.context_expire_after_messages ?? 10,
+        idle_continuation_enabled: values.idle_continuation_enabled ?? true,
+        idle_continuation_seconds: values.idle_continuation_seconds ?? 300,
       };
     }
     if (taskType === 'group_relay') {
@@ -622,7 +629,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     if (taskType === 'channel_like') {
       return { ...base, ...channelScopePayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? 0.3, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
     }
-    return { ...base, ...channelScopePayload(values), target_comments_per_message: values.target_comments_per_message ?? 10, comment_count_jitter: values.comment_count_jitter ?? 0.3, comment_mode: values.comment_mode ?? 'comment', reply_to_message_ids: csvNumbers(values.reply_to_message_ids), ai_model: values.ai_model ?? '', comment_style: values.comment_style ?? 'mixed', topic_hint: values.topic_hint ?? '', system_prompt_override: values.system_prompt_override ?? '', language: values.language ?? 'zh-CN', max_comment_length: values.max_comment_length ?? null, max_comments_per_account_per_hour: values.max_comments_per_account_per_hour ?? 3, require_review: false };
+    return { ...base, ...channelScopePayload(values), target_comments_per_message: values.target_comments_per_message ?? 10, comment_count_jitter: values.comment_count_jitter ?? 0.3, comment_mode: values.comment_mode ?? 'comment', reply_to_message_ids: csvNumbers(values.reply_to_message_ids), rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, ai_model: values.ai_model ?? '', comment_style: values.comment_style ?? 'mixed', topic_hint: values.topic_hint ?? '', system_prompt_override: values.system_prompt_override ?? '', language: values.language ?? 'zh-CN', max_comment_length: values.max_comment_length ?? null, max_comments_per_account_per_hour: values.max_comments_per_account_per_hour ?? 3, require_review: false };
   }
 
   function settingsPayload(type: TaskCenterTaskType, values: any): Record<string, any> {
@@ -638,7 +645,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     };
     if (type === 'group_ai_chat') {
       const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
-      return { ...base, target_operation_target_id: values.target_operation_target_id ?? null, target_group_name: target?.title ?? '', topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, participation_jitter: values.participation_jitter ?? 0.5, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, account_personas: parseKeyValueMap(values.account_personas), account_memory_depth: values.account_memory_depth ?? 3, messages_per_round_mode: values.messages_per_round_mode ?? 'auto', messages_per_round: values.messages_per_round ?? 1, history_fetch_account_id: values.history_fetch_account_id ?? null, silent_mode_enabled: values.silent_mode_enabled ?? true, silent_start: values.silent_start ?? '23:00', silent_end: values.silent_end ?? '08:00', silent_max_accounts: values.silent_max_accounts ?? 5, silent_messages_per_round: values.silent_messages_per_round ?? 1, ramp_up_minutes: values.ramp_up_minutes ?? 60, ramp_start_ratio: values.ramp_start_ratio ?? 0.3, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
+      return { ...base, target_operation_target_id: values.target_operation_target_id ?? null, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, target_group_name: target?.title ?? '', topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, participation_jitter: values.participation_jitter ?? 0.5, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, account_personas: parseKeyValueMap(values.account_personas), account_memory_depth: values.account_memory_depth ?? 3, messages_per_round_mode: values.messages_per_round_mode ?? 'auto', messages_per_round: values.messages_per_round ?? 1, history_fetch_account_id: values.history_fetch_account_id ?? null, idle_continuation_enabled: values.idle_continuation_enabled ?? true, idle_continuation_seconds: values.idle_continuation_seconds ?? 300, silent_mode_enabled: values.silent_mode_enabled ?? true, silent_start: values.silent_start ?? '23:00', silent_end: values.silent_end ?? '08:00', silent_max_accounts: values.silent_max_accounts ?? 5, silent_messages_per_round: values.silent_messages_per_round ?? 1, ramp_up_minutes: values.ramp_up_minutes ?? 60, ramp_start_ratio: values.ramp_start_ratio ?? 0.3, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
     }
     if (type === 'group_relay') {
       const sourceTargetIds = csvNumbers(values.source_operation_target_ids);
@@ -654,7 +661,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     if (type === 'channel_like') {
       return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? 0.3, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
     }
-    return { ...base, target_comments_per_message: values.target_comments_per_message ?? 10, comment_count_jitter: values.comment_count_jitter ?? 0.3, comment_mode: values.comment_mode ?? 'comment', reply_to_message_ids: csvNumbers(values.reply_to_message_ids), ai_model: values.ai_model ?? '', comment_style: values.comment_style ?? 'mixed', topic_hint: values.topic_hint ?? '', system_prompt_override: values.system_prompt_override ?? '', language: values.language ?? 'zh-CN', max_comment_length: values.max_comment_length ?? null, max_comments_per_account_per_hour: values.max_comments_per_account_per_hour ?? 3, require_review: false };
+    return { ...base, target_comments_per_message: values.target_comments_per_message ?? 10, comment_count_jitter: values.comment_count_jitter ?? 0.3, comment_mode: values.comment_mode ?? 'comment', reply_to_message_ids: csvNumbers(values.reply_to_message_ids), rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, ai_model: values.ai_model ?? '', comment_style: values.comment_style ?? 'mixed', topic_hint: values.topic_hint ?? '', system_prompt_override: values.system_prompt_override ?? '', language: values.language ?? 'zh-CN', max_comment_length: values.max_comment_length ?? null, max_comments_per_account_per_hour: values.max_comments_per_account_per_hour ?? 3, require_review: false };
   }
 
   function capacityCheckPayload(values: any) {
@@ -787,7 +794,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
       await form.validateFields(fieldsForStep(wizardStep, taskType, messageScope, accountMode));
       if (wizardStep === 0) {
         await ensureTaskFormData(taskType);
-        if (taskType === 'group_relay') applyDefaultRelayRuleSet(await ensureRuleSets());
+        if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType)) applyDefaultRuleSet(await ensureRuleSets(), taskType);
       }
       setWizardStep((value) => Math.min(value + 1, WIZARD_STEPS.length - 1));
     } catch (error) {
@@ -801,7 +808,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     form.setFieldsValue(initialValuesForType(nextType, schedulingSetting));
     setWizardStep(0);
     void ensureTaskFormData(nextType).then(async () => {
-      if (nextType === 'group_relay') applyDefaultRelayRuleSet(await ensureRuleSets());
+      if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(nextType)) applyDefaultRuleSet(await ensureRuleSets(), nextType);
     });
   }
 
@@ -1071,6 +1078,11 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
                 { key: 'skipped', label: '跳过', children: detail.stats.skipped_count ?? 0 },
                 { key: 'total', label: '总动作', children: detail.stats.total_actions ?? 0 },
                 { key: 'next', label: '下次运行', children: formatDateTime(detail.task.next_run_at) },
+                ...(detail.task.type === 'group_ai_chat' ? [
+                  { key: 'idle-enabled', label: '无人发言续聊', children: detail.task.type_config?.idle_continuation_enabled === false ? '关闭' : '开启' },
+                  { key: 'idle-seconds', label: '续聊间隔', children: `${detail.task.type_config?.idle_continuation_seconds ?? 300} 秒` },
+                  { key: 'context-mode', label: '上下文状态', children: detail.task.stats?.context_mode || '-' },
+                ] : []),
                 { key: 'capacity', label: '容量提示', span: 3, children: detail.stats.capacity_warning ? `${detail.stats.capacity_warning} 该提示不会停止任务。` : '无' },
                   { key: 'mode', label: '执行口径', span: 3, children: detail.task.type === 'group_ai_chat' || detail.task.type === 'group_relay' ? '自动校验通过后自动发送，无需人工确认。' : '按频道消息生成动作子任务，执行项按账号留痕。' },
                   { key: 'error', label: '错误', span: 3, children: detail.task.last_error || '无' },
@@ -1249,6 +1261,8 @@ function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, acc
     return [
       ...baseFields,
       'target_operation_target_id',
+      'rule_set_id',
+      'rule_set_version_id',
       'topic_hint',
       'chat_history_depth',
       'ai_model',
@@ -1265,6 +1279,8 @@ function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, acc
       'messages_per_round_mode',
       'messages_per_round',
       'history_fetch_account_id',
+      'idle_continuation_enabled',
+      'idle_continuation_seconds',
       'silent_mode_enabled',
       'silent_start',
       'silent_end',
@@ -1307,13 +1323,13 @@ function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, acc
   if (taskType === 'channel_like') {
     return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions', 'max_likes_per_account_per_hour'];
   }
-  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'comment_count_jitter', 'comment_mode', 'reply_to_message_ids', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];
+  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'comment_count_jitter', 'comment_mode', 'reply_to_message_ids', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];
 }
 
 function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
   const baseFields = ['name', 'scheduled_end', ...accountFields(accountMode), ...pacingFields(pacingMode)];
   if (taskType === 'group_ai_chat') {
-    return [...baseFields, 'target_operation_target_id', 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'tone', 'language', 'max_message_length', 'participation_rate', 'participation_jitter', 'allow_account_repeat', 'repeat_cooldown_rounds', 'account_personas', 'account_memory_depth', 'messages_per_round_mode', 'messages_per_round', 'history_fetch_account_id', 'silent_mode_enabled', 'silent_start', 'silent_end', 'silent_max_accounts', 'silent_messages_per_round', 'ramp_up_minutes', 'ramp_start_ratio', 'context_expire_after_messages'];
+    return [...baseFields, 'target_operation_target_id', 'rule_set_id', 'rule_set_version_id', 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'tone', 'language', 'max_message_length', 'participation_rate', 'participation_jitter', 'allow_account_repeat', 'repeat_cooldown_rounds', 'account_personas', 'account_memory_depth', 'messages_per_round_mode', 'messages_per_round', 'history_fetch_account_id', 'idle_continuation_enabled', 'idle_continuation_seconds', 'silent_mode_enabled', 'silent_start', 'silent_end', 'silent_max_accounts', 'silent_messages_per_round', 'ramp_up_minutes', 'ramp_start_ratio', 'context_expire_after_messages'];
   }
   if (taskType === 'group_relay') {
     return [...baseFields, 'source_operation_target_ids', 'source_groups', 'target_operation_target_id', 'target_operation_target_ids', 'rule_set_id', 'rule_set_version_id', 'monitor_account_ids', 'content_mode', 'rewrite_prompt', 'keyword_whitelist', 'keyword_blacklist', 'min_message_length', 'max_message_length', 'allowed_media_types', 'blocked_user_ids', 'only_with_media', 'only_text', 'language_filter', 'preserve_media', 'add_source_attribution', 'dedup_window_minutes', 'dedup_method'];
@@ -1324,7 +1340,7 @@ function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, 
   if (taskType === 'channel_like') {
     return [...baseFields, 'target_likes_per_message', 'like_count_jitter', 'reaction_type', 'allowed_reactions', 'max_likes_per_account_per_hour'];
   }
-  return [...baseFields, 'target_comments_per_message', 'comment_count_jitter', 'comment_mode', 'reply_to_message_ids', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];
+  return [...baseFields, 'target_comments_per_message', 'comment_count_jitter', 'comment_mode', 'reply_to_message_ids', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];
 }
 
 function EditBasics() {
@@ -1401,9 +1417,25 @@ function WizardTypeConfig({
   messageScope?: string;
   messageIds?: Array<number | string> | string | null;
 }) {
+  const versionOptions = ruleSets.flatMap((ruleSet) => ruleSet.versions.filter((version) => version.status !== 'draft').map((version) => ({
+    value: version.id,
+    label: `${ruleSet.name} / v${version.version} / ${version.status === 'published' ? '已发布' : '历史版本'}`,
+  })));
+  const ruleFields = (
+    <div className="form-grid">
+      <Form.Item name="rule_set_id" label="规则集">
+        <Select allowClear options={ruleSets.map((ruleSet) => ({ value: ruleSet.id, label: ruleSet.name }))} />
+      </Form.Item>
+      <Form.Item name="rule_set_version_id" label="规则版本">
+        <Select allowClear options={versionOptions} />
+      </Form.Item>
+    </div>
+  );
   if (taskType === 'group_ai_chat') {
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
+        <Alert type="info" showIcon message="AI 回复会按绑定规则集先过滤输入上下文，再逐条校验候选回复。" />
+        {ruleFields}
         <div className="form-grid">
           <Form.Item name="topic_hint" label="话题方向（可选）"><Input.TextArea rows={2} placeholder="不填时系统会按群目标方向或自然开场自动起聊" /></Form.Item>
         </div>
@@ -1425,6 +1457,8 @@ function WizardTypeConfig({
                   <Form.Item name="account_personas" label="账号角色">
                     <Input.TextArea rows={3} placeholder={'101=提问型账号\n102=补充细节账号'} />
                   </Form.Item>
+                  <Form.Item name="idle_continuation_enabled" label="无人发言续聊"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
+                  <Form.Item name="idle_continuation_seconds" label="续聊间隔秒数"><InputNumber min={30} max={86400} /></Form.Item>
                   <Form.Item name="silent_mode_enabled" label="静默期"><Select options={[{ value: true, label: '启用低频模式' }, { value: false, label: '关闭' }]} /></Form.Item>
                   <Form.Item name="silent_start" label="静默开始"><Input /></Form.Item>
                   <Form.Item name="silent_end" label="静默结束"><Input /></Form.Item>
@@ -1442,10 +1476,6 @@ function WizardTypeConfig({
     );
   }
   if (taskType === 'group_relay') {
-    const versionOptions = ruleSets.flatMap((ruleSet) => ruleSet.versions.map((version) => ({
-      value: version.id,
-      label: `${ruleSet.name} / v${version.version} / ${version.status === 'published' ? '已发布' : '草稿'}`,
-    })));
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
         <Alert
@@ -1460,14 +1490,7 @@ function WizardTypeConfig({
               key: 'rules',
               label: '规则集',
               children: (
-                <div className="form-grid">
-                  <Form.Item name="rule_set_id" label="规则集">
-                    <Select allowClear options={ruleSets.map((ruleSet) => ({ value: ruleSet.id, label: ruleSet.name }))} />
-                  </Form.Item>
-                  <Form.Item name="rule_set_version_id" label="规则版本">
-                    <Select allowClear options={versionOptions} />
-                  </Form.Item>
-                </div>
+                ruleFields
               ),
             },
             {
@@ -1533,6 +1556,10 @@ function WizardTypeConfig({
     }));
   return (
     <div className="form-grid">
+      <div style={{ gridColumn: '1 / -1' }}>
+        <Alert type="info" showIcon message="AI 评论会按绑定规则集逐条做输出校验，单条失败不会废弃整批评论。" />
+      </div>
+      <div style={{ gridColumn: '1 / -1' }}>{ruleFields}</div>
       <Form.Item name="target_comments_per_message" label="每条目标评论/回复"><InputNumber min={1} /></Form.Item>
       <Form.Item name="comment_count_jitter" label="评论抖动"><InputNumber min={0} max={1} step={0.05} /></Form.Item>
       <Form.Item name="comment_mode" label="互动方式"><Select options={[{ value: 'comment', label: '评论频道消息' }, { value: 'reply', label: '回复指定评论' }, { value: 'mixed', label: '评论+回复' }]} /></Form.Item>

@@ -16,6 +16,7 @@ from .messages import *  # noqa: F401,F403
 from .notifications import *  # noqa: F401,F403
 from .operations import *  # noqa: F401,F403
 from .operations_center import *  # noqa: F401,F403
+from .risk_control import *  # noqa: F401,F403
 from .reports import *  # noqa: F401,F403
 from .tenants import *  # noqa: F401,F403
 from .task_center import *  # noqa: F401,F403

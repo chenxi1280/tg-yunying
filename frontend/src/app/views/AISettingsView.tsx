@@ -5,7 +5,7 @@ import { StatusBadge, Badge } from '../components/shared';
 import { statusAccent } from '../utils';
 
 interface Props {
-  section?: 'all' | 'providers' | 'scheduling' | 'resources' | 'keywords';
+  section?: 'all' | 'providers' | 'scheduling' | 'resources';
   aiProviders: AiProvider[];
   promptTemplates: PromptTemplate[];
   tenantAiSetting: TenantAiSetting | null;
@@ -54,7 +54,6 @@ export default function AISettingsView({
   const showProviders = section === 'all' || section === 'providers';
   const showScheduling = section === 'all' || section === 'scheduling';
   const showResources = section === 'all' || section === 'resources';
-  const showKeywords = section === 'all' || section === 'keywords';
 
   return (
     <section className="view-grid">
@@ -183,26 +182,6 @@ export default function AISettingsView({
         />
       </Card>}
 
-      {showKeywords && <Card
-        className="panel"
-        title="关键词库"
-        extra={<Button size="small" onClick={onCreateKeywordRule}>新增关键词</Button>}
-      >
-        <Typography.Text type="secondary">持续任务和发送前校验会合并运营空间关键词与群规则</Typography.Text>
-        <List
-          className="mini-list"
-          dataSource={contentKeywordRules}
-          locale={{ emptyText: '暂无关键词规则。' }}
-          renderItem={(rule) => (
-            <List.Item actions={[<Button size="small" onClick={() => onEditKeywordRule(rule)}>编辑</Button>]}>
-              <List.Item.Meta
-                title={<Space><StatusBadge status={rule.is_active ? '已启用' : '禁用'} />{rule.keyword}</Space>}
-                description={rule.note || rule.match_type}
-              />
-            </List.Item>
-          )}
-        />
-      </Card>}
     </section>
   );
 }

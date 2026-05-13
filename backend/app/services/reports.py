@@ -9,10 +9,10 @@ from app.models import (
     AiDraft,
     AuditLog,
     AiUsageLedger,
-    ContentKeywordRule,
     GroupAuthStatus,
     MessageTask,
     OperationTarget,
+    RuleSet,
     Task,
     TaskStatus,
     TgAccount,
@@ -68,8 +68,8 @@ def build_overview(session: Session, tenant_id: int | None = None) -> dict:
     listener_error_groups = session.scalar(select(func.count(TgGroup.id)).where(*([TgGroup.tenant_id == tenant_id] if tenant_id is not None else []), TgGroup.listener_last_error != "")) or 0
     failed_actions = session.scalar(select(func.count(Action.id)).where(*action_filters, Action.status == "failed")) or 0
     pending_actions = session.scalar(select(func.count(Action.id)).where(*action_filters, Action.status.in_(["pending", "executing"]))) or 0
-    rule_filters = [ContentKeywordRule.tenant_id == tenant_id] if tenant_id is not None else []
-    active_rules = session.scalar(select(func.count(ContentKeywordRule.id)).where(*rule_filters, ContentKeywordRule.is_active.is_(True))) or 0
+    rule_filters = [RuleSet.tenant_id == tenant_id] if tenant_id is not None else []
+    active_rules = session.scalar(select(func.count(RuleSet.id)).where(*rule_filters, RuleSet.status == "active")) or 0
     risks: list[dict[str, str]] = []
     if pending_verifications:
         risks.append({"level": "中", "title": f"{pending_verifications} 个验证辅助待处理", "detail": "存在群验证、关注或按钮确认任务尚未完成。"})

@@ -99,6 +99,11 @@ class AccountOut(ApiModel):
     developer_api_id: int | None = None
     developer_app_health_status: str | None = None
     developer_app_version: int
+    proxy_id: int | None = None
+    proxy_name: str | None = None
+    proxy_local_address: str | None = None
+    proxy_status: str | None = None
+    proxy_alert_status: str | None = None
     deleted_at: datetime | None = None
     deleted_by: str = ""
     delete_reason: str = ""

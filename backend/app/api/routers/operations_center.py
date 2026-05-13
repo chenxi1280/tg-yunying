@@ -13,21 +13,25 @@ from app.schemas.operations_center import (
     RelayAttributionReportOut,
     RuleCenterSummaryOut,
     RuleSetCreate,
+    RuleSetBoundTaskOut,
     RuleSetOut,
     RuleSetVersionCreate,
     RuleTestOut,
     RuleTestRequest,
 )
 from app.services.operations_center import (
+    copy_rule_set_version,
     create_rule_set,
     create_rule_set_version,
     listener_summary,
+    list_rule_set_bound_tasks,
     list_rule_sets,
     operation_metrics_summary,
     publish_rule_set_version,
     relay_attribution_csv,
     relay_attribution_report,
     rule_center_summary,
+    rollback_rule_set_version,
     switch_listener_account,
     test_rules,
 )
@@ -80,6 +84,10 @@ def post_rule_test(payload: RuleTestRequest, session: Session = Depends(get_sess
         session,
         current_user.tenant_id or 1,
         payload.text,
+        test_type=payload.test_type,
+        test_mode=payload.test_mode,
+        candidates=payload.candidates,
+        context=payload.context,
         rule_set_version_id=payload.rule_set_version_id,
         source_group_id=payload.source_group_id,
         sender_id=payload.sender_id,
@@ -112,6 +120,30 @@ def post_rule_set_version(rule_set_id: int, payload: RuleSetVersionCreate, sessi
 def post_rule_set_version_publish(rule_set_id: int, version_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
         return publish_rule_set_version(session, current_user.tenant_id or 1, rule_set_id, version_id, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/rule-sets/{rule_set_id}/versions/{version_id}/copy", response_model=RuleSetOut)
+def post_rule_set_version_copy(rule_set_id: int, version_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return copy_rule_set_version(session, current_user.tenant_id or 1, rule_set_id, version_id, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/rule-sets/{rule_set_id}/versions/{version_id}/rollback", response_model=RuleSetOut)
+def post_rule_set_version_rollback(rule_set_id: int, version_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return rollback_rule_set_version(session, current_user.tenant_id or 1, rule_set_id, version_id, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.get("/api/rule-sets/{rule_set_id}/tasks", response_model=list[RuleSetBoundTaskOut])
+def get_rule_set_bound_tasks(rule_set_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return list_rule_set_bound_tasks(session, current_user.tenant_id or 1, rule_set_id)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 

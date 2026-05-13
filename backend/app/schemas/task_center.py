@@ -115,6 +115,8 @@ class GroupAIChatConfig(BaseModel):
 
     target_group_id: int | None = None
     target_operation_target_id: int | None = None
+    rule_set_id: int | None = None
+    rule_set_version_id: int | None = None
     target_group_name: str = ""
     topic_hint: str | None = None
     chat_history_depth: int = Field(default=50, ge=1, le=200)
@@ -132,6 +134,8 @@ class GroupAIChatConfig(BaseModel):
     messages_per_round_mode: Literal["auto", "manual"] = "auto"
     messages_per_round: int = Field(default=1, ge=1, le=10)
     history_fetch_account_id: int | None = None
+    idle_continuation_enabled: bool = True
+    idle_continuation_seconds: int = Field(default=300, ge=30, le=86400)
     silent_mode_enabled: bool = True
     silent_start: str = "23:00"
     silent_end: str = "08:00"
@@ -223,6 +227,8 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     comment_count_jitter: float = Field(default=0.3, ge=0, le=1)
     comment_mode: Literal["comment", "reply", "mixed"] = "comment"
     reply_to_message_ids: list[int] = Field(default_factory=list)
+    rule_set_id: int | None = None
+    rule_set_version_id: int | None = None
     ai_model: str = ""
     comment_style: Literal["relevant", "question", "praise", "discussion", "mixed"] = "mixed"
     topic_hint: str | None = None
@@ -327,6 +333,10 @@ class TaskSettingsUpdate(TaskUpdate):
     messages_per_round_mode: Literal["auto", "manual"] | None = None
     messages_per_round: int | None = Field(default=None, ge=1, le=10)
     history_fetch_account_id: int | None = None
+    idle_continuation_enabled: bool | None = None
+    idle_continuation_seconds: int | None = Field(default=None, ge=30, le=86400)
+    rule_set_id: int | None = None
+    rule_set_version_id: int | None = None
 
     source_groups: list[SourceGroup] | None = None
     target_group_id: int | None = None
@@ -513,7 +523,9 @@ class TaskRelayItemOut(BaseModel):
     rule_set_id: int | None = None
     rule_set_name: str = ""
     rule_set_version_id: int | None = None
+    resolved_rule_set_version_id: int | None = None
     rule_set_version: int | None = None
+    rule_binding_mode: str = ""
     rule_trace: dict[str, Any] = Field(default_factory=dict)
     account_id: int | None = None
     status: str

@@ -50,7 +50,9 @@ class SendMessagePayload(BaseModel):
     rule_set_id: int | None = None
     rule_set_name: str = ""
     rule_set_version_id: int | None = None
+    resolved_rule_set_version_id: int | None = None
     rule_set_version: int | None = None
+    rule_binding_mode: str = ""
     rule_trace: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -82,6 +84,12 @@ class PostCommentPayload(ViewMessagePayload):
     reply_to_message_id: int | None = None
     reply_target_label: str = ""
     review_approved: bool = False
+    rule_set_id: int | None = None
+    rule_set_name: str = ""
+    rule_set_version_id: int | None = None
+    resolved_rule_set_version_id: int | None = None
+    rule_set_version: int | None = None
+    rule_binding_mode: str = ""
 
 
 PAYLOAD_MODELS = {

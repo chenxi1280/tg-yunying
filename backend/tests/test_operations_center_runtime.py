@@ -2222,6 +2222,247 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
     assert task.stats["context_mode"] == "waiting_new_context"
 
 
+def test_group_ai_chat_idle_continuation_waits_until_interval(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    generated: list[str] = []
+    now_value = datetime(2026, 5, 13, 11, 0, 0)
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        generated.append(history)
+        return [f"续聊内容 {len(generated)}"], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="校园日常"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+        session.add(
+            GroupContextMessage(
+                id=43,
+                tenant_id=1,
+                group_id=7,
+                listener_account_id=101,
+                sender_name="真人用户",
+                content="第一条真人消息",
+                remote_message_id="real-once",
+                sent_at=now_value - timedelta(minutes=10),
+            )
+        )
+        session.add(
+            Task(
+                id="ai-idle-wait",
+                tenant_id=1,
+                name="AI 未到续聊间隔",
+                type="group_ai_chat",
+                status="running",
+                account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 1, "idle_continuation_seconds": 300},
+            )
+        )
+        session.commit()
+
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-wait")) == 1
+        action = session.scalar(select(Action).where(Action.task_id == "ai-idle-wait"))
+        action.status = "success"
+        action.executed_at = now_value
+        action.result = {"success": True}
+        session.commit()
+
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-wait")) == 0
+        task = session.get(Task, "ai-idle-wait")
+        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-idle-wait"))
+
+    assert len(generated) == 1
+    assert action_count == 1
+    assert task.status == "running"
+    assert task.last_error == "持续监听中，等待新消息或空闲续聊间隔"
+    assert task.stats["context_mode"] == "waiting_new_context"
+    assert task.stats["idle_continuation_next_run_at"] == (now_value + timedelta(seconds=300)).isoformat()
+    assert task.next_run_at == now_value + timedelta(seconds=300)
+
+
+def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    generated: list[str] = []
+    now_value = datetime(2026, 5, 13, 11, 0, 0)
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        generated.append(history)
+        if len(generated) == 1:
+            return ["第一轮先接住真人消息。"], 0
+        return ["换个角度继续聊校园日常。"], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="校园日常"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+        session.add(
+            GroupContextMessage(
+                id=43,
+                tenant_id=1,
+                group_id=7,
+                listener_account_id=101,
+                sender_name="真人用户",
+                content="第一条真人消息",
+                remote_message_id="real-once",
+                sent_at=now_value - timedelta(minutes=10),
+            )
+        )
+        session.add(
+            Task(
+                id="ai-idle-due",
+                tenant_id=1,
+                name="AI 到点续聊",
+                type="group_ai_chat",
+                status="running",
+                account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 1, "idle_continuation_seconds": 300},
+            )
+        )
+        session.commit()
+
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-due")) == 1
+        first_action = session.scalar(select(Action).where(Action.task_id == "ai-idle-due"))
+        first_action.status = "success"
+        first_action.executed_at = now_value - timedelta(seconds=301)
+        first_action.payload["message_text"] = "上一轮已经聊过开场。"
+        first_action.result = {"success": True}
+        session.commit()
+
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-due")) == 1
+        task = session.get(Task, "ai-idle-due")
+        actions = list(session.scalars(select(Action).where(Action.task_id == "ai-idle-due").order_by(Action.created_at.asc(), Action.id.asc())))
+
+    assert len(generated) == 2
+    assert "群内暂时没有新的真人消息" in generated[-1]
+    assert "上一轮 AI 已说" in generated[-1]
+    assert len(actions) == 2
+    assert actions[-1].payload["message_text"] == "换个角度继续聊校园日常。"
+    assert task.status == "running"
+    assert task.last_error == ""
+    assert task.stats["context_mode"] == "idle_continuation"
+    assert "idle_continuation_next_run_at" not in task.stats
+
+
+def test_group_ai_chat_idle_continuation_can_be_disabled(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    generated: list[str] = []
+    now_value = datetime(2026, 5, 13, 11, 0, 0)
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        generated.append(history)
+        return ["只应该生成第一轮。"], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="校园日常"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+        session.add(
+            GroupContextMessage(
+                id=43,
+                tenant_id=1,
+                group_id=7,
+                listener_account_id=101,
+                sender_name="真人用户",
+                content="第一条真人消息",
+                remote_message_id="real-once",
+                sent_at=now_value - timedelta(minutes=10),
+            )
+        )
+        session.add(
+            Task(
+                id="ai-idle-disabled",
+                tenant_id=1,
+                name="AI 关闭续聊",
+                type="group_ai_chat",
+                status="running",
+                account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 1, "idle_continuation_enabled": False, "idle_continuation_seconds": 300},
+            )
+        )
+        session.commit()
+
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-disabled")) == 1
+        first_action = session.scalar(select(Action).where(Action.task_id == "ai-idle-disabled"))
+        first_action.status = "success"
+        first_action.executed_at = now_value - timedelta(hours=1)
+        first_action.result = {"success": True}
+        session.commit()
+
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-disabled")) == 0
+        task = session.get(Task, "ai-idle-disabled")
+        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-idle-disabled"))
+
+    assert len(generated) == 1
+    assert action_count == 1
+    assert task.status == "running"
+    assert task.last_error == "暂无新的真人上下文，等待群内新消息"
+    assert "idle_continuation_next_run_at" not in task.stats
+
+
+def test_task_center_drain_respects_ai_idle_continuation_next_run(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionFactory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    now_value = _now()
+    idle_next = now_value + timedelta(minutes=5)
+
+    def fake_build_task_plan(_session, task):
+        stats = dict(task.stats or {})
+        stats["context_mode"] = "waiting_new_context"
+        stats["idle_continuation_next_run_at"] = idle_next.isoformat()
+        task.stats = stats
+        task.last_error = "持续监听中，等待新消息或空闲续聊间隔"
+        return 0
+
+    monkeypatch.setattr("app.services.task_center.service.build_task_plan", fake_build_task_plan)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            Task(
+                id="ai-idle-drain",
+                tenant_id=1,
+                name="AI drain 续聊间隔",
+                type="group_ai_chat",
+                status="running",
+                next_run_at=now_value - timedelta(seconds=1),
+                pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                type_config={"target_group_id": 7},
+                stats={},
+            )
+        )
+        session.commit()
+
+    drain_task_center(SessionFactory, 10)
+
+    with Session(engine) as session:
+        task = session.get(Task, "ai-idle-drain")
+
+    assert task.status == "running"
+    assert task.last_error == "持续监听中，等待新消息或空闲续聊间隔"
+    assert task.next_run_at == idle_next
+
+
 def test_task_center_scheduled_end_marks_running_task_completed():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -2447,7 +2688,6 @@ def test_rule_center_summary_reports_rule_conflicts_and_missing_bindings():
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群", auth_status="已授权运营"))
         session.add(TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="11", status="在线"))
-        session.add(ContentKeywordRule(id=41, tenant_id=1, keyword="公告", match_type="contains", is_active=True))
         session.add(RuleSet(id=31, tenant_id=1, name="未发布规则", status="active", active_version_id=None))
         session.add(
             Task(
@@ -2536,8 +2776,8 @@ def test_rule_center_summary_reports_rule_conflicts_and_missing_bindings():
     assert summary.target_metrics[0].action_count == 3
     assert summary.account_metrics[0].name == "发送号"
     assert summary.account_metrics[0].failed_count == 1
-    assert summary.keyword_metrics[0].name == "公告"
-    assert summary.keyword_metrics[0].success_count == 2
+    assert summary.keyword_rule_count == 0
+    assert summary.keyword_metrics == []
     today_trend = next(item for item in summary.trend_metrics if item.date == datetime.now(UTC).date().isoformat())
     assert today_trend.action_count == 2
     assert today_trend.success_count == 1
@@ -2629,7 +2869,7 @@ def test_overview_counts_new_task_center_tasks_not_legacy_campaigns():
         session.add(Task(id="task-overview-failed", tenant_id=1, name="失败任务", type="group_relay", status="failed"))
         session.add(Action(id="action-overview-pending", tenant_id=1, task_id="task-overview", task_type="group_ai_chat", action_type="send_message", status="pending"))
         session.add(Action(id="action-overview-failed", tenant_id=1, task_id="task-overview-failed", task_type="group_relay", action_type="send_message", status="failed"))
-        session.add(ContentKeywordRule(id=9, tenant_id=1, keyword="风险词", match_type="contains", is_active=True))
+        session.add(RuleSet(id=9, tenant_id=1, name="新版规则", status="active"))
         session.commit()
 
         overview = build_overview(session, 1)

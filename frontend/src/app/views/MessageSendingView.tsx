@@ -4,7 +4,7 @@ import { Alert, App as AntdApp, Button, Card, Col, DatePicker, Form, Input, Moda
 import type { ColumnsType } from 'antd/es/table';
 import { MessageSquareText, RefreshCcw, Send, ShieldAlert } from 'lucide-react';
 import { StatusBadge } from '../components/shared';
-import type { Account, Contact, Material, MessageSendBatchCreate, MessageSendTarget, MessageSendingPrefill, MessageTask, OperationTarget } from '../types';
+import type { Account, Contact, Material, MessageSendBatchCreate, MessageSendTarget, MessageSendingPrefill, MessageTask, OperationTarget, RiskPreflight } from '../types';
 import { api, ApiError } from '../../shared/api/client';
 import { formatBeijingDateTime, fromBeijingDateTimeLocalValue } from '../time';
 
@@ -99,10 +99,12 @@ export default function MessageSendingView({
   const [materialOpen, setMaterialOpen] = React.useState(false);
   const [materialForm, setMaterialForm] = React.useState({ title: '', content: '', tags: '' });
   const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const [preflight, setPreflight] = React.useState<RiskPreflight | null>(null);
   const [detailTask, setDetailTask] = React.useState<MessageTask | null>(null);
   const [error, setError] = React.useState('');
   const [loadingTargets, setLoadingTargets] = React.useState(false);
   const [savingMaterial, setSavingMaterial] = React.useState(false);
+  const [preflightLoading, setPreflightLoading] = React.useState(false);
 
   React.useEffect(() => setLocalMaterials(materials), [materials]);
 
@@ -233,6 +235,7 @@ export default function MessageSendingView({
     setMaterialId(undefined);
     setDispatchNow(true);
     setScheduledAt(null);
+    setPreflight(null);
     setError('');
   }
 
@@ -253,15 +256,35 @@ export default function MessageSendingView({
     };
   }
 
-  function openConfirm() {
+  async function openConfirm() {
     try {
-      buildPayload();
+      const payload = buildPayload();
       setError('');
+      setPreflightLoading(true);
+      const result = await api<RiskPreflight>('/risk-control/preflight', {
+        method: 'POST',
+        body: JSON.stringify({
+          scenario: 'manual_send',
+          account_ids: [payload.account_id],
+          proxy_ids: selectedAccount?.proxy_id ? [selectedAccount.proxy_id] : [],
+          target_ids: selectedTargets.map((option) => option.target.operation_target_id).filter((id): id is number => Boolean(id)),
+          content_preview: payload.content,
+          task_type: 'message_send',
+          scheduled_at: payload.scheduled_at ?? null,
+        }),
+      });
+      setPreflight(result);
+      if (result.decision === 'block') {
+        const reason = [...result.suggested_actions, ...result.decision_reasons].filter(Boolean).join('；') || '风控预检未通过';
+        throw new Error(reason);
+      }
       setConfirmOpen(true);
     } catch (validationError) {
       const nextError = errorText(validationError);
       setError(nextError);
       void message.error(nextError);
+    } finally {
+      setPreflightLoading(false);
     }
   }
 
@@ -532,7 +555,7 @@ export default function MessageSendingView({
             )}
             <Col xs={24} md={dispatchNow ? 16 : 6}>
               <Form.Item label=" ">
-                <Button type="primary" block icon={<Send size={16} />} onClick={openConfirm} loading={isActionPending('message-send:create')}>提交发送</Button>
+                <Button type="primary" block icon={<Send size={16} />} onClick={() => void openConfirm()} loading={preflightLoading || isActionPending('message-send:create')}>提交发送</Button>
               </Form.Item>
             </Col>
           </Row>
@@ -566,6 +589,21 @@ export default function MessageSendingView({
 
       <Modal title="确认发送" open={confirmOpen} onCancel={() => setConfirmOpen(false)} onOk={submit} confirmLoading={isActionPending('message-send:create')} okText="确认提交">
         <Space direction="vertical" style={{ width: '100%' }}>
+          {preflight && (
+            <Alert
+              type={preflight.decision === 'allow' ? 'success' : 'warning'}
+              showIcon
+              message={preflight.decision === 'allow' ? '风控预检通过' : '风控预检提示'}
+              description={(
+                <Space direction="vertical" size={2}>
+                  <Typography.Text>可用账号 {preflight.available_accounts.length} 个，受限账号 {preflight.limited_accounts.length} 个，阻塞账号 {preflight.blocked_accounts.length} 个</Typography.Text>
+                  {[...preflight.proxy_warnings, ...preflight.target_warnings, ...preflight.content_warnings, ...preflight.suggested_actions].filter(Boolean).slice(0, 6).map((item) => (
+                    <Typography.Text key={item} type="secondary">{item}</Typography.Text>
+                  ))}
+                </Space>
+              )}
+            />
+          )}
           <Typography.Text>账号：{selectedAccount?.display_name || accountId}</Typography.Text>
           <Typography.Text>目标：{selectedTargets.map((option) => option.searchText.split(' ').slice(0, 2).join(' ')).join('、')}</Typography.Text>
           <Typography.Text>消息类型：{messageType}</Typography.Text>

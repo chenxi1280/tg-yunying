@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, GroupAuthStatus, MessageFingerprint, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, WorkerHeartbeat
+from app.models import Action, ChannelMessage, GroupAuthStatus, MessageFingerprint, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, Task, TgAccount, TgGroup, WorkerHeartbeat
 from app.schemas.task_center import (
     ChannelCapacityCheckRequest,
     ChannelCommentConfig,
@@ -85,6 +85,8 @@ TYPE_SETTINGS_FIELDS = {
     "group_ai_chat": {
         "target_group_id",
         "target_operation_target_id",
+        "rule_set_id",
+        "rule_set_version_id",
         "target_group_name",
         "topic_hint",
         "chat_history_depth",
@@ -101,6 +103,8 @@ TYPE_SETTINGS_FIELDS = {
         "messages_per_round_mode",
         "messages_per_round",
         "history_fetch_account_id",
+        "idle_continuation_enabled",
+        "idle_continuation_seconds",
         "silent_mode_enabled",
         "silent_start",
         "silent_end",
@@ -145,6 +149,8 @@ TYPE_SETTINGS_FIELDS = {
         "comment_count_jitter",
         "comment_mode",
         "reply_to_message_ids",
+        "rule_set_id",
+        "rule_set_version_id",
         "ai_model",
         "comment_style",
         "topic_hint",
@@ -205,6 +211,7 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     raw_type_config = payload.model_dump(mode="json", exclude=COMMON_CREATE_FIELDS)
     raw_type_config = _normalize_operation_target_references(session, tenant_id, task_type, raw_type_config)
     type_config = _validated_type_config(task_type, raw_type_config)
+    _validate_rule_binding(session, tenant_id, type_config)
     task = Task(
         tenant_id=tenant_id,
         name=payload.name,
@@ -658,6 +665,7 @@ def drain_task_center(session_factory, limit: int = 100) -> int:
             )
         )
         session.commit()
+    future_open_action_task_ids: set[str] = set()
     for task_id in task_ids:
         with session_factory() as session:
             task = session.get(Task, task_id)
@@ -668,6 +676,8 @@ def drain_task_center(session_factory, limit: int = 100) -> int:
                 continue
             processed += _retry_failed_actions(session, task)
             if task.type == "group_ai_chat" and _has_open_actions(session, task):
+                if task.next_run_at and _absolute_naive_datetime(task.next_run_at) > _utc_now_naive():
+                    future_open_action_task_ids.add(task.id)
                 refresh_task_stats(session, task)
                 session.commit()
                 continue
@@ -677,7 +687,7 @@ def drain_task_center(session_factory, limit: int = 100) -> int:
             session.commit()
             processed += created
     with session_factory() as session:
-        for action in due_actions(session, limit=max(10, limit)):
+        for action in due_actions(session, limit=max(10, limit), exclude_task_ids=future_open_action_task_ids):
             if dispatch_action(session, action):
                 processed += 1
                 refresh = session.get(Task, action.task_id)
@@ -797,10 +807,28 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
 
 def _next_run_after_task(task: Task):
     config = task.type_config or {}
+    if task.type == "group_ai_chat":
+        waiting_until = _stats_datetime(task, "idle_continuation_next_run_at")
+        if waiting_until:
+            return waiting_until
     if task.type in CHANNEL_DYNAMIC_TASK_TYPES and (config.get("message_scope") or "latest_n") == "dynamic_new":
         interval = int(config.get("listener_interval_seconds") or 30)
         return _utc_now_naive() + timedelta(seconds=max(1, interval))
     return next_run_after(task.pacing_config or {})
+
+
+def _stats_datetime(task: Task, key: str) -> datetime | None:
+    stats = task.stats or {}
+    if not isinstance(stats, dict):
+        return None
+    value = stats.get(key)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return _naive_datetime(parsed)
 
 
 def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
@@ -899,11 +927,37 @@ def _validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, An
     return normalized
 
 
+def _validate_rule_binding(session: Session, tenant_id: int, config: dict[str, Any]) -> None:
+    rule_set_id = _as_int(config.get("rule_set_id"))
+    version_id = _as_int(config.get("rule_set_version_id"))
+    if version_id:
+        version = session.get(RuleSetVersion, version_id)
+        if not version or version.tenant_id != tenant_id:
+            raise ValueError("规则版本不存在")
+        if version.status == "draft":
+            raise ValueError("草稿规则版本不能绑定到真实任务，请先发布或复制后发布")
+        if rule_set_id and version.rule_set_id != rule_set_id:
+            raise ValueError("规则版本不属于所选规则集")
+        return
+    if rule_set_id:
+        rule_set = session.get(RuleSet, rule_set_id)
+        if not rule_set or rule_set.tenant_id != tenant_id:
+            raise ValueError("规则集不存在")
+        if not rule_set.active_version_id:
+            raise ValueError("规则集没有已发布版本")
+        active = session.get(RuleSetVersion, rule_set.active_version_id)
+        if not active or active.tenant_id != tenant_id or active.rule_set_id != rule_set.id or active.status != "published":
+            raise ValueError("规则集当前发布版本不可用")
+
+
 def _update_type_config(session: Session, tenant_id: int, task_id: str, expected_type: str, payload, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
     if task.type != expected_type:
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
-    task.type_config = _normalize_operation_target_references(session, tenant_id, expected_type, payload.model_dump(mode="json"))
+    next_config = _normalize_operation_target_references(session, tenant_id, expected_type, payload.model_dump(mode="json"))
+    next_config = _validated_type_config(expected_type, next_config)
+    _validate_rule_binding(session, tenant_id, next_config)
+    task.type_config = next_config
     task.updated_at = _now()
     audit(session, tenant_id=tenant_id, actor=actor, action="更新任务类型配置", target_type="task", target_id=task.id, detail=expected_type)
     session.commit()
@@ -1378,7 +1432,9 @@ def _relay_batches(actions: list[Action]) -> list[dict[str, Any]]:
                 "rule_set_id": payload.get("rule_set_id") if isinstance(payload.get("rule_set_id"), int) else None,
                 "rule_set_name": str(payload.get("rule_set_name") or ""),
                 "rule_set_version_id": payload.get("rule_set_version_id") if isinstance(payload.get("rule_set_version_id"), int) else None,
+                "resolved_rule_set_version_id": payload.get("resolved_rule_set_version_id") if isinstance(payload.get("resolved_rule_set_version_id"), int) else payload.get("rule_set_version_id") if isinstance(payload.get("rule_set_version_id"), int) else None,
                 "rule_set_version": payload.get("rule_set_version") if isinstance(payload.get("rule_set_version"), int) else None,
+                "rule_binding_mode": str(payload.get("rule_binding_mode") or ""),
                 "rule_trace": payload.get("rule_trace") if isinstance(payload.get("rule_trace"), dict) else {},
                 "account_id": action.account_id,
                 "status": action.status,
@@ -1393,7 +1449,7 @@ def _relay_batches(actions: list[Action]) -> list[dict[str, Any]]:
         item["items"].sort(key=lambda row: row["scheduled_at"])
         item["source_event_count"] = len({row["source_event_key"] for row in item["items"] if row.get("source_event_key") and not str(row.get("source_event_key")).endswith(":-")})
         item["material_count"] = len({row["material_fingerprint"] for row in item["items"] if row.get("material_fingerprint")})
-        item["rule_version_count"] = len({row["rule_set_version_id"] for row in item["items"] if row.get("rule_set_version_id")})
+        item["rule_version_count"] = len({row["resolved_rule_set_version_id"] or row["rule_set_version_id"] for row in item["items"] if row.get("resolved_rule_set_version_id") or row.get("rule_set_version_id")})
     return sorted(batches.values(), key=lambda item: item["relay_batch_id"])
 
 

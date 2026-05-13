@@ -184,35 +184,6 @@ export default function SystemConfigView({
             />
           ),
         },
-        {
-          key: 'keywords',
-          label: '关键词库',
-          children: (
-            <AISettingsView
-              section="keywords"
-              aiProviders={aiProviders}
-              promptTemplates={promptTemplates}
-              tenantAiSetting={tenantAiSetting}
-              schedulingSetting={schedulingSetting}
-              materials={materials}
-              contentKeywordRules={contentKeywordRules}
-              currentUserRole={currentUserRole}
-              onCreateProvider={onCreateAiProvider}
-              onEditProvider={onEditAiProvider}
-              onToggleProvider={onToggleAiProvider}
-              onCheckProvider={onCheckAiProvider}
-              onEditTenantAi={onEditTenantAi}
-              onEditScheduling={onEditScheduling}
-              onCreatePromptTemplate={onCreatePromptTemplate}
-              onEditPromptTemplate={onEditPromptTemplate}
-              onCreateMaterial={onCreateMaterial}
-              onEditMaterial={onEditMaterial}
-              onCreateKeywordRule={onCreateKeywordRule}
-              onEditKeywordRule={onEditKeywordRule}
-              isActionPending={isActionPending}
-            />
-          ),
-        },
       ]}
     />
   );

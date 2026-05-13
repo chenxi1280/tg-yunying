@@ -54,7 +54,7 @@ def dispatch_action(session: Session, action: Action) -> bool:
         return True
 
 
-def due_actions(session: Session, limit: int = 100) -> list[Action]:
+def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str] | None = None) -> list[Action]:
     pending_review_exists = None
     if _legacy_review_enabled():
         pending_review_exists = (
@@ -67,6 +67,8 @@ def due_actions(session: Session, limit: int = 100) -> list[Action]:
         Action.scheduled_at <= _now(),
         Task.status == "running",
     ]
+    if exclude_task_ids:
+        filters.append(Action.task_id.not_in(exclude_task_ids))
     if pending_review_exists is not None:
         filters.append(~pending_review_exists)
     return list(

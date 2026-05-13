@@ -8,6 +8,7 @@ export const VIEW_ROUTES: Record<string, string> = {
   taskManagement: '/task-center',
   listenerCenter: '/listeners',
   ruleCenter: '/rules',
+  riskControl: '/risk-control',
   archives: '/archives',
   usageReports: '/usage-reports',
   systemConfig: '/system-config',
@@ -28,6 +29,7 @@ Object.assign(ROUTE_VIEWS, {
   '/group-archives': 'archives',
   '/rule-center': 'ruleCenter',
   '/listener-center': 'listenerCenter',
+  '/risk-center': 'riskControl',
 });
 
 export function viewFromPath(pathname: string): string {

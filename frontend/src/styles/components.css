@@ -126,6 +126,41 @@
   width: fit-content;
 }
 
+.rules-workbench.ant-card > .ant-card-body {
+  gap: 10px;
+}
+
+.rules-workbench-tabs.ant-tabs > .ant-tabs-nav {
+  margin-bottom: 14px;
+}
+
+.rules-workbench-tabs .ant-tabs-tab {
+  padding: 10px 0;
+}
+
+.rules-tab-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.rules-section-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.rules-section-header .ant-space {
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.rules-inner-tabs.ant-tabs {
+  min-width: 0;
+}
+
 .wizard-steps.ant-steps {
   display: flex;
 }
@@ -244,4 +279,8 @@
 
 .task-action-bar .ant-btn {
   min-width: 48px;
+}
+
+.full-width {
+  width: 100%;
 }

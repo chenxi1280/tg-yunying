@@ -3,8 +3,9 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ChannelMessage, ChannelMessageComment, Task
+from app.models import ChannelMessage, ChannelMessageComment, RuleSet, Task
 
+from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 from ..account_pool import select_task_accounts
 from ..ai_generator import generate_channel_comments
 from ..pacing import schedule_times
@@ -14,6 +15,8 @@ from .common import add_tokens, adjust_for_account_hour_limit, channel_message_p
 
 def build_plan(session: Session, task: Task) -> int:
     config = task.type_config or {}
+    rule_version = bound_rule_version(session, task)
+    rule_set = session.get(RuleSet, rule_version.rule_set_id) if rule_version else None
     channel, messages = channel_scope(session, task, config)
     if not channel or not messages:
         return 0
@@ -29,6 +32,20 @@ def build_plan(session: Session, task: Task) -> int:
         task.last_error = "回复对象不属于当前频道消息，请先采集评论后重新选择"
         return 0
     for message in messages:
+        if rule_version:
+            context_text = "\n".join(
+                item
+                for item in [
+                    message.content_preview or message.message_url,
+                    config.get("topic_hint") or "",
+                    config.get("comment_style") or "",
+                ]
+                if item
+            )
+            input_result = evaluate_input_filter(context_text, message_type="channel_comment", filters=rule_version.filters or {})
+            if not input_result.passed:
+                stats_inc(task, "skipped_count")
+                continue
         quantity = quantity_with_jitter(int(config.get("target_comments_per_message") or 1), float(config.get("comment_count_jitter") or 0))
         contents, tokens = generate_channel_comments(
             session,
@@ -40,6 +57,9 @@ def build_plan(session: Session, task: Task) -> int:
         )
         add_tokens(task, tokens)
         actions.extend((message, contents[index] if index < len(contents) else "支持一下", _reply_target_for_index(comment_mode, reply_targets, index)) for index in range(quantity))
+    if not actions:
+        task.last_error = ""
+        return 0
     accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, limit=len(actions))
     if not accounts:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
@@ -48,6 +68,12 @@ def build_plan(session: Session, task: Task) -> int:
     times = schedule_times(len(actions), task.pacing_config or {})
     created = 0
     for index, (message, content, reply_to_message_id) in enumerate(actions):
+        if rule_version:
+            policy_result = apply_output_policy(content, rule_version.output_checks or {}, rule_version.transforms or {})
+            if not policy_result.allowed:
+                stats_inc(task, "failure_count")
+                continue
+            content = policy_result.content
         planned_at = times[index]
         account = pick_channel_account(session, task, accounts, "post_comment", planned_at, config, index)
         if not account:
@@ -66,6 +92,12 @@ def build_plan(session: Session, task: Task) -> int:
                 reply_to_message_id=reply_to_message_id,
                 reply_target_label=f"回复消息 #{reply_to_message_id}" if reply_to_message_id else "",
                 review_approved=True,
+                rule_set_id=rule_version.rule_set_id if rule_version else None,
+                rule_set_name=rule_set.name if rule_set else "",
+                rule_set_version_id=rule_version.id if rule_version else None,
+                resolved_rule_set_version_id=rule_version.id if rule_version else None,
+                rule_set_version=rule_version.version if rule_version else None,
+                rule_binding_mode="fixed_version" if rule_version and config.get("rule_set_version_id") else "follow_current" if rule_version else "",
             ),
         )
         created += 1

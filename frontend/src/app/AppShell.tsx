@@ -1,7 +1,6 @@
 import React from 'react';
 import {
   Activity,
-  CheckCircle2,
   Database,
   LayoutDashboard,
   LockKeyhole,
@@ -24,6 +23,7 @@ import TaskCenterView from './views/TaskCenterView';
 import MessageSendingView from './views/MessageSendingView';
 import ListenerCenterView from './views/ListenerCenterView';
 import RulesCenterView from './views/RulesCenterView';
+import RiskControlView from './views/RiskControlView';
 import ArchivesView from './views/ArchivesView';
 import { AppModals } from './AppModals';
 import { VIEW_ROUTES } from './routes';
@@ -42,6 +42,7 @@ const SHELL_NAV_ITEMS: ShellNavItem[] = [
   ['taskManagement', '任务中心', <Activity size={18} />],
   ['listenerCenter', '监听中心', <RefreshCcw size={18} />],
   ['ruleCenter', '规则中心', <ShieldAlert size={18} />],
+  ['riskControl', '风控中心', <ShieldAlert size={18} />],
   ['archives', '归档中心', <Database size={18} />],
   ['usageReports', '运营数据', <Activity size={18} />],
   ['systemConfig', '系统设置', <Database size={18} />],
@@ -349,6 +350,7 @@ function AppShell() {
         {activeView === 'taskManagement' && <TaskCenterView accounts={accounts} accountPools={accountPools} prefill={taskCenterPrefill} />}
         {activeView === 'listenerCenter' && <ListenerCenterView />}
         {activeView === 'ruleCenter' && <RulesCenterView onOpenSystemConfig={() => goToView('systemConfig')} />}
+        {activeView === 'riskControl' && <RiskControlView onOpenAccounts={() => goToView('accounts')} onOpenSystemConfig={() => goToView('systemConfig')} />}
         {activeView === 'archives' && <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onRefresh={refresh} isActionPending={isActionPending} />}
         {activeView === 'audits' && <AuditsView audits={audits} filters={auditFilters} setFilters={setAuditFilters} onRefresh={refresh} />}
 

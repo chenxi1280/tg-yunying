@@ -11,6 +11,7 @@ from app.models import AccountStatus, GroupAuthStatus, OperationTarget, RuleSet,
 from app.services.account_capacity import available_accounts_by_capacity, next_capacity_window
 from app.services.content_filters import filter_outbound_content
 from app.services.group_listeners import collect_group_context, recent_context_messages
+from app.services.rule_engine import apply_output_policy
 
 from ..account_pool import select_task_accounts
 from ..ai_generator import rewrite_relay_content
@@ -62,6 +63,12 @@ def build_plan(session: Session, task: Task) -> int:
                 rewritten, tokens = rewrite_relay_content(session, task.tenant_id, config, message.content, target_label=target.title)
                 rewritten = apply_transform_rules(rewritten, config.get("transforms") or {})
                 add_tokens(task, tokens)
+                policy_result = apply_output_policy(rewritten, config.get("output_checks") or {}, config.get("transforms") or {})
+                if not policy_result.allowed:
+                    stats_inc(task, "failure_count")
+                    remember_fingerprint(session, task.tenant_id, source_fingerprint_key, message.content)
+                    continue
+                rewritten = policy_result.content
                 filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=target, content=rewritten, reject_mentions=True, reject_replies=True)
                 if not filtered.ok:
                     stats_inc(task, "failure_count")
@@ -148,7 +155,9 @@ def build_plan(session: Session, task: Task) -> int:
                 rule_set_id=config.get("rule_set_id"),
                 rule_set_name=str(config.get("rule_set_name") or ""),
                 rule_set_version_id=config.get("rule_set_version_id"),
+                resolved_rule_set_version_id=config.get("resolved_rule_set_version_id") or config.get("rule_set_version_id"),
                 rule_set_version=config.get("rule_set_version"),
+                rule_binding_mode=str(config.get("rule_binding_mode") or ""),
                 rule_trace=_relay_rule_trace(config, source_id, target.id, original, content, account.id),
             ),
         )
@@ -215,8 +224,11 @@ def effective_relay_config(session: Session, task: Task) -> dict[str, Any]:
     config["rule_set_id"] = version.rule_set_id
     config["rule_set_name"] = rule_set.name if rule_set else ""
     config["rule_set_version_id"] = version.id
+    config["resolved_rule_set_version_id"] = version.id
     config["rule_set_version"] = version.version
+    config["rule_binding_mode"] = "fixed_version" if (task.type_config or {}).get("rule_set_version_id") else "follow_current"
     config["filters"] = dict(version.filters or {})
+    config["output_checks"] = dict(version.output_checks or {})
     config["transforms"] = transforms
     config["routing"] = routing
     config["account_strategy"] = account_strategy
@@ -679,6 +691,9 @@ def _bound_rule_version(session: Session, task: Task) -> RuleSetVersion | None:
     if version_id:
         version = session.get(RuleSetVersion, version_id)
         if version and version.tenant_id == task.tenant_id:
+            if version.status == "draft":
+                task.last_error = "绑定的规则版本尚未发布"
+                return None
             return version
         task.last_error = "绑定的规则版本不存在"
         return None
@@ -695,6 +710,9 @@ def _bound_rule_version(session: Session, task: Task) -> RuleSetVersion | None:
     version = session.get(RuleSetVersion, rule_set.active_version_id)
     if not version or version.tenant_id != task.tenant_id or version.rule_set_id != rule_set.id:
         task.last_error = "绑定的活动规则版本不存在"
+        return None
+    if version.status != "published":
+        task.last_error = "绑定的活动规则版本不是已发布状态"
         return None
     return version
 

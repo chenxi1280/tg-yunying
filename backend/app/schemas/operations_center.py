@@ -195,7 +195,11 @@ class RuleCenterSummaryOut(BaseModel):
 
 
 class RuleTestRequest(BaseModel):
+    test_type: str = "group_relay"
+    test_mode: str = "rules_only"
     text: str = ""
+    candidates: list[str] = Field(default_factory=list)
+    context: str = ""
     rule_set_version_id: int | None = None
     source_group_id: int | None = None
     sender_id: str = ""
@@ -217,9 +221,22 @@ class RuleTestRouteOut(BaseModel):
     account_strategy: str = ""
 
 
+class RuleTestCandidateOut(BaseModel):
+    index: int
+    original_text: str
+    passed: bool
+    action: str = "pass"
+    reason: str = ""
+    transformed_text: str = ""
+
+
 class RuleTestOut(BaseModel):
     result: str
+    test_mode: str = "rules_only"
+    is_test_data: bool = True
     hits: list[RuleTestHitOut] = Field(default_factory=list)
+    input_hits: list[str] = Field(default_factory=list)
+    output_candidates: list[RuleTestCandidateOut] = Field(default_factory=list)
     should_block: bool = False
     block_reason: str = ""
     filter_passed: bool = True
@@ -234,7 +251,9 @@ class RuleTestOut(BaseModel):
 
 
 class RuleSetVersionCreate(BaseModel):
+    version_note: str = ""
     filters: dict[str, Any] = Field(default_factory=dict)
+    output_checks: dict[str, Any] = Field(default_factory=dict)
     transforms: dict[str, Any] = Field(default_factory=dict)
     routing: dict[str, Any] = Field(default_factory=dict)
     account_strategy: dict[str, Any] = Field(default_factory=dict)
@@ -245,6 +264,8 @@ class RuleSetVersionCreate(BaseModel):
 class RuleSetCreate(RuleSetVersionCreate):
     name: str = Field(min_length=1, max_length=160)
     description: str = ""
+    task_types: list[str] = Field(default_factory=list)
+    default_policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class RuleSetVersionOut(BaseModel):
@@ -253,7 +274,9 @@ class RuleSetVersionOut(BaseModel):
     rule_set_id: int
     version: int
     status: str
+    version_note: str
     filters: dict[str, Any]
+    output_checks: dict[str, Any]
     transforms: dict[str, Any]
     routing: dict[str, Any]
     account_strategy: dict[str, Any]
@@ -272,8 +295,23 @@ class RuleSetOut(BaseModel):
     name: str
     description: str
     status: str
+    task_types: list[str] = Field(default_factory=list)
+    default_policy: dict[str, Any] = Field(default_factory=dict)
     active_version_id: int | None
     versions: list[RuleSetVersionOut] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class RuleSetBoundTaskOut(BaseModel):
+    id: str
+    name: str
+    type: str
+    status: str
+    binding_mode: str = ""
+    rule_set_id: int | None = None
+    rule_set_version_id: int | None = None
+    resolved_rule_set_version_id: int | None = None
     created_at: str
     updated_at: str
 
@@ -337,7 +375,9 @@ __all__ = [
     "RuleSetOut",
     "RuleSetVersionCreate",
     "RuleSetVersionOut",
+    "RuleSetBoundTaskOut",
     "RuleTestHitOut",
+    "RuleTestCandidateOut",
     "RuleTestOut",
     "RuleTestRequest",
     "RuleTestRouteOut",

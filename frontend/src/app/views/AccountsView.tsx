@@ -55,7 +55,7 @@ export default function AccountsView({
 }: Props) {
   const accountTable = useAntdTableControls<Account>({
     rows: accounts,
-    placeholder: '搜索账号 / username / 手机号 / 分组 / 状态',
+    placeholder: '搜索账号 / username / 手机号 / 分组 / 状态 / 代理',
     search: [
       (account) => [
         account.id,
@@ -67,6 +67,10 @@ export default function AccountsView({
         account.profile_sync_status,
         account.developer_app_name,
         account.developer_app_health_status,
+        account.proxy_name,
+        account.proxy_local_address,
+        account.proxy_status,
+        account.proxy_alert_status,
         account.tg_first_name,
         account.tg_last_name,
       ],
@@ -114,6 +118,9 @@ export default function AccountsView({
           <Typography.Text strong>{account.developer_app_name ? '正常' : '未绑定'}</Typography.Text>
           <Typography.Text type="secondary">{account.developer_app_name ? '登录能力已分配' : '登录时自动准备'}</Typography.Text>
           <StatusBadge status={account.developer_app_health_status ?? '未配置'} label={account.developer_app_health_status === '健康' ? '正常' : account.developer_app_health_status ?? '未配置'} />
+          <Typography.Text type="secondary">{account.proxy_name ? `代理：${account.proxy_name}` : '代理：未绑定'}</Typography.Text>
+          <Typography.Text type="secondary">{account.proxy_local_address || '高频发送建议绑定本地代理'}</Typography.Text>
+          {account.proxy_status && <StatusBadge status={account.proxy_status} label={account.proxy_alert_status ? `${account.proxy_status} / ${account.proxy_alert_status}` : account.proxy_status} />}
         </Space>
       ),
     },
@@ -195,7 +202,7 @@ export default function AccountsView({
         columns={columns}
         dataSource={accountTable.filteredRows}
         pagination={accountTable.pagination}
-        scroll={{ x: 1130 }}
+        scroll={{ x: 1280 }}
         locale={{ emptyText: '暂无 TG 账号。配置开发者应用后，可以通过手机号新增账号并启动真实 TG 登录。' }}
       />
     </Card>

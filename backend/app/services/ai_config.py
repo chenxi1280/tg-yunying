@@ -487,7 +487,7 @@ def create_content_keyword_rule(session: Session, payload: ContentKeywordRuleCre
     )
     session.add(rule)
     session.flush()
-    audit(session, tenant_id=rule.tenant_id, actor=actor, action="新增关键词规则", target_type="content_keyword_rule", target_id=str(rule.id))
+    audit(session, tenant_id=rule.tenant_id, actor=actor, action="新增旧内容过滤规则", target_type="content_keyword_rule", target_id=str(rule.id))
     session.commit()
     session.refresh(rule)
     return rule
@@ -516,7 +516,7 @@ def update_content_keyword_rule(session: Session, rule_id: int, payload: Content
         if field in data and data[field] is not None:
             setattr(rule, field, data[field])
     rule.updated_at = _now()
-    audit(session, tenant_id=rule.tenant_id, actor=actor, action="更新关键词规则", target_type="content_keyword_rule", target_id=str(rule.id))
+    audit(session, tenant_id=rule.tenant_id, actor=actor, action="更新旧内容过滤规则", target_type="content_keyword_rule", target_id=str(rule.id))
     session.commit()
     session.refresh(rule)
     return rule

@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import random
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from difflib import SequenceMatcher
 import re
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, Task, TgGroup
+from app.models import Action, RuleSet, Task, TgGroup
 from app.services._common import _now
 from app.services.account_capacity import available_accounts_by_capacity, next_capacity_window
 from app.services.content_filters import filter_outbound_content, looks_like_generated_template_noise, looks_like_operator_ui_content
 from app.services.group_listeners import collect_group_context, recent_context_messages
+from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 
 from ..account_pool import select_task_accounts
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
@@ -25,10 +26,14 @@ from .common import add_tokens, stats_inc
 
 
 WAITING_NEW_CONTEXT_MESSAGE = "暂无新的真人上下文，等待群内新消息"
+WAITING_IDLE_CONTINUATION_MESSAGE = "持续监听中，等待新消息或空闲续聊间隔"
+DEFAULT_IDLE_CONTINUATION_SECONDS = 300
 
 
 def build_plan(session: Session, task: Task) -> int:
     config = task.type_config or {}
+    rule_version = bound_rule_version(session, task)
+    rule_set = session.get(RuleSet, rule_version.rule_set_id) if rule_version else None
     group = group_from_reference(
         session,
         task.tenant_id,
@@ -69,18 +74,35 @@ def build_plan(session: Session, task: Task) -> int:
         if not fingerprint_exists(session, task.tenant_id, fingerprint_source, _context_fingerprint(row))
     ]
     force_bootstrap_once = bool((task.stats or {}).get("force_bootstrap_once"))
-    if usable_context_rows and not unprocessed_rows and not force_bootstrap_once:
-        _mark_waiting_context(task, config, mode, ramp_ratio, context_mode="waiting_new_context")
-        return 0
-    if not usable_context_rows and _has_generated_before(session, task) and not force_bootstrap_once:
-        _mark_waiting_context(task, config, mode, ramp_ratio, context_mode="waiting_new_context")
-        return 0
+    previous_ai_messages = _recent_ai_messages(session, task, limit=10)
+    idle_continuation = False
+    if not force_bootstrap_once and _should_wait_for_human_context(session, task, usable_context_rows, unprocessed_rows):
+        idle_decision = _idle_continuation_decision(session, task, config)
+        if idle_decision["due"]:
+            idle_continuation = True
+        else:
+            _mark_waiting_context(
+                task,
+                config,
+                mode,
+                ramp_ratio,
+                context_mode="waiting_new_context",
+                next_run_at=idle_decision["next_run_at"],
+            )
+            return 0
     selected, turn_count = _select_cycle_accounts(accounts, config, mode, ramp_ratio, has_context=bool(usable_context_rows))
     history_parts = [f"{row.sender_name}: {row.content}" for row in usable_context_rows[-50:]]
-    if not usable_context_rows:
+    if idle_continuation:
+        history_parts.append(_idle_continuation_history(config, group, previous_ai_messages))
+    elif not usable_context_rows:
         history_parts.append(_bootstrap_history(config, group))
     history = "\n".join(history_parts)
-    previous_ai_messages = _recent_ai_messages(session, task, limit=10)
+    if rule_version:
+        input_result = evaluate_input_filter(history, message_type="text", filters=rule_version.filters or {})
+        if not input_result.passed:
+            task.last_error = f"规则输入过滤跳过：{input_result.reason}"
+            stats_inc(task, "skipped_count")
+            return 0
     topic_thread = _topic_thread_summary(config, group, usable_context_rows, previous_ai_messages)
     topic_plan = _topic_plan_summary(config, group, topic_thread, turn_count)
     account_memories = _recent_account_memories(session, task, [account.id for account in selected], depth=int(config.get("account_memory_depth") or 3))
@@ -95,7 +117,7 @@ def build_plan(session: Session, task: Task) -> int:
         stats = dict(task.stats or {})
         stats["current_mode"] = mode
         stats["ramp_ratio"] = ramp_ratio
-        stats["context_mode"] = "history" if usable_context_rows else "bootstrap"
+        stats["context_mode"] = _context_mode(usable_context_rows, idle_continuation)
         task.stats = stats
         return 0
     contents = [content for content in contents if not _looks_like_generated_noise(content)]
@@ -110,6 +132,12 @@ def build_plan(session: Session, task: Task) -> int:
     context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
     created = 0
     for index, content in enumerate(contents):
+        if rule_version:
+            policy_result = apply_output_policy(content, rule_version.output_checks or {}, rule_version.transforms or {})
+            if not policy_result.allowed:
+                stats_inc(task, "failure_count")
+                continue
+            content = policy_result.content
         planned_at = times[index]
         available = available_accounts_by_capacity(session, tenant_id=task.tenant_id, accounts=selected, scheduled_at=planned_at)
         account = available[index % len(available)] if available else selected[index % len(selected)]
@@ -155,6 +183,12 @@ def build_plan(session: Session, task: Task) -> int:
                 ai_generation_count=len(contents),
                 ai_generation_context_count=len(context_message_ids),
                 ai_generation_memory_count=len(account_memories),
+                rule_set_id=rule_version.rule_set_id if rule_version else None,
+                rule_set_name=rule_set.name if rule_set else "",
+                rule_set_version_id=rule_version.id if rule_version else None,
+                resolved_rule_set_version_id=rule_version.id if rule_version else None,
+                rule_set_version=rule_version.version if rule_version else None,
+                rule_binding_mode="fixed_version" if rule_version and config.get("rule_set_version_id") else "follow_current" if rule_version else "",
             ),
         )
         created += 1
@@ -163,7 +197,8 @@ def build_plan(session: Session, task: Task) -> int:
     stats = dict(task.stats or {})
     stats["current_mode"] = mode
     stats["ramp_ratio"] = ramp_ratio
-    stats["context_mode"] = "history" if usable_context_rows else "bootstrap"
+    stats["context_mode"] = _context_mode(usable_context_rows, idle_continuation)
+    stats.pop("idle_continuation_next_run_at", None)
     stats.pop("force_bootstrap_once", None)
     task.last_error = ""
     task.stats = stats
@@ -171,18 +206,71 @@ def build_plan(session: Session, task: Task) -> int:
     return created
 
 
-def _mark_waiting_context(task: Task, config: dict, mode: str | None = None, ramp_ratio: float | None = None, *, context_mode: str) -> None:
+def _mark_waiting_context(
+    task: Task,
+    config: dict,
+    mode: str | None = None,
+    ramp_ratio: float | None = None,
+    *,
+    context_mode: str,
+    next_run_at: datetime | None = None,
+) -> None:
     resolved_mode, resolved_ratio = (mode, ramp_ratio) if mode and ramp_ratio is not None else ai_cycle_mode(config, task.scheduled_start)
     stats = dict(task.stats or {})
     stats["current_mode"] = resolved_mode
     stats["ramp_ratio"] = resolved_ratio
     stats["context_mode"] = context_mode
-    task.last_error = WAITING_NEW_CONTEXT_MESSAGE
+    if next_run_at:
+        stats["idle_continuation_next_run_at"] = _naive_datetime(next_run_at).isoformat()
+        task.next_run_at = _naive_datetime(next_run_at)
+        task.last_error = WAITING_IDLE_CONTINUATION_MESSAGE
+    else:
+        stats.pop("idle_continuation_next_run_at", None)
+        task.last_error = WAITING_NEW_CONTEXT_MESSAGE
     task.stats = stats
+
+
+def _should_wait_for_human_context(session: Session, task: Task, usable_context_rows: list, unprocessed_rows: list) -> bool:
+    return (bool(usable_context_rows) and not unprocessed_rows) or (not usable_context_rows and _has_generated_before(session, task))
 
 
 def _has_generated_before(session: Session, task: Task) -> bool:
     return bool(session.scalar(select(Action.id).where(Action.task_id == task.id, Action.action_type == "send_message").limit(1)))
+
+
+def _idle_continuation_decision(session: Session, task: Task, config: dict) -> dict[str, datetime | bool | None]:
+    if config.get("idle_continuation_enabled") is False:
+        return {"due": False, "next_run_at": None}
+    last_success_at = _last_successful_ai_action_at(session, task)
+    if not last_success_at:
+        return {"due": False, "next_run_at": None}
+    next_run_at = _naive_datetime(last_success_at) + timedelta(seconds=_idle_continuation_seconds(config))
+    return {"due": _now() >= next_run_at, "next_run_at": next_run_at}
+
+
+def _idle_continuation_seconds(config: dict) -> int:
+    try:
+        value = int(config.get("idle_continuation_seconds") or DEFAULT_IDLE_CONTINUATION_SECONDS)
+    except (TypeError, ValueError):
+        value = DEFAULT_IDLE_CONTINUATION_SECONDS
+    return max(30, value)
+
+
+def _last_successful_ai_action_at(session: Session, task: Task) -> datetime | None:
+    action = session.scalar(
+        select(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status == "success",
+        )
+        .order_by(Action.executed_at.desc().nullslast(), Action.scheduled_at.desc(), Action.created_at.desc())
+        .limit(1)
+    )
+    if not action:
+        return None
+    return _naive_datetime(action.executed_at or action.scheduled_at or action.created_at)
 
 
 def _select_cycle_accounts(accounts: list, config: dict, mode: str, ramp_ratio: float, *, has_context: bool) -> tuple[list, int]:
@@ -209,6 +297,25 @@ def _bootstrap_history(config: dict, group: TgGroup) -> str:
     if not topic:
         topic = "围绕群内日常交流自然开场，轻松抛出一个大家容易接上的话题"
     return f"当前群暂无可用历史消息。请以“{topic}”为方向，生成自然开场，不要提到系统、任务或 AI。"
+
+
+def _idle_continuation_history(config: dict, group: TgGroup, previous_ai_messages: list[str]) -> str:
+    topic = str(config.get("topic_hint") or group.topic_direction or "群聊日常活跃").strip()
+    recent_ai = " / ".join(_clean_topic_text(text) for text in previous_ai_messages[-3:])
+    recent_ai = recent_ai.strip(" /")
+    parts = [
+        f"群内暂时没有新的真人消息。请围绕“{topic}”自然续聊一轮，像真实群友一样轻量推进话题。",
+        "必须避免重复上一轮表达，不要提到系统、任务或 AI。",
+    ]
+    if recent_ai:
+        parts.append(f"上一轮 AI 已说：{recent_ai}。请换一个角度承接。")
+    return "\n".join(parts)
+
+
+def _context_mode(context_rows: list, idle_continuation: bool) -> str:
+    if idle_continuation:
+        return "idle_continuation"
+    return "history" if context_rows else "bootstrap"
 
 
 def _topic_thread_summary(config: dict, group: TgGroup, context_rows: list, previous_ai_messages: list[str]) -> str:
@@ -280,6 +387,12 @@ def _parse_time(value: str, fallback: time) -> time:
         return time(hour=hour, minute=minute)
     except (TypeError, ValueError):
         return fallback
+
+
+def _naive_datetime(value: datetime) -> datetime:
+    if value and getattr(value, "tzinfo", None):
+        return value.replace(tzinfo=None)
+    return value
 
 
 def _context_fingerprint(row) -> str:

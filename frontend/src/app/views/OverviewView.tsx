@@ -21,7 +21,7 @@ export default function OverviewView({ overview, runtime }: Props) {
         <StatCard label="待执行项" value={overview.queue.pending_actions ?? overview.queue.queued ?? 0} detail="pending/executing 动作" icon={<Activity size={22} />} />
         <StatCard label="失败任务" value={overview.queue.failed_tasks ?? 0} detail={`失败执行项 ${overview.queue.failed_actions ?? overview.queue.failed ?? 0}`} icon={<ShieldAlert size={22} />} />
         <StatCard label="监听异常" value={overview.queue.listener_errors ?? 0} detail="群/频道监听错误" icon={<Database size={22} />} />
-        <StatCard label="启用规则" value={overview.totals.rules ?? 0} detail="关键词/敏感词规则" icon={<CheckCircle2 size={22} />} />
+        <StatCard label="启用规则" value={overview.totals.rules ?? 0} detail="规则条件与敏感表达" icon={<CheckCircle2 size={22} />} />
       </div>
       <Card className="panel workflow-panel" title="新版运营闭环" extra={<Typography.Text type="secondary">账号接入 &gt; 目标确认 &gt; 规则配置 &gt; 任务执行 &gt; 数据复盘 &gt; 审计留痕</Typography.Text>}>
         <Steps

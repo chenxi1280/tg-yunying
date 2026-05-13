@@ -50,6 +50,7 @@ class TgAccount(Base):
     phone_masked: Mapped[str] = mapped_column(String(60))
     phone_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     developer_app_id: Mapped[int | None] = mapped_column(ForeignKey("telegram_developer_apps.id"), nullable=True)
+    proxy_id: Mapped[int | None] = mapped_column(ForeignKey("account_proxies.id"), nullable=True)
     developer_app_version: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(30), default=AccountStatus.PENDING_LOGIN.value)
     health_score: Mapped[float] = mapped_column(Float, default=100)
@@ -64,6 +65,7 @@ class TgAccount(Base):
     groups: Mapped[list[TgGroupAccount]] = relationship(back_populates="account")
     contacts: Mapped[list[TgContact]] = relationship(back_populates="account")
     developer_app: Mapped[TelegramDeveloperApp | None] = relationship(back_populates="accounts")
+    proxy: Mapped[AccountProxy | None] = relationship(back_populates="accounts")
     pool: Mapped[AccountPool | None] = relationship(back_populates="accounts")
 
     @property
@@ -77,6 +79,22 @@ class TgAccount(Base):
     @property
     def developer_app_health_status(self) -> str | None:
         return self.developer_app.health_status if self.developer_app else None
+
+    @property
+    def proxy_name(self) -> str | None:
+        return self.proxy.name if self.proxy else None
+
+    @property
+    def proxy_local_address(self) -> str | None:
+        return self.proxy.local_address if self.proxy else None
+
+    @property
+    def proxy_status(self) -> str | None:
+        return self.proxy.status if self.proxy else None
+
+    @property
+    def proxy_alert_status(self) -> str | None:
+        return self.proxy.alert_status if self.proxy else None
 
     @property
     def avatar_preview_url(self) -> str:
