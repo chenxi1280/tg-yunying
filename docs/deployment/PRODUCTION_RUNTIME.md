@@ -25,14 +25,14 @@ Repository secrets:
 Repository variables:
 
 - `SILICON_VALLEY_PRODUCTION_BASE_DIR`，默认 `/data/tgyunying`
-- `SILICON_VALLEY_RELEASE_BRANCHES`，默认 `release-yunying`
+- `SILICON_VALLEY_RELEASE_BRANCHES`，默认 `release`
 - `TGYUNYING_WEB_HOST`，例如 `tgyunying.example.com`
 - `TGYUNYING_FRONTEND_STATIC_BASE_DIR`，例如 `/data/infra/www/tgyunying.example.com`
 - `POST_DEPLOY_CHECKS_ENABLED`，默认 `true`
 - `TGYUNYING_CHECK_HOST_NGINX`，默认 `true`
 - `TGYUNYING_CHECK_PUBLIC_URLS`，默认 `true`
 
-正式自动部署只监听 `release-yunying` 分支，也保留 `workflow_dispatch` 手动触发。
+正式自动部署只监听 `release` 分支，也保留 `workflow_dispatch` 手动触发。
 
 ## 首次服务器准备
 

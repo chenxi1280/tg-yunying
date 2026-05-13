@@ -4,7 +4,7 @@ name: Deploy Production
   workflow_dispatch:
   push:
     branches:
-      - release-yunying
+      - release
 
 concurrency:
   group: deploy-production
@@ -207,7 +207,7 @@ jobs:
         run: |
           set -euo pipefail
           BASE_DIR="${SILICON_VALLEY_PRODUCTION_BASE_DIR:-/data/tgyunying}"
-          BRANCHES="${SILICON_VALLEY_RELEASE_BRANCHES:-release-yunying}"
+          BRANCHES="${SILICON_VALLEY_RELEASE_BRANCHES:-release}"
           bash deploy/release.sh \
             --host silicon-valley-production-server \
             --user "${DEPLOY_USER}" \

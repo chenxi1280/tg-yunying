@@ -8,7 +8,7 @@ BASE_DIR="${BASE_DIR:-/data/tgyunying}"
 REF_NAME="${REF_NAME:-HEAD}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 KEEP_ARCHIVE="${KEEP_ARCHIVE:-0}"
-EXPECTED_BRANCHES="${EXPECTED_BRANCHES:-release-yunying}"
+EXPECTED_BRANCHES="${EXPECTED_BRANCHES:-release}"
 RELEASE_SSH_ATTEMPTS="${RELEASE_SSH_ATTEMPTS:-3}"
 RELEASE_SSH_RETRY_DELAY="${RELEASE_SSH_RETRY_DELAY:-10}"
 IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-ghcr.io/chenxi1280}"
@@ -31,7 +31,7 @@ Options:
   --base-dir DIR        Remote base directory, default /data/tgyunying
   --ref REF             Git ref to release, default HEAD
   --allow-dirty         Allow releasing with local uncommitted changes
-  --branch-list "..."   Allowed release branches, default "release-yunying"
+  --branch-list "..."   Allowed release branches, default "release"
   --ssh-opt OPT         Extra ssh/scp option, can be repeated
   -h, --help            Show this help
 EOF
