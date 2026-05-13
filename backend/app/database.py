@@ -20,6 +20,10 @@ engine = create_engine(DATABASE_URL, connect_args=connect_args, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
+def _escape_configparser_value(value: str) -> str:
+    return value.replace("%", "%%")
+
+
 def get_session() -> Generator[Session, None, None]:
     session = SessionLocal()
     try:
@@ -35,7 +39,7 @@ def run_migrations() -> None:
 
     alembic_cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     alembic_cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
-    alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
+    alembic_cfg.set_main_option("sqlalchemy.url", _escape_configparser_value(DATABASE_URL))
     command.upgrade(alembic_cfg, "head")
 
 
