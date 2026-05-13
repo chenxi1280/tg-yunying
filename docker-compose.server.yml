@@ -1,0 +1,66 @@
+name: tgyunying
+
+x-backend-env: &backend-env
+  APP_ENV: ${APP_ENV:-production}
+  TZ: ${TZ:-Asia/Shanghai}
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+  REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
+  QUEUE_BACKEND: ${QUEUE_BACKEND:-redis}
+  SESSION_SECRET_KEY: ${SESSION_SECRET_KEY:?SESSION_SECRET_KEY is required}
+  CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required}
+  TG_GATEWAY_MODE: ${TG_GATEWAY_MODE:-telethon}
+  TG_API_ID: ${TG_API_ID:-}
+  TG_API_HASH: ${TG_API_HASH:-}
+  ADMIN_BOOTSTRAP_USERNAME: ${ADMIN_BOOTSTRAP_USERNAME:-admin}
+  ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:?ADMIN_BOOTSTRAP_PASSWORD is required}
+  ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-}
+  AUTO_MIGRATE_ON_START: ${AUTO_MIGRATE_ON_START:-false}
+  SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+  SEED_TG_DEVELOPER_APP_FROM_ENV: ${SEED_TG_DEVELOPER_APP_FROM_ENV:-false}
+  ENABLE_EMBEDDED_WORKER: ${ENABLE_EMBEDDED_WORKER:-false}
+  ENABLE_LEGACY_CAMPAIGN_WORKER: ${ENABLE_LEGACY_CAMPAIGN_WORKER:-false}
+  ENABLE_LEGACY_OPERATION_TASK_WORKER: ${ENABLE_LEGACY_OPERATION_TASK_WORKER:-false}
+  ENABLE_LEGACY_CAMPAIGN_ROUTES: ${ENABLE_LEGACY_CAMPAIGN_ROUTES:-false}
+  ENABLE_LEGACY_OPERATION_TASK_ROUTES: ${ENABLE_LEGACY_OPERATION_TASK_ROUTES:-false}
+  ENABLE_LEGACY_REVIEW_ROUTES: ${ENABLE_LEGACY_REVIEW_ROUTES:-false}
+  MEDIA_ROOT: /app/media
+
+services:
+  backend:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-backend
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+    ports:
+      - "${TGYUNYING_BACKEND_BIND_HOST:-127.0.0.1}:${TGYUNYING_BACKEND_HOST_PORT:-18090}:8000"
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 8
+    networks:
+      - infra_default
+
+  worker:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - infra_default
+
+networks:
+  infra_default:
+    name: ${INFRA_NETWORK_NAME:-infra_default}
+    external: true
