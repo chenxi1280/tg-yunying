@@ -1,9 +1,9 @@
 import React from 'react';
 import { Database } from 'lucide-react';
-import { Button, Card, Descriptions, Drawer, Input, Select, Space, Table, Typography } from 'antd';
+import { Button, Card, Descriptions, Input, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { AuditFilters, AuditLog } from '../types';
-import { StatusBadge, useAntdTableControls } from '../components/shared';
+import { DetailModal, StatusBadge, useAntdTableControls } from '../components/shared';
 import { API_BASE } from '../../shared/api/client';
 import { formatBeijingDateTime } from '../time';
 
@@ -143,7 +143,7 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh }: P
           locale={{ emptyText: '暂无审计记录。配置、登录、任务、规则、发送和账号池操作会写入这里。' }}
         />
       </Card>
-      <Drawer title={selectedAudit ? `审计详情 #${selectedAudit.id}` : '审计详情'} open={Boolean(selectedAudit)} size="large" onClose={() => setSelectedAudit(null)}>
+      <DetailModal title={selectedAudit ? `审计详情 #${selectedAudit.id}` : '审计详情'} open={Boolean(selectedAudit)} size="medium" onClose={() => setSelectedAudit(null)}>
         {selectedAudit && (
           <Descriptions
             bordered
@@ -161,7 +161,7 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh }: P
             ]}
           />
         )}
-      </Drawer>
+      </DetailModal>
     </>
   );
 }

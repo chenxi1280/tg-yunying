@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Card, Empty, Input, Segmented, Space, Statistic, Tag, Typography } from 'antd';
+import { Button, Card, Empty, Input, Modal, Segmented, Space, Statistic, Tag, Typography } from 'antd';
 import type { TablePaginationConfig } from 'antd/es/table';
 import type { BadgeTone } from '../types';
 import { formatBeijingDateTime } from '../time';
@@ -155,6 +155,53 @@ export function FormActions({ submitLabel = '保存', onCancel, onSubmit, disabl
       <Button onClick={onCancel} disabled={loading}>取消</Button>
       <Button type="primary" disabled={disabled} loading={loading} onClick={onSubmit}>{submitLabel}</Button>
     </Space>
+  );
+}
+
+const detailModalWidth = {
+  small: 560,
+  medium: 760,
+  large: 980,
+  wide: 1120,
+} as const;
+
+export function DetailModal({
+  title,
+  open,
+  onClose,
+  children,
+  extra,
+  size = 'large',
+  width,
+}: {
+  title: React.ReactNode;
+  open: boolean;
+  onClose: () => void;
+  children: React.ReactNode;
+  extra?: React.ReactNode;
+  size?: keyof typeof detailModalWidth;
+  width?: number;
+}) {
+  return (
+    <Modal
+      className={`tg-modal detail-modal ${size}`}
+      title={(
+        <div className="modal-title-row">
+          <span>{title}</span>
+          {extra && <div className="modal-title-actions">{extra}</div>}
+        </div>
+      )}
+      open={open}
+      width={width ?? detailModalWidth[size]}
+      footer={null}
+      destroyOnHidden
+      centered
+      onCancel={onClose}
+    >
+      <div className="detail-modal-body">
+        {children}
+      </div>
+    </Modal>
   );
 }
 

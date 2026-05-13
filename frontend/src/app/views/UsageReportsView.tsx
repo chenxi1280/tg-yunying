@@ -1,10 +1,10 @@
 import React from 'react';
 import { Activity, Bot, CheckCircle2, Database, RefreshCcw } from 'lucide-react';
-import { Alert, Button, Card, Drawer, Input, InputNumber, List, Select, Space, Switch, Table, Typography } from 'antd';
+import { Alert, Button, Card, Input, InputNumber, List, Select, Space, Switch, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from '../../shared/api/client';
 import type { ContentKeywordRule, CurrentUser, MetricBucket, OperationMetricDetail, OperationMetricsSummary, SchedulingSetting, UsageLedger, UsageSummary } from '../types';
-import { StatCard, StatusBadge, useAntdTableControls } from '../components/shared';
+import { DetailModal, StatCard, StatusBadge, useAntdTableControls } from '../components/shared';
 import { formatBeijingDateTime } from '../time';
 
 interface Props {
@@ -304,7 +304,7 @@ export default function UsageReportsView({ usageLedgers, usageSummary, currentUs
           locale={{ emptyText: '暂无调用明细。' }}
         />
       </Card>
-      <Drawer title="全局风控策略" open={policyOpen} width={720} onClose={() => setPolicyOpen(false)} extra={<Button type="primary" loading={policySaving} onClick={saveRiskPolicy}>保存策略</Button>}>
+      <DetailModal title="全局风控策略" open={policyOpen} size="medium" onClose={() => setPolicyOpen(false)} extra={<Button type="primary" loading={policySaving} onClick={saveRiskPolicy}>保存策略</Button>}>
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <Alert type="info" showIcon message="这里编辑的是任务和消息发送共用的账号风控；账号上限填 0 表示不限制，达到上限后优先转派可用账号。" />
           <Card size="small" title="静默时段与默认失败策略">
@@ -346,7 +346,7 @@ export default function UsageReportsView({ usageLedgers, usageSummary, currentUs
           </Card>
           {schedulingSetting && <Typography.Text type="secondary">当前配置更新时间以服务端记录为准，保存后会刷新全局风控指标。</Typography.Text>}
         </Space>
-      </Drawer>
+      </DetailModal>
     </section>
   );
 }

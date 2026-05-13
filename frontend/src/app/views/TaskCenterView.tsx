@@ -1,10 +1,10 @@
 import React from 'react';
-import { Alert, Button, Card, Checkbox, Collapse, Descriptions, Drawer, Form, Input, InputNumber, Modal, Select, Space, Steps, Table, Typography } from 'antd';
+import { Alert, Button, Card, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Steps, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, RefreshCcw } from 'lucide-react';
 import { api, ApiError } from '../../shared/api/client';
 import type { Account, AccountPool, ChannelCapacityCheck, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType } from '../types';
-import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
+import { DetailModal, StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
 import { formatBeijingDateTime, fromBeijingDateTimeLocalValue, toBeijingDateTimeLocalValue } from '../time';
 
 const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
@@ -1053,7 +1053,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         </Form>
       </Modal>
 
-      <Drawer title={detail?.task.name ?? '任务详情'} open={Boolean(detail)} width={1120} extra={detail && <Space><Button loading={supportLoading} onClick={() => void openEditTask(detail.task)}>编辑任务</Button><Button onClick={() => loadDetail(detail.task)}>刷新</Button></Space>} onClose={() => setDetail(null)}>
+      <DetailModal title={detail?.task.name ?? '任务详情'} open={Boolean(detail)} size="wide" extra={detail && <Space><Button loading={supportLoading} onClick={() => void openEditTask(detail.task)}>编辑任务</Button><Button onClick={() => loadDetail(detail.task)}>刷新</Button></Space>} onClose={() => setDetail(null)}>
         {detail && (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Descriptions
@@ -1192,7 +1192,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
             </Space>
           </Space>
         )}
-      </Drawer>
+      </DetailModal>
     </>
   );
 }

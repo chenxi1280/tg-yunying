@@ -640,18 +640,33 @@ def _operation_target_task_capabilities(target: OperationTarget, linked_group: T
     return capabilities
 
 
-def _group_accounts_for_detail(session: Session, group: TgGroup) -> list[dict]:
-    links = list(
+def _group_accounts_for_detail(session: Session, group: TgGroup, links: list[TgGroupAccount] | None = None) -> list[dict]:
+    group_links = links
+    if group_links is None:
+        group_links = list(
+            session.scalars(
+                select(TgGroupAccount)
+                .where(TgGroupAccount.tenant_id == group.tenant_id, TgGroupAccount.group_id == group.id)
+                .order_by(TgGroupAccount.id.asc())
+            )
+        )
+    account_ids = [link.account_id for link in group_links]
+    if not account_ids:
+        return []
+    account_rows = list(
         session.scalars(
-            select(TgGroupAccount)
-            .where(TgGroupAccount.tenant_id == group.tenant_id, TgGroupAccount.group_id == group.id)
-            .order_by(TgGroupAccount.id.asc())
+            select(TgAccount).where(
+                TgAccount.tenant_id == group.tenant_id,
+                TgAccount.id.in_(account_ids),
+                TgAccount.deleted_at.is_(None),
+            )
         )
     )
+    accounts_by_id = {account.id: account for account in account_rows}
     accounts: list[dict] = []
-    for link in links:
-        account = session.get(TgAccount, link.account_id)
-        if not account or account.deleted_at is not None:
+    for link in group_links:
+        account = accounts_by_id.get(link.account_id)
+        if not account:
             continue
         accounts.append(
             {
@@ -809,7 +824,7 @@ def operation_target_detail(session: Session, tenant_id: int, target_id: int, *,
         if linked_group
         else []
     )
-    accounts = _group_accounts_for_detail(session, linked_group) if linked_group else []
+    accounts = _group_accounts_for_detail(session, linked_group, group_links) if linked_group else []
     group_messages = _group_messages_for_detail(session, linked_group) if linked_group else []
     channel_messages = filter_channel_messages(session, tenant_id, target.id) if target.target_type == "channel" else []
     channel_comments = filter_channel_message_comments(session, tenant_id, target.id) if target.target_type == "channel" else []

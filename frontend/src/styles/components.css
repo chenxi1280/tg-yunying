@@ -167,6 +167,35 @@
   justify-content: flex-end;
 }
 
+.modal-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.modal-title-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-title-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding-right: 28px;
+}
+
+.detail-modal-body {
+  max-height: min(76vh, 760px);
+  overflow: auto;
+  padding-right: 4px;
+}
+
 .account-risk-card .ant-card-body,
 .verification-code-card {
   display: grid;

@@ -1,10 +1,10 @@
 import React from 'react';
-import { Alert, App as AntdApp, Button, Card, Descriptions, Drawer, Empty, Form, Input, InputNumber, List, Modal, Select, Space, Switch, Table, Tag, Typography } from 'antd';
+import { Alert, App as AntdApp, Button, Card, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Select, Space, Switch, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { MessageSquareText, RefreshCcw } from 'lucide-react';
 import { api, ApiError } from '../../shared/api/client';
 import type { ChannelMessage, ChannelMessageCommentSync, OperationTarget, OperationTargetDetail, OperationTargetMessageSync, OperationTargetsSync, TaskCenterTaskType } from '../types';
-import { StatusBadge, useAntdTableControls } from '../components/shared';
+import { DetailModal, StatusBadge, useAntdTableControls } from '../components/shared';
 import { formatBeijingDateTime } from '../time';
 
 type Props = {
@@ -397,10 +397,10 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
         </Form>
       </Modal>
 
-      <Drawer
+      <DetailModal
         title={detailTarget?.title ?? '目标详情'}
         open={detailOpen}
-        width={980}
+        size="large"
         extra={detailTarget && <Button icon={<RefreshCcw size={16} />} loading={syncing || detailLoading} onClick={() => syncTargetMessages(detailTarget)}>同步最新消息</Button>}
         onClose={closeDetail}
       >
@@ -571,7 +571,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
         ) : (
           <Card loading={detailLoading}>正在读取目标详情</Card>
         )}
-      </Drawer>
+      </DetailModal>
     </>
   );
 }

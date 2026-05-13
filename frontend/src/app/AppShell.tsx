@@ -32,6 +32,22 @@ import { api } from '../shared/api/client';
 
 const { Header, Sider, Content } = Layout;
 
+type ShellNavItem = [string, string, React.ReactNode];
+
+const SHELL_NAV_ITEMS: ShellNavItem[] = [
+  ['overview', '运营概览', <LayoutDashboard size={18} />],
+  ['accounts', 'TG账号管理', <Smartphone size={18} />],
+  ['targetManagement', '运营目标', <Users size={18} />],
+  ['messageSending', '消息发送', <MessageSquareText size={18} />],
+  ['taskManagement', '任务中心', <Activity size={18} />],
+  ['listenerCenter', '监听中心', <RefreshCcw size={18} />],
+  ['ruleCenter', '规则中心', <ShieldAlert size={18} />],
+  ['archives', '归档中心', <Database size={18} />],
+  ['usageReports', '运营数据', <Activity size={18} />],
+  ['systemConfig', '系统设置', <Database size={18} />],
+  ['audits', '审计记录', <LockKeyhole size={18} />],
+];
+
 function noticeMessageType(notice: string): 'success' | 'error' | 'warning' | 'info' {
   if (/失败|异常|错误|过期|未连接|不能|请先|需先/.test(notice)) return 'error';
   if (/等待|扫码|验证码|二步验证|确认|排队|重试/.test(notice)) return 'warning';
@@ -96,20 +112,7 @@ function AppShell() {
     accountName, groupName,
   } = ctx;
 
-  const navCandidates: Array<[string, string, React.ReactNode]> = [
-    ['overview', '运营概览', <LayoutDashboard size={18} />],
-    ['accounts', 'TG账号管理', <Smartphone size={18} />],
-    ['targetManagement', '运营目标', <Users size={18} />],
-    ['messageSending', '消息发送', <MessageSquareText size={18} />],
-    ['taskManagement', '任务中心', <Activity size={18} />],
-    ['listenerCenter', '监听中心', <RefreshCcw size={18} />],
-    ['ruleCenter', '规则中心', <ShieldAlert size={18} />],
-    ['archives', '归档中心', <Database size={18} />],
-    ['usageReports', '运营数据', <Activity size={18} />],
-    ['systemConfig', '系统设置', <Database size={18} />],
-    ['audits', '审计记录', <LockKeyhole size={18} />],
-  ];
-  const nav = navCandidates;
+  const nav = SHELL_NAV_ITEMS;
 
   React.useEffect(() => {
     if (!notice) return;
