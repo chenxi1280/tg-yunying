@@ -3,7 +3,7 @@ import { Alert, Button, Card, Checkbox, Collapse, Descriptions, Form, Input, Inp
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, RefreshCcw } from 'lucide-react';
 import { api, ApiError } from '../../shared/api/client';
-import type { Account, AccountPool, ChannelCapacityCheck, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType } from '../types';
+import type { Account, AccountPool, ChannelCapacityCheck, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType } from '../types';
 import { DetailModal, StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
 import { formatBeijingDateTime, fromBeijingDateTimeLocalValue, toBeijingDateTimeLocalValue } from '../time';
 
@@ -84,6 +84,10 @@ function parseKeyValueMap(value?: string | Record<string, string>): Record<strin
 
 function formatKeyValueMap(value?: Record<string, string>): string {
   return value ? Object.entries(value).map(([key, role]) => `${key}=${role}`).join('\n') : '';
+}
+
+function normalizePromptTemplateType(value?: string): string {
+  return (value ?? '').replace(/\s+/g, '');
 }
 
 function csvNumbers(value?: Array<number | string> | string | null): number[] {
@@ -198,6 +202,7 @@ function typeInitialValues(type: TaskCenterTaskType, setting?: SchedulingSetting
       idle_continuation_seconds: 300,
       account_memory_depth: 3,
       account_personas: '',
+      slang_prompt_template_id: null,
       tone: 'auto',
       language: 'zh-CN',
     };
@@ -248,7 +253,7 @@ function initialValuesForType(type: TaskCenterTaskType, setting?: SchedulingSett
 
 function defaultRuleSelection(ruleSets: RuleSet[], taskType: TaskCenterTaskType): { rule_set_id: number; rule_set_version_id: number } | null {
   const ruleSet = ruleSets.find((item) => (item.task_types ?? []).includes(taskType))
-    ?? (taskType === 'group_relay' ? ruleSets.find((item) => item.name === '默认转发监听过滤规则') : null)
+    ?? (taskType === 'group_relay' ? ruleSets.find((item) => item.name === '默认运营规则集' || item.name === '默认转发监听过滤规则') : null)
     ?? ruleSets[0];
   if (!ruleSet) return null;
   const version = ruleSet.versions.find((item) => item.id === ruleSet.active_version_id && item.status === 'published')
@@ -257,7 +262,17 @@ function defaultRuleSelection(ruleSets: RuleSet[], taskType: TaskCenterTaskType)
   return { rule_set_id: ruleSet.id, rule_set_version_id: version.id };
 }
 
-export default function TaskCenterView({ accounts, accountPools, prefill }: { accounts: Account[]; accountPools: AccountPool[]; prefill?: TaskCenterPrefill | null }) {
+export default function TaskCenterView({
+  accounts,
+  accountPools,
+  promptTemplates,
+  prefill,
+}: {
+  accounts: Account[];
+  accountPools: AccountPool[];
+  promptTemplates: PromptTemplate[];
+  prefill?: TaskCenterPrefill | null;
+}) {
   const [tasks, setTasks] = React.useState<TaskCenterTask[]>([]);
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
   const [messages, setMessages] = React.useState<ChannelMessage[]>([]);
@@ -290,6 +305,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
   const targetChannelId = Form.useWatch('target_channel_id', form);
   const channelTargets = targets.filter((target) => target.target_type === 'channel');
   const groupTargets = targets.filter((target) => target.target_type === 'group' && target.linked_group_id);
+  const slangTemplates = promptTemplates.filter((template) => normalizePromptTemplateType(template.template_type) === 'AI黑话词表' && template.is_active);
 
   async function load() {
     setLoading(true);
@@ -459,6 +475,8 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         ? config.source_groups.map((item: any) => item?.operation_target_id).filter(Boolean)
         : [],
       account_personas: formatKeyValueMap(config.account_personas),
+      slang_terms: formatKeyValueMap(config.slang_terms),
+      slang_prompt_template_id: config.slang_prompt_template_id ?? null,
       allowed_reactions: Array.isArray(config.allowed_reactions) ? config.allowed_reactions.join(',') : config.allowed_reactions,
       reply_to_message_ids: Array.isArray(config.reply_to_message_ids) ? config.reply_to_message_ids : csvNumbers(config.reply_to_message_ids),
       monitor_account_ids: config.monitor_account_ids ?? [],
@@ -564,6 +582,8 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         chat_history_depth: values.chat_history_depth ?? 50,
         ai_model: values.ai_model ?? '',
         system_prompt_override: values.system_prompt_override ?? '',
+        slang_prompt_template_id: values.slang_prompt_template_id ?? null,
+        slang_terms: parseKeyValueMap(values.slang_terms),
         tone: values.tone ?? 'auto',
         language: values.language ?? 'zh-CN',
         max_message_length: values.max_message_length ?? null,
@@ -645,7 +665,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
     };
     if (type === 'group_ai_chat') {
       const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
-      return { ...base, target_operation_target_id: values.target_operation_target_id ?? null, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, target_group_name: target?.title ?? '', topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, participation_jitter: values.participation_jitter ?? 0.5, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, account_personas: parseKeyValueMap(values.account_personas), account_memory_depth: values.account_memory_depth ?? 3, messages_per_round_mode: values.messages_per_round_mode ?? 'auto', messages_per_round: values.messages_per_round ?? 1, history_fetch_account_id: values.history_fetch_account_id ?? null, idle_continuation_enabled: values.idle_continuation_enabled ?? true, idle_continuation_seconds: values.idle_continuation_seconds ?? 300, silent_mode_enabled: values.silent_mode_enabled ?? true, silent_start: values.silent_start ?? '23:00', silent_end: values.silent_end ?? '08:00', silent_max_accounts: values.silent_max_accounts ?? 5, silent_messages_per_round: values.silent_messages_per_round ?? 1, ramp_up_minutes: values.ramp_up_minutes ?? 60, ramp_start_ratio: values.ramp_start_ratio ?? 0.3, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
+      return { ...base, target_operation_target_id: values.target_operation_target_id ?? null, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, target_group_name: target?.title ?? '', topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', slang_prompt_template_id: values.slang_prompt_template_id ?? null, slang_terms: parseKeyValueMap(values.slang_terms), tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, participation_jitter: values.participation_jitter ?? 0.5, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, account_personas: parseKeyValueMap(values.account_personas), account_memory_depth: values.account_memory_depth ?? 3, messages_per_round_mode: values.messages_per_round_mode ?? 'auto', messages_per_round: values.messages_per_round ?? 1, history_fetch_account_id: values.history_fetch_account_id ?? null, idle_continuation_enabled: values.idle_continuation_enabled ?? true, idle_continuation_seconds: values.idle_continuation_seconds ?? 300, silent_mode_enabled: values.silent_mode_enabled ?? true, silent_start: values.silent_start ?? '23:00', silent_end: values.silent_end ?? '08:00', silent_max_accounts: values.silent_max_accounts ?? 5, silent_messages_per_round: values.silent_messages_per_round ?? 1, ramp_up_minutes: values.ramp_up_minutes ?? 60, ramp_start_ratio: values.ramp_start_ratio ?? 0.3, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
     }
     if (type === 'group_relay') {
       const sourceTargetIds = csvNumbers(values.source_operation_target_ids);
@@ -1023,7 +1043,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
         <Form form={form} layout="vertical" initialValues={initialValuesForType(taskType, schedulingSetting)}>
           {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
           {wizardStep === 1 && <WizardTarget taskType={taskType} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} />}
-          {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} comments={comments} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} />}
+          {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} />}
           {wizardStep === 3 && <WizardAccounts accountMode={accountMode} accounts={accounts} accountPools={accountPools} includeAdvanced pacingMode={pacingMode} />}
           {wizardStep === 4 && <WizardReview taskType={taskType} values={formValues} />}
           <Space className="modal-actions">
@@ -1052,7 +1072,7 @@ export default function TaskCenterView({ accounts, accountPools, prefill }: { ac
             </>
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>
-          <WizardTypeConfig taskType={detail?.task.type ?? taskType} ruleSets={ruleSets} comments={comments} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} />
+          <WizardTypeConfig taskType={detail?.task.type ?? taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} />
           <Typography.Title level={5}>账号选择</Typography.Title>
           <WizardAccounts accountMode={editAccountMode} accounts={accounts} accountPools={accountPools} />
           <Typography.Title level={5}>节奏策略</Typography.Title>
@@ -1267,6 +1287,8 @@ function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, acc
       'chat_history_depth',
       'ai_model',
       'system_prompt_override',
+      'slang_prompt_template_id',
+      'slang_terms',
       'tone',
       'language',
       'max_message_length',
@@ -1329,7 +1351,7 @@ function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: string, acc
 function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
   const baseFields = ['name', 'scheduled_end', ...accountFields(accountMode), ...pacingFields(pacingMode)];
   if (taskType === 'group_ai_chat') {
-    return [...baseFields, 'target_operation_target_id', 'rule_set_id', 'rule_set_version_id', 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'tone', 'language', 'max_message_length', 'participation_rate', 'participation_jitter', 'allow_account_repeat', 'repeat_cooldown_rounds', 'account_personas', 'account_memory_depth', 'messages_per_round_mode', 'messages_per_round', 'history_fetch_account_id', 'idle_continuation_enabled', 'idle_continuation_seconds', 'silent_mode_enabled', 'silent_start', 'silent_end', 'silent_max_accounts', 'silent_messages_per_round', 'ramp_up_minutes', 'ramp_start_ratio', 'context_expire_after_messages'];
+    return [...baseFields, 'target_operation_target_id', 'rule_set_id', 'rule_set_version_id', 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'slang_prompt_template_id', 'slang_terms', 'tone', 'language', 'max_message_length', 'participation_rate', 'participation_jitter', 'allow_account_repeat', 'repeat_cooldown_rounds', 'account_personas', 'account_memory_depth', 'messages_per_round_mode', 'messages_per_round', 'history_fetch_account_id', 'idle_continuation_enabled', 'idle_continuation_seconds', 'silent_mode_enabled', 'silent_start', 'silent_end', 'silent_max_accounts', 'silent_messages_per_round', 'ramp_up_minutes', 'ramp_start_ratio', 'context_expire_after_messages'];
   }
   if (taskType === 'group_relay') {
     return [...baseFields, 'source_operation_target_ids', 'source_groups', 'target_operation_target_id', 'target_operation_target_ids', 'rule_set_id', 'rule_set_version_id', 'monitor_account_ids', 'content_mode', 'rewrite_prompt', 'keyword_whitelist', 'keyword_blacklist', 'min_message_length', 'max_message_length', 'allowed_media_types', 'blocked_user_ids', 'only_with_media', 'only_text', 'language_filter', 'preserve_media', 'add_source_attribution', 'dedup_window_minutes', 'dedup_method'];
@@ -1405,6 +1427,7 @@ function WizardTarget({ taskType, groupTargets, channelTargets, messages, messag
 function WizardTypeConfig({
   taskType,
   ruleSets = [],
+  slangTemplates = [],
   comments = [],
   targetChannelId,
   messageScope = 'latest_n',
@@ -1412,6 +1435,7 @@ function WizardTypeConfig({
 }: {
   taskType: TaskCenterTaskType;
   ruleSets?: RuleSet[];
+  slangTemplates?: PromptTemplate[];
   comments?: ChannelMessageComment[];
   targetChannelId?: number;
   messageScope?: string;
@@ -1431,6 +1455,10 @@ function WizardTypeConfig({
       </Form.Item>
     </div>
   );
+  const slangOptions = slangTemplates.map((template) => ({
+    value: template.id,
+    label: `${template.name} / v${template.version}`,
+  }));
   if (taskType === 'group_ai_chat') {
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
@@ -1438,6 +1466,9 @@ function WizardTypeConfig({
         {ruleFields}
         <div className="form-grid">
           <Form.Item name="topic_hint" label="话题方向（可选）"><Input.TextArea rows={2} placeholder="不填时系统会按群目标方向或自然开场自动起聊" /></Form.Item>
+          <Form.Item name="slang_prompt_template_id" label="AI 黑话配置">
+            <Select allowClear options={slangOptions} placeholder="选择系统设置里的 AI 黑话词表" />
+          </Form.Item>
         </div>
         <Collapse
           ghost
@@ -1481,7 +1512,7 @@ function WizardTypeConfig({
         <Alert
           type="info"
           showIcon
-          message={ruleSets.length ? '已加载转发监听过滤规则，可直接使用默认规则集。' : '正在初始化默认转发监听过滤规则。'}
+          message={ruleSets.length ? '已加载默认运营规则集，可直接绑定任务使用。' : '正在初始化默认运营规则集。'}
         />
         <Collapse
           defaultActiveKey={['rules', 'filters', 'rewrite']}

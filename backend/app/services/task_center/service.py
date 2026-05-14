@@ -92,6 +92,8 @@ TYPE_SETTINGS_FIELDS = {
         "chat_history_depth",
         "ai_model",
         "system_prompt_override",
+        "slang_prompt_template_id",
+        "slang_terms",
         "tone",
         "language",
         "max_message_length",

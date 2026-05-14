@@ -655,6 +655,7 @@ export type AccountSyncRecord = {
 
 export type VerificationTask = {
   id: number;
+  tenant_id: number;
   account_id: number | null;
   group_id: number | null;
   message_task_id: number | null;
@@ -668,6 +669,11 @@ export type VerificationTask = {
   failure_detail: string;
   created_at: string;
   handled_at: string | null;
+  issue_scope: 'account' | 'target' | string;
+  issue_category: 'account_restricted' | 'group_restriction' | 'verification' | string;
+  can_auto_resolve: boolean;
+  requires_target_recheck: boolean;
+  resolution_entry_label: string;
 };
 
 export type AccountCloneItem = {
@@ -1283,7 +1289,6 @@ export type ModalState =
   | { type: 'keywordRuleCreate' }
   | { type: 'keywordRuleEdit' }
   | { type: 'tenantAiEdit' }
-  | { type: 'schedulingEdit' }
   | { type: 'changePassword' }
   | { type: 'groupPolicyEdit' }
   | { type: 'accountDetail' }

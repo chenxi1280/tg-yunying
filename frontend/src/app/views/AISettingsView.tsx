@@ -1,15 +1,14 @@
 import React from 'react';
 import { Button, Card, Descriptions, Empty, List, Space, Typography } from 'antd';
-import type { AiProvider, PromptTemplate, TenantAiSetting, SchedulingSetting, Material, ContentKeywordRule } from '../types';
+import type { AiProvider, PromptTemplate, TenantAiSetting, Material, ContentKeywordRule } from '../types';
 import { StatusBadge, Badge } from '../components/shared';
 import { statusAccent } from '../utils';
 
 interface Props {
-  section?: 'all' | 'providers' | 'scheduling' | 'resources';
+  section?: 'all' | 'providers' | 'resources' | 'slang';
   aiProviders: AiProvider[];
   promptTemplates: PromptTemplate[];
   tenantAiSetting: TenantAiSetting | null;
-  schedulingSetting: SchedulingSetting | null;
   materials: Material[];
   contentKeywordRules: ContentKeywordRule[];
   currentUserRole: string | undefined;
@@ -18,8 +17,8 @@ interface Props {
   onToggleProvider: (provider: AiProvider) => void;
   onCheckProvider: (provider: AiProvider) => void;
   onEditTenantAi: () => void;
-  onEditScheduling: () => void;
   onCreatePromptTemplate: () => void;
+  onCreateSlangTemplate: () => void;
   onEditPromptTemplate: (template: PromptTemplate) => void;
   onCreateMaterial: () => void;
   onEditMaterial: (material: Material) => void;
@@ -33,7 +32,6 @@ export default function AISettingsView({
   aiProviders,
   promptTemplates,
   tenantAiSetting,
-  schedulingSetting,
   materials,
   contentKeywordRules,
   currentUserRole,
@@ -42,8 +40,8 @@ export default function AISettingsView({
   onToggleProvider,
   onCheckProvider,
   onEditTenantAi,
-  onEditScheduling,
   onCreatePromptTemplate,
+  onCreateSlangTemplate,
   onEditPromptTemplate,
   onCreateMaterial,
   onEditMaterial,
@@ -52,8 +50,10 @@ export default function AISettingsView({
   isActionPending,
 }: Props) {
   const showProviders = section === 'all' || section === 'providers';
-  const showScheduling = section === 'all' || section === 'scheduling';
   const showResources = section === 'all' || section === 'resources';
+  const showSlang = section === 'all' || section === 'slang';
+  const slangTemplates = promptTemplates.filter((template) => template.template_type.replace(/\s+/g, '') === 'AI黑话词表');
+  const businessPromptTemplates = promptTemplates.filter((template) => template.template_type.replace(/\s+/g, '') !== 'AI黑话词表');
 
   return (
     <section className="view-grid">
@@ -109,41 +109,6 @@ export default function AISettingsView({
         </div>
       </Card>}
 
-      {showScheduling && <Card
-        className="panel"
-        title="发送节奏与全局风控"
-        extra={<Button size="small" onClick={onEditScheduling}>编辑发送节奏</Button>}
-      >
-        <Typography.Text type="secondary">任务与消息发送共用全局账号限额；0 表示不限制，达到上限后优先转派可用账号</Typography.Text>
-        <div className="summary-grid">
-          <Card className="summary-card" size="small">
-            <span>发送抖动</span>
-            <strong>{schedulingSetting?.jitter_min_seconds ?? '-'}-{schedulingSetting?.jitter_max_seconds ?? '-'}s</strong>
-            <p>批次 {schedulingSetting?.batch_interval_seconds ?? '-'}s / {schedulingSetting?.respect_send_window ? '遵守时间窗' : '忽略时间窗'}</p>
-          </Card>
-          <Card className="summary-card" size="small">
-            <span>全局静默</span>
-            <strong>{schedulingSetting?.quiet_hours_enabled ? `${schedulingSetting.quiet_start}-${schedulingSetting.quiet_end}` : '未启用'}</strong>
-            <p>{schedulingSetting?.quiet_timezone ?? 'Asia/Shanghai'}</p>
-          </Card>
-          <Card className="summary-card" size="small">
-            <span>默认重试</span>
-            <strong>{schedulingSetting?.default_max_retries ?? 3} 次</strong>
-            <p>{schedulingSetting?.default_retry_delay_seconds ?? 60}s / {schedulingSetting?.default_retry_backoff ?? 'exponential'}</p>
-          </Card>
-          <Card className="summary-card" size="small">
-            <span>异常处理</span>
-            <strong>{schedulingSetting?.default_on_api_rate_limit ?? 'wait_and_retry'}</strong>
-            <p>账号异常 {schedulingSetting?.default_on_account_banned ?? 'skip_account'} / 内容 {schedulingSetting?.default_on_content_rejected ?? 'skip_message'}</p>
-          </Card>
-          <Card className="summary-card" size="small">
-            <span>账号全局限额</span>
-            <strong>{schedulingSetting?.default_account_hour_limit ?? 0}/小时</strong>
-            <p>{schedulingSetting?.default_account_day_limit ?? 0}/日 / 冷却 {schedulingSetting?.default_account_cooldown_seconds ?? 0}s / 0 不限制</p>
-          </Card>
-        </div>
-      </Card>}
-
       {showResources && <Card
         className="panel"
         title="提示词与素材"
@@ -153,7 +118,7 @@ export default function AISettingsView({
         <List
           className="mini-list"
           dataSource={[
-            ...promptTemplates.slice(0, 6).map((template) => ({ kind: 'template' as const, item: template })),
+            ...businessPromptTemplates.slice(0, 6).map((template) => ({ kind: 'template' as const, item: template })),
             ...materials.slice(0, 4).map((material) => ({ kind: 'material' as const, item: material })),
           ]}
           locale={{ emptyText: '暂无提示词或素材。可以先新增提示词模板，再创建素材。' }}
@@ -179,6 +144,27 @@ export default function AISettingsView({
               </List.Item>
             );
           }}
+        />
+      </Card>}
+
+      {showSlang && <Card
+        className="panel"
+        title="AI 黑话配置"
+        extra={<Button size="small" type="primary" onClick={onCreateSlangTemplate}>新增黑话配置</Button>}
+      >
+        <Typography.Text type="secondary">这里维护 AI 活群可选的行业黑话和俗语口径；创建 AI 活群任务时选择一套后，会作为系统默认提示词注入大模型。</Typography.Text>
+        <List
+          className="mini-list"
+          dataSource={slangTemplates}
+          locale={{ emptyText: '暂无 AI 黑话配置。可以先新增一套，再到 AI 活跃群任务里选择。' }}
+          renderItem={(template) => (
+            <List.Item actions={[<Button size="small" onClick={() => onEditPromptTemplate(template)}>编辑</Button>]}>
+              <List.Item.Meta
+                title={<Space><Badge tone={template.tenant_id ? 'positive' : 'neutral'}>{template.tenant_id ? '运营空间' : '平台'}</Badge><StatusBadge status={template.is_active ? '已启用' : '禁用'} />{template.name}</Space>}
+                description={`v${template.version} / ${template.content.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 3).join('；') || '空配置'}`}
+              />
+            </List.Item>
+          )}
         />
       </Card>}
 

@@ -28,7 +28,7 @@ from app.models import (
     TaskStatus,
     TgAccount,
 )
-from app.schemas.risk_control import AccountProxyCreate, AccountProxyUpdate, ProxyBatchBindingRequest, ProxyBindingRequest, RiskPreflightRequest
+from app.schemas.risk_control import AccountProxyCreate, AccountProxyUpdate, ProxyBatchBindingRequest, ProxyBindingRequest, RiskControlGlobalPolicyUpdate, RiskPreflightRequest
 from app.security import encrypt_secret
 from app.services._common import _now, audit
 from app.services.account_capacity import account_capacity_decision
@@ -64,6 +64,39 @@ def list_account_proxies(session: Session, tenant_id: int) -> list[dict[str, Any
     proxies = list(session.scalars(select(AccountProxy).where(AccountProxy.tenant_id == tenant_id).order_by(AccountProxy.id.asc())))
     bound_counts = _proxy_bound_counts(session, tenant_id, [proxy.id for proxy in proxies])
     return [_proxy_payload(proxy, bound_counts.get(proxy.id, 0)) for proxy in proxies]
+
+
+def update_global_policy(session: Session, tenant_id: int, payload: RiskControlGlobalPolicyUpdate, actor: str) -> dict[str, Any]:
+    setting = get_scheduling_setting(session, tenant_id)
+    data = payload.model_dump(exclude_unset=True)
+    for field in [
+        "jitter_min_seconds",
+        "jitter_max_seconds",
+        "batch_interval_seconds",
+        "respect_send_window",
+        "quiet_hours_enabled",
+        "quiet_start",
+        "quiet_end",
+        "quiet_timezone",
+        "default_max_retries",
+        "default_retry_delay_seconds",
+        "default_retry_backoff",
+        "default_on_account_banned",
+        "default_on_api_rate_limit",
+        "default_on_content_rejected",
+        "default_account_hour_limit",
+        "default_account_day_limit",
+        "default_account_cooldown_seconds",
+    ]:
+        if field in data and data[field] is not None:
+            setattr(setting, field, data[field])
+    if setting.jitter_max_seconds < setting.jitter_min_seconds:
+        setting.jitter_max_seconds = setting.jitter_min_seconds
+    setting.updated_at = _now()
+    audit(session, tenant_id=tenant_id, actor=actor, action="更新风控全局策略", target_type="risk_global_policy", target_id=str(setting.id))
+    session.commit()
+    session.refresh(setting)
+    return _global_policy(setting)
 
 
 def create_account_proxy(session: Session, tenant_id: int, payload: AccountProxyCreate, actor: str) -> dict[str, Any]:
@@ -1183,6 +1216,7 @@ __all__ = [
     "list_proxy_alerts",
     "risk_preflight",
     "risk_control_summary",
+    "update_global_policy",
     "update_account_proxy",
     "update_proxy_alert_status",
 ]

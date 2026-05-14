@@ -100,5 +100,36 @@ class VerificationTask(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     handled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    @property
+    def issue_scope(self) -> str:
+        if self.group_id:
+            return "target"
+        return "account"
+
+    @property
+    def issue_category(self) -> str:
+        text = f"{self.verification_type} {self.detected_reason} {self.suggested_action}"
+        if self.group_id and any(keyword in text for keyword in ("群", "发言", "验证", "按钮", "关注", "慢速", "权限")):
+            return "group_restriction"
+        if any(keyword in text for keyword in ("账号受限", "Session", "重新登录", "不可用")):
+            return "account_restricted"
+        return "verification"
+
+    @property
+    def can_auto_resolve(self) -> bool:
+        return self.suggested_action in {"关注频道", "点击按钮", "发送验证回复"}
+
+    @property
+    def requires_target_recheck(self) -> bool:
+        return self.issue_category == "group_restriction"
+
+    @property
+    def resolution_entry_label(self) -> str:
+        if self.issue_category == "group_restriction":
+            return "解除群限制"
+        if self.can_auto_resolve:
+            return "执行自动处理"
+        return "处理验证辅助"
+
 
 __all__ = ["TgGroup", "TgGroupAccount", "GroupContextMessage", "VerificationTask"]

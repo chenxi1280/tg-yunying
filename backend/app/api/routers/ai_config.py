@@ -17,7 +17,7 @@ from app.schemas import (
     ContentKeywordRuleCreate, ContentKeywordRuleOut, ContentKeywordRuleUpdate,
     MaterialCreate, MaterialOut, MaterialUpdate,
     PromptTemplateCreate, PromptTemplateOut, PromptTemplateUpdate,
-    SchedulingSettingOut, SchedulingSettingUpdate,
+    SchedulingSettingOut,
     TenantAiSettingOut, TenantAiSettingUpdate,
 )
 from app.services import (
@@ -25,7 +25,7 @@ from app.services import (
     get_scheduling_setting, get_tenant_ai_setting,
     list_ai_providers, list_content_keyword_rules, list_materials, list_prompt_templates,
     update_ai_provider, update_content_keyword_rule, update_material, update_prompt_template,
-    update_scheduling_setting, update_tenant_ai_setting,
+    update_tenant_ai_setting,
 )
 
 router = APIRouter()
@@ -157,18 +157,6 @@ def get_scheduling_settings(
     if current_user.is_platform_admin and tenant_id is None:
         return get_scheduling_setting(session, None)
     return get_scheduling_setting(session, resolve_tenant_id(current_user, tenant_id))
-
-
-@router.patch("/api/scheduling-settings", response_model=SchedulingSettingOut)
-def patch_scheduling_settings(
-    payload: SchedulingSettingUpdate,
-    tenant_id: int | None = None,
-    session: Session = Depends(get_session),
-    current_user: CurrentUser = Depends(get_current_user),
-) -> SchedulingSetting:
-    require_core_feature_access(current_user)
-    target_tenant_id = None if current_user.is_platform_admin and tenant_id is None else resolve_tenant_id(current_user, tenant_id)
-    return update_scheduling_setting(session, target_tenant_id, payload, current_user.name)
 
 
 # ── Materials ──

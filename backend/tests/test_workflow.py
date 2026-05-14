@@ -6,7 +6,7 @@ from app.config import get_settings
 from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
-from app.gateways import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, OperationResult, SendResult
+from app.gateways import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult
 from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
@@ -288,6 +288,113 @@ def test_verification_tasks_backfill_group_target_label():
         task = next(item for item in tasks if item["id"] == stale_task_id)
         assert task["target_display"] == group["title"]
         assert task["target_peer_id"] == group["tg_peer_id"]
+
+
+def test_manual_group_restriction_confirm_does_not_restore_sendability():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.DISABLED.value
+            db_group = session.get(TgGroup, group["id"])
+            db_group.can_send = False
+            link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
+            link.can_send = False
+            manual_task = VerificationTask(
+                tenant_id=1,
+                account_id=account["id"],
+                group_id=group["id"],
+                message_task_id=None,
+                verification_type="群发言不可用",
+                detected_reason="pytest manual verification",
+                suggested_action="人工处理",
+                status="待处理",
+            )
+            session.add(manual_task)
+            session.commit()
+            task_id = manual_task.id
+
+        confirmed = client.post(f"/api/verification-tasks/{task_id}/confirm-action", headers=headers, json={"actor": "pytest"}).json()
+        assert confirmed["status"] == "需人工处理"
+        assert confirmed["issue_category"] == "group_restriction"
+        assert confirmed["resolution_entry_label"] == "解除群限制"
+        assert "解除限制" in confirmed["failure_detail"]
+
+        with SessionLocal() as session:
+            db_group = session.get(TgGroup, group["id"])
+            link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
+            assert db_group.can_send is False
+            assert link.can_send is False
+
+
+def test_resolve_group_restriction_rechecks_target_before_restoring_sendability(monkeypatch):
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            db_group = session.get(TgGroup, group["id"])
+            db_group.can_send = False
+            db_group.auth_status = "只读"
+            link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
+            link.can_send = False
+            link.permission_label = "群管理限制"
+            target = session.query(OperationTarget).filter_by(tenant_id=1, tg_peer_id=group["tg_peer_id"]).first()
+            if not target:
+                target = OperationTarget(
+                    tenant_id=1,
+                    target_type="group",
+                    tg_peer_id=group["tg_peer_id"],
+                    title=group["title"],
+                    member_count=group["member_count"],
+                )
+                session.add(target)
+                session.flush()
+            target.can_send = False
+            target.auth_status = "只读"
+            manual_task = VerificationTask(
+                tenant_id=1,
+                account_id=account["id"],
+                group_id=group["id"],
+                message_task_id=None,
+                verification_type="群发言不可用",
+                detected_reason="pytest resolve group restriction",
+                suggested_action="人工处理",
+                status="需人工处理",
+            )
+            session.add(manual_task)
+            session.commit()
+            task_id = manual_task.id
+            target_id = target.id
+
+        def fake_list_groups(account_id, *_args, **_kwargs):
+            assert account_id == account["id"]
+            return [
+                GroupSnapshot(
+                    tg_peer_id=group["tg_peer_id"],
+                    title=group["title"],
+                    group_type="supergroup",
+                    member_count=group["member_count"],
+                    permission_label="可发言",
+                    can_send=True,
+                )
+            ]
+
+        monkeypatch.setattr("app.services.verification.gateway.list_groups", fake_list_groups)
+
+        resolved = client.post(f"/api/verification-tasks/{task_id}/resolve-group-restriction", headers=headers, json={"actor": "pytest"}).json()
+        assert resolved["status"] == "已处理"
+        assert "重查通过" in resolved["failure_detail"]
+
+        with SessionLocal() as session:
+            db_group = session.get(TgGroup, group["id"])
+            link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
+            target = session.get(OperationTarget, target_id)
+            assert db_group.can_send is True
+            assert link.can_send is True
+            assert link.permission_label == "可发言"
+            assert target.can_send is True
+            assert target.auth_status == "已授权运营"
 
 
 def test_campaign_draft_approval_and_dispatch_flow():

@@ -76,6 +76,11 @@ class VerificationTaskOut(ApiModel):
     failure_detail: str
     created_at: datetime
     handled_at: datetime | None
+    issue_scope: str = "account"
+    issue_category: str = "verification"
+    can_auto_resolve: bool = False
+    requires_target_recheck: bool = False
+    resolution_entry_label: str = "处理验证辅助"
 
 
 # ── Composite outputs (imports from other domain files handled lazily) ──

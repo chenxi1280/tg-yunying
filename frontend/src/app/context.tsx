@@ -22,7 +22,6 @@ import type {
   AiProvider,
   PromptTemplate,
   TenantAiSetting,
-  SchedulingSetting,
   Material,
   ContentKeywordRule,
   Contact,
@@ -118,7 +117,6 @@ export function AppProvider({ children }: AppProviderProps) {
   const [aiProviders, setAiProviders] = useState<AiProvider[]>([]);
   const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
   const [tenantAiSetting, setTenantAiSetting] = useState<TenantAiSetting | null>(null);
-  const [schedulingSetting, setSchedulingSetting] = useState<SchedulingSetting | null>(null);
   const [materials, setMaterials] = useState<Material[]>([]);
   const [contentKeywordRules, setContentKeywordRules] = useState<ContentKeywordRule[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -163,23 +161,6 @@ export function AppProvider({ children }: AppProviderProps) {
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [selectedAiProviderId, setSelectedAiProviderId] = useState<number | ''>('');
-  const [jitterMinSeconds, setJitterMinSeconds] = useState(15);
-  const [jitterMaxSeconds, setJitterMaxSeconds] = useState(180);
-  const [batchIntervalSeconds, setBatchIntervalSeconds] = useState(45);
-  const [respectSendWindow, setRespectSendWindow] = useState(true);
-  const [quietHoursEnabled, setQuietHoursEnabled] = useState(false);
-  const [quietStart, setQuietStart] = useState('02:00');
-  const [quietEnd, setQuietEnd] = useState('08:00');
-  const [quietTimezone, setQuietTimezone] = useState('Asia/Shanghai');
-  const [defaultMaxRetries, setDefaultMaxRetries] = useState(3);
-  const [defaultRetryDelaySeconds, setDefaultRetryDelaySeconds] = useState(60);
-  const [defaultRetryBackoff, setDefaultRetryBackoff] = useState('exponential');
-  const [defaultOnAccountBanned, setDefaultOnAccountBanned] = useState('skip_account');
-  const [defaultOnApiRateLimit, setDefaultOnApiRateLimit] = useState('wait_and_retry');
-  const [defaultOnContentRejected, setDefaultOnContentRejected] = useState('skip_message');
-  const [defaultAccountHourLimit, setDefaultAccountHourLimit] = useState(0);
-  const [defaultAccountDayLimit, setDefaultAccountDayLimit] = useState(0);
-  const [defaultAccountCooldownSeconds, setDefaultAccountCooldownSeconds] = useState(0);
   const [taskStatusFilter, setTaskStatusFilter] = useState('');
   const [groupPolicy, setGroupPolicy] = useState({
     active_window: '09:00-23:00',
@@ -360,7 +341,6 @@ export function AppProvider({ children }: AppProviderProps) {
         api<AiProvider[]>('/ai-providers'),
         api<PromptTemplate[]>('/prompt-templates'),
         api<TenantAiSetting>('/tenant-ai-settings'),
-        api<SchedulingSetting>('/scheduling-settings'),
         api<Material[]>('/materials'),
         api<ContentKeywordRule[]>('/content-keyword-rules'),
       ]);
@@ -375,9 +355,8 @@ export function AppProvider({ children }: AppProviderProps) {
       const aiProviderData = settledValue(results[8], [] as AiProvider[]);
       const promptTemplateData = settledValue(results[9], [] as PromptTemplate[]);
       const tenantAiData = settledValue(results[10], {} as TenantAiSetting);
-      const schedulingData = settledValue(results[11], {} as SchedulingSetting);
-      const materialData = settledValue(results[12], [] as Material[]);
-      const keywordRuleData = settledValue(results[13], [] as ContentKeywordRule[]);
+      const materialData = settledValue(results[11], [] as Material[]);
+      const keywordRuleData = settledValue(results[12], [] as ContentKeywordRule[]);
       const developerAppData = me.role === '系统管理员' ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
       const tenantData = me.role === '系统管理员' ? await api<Tenant[]>('/tenants').catch(() => [] as Tenant[]) : [];
       const adminUserData: AdminUser[] = [];
@@ -396,7 +375,6 @@ export function AppProvider({ children }: AppProviderProps) {
       setAiProviders(aiProviderData);
       setPromptTemplates(promptTemplateData);
       setTenantAiSetting(tenantAiData);
-      setSchedulingSetting(schedulingData);
       setMaterials(materialData);
       setContentKeywordRules(keywordRuleData);
       setGroups(groupData);
@@ -405,23 +383,6 @@ export function AppProvider({ children }: AppProviderProps) {
       setAudits(auditData);
       setSelectedGroupId((current) => current ?? groupData[0]?.id ?? null);
       setSelectedAiProviderId((current) => current || tenantAiData.default_provider_id || aiProviderData[0]?.id || '');
-      setJitterMinSeconds((current) => current || schedulingData.jitter_min_seconds);
-      setJitterMaxSeconds((current) => current || schedulingData.jitter_max_seconds);
-      setBatchIntervalSeconds((current) => current || schedulingData.batch_interval_seconds);
-      setRespectSendWindow(schedulingData.respect_send_window);
-      setQuietHoursEnabled(Boolean(schedulingData.quiet_hours_enabled));
-      setQuietStart(schedulingData.quiet_start || '02:00');
-      setQuietEnd(schedulingData.quiet_end || '08:00');
-      setQuietTimezone(schedulingData.quiet_timezone || 'Asia/Shanghai');
-      setDefaultMaxRetries(schedulingData.default_max_retries ?? 3);
-      setDefaultRetryDelaySeconds(schedulingData.default_retry_delay_seconds ?? 60);
-      setDefaultRetryBackoff(schedulingData.default_retry_backoff || 'exponential');
-      setDefaultOnAccountBanned(schedulingData.default_on_account_banned || 'skip_account');
-      setDefaultOnApiRateLimit(schedulingData.default_on_api_rate_limit || 'wait_and_retry');
-      setDefaultOnContentRejected(schedulingData.default_on_content_rejected || 'skip_message');
-      setDefaultAccountHourLimit(schedulingData.default_account_hour_limit ?? 0);
-      setDefaultAccountDayLimit(schedulingData.default_account_day_limit ?? 0);
-      setDefaultAccountCooldownSeconds(schedulingData.default_account_cooldown_seconds ?? 0);
     } catch (error) {
       throw error;
     } finally {
@@ -754,7 +715,35 @@ export function AppProvider({ children }: AppProviderProps) {
       method: 'POST',
       body: JSON.stringify({ actor: '普通用户' }),
     });
-    showResult('验证辅助已处理', `${updated.verification_type}：${updated.status}`);
+    if (updated.status === '失败') {
+      showResult('验证辅助处理失败', updated.failure_detail || `${updated.verification_type}：失败`);
+    } else if (updated.status === '需人工处理') {
+      showResult('仍需人工处理', updated.failure_detail || updated.detected_reason || updated.verification_type);
+    } else {
+      showResult('验证辅助已处理', `${updated.verification_type}：${updated.status}`);
+    }
+    if (accountDetail) await refreshAccountDetail();
+    if (accountPoolDetail) await refreshAccountPoolDetail();
+    if (groupDetail) {
+      const detail = await api<GroupDetail>(`/groups/${groupDetail.group.id}/detail`);
+      setGroupDetail(detail);
+    }
+    setBusy('');
+  }
+
+  async function resolveGroupRestrictionTask(task: VerificationTask) {
+    setBusy('解除群限制重查');
+    const updated = await api<VerificationTask>(`/verification-tasks/${task.id}/resolve-group-restriction`, {
+      method: 'POST',
+      body: JSON.stringify({ actor: '普通用户' }),
+    });
+    if (updated.status === '已处理') {
+      showResult('群限制已解除', updated.failure_detail || `${updated.verification_type}：目标已可发言`);
+    } else if (updated.status === '需人工处理') {
+      showResult('仍需管理员处理', updated.failure_detail || '当前账号在该群仍不可发言。');
+    } else {
+      showResult('解除群限制重查失败', updated.failure_detail || `${updated.verification_type}：${updated.status}`);
+    }
     if (accountDetail) await refreshAccountDetail();
     if (accountPoolDetail) await refreshAccountPoolDetail();
     if (groupDetail) {
@@ -1507,35 +1496,6 @@ export function AppProvider({ children }: AppProviderProps) {
     }
   }
 
-  async function saveSchedulingSetting() {
-    setBusy('保存发送节奏');
-    await api('/scheduling-settings', {
-      method: 'PATCH',
-      body: JSON.stringify({
-        jitter_min_seconds: jitterMinSeconds,
-        jitter_max_seconds: jitterMaxSeconds,
-        batch_interval_seconds: batchIntervalSeconds,
-        respect_send_window: respectSendWindow,
-        quiet_hours_enabled: quietHoursEnabled,
-        quiet_start: quietStart,
-        quiet_end: quietEnd,
-        quiet_timezone: quietTimezone,
-        default_max_retries: defaultMaxRetries,
-        default_retry_delay_seconds: defaultRetryDelaySeconds,
-        default_retry_backoff: defaultRetryBackoff,
-        default_on_account_banned: defaultOnAccountBanned,
-        default_on_api_rate_limit: defaultOnApiRateLimit,
-        default_on_content_rejected: defaultOnContentRejected,
-        default_account_hour_limit: defaultAccountHourLimit,
-        default_account_day_limit: defaultAccountDayLimit,
-        default_account_cooldown_seconds: defaultAccountCooldownSeconds,
-      }),
-    });
-    closeModal();
-    showResult('发送节奏已保存', '默认抖动、批次间隔和时间窗策略已更新。');
-    await refresh();
-  }
-
   async function createPromptTemplate() {
     setBusy('新增提示词');
     const { id: _id, ...payload } = promptTemplateForm;
@@ -1738,8 +1698,6 @@ export function AppProvider({ children }: AppProviderProps) {
     setTenantAiSetting,
     selectedAiProviderId,
     setSelectedAiProviderId,
-    schedulingSetting,
-    setSchedulingSetting,
     materials,
     setMaterials,
     contentKeywordRules,
@@ -1800,40 +1758,6 @@ export function AppProvider({ children }: AppProviderProps) {
     // Group state
     selectedGroupId,
     setSelectedGroupId,
-    jitterMinSeconds,
-    setJitterMinSeconds,
-    jitterMaxSeconds,
-    setJitterMaxSeconds,
-    batchIntervalSeconds,
-    setBatchIntervalSeconds,
-    respectSendWindow,
-    setRespectSendWindow,
-    quietHoursEnabled,
-    setQuietHoursEnabled,
-    quietStart,
-    setQuietStart,
-    quietEnd,
-    setQuietEnd,
-    quietTimezone,
-    setQuietTimezone,
-    defaultMaxRetries,
-    setDefaultMaxRetries,
-    defaultRetryDelaySeconds,
-    setDefaultRetryDelaySeconds,
-    defaultRetryBackoff,
-    setDefaultRetryBackoff,
-    defaultOnAccountBanned,
-    setDefaultOnAccountBanned,
-    defaultOnApiRateLimit,
-    setDefaultOnApiRateLimit,
-    defaultOnContentRejected,
-    setDefaultOnContentRejected,
-    defaultAccountHourLimit,
-    setDefaultAccountHourLimit,
-    defaultAccountDayLimit,
-    setDefaultAccountDayLimit,
-    defaultAccountCooldownSeconds,
-    setDefaultAccountCooldownSeconds,
     taskStatusFilter,
     setTaskStatusFilter,
     groupPolicy,
@@ -1890,6 +1814,7 @@ export function AppProvider({ children }: AppProviderProps) {
     confirmClonePlan: (plan) => runWithLoading(`clone-plan:${plan.id}:confirm`, '执行克隆计划', () => confirmClonePlan(plan)),
     retryCloneItem: (item) => runWithLoading(`clone-item:${item.id}:retry`, '重试克隆项', () => retryCloneItem(item)),
     confirmVerificationTask: (task) => runWithLoading(`verification:${task.id}:confirm`, '处理验证辅助', () => confirmVerificationTask(task)),
+    resolveGroupRestrictionTask: (task) => runWithLoading(`verification:${task.id}:resolve-group`, '解除群限制重查', () => resolveGroupRestrictionTask(task)),
     dismissVerificationTask: (task) => runWithLoading(`verification:${task.id}:dismiss`, '忽略验证辅助', () => dismissVerificationTask(task)),
     refreshAccountDetail: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:detail-refresh`, '刷新账号详情', refreshAccountDetail),
     syncAccountContacts: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:contacts`, '同步联系人', syncAccountContacts),
@@ -1943,7 +1868,6 @@ export function AppProvider({ children }: AppProviderProps) {
     toggleAiProvider: (provider) => runWithLoading(`ai-provider:${provider.id}:toggle`, provider.is_active ? '禁用 AI 供应商' : '启用 AI 供应商', () => toggleAiProvider(provider)),
     checkAiProvider: (provider) => runWithLoading(`ai-provider:${provider.id}:check`, '检查 AI 供应商', () => checkAiProvider(provider)),
     saveTenantAiSetting: () => runWithLoading('tenant-ai:save', '保存 AI 配置', saveTenantAiSetting),
-    saveSchedulingSetting: () => runWithLoading('scheduling:save', '保存发送节奏', saveSchedulingSetting),
     createPromptTemplate: () => runWithLoading('prompt-template:create', '新增提示词', createPromptTemplate),
     openPromptTemplateEdit,
     savePromptTemplate: () => runWithLoading(`prompt-template:${promptTemplateForm.id ?? 'create'}:save`, promptTemplateForm.id ? '保存提示词' : '新增提示词', savePromptTemplate),

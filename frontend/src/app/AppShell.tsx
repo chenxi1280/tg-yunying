@@ -73,7 +73,7 @@ function AppShell() {
     developerApps, tenants, groups, selectedGroup, selectedGroupId, setSelectedGroupId,
     tasks,
     archives, archiveDetail, audits, auditFilters, setAuditFilters, groupDetail,
-    aiProviders, promptTemplates, tenantAiSetting, setTenantAiSetting, schedulingSetting, materials, contentKeywordRules,
+    aiProviders, promptTemplates, tenantAiSetting, setTenantAiSetting, materials, contentKeywordRules,
     usageLedgers, usageSummary,
     accountDetail, accountDetailTab, setAccountDetailTab,
     accountPoolDetail, poolDirectAccountId, setPoolDirectAccountId,
@@ -106,7 +106,7 @@ function AppShell() {
     createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp,
     openTenantEdit, saveTenantQuota,
     createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider,
-    saveTenantAiSetting, saveSchedulingSetting,
+    saveTenantAiSetting,
     createPromptTemplate, createMaterial,
     logout,
     runLogin, verifyAccount, deleteAccount, healthCheck, syncAccountGroups,
@@ -282,7 +282,6 @@ function AppShell() {
             aiProviders={aiProviders}
             promptTemplates={promptTemplates}
             tenantAiSetting={tenantAiSetting}
-            schedulingSetting={schedulingSetting}
             materials={materials}
             contentKeywordRules={contentKeywordRules}
             currentUserRole={currentUser?.role}
@@ -296,13 +295,22 @@ function AppShell() {
             onToggleAiProvider={toggleAiProvider}
             onCheckAiProvider={checkAiProvider}
             onEditTenantAi={() => setModal({ type: 'tenantAiEdit' })}
-            onEditScheduling={() => setModal({ type: 'schedulingEdit' })}
             onCreatePromptTemplate={() => {
               setPromptTemplateForm({
                 id: null,
                 name: '运营群活跃模板',
                 template_type: '群活跃对话计划',
                 content: '请为 {{group_title}} 围绕 {{topic}} 生成 {{count}} 条自然 Telegram 群聊发言计划，语气 {{tone}}，素材 {{materials}}，输出 JSON turns，并包含角色、意图、延迟和自动校验建议。',
+                is_active: true,
+              });
+              setModal({ type: 'promptTemplateCreate' });
+            }}
+            onCreateSlangTemplate={() => {
+              setPromptTemplateForm({
+                id: null,
+                name: '默认 AI 黑话配置',
+                template_type: 'AI黑话词表',
+                content: '老师=妓女\n开课=开始营业',
                 is_active: true,
               });
               setModal({ type: 'promptTemplateCreate' });
@@ -347,10 +355,10 @@ function AppShell() {
         {activeView === 'groupManagement' && (
           <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateTask={openTaskFromGroup} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
         )}
-        {activeView === 'taskManagement' && <TaskCenterView accounts={accounts} accountPools={accountPools} prefill={taskCenterPrefill} />}
+        {activeView === 'taskManagement' && <TaskCenterView accounts={accounts} accountPools={accountPools} promptTemplates={promptTemplates} prefill={taskCenterPrefill} />}
         {activeView === 'listenerCenter' && <ListenerCenterView />}
         {activeView === 'ruleCenter' && <RulesCenterView onOpenSystemConfig={() => goToView('systemConfig')} />}
-        {activeView === 'riskControl' && <RiskControlView onOpenAccounts={() => goToView('accounts')} onOpenSystemConfig={() => goToView('systemConfig')} />}
+        {activeView === 'riskControl' && <RiskControlView onOpenAccounts={() => goToView('accounts')} />}
         {activeView === 'archives' && <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onRefresh={refresh} isActionPending={isActionPending} />}
         {activeView === 'audits' && <AuditsView audits={audits} filters={auditFilters} setFilters={setAuditFilters} onRefresh={refresh} />}
 

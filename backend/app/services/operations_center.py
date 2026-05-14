@@ -46,8 +46,10 @@ from app.services.task_center.fingerprints import content_fingerprint
 
 ACTIVE_TASK_STATUSES = {"draft", "pending", "running", "paused"}
 LISTENER_TASK_STATUSES = {"pending", "running"}
-DEFAULT_RELAY_RULE_SET_NAME = "默认转发监听过滤规则"
-DEFAULT_RELAY_RULE_SET_DESCRIPTION = "系统初始化的转发监听过滤规则，默认不拦截内容，可按任务绑定后继续扩展。"
+DEFAULT_RULE_SET_NAME = "默认运营规则集"
+LEGACY_DEFAULT_RELAY_RULE_SET_NAME = "默认转发监听过滤规则"
+DEFAULT_RULE_SET_DESCRIPTION = "系统初始化的通用规则集，默认不拦截内容，可用于监听转发、AI 回复、AI 评论和普通消息发送。"
+DEFAULT_RULE_TASK_TYPES = ["group_relay", "group_ai_chat", "channel_comment", "message_send"]
 DEFAULT_RELAY_FILTERS = {
     "keyword_whitelist": [],
     "keyword_blacklist": [],
@@ -629,9 +631,8 @@ def operation_metrics_summary(session: Session, tenant_id: int) -> OperationMetr
 
 
 def list_rule_sets(session: Session, tenant_id: int) -> list[RuleSetOut]:
+    _ensure_default_rule_set(session, tenant_id)
     rule_sets = list(session.scalars(select(RuleSet).where(RuleSet.tenant_id == tenant_id).order_by(RuleSet.id.asc())))
-    if not rule_sets:
-        rule_sets = [_ensure_default_relay_rule_set(session, tenant_id)]
     versions = list(
         session.scalars(
             select(RuleSetVersion)
@@ -645,21 +646,77 @@ def list_rule_sets(session: Session, tenant_id: int) -> list[RuleSetOut]:
     return [_rule_set_out(rule_set, by_set.get(rule_set.id, [])) for rule_set in rule_sets]
 
 
-def _ensure_default_relay_rule_set(session: Session, tenant_id: int) -> RuleSet:
+def _ensure_default_rule_set(session: Session, tenant_id: int) -> RuleSet:
     existing = session.scalar(
         select(RuleSet).where(
             RuleSet.tenant_id == tenant_id,
-            RuleSet.name == DEFAULT_RELAY_RULE_SET_NAME,
+            RuleSet.name == DEFAULT_RULE_SET_NAME,
         )
     )
+    if not existing:
+        existing = session.scalar(
+            select(RuleSet).where(
+                RuleSet.tenant_id == tenant_id,
+                RuleSet.name == LEGACY_DEFAULT_RELAY_RULE_SET_NAME,
+            )
+        )
     if existing:
+        changed = False
+        if existing.name == LEGACY_DEFAULT_RELAY_RULE_SET_NAME:
+            existing.name = DEFAULT_RULE_SET_NAME
+            changed = True
+        if existing.description != DEFAULT_RULE_SET_DESCRIPTION:
+            existing.description = DEFAULT_RULE_SET_DESCRIPTION
+            changed = True
+        if set(existing.task_types or []) != set(DEFAULT_RULE_TASK_TYPES):
+            existing.task_types = DEFAULT_RULE_TASK_TYPES
+            changed = True
+        default_policy = dict(existing.default_policy or {})
+        if default_policy.get("version_binding") != "follow_current":
+            default_policy["version_binding"] = "follow_current"
+            existing.default_policy = default_policy
+            changed = True
+        versions = list(session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == existing.id).order_by(RuleSetVersion.version.desc())))
+        if not versions:
+            version = RuleSetVersion(
+                tenant_id=tenant_id,
+                rule_set_id=existing.id,
+                version=1,
+                status="published",
+                filters=_default_relay_filters(),
+                output_checks=_default_relay_output_checks(),
+                transforms={},
+                routing={},
+                account_strategy={},
+                rate_limits={},
+                retry_policy={},
+                created_by="system",
+                published_by="system",
+                published_at=_now(),
+            )
+            session.add(version)
+            session.flush()
+            existing.active_version_id = version.id
+            changed = True
+        elif not existing.active_version_id:
+            published = next((item for item in versions if item.status == "published"), versions[0])
+            existing.active_version_id = published.id
+            if published.status != "published":
+                published.status = "published"
+                published.published_by = published.published_by or "system"
+                published.published_at = published.published_at or _now()
+            changed = True
+        if changed:
+            existing.updated_at = _now()
+            session.commit()
+            session.refresh(existing)
         return existing
     rule_set = RuleSet(
         tenant_id=tenant_id,
-        name=DEFAULT_RELAY_RULE_SET_NAME,
-        description=DEFAULT_RELAY_RULE_SET_DESCRIPTION,
+        name=DEFAULT_RULE_SET_NAME,
+        description=DEFAULT_RULE_SET_DESCRIPTION,
         status="active",
-        task_types=["group_relay"],
+        task_types=DEFAULT_RULE_TASK_TYPES,
         default_policy={"input_failure": "skip", "output_failure": "transform_once_drop", "version_binding": "follow_current"},
     )
     session.add(rule_set)
@@ -688,7 +745,7 @@ def _ensure_default_relay_rule_set(session: Session, tenant_id: int) -> RuleSet:
         session,
         tenant_id=tenant_id,
         actor="system",
-        action="初始化默认转发监听规则集",
+        action="初始化默认运营规则集",
         target_type="rule_set",
         target_id=str(rule_set.id),
         detail=rule_set.name,
@@ -727,6 +784,25 @@ def create_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, 
     latest = session.scalar(select(RuleSetVersion.version).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()).limit(1)) or 0
     version = _new_rule_set_version(session, tenant_id, rule_set.id, int(latest) + 1, payload, actor)
     audit(session, tenant_id=tenant_id, actor=actor, action="创建规则集版本", target_type="rule_set", target_id=str(rule_set.id), detail=f"v{version.version}")
+    session.commit()
+    session.refresh(rule_set)
+    return _rule_set_out(rule_set, list(session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()))))
+
+
+def update_rule_set_config(session: Session, tenant_id: int, rule_set_id: int, payload: RuleSetVersionCreate, actor: str) -> RuleSetOut:
+    rule_set = _get_rule_set(session, tenant_id, rule_set_id)
+    latest = session.scalar(select(RuleSetVersion.version).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()).limit(1)) or 0
+    version = _new_rule_set_version(session, tenant_id, rule_set.id, int(latest) + 1, payload, actor)
+    for old_version in session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id, RuleSetVersion.status == "published")):
+        old_version.status = "archived"
+        old_version.updated_at = _now()
+    version.status = "published"
+    version.published_by = actor
+    version.published_at = _now()
+    version.updated_at = _now()
+    rule_set.active_version_id = version.id
+    rule_set.updated_at = _now()
+    audit(session, tenant_id=tenant_id, actor=actor, action="更新规则集配置并发布", target_type="rule_set", target_id=str(rule_set.id), detail=f"v{version.version}")
     session.commit()
     session.refresh(rule_set)
     return _rule_set_out(rule_set, list(session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()))))
@@ -2328,4 +2404,5 @@ __all__ = [
     "rollback_rule_set_version",
     "rule_center_summary",
     "test_rules",
+    "update_rule_set_config",
 ]

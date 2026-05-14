@@ -18,7 +18,8 @@ from app.schemas import (
 )
 from app.services import (
     authorize_group, confirm_verification_task, dismiss_verification_task,
-    filter_groups, group_detail, list_verification_tasks, update_group_policy,
+    filter_groups, group_detail, list_verification_tasks, resolve_group_restriction_task,
+    update_group_policy,
 )
 
 router = APIRouter()
@@ -118,6 +119,21 @@ def post_verification_task_confirm(
     require_resource_tenant(session, current_user, VerificationTask, task_id)
     try:
         return confirm_verification_task(session, task_id, payload.actor if payload else current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/verification-tasks/{task_id}/resolve-group-restriction", response_model=VerificationTaskOut)
+def post_verification_task_resolve_group_restriction(
+    task_id: int,
+    payload: VerificationTaskConfirmRequest | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    require_resource_tenant(session, current_user, VerificationTask, task_id)
+    try:
+        return resolve_group_restriction_task(session, task_id, payload.actor if payload else current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

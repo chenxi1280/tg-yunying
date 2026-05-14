@@ -81,6 +81,17 @@ def seed_ai_configuration(session: Session) -> None:
         ),
         PromptTemplate(
             tenant_id=None,
+            template_type="AI黑话词表",
+            name="默认 AI 黑话词表",
+            content=(
+                "本模板用于 AI 活群任务的行业黑话/俗语口径。每行写一个映射，格式：原词=实际含义。\n"
+                "示例：\n"
+                "老师=妓女\n"
+                "开课=开始营业"
+            ),
+        ),
+        PromptTemplate(
+            tenant_id=None,
             template_type="素材配文",
             name="默认素材配文",
             content="围绕 {{topic}} 给素材 {{materials}} 写 Telegram 群内自然配文，输出 JSON drafts。",

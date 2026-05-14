@@ -122,6 +122,8 @@ class GroupAIChatConfig(BaseModel):
     chat_history_depth: int = Field(default=50, ge=1, le=200)
     ai_model: str = ""
     system_prompt_override: str | None = None
+    slang_prompt_template_id: int | None = None
+    slang_terms: dict[str, str] = Field(default_factory=dict)
     tone: Literal["casual", "professional", "mixed", "auto"] = "auto"
     language: str = "zh-CN"
     max_message_length: int | None = Field(default=None, ge=1)

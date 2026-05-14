@@ -19,6 +19,8 @@ from app.schemas.risk_control import (
     ProxyDisableRequest,
     ProxyHealthCheckOut,
     RiskControlAccountScoreOut,
+    RiskControlGlobalPolicyOut,
+    RiskControlGlobalPolicyUpdate,
     RiskControlOverviewOut,
     RiskControlSummaryOut,
     RiskDispositionItemOut,
@@ -38,6 +40,7 @@ from app.services.risk_control import (
     risk_control_summary,
     risk_preflight,
     update_account_proxy,
+    update_global_policy,
     update_proxy_alert_status,
 )
 
@@ -76,6 +79,12 @@ def get_risk_control_events(session: Session = Depends(get_session), current_use
 @router.get("/api/risk-control/dispositions", response_model=list[RiskDispositionItemOut])
 def get_risk_control_dispositions(session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     return risk_control_summary(session, current_user.tenant_id or 1)["disposition_queue"]
+
+
+@router.patch("/api/risk-control/global-policy", response_model=RiskControlGlobalPolicyOut)
+def patch_risk_control_global_policy(payload: RiskControlGlobalPolicyUpdate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    require_core_feature_access(current_user)
+    return update_global_policy(session, current_user.tenant_id or 1, payload, current_user.name)
 
 
 @router.post("/api/risk-control/preflight", response_model=RiskPreflightOut)

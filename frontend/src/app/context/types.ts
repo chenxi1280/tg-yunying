@@ -4,7 +4,7 @@ import type {
   AdminUser, AdminUserForm,
   TokenLedger,
   UsageLedger, UsageSummary, LoginFlow, Account, AccountPool, AccountLoginForm,
-  DeveloperApp, AiProvider, PromptTemplate, TenantAiSetting, SchedulingSetting,
+  DeveloperApp, AiProvider, PromptTemplate, TenantAiSetting,
   Material, ContentKeywordRule, Contact, Group, MessageTask, ArchiveItem, ArchiveDetail,
   ArchiveExport, AuditFilters, AuditLog, VerificationCode, AccountSyncRecord, VerificationTask,
   AccountCloneItem, AccountClonePlan, AccountGroup, ProfileSyncRecord,
@@ -86,8 +86,6 @@ export interface AppState {
   setTenantAiSetting: (setting: TenantAiSetting | null) => void;
   selectedAiProviderId: number | '';
   setSelectedAiProviderId: (id: number | '') => void;
-  schedulingSetting: SchedulingSetting | null;
-  setSchedulingSetting: (setting: SchedulingSetting | null) => void;
   materials: Material[];
   setMaterials: (materials: Material[]) => void;
   contentKeywordRules: ContentKeywordRule[];
@@ -148,40 +146,6 @@ export interface AppState {
   // Group state
   selectedGroupId: number | null;
   setSelectedGroupId: (id: number | null) => void;
-  jitterMinSeconds: number;
-  setJitterMinSeconds: (seconds: number) => void;
-  jitterMaxSeconds: number;
-  setJitterMaxSeconds: (seconds: number) => void;
-  batchIntervalSeconds: number;
-  setBatchIntervalSeconds: (seconds: number) => void;
-  respectSendWindow: boolean;
-  setRespectSendWindow: (respect: boolean) => void;
-  quietHoursEnabled: boolean;
-  setQuietHoursEnabled: (enabled: boolean) => void;
-  quietStart: string;
-  setQuietStart: (value: string) => void;
-  quietEnd: string;
-  setQuietEnd: (value: string) => void;
-  quietTimezone: string;
-  setQuietTimezone: (value: string) => void;
-  defaultMaxRetries: number;
-  setDefaultMaxRetries: (value: number) => void;
-  defaultRetryDelaySeconds: number;
-  setDefaultRetryDelaySeconds: (value: number) => void;
-  defaultRetryBackoff: string;
-  setDefaultRetryBackoff: (value: string) => void;
-  defaultOnAccountBanned: string;
-  setDefaultOnAccountBanned: (value: string) => void;
-  defaultOnApiRateLimit: string;
-  setDefaultOnApiRateLimit: (value: string) => void;
-  defaultOnContentRejected: string;
-  setDefaultOnContentRejected: (value: string) => void;
-  defaultAccountHourLimit: number;
-  setDefaultAccountHourLimit: (value: number) => void;
-  defaultAccountDayLimit: number;
-  setDefaultAccountDayLimit: (value: number) => void;
-  defaultAccountCooldownSeconds: number;
-  setDefaultAccountCooldownSeconds: (value: number) => void;
   taskStatusFilter: string;
   setTaskStatusFilter: (filter: string) => void;
   groupPolicy: {
@@ -271,6 +235,7 @@ export interface AppState {
   confirmClonePlan: (plan: AccountClonePlan) => Promise<void>;
   retryCloneItem: (item: AccountCloneItem) => Promise<void>;
   confirmVerificationTask: (task: VerificationTask) => Promise<void>;
+  resolveGroupRestrictionTask: (task: VerificationTask) => Promise<void>;
   dismissVerificationTask: (task: VerificationTask) => Promise<void>;
   refreshAccountDetail: () => Promise<void>;
   syncAccountContacts: () => Promise<void>;
@@ -324,7 +289,6 @@ export interface AppState {
   toggleAiProvider: (provider: AiProvider) => Promise<void>;
   checkAiProvider: (provider: AiProvider) => Promise<void>;
   saveTenantAiSetting: () => Promise<void>;
-  saveSchedulingSetting: () => Promise<void>;
   createPromptTemplate: () => Promise<void>;
   openPromptTemplateEdit: (template: PromptTemplate) => void;
   savePromptTemplate: () => Promise<void>;

@@ -10,18 +10,21 @@ from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage
 from app.config import Settings
 from app.database import Base
 from app.gateways import SendResult, _resolve_telethon_target, _telethon_send_target
-from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgGroup, TgGroupAccount, WorkerHeartbeat
+from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgGroup, TgGroupAccount, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskSettingsUpdate
+from app.schemas.operations_center import RuleSetVersionCreate
+from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
 from app.security import encrypt_secret
 from app.services._common import _now
 from app.services.audit import audit_logs_csv, filter_audit_logs
 from app.services.archives import create_archive
 from app.services.ai_config import create_material, create_prompt_template, get_scheduling_setting, update_material, update_prompt_template, update_scheduling_setting
+from app.services.risk_control import update_global_policy
 from app.services.account_capacity import account_capacity_decision
 from app.services.messages import create_message_send_task, dispatch_task, validate_group_task_policy
 from app.services.operations import filter_operation_targets, operation_target_detail, sync_all_operation_targets, update_operation_target, update_operation_target_account_policy
 from app.services.task_center.executors.group_ai_chat import ai_cycle_mode, build_plan as build_group_ai_chat_plan
-from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, rule_center_summary, switch_listener_account, test_rules as preview_rules
+from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
 from app.services.reports import build_overview
 from app.services.task_center.executors.group_relay import apply_transform_rules, build_plan as build_group_relay_plan, passes_relay_filters, resolve_relay_target_ids
 from app.services.group_listeners import process_group_listener
@@ -231,7 +234,34 @@ def test_scheduling_setting_centralizes_quiet_hours_and_default_failure_policy()
     assert loaded.default_account_cooldown_seconds == 45
 
 
-def test_list_rule_sets_initializes_default_relay_filter_rule_set():
+def test_risk_control_global_policy_updates_scheduling_policy():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        policy = update_global_policy(
+            session,
+            1,
+            RiskControlGlobalPolicyUpdate(
+                jitter_min_seconds=12,
+                jitter_max_seconds=8,
+                quiet_hours_enabled=True,
+                default_on_api_rate_limit="pause",
+                default_account_hour_limit=9,
+            ),
+            "pytest",
+        )
+        loaded = get_scheduling_setting(session, 1)
+
+    assert policy["jitter_min_seconds"] == 12
+    assert policy["jitter_max_seconds"] == 12
+    assert policy["default_on_api_rate_limit"] == "pause"
+    assert loaded.quiet_hours_enabled is True
+    assert loaded.default_account_hour_limit == 9
+
+
+def test_list_rule_sets_initializes_default_rule_center():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -244,7 +274,8 @@ def test_list_rule_sets_initializes_default_relay_filter_rule_set():
 
     assert len(rule_sets) == 1
     assert len(loaded) == 1
-    assert rule_sets[0].name == "默认转发监听过滤规则"
+    assert rule_sets[0].name == "默认运营规则集"
+    assert set(rule_sets[0].task_types) == {"group_relay", "group_ai_chat", "channel_comment", "message_send"}
     assert rule_sets[0].active_version_id == rule_sets[0].versions[0].id
     assert rule_sets[0].versions[0].status == "published"
     assert rule_sets[0].versions[0].filters == {
@@ -258,6 +289,56 @@ def test_list_rule_sets_initializes_default_relay_filter_rule_set():
         "only_text": False,
         "language_filter": None,
     }
+
+
+def test_list_rule_sets_adds_default_even_when_custom_rule_set_exists():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        custom = RuleSet(tenant_id=1, name="自定义规则集", description="", status="active", task_types=["group_relay"], default_policy={})
+        session.add(custom)
+        session.commit()
+
+        rule_sets = list_rule_sets(session, 1)
+
+    assert [item.name for item in rule_sets] == ["自定义规则集", "默认运营规则集"]
+
+
+def test_update_rule_set_config_auto_publishes_new_version():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        rule_set = list_rule_sets(session, 1)[0]
+
+        updated = update_rule_set_config(
+            session,
+            1,
+            rule_set.id,
+            RuleSetVersionCreate(
+                filters={"keyword_blacklist": ["广告"]},
+                output_checks={"forbidden_keywords": ["联系我"], "failure_strategy": "drop"},
+                transforms={"remove_links": True},
+                routing={},
+                account_strategy={"mode": "target_sticky"},
+                rate_limits={},
+                retry_policy={"max_retries": 1},
+                version_note="调整基础过滤",
+            ),
+            "pytest",
+        )
+
+    versions = sorted(updated.versions, key=lambda item: item.version)
+    assert [item.version for item in versions] == [1, 2]
+    assert versions[0].status == "archived"
+    assert versions[1].status == "published"
+    assert updated.active_version_id == versions[1].id
+    assert versions[1].filters["keyword_blacklist"] == ["广告"]
+    assert versions[1].transforms["remove_links"] is True
 
 
 def test_prompt_template_and_material_updates_are_persisted():
@@ -1917,6 +1998,7 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
         captured["provider_name"] = credentials.provider_name
         captured["model_name"] = credentials.model_name
         captured["prompt"] = prompt
+        captured["system_prompt"] = _kwargs.get("system_prompt")
         captured["count"] = count
         captured["topic"] = topic
         captured["tone"] = tone
@@ -1949,6 +2031,16 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
         )
         session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, temperature=0.6, max_tokens=1024))
         session.add(
+            PromptTemplate(
+                id=91,
+                tenant_id=1,
+                template_type="AI黑话词表",
+                name="成人行业黑话",
+                content="老师=妓女\n开课=开始营业",
+                is_active=True,
+            )
+        )
+        session.add(
             Task(
                 id="ai-provider-model",
                 tenant_id=1,
@@ -1961,6 +2053,7 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
                     "target_group_id": 7,
                     "topic_hint": "MiMo 续聊",
                     "ai_model": "MiMo-V2.5",
+                    "slang_prompt_template_id": 91,
                     "messages_per_round_mode": "manual",
                     "messages_per_round": 1,
                     "silent_mode_enabled": False,
@@ -1980,10 +2073,55 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
     assert captured["temperature"] == 0.75
     assert captured["max_tokens"] == 1024
     assert "MiMo 活跃群" in str(captured["prompt"])
+    assert "AI 黑话配置：成人行业黑话" in str(captured["system_prompt"])
+    assert "老师=妓女" in str(captured["system_prompt"])
+    assert "开课=开始营业" in str(captured["system_prompt"])
+    assert "老师=妓女" not in str(captured["prompt"])
     assert action is not None
     assert action.payload["message_text"] == "这个话题可以继续自然接一句。"
     assert action.payload["ai_generation_tokens"] == 88
     assert task.last_error == ""
+
+
+def test_group_ai_chat_invalid_slang_template_sets_visible_error(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        "app.services.task_center.ai_generator.ai_gateway.generate_drafts",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("invalid slang template must stop before AI call")),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="黑话失效群", auth_status="已授权运营"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+        session.add(
+            Task(
+                id="ai-invalid-slang",
+                tenant_id=1,
+                name="黑话配置失效",
+                type="group_ai_chat",
+                status="running",
+                account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                type_config={
+                    "target_group_id": 7,
+                    "slang_prompt_template_id": 404,
+                    "messages_per_round_mode": "manual",
+                    "messages_per_round": 1,
+                    "silent_mode_enabled": False,
+                },
+            )
+        )
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, session.get(Task, "ai-invalid-slang"))
+        task = session.get(Task, "ai-invalid-slang")
+
+    assert created == 0
+    assert task.last_error == "AI 黑话配置不存在或已禁用"
 
 
 def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeypatch):

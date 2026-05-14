@@ -34,11 +34,13 @@ from app.services.operations_center import (
     rollback_rule_set_version,
     switch_listener_account,
     test_rules,
+    update_rule_set_config,
 )
 from app.common.http import not_found
 
 
 router = APIRouter()
+SYSTEM_SCOPE_ID = 1
 
 
 @router.get("/api/listeners/summary", response_model=ListenerSummaryOut)
@@ -56,13 +58,13 @@ def post_listener_switch(object_type: str, object_id: int, payload: ListenerSwit
 
 @router.get("/api/rules/summary", response_model=RuleCenterSummaryOut)
 def get_rule_summary(session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    return rule_center_summary(session, current_user.tenant_id or 1)
+    return rule_center_summary(session, SYSTEM_SCOPE_ID)
 
 
 @router.get("/api/rules/relay-attribution/export")
 def export_relay_attribution(session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)) -> Response:
     return Response(
-        content=relay_attribution_csv(session, current_user.tenant_id or 1),
+        content=relay_attribution_csv(session, SYSTEM_SCOPE_ID),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="relay-attribution.csv"'},
     )
@@ -70,7 +72,7 @@ def export_relay_attribution(session: Session = Depends(get_session), current_us
 
 @router.get("/api/rules/relay-attribution/report", response_model=RelayAttributionReportOut)
 def get_relay_attribution_report(session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    return relay_attribution_report(session, current_user.tenant_id or 1)
+    return relay_attribution_report(session, SYSTEM_SCOPE_ID)
 
 
 @router.get("/api/operation-metrics/summary", response_model=OperationMetricsOut)
@@ -82,7 +84,7 @@ def get_operation_metrics_summary(session: Session = Depends(get_session), curre
 def post_rule_test(payload: RuleTestRequest, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     return test_rules(
         session,
-        current_user.tenant_id or 1,
+        SYSTEM_SCOPE_ID,
         payload.text,
         test_type=payload.test_type,
         test_mode=payload.test_mode,
@@ -97,13 +99,13 @@ def post_rule_test(payload: RuleTestRequest, session: Session = Depends(get_sess
 
 @router.get("/api/rule-sets", response_model=list[RuleSetOut])
 def get_rule_sets(session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
-    return list_rule_sets(session, current_user.tenant_id or 1)
+    return list_rule_sets(session, SYSTEM_SCOPE_ID)
 
 
 @router.post("/api/rule-sets", response_model=RuleSetOut)
 def post_rule_set(payload: RuleSetCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return create_rule_set(session, current_user.tenant_id or 1, payload, current_user.name)
+        return create_rule_set(session, SYSTEM_SCOPE_ID, payload, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -111,7 +113,15 @@ def post_rule_set(payload: RuleSetCreate, session: Session = Depends(get_session
 @router.post("/api/rule-sets/{rule_set_id}/versions", response_model=RuleSetOut)
 def post_rule_set_version(rule_set_id: int, payload: RuleSetVersionCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return create_rule_set_version(session, current_user.tenant_id or 1, rule_set_id, payload, current_user.name)
+        return create_rule_set_version(session, SYSTEM_SCOPE_ID, rule_set_id, payload, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.put("/api/rule-sets/{rule_set_id}/config", response_model=RuleSetOut)
+def put_rule_set_config(rule_set_id: int, payload: RuleSetVersionCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return update_rule_set_config(session, SYSTEM_SCOPE_ID, rule_set_id, payload, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -119,7 +129,7 @@ def post_rule_set_version(rule_set_id: int, payload: RuleSetVersionCreate, sessi
 @router.post("/api/rule-sets/{rule_set_id}/versions/{version_id}/publish", response_model=RuleSetOut)
 def post_rule_set_version_publish(rule_set_id: int, version_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return publish_rule_set_version(session, current_user.tenant_id or 1, rule_set_id, version_id, current_user.name)
+        return publish_rule_set_version(session, SYSTEM_SCOPE_ID, rule_set_id, version_id, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -127,7 +137,7 @@ def post_rule_set_version_publish(rule_set_id: int, version_id: int, session: Se
 @router.post("/api/rule-sets/{rule_set_id}/versions/{version_id}/copy", response_model=RuleSetOut)
 def post_rule_set_version_copy(rule_set_id: int, version_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return copy_rule_set_version(session, current_user.tenant_id or 1, rule_set_id, version_id, current_user.name)
+        return copy_rule_set_version(session, SYSTEM_SCOPE_ID, rule_set_id, version_id, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -135,7 +145,7 @@ def post_rule_set_version_copy(rule_set_id: int, version_id: int, session: Sessi
 @router.post("/api/rule-sets/{rule_set_id}/versions/{version_id}/rollback", response_model=RuleSetOut)
 def post_rule_set_version_rollback(rule_set_id: int, version_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return rollback_rule_set_version(session, current_user.tenant_id or 1, rule_set_id, version_id, current_user.name)
+        return rollback_rule_set_version(session, SYSTEM_SCOPE_ID, rule_set_id, version_id, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -143,7 +153,7 @@ def post_rule_set_version_rollback(rule_set_id: int, version_id: int, session: S
 @router.get("/api/rule-sets/{rule_set_id}/tasks", response_model=list[RuleSetBoundTaskOut])
 def get_rule_set_bound_tasks(rule_set_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return list_rule_set_bound_tasks(session, current_user.tenant_id or 1, rule_set_id)
+        return list_rule_set_bound_tasks(session, SYSTEM_SCOPE_ID, rule_set_id)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 

@@ -198,15 +198,14 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
   const [testing, setTesting] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [createOpen, setCreateOpen] = React.useState(false);
-  const [testerOpen, setTesterOpen] = React.useState(false);
-  const [versionTarget, setVersionTarget] = React.useState<RuleSet | null>(null);
+  const [configTarget, setConfigTarget] = React.useState<RuleSet | null>(null);
   const [versionListTarget, setVersionListTarget] = React.useState<RuleSet | null>(null);
   const [boundTaskTarget, setBoundTaskTarget] = React.useState<RuleSet | null>(null);
   const [boundTasks, setBoundTasks] = React.useState<RuleSetBoundTask[]>([]);
   const [detailRule, setDetailRule] = React.useState<RuleRow | null>(null);
   const [error, setError] = React.useState('');
   const [createForm] = Form.useForm();
-  const [versionForm] = Form.useForm();
+  const [configForm] = Form.useForm();
 
   async function load() {
     setLoading(true);
@@ -232,6 +231,15 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
   React.useEffect(() => {
     void load();
   }, []);
+
+  React.useEffect(() => {
+    if (testVersionId || !ruleSets.length) return;
+    const ruleSet = preferredRuleSet(ruleSets);
+    const version = preferredVersion(ruleSet);
+    if (!version) return;
+    setTestVersionId(version.id);
+    setTestType(ruleSet.task_types?.[0] ?? 'group_relay');
+  }, [ruleSets, testVersionId]);
 
   async function runRuleTest() {
     setTesting(true);
@@ -277,23 +285,11 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     }
   }
 
-  function ruleConfig(values: Record<string, string>) {
-    const read = (key: string) => {
-      const raw = values[key]?.trim() || '{}';
-      const parsed = JSON.parse(raw);
-      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
-        throw new Error(`${key} 必须是 JSON 对象`);
-      }
-      return parsed;
-    };
+  function ruleConfig(values: Record<string, any>) {
+    const config = composeRuleConfig(values, groupTargets);
     return {
-      filters: read('filters'),
-      transforms: read('transforms'),
-      routing: read('routing'),
-      account_strategy: read('account_strategy'),
-      rate_limits: read('rate_limits'),
-      retry_policy: read('retry_policy'),
-      output_checks: read('output_checks'),
+      ...config,
+      version_note: values.version_note || '配置编辑自动生成',
     };
   }
 
@@ -322,21 +318,38 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     }
   }
 
-  async function createRuleSetVersion() {
-    if (!versionTarget) return;
+  async function saveRuleSetConfig() {
+    if (!configTarget) return;
     setSaving(true);
     setError('');
     try {
-      const values = await versionForm.validateFields();
-      await api<RuleSet>(`/rule-sets/${versionTarget.id}/versions`, { method: 'POST', body: JSON.stringify(ruleConfig(values)) });
-      setVersionTarget(null);
-      versionForm.resetFields();
+      const values = await configForm.validateFields();
+      await api<RuleSet>(`/rule-sets/${configTarget.id}/config`, { method: 'PUT', body: JSON.stringify(ruleConfig(values)) });
+      setConfigTarget(null);
+      configForm.resetFields();
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
+  }
+
+  function openConfigEditor(ruleSet: RuleSet, version?: RuleVersionRow | RuleSet['versions'][number]) {
+    setConfigTarget(ruleSet);
+    configForm.setFieldsValue({
+      ...ruleFormValuesFromVersion(ruleSet, groupTargets, version),
+      version_note: version ? `基于 v${version.version} 编辑` : '配置编辑自动生成',
+    });
+  }
+
+  function openRuleTester(ruleSet: RuleSet) {
+    const version = preferredVersion(ruleSet);
+    if (version) {
+      setTestVersionId(version.id);
+    }
+    setTestType(ruleSet.task_types?.[0] ?? 'group_relay');
+    setActiveTab('tester');
   }
 
   async function publishRuleSetVersion(ruleSet: RuleSet, versionId: number) {
@@ -344,19 +357,6 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     setError('');
     try {
       await api<RuleSet>(`/rule-sets/${ruleSet.id}/versions/${versionId}/publish`, { method: 'POST' });
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function copyRuleSetVersion(ruleSet: RuleSet, versionId: number) {
-    setSaving(true);
-    setError('');
-    try {
-      await api<RuleSet>(`/rule-sets/${ruleSet.id}/versions/${versionId}/copy`, { method: 'POST' });
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -436,12 +436,13 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     {
       title: '操作',
       key: 'actions',
-      width: 280,
+      width: 330,
       render: (_, row) => (
         <Space size={8}>
-          <Button size="small" onClick={() => setVersionListTarget(row)}>查看版本</Button>
+          <Button size="small" type="primary" icon={<CheckCircle2 size={14} />} onClick={() => openConfigEditor(row)}>编辑配置</Button>
+          <Button size="small" onClick={() => openRuleTester(row)}>测试</Button>
+          <Button size="small" onClick={() => setVersionListTarget(row)}>版本记录</Button>
           <Button size="small" onClick={() => openBoundTasks(row)}>绑定任务</Button>
-          <Button size="small" icon={<CheckCircle2 size={14} />} onClick={() => { setVersionTarget(row); versionForm.setFieldsValue(ruleFormValuesFromVersion(row, groupTargets)); }}>新建版本</Button>
         </Space>
       ),
     },
@@ -465,8 +466,8 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
       width: 260,
       render: (_, version) => (
         <Space size={8}>
+          <Button size="small" onClick={() => openConfigEditor(version.ruleSet, version)}>{version.status === 'published' ? '编辑配置' : '基于此版编辑'}</Button>
           {version.status === 'published' ? <Typography.Text type="secondary">当前发布</Typography.Text> : <Button size="small" loading={saving} onClick={() => publishRuleSetVersion(version.ruleSet, version.id)}>发布</Button>}
-          <Button size="small" loading={saving} onClick={() => copyRuleSetVersion(version.ruleSet, version.id)}>复制草稿</Button>
           {version.status === 'archived' && <Button size="small" danger loading={saving} onClick={() => rollbackRuleSetVersion(version.ruleSet, version.id)}>回滚到此版本</Button>}
         </Space>
       ),
@@ -474,7 +475,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
   ];
   const versionOptions = ruleSets.flatMap((ruleSet) => ruleSet.versions.map((version) => ({
     value: version.id,
-    label: `${ruleSet.name} / v${version.version} / ${version.status === 'published' ? '已发布' : '草稿'}`,
+    label: `${ruleSet.name} / v${version.version} / ${version.status === 'published' ? '当前发布' : version.status}`,
   })));
   const routeColumns: ColumnsType<RuleTestResult['target_routes'][number]> = [
     { title: '目标群', dataIndex: 'title' },
@@ -543,7 +544,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
       <div className="form-grid">
         <label>测试模式<Select value={testMode} onChange={setTestMode} options={TEST_MODE_OPTIONS} /></label>
         <label>测试类型<Select value={testType} onChange={setTestType} options={TASK_TYPE_OPTIONS} /></label>
-        <label>规则版本<Select allowClear value={testVersionId ?? undefined} onChange={(value) => setTestVersionId(value ?? null)} options={versionOptions} placeholder="选择已发布或草稿版本" /></label>
+        <label>规则版本<Select allowClear value={testVersionId ?? undefined} onChange={(value) => setTestVersionId(value ?? null)} options={versionOptions} placeholder="默认使用当前发布版本" /></label>
         <label>源群 ID<Input value={testSourceGroupId} onChange={(event) => setTestSourceGroupId(event.target.value)} placeholder="用于 source_group_map / routes 预览" /></label>
       </div>
       <Input.TextArea rows={4} value={sample} onChange={(event) => setSample(event.target.value)} placeholder="输入源消息、用户消息或频道评论上下文，预览规则命中情况" />
@@ -619,6 +620,29 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
       ),
     },
     {
+      key: 'system-rules',
+      label: '规则配置',
+      children: (
+        <div className="rules-tab-stack">
+          <Table<RuleSet>
+            className="tg-table"
+            rowKey="id"
+            columns={ruleSetColumns}
+            dataSource={ruleSets}
+            pagination={{ pageSize: 8 }}
+            scroll={{ x: 980 }}
+            loading={loading}
+            locale={{ emptyText: '默认运营规则集正在初始化。' }}
+          />
+        </div>
+      ),
+    },
+    {
+      key: 'tester',
+      label: '规则测试',
+      children: ruleTesterPanel,
+    },
+    {
       key: 'versions',
       label: '规则版本',
       children: (
@@ -635,29 +659,6 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
           />
         </div>
       ),
-    },
-    {
-      key: 'system-rules',
-      label: '规则配置',
-      children: (
-        <div className="rules-tab-stack">
-          <Space className="toolbar-row" wrap>{table.searchInput}</Space>
-          <Table<RuleRow>
-            className="tg-table"
-            rowKey="key"
-            columns={columns}
-            dataSource={table.filteredRows}
-            pagination={table.pagination}
-            scroll={{ x: 960 }}
-            loading={loading}
-          />
-        </div>
-      ),
-    },
-    {
-      key: 'tester',
-      label: '规则测试',
-      children: ruleTesterPanel,
     },
     {
       key: 'monitor',
@@ -771,7 +772,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
       <Space className="stats-grid" wrap>
         <StatCard label="系统规则" value={summary.system_rule_count} detail="自动校验、路由、账号、重试" icon={<ShieldAlert size={20} />} />
         <StatCard label="规则集" value={ruleSets.length} detail="过滤、转换、路由版本化" icon={<CheckCircle2 size={20} />} />
-        <StatCard label="条件词规则" value={summary.keyword_rule_count} detail="规则集条件统一管理" icon={<Database size={20} />} />
+        <StatCard label="发布版本" value={ruleSets.filter((ruleSet) => ruleSet.versions.some((version) => version.id === ruleSet.active_version_id && version.status === 'published')).length} detail="当前生效的规则配置" icon={<Database size={20} />} />
         <StatCard label="转发任务规则" value={summary.relay_task_rule_count} detail="任务绑定的过滤/转换配置" icon={<CheckCircle2 size={20} />} />
       </Space>
       <Card
@@ -780,7 +781,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
         extra={(
           <Space wrap>
             <Button icon={<ShieldAlert size={16} />} onClick={() => setActiveTab('monitor')}>查看命中记录</Button>
-            <Button onClick={() => setTesterOpen(true)}>规则测试器</Button>
+            <Button onClick={() => setActiveTab('tester')}>规则测试器</Button>
             <Button type="primary" icon={<CheckCircle2 size={16} />} onClick={() => { createForm.setFieldsValue(defaultRuleFormValues()); setCreateOpen(true); }}>新建规则集</Button>
             <Button icon={<RefreshCcw size={16} />} loading={loading} onClick={load}>刷新</Button>
           </Space>
@@ -789,9 +790,6 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
         {error && <Alert className="form-alert" type="error" showIcon message={error} />}
         <Tabs className="rules-workbench-tabs" activeKey={activeTab} onChange={setActiveTab} items={ruleWorkbenchItems} />
       </Card>
-      <Modal className="tg-modal large" title="规则测试器" open={testerOpen} width={920} footer={null} onCancel={() => setTesterOpen(false)} destroyOnHidden centered>
-        {ruleTesterPanel}
-      </Modal>
       <Modal className="tg-modal large" title={versionListTarget ? `版本列表：${versionListTarget.name}` : '版本列表'} open={Boolean(versionListTarget)} width={980} footer={null} onCancel={() => setVersionListTarget(null)} destroyOnHidden centered>
         <Table<RuleVersionRow>
           className="tg-table"
@@ -843,8 +841,8 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
       <Modal className="tg-modal large" title="新建规则集" open={createOpen} width={840} confirmLoading={saving} okText="创建并发布 v1" cancelText="取消" onOk={createRuleSet} onCancel={() => setCreateOpen(false)} destroyOnHidden centered>
         <RuleSetForm form={createForm} includeBasics groupTargets={groupTargets} />
       </Modal>
-      <Modal className="tg-modal large" title={versionTarget ? `新建版本：${versionTarget.name}` : '新建版本'} open={Boolean(versionTarget)} width={840} confirmLoading={saving} okText="保存未发布版本" cancelText="取消" onOk={createRuleSetVersion} onCancel={() => setVersionTarget(null)} destroyOnHidden centered>
-        <RuleSetForm form={versionForm} groupTargets={groupTargets} />
+      <Modal className="tg-modal large" title={configTarget ? `编辑规则配置：${configTarget.name}` : '编辑规则配置'} open={Boolean(configTarget)} width={840} confirmLoading={saving} okText="保存并发布新版本" cancelText="取消" onOk={saveRuleSetConfig} onCancel={() => setConfigTarget(null)} destroyOnHidden centered>
+        <RuleSetForm form={configForm} groupTargets={groupTargets} />
       </Modal>
     </section>
   );
@@ -918,6 +916,7 @@ function defaultRuleFormValues() {
     input_failure: 'skip',
     output_failure: 'transform_once_drop',
     version_binding: 'follow_current',
+    version_note: '配置编辑自动生成',
     visual_forbidden_keywords: '',
     visual_forbid_links: false,
     visual_forbid_mentions: true,
@@ -928,8 +927,8 @@ function defaultRuleFormValues() {
   };
 }
 
-function ruleFormValuesFromVersion(ruleSet: RuleSet, groupTargets: OperationTarget[] = []) {
-  const version = ruleSet.versions.find((item) => item.id === ruleSet.active_version_id) ?? ruleSet.versions[0];
+function ruleFormValuesFromVersion(ruleSet: RuleSet, groupTargets: OperationTarget[] = [], sourceVersion?: RuleSet['versions'][number]) {
+  const version = sourceVersion ?? ruleSet.versions.find((item) => item.id === ruleSet.active_version_id) ?? ruleSet.versions[0];
   if (!version) return defaultRuleFormValues();
   const filters = version.filters ?? {};
   const transforms = version.transforms ?? {};
@@ -980,6 +979,114 @@ function ruleFormValuesFromVersion(ruleSet: RuleSet, groupTargets: OperationTarg
     visual_output_min_length: outputChecks.min_length ?? null,
     visual_output_max_length: outputChecks.max_length ?? null,
     visual_output_failure_strategy: outputChecks.failure_strategy ?? outputChecks.on_failure ?? 'transform_once_drop',
+    version_note: version.version_note ?? '',
+  };
+}
+
+function preferredRuleSet(ruleSets: RuleSet[]) {
+  return ruleSets.find((item) => item.name.includes('默认')) ?? ruleSets[0];
+}
+
+function preferredVersion(ruleSet: RuleSet) {
+  return ruleSet.versions.find((item) => item.id === ruleSet.active_version_id)
+    ?? ruleSet.versions.find((item) => item.status === 'published')
+    ?? ruleSet.versions[0];
+}
+
+function composeRuleConfig(values: Record<string, any>, groupTargets: OperationTarget[]) {
+  const filters = readStrictJsonObject(values.filters, 'filters');
+  const outputChecks = readStrictJsonObject(values.output_checks, 'output_checks');
+  const transforms = readStrictJsonObject(values.transforms, 'transforms');
+  const routing = readStrictJsonObject(values.routing, 'routing');
+  const accountStrategy = readStrictJsonObject(values.account_strategy, 'account_strategy');
+  const rateLimits = readStrictJsonObject(values.rate_limits, 'rate_limits');
+  const retryPolicy = readStrictJsonObject(values.retry_policy, 'retry_policy');
+
+  filters.keyword_whitelist = words(values.visual_keyword_whitelist);
+  filters.keyword_blacklist = words(values.visual_keyword_blacklist);
+  setOptionalNumber(filters, 'min_message_length', values.visual_min_message_length);
+  setOptionalNumber(filters, 'max_message_length', values.visual_max_message_length);
+  setOptionalList(filters, 'allowed_media_types', words(values.visual_allowed_media_types));
+  setOptionalList(filters, 'blocked_user_ids', words(values.visual_blocked_user_ids));
+  filters.only_with_media = values.visual_message_type_filter === 'media';
+  filters.only_text = values.visual_message_type_filter === 'text';
+  const expression = parseFilterExpression(values.visual_expression_mode, values.visual_expression_conditions);
+  if (expression.conditions.length) {
+    filters.expression = expression;
+  } else {
+    delete filters.expression;
+  }
+
+  transforms.prefix = values.visual_prefix || '';
+  transforms.suffix = values.visual_suffix || '';
+  transforms.remove_mentions = Boolean(values.visual_remove_mentions);
+  transforms.remove_links = Boolean(values.visual_remove_links);
+
+  outputChecks.forbidden_keywords = words(values.visual_forbidden_keywords);
+  outputChecks.forbid_links = Boolean(values.visual_forbid_links);
+  outputChecks.forbid_mentions = Boolean(values.visual_forbid_mentions);
+  outputChecks.forbid_contacts = Boolean(values.visual_forbid_contacts);
+  outputChecks.failure_strategy = values.visual_output_failure_strategy || 'transform_once_drop';
+  setOptionalNumber(outputChecks, 'min_length', values.visual_output_min_length);
+  setOptionalNumber(outputChecks, 'max_length', values.visual_output_max_length);
+
+  routing.target_group_ids = uniqueNumbers([
+    ...groupIdsForOperationTargetIds(values.visual_default_operation_target_ids, groupTargets),
+    ...numberList(values.visual_default_target_group_ids),
+  ]);
+  const sourceGroupMap = parseSourceGroupMap(values.visual_source_group_map);
+  if (Object.keys(sourceGroupMap).length) {
+    routing.source_group_map = sourceGroupMap;
+  } else {
+    delete routing.source_group_map;
+  }
+  const keywordRoutes = parseKeywordRoutes(values.visual_keyword_routes);
+  if (keywordRoutes.length) {
+    routing.keyword_routes = keywordRoutes;
+  } else {
+    delete routing.keyword_routes;
+  }
+  const routes = parseRoutes(values.visual_routes);
+  if (routes.length) {
+    routing.routes = routes;
+  } else {
+    delete routing.routes;
+  }
+
+  accountStrategy.mode = values.visual_account_mode || 'target_sticky';
+  if (values.visual_fixed_account_id) {
+    accountStrategy.account_id = values.visual_fixed_account_id;
+  } else {
+    delete accountStrategy.account_id;
+    delete accountStrategy.fixed_account_id;
+  }
+  const accountWeights = parseAccountWeights(values.visual_account_weights);
+  if (Object.keys(accountWeights).length) {
+    accountStrategy.weights = accountWeights;
+  } else {
+    delete accountStrategy.weights;
+  }
+
+  if (values.visual_per_target_per_hour) {
+    rateLimits.per_target_per_hour = values.visual_per_target_per_hour;
+  } else {
+    delete rateLimits.per_target_per_hour;
+  }
+  if (values.visual_cooldown_seconds) {
+    rateLimits.cooldown_seconds = values.visual_cooldown_seconds;
+  } else {
+    delete rateLimits.cooldown_seconds;
+  }
+  retryPolicy.max_retries = values.visual_max_retries ?? 3;
+
+  return {
+    filters,
+    output_checks: outputChecks,
+    transforms,
+    routing,
+    account_strategy: accountStrategy,
+    rate_limits: rateLimits,
+    retry_policy: retryPolicy,
   };
 }
 
@@ -991,94 +1098,16 @@ function RuleSetForm({ form, includeBasics = false, groupTargets = [] }: { form:
 
   function applyVisualTemplate() {
     const values = form.getFieldsValue() as Record<string, any>;
-    const filters = readJsonObject(values.filters);
-    const outputChecks = readJsonObject(values.output_checks);
-    const transforms = readJsonObject(values.transforms);
-    const routing = readJsonObject(values.routing);
-    const accountStrategy = readJsonObject(values.account_strategy);
-    const rateLimits = readJsonObject(values.rate_limits);
-    const retryPolicy = readJsonObject(values.retry_policy);
-
-    filters.keyword_whitelist = words(values.visual_keyword_whitelist);
-    filters.keyword_blacklist = words(values.visual_keyword_blacklist);
-    setOptionalNumber(filters, 'min_message_length', values.visual_min_message_length);
-    setOptionalNumber(filters, 'max_message_length', values.visual_max_message_length);
-    setOptionalList(filters, 'allowed_media_types', words(values.visual_allowed_media_types));
-    setOptionalList(filters, 'blocked_user_ids', words(values.visual_blocked_user_ids));
-    filters.only_with_media = values.visual_message_type_filter === 'media';
-    filters.only_text = values.visual_message_type_filter === 'text';
-    const expression = parseFilterExpression(values.visual_expression_mode, values.visual_expression_conditions);
-    if (expression.conditions.length) {
-      filters.expression = expression;
-    } else {
-      delete filters.expression;
-    }
-    transforms.prefix = values.visual_prefix || '';
-    transforms.suffix = values.visual_suffix || '';
-    transforms.remove_mentions = Boolean(values.visual_remove_mentions);
-    transforms.remove_links = Boolean(values.visual_remove_links);
-    outputChecks.forbidden_keywords = words(values.visual_forbidden_keywords);
-    outputChecks.forbid_links = Boolean(values.visual_forbid_links);
-    outputChecks.forbid_mentions = Boolean(values.visual_forbid_mentions);
-    outputChecks.forbid_contacts = Boolean(values.visual_forbid_contacts);
-    outputChecks.failure_strategy = values.visual_output_failure_strategy || 'transform_once_drop';
-    setOptionalNumber(outputChecks, 'min_length', values.visual_output_min_length);
-    setOptionalNumber(outputChecks, 'max_length', values.visual_output_max_length);
-    routing.target_group_ids = uniqueNumbers([
-      ...groupIdsForOperationTargetIds(values.visual_default_operation_target_ids, groupTargets),
-      ...numberList(values.visual_default_target_group_ids),
-    ]);
-    const sourceGroupMap = parseSourceGroupMap(values.visual_source_group_map);
-    if (Object.keys(sourceGroupMap).length) {
-      routing.source_group_map = sourceGroupMap;
-    } else {
-      delete routing.source_group_map;
-    }
-    const keywordRoutes = parseKeywordRoutes(values.visual_keyword_routes);
-    if (keywordRoutes.length) {
-      routing.keyword_routes = keywordRoutes;
-    } else {
-      delete routing.keyword_routes;
-    }
-    const routes = parseRoutes(values.visual_routes);
-    if (routes.length) {
-      routing.routes = routes;
-    } else {
-      delete routing.routes;
-    }
-    accountStrategy.mode = values.visual_account_mode || 'target_sticky';
-    if (values.visual_fixed_account_id) {
-      accountStrategy.account_id = values.visual_fixed_account_id;
-    } else {
-      delete accountStrategy.account_id;
-      delete accountStrategy.fixed_account_id;
-    }
-    const accountWeights = parseAccountWeights(values.visual_account_weights);
-    if (Object.keys(accountWeights).length) {
-      accountStrategy.weights = accountWeights;
-    } else {
-      delete accountStrategy.weights;
-    }
-    if (values.visual_per_target_per_hour) {
-      rateLimits.per_target_per_hour = values.visual_per_target_per_hour;
-    } else {
-      delete rateLimits.per_target_per_hour;
-    }
-    if (values.visual_cooldown_seconds) {
-      rateLimits.cooldown_seconds = values.visual_cooldown_seconds;
-    } else {
-      delete rateLimits.cooldown_seconds;
-    }
-    retryPolicy.max_retries = values.visual_max_retries ?? 3;
+    const config = composeRuleConfig(values, groupTargets);
 
     form.setFieldsValue({
-      filters: formatJson(filters),
-      output_checks: formatJson(outputChecks),
-      transforms: formatJson(transforms),
-      routing: formatJson(routing),
-      account_strategy: formatJson(accountStrategy),
-      rate_limits: formatJson(rateLimits),
-      retry_policy: formatJson(retryPolicy),
+      filters: formatJson(config.filters),
+      output_checks: formatJson(config.output_checks),
+      transforms: formatJson(config.transforms),
+      routing: formatJson(config.routing),
+      account_strategy: formatJson(config.account_strategy),
+      rate_limits: formatJson(config.rate_limits),
+      retry_policy: formatJson(config.retry_policy),
     });
   }
 
@@ -1094,7 +1123,8 @@ function RuleSetForm({ form, includeBasics = false, groupTargets = [] }: { form:
           <Form.Item name="version_binding" label="任务绑定方式"><Select options={[{ value: 'fixed_version', label: '固定版本' }, { value: 'follow_current', label: '跟随当前发布版本' }]} /></Form.Item>
         </div>
       )}
-      <Card size="small" title="常用规则模板" extra={<Button size="small" onClick={applyVisualTemplate}>生成 JSON</Button>}>
+      <Form.Item name="version_note" label="版本说明"><Input placeholder="例如：调整关键词、输出校验或路由策略" /></Form.Item>
+      <Card size="small" title="规则配置" extra={<Button size="small" onClick={applyVisualTemplate}>同步高级配置</Button>}>
         <div className="form-grid">
           <Form.Item name="visual_keyword_whitelist" label="白名单关键词"><Input placeholder="公告, 活动" /></Form.Item>
           <Form.Item name="visual_keyword_blacklist" label="黑名单关键词"><Input placeholder="广告, 禁止" /></Form.Item>
@@ -1161,6 +1191,14 @@ function readJsonObject(raw: string): Record<string, any> {
   } catch {
     return {};
   }
+}
+
+function readStrictJsonObject(raw: string, key: string): Record<string, any> {
+  const parsed = JSON.parse((raw || '').trim() || '{}');
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+    throw new Error(`${key} 必须是 JSON 对象`);
+  }
+  return parsed;
 }
 
 function formatJson(value: Record<string, any>) {

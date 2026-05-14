@@ -6,7 +6,6 @@ import type {
   DeveloperApp,
   Material,
   PromptTemplate,
-  SchedulingSetting,
   Tenant,
   TenantAiSetting,
 } from '../types';
@@ -19,7 +18,6 @@ interface Props {
   aiProviders: AiProvider[];
   promptTemplates: PromptTemplate[];
   tenantAiSetting: TenantAiSetting | null;
-  schedulingSetting: SchedulingSetting | null;
   materials: Material[];
   contentKeywordRules: ContentKeywordRule[];
   currentUserRole: string | undefined;
@@ -33,8 +31,8 @@ interface Props {
   onToggleAiProvider: (provider: AiProvider) => void;
   onCheckAiProvider: (provider: AiProvider) => void;
   onEditTenantAi: () => void;
-  onEditScheduling: () => void;
   onCreatePromptTemplate: () => void;
+  onCreateSlangTemplate: () => void;
   onEditPromptTemplate: (template: PromptTemplate) => void;
   onCreateMaterial: () => void;
   onEditMaterial: (material: Material) => void;
@@ -50,7 +48,6 @@ export default function SystemConfigView({
   aiProviders,
   promptTemplates,
   tenantAiSetting,
-  schedulingSetting,
   materials,
   contentKeywordRules,
   currentUserRole,
@@ -64,8 +61,8 @@ export default function SystemConfigView({
   onToggleAiProvider,
   onCheckAiProvider,
   onEditTenantAi,
-  onEditScheduling,
   onCreatePromptTemplate,
+  onCreateSlangTemplate,
   onEditPromptTemplate,
   onCreateMaterial,
   onEditMaterial,
@@ -106,7 +103,6 @@ export default function SystemConfigView({
               aiProviders={aiProviders}
               promptTemplates={promptTemplates}
               tenantAiSetting={tenantAiSetting}
-              schedulingSetting={schedulingSetting}
               materials={materials}
               contentKeywordRules={contentKeywordRules}
               currentUserRole={currentUserRole}
@@ -115,8 +111,8 @@ export default function SystemConfigView({
               onToggleProvider={onToggleAiProvider}
               onCheckProvider={onCheckAiProvider}
               onEditTenantAi={onEditTenantAi}
-              onEditScheduling={onEditScheduling}
               onCreatePromptTemplate={onCreatePromptTemplate}
+              onCreateSlangTemplate={onCreateSlangTemplate}
               onEditPromptTemplate={onEditPromptTemplate}
               onCreateMaterial={onCreateMaterial}
               onEditMaterial={onEditMaterial}
@@ -127,15 +123,14 @@ export default function SystemConfigView({
           ),
         },
         {
-          key: 'scheduling',
-          label: '发送节奏与风控',
+          key: 'ai-slang',
+          label: 'AI黑话配置',
           children: (
             <AISettingsView
-              section="scheduling"
+              section="slang"
               aiProviders={aiProviders}
               promptTemplates={promptTemplates}
               tenantAiSetting={tenantAiSetting}
-              schedulingSetting={schedulingSetting}
               materials={materials}
               contentKeywordRules={contentKeywordRules}
               currentUserRole={currentUserRole}
@@ -144,8 +139,8 @@ export default function SystemConfigView({
               onToggleProvider={onToggleAiProvider}
               onCheckProvider={onCheckAiProvider}
               onEditTenantAi={onEditTenantAi}
-              onEditScheduling={onEditScheduling}
               onCreatePromptTemplate={onCreatePromptTemplate}
+              onCreateSlangTemplate={onCreateSlangTemplate}
               onEditPromptTemplate={onEditPromptTemplate}
               onCreateMaterial={onCreateMaterial}
               onEditMaterial={onEditMaterial}
@@ -164,7 +159,6 @@ export default function SystemConfigView({
               aiProviders={aiProviders}
               promptTemplates={promptTemplates}
               tenantAiSetting={tenantAiSetting}
-              schedulingSetting={schedulingSetting}
               materials={materials}
               contentKeywordRules={contentKeywordRules}
               currentUserRole={currentUserRole}
@@ -173,8 +167,8 @@ export default function SystemConfigView({
               onToggleProvider={onToggleAiProvider}
               onCheckProvider={onCheckAiProvider}
               onEditTenantAi={onEditTenantAi}
-              onEditScheduling={onEditScheduling}
               onCreatePromptTemplate={onCreatePromptTemplate}
+              onCreateSlangTemplate={onCreateSlangTemplate}
               onEditPromptTemplate={onEditPromptTemplate}
               onCreateMaterial={onCreateMaterial}
               onEditMaterial={onEditMaterial}

@@ -4,11 +4,11 @@ import re
 from dataclasses import replace
 from difflib import SequenceMatcher
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.ai_gateway import normalize_ai_model_name
-from app.models import AiProvider, AiProviderHealthStatus, TenantAiSetting
+from app.models import AiProvider, AiProviderHealthStatus, PromptTemplate, TenantAiSetting
 from app.services._common import ai_gateway
 from app.services.ai_config import ai_provider_credentials
 from app.services.content_filters import looks_like_generated_template_noise, looks_like_operator_ui_content
@@ -82,6 +82,7 @@ def generate_contents(
     count: int,
     purpose: str,
     target_label: str = "",
+    system_prompt: str | None = None,
 ) -> tuple[list[str], int]:
     provider, setting = _provider(session, tenant_id, provider_id, model_name)
     if not provider or not setting:
@@ -116,6 +117,7 @@ def generate_contents(
             persona_set=persona_set,
             temperature=max(float(setting.temperature or 0.7), 0.75) if purpose == GROUP_CHAT_PURPOSE else setting.temperature,
             max_tokens=max(setting.max_tokens, 1024),
+            system_prompt=system_prompt,
         )
     except Exception as exc:
         if purpose == GROUP_CHAT_PURPOSE:
@@ -286,7 +288,21 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
     topic_thread_prompt = f"话题脉络：\n{topic_thread}" if topic_thread else ""
     topic_plan = str(config.get("topic_plan") or "").strip()
     topic_plan_prompt = f"本轮话题计划：\n{topic_plan}" if topic_plan else ""
-    requirements = "\n".join(part for part in [config.get("topic_hint") or "", topic_thread_prompt, topic_plan_prompt, persona_prompt, memory_prompt, profile_prompt, history, config.get("system_prompt_override") or ""] if part)
+    slang_prompt = _slang_system_prompt(session, tenant_id, config)
+    requirements = "\n".join(
+        part
+        for part in [
+            config.get("topic_hint") or "",
+            topic_thread_prompt,
+            topic_plan_prompt,
+            persona_prompt,
+            memory_prompt,
+            profile_prompt,
+            history,
+            config.get("system_prompt_override") or "",
+        ]
+        if part
+    )
     contents, tokens = generate_contents(
         session,
         tenant_id,
@@ -297,8 +313,67 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
         count=count,
         purpose="群活跃续聊",
         target_label=target_label,
+        system_prompt=_group_chat_system_prompt(slang_prompt),
     )
     return _trim(contents, config.get("max_message_length")), tokens
+
+
+def _group_chat_system_prompt(slang_prompt: str) -> str:
+    base = "你是一个 Telegram 群运营话术助手，只输出用户要求的 JSON。"
+    if not slang_prompt:
+        return base
+    return f"{base}\n\n{slang_prompt}"
+
+
+def _slang_system_prompt(session: Session, tenant_id: int, config: dict) -> str:
+    parts = [
+        _slang_prompt_template(session, tenant_id, config.get("slang_prompt_template_id")),
+        _slang_terms_prompt(config.get("slang_terms")),
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
+def _slang_prompt_template(session: Session, tenant_id: int, template_id: object) -> str:
+    try:
+        resolved_id = int(template_id or 0)
+    except (TypeError, ValueError):
+        raise AiGenerationUnavailable("AI 黑话配置不存在或已禁用")
+    if not resolved_id:
+        return ""
+    template = session.scalar(
+        select(PromptTemplate).where(
+            PromptTemplate.id == resolved_id,
+            PromptTemplate.is_active.is_(True),
+            PromptTemplate.template_type == "AI黑话词表",
+            or_(PromptTemplate.tenant_id == tenant_id, PromptTemplate.tenant_id.is_(None)),
+        )
+    )
+    if not template or not template.content.strip():
+        raise AiGenerationUnavailable("AI 黑话配置不存在或已禁用")
+    return (
+        f"AI 黑话配置：{template.name}\n"
+        "以下内容是本任务的系统级行业口径，生成所有群聊消息时必须优先遵守；"
+        "不要向群友解释这是配置或词表。\n"
+        f"{template.content.strip()}"
+    )
+
+
+def _slang_terms_prompt(value: object) -> str:
+    if not isinstance(value, dict):
+        return ""
+    terms = [
+        (str(source).strip(), str(target).strip())
+        for source, target in value.items()
+        if str(source).strip() and str(target).strip()
+    ]
+    if not terms:
+        return ""
+    lines = "\n".join(f"- {source} => {target}" for source, target in terms[:50])
+    return (
+        "行业黑话/俗语口径（强制遵守）：\n"
+        f"{lines}\n"
+        "生成时遇到左侧词或对应场景，不按字面含义解释，必须用右侧口径理解和表达；不要向群友解释这是词表。"
+    )
 
 
 def generate_channel_comments(session: Session, tenant_id: int, config: dict, *, count: int, message_content: str, target_label: str) -> tuple[list[str], int]:

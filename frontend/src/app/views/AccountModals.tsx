@@ -13,6 +13,8 @@ import { formatBeijingDateTime, parseBeijingDate } from '../time';
 
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
 const verificationTargetLabel = (task: VerificationTask) => task.target_display || task.target_peer_id || (task.group_id ? `群聊 #${task.group_id}` : '未识别目标');
+const verificationActionLabel = (task: VerificationTask) => task.resolution_entry_label || (task.issue_category === 'group_restriction' ? '解除群限制' : '处理');
+const verificationActionable = (task: VerificationTask) => ['待处理', '失败', '需人工处理'].includes(task.status);
 
 // ===== Account Pool Detail Modal =====
 
@@ -136,7 +138,7 @@ export function AccountPoolDetailModal({
             className="mini-list"
             dataSource={accountPoolDetail.verification_tasks.slice(0, 4)}
             renderItem={(task) => (
-              <List.Item className={statusAccent(task.status)} actions={[<Button size="small" onClick={() => { onSetReturnAfterVerification('accountPoolDetail'); onSetModal({ type: 'verificationTaskDetail', payload: task }); }}>处理</Button>]}>
+              <List.Item className={statusAccent(task.status)} actions={[<Button size="small" onClick={() => { onSetReturnAfterVerification('accountPoolDetail'); onSetModal({ type: 'verificationTaskDetail', payload: task }); }}>{verificationActionLabel(task)}</Button>]}>
                 <List.Item.Meta
                   title={<Space><StatusBadge status={task.status} />{task.verification_type}</Space>}
                   description={<Space direction="vertical" size={0}><span>目标：{verificationTargetLabel(task)}</span><span>{task.detected_reason || task.suggested_action}</span></Space>}
@@ -176,6 +178,7 @@ interface AccountDetailModalProps {
   onRetryAccountProfileSync: () => Promise<void>;
   onDismissVerificationTask: (task: VerificationTask) => Promise<void>;
   onConfirmVerificationTask: (task: VerificationTask) => Promise<void>;
+  onResolveGroupRestrictionTask: (task: VerificationTask) => Promise<void>;
   onOpenConfirm: (payload: {
     title: string;
     message: string;
@@ -199,7 +202,7 @@ export function AccountDetailModal({
   onStartDirectMessageToContact, onCreateDirectMessageTask,
   onConfirmClonePlan, onRetryCloneItem,
   onRetryAccountProfileSync,
-  onDismissVerificationTask, onConfirmVerificationTask,
+  onDismissVerificationTask, onConfirmVerificationTask, onResolveGroupRestrictionTask,
   onOpenConfirm, onSetReturnAfterVerification, onSetModal,
   onSetCloneForm, accountName, isActionPending,
 }: AccountDetailModalProps) {
@@ -540,7 +543,7 @@ export function AccountDetailModal({
           <div className="section-title">
             <div>
               <h2>验证辅助</h2>
-              <span>遇到关注频道、机器人按钮、发言验证等情况时，平台会生成可确认的处理事项；官方冷却或群限制类需要等待 TG / 目标群解除。</span>
+              <span>账号级受限由系统探测恢复；群管理机器拦截需要管理员在群内解除后，从这里重查目标能力。</span>
             </div>
           </div>
           <div className="mini-list">
@@ -550,10 +553,14 @@ export function AccountDetailModal({
                 <strong>{task.verification_type}</strong>
                 <span>目标：{verificationTargetLabel(task)}</span>
                 <span>{task.detected_reason || '等待处理'}</span>
-                <span>建议操作：{task.suggested_action}</span>
+                <span>处理入口：{verificationActionLabel(task)} / {task.issue_category === 'group_restriction' ? '群内管理员解除后重查' : task.suggested_action}</span>
                 <div className="row-actions">
-                  <Button size="small" disabled={!['待处理', '失败'].includes(task.status)} onClick={() => { onSetReturnAfterVerification('accountDetail'); onSetModal({ type: 'verificationTaskDetail', payload: task }); }}>处理</Button>
-                  <Button size="small" loading={isActionPending(`verification:${task.id}:dismiss`)} disabled={task.status !== '待处理'} onClick={() => onDismissVerificationTask(task)}>忽略</Button>
+                  {task.issue_category === 'group_restriction' ? (
+                    <Button size="small" loading={isActionPending(`verification:${task.id}:resolve-group`)} disabled={!verificationActionable(task)} onClick={() => onResolveGroupRestrictionTask(task)}>解除群限制</Button>
+                  ) : (
+                    <Button size="small" disabled={!verificationActionable(task)} onClick={() => { onSetReturnAfterVerification('accountDetail'); onSetModal({ type: 'verificationTaskDetail', payload: task }); }}>{verificationActionLabel(task)}</Button>
+                  )}
+                  <Button size="small" loading={isActionPending(`verification:${task.id}:dismiss`)} disabled={!verificationActionable(task)} onClick={() => onDismissVerificationTask(task)}>忽略</Button>
                 </div>
               </Card>
             ))}

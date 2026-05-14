@@ -25,13 +25,6 @@ export function AppModals() {
     adminUserForm, setAdminUserForm, saveAdminUser, tokenAdjustmentForm, setTokenAdjustmentForm, adminUsers, selectedUserTokenLedgers, adjustAdminUserTokens, resetAdminUserPassword,
     // Tenant AI
     tenantAiSetting, setTenantAiSetting, selectedAiProviderId, setSelectedAiProviderId, aiProviders, saveTenantAiSetting,
-    // Scheduling
-    jitterMinSeconds, setJitterMinSeconds, jitterMaxSeconds, setJitterMaxSeconds, batchIntervalSeconds, setBatchIntervalSeconds, respectSendWindow, setRespectSendWindow,
-    quietHoursEnabled, setQuietHoursEnabled, quietStart, setQuietStart, quietEnd, setQuietEnd, quietTimezone, setQuietTimezone,
-    defaultMaxRetries, setDefaultMaxRetries, defaultRetryDelaySeconds, setDefaultRetryDelaySeconds, defaultRetryBackoff, setDefaultRetryBackoff,
-    defaultOnAccountBanned, setDefaultOnAccountBanned, defaultOnApiRateLimit, setDefaultOnApiRateLimit, defaultOnContentRejected, setDefaultOnContentRejected,
-    defaultAccountHourLimit, setDefaultAccountHourLimit, defaultAccountDayLimit, setDefaultAccountDayLimit, defaultAccountCooldownSeconds, setDefaultAccountCooldownSeconds,
-    saveSchedulingSetting,
     // Prompt Template
     promptTemplateForm, setPromptTemplateForm, createPromptTemplate, savePromptTemplate,
     // Material
@@ -45,7 +38,7 @@ export function AppModals() {
     // Group
     selectedGroup, groupPolicy, setGroupPolicy, saveGroupPolicy, groupDetail,
     // Verification
-    returnAfterVerification, setReturnAfterVerification, confirmVerificationTask, dismissVerificationTask,
+    returnAfterVerification, setReturnAfterVerification, confirmVerificationTask, resolveGroupRestrictionTask, dismissVerificationTask,
     // Direct Message
     directMessageForm, setDirectMessageForm, selectedDirectContact, startDirectMessageToContact, createDirectMessageTask,
     // Misc
@@ -53,6 +46,9 @@ export function AppModals() {
   } = ctx;
 
   if (!modal) return null;
+  const isManualVerificationTask = modal.type === 'verificationTaskDetail' && modal.payload.suggested_action === '人工处理';
+  const isGroupRestrictionTask = modal.type === 'verificationTaskDetail' && modal.payload.issue_category === 'group_restriction';
+  const verificationTaskActionable = modal.type === 'verificationTaskDetail' && ['待处理', '失败', '需人工处理'].includes(modal.payload.status);
 
   return (
     <>
@@ -178,33 +174,6 @@ export function AppModals() {
         </Modal>
       )}
 
-      {modal?.type === 'schedulingEdit' && (
-        <Modal className="tg-modal medium" title="编辑发送节奏与风控" open width={760} onCancel={closeModal} footer={null} destroyOnHidden centered>
-      <div className="modal-body">
-          <div className="policy-grid">
-            <label>最小抖动秒<InputNumber min={0} value={jitterMinSeconds} onChange={(value) => setJitterMinSeconds(Number(value ?? 0))} /></label>
-            <label>最大抖动秒<InputNumber min={0} value={jitterMaxSeconds} onChange={(value) => setJitterMaxSeconds(Number(value ?? 0))} /></label>
-            <label>批次间隔秒<InputNumber min={0} value={batchIntervalSeconds} onChange={(value) => setBatchIntervalSeconds(Number(value ?? 0))} /></label>
-            <Checkbox checked={respectSendWindow} onChange={(event) => setRespectSendWindow(event.target.checked)}>遵守发送时间窗</Checkbox>
-            <Checkbox checked={quietHoursEnabled} onChange={(event) => setQuietHoursEnabled(event.target.checked)}>启用全局静默时段</Checkbox>
-            <label>静默开始<Input value={quietStart} onChange={(event) => setQuietStart(event.target.value)} /></label>
-            <label>静默结束<Input value={quietEnd} onChange={(event) => setQuietEnd(event.target.value)} /></label>
-            <label>静默时区<Input value={quietTimezone} onChange={(event) => setQuietTimezone(event.target.value)} /></label>
-            <label>默认重试次数<InputNumber min={0} max={10} value={defaultMaxRetries} onChange={(value) => setDefaultMaxRetries(Number(value ?? 0))} /></label>
-            <label>默认重试间隔秒<InputNumber min={0} value={defaultRetryDelaySeconds} onChange={(value) => setDefaultRetryDelaySeconds(Number(value ?? 0))} /></label>
-            <label>默认退避<Select value={defaultRetryBackoff} onChange={setDefaultRetryBackoff} options={[{ value: 'none', label: '固定' }, { value: 'linear', label: '线性' }, { value: 'exponential', label: '指数' }]} /></label>
-            <label>账号异常<Select value={defaultOnAccountBanned} onChange={setDefaultOnAccountBanned} options={[{ value: 'skip_account', label: '跳过账号' }, { value: 'pause_task', label: '暂停任务' }, { value: 'stop_task', label: '停止任务' }]} /></label>
-            <label>API 限流<Select value={defaultOnApiRateLimit} onChange={setDefaultOnApiRateLimit} options={[{ value: 'wait_and_retry', label: '等待重试' }, { value: 'skip', label: '跳过' }, { value: 'pause', label: '暂停' }]} /></label>
-            <label>内容拦截<Select value={defaultOnContentRejected} onChange={setDefaultOnContentRejected} options={[{ value: 'skip_message', label: '跳过消息' }, { value: 'rewrite_and_retry', label: '改写重试' }, { value: 'pause', label: '暂停' }]} /></label>
-            <label>账号每小时上限(0不限制)<InputNumber min={0} value={defaultAccountHourLimit} onChange={(value) => setDefaultAccountHourLimit(Number(value ?? 0))} /></label>
-            <label>账号每日上限(0不限制)<InputNumber min={0} value={defaultAccountDayLimit} onChange={(value) => setDefaultAccountDayLimit(Number(value ?? 0))} /></label>
-            <label>账号全局冷却秒(0不限制)<InputNumber min={0} value={defaultAccountCooldownSeconds} onChange={(value) => setDefaultAccountCooldownSeconds(Number(value ?? 0))} /></label>
-          </div>
-          <FormActions onCancel={closeModal} onSubmit={saveSchedulingSetting} loading={isActionPending('scheduling:save')} />
-          </div>
-        </Modal>
-      )}
-
       {modal?.type === 'changePassword' && (
         <Modal className="tg-modal small" title="修改登录密码" open width={480} onCancel={closeModal} footer={null} destroyOnHidden centered>
       <div className="modal-body">
@@ -223,7 +192,7 @@ export function AppModals() {
       <div className="modal-body">
           <div className="policy-grid">
             <label>模板名称<Input value={promptTemplateForm.name} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, name: event.target.value })} /></label>
-            <label>模板类型<Select value={promptTemplateForm.template_type} onChange={(value) => setPromptTemplateForm({ ...promptTemplateForm, template_type: value })} options={['系统决策提示词', '群活跃对话计划', '多账号对话脚本', '素材配文', '风险检查'].map((value) => ({ value, label: value }))} /></label>
+            <label>模板类型<Select value={promptTemplateForm.template_type} onChange={(value) => setPromptTemplateForm({ ...promptTemplateForm, template_type: value })} options={['系统决策提示词', '群活跃对话计划', '多账号对话脚本', 'AI黑话词表', '素材配文', '风险检查'].map((value) => ({ value, label: value }))} /></label>
             <label className="wide-field">模板内容<Input.TextArea value={promptTemplateForm.content} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, content: event.target.value })} /></label>
             <Checkbox checked={promptTemplateForm.is_active} onChange={(event) => setPromptTemplateForm({ ...promptTemplateForm, is_active: event.target.checked })}>启用提示词</Checkbox>
           </div>
@@ -419,11 +388,18 @@ export function AppModals() {
             <div><dt>目标</dt><dd>{verificationTargetLabel(modal.payload)}</dd></div>
           </div>
           <p className="dialog-message">{modal.payload.detected_reason || '平台检测到当前账号在该群可能需要完成验证后才能发言。'}</p>
-          <p className="muted-line">平台只会在你确认后执行可控动作。</p>
+          <p className="muted-line">{isGroupRestrictionTask ? '这类问题需要群管理员先在 Telegram 群内解除限制；平台重查目标能力，通过后才恢复可发。' : isManualVerificationTask ? '确认前请先在 Telegram 内完成人工处理；平台不会自动放行群权限。' : '平台只会在你确认后执行可控动作。'}</p>
           <Space className="modal-actions">
             <Button onClick={() => ctx.setModal({ type: returnAfterVerification })}>返回</Button>
             <Button loading={isActionPending(`verification:${modal.payload.id}:dismiss`)} onClick={() => dismissVerificationTask(modal.payload)}>忽略</Button>
-            <Button type="primary" loading={isActionPending(`verification:${modal.payload.id}:confirm`)} disabled={!['待处理', '失败'].includes(modal.payload.status)} onClick={() => confirmVerificationTask(modal.payload)}>确认处理</Button>
+            <Button
+              type="primary"
+              loading={isActionPending(isGroupRestrictionTask ? `verification:${modal.payload.id}:resolve-group` : `verification:${modal.payload.id}:confirm`)}
+              disabled={!verificationTaskActionable}
+              onClick={() => (isGroupRestrictionTask ? resolveGroupRestrictionTask(modal.payload) : confirmVerificationTask(modal.payload))}
+            >
+              {isGroupRestrictionTask ? '已解除，重新检查' : isManualVerificationTask ? '标记已人工处理' : '确认处理'}
+            </Button>
           </Space>
           </div>
         </Modal>
@@ -492,7 +468,7 @@ export function AppModals() {
       )}
 
       {modal?.type === 'accountDetail' && accountDetail && (
-        <AccountDetailModal accountDetail={accountDetail} accountDetailTab={accountDetailTab} setAccountDetailTab={setAccountDetailTab} runtime={runtime} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} accountContacts={accountContacts} accounts={accounts} avatarUrl={avatarUrl} onClose={closeModal} onOpenAccountProfileEdit={openAccountProfileEdit} onQueueAccountSyncNow={queueAccountSyncNow} onRefreshAccountDetail={ctx.refreshAccountDetail} onPollVerificationCodes={pollVerificationCodes} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onConfirmClonePlan={confirmClonePlan} onRetryCloneItem={ctx.retryCloneItem} onRetryAccountProfileSync={retryAccountProfileSync} onDismissVerificationTask={dismissVerificationTask} onConfirmVerificationTask={confirmVerificationTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} onSetCloneForm={setCloneForm} accountName={accountName} isActionPending={isActionPending} />
+        <AccountDetailModal accountDetail={accountDetail} accountDetailTab={accountDetailTab} setAccountDetailTab={setAccountDetailTab} runtime={runtime} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} accountContacts={accountContacts} accounts={accounts} avatarUrl={avatarUrl} onClose={closeModal} onOpenAccountProfileEdit={openAccountProfileEdit} onQueueAccountSyncNow={queueAccountSyncNow} onRefreshAccountDetail={ctx.refreshAccountDetail} onPollVerificationCodes={pollVerificationCodes} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onConfirmClonePlan={confirmClonePlan} onRetryCloneItem={ctx.retryCloneItem} onRetryAccountProfileSync={retryAccountProfileSync} onDismissVerificationTask={dismissVerificationTask} onConfirmVerificationTask={confirmVerificationTask} onResolveGroupRestrictionTask={resolveGroupRestrictionTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} onSetCloneForm={setCloneForm} accountName={accountName} isActionPending={isActionPending} />
       )}
 
     </>

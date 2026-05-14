@@ -43,6 +43,26 @@ class RiskControlGlobalPolicyOut(ApiModel):
     updated_at: datetime
 
 
+class RiskControlGlobalPolicyUpdate(BaseModel):
+    jitter_min_seconds: int | None = Field(default=None, ge=0, le=86400)
+    jitter_max_seconds: int | None = Field(default=None, ge=0, le=86400)
+    batch_interval_seconds: int | None = Field(default=None, ge=0, le=86400)
+    respect_send_window: bool | None = None
+    quiet_hours_enabled: bool | None = None
+    quiet_start: str | None = None
+    quiet_end: str | None = None
+    quiet_timezone: str | None = None
+    default_max_retries: int | None = Field(default=None, ge=0, le=20)
+    default_retry_delay_seconds: int | None = Field(default=None, ge=0, le=86400)
+    default_retry_backoff: str | None = None
+    default_on_account_banned: str | None = None
+    default_on_api_rate_limit: str | None = None
+    default_on_content_rejected: str | None = None
+    default_account_hour_limit: int | None = Field(default=None, ge=0, le=100000)
+    default_account_day_limit: int | None = Field(default=None, ge=0, le=100000)
+    default_account_cooldown_seconds: int | None = Field(default=None, ge=0, le=86400)
+
+
 class RiskControlAccountScoreOut(ApiModel):
     account_id: int
     display_name: str
@@ -272,6 +292,7 @@ class RiskControlSummaryOut(ApiModel):
 __all__ = [
     "RiskControlAccountScoreOut",
     "RiskControlGlobalPolicyOut",
+    "RiskControlGlobalPolicyUpdate",
     "RiskControlMetricOut",
     "RiskControlOverviewOut",
     "RiskControlSummaryOut",
