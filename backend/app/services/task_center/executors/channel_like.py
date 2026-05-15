@@ -7,7 +7,7 @@ from app.models import ChannelMessage, Task
 from ..account_pool import select_task_accounts
 from ..pacing import schedule_times
 from ..payloads import LikeMessagePayload, create_like_action
-from .common import adjust_for_account_hour_limit, available_channel_accounts_for_message, channel_message_payload, channel_scope, quantity_with_jitter, record_channel_capacity_warning
+from .common import adjust_for_account_hour_limit, available_channel_accounts_for_message, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -17,7 +17,8 @@ def build_plan(session: Session, task: Task) -> int:
         return 0
     reactions = config.get("allowed_reactions") or ["👍"]
     target_per_message = int(config.get("target_likes_per_message") or 1)
-    accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, limit=target_per_message)
+    _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("like_count_jitter") or 0))
+    accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, limit=max_target_per_message)
     if not accounts:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
         return 0

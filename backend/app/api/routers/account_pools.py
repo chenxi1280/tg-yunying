@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.auth import CurrentUser, get_current_user, require_core_feature_access, resolve_tenant_id
 from app.database import get_session
 from app.common.http import not_found
+from app.api.response_permissions import account_pool_detail_out_for_user
 from app.models import AccountPool
 from app.repositories.tenant import require_resource_tenant
 from app.schemas import (
@@ -68,7 +69,7 @@ def get_account_pool_detail(
 ) -> dict:
     require_resource_tenant(session, current_user, AccountPool, pool_id)
     try:
-        return account_pool_detail(session, pool_id)
+        return account_pool_detail_out_for_user(account_pool_detail(session, pool_id), current_user)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 

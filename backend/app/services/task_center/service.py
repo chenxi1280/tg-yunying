@@ -7,7 +7,8 @@ from typing import Any
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, GroupAuthStatus, MessageFingerprint, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, Task, TgAccount, TgGroup, WorkerHeartbeat
+from app.config import get_settings
+from app.models import Action, ChannelMessage, ExecutionAttempt, GroupAuthStatus, MessageFingerprint, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, Task, TgAccount, TgGroup, WorkerHeartbeat
 from app.schemas.task_center import (
     ChannelCapacityCheckRequest,
     ChannelCommentConfig,
@@ -38,14 +39,17 @@ from app.services._common import _now, audit
 
 from .account_pool import select_task_accounts
 from .ai_generator import generate_channel_comments, generate_group_messages
-from .dispatcher import dispatch_action, due_actions
+from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims
 from .executors import build_task_plan, reached_daily_action_limit
+from .executors.common import quantity_jitter_bounds
 from .executors.group_ai_chat import account_profile_summaries
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
 from .pacing import next_run_after
 from .review import expire_reviews
+from .runtime_retention import cleanup_runtime_details
+from app.services.source_media import WAITING_MATERIAL_CACHE, expire_waiting_source_media_actions, wake_waiting_actions_for_source_media
 
 
 TYPE_CONFIG_MODELS = {
@@ -654,9 +658,17 @@ def drain_task_center(session_factory, limit: int = 100) -> int:
     processed += drain_listener_runtime(session_factory, limit=limit).processed_count
     with session_factory() as session:
         record_worker_heartbeat(session, metadata={"limit": limit})
+        processed += recover_expired_claims(session)
         processed += _recover_continuous_task_states(session)
         processed += _recover_stale_executing_actions(session)
         processed += expire_reviews(session)
+        settings = get_settings()
+        if settings.enable_runtime_retention_cleanup:
+            processed += cleanup_runtime_details(session, retention_days=settings.runtime_detail_retention_days)
+        processed += expire_waiting_source_media_actions(session, limit=max(10, limit))
+        tenant_ids = list(session.scalars(select(Action.tenant_id).where(Action.status == WAITING_MATERIAL_CACHE).distinct()))
+        for tenant_id in tenant_ids:
+            processed += wake_waiting_actions_for_source_media(session, tenant_id=tenant_id, limit=max(10, limit))
         _activate_pending_tasks(session)
         task_ids = list(
             session.scalars(
@@ -683,13 +695,18 @@ def drain_task_center(session_factory, limit: int = 100) -> int:
                 refresh_task_stats(session, task)
                 session.commit()
                 continue
+            if _planning_backlog_blocked(session, task):
+                refresh_task_stats(session, task)
+                session.commit()
+                continue
             created = build_task_plan(session, task)
             task.next_run_at = _next_run_after_task(task)
             refresh_task_stats(session, task)
             session.commit()
             processed += created
     with session_factory() as session:
-        for action in due_actions(session, limit=max(10, limit), exclude_task_ids=future_open_action_task_ids):
+        claimed = claim_actions(session, limit=max(10, limit), exclude_task_ids=future_open_action_task_ids)
+        for action in claimed:
             if dispatch_action(session, action):
                 processed += 1
                 refresh = session.get(Task, action.task_id)
@@ -697,6 +714,33 @@ def drain_task_center(session_factory, limit: int = 100) -> int:
                     refresh_task_stats(session, refresh)
                 session.commit()
     return processed
+
+
+def _planning_backlog_blocked(session: Session, task: Task) -> bool:
+    settings = get_settings()
+    pending_statuses = {"pending", "claiming", "executing"}
+    global_pending = session.scalar(select(func.count(Action.id)).where(Action.status.in_(pending_statuses))) or 0
+    task_pending = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id, Action.status.in_(pending_statuses))) or 0
+    oldest_pending = session.scalar(select(func.min(Action.scheduled_at)).where(Action.status.in_(pending_statuses)))
+    now_value = _now()
+    oldest_age = int((now_value - _naive_datetime(oldest_pending)).total_seconds()) if oldest_pending else 0
+    blocked = (
+        int(global_pending or 0) >= int(settings.max_pending_global or 0)
+        or int(task_pending or 0) >= int(settings.max_pending_per_task or 0)
+        or oldest_age >= int(settings.oldest_pending_age_seconds or 0)
+    )
+    if not blocked:
+        return False
+    stats = dict(task.stats or {})
+    stats["planner_backlog_blocked"] = True
+    stats["planner_backlog_blocked_at"] = now_value.isoformat()
+    stats["planner_backlog_global_pending"] = int(global_pending or 0)
+    stats["planner_backlog_task_pending"] = int(task_pending or 0)
+    stats["planner_backlog_oldest_age_seconds"] = int(oldest_age)
+    task.stats = stats
+    interval = max(10, min(300, int((task.pacing_config or {}).get("interval_seconds") or 30)))
+    task.next_run_at = now_value + timedelta(seconds=interval)
+    return True
 
 
 def _recover_continuous_task_states(session: Session) -> int:
@@ -773,16 +817,23 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
         previous_lease_owner = action.lease_owner or ""
         previous_lease_expires_at = action.lease_expires_at
         recovery_reason = "stale_worker" if previous_lease_owner in stale_worker_ids else "lease_expired" if previous_lease_expires_at else "execution_timeout"
-        action.status = "failed"
+        latest_attempt = session.scalar(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.action_id == action.id)
+            .order_by(ExecutionAttempt.attempt_no.desc())
+            .limit(1)
+        )
+        gateway_started = bool(latest_attempt and latest_attempt.gateway_call_started_at and latest_attempt.status not in {"success", "failed", "call_not_started"})
+        action.status = "unknown_after_send" if gateway_started else "failed"
         action.executed_at = now
         action.lease_owner = ""
         action.lease_expires_at = None
         action.result = {
             "success": False,
-            "error_code": "execution_timeout",
-            "error_message": "执行项长时间处于执行中，已由投递守护标记为超时",
+            "error_code": "unknown_after_send" if gateway_started else "execution_timeout",
+            "error_message": "执行项已进入 TG 调用边界但本地结果未知，需人工或补偿确认" if gateway_started else "执行项长时间处于执行中，已由投递守护标记为超时",
             "validation_stage": "execution_recovery",
-            "auto_check": "超时恢复",
+            "auto_check": "结果未知" if gateway_started else "超时恢复",
             "recovery_reason": recovery_reason,
             "recovered_at": now.isoformat(),
             "previous_lease_owner": previous_lease_owner,
@@ -790,6 +841,10 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
         }
         if previous_result:
             action.result["previous_result"] = previous_result
+        if latest_attempt:
+            latest_attempt.status = "result_unknown" if gateway_started else "call_not_started"
+            latest_attempt.after_call_at = now
+            latest_attempt.result_snapshot = dict(action.result or {})
         task.last_error = action.result["error_message"]
         stats = dict(task.stats or {})
         recovered_action_ids = list(stats.get("stale_executing_recovered_action_ids") or [])
@@ -801,6 +856,8 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
         stats["stale_executing_last_recovery_reason"] = recovery_reason
         stats["stale_executing_recovered_action_ids"] = recovered_action_ids[-20:]
         stats["recovered_execution_timeout_count"] = int(stats.get("recovered_execution_timeout_count") or 0) + 1
+        if gateway_started:
+            stats["unknown_after_send_count"] = int(stats.get("unknown_after_send_count") or 0) + 1
         stats["last_recovery_stage"] = "execution_recovery"
         task.stats = stats
         recovered += 1
@@ -846,7 +903,10 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
             "success_count": counts.get("success", 0),
             "failure_count": counts.get("failed", 0),
             "pending_count": counts.get("pending", 0),
+            "claiming_count": counts.get("claiming", 0),
             "executing_count": counts.get("executing", 0),
+            "retryable_failed_count": counts.get("retryable_failed", 0),
+            "unknown_after_send_count": counts.get("unknown_after_send", 0),
             "skipped_count": counts.get("skipped", 0),
             "accounts_used": int(accounts_used or 0),
             "last_action_at": last_action_at.isoformat() if last_action_at else stats.get("last_action_at"),
@@ -864,7 +924,7 @@ def _retry_failed_actions(session: Session, task: Task) -> int:
     retry_delay = int(policy["retry_delay_seconds"]) if policy.get("retry_delay_seconds") is not None else 60
     backoff = policy.get("retry_backoff") or "none"
     count = 0
-    for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "failed", Action.retry_count < max_retries)):
+    for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status.in_(["failed", "retryable_failed"]), Action.retry_count < max_retries)):
         previous_result = dict(action.result or {})
         action.retry_count += 1
         delay = retry_delay
@@ -1161,7 +1221,7 @@ def _message_groups(session: Session, task: Task, actions: list[Action]) -> list
         channel = channels_by_id.get(channel_target_id) if channel_target_id else None
         action_type = action.action_type
         key = (channel_target_id, int(payload.get("message_id") or 0) or None, action_type)
-        target_count = _channel_subtask_target_count(task, action_type)
+        target_count = _channel_subtask_configured_target_count(task, action_type)
         item = groups.setdefault(
             key,
             {
@@ -1201,12 +1261,15 @@ def _message_groups(session: Session, task: Task, actions: list[Action]) -> list
         item["running_count"] = int(stats.get("pending") or 0) + int(stats.get("executing") or 0)
         item["skipped_count"] = int(stats.get("skipped") or 0)
         item["duplicate_count"] = int(stats.get("duplicate") or 0)
-        item["capacity_shortfall"] = max(int(item.get("target_count") or 0) - int(stats.get("total") or 0), 0)
+        total_actions = int(stats.get("total") or 0)
+        item["target_count"] = _channel_subtask_effective_target_count(task, str(item.get("action_type") or ""), total_actions)
+        item["stats"]["target"] = item["target_count"]
+        item["capacity_shortfall"] = max(int(item.get("target_count") or 0) - total_actions, 0)
         item["subtask_status"] = _channel_subtask_status(item)
     return sorted(groups.values(), key=lambda item: (item.get("channel_title") or "", -(item.get("message_id") or 0)))
 
 
-def _channel_subtask_target_count(task: Task, action_type: str) -> int:
+def _channel_subtask_configured_target_count(task: Task, action_type: str) -> int:
     config = task.type_config or {}
     if action_type == "view_message":
         return int(config.get("target_views_per_message") or 0)
@@ -1215,6 +1278,27 @@ def _channel_subtask_target_count(task: Task, action_type: str) -> int:
     if action_type == "post_comment":
         return int(config.get("target_comments_per_message") or 0)
     return 0
+
+
+def _channel_subtask_effective_target_count(task: Task, action_type: str, planned_count: int) -> int:
+    configured_count = _channel_subtask_configured_target_count(task, action_type)
+    lower, upper = quantity_jitter_bounds(configured_count, _channel_subtask_jitter_ratio(task, action_type))
+    if planned_count and lower <= planned_count <= upper:
+        return planned_count
+    if planned_count < lower:
+        return lower
+    return configured_count
+
+
+def _channel_subtask_jitter_ratio(task: Task, action_type: str) -> float:
+    config = task.type_config or {}
+    if action_type == "view_message":
+        return float(config.get("view_count_jitter") or 0)
+    if action_type == "like_message":
+        return float(config.get("like_count_jitter") or 0)
+    if action_type == "post_comment":
+        return float(config.get("comment_count_jitter") or 0)
+    return 0.0
 
 
 def _action_label(action_type: str) -> str:

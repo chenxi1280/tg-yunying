@@ -68,21 +68,28 @@ def filter_audit_logs(
     return list(session.scalars(stmt.order_by(AuditLog.id.desc()).limit(limit)))
 
 
-def audit_logs_csv(logs: list[AuditLog]) -> str:
+def _audit_value(item, key: str):
+    if isinstance(item, dict):
+        return item.get(key)
+    return getattr(item, key)
+
+
+def audit_logs_csv(logs: list[AuditLog] | list[dict]) -> str:
     output = StringIO()
     writer = csv.writer(output)
     writer.writerow(["id", "tenant_id", "actor", "action", "target_type", "target_id", "detail", "ip_address", "created_at"])
     for item in logs:
+        created_at = _audit_value(item, "created_at")
         writer.writerow([
-            item.id,
-            item.tenant_id,
-            item.actor,
-            item.action,
-            item.target_type,
-            item.target_id,
-            item.detail,
-            item.ip_address,
-            item.created_at.isoformat() if item.created_at else "",
+            _audit_value(item, "id"),
+            _audit_value(item, "tenant_id"),
+            _audit_value(item, "actor"),
+            _audit_value(item, "action"),
+            _audit_value(item, "target_type"),
+            _audit_value(item, "target_id"),
+            _audit_value(item, "detail"),
+            _audit_value(item, "ip_address"),
+            created_at.isoformat() if created_at else "",
         ])
     return output.getvalue()
 

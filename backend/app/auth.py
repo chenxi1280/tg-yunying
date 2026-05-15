@@ -165,21 +165,141 @@ def _get_captcha_store() -> CaptchaStore:
 
 
 _PBKDF2_ITERATIONS = 600_000
-DEFAULT_USER_MENU_PERMISSIONS = ["overview", "accounts", "taskManagement", "groupManagement", "usageReports"]
+
+ALL_PERMISSIONS = [
+    "overview.view",
+    "accounts.view",
+    "accounts.create",
+    "accounts.login",
+    "accounts.sync",
+    "accounts.view_codes",
+    "accounts.update_profile",
+    "accounts.delete",
+    "accounts.pool_manage",
+    "accounts.proxy_bind",
+    "accounts.clone",
+    "accounts.manual_send",
+    "developer_apps.manage",
+    "targets.view",
+    "targets.manage",
+    "message_sending.view",
+    "message_sending.create",
+    "tasks.view",
+    "tasks.manage",
+    "listeners.view",
+    "listeners.manage",
+    "rules.view",
+    "rules.publish",
+    "risk.view",
+    "risk.manage",
+    "archives.view",
+    "archives.manage",
+    "archives.export",
+    "usage.view",
+    "system.view",
+    "system.manage",
+    "system.secrets_manage",
+    "permissions.view",
+    "permissions.manage",
+    "audits.view",
+    "audits.view_sensitive",
+]
+
+MENU_VIEW_PERMISSIONS = {
+    "overview.view",
+    "accounts.view",
+    "targets.view",
+    "message_sending.view",
+    "tasks.view",
+    "listeners.view",
+    "rules.view",
+    "risk.view",
+    "archives.view",
+    "usage.view",
+    "system.view",
+    "permissions.view",
+    "audits.view",
+}
+
+LEGACY_PERMISSION_MAP = {
+    "overview": "overview.view",
+    "accounts": "accounts.view",
+    "targetManagement": "targets.view",
+    "groups": "targets.view",
+    "groupManagement": "targets.view",
+    "operationTargets": "targets.view",
+    "messageSending": "message_sending.view",
+    "taskManagement": "tasks.view",
+    "listenerCenter": "listeners.view",
+    "ruleCenter": "rules.view",
+    "riskControl": "risk.view",
+    "archives": "archives.view",
+    "groupArchives": "archives.view",
+    "usageReports": "usage.view",
+    "systemConfig": "system.view",
+    "developerApps": "system.view",
+    "aiConfig": "system.view",
+    "audits": "audits.view",
+}
+
+ROLE_TEMPLATE_PERMISSIONS = {
+    "运营管理员": [
+        "overview.view",
+        "accounts.view",
+        "accounts.sync",
+        "targets.view",
+        "targets.manage",
+        "message_sending.view",
+        "message_sending.create",
+        "tasks.view",
+        "tasks.manage",
+        "listeners.view",
+        "listeners.manage",
+        "rules.view",
+        "rules.publish",
+        "risk.view",
+        "risk.manage",
+        "archives.view",
+        "archives.manage",
+        "usage.view",
+        "audits.view",
+    ],
+    "账号添加专员": ["overview.view", "accounts.view", "accounts.create", "accounts.login", "accounts.sync"],
+    "只读观察员": ["overview.view", "usage.view", "audits.view"],
+}
+
+DEFAULT_USER_MENU_PERMISSIONS = ROLE_TEMPLATE_PERMISSIONS["运营管理员"]
 
 
-def parse_menu_permissions(raw: str | None, *, role: str | None = None) -> list[str]:
+def all_permissions() -> list[str]:
+    return list(ALL_PERMISSIONS)
+
+
+def normalize_permissions(values: list[str] | None, *, role: str | None = None, role_template: str | None = None) -> list[str]:
     if role == "系统管理员":
         return ["*"]
-    if not raw:
-        return list(DEFAULT_USER_MENU_PERMISSIONS)
-    return [item.strip() for item in raw.split(",") if item.strip()]
+    if not values:
+        return list(ROLE_TEMPLATE_PERMISSIONS.get(role_template or "运营管理员", DEFAULT_USER_MENU_PERMISSIONS))
+    normalized: list[str] = []
+    for value in values:
+        key = (value or "").strip()
+        if not key:
+            continue
+        mapped = LEGACY_PERMISSION_MAP.get(key, key)
+        if mapped in ALL_PERMISSIONS:
+            normalized.append(mapped)
+    return list(dict.fromkeys(normalized))
+
+
+def parse_menu_permissions(raw: str | None, *, role: str | None = None, role_template: str | None = None) -> list[str]:
+    raw_values = [item.strip() for item in raw.split(",") if item.strip()] if raw else []
+    return normalize_permissions(raw_values, role=role, role_template=role_template)
 
 
 def format_menu_permissions(values: list[str] | None) -> str:
     if values is None:
         return ""
-    return ",".join(dict.fromkeys(item.strip() for item in values if item.strip()))
+    return ",".join(normalize_permissions(values))
 
 
 def hash_password(password: str) -> str:
@@ -220,6 +340,7 @@ def create_access_token(user: AppUser) -> str:
         "sub": user.id,
         "tenant_id": user.tenant_id,
         "role": user.role,
+        "permission_version": user.permission_version,
         "exp": int((datetime.now(UTC) + timedelta(hours=12)).timestamp()),
     }
     encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
@@ -231,6 +352,7 @@ def create_admin_access_token() -> str:
         "sub": "admin",
         "tenant_id": 1,
         "role": "系统管理员",
+        "permission_version": 1,
         "exp": int((datetime.now(UTC) + timedelta(hours=12)).timestamp()),
     }
     encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("ascii")
@@ -257,6 +379,7 @@ class CurrentUser:
     tenant_id: int | None
     name: str
     role: str
+    role_template: str
     email: str
     phone: str | None
     tenant_name: str | None
@@ -268,14 +391,21 @@ class CurrentUser:
     token_balance: int
     token_quota_total: int
     menu_permissions: list[str]
+    permissions: list[str]
+    permission_version: int
+    is_active: bool
+    is_super_admin: bool = False
 
     @property
     def is_platform_admin(self) -> bool:
-        return self.role == "系统管理员"
+        return self.is_super_admin or self.role == "系统管理员"
 
     @property
     def is_end_user(self) -> bool:
         return self.role == "普通用户"
+
+    def has_permission(self, permission: str) -> bool:
+        return self.is_platform_admin or "*" in self.permissions or permission in self.permissions
 
 
 def normalize_phone(phone: str | None) -> str | None:
@@ -330,6 +460,7 @@ def admin_user_payload() -> dict:
         "tenant_id": 1,
         "name": username,
         "role": "系统管理员",
+        "role_template": "系统管理员",
         "email": email,
         "phone": None,
         "tenant_name": "默认运营空间",
@@ -341,6 +472,10 @@ def admin_user_payload() -> dict:
         "token_balance": 0,
         "token_quota_total": 0,
         "menu_permissions": ["*"],
+        "permissions": ["*"],
+        "permission_version": 1,
+        "is_active": True,
+        "is_super_admin": True,
     }
 
 
@@ -439,11 +574,13 @@ def serialize_user(session: Session, user: AppUser) -> dict:
         tenant = session.get(Tenant, user.tenant_id)
         tenant_name = tenant.name if tenant else None
     subscription_status = compute_subscription_status(user)
+    permissions = parse_menu_permissions(user.menu_permissions, role=user.role, role_template=user.role_template)
     return {
         "id": user.id,
         "tenant_id": user.tenant_id,
         "name": user.name,
         "role": user.role,
+        "role_template": user.role_template,
         "email": user.email,
         "phone": user.phone,
         "tenant_name": tenant_name,
@@ -454,7 +591,11 @@ def serialize_user(session: Session, user: AppUser) -> dict:
         "can_use_core_features": can_user_use_core_features(user),
         "token_balance": user.token_balance,
         "token_quota_total": user.token_quota_total,
-        "menu_permissions": parse_menu_permissions(user.menu_permissions, role=user.role),
+        "menu_permissions": permissions,
+        "permissions": permissions,
+        "permission_version": user.permission_version,
+        "is_active": user.is_active,
+        "is_super_admin": user.role == "系统管理员",
     }
 
 
@@ -483,14 +624,43 @@ def get_current_user(
     authorization: Annotated[str | None, Header()] = None,
     session: Session = Depends(get_session),
 ) -> CurrentUser:
+    return current_user_from_authorization(authorization, session)
+
+
+def current_user_from_authorization(authorization: str | None, session: Session) -> CurrentUser:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
     payload = decode_access_token(authorization.split(" ", 1)[1])
     if payload.get("sub") == "admin":
         return CurrentUser(**admin_user_payload())
-    # The operation-center build no longer keeps database users. Reject legacy
-    # user tokens before touching removed authorization tables.
-    raise HTTPException(status_code=401, detail="legacy user token unsupported")
+    try:
+        user_id = int(payload.get("sub", 0))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail="invalid token subject") from exc
+    user = session.get(AppUser, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="user inactive")
+    if int(payload.get("permission_version", 0)) != int(user.permission_version):
+        raise HTTPException(status_code=401, detail="permission version expired")
+    return CurrentUser(**serialize_user(session, user))
+
+
+def require_permission(permission: str):
+    def dependency(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+        if not current_user.has_permission(permission):
+            from app.common.http import forbidden
+
+            raise forbidden("permission denied")
+        return current_user
+
+    return dependency
+
+
+def ensure_permission(current_user: CurrentUser, permission: str) -> None:
+    if not current_user.has_permission(permission):
+        from app.common.http import forbidden
+
+        raise forbidden("permission denied")
 
 
 def require_platform_admin(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:

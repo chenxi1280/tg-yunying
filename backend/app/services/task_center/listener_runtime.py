@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import socket
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from threading import Lock
@@ -7,7 +9,7 @@ from threading import Lock
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, GroupAuthStatus, Task, TgAccount, TgGroup, TgGroupAccount
+from app.models import AccountStatus, GroupAuthStatus, ListenerSourceState, Task, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now, audit
 from app.services.group_listeners import collect_group_context
 
@@ -151,9 +153,13 @@ def _drain_listener_source(session: Session, source: ListenerRuntimeSource, resu
     if not group or group.tenant_id != source.tenant_id or group.auth_status != GroupAuthStatus.AUTHORIZED.value:
         result.skipped_count += 1
         return
+    if not _claim_listener_source(session, source, group):
+        result.skipped_count += 1
+        return
     account_ids = _usable_group_account_ids(session, group, source.account_ids)
     if not account_ids:
         _mark_listener_runtime_error(session, group, source.task_ids, "没有可用监听账号")
+        _update_listener_source(session, source, group, occurred_at=_now(), error="没有可用监听账号")
         result.error_count += 1
         session.commit()
         return
@@ -168,6 +174,7 @@ def _drain_listener_source(session: Session, source: ListenerRuntimeSource, resu
         group = session.get(TgGroup, source.group_id)
         if group:
             _mark_listener_runtime_error(session, group, source.task_ids, str(exc))
+            _update_listener_source(session, source, group, occurred_at=_now(), error=str(exc))
             session.commit()
         result.error_count += 1
         return
@@ -175,6 +182,7 @@ def _drain_listener_source(session: Session, source: ListenerRuntimeSource, resu
     group.listener_enabled = True
     group.listener_last_polled_at = now_value
     group.listener_last_error = ""
+    _update_listener_source(session, source, group, occurred_at=now_value, error="")
     _mark_listener_runtime_success(session, source.task_ids, group.id, inserted, now_value)
     if recovered:
         result.recovered_count += 1
@@ -218,6 +226,60 @@ def _recover_group_listener_account(session: Session, group: TgGroup, account_id
         detail=f"account={account_id}",
     )
     return True
+
+
+def _claim_listener_source(session: Session, source: ListenerRuntimeSource, group: TgGroup) -> bool:
+    now_value = _now()
+    account_id = source.account_ids[0] if source.account_ids else None
+    owner = _listener_owner()
+    state = session.scalar(
+        select(ListenerSourceState).where(
+            ListenerSourceState.tenant_id == source.tenant_id,
+            ListenerSourceState.source_type == "group",
+            ListenerSourceState.source_peer_id == str(group.id),
+            ListenerSourceState.account_id == account_id,
+        )
+    )
+    if state and state.lease_owner and state.lease_owner != owner and state.lease_expires_at and _naive_datetime(state.lease_expires_at) > _naive_datetime(now_value):
+        return False
+    if not state:
+        state = ListenerSourceState(
+            tenant_id=source.tenant_id,
+            source_type="group",
+            source_peer_id=str(group.id),
+            account_id=account_id,
+            shard_key=f"group:{group.id}",
+            collect_window_seconds=int(group.listener_interval_seconds or 30),
+        )
+        session.add(state)
+    state.lease_owner = owner
+    state.lease_expires_at = now_value + timedelta(seconds=max(30, int(group.listener_interval_seconds or 30) * 2))
+    state.updated_at = now_value
+    session.commit()
+    return True
+
+
+def _update_listener_source(session: Session, source: ListenerRuntimeSource, group: TgGroup, *, occurred_at: datetime, error: str) -> None:
+    account_id = source.account_ids[0] if source.account_ids else None
+    state = session.scalar(
+        select(ListenerSourceState).where(
+            ListenerSourceState.tenant_id == source.tenant_id,
+            ListenerSourceState.source_type == "group",
+            ListenerSourceState.source_peer_id == str(group.id),
+            ListenerSourceState.account_id == account_id,
+        )
+    )
+    if not state:
+        return
+    state.last_event_at = occurred_at
+    state.last_error = error
+    state.lease_owner = ""
+    state.lease_expires_at = None
+    state.updated_at = occurred_at
+
+
+def _listener_owner() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}:listener"
 
 
 def _mark_listener_runtime_success(session: Session, task_ids: list[str], group_id: int, inserted: int, occurred_at: datetime) -> None:

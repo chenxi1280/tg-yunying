@@ -1,11 +1,21 @@
 from __future__ import annotations
 
-from sqlalchemy import create_engine
+from datetime import timedelta
+from os import utime
+from pathlib import Path
+
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import ContentKeywordRule, Task, Tenant
+from app.config import get_settings
+from app.gateways import DeveloperAppCredentials, SendResult, TelethonTelegramGateway
+from app.models import AccountStatus, Action, ContentKeywordRule, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, SourceMediaAsset, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.schemas.operations_center import RuleSetCreate, RuleSetVersionCreate
+from app.schemas.ai_config import MaterialCreate, MaterialUpdate
+from app.services.ai_config import create_material, create_uploaded_material, material_cache_health, update_material
+from app.services.material_ingestion import deep_probe_material_url
+from app.services.messages import build_outbound_segments
 from app.services.operations_center import (
     copy_rule_set_version,
     create_rule_set,
@@ -18,6 +28,16 @@ from app.services.operations_center import (
 )
 from app.services.rule_engine import apply_output_policy, bound_rule_version, transform_content
 from app.services.task_center.executors.group_relay import effective_relay_config
+from app.services.task_center.executors.group_ai_chat import build_plan as build_ai_chat_plan
+from app.services._common import _now
+from app.services.source_media import (
+    WAITING_MATERIAL_CACHE,
+    drain_source_media_cache,
+    register_action_waiting_for_source_media,
+    source_media_cached_event,
+)
+from app.services.material_cache import drain_material_cache
+from app.services.temp_files import TEMP_FILE_TTL_SECONDS, cleanup_temp_files, temp_dir
 
 
 def test_rule_set_create_persists_task_scope_and_output_checks():
@@ -75,6 +95,636 @@ def test_rule_tester_validates_ai_candidates_one_by_one():
     assert [item.passed for item in result.output_candidates] == [True, True]
     assert result.output_candidates[1].action == "transform"
     assert result.output_candidates[1].transformed_text == "第二条正常内容"
+
+
+def test_rule_tester_simulates_material_cache_edges():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        album_result = preview_rules(session, 1, "相册消息", simulation_scenario="album_one_failed")
+        queue_result = preview_rules(session, 1, "队列保护", simulation_scenario="queue_overflow")
+        late_result = preview_rules(session, 1, "迟到事件", simulation_scenario="timeout_then_cached")
+        pending_result = preview_rules(session, 1, "待缓存", simulation_scenario="pending_cache")
+        old_event_result = preview_rules(session, 1, "旧事件", simulation_scenario="late_cache_event")
+
+    assert [step.status for step in album_result.simulation_steps] == ["ready", "album_segment_failed", "ready"]
+    assert album_result.simulation_steps[1].action == "剔除失败图"
+    assert queue_result.simulation_steps[0].status == "material_cache_wait_queue_full"
+    assert "不创建人工缓存动作" in queue_result.simulation_steps[0].reason
+    assert late_result.simulation_steps[1].status == "late_event"
+    assert late_result.simulation_steps[1].action == "拒绝补发"
+    assert pending_result.simulation_steps[0].status == "pending_cache"
+    assert pending_result.simulation_steps[0].action == "等待本轮超时或按规则降级"
+    assert old_event_result.simulation_steps[0].status == "stale_event"
+    assert old_event_result.simulation_steps[0].action == "拒绝唤醒"
+
+
+def test_rule_material_policy_selects_ready_material_for_preview_and_ai_action(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.generate_group_messages",
+        lambda *_args, **_kwargs: (["素材规则触发"], 0),
+    )
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        account = TgAccount(id=101, tenant_id=1, display_name="AI号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
+        group = TgGroup(id=201, tenant_id=1, tg_peer_id="-100201", title="素材群", auth_status="已授权运营", can_send=True, listener_interval_seconds=0)
+        session.add_all([account, group, TgGroupAccount(tenant_id=1, group_id=201, account_id=101, can_send=True)])
+        session.add(
+            Material(
+                id=9301,
+                tenant_id=1,
+                title="围观表情",
+                material_type="表情包",
+                content="https://trusted.example.com/watch.webp",
+                tags="围观,表情包",
+                emoji_asset_kind="image_meme",
+                cache_ready_status="ready",
+                tg_cache_peer_id="cache-peer",
+                tg_cache_message_id="9301",
+                asset_fingerprint="fp-9301",
+            )
+        )
+        rule_set = create_rule_set(
+            session,
+            1,
+            RuleSetCreate(
+                name="素材规则",
+                task_types=["group_ai_chat"],
+                routing={
+                    "material_policy": {
+                        "enabled": True,
+                        "material_type": "表情包",
+                        "required_tags": ["围观"],
+                        "action": "append_media",
+                        "fallback": "text_only",
+                    }
+                },
+            ),
+            "tester",
+        )
+        preview = preview_rules(session, 1, "素材规则触发", test_type="group_ai_chat", rule_set_version_id=rule_set.active_version_id)
+        task = Task(
+            id="ai-material-rule",
+            tenant_id=1,
+            name="AI素材规则",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "manual", "account_ids": [101], "cooldown_per_account_minutes": 0},
+            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0},
+            type_config={
+                "target_group_id": 201,
+                "messages_per_round": 1,
+                "participation_rate": 1,
+                "rule_set_version_id": rule_set.active_version_id,
+            },
+            stats={"force_bootstrap_once": True},
+        )
+        session.add(task)
+        session.commit()
+
+        assert build_ai_chat_plan(session, task) == 1
+        action = session.scalar(select(Action).where(Action.task_id == task.id))
+        action_payload = action.payload
+
+    assert preview.material_candidate_count == 1
+    assert preview.material_selected_id == 9301
+    assert action_payload["media_segments"][0]["material_id"] == 9301
+    assert action_payload["media_segments"][0]["source"] == "tg-cache://cache-peer/9301"
+    assert action_payload["rule_trace"]["material_id"] == 9301
+
+
+def test_source_media_waiting_rejects_stale_event_and_queue_overflow():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(id="relay-media", tenant_id=1, name="媒体转发", type="group_relay", status="running")
+        action = Action(id="action-wait", tenant_id=1, task_id=task.id, task_type=task.type, action_type="send_message", status="pending", payload={"message_text": "带图转发"})
+        asset = SourceMediaAsset(id="asset-1", tenant_id=1, source_message_id="src-1", media_group_index=1, cache_status="pending_cache", cache_version=2)
+        session.add_all([task, action, asset])
+        session.flush()
+
+        assert register_action_waiting_for_source_media(session, action, [asset.id], queue_limit=10)
+        assert action.status == WAITING_MATERIAL_CACHE
+        assert source_media_cached_event(session, source_media_asset_id=asset.id, cache_peer_id="cache", cache_message_id="old", cache_version=1) == 0
+        assert action.status == WAITING_MATERIAL_CACHE
+        assert asset.cache_status == "pending_cache"
+
+        assert source_media_cached_event(session, source_media_asset_id=asset.id, cache_peer_id="cache", cache_message_id="new", cache_version=2) == 1
+        assert action.status == "pending"
+        assert action.payload["media_segments"][0]["source"] == "tg-cache://cache/new"
+
+        overflow_action = Action(id="action-overflow", tenant_id=1, task_id=task.id, task_type=task.type, action_type="send_message", status="pending", payload={"message_text": "队列满"})
+        waiting_filler = Action(id="action-existing-wait", tenant_id=1, task_id=task.id, task_type=task.type, action_type="send_message", status=WAITING_MATERIAL_CACHE, payload={"message_text": "已有等待"})
+        overflow_asset = SourceMediaAsset(id="asset-overflow", tenant_id=1, source_message_id="src-2", cache_status="pending_cache")
+        session.add_all([overflow_action, waiting_filler, overflow_asset])
+        session.flush()
+
+        assert not register_action_waiting_for_source_media(session, overflow_action, [overflow_asset.id], queue_limit=1)
+        assert overflow_action.status == "skipped"
+        assert overflow_action.result["error_code"] == "material_cache_wait_queue_full"
+        assert overflow_asset.cache_status == "cache_failed"
+
+
+def test_source_media_cache_worker_uploads_and_wakes_waiting_action(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setenv("SOURCE_MEDIA_CACHE_PEER_ID", "cache-peer")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.developer_apps.credentials_for_account",
+        lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+    )
+    monkeypatch.setattr(
+        "app.services.source_media.gateway.cache_source_media",
+        lambda *args, **kwargs: SendResult(True, remote_message_id="301"),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="监听号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        task = Task(id="relay-worker", tenant_id=1, name="媒体缓存 worker", type="group_relay", status="running")
+        action = Action(id="action-worker", tenant_id=1, task_id=task.id, task_type=task.type, action_type="send_message", status="pending", payload={"message_text": "worker"})
+        asset = SourceMediaAsset(id="asset-worker", tenant_id=1, listener_account_id=101, source_peer_id="-1001", source_message_id="55", cache_status="pending_cache")
+        session.add_all([task, action, asset])
+        session.flush()
+        register_action_waiting_for_source_media(session, action, [asset.id])
+        session.commit()
+
+    def factory():
+        return Session(engine)
+
+    assert drain_source_media_cache(factory, limit=10) == 1
+
+    with Session(engine) as session:
+        action = session.get(Action, "action-worker")
+        asset = session.get(SourceMediaAsset, "asset-worker")
+        assert asset.cache_status == "ready"
+        assert asset.cache_peer_id == "cache-peer"
+        assert asset.cache_message_id == "301"
+        assert action.status == "pending"
+        assert action.payload["media_segments"][0]["source"] == "tg-cache://cache-peer/301"
+
+    get_settings.cache_clear()
+
+
+def test_source_media_cache_worker_marks_missing_cache_peer_observable(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.delenv("SOURCE_MEDIA_CACHE_PEER_ID", raising=False)
+    get_settings.cache_clear()
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SourceMediaAsset(id="asset-no-peer", tenant_id=1, source_message_id="src-no-peer", cache_status="pending_cache"))
+        session.commit()
+
+    def factory():
+        return Session(engine)
+
+    assert drain_source_media_cache(factory, limit=10) == 0
+    with Session(engine) as session:
+        asset = session.get(SourceMediaAsset, "asset-no-peer")
+        assert asset.cache_status == "pending_cache"
+        assert asset.failure_reason == "cache_peer_unavailable"
+
+    get_settings.cache_clear()
+
+
+def test_material_cache_worker_marks_media_material_ready(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setenv("MATERIAL_CACHE_PEER_ID", "material-cache-peer")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.developer_apps.credentials_for_account",
+        lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+    )
+    monkeypatch.setattr(
+        "app.services.material_cache.gateway.cache_material_source",
+        lambda *args, **kwargs: SendResult(True, remote_message_id="material-501"),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="缓存号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        material = Material(
+            id=9001,
+            tenant_id=1,
+            title="待缓存图片",
+            material_type="图片",
+            content="https://trusted.example.com/material.png",
+            cache_ready_status="not_cached",
+        )
+        session.add(material)
+        session.commit()
+
+    def factory():
+        return Session(engine)
+
+    assert drain_material_cache(factory, limit=10) == 1
+
+    with Session(engine) as session:
+        material = session.get(Material, 9001)
+        assert material.cache_ready_status == "ready"
+        assert material.tg_cache_account_id == 101
+        assert material.tg_cache_peer_id == "material-cache-peer"
+        assert material.tg_cache_message_id == "material-501"
+        assert material.last_cache_error == ""
+
+    get_settings.cache_clear()
+
+
+def test_material_cache_worker_respects_flood_wait_retry_time(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setenv("MATERIAL_CACHE_PEER_ID", "material-cache-peer")
+    get_settings.cache_clear()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "app.services.developer_apps.credentials_for_account",
+        lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+    )
+    monkeypatch.setattr(
+        "app.services.material_cache.gateway.cache_material_source",
+        lambda *args, **kwargs: calls.append(args[1]) or SendResult(True, remote_message_id="material-601"),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="缓存号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        session.add(
+            Material(
+                id=9002,
+                tenant_id=1,
+                title="FloodWait 图片",
+                material_type="图片",
+                content="https://trusted.example.com/flood.png",
+                cache_ready_status="flood_wait",
+                last_cache_flood_wait_until=_now() + timedelta(minutes=5),
+            )
+        )
+        session.commit()
+
+    def factory():
+        return Session(engine)
+
+    assert drain_material_cache(factory, limit=10) == 0
+    assert calls == []
+
+    with Session(engine) as session:
+        material = session.get(Material, 9002)
+        material.last_cache_flood_wait_until = _now() - timedelta(minutes=1)
+        session.commit()
+
+    assert drain_material_cache(factory, limit=10) == 1
+    assert calls == ["https://trusted.example.com/flood.png"]
+
+    get_settings.cache_clear()
+
+
+def test_material_create_rejects_public_ready_spoof_and_unsafe_url():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        material = create_material(
+            session,
+            MaterialCreate(
+                tenant_id=1,
+                title="伪造 ready",
+                material_type="图片",
+                content="https://trusted.example.com/a.png",
+                cache_ready_status="ready",
+                tg_cache_peer_id="fake-peer",
+                tg_cache_message_id="fake-id",
+            ),
+            "tester",
+        )
+        assert material.cache_ready_status == "not_cached"
+        assert material.tg_cache_peer_id == ""
+        assert material.tg_cache_message_id == ""
+
+        try:
+            create_material(
+                session,
+                MaterialCreate(tenant_id=1, title="内网图", material_type="图片", content="https://127.0.0.1/a.png"),
+                "tester",
+            )
+        except ValueError as exc:
+            assert "内网" in str(exc) or "localhost" in str(exc)
+        else:
+            raise AssertionError("unsafe material url should be rejected")
+
+
+def test_material_url_deep_probe_checks_dns_redirect_type_and_size(monkeypatch):
+    monkeypatch.setenv("MATERIAL_MAX_BYTES", "32")
+    get_settings.cache_clear()
+
+    def public_resolver(host, port, type=None):  # noqa: ANN001 - mirrors socket.getaddrinfo.
+        if host == "private.example":
+            return [(None, None, None, "", ("10.0.0.5", port))]
+        return [(None, None, None, "", ("93.184.216.34", port))]
+
+    class Response:
+        status = 200
+
+        def __init__(self, headers):
+            self.headers = headers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class Opener:
+        def __init__(self, headers):
+            self.headers = headers
+
+        def open(self, _request, timeout=0):  # noqa: ANN001 - mirrors urllib opener.
+            return Response(self.headers)
+
+    class RedirectOpener:
+        def __init__(self):
+            self.calls = 0
+
+        def open(self, request, timeout=0):  # noqa: ANN001 - mirrors urllib opener.
+            self.calls += 1
+            if self.calls == 1:
+                raise __import__("urllib.error").error.HTTPError(request.full_url, 302, "Found", {"Location": "https://cdn.example/final.png"}, None)
+            return Response({"Content-Type": "image/png", "Content-Length": "12"})
+
+    assert deep_probe_material_url(
+        "https://cdn.example/a.png",
+        material_type="图片",
+        resolver=public_resolver,
+        opener=Opener({"Content-Type": "image/png", "Content-Length": "12"}),
+    ) == "https://cdn.example/a.png"
+    assert deep_probe_material_url("https://cdn.example/redirect.png", material_type="图片", resolver=public_resolver, opener=RedirectOpener()) == "https://cdn.example/final.png"
+    try:
+        deep_probe_material_url("https://private.example/a.png", material_type="图片", resolver=public_resolver, opener=Opener({"Content-Type": "image/png"}))
+    except ValueError as exc:
+        assert "内网" in str(exc)
+    else:
+        raise AssertionError("private DNS target should be rejected")
+    try:
+        deep_probe_material_url("https://cdn.example/a.png", material_type="图片", resolver=public_resolver, opener=Opener({"Content-Type": "text/html"}))
+    except ValueError as exc:
+        assert "Content-Type" in str(exc)
+    else:
+        raise AssertionError("bad content type should be rejected")
+    try:
+        deep_probe_material_url("https://cdn.example/a.png", material_type="图片", resolver=public_resolver, opener=Opener({"Content-Type": "image/png", "Content-Length": "64"}))
+    except ValueError as exc:
+        assert "过大" in str(exc)
+    else:
+        raise AssertionError("oversized content length should be rejected")
+
+    get_settings.cache_clear()
+
+
+def test_material_update_content_change_clears_cache_refs():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        material = Material(
+            id=9101,
+            tenant_id=1,
+            title="已缓存图片",
+            material_type="图片",
+            content="https://trusted.example.com/old.png",
+            cache_ready_status="ready",
+            tg_cache_peer_id="cache-peer",
+            tg_cache_message_id="old-id",
+            asset_version_id=2,
+            tg_ref_version_id=3,
+        )
+        session.add(material)
+        session.commit()
+        updated = update_material(
+            session,
+            9101,
+            MaterialUpdate(content="https://trusted.example.com/new.png", cache_ready_status="ready", tg_cache_peer_id="fake", tg_cache_message_id="fake"),
+            "tester",
+        )
+
+    assert updated.content == "https://trusted.example.com/new.png"
+    assert updated.cache_ready_status == "not_cached"
+    assert updated.tg_cache_peer_id == ""
+    assert updated.tg_cache_message_id == ""
+    assert updated.asset_version_id == 3
+    assert updated.tg_ref_version_id == 4
+
+
+def test_material_asset_and_tg_ref_versions_are_recorded(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setenv("MATERIAL_CACHE_PEER_ID", "material-cache-peer")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.developer_apps.credentials_for_account",
+        lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+    )
+    monkeypatch.setattr(
+        "app.services.material_cache.gateway.cache_material_source",
+        lambda *args, **kwargs: SendResult(True, remote_message_id="version-801"),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="缓存号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        material = create_material(
+            session,
+            MaterialCreate(tenant_id=1, title="版本图片", material_type="图片", content="https://trusted.example.com/v1.png"),
+            "tester",
+        )
+        material_id = material.id
+        assert session.scalar(select(MaterialAssetVersion).where(MaterialAssetVersion.material_id == material_id, MaterialAssetVersion.asset_version_id == 1))
+        assert session.scalar(select(MaterialTgRefVersion).where(MaterialTgRefVersion.material_id == material_id, MaterialTgRefVersion.tg_ref_version_id == 1)).cache_status == "not_cached"
+        update_material(session, material_id, MaterialUpdate(content="https://trusted.example.com/v2.png"), "tester")
+        assert session.scalar(select(MaterialAssetVersion).where(MaterialAssetVersion.material_id == material_id, MaterialAssetVersion.asset_version_id == 2)).content.endswith("/v2.png")
+        assert session.scalar(select(MaterialTgRefVersion).where(MaterialTgRefVersion.material_id == material_id, MaterialTgRefVersion.tg_ref_version_id == 2)).cache_status == "not_cached"
+        session.commit()
+
+    def factory():
+        return Session(engine)
+
+    assert drain_material_cache(factory, limit=10) == 1
+
+    with Session(engine) as session:
+        material = session.get(Material, material_id)
+        ref = session.scalar(select(MaterialTgRefVersion).where(MaterialTgRefVersion.material_id == material_id, MaterialTgRefVersion.tg_ref_version_id == material.tg_ref_version_id))
+        assert material.cache_ready_status == "ready"
+        assert ref.cache_status == "ready"
+        assert ref.tg_cache_message_id == "version-801"
+
+    get_settings.cache_clear()
+
+
+def test_custom_emoji_material_is_ready_and_builds_custom_segment():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        material = create_material(
+            session,
+            MaterialCreate(
+                tenant_id=1,
+                title="自定义表情",
+                material_type="表情包",
+                content="custom_emoji:1234567890:🙂",
+                emoji_asset_kind="custom_emoji",
+            ),
+            "tester",
+        )
+        task = MessageTask(
+            tenant_id=1,
+            content="",
+            message_type="表情包",
+            material_id=material.id,
+            idempotency_key="custom-emoji-test",
+        )
+        session.add(task)
+        session.commit()
+
+        refreshed = session.get(Material, material.id)
+        ref = session.scalar(select(MaterialTgRefVersion).where(MaterialTgRefVersion.material_id == material.id))
+        segments = build_outbound_segments(session, task)
+
+    assert refreshed.cache_ready_status == "ready"
+    assert refreshed.tg_cache_peer_id == ""
+    assert ref.cache_status == "ready"
+    assert segments[0].segment_type == "表情包"
+    assert segments[0].source == "custom_emoji:1234567890:🙂"
+    assert TelethonTelegramGateway._parse_custom_emoji_source(segments[0].source) == (1234567890, "🙂")
+    assert TelethonTelegramGateway._telegram_entity_length("🙂") == 2
+
+
+def test_custom_emoji_runtime_error_maps_to_unavailable_reason():
+    result = TelethonTelegramGateway._map_send_error(RuntimeError("MessageEntityCustomEmoji document id is unavailable"))
+
+    assert result.ok is False
+    assert result.failure_type == "custom_emoji_unavailable"
+
+
+def test_uploaded_material_temp_file_is_removed_after_cache_success(monkeypatch, tmp_path):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setenv("MEDIA_ROOT", str(tmp_path))
+    monkeypatch.setenv("MATERIAL_CACHE_PEER_ID", "material-cache-peer")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.services.developer_apps.credentials_for_account",
+        lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+    )
+    monkeypatch.setattr(
+        "app.services.material_cache.gateway.cache_material_source",
+        lambda *args, **kwargs: SendResult(True, remote_message_id="upload-701"),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="缓存号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        material = create_uploaded_material(
+            session,
+            tenant_id=1,
+            title="上传图片",
+            material_type="图片",
+            tags="上传",
+            caption="caption",
+            filename="hello.png",
+            content_type="image/png",
+            data=b"png-bytes",
+            actor="tester",
+        )
+        temp_path = material.content
+        material_id = material.id
+        assert temp_path.startswith(str(tmp_path))
+        assert Path(temp_path).exists()
+
+    def factory():
+        return Session(engine)
+
+    assert drain_material_cache(factory, limit=10) == 1
+    assert not Path(temp_path).exists()
+
+    with Session(engine) as session:
+        material = session.get(Material, material_id)
+        asset_version = session.scalar(select(MaterialAssetVersion).where(MaterialAssetVersion.material_id == material_id))
+        assert material.cache_ready_status == "ready"
+        assert material.tg_cache_message_id == "upload-701"
+        assert material.content == ""
+        assert asset_version.content == ""
+
+    get_settings.cache_clear()
+
+
+def test_material_cache_health_summarizes_material_and_source_queues(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setenv("MATERIAL_CACHE_PEER_ID", "material-cache-peer")
+    monkeypatch.setenv("SOURCE_MEDIA_CACHE_PEER_ID", "source-cache-peer")
+    get_settings.cache_clear()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="缓存号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        session.add(Material(id=9201, tenant_id=1, title="待缓存", material_type="图片", content="https://trusted.example.com/a.png", cache_ready_status="not_cached"))
+        session.add(Material(id=9202, tenant_id=1, title="失败素材", material_type="图片", content="https://trusted.example.com/b.png", cache_ready_status="cache_failed", last_cache_error="cache_failed"))
+        task = Task(id="health-task", tenant_id=1, name="等待缓存", type="group_relay", status="running")
+        action = Action(id="health-action", tenant_id=1, task_id=task.id, task_type=task.type, action_type="send_message", status=WAITING_MATERIAL_CACHE)
+        source_asset = SourceMediaAsset(id="health-asset", tenant_id=1, source_message_id="src", cache_status="cache_failed", failure_reason="source_deleted")
+        session.add_all([task, action, source_asset])
+        session.commit()
+
+        health = material_cache_health(session, 1)
+
+    assert health.material_cache_peer_configured is True
+    assert health.source_media_cache_peer_configured is True
+    assert health.active_cache_account_count == 1
+    assert {item.status: item.count for item in health.material_status_counts}["not_cached"] == 1
+    assert health.cache_failed_count == 2
+    assert health.waiting_action_count == 1
+    assert {item.scope for item in health.recent_errors} == {"material", "source_media"}
+
+    get_settings.cache_clear()
+
+
+def test_temp_file_cleanup_removes_only_expired_platform_temp_files(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEDIA_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    expired = temp_dir("material-tmp") / "expired.bin"
+    fresh = temp_dir("material-tmp") / "fresh.bin"
+    avatar_dir = tmp_path / "avatars" / "1" / "1"
+    avatar_dir.mkdir(parents=True)
+    avatar = avatar_dir / "keep.png"
+    expired.write_bytes(b"expired")
+    fresh.write_bytes(b"fresh")
+    avatar.write_bytes(b"avatar")
+    now_ts = _now().timestamp()
+    utime(expired, (now_ts - TEMP_FILE_TTL_SECONDS - 60, now_ts - TEMP_FILE_TTL_SECONDS - 60))
+    utime(fresh, (now_ts, now_ts))
+    utime(avatar, (now_ts - TEMP_FILE_TTL_SECONDS - 60, now_ts - TEMP_FILE_TTL_SECONDS - 60))
+
+    assert cleanup_temp_files(now_ts=now_ts) == 1
+    assert not expired.exists()
+    assert fresh.exists()
+    assert avatar.exists()
+
+    get_settings.cache_clear()
 
 
 def test_published_rule_version_is_immutable_by_new_draft_flow():

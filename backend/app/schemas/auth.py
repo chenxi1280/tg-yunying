@@ -74,10 +74,16 @@ class AuthUserOut(BaseModel):
     tenant_id: int | None
     name: str
     role: str
+    role_template: str = "运营管理员"
     email: str
     phone: str | None = None
     tenant_name: str | None = None
     can_use_core_features: bool = True
+    permissions: list[str] = []
+    menu_permissions: list[str] = []
+    permission_version: int = 1
+    is_active: bool = True
+    is_super_admin: bool = False
 
 
 class AuthTokenOut(BaseModel):
@@ -197,6 +203,7 @@ class AdminUserOut(BaseModel):
     tenant_name: str | None = None
     name: str
     role: str
+    role_template: str = "运营管理员"
     email: str
     phone: str | None = None
     subscription_status: str
@@ -206,6 +213,9 @@ class AdminUserOut(BaseModel):
     token_balance: int = 0
     token_quota_total: int = 0
     menu_permissions: list[str] = []
+    permissions: list[str] = []
+    permission_version: int = 1
+    is_super_admin: bool = False
     is_active: bool
     created_at: datetime
     last_login_at: datetime | None = None
@@ -215,10 +225,23 @@ class AdminUserUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     email: str | None = Field(default=None, min_length=3, max_length=160)
     phone: str | None = Field(default=None, max_length=40)
-    role: str | None = Field(default=None, pattern="^(系统管理员|普通用户)$")
+    role: str | None = Field(default=None, pattern="^(系统管理员|后台用户|普通用户)$")
+    role_template: str | None = Field(default=None, max_length=40)
     subscription_status: str | None = Field(default=None, max_length=30)
     menu_permissions: list[str] | None = None
+    permissions: list[str] | None = None
     is_active: bool | None = None
+
+
+class AdminUserCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    email: str = Field(..., min_length=3, max_length=160)
+    phone: str | None = Field(default=None, max_length=40)
+    password: str = Field(default="user123456", min_length=6, max_length=80)
+    role: str = Field(default="后台用户", pattern="^(系统管理员|后台用户|普通用户)$")
+    role_template: str = Field(default="运营管理员", max_length=40)
+    permissions: list[str] | None = None
+    is_active: bool = True
 
 
 class AdminResetPasswordRequest(BaseModel):
@@ -274,6 +297,6 @@ __all__ = [
     "SubscriptionRedeemRequest", "SubscriptionRedeemOut",
     "SubscriptionPlanCreate", "SubscriptionPlanUpdate", "SubscriptionPlanOut",
     "ActivationCodeCreateRequest", "ActivationCodeOut", "ActivationCodePageOut",
-    "AdminUserOut", "AdminUserUpdate", "AdminResetPasswordRequest", "TokenAdjustmentRequest", "UserTokenLedgerOut",
+    "AdminUserOut", "AdminUserCreate", "AdminUserUpdate", "AdminResetPasswordRequest", "TokenAdjustmentRequest", "UserTokenLedgerOut",
     "RuntimeConfigOut",
 ]

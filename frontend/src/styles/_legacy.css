@@ -1,25 +1,32 @@
 :root {
   font-family: Inter, "SF Pro Display", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  color: #17201b;
-  background: #f6f7f4;
+  color: #101828;
+  background: #f3f6fa;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  --bg: #f6f7f4;
+  --bg: #f3f6fa;
   --surface: #ffffff;
-  --surface-strong: #eef4ee;
-  --ink: #17201b;
-  --muted: #66736b;
-  --line: #dde4dd;
-  --green: #196b4d;
-  --green-soft: #dceee5;
-  --amber: #a46412;
-  --amber-soft: #faecd2;
-  --red: #a93d36;
-  --red-soft: #f7dddd;
-  --blue: #2d5f9a;
-  --blue-soft: #dfeaf8;
-  --shadow: 0 18px 40px rgba(24, 39, 31, 0.08);
+  --surface-strong: #f8fafc;
+  --surface-hover: #eef5ff;
+  --ink: #101828;
+  --muted: #667085;
+  --line: #d9e2ec;
+  --border: #d9e2ec;
+  --sidebar: #172033;
+  --sidebar-soft: #22304a;
+  --green: #1677ff;
+  --green-soft: #e8f2ff;
+  --positive: #16a34a;
+  --positive-soft: #eaf8ef;
+  --amber: #d97706;
+  --amber-soft: #fff5de;
+  --red: #dc2626;
+  --red-soft: #fdecec;
+  --blue: #1677ff;
+  --blue-soft: #e8f2ff;
+  --shadow: 0 10px 28px rgba(16, 32, 51, 0.07);
+  --shadow-soft: 0 1px 2px rgba(16, 32, 51, 0.05), 0 14px 40px rgba(16, 32, 51, 0.06);
 }
 
 /* ── Reusable utility classes ── */
@@ -44,6 +51,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  line-height: 1.5;
 }
 
 .login-screen {
@@ -51,14 +59,12 @@ body {
   padding: 24px;
   display: grid;
   place-items: center;
-  background:
-    linear-gradient(135deg, rgba(25, 107, 77, 0.08), rgba(45, 95, 154, 0.08)),
-    var(--bg);
+  background: var(--bg);
 }
 
 .login-panel {
   width: min(440px, 100%);
-  padding: 24px;
+  padding: 28px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
@@ -156,8 +162,8 @@ body {
   top: 0;
   height: 100vh;
   padding: 22px;
-  border-right: 1px solid var(--line);
-  background: #f9faf7;
+  border-right: 1px solid #1d2939;
+  background: var(--sidebar);
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -168,7 +174,7 @@ body {
   align-items: center;
   gap: 12px;
   padding-bottom: 14px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .brand-mark {
@@ -177,7 +183,7 @@ body {
   display: grid;
   place-items: center;
   border-radius: 8px;
-  background: var(--green);
+  background: var(--blue);
   color: #fff;
   font-weight: 800;
   letter-spacing: 0;
@@ -190,21 +196,22 @@ body {
 
 .brand strong {
   font-size: 17px;
+  color: #fff;
 }
 
 .brand span {
   margin-top: 3px;
-  color: var(--muted);
+  color: #98a2b3;
   font-size: 12px;
 }
 
 .side-note {
   margin-top: auto;
   padding: 14px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
-  background: var(--surface);
-  color: var(--muted);
+  background: var(--sidebar-soft);
+  color: #cbd5e1;
   display: flex;
   gap: 10px;
   font-size: 13px;
@@ -917,6 +924,21 @@ body {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.permission-group {
+  min-height: 42px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.permission-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding-top: 8px;
+  padding-left: 24px;
 }
 
 .material-picker {

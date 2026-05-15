@@ -146,6 +146,8 @@ type RuleTestResult = {
   result: string;
   test_mode: string;
   is_test_data: boolean;
+  simulation_scenario: string;
+  simulation_steps: Array<{ step: string; status: string; action: string; reason: string }>;
   hits: Array<{ rule_id: number; keyword: string; match_type: string; note: string }>;
   input_hits: string[];
   output_candidates: Array<{ index: number; original_text: string; passed: boolean; action: string; reason: string; transformed_text: string }>;
@@ -156,6 +158,10 @@ type RuleTestResult = {
   rule_set_version_id: number | null;
   rule_set_name: string;
   transformed_text: string;
+  material_candidate_count: number;
+  material_selected_id: number | null;
+  material_action: string;
+  material_failure_reason: string;
   target_summary: string;
   target_routes: Array<{ group_id: number; title: string; status: string; can_send_account_count: number; account_strategy: string }>;
   account_strategy: string;
@@ -171,6 +177,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
   const [activeTab, setActiveTab] = React.useState('rule-sets');
   const [testType, setTestType] = React.useState('group_relay');
   const [testMode, setTestMode] = React.useState('rules_only');
+  const [simulationScenario, setSimulationScenario] = React.useState('');
   const [sample, setSample] = React.useState('');
   const [candidateSample, setCandidateSample] = React.useState('');
   const [testVersionId, setTestVersionId] = React.useState<number | null>(null);
@@ -179,6 +186,8 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     result: '未测试',
     test_mode: 'rules_only',
     is_test_data: true,
+    simulation_scenario: '',
+    simulation_steps: [],
     hits: [],
     input_hits: [],
     output_candidates: [],
@@ -189,6 +198,10 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     rule_set_version_id: null,
     rule_set_name: '',
     transformed_text: '',
+    material_candidate_count: 0,
+    material_selected_id: null,
+    material_action: '',
+    material_failure_reason: '',
     target_summary: '按绑定任务/目标路由',
     target_routes: [],
     account_strategy: '按任务账号策略选择',
@@ -251,6 +264,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
           text: sample,
           test_type: testType,
           test_mode: testMode,
+          simulation_scenario: simulationScenario,
           candidates: candidateSample.split(/\n+/).map((item) => item.trim()).filter(Boolean),
           rule_set_version_id: testVersionId,
           source_group_id: testSourceGroupId.trim() ? Number(testSourceGroupId) : null,
@@ -544,6 +558,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
       <div className="form-grid">
         <label>测试模式<Select value={testMode} onChange={setTestMode} options={TEST_MODE_OPTIONS} /></label>
         <label>测试类型<Select value={testType} onChange={setTestType} options={TASK_TYPE_OPTIONS} /></label>
+        <label>媒体场景<Select value={simulationScenario} onChange={setSimulationScenario} options={MEDIA_SIMULATION_OPTIONS} /></label>
         <label>规则版本<Select allowClear value={testVersionId ?? undefined} onChange={(value) => setTestVersionId(value ?? null)} options={versionOptions} placeholder="默认使用当前发布版本" /></label>
         <label>源群 ID<Input value={testSourceGroupId} onChange={(event) => setTestSourceGroupId(event.target.value)} placeholder="用于 source_group_map / routes 预览" /></label>
       </div>
@@ -569,10 +584,25 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
           { key: 'rule-set', label: '规则版本', children: testResult.rule_set_name ? `${testResult.rule_set_name} / #${testResult.rule_set_version_id}` : '未选择' },
           { key: 'filter-reason', label: '过滤说明', span: 2, children: testResult.filter_passed ? '通过' : testResult.filter_reason || '未通过过滤' },
           { key: 'transform', label: '转换后内容', span: 2, children: testResult.transformed_text || sample || '-' },
+          { key: 'material', label: '素材动作', children: testResult.material_selected_id ? `#${testResult.material_selected_id} / ${testResult.material_action}` : testResult.material_failure_reason || `候选 ${testResult.material_candidate_count}` },
           { key: 'target', label: '目标路由', children: testResult.target_summary },
           { key: 'account', label: '预计账号', children: testResult.account_strategy },
           { key: 'rate', label: '限流判断', span: 2, children: testResult.rate_limit_summary },
         ]}
+      />
+      <Table
+        className="tg-table"
+        rowKey="step"
+        size="small"
+        columns={[
+          { title: '媒体步骤', dataIndex: 'step', width: 150 },
+          { title: '状态', dataIndex: 'status', width: 180 },
+          { title: '动作', dataIndex: 'action', width: 220 },
+          { title: '原因', dataIndex: 'reason' },
+        ]}
+        dataSource={testResult.simulation_steps}
+        pagination={false}
+        locale={{ emptyText: '选择媒体场景后可模拟待缓存、迟到事件、相册失败和队列超量。' }}
       />
       <Table
         className="tg-table"
@@ -873,6 +903,15 @@ const TEST_MODE_OPTIONS = [
   { value: 'history_replay', label: '历史样本回放' },
 ];
 
+const MEDIA_SIMULATION_OPTIONS = [
+  { value: '', label: '不模拟媒体缓存' },
+  { value: 'pending_cache', label: '待缓存' },
+  { value: 'timeout_then_cached', label: '超时后缓存完成' },
+  { value: 'late_cache_event', label: '旧事件迟到' },
+  { value: 'album_one_failed', label: '相册一张失败' },
+  { value: 'queue_overflow', label: '等待队列超量' },
+];
+
 const OUTPUT_FAILURE_OPTIONS = [
   { value: 'transform_once_drop', label: '转换一次，仍失败则丢弃' },
   { value: 'drop', label: '直接丢弃' },
@@ -924,6 +963,11 @@ function defaultRuleFormValues() {
     visual_output_min_length: null,
     visual_output_max_length: null,
     visual_output_failure_strategy: 'transform_once_drop',
+    visual_material_enabled: false,
+    visual_material_type: '表情包',
+    visual_material_tags: '',
+    visual_material_action: 'append_media',
+    visual_material_fallback: 'text_only',
   };
 }
 
@@ -934,6 +978,7 @@ function ruleFormValuesFromVersion(ruleSet: RuleSet, groupTargets: OperationTarg
   const transforms = version.transforms ?? {};
   const outputChecks = version.output_checks ?? {};
   const routing = version.routing ?? {};
+  const materialPolicy = routing.material_policy ?? {};
   const defaultGroupIds = numberList(routing.target_group_ids ?? routing.default_target_group_ids);
   const mappedTargetIds = operationTargetIdsForGroupIds(defaultGroupIds, groupTargets);
   const unmappedGroupIds = defaultGroupIds.filter((id) => !groupTargets.some((target) => target.linked_group_id === id));
@@ -966,6 +1011,11 @@ function ruleFormValuesFromVersion(ruleSet: RuleSet, groupTargets: OperationTarg
     visual_source_group_map: formatSourceGroupMap(routing.source_group_map ?? routing.source_to_targets),
     visual_keyword_routes: formatKeywordRoutes(routing.keyword_routes),
     visual_routes: formatRoutes(routing.routes),
+    visual_material_enabled: Boolean(materialPolicy.enabled),
+    visual_material_type: materialPolicy.material_type ?? '表情包',
+    visual_material_tags: words(materialPolicy.required_tags ?? materialPolicy.tags).join(','),
+    visual_material_action: materialPolicy.action ?? 'append_media',
+    visual_material_fallback: materialPolicy.fallback ?? 'text_only',
     visual_account_mode: accountStrategy.mode ?? 'target_sticky',
     visual_fixed_account_id: accountStrategy.account_id ?? accountStrategy.fixed_account_id ?? null,
     visual_account_weights: formatAccountWeights(accountStrategy.weights),
@@ -1051,6 +1101,17 @@ function composeRuleConfig(values: Record<string, any>, groupTargets: OperationT
     routing.routes = routes;
   } else {
     delete routing.routes;
+  }
+  if (values.visual_material_enabled) {
+    routing.material_policy = {
+      enabled: true,
+      material_type: values.visual_material_type || '表情包',
+      required_tags: words(values.visual_material_tags),
+      action: values.visual_material_action || 'append_media',
+      fallback: values.visual_material_fallback || 'text_only',
+    };
+  } else {
+    delete routing.material_policy;
   }
 
   accountStrategy.mode = values.visual_account_mode || 'target_sticky';
@@ -1161,6 +1222,11 @@ function RuleSetForm({ form, includeBasics = false, groupTargets = [] }: { form:
           <Form.Item name="visual_routes" label="源群+关键词路由">
             <Input.TextArea rows={2} placeholder="7 | 公告,活动 -> 9,10&#10;8 | 报名 -> 11" />
           </Form.Item>
+          <Form.Item name="visual_material_enabled" label="素材动作"><Select options={[{ value: false, label: '不追加素材' }, { value: true, label: '按规则选择素材' }]} /></Form.Item>
+          <Form.Item name="visual_material_type" label="素材类型"><Select options={['图片', '表情包', '文件'].map((value) => ({ value, label: value }))} /></Form.Item>
+          <Form.Item name="visual_material_tags" label="素材标签"><Input placeholder="围观, 欢迎" /></Form.Item>
+          <Form.Item name="visual_material_action" label="素材发送方式"><Select options={[{ value: 'append_media', label: '追加素材' }, { value: 'replace_media', label: '替换源媒体' }]} /></Form.Item>
+          <Form.Item name="visual_material_fallback" label="素材不可用"><Select options={[{ value: 'text_only', label: '只发文字' }, { value: 'skip', label: '跳过本条' }]} /></Form.Item>
           <Form.Item name="visual_account_mode" label="账号策略"><Select options={[{ value: 'target_sticky', label: '目标群粘性' }, { value: 'source_target_sticky', label: '源群+目标群粘性' }, { value: 'round_robin', label: '轮询' }, { value: 'random', label: '随机' }, { value: 'weighted_random', label: '权重随机' }, { value: 'fixed', label: '固定账号' }]} /></Form.Item>
           <Form.Item name="visual_fixed_account_id" label="固定账号 ID"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="visual_account_weights" label="账号权重">

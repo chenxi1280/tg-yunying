@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button, Card, Descriptions, Empty, List, Space, Typography } from 'antd';
-import type { AiProvider, PromptTemplate, TenantAiSetting, Material, ContentKeywordRule } from '../types';
+import type { AiProvider, PromptTemplate, TenantAiSetting, Material, MaterialCacheHealth, ContentKeywordRule } from '../types';
 import { StatusBadge, Badge } from '../components/shared';
 import { statusAccent } from '../utils';
 
@@ -10,6 +10,7 @@ interface Props {
   promptTemplates: PromptTemplate[];
   tenantAiSetting: TenantAiSetting | null;
   materials: Material[];
+  materialCacheHealth: MaterialCacheHealth | null;
   contentKeywordRules: ContentKeywordRule[];
   currentUserRole: string | undefined;
   onCreateProvider: () => void;
@@ -33,6 +34,7 @@ export default function AISettingsView({
   promptTemplates,
   tenantAiSetting,
   materials,
+  materialCacheHealth,
   contentKeywordRules,
   currentUserRole,
   onCreateProvider,
@@ -115,6 +117,46 @@ export default function AISettingsView({
         extra={<Space><Button size="small" onClick={onCreatePromptTemplate}>新增提示词</Button><Button size="small" onClick={onCreateMaterial}>新增素材</Button></Space>}
       >
         <Typography.Text type="secondary">系统决策提示词自动选择业务模板；素材先支持图片和表情包</Typography.Text>
+        {materialCacheHealth && (
+          <>
+            <div className="summary-grid">
+              <Card className="summary-card" size="small">
+                <span>TG 缓存</span>
+                <strong>{materialCacheHealth.material_cache_peer_configured ? '已配置' : '未配置'}</strong>
+                <p>源媒体缓存 {materialCacheHealth.source_media_cache_peer_configured ? '已配置' : '未配置'} / 可用账号 {materialCacheHealth.active_cache_account_count}</p>
+              </Card>
+              <Card className="summary-card" size="small">
+                <span>队列状态</span>
+                <strong>{materialCacheHealth.waiting_action_count}</strong>
+                <p>FloodWait {materialCacheHealth.flood_wait_count} / 失败 {materialCacheHealth.cache_failed_count}</p>
+              </Card>
+              <Card className="summary-card" size="small">
+                <span>最早待缓存</span>
+                <strong>{materialCacheHealth.material_oldest_pending_at || '-'}</strong>
+                <p>源媒体 {materialCacheHealth.source_media_oldest_pending_at || '-'}</p>
+              </Card>
+            </div>
+            <Space wrap size={[6, 6]} style={{ marginBottom: 12 }}>
+              {materialCacheHealth.material_status_counts.map((item) => <StatusBadge key={`material-${item.status}`} status={item.status} label={`素材 ${item.status} ${item.count}`} />)}
+              {materialCacheHealth.source_media_status_counts.map((item) => <StatusBadge key={`source-${item.status}`} status={item.status} label={`源媒体 ${item.status} ${item.count}`} />)}
+            </Space>
+            {materialCacheHealth.recent_errors.length > 0 && (
+              <List
+                className="mini-list"
+                size="small"
+                dataSource={materialCacheHealth.recent_errors.slice(0, 5)}
+                renderItem={(item) => (
+                  <List.Item>
+                    <Space direction="vertical" size={0}>
+                      <Typography.Text>{item.scope === 'source_media' ? '源媒体' : '素材'} {item.title}</Typography.Text>
+                      <Typography.Text type="secondary">{item.status} / {item.reason || '无失败原因'}</Typography.Text>
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            )}
+          </>
+        )}
         <List
           className="mini-list"
           dataSource={[

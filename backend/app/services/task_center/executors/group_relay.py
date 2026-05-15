@@ -7,11 +7,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, GroupAuthStatus, OperationTarget, RuleSet, RuleSetVersion, Task, TgAccount, TgGroup, TgGroupAccount
+from app.models import AccountStatus, GroupAuthStatus, OperationTarget, RuleSet, RuleSetVersion, SourceMediaAsset, Task, TgAccount, TgGroup, TgGroupAccount
 from app.services.account_capacity import available_accounts_by_capacity, next_capacity_window
 from app.services.content_filters import filter_outbound_content
 from app.services.group_listeners import collect_group_context, recent_context_messages
 from app.services.rule_engine import apply_output_policy
+from app.services.material_rules import select_material_for_policy
 
 from ..account_pool import select_task_accounts
 from ..ai_generator import rewrite_relay_content
@@ -19,6 +20,7 @@ from ..fingerprints import is_duplicate, remember_fingerprint
 from ..listener_runtime import should_collect_listener
 from ..pacing import schedule_times
 from ..payloads import SendMessagePayload, create_send_action
+from app.services.source_media import SOURCE_MEDIA_READY, ready_media_segments, register_action_waiting_for_source_media
 from ..targets import group_from_reference, group_ids_from_operation_targets
 from .common import add_tokens, stats_inc
 
@@ -89,6 +91,10 @@ def build_plan(session: Session, task: Task) -> int:
                         "source_remote_message_id": message.remote_message_id,
                         "source_message_type": message.message_type,
                         "source_sent_at": message.sent_at,
+                        "source_media_asset_ids": [
+                            asset.id
+                            for asset in _source_media_assets_for_message(session, task.tenant_id, source.id, message.remote_message_id)
+                        ] if config.get("preserve_media") and message.message_type != "text" else [],
                     }
                 )
                 remember_fingerprint(session, task.tenant_id, source_fingerprint_key, message.content)
@@ -128,7 +134,21 @@ def build_plan(session: Session, task: Task) -> int:
             )
             if decision.defer_until:
                 planned_at = decision.defer_until
-        create_send_action(
+        material_result = select_material_for_policy(
+            session,
+            task.tenant_id,
+            (config.get("routing") or {}).get("material_policy") or config.get("material_policy") or {},
+            context_key=f"{task.id}:{target.id}:{source_id}:{original}",
+            default_caption="",
+        )
+        if material_result.failure_reason and material_result.fallback == "skip":
+            stats_inc(task, "failure_count")
+            continue
+        material_segments = [material_result.segment] if material_result.ok and material_result.segment else []
+        source_media_asset_ids = [str(asset_id) for asset_id in candidate.get("source_media_asset_ids") or []]
+        if material_result.action in {"replace_media", "replace_source_media"} and material_segments:
+            source_media_asset_ids = []
+        action = create_send_action(
             session,
             task,
             account.id,
@@ -152,18 +172,82 @@ def build_plan(session: Session, task: Task) -> int:
                 source_remote_message_id=str(candidate.get("source_remote_message_id") or ""),
                 source_message_type=str(candidate.get("source_message_type") or ""),
                 source_sent_at=candidate.get("source_sent_at"),
+                source_media_asset_ids=source_media_asset_ids,
+                media_segments=material_segments,
                 rule_set_id=config.get("rule_set_id"),
                 rule_set_name=str(config.get("rule_set_name") or ""),
                 rule_set_version_id=config.get("rule_set_version_id"),
                 resolved_rule_set_version_id=config.get("resolved_rule_set_version_id") or config.get("rule_set_version_id"),
                 rule_set_version=config.get("rule_set_version"),
                 rule_binding_mode=str(config.get("rule_binding_mode") or ""),
-                rule_trace=_relay_rule_trace(config, source_id, target.id, original, content, account.id),
+                rule_trace={
+                    **_relay_rule_trace(config, source_id, target.id, original, content, account.id),
+                    "material_policy": (config.get("routing") or {}).get("material_policy") or config.get("material_policy") or {},
+                    "material_action": material_result.action,
+                    "material_id": material_result.selected.id if material_result.selected else None,
+                    "material_failure_reason": material_result.failure_reason,
+                },
             ),
         )
+        _attach_source_media_or_wait(session, action, source_media_asset_ids)
         created += 1
     stats_inc(task, "total_rounds")
     return created
+
+
+def _source_media_assets_for_message(session: Session, tenant_id: int, source_group_id: int, remote_message_id: str) -> list[SourceMediaAsset]:
+    if not remote_message_id:
+        return []
+    assets = list(
+        session.scalars(
+            select(SourceMediaAsset)
+            .where(
+                SourceMediaAsset.tenant_id == tenant_id,
+                SourceMediaAsset.source_group_id == source_group_id,
+                SourceMediaAsset.source_message_id == str(remote_message_id),
+            )
+            .order_by(SourceMediaAsset.source_media_group_id.asc(), SourceMediaAsset.media_group_index.asc(), SourceMediaAsset.created_at.asc())
+        )
+    )
+    if not assets:
+        return []
+    group_id = assets[0].source_media_group_id
+    if group_id:
+        return list(
+            session.scalars(
+                select(SourceMediaAsset)
+                .where(
+                    SourceMediaAsset.tenant_id == tenant_id,
+                    SourceMediaAsset.source_group_id == source_group_id,
+                    SourceMediaAsset.source_media_group_id == group_id,
+                )
+                .order_by(SourceMediaAsset.media_group_index.asc(), SourceMediaAsset.created_at.asc())
+            )
+        )
+    return assets
+
+
+def _attach_source_media_or_wait(session: Session, action, asset_ids: list[str]) -> None:
+    if not asset_ids:
+        return
+    assets = list(session.scalars(select(SourceMediaAsset).where(SourceMediaAsset.id.in_(asset_ids))))
+    ready_count = sum(1 for asset in assets if asset.cache_status == SOURCE_MEDIA_READY and asset.cache_peer_id and asset.cache_message_id)
+    payload = dict(action.payload or {})
+    payload["source_media_asset_ids"] = asset_ids
+    if ready_count:
+        payload["media_segments"] = [*(payload.get("media_segments") or []), *ready_media_segments(session, asset_ids)]
+        payload["album_segment_results"] = [
+            {
+                "source_media_asset_id": asset.id,
+                "media_group_index": asset.media_group_index,
+                "status": "ready" if asset.cache_status == SOURCE_MEDIA_READY else "album_segment_failed",
+                "reason": "" if asset.cache_status == SOURCE_MEDIA_READY else (asset.failure_reason or asset.cache_status),
+            }
+            for asset in sorted(assets, key=lambda item: (item.source_media_group_id or item.source_message_id or "", item.media_group_index, item.created_at))
+        ]
+    action.payload = payload
+    if ready_count < len(asset_ids):
+        register_action_waiting_for_source_media(session, action, asset_ids)
 
 
 def _source_monitor_account_ids(session: Session, task: Task, source: TgGroup, configured_ids: list[int]) -> list[int]:

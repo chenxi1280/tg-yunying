@@ -14,6 +14,7 @@ from app.services.account_capacity import available_accounts_by_capacity, next_c
 from app.services.content_filters import filter_outbound_content, looks_like_generated_template_noise, looks_like_operator_ui_content
 from app.services.group_listeners import collect_group_context, recent_context_messages
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
+from app.services.material_rules import select_material_for_policy
 
 from ..account_pool import select_task_accounts
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
@@ -154,6 +155,17 @@ def build_plan(session: Session, task: Task) -> int:
         if not filtered.ok:
             stats_inc(task, "failure_count")
             continue
+        material_result = select_material_for_policy(
+            session,
+            task.tenant_id,
+            (rule_version.routing or {}).get("material_policy") if rule_version else {},
+            context_key=f"{cycle_id}:{index}:{filtered.content}",
+            default_caption="",
+        )
+        if material_result.failure_reason and material_result.fallback == "skip":
+            stats_inc(task, "failure_count")
+            continue
+        media_segments = [material_result.segment] if material_result.ok and material_result.segment else []
         create_send_action(
             session,
             task,
@@ -165,6 +177,7 @@ def build_plan(session: Session, task: Task) -> int:
                 operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
                 target_display=group.title,
                 message_text=filtered.content,
+                media_segments=media_segments,
                 review_approved=True,
                 cycle_id=cycle_id,
                 turn_index=index + 1,
@@ -189,6 +202,12 @@ def build_plan(session: Session, task: Task) -> int:
                 resolved_rule_set_version_id=rule_version.id if rule_version else None,
                 rule_set_version=rule_version.version if rule_version else None,
                 rule_binding_mode="fixed_version" if rule_version and config.get("rule_set_version_id") else "follow_current" if rule_version else "",
+                rule_trace={
+                    "material_policy": (rule_version.routing or {}).get("material_policy") if rule_version else {},
+                    "material_action": material_result.action,
+                    "material_id": material_result.selected.id if material_result.selected else None,
+                    "material_failure_reason": material_result.failure_reason,
+                },
             ),
         )
         created += 1

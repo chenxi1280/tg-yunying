@@ -584,7 +584,7 @@ class GenerateTaskPreviewOut(BaseModel):
 class ChannelCapacityCheckRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    task_type: Literal["channel_view", "channel_like"]
+    task_type: Literal["channel_view", "channel_like", "channel_comment"]
     account_config: AccountConfig = Field(default_factory=AccountConfig)
     target_per_message: int = Field(default=1, ge=1, le=10000)
     target_channel_id: int | None = None

@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.database import SessionLocal
 from app.gateways import GroupMessageSnapshot
 from app.main import app
-from app.models import AccountStatus, Campaign, GroupContextMessage, MessageTask, TgGroup, TgGroupAccount
+from app.models import AccountStatus, Campaign, GroupContextMessage, MessageTask, SourceMediaAsset, TgGroup, TgGroupAccount
 from app.services.group_listeners import process_group_listener
 from app.worker import drain_once
 from tests.test_workflow import _next_test_phone, auth_headers, ensure_developer_app, ensure_test_workspace
@@ -100,6 +100,19 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
                 sender_name=sender["display_name"],
                 content="托管账号自己发的消息不应触发。",
             ),
+            GroupMessageSnapshot(
+                remote_message_id="remote-media-1",
+                sender_peer_id="real-user-media",
+                sender_name="真人用户",
+                content="[media]",
+                message_type="media",
+                caption="相册第一张",
+                media_type="photo",
+                media_fingerprint="media-fingerprint-1",
+                media_group_id="album-1",
+                media_group_index=1,
+                media_group_total=2,
+            ),
         ]
         monkeypatch.setattr("app.services.group_listeners.gateway.fetch_group_messages", lambda *args, **kwargs: snapshots)
 
@@ -133,12 +146,22 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
             assert len(contexts) == 1
             assert contexts[0].content == "这个功能怎么开始参与？"
             assert contexts[0].used_for_ai is False
+            media_context = session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-media-1").one()
+            assert media_context.message_type == "media"
+            media_asset = session.query(SourceMediaAsset).filter_by(source_group_id=group["id"], source_message_id="remote-media-1").one()
+            assert media_asset.source_media_group_id == "album-1"
+            assert media_asset.media_group_index == 1
+            assert media_asset.media_group_total == 2
+            assert media_asset.cache_status == "pending_cache"
             assert session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-bot-1").count() == 0
             tasks = session.query(MessageTask).filter_by(group_id=group["id"]).order_by(MessageTask.id.desc()).limit(5).all()
             assert not any(task.preferred_account_id == sender["id"] and task.content == "这个功能怎么开始参与？" for task in tasks)
 
         drain_once()
-        assert drain_once() == 0
+        drain_once()
+        with SessionLocal() as session:
+            assert session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-real-1").count() == 1
+            assert session.query(SourceMediaAsset).filter_by(source_group_id=group["id"], source_message_id="remote-media-1").count() == 1
 
 
 def test_group_listener_context_collection_is_not_subscription_gated(monkeypatch):

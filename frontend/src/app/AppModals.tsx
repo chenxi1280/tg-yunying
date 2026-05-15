@@ -3,12 +3,48 @@ import { Button, Checkbox, Input, InputNumber, Modal, QRCode, Select, Space } fr
 import { FormActions, StatusBadge } from './components/shared';
 import { AccountDetailModal, AccountPoolDetailModal } from './views/AccountModals';
 import { formatBeijingDateTime } from './time';
+import { hasPermission } from './utils';
 
 const accountPhone = (account: { phone_number?: string | null; phone_masked: string }) => account.phone_number || account.phone_masked;
 
 const verificationTargetLabel = (task: { target_display?: string | null; target_peer_id?: string | null; group_id?: number | null }) => (
   task.target_display || task.target_peer_id || (task.group_id ? `群聊 #${task.group_id}` : '未识别目标')
 );
+
+const adminPermissionGroups = [
+  { menu: ['overview.view', '运营概览'], buttons: [] },
+  { menu: ['accounts.view', 'TG账号管理'], buttons: [
+    ['accounts.create', '新增账号'],
+    ['accounts.login', '账号登录'],
+    ['accounts.sync', '账号同步'],
+    ['accounts.view_codes', '查看验证码'],
+    ['accounts.update_profile', '编辑资料'],
+    ['accounts.delete', '删除账号'],
+    ['accounts.pool_manage', '账号池管理'],
+    ['accounts.proxy_bind', '代理绑定'],
+    ['accounts.clone', '账号克隆'],
+    ['accounts.manual_send', '手动私信'],
+  ] },
+  { menu: ['targets.view', '运营目标'], buttons: [['targets.manage', '目标管理']] },
+  { menu: ['message_sending.view', '消息发送'], buttons: [['message_sending.create', '创建发送']] },
+  { menu: ['tasks.view', '任务中心'], buttons: [['tasks.manage', '任务管理']] },
+  { menu: ['listeners.view', '监听中心'], buttons: [['listeners.manage', '监听管理']] },
+  { menu: ['rules.view', '规则中心'], buttons: [['rules.publish', '规则发布']] },
+  { menu: ['risk.view', '风控中心'], buttons: [['risk.manage', '风控管理']] },
+  { menu: ['archives.view', '归档中心'], buttons: [['archives.manage', '归档管理'], ['archives.export', '归档导出']] },
+  { menu: ['usage.view', '运营数据'], buttons: [] },
+  { menu: ['system.view', '系统设置'], buttons: [
+    ['system.manage', '系统管理'],
+    ['system.secrets_manage', '密钥配置'],
+    ['developer_apps.manage', '开发者应用'],
+    ['permissions.view', '账号权限'],
+    ['permissions.manage', '权限管理'],
+  ] },
+  { menu: ['audits.view', '审计记录'], buttons: [['audits.view_sensitive', '敏感审计']] },
+];
+
+const flattenPermissions = (groups: typeof adminPermissionGroups) => groups.flatMap((group) => [group.menu, ...group.buttons].map(([value]) => value));
+const allAdminPermissions = flattenPermissions(adminPermissionGroups);
 
 /** 从 AppShell 中提取的所有模态框渲染组件。 */
 export function AppModals() {
@@ -28,7 +64,7 @@ export function AppModals() {
     // Prompt Template
     promptTemplateForm, setPromptTemplateForm, createPromptTemplate, savePromptTemplate,
     // Material
-    materialForm, setMaterialForm, createMaterial, saveMaterial, keywordRuleForm, setKeywordRuleForm, createContentKeywordRule, saveContentKeywordRule,
+    materialForm, setMaterialForm, materialFile, setMaterialFile, createMaterial, saveMaterial, keywordRuleForm, setKeywordRuleForm, createContentKeywordRule, saveContentKeywordRule,
     // Account Pool
     accountPoolForm, setAccountPoolForm, createAccountPool, accountPoolDetail, poolDirectAccountId, setPoolDirectAccountId, refreshAccountPoolDetail,
     // Account
@@ -42,13 +78,18 @@ export function AppModals() {
     // Direct Message
     directMessageForm, setDirectMessageForm, selectedDirectContact, startDirectMessageToContact, createDirectMessageTask,
     // Misc
-    openAccountCreate, openAccountDetail, openConfirm, accountContacts, accountName, groupName, busy, isActionPending,
+    openAccountCreate, openAccountDetail, openConfirm, accountContacts, accountName, groupName, busy, isActionPending, currentUser,
   } = ctx;
 
   if (!modal) return null;
   const isManualVerificationTask = modal.type === 'verificationTaskDetail' && modal.payload.suggested_action === '人工处理';
   const isGroupRestrictionTask = modal.type === 'verificationTaskDetail' && modal.payload.issue_category === 'group_restriction';
   const verificationTaskActionable = modal.type === 'verificationTaskDetail' && ['待处理', '失败', '需人工处理'].includes(modal.payload.status);
+  const canManageDeveloperApps = hasPermission(currentUser, 'developer_apps.manage');
+  const developerAppSaveDisabled = !developerAppForm.app_name.trim()
+    || !developerAppForm.api_id
+    || !canManageDeveloperApps
+    || (modal.type === 'developerAppCreate' && developerAppForm.api_hash.length < 8);
 
   return (
     <>
@@ -63,7 +104,7 @@ export function AppModals() {
             <label className="wide-field">API Hash<Input.Password value={developerAppForm.api_hash} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, api_hash: event.target.value })} placeholder={modal.type === 'developerAppEdit' ? '不填写则保留原凭证' : ''} /></label>
             <Checkbox checked={developerAppForm.is_active} onChange={(event) => setDeveloperAppForm({ ...developerAppForm, is_active: event.target.checked })}>启用应用</Checkbox>
           </div>
-          <FormActions submitLabel={modal.type === 'developerAppEdit' ? '保存应用' : '新增应用'} onCancel={closeModal} onSubmit={createDeveloperApp} loading={isActionPending('developer-app:save')} disabled={!developerAppForm.app_name.trim() || !developerAppForm.api_id || (modal.type === 'developerAppCreate' && developerAppForm.api_hash.length < 8)} />
+          <FormActions submitLabel={modal.type === 'developerAppEdit' ? '保存应用' : '新增应用'} onCancel={closeModal} onSubmit={createDeveloperApp} loading={isActionPending('developer-app:save')} disabled={developerAppSaveDisabled} />
           </div>
         </Modal>
       )}
@@ -106,33 +147,60 @@ export function AppModals() {
             <label>用户名称<Input value={adminUserForm.name} onChange={(event) => setAdminUserForm((current) => ({ ...current, name: event.target.value }))} /></label>
             <label>邮箱<Input value={adminUserForm.email} onChange={(event) => setAdminUserForm((current) => ({ ...current, email: event.target.value }))} /></label>
             <label>手机号<Input value={adminUserForm.phone} onChange={(event) => setAdminUserForm((current) => ({ ...current, phone: event.target.value }))} /></label>
-            <label>角色<Select value={adminUserForm.role} onChange={(value) => setAdminUserForm((current) => ({ ...current, role: value }))} options={['普通用户', '系统管理员'].map((value) => ({ value, label: value }))} /></label>
+            <label>账号类型<Select value={adminUserForm.role} onChange={(value) => setAdminUserForm((current) => ({ ...current, role: value }))} options={['后台用户', '系统管理员'].map((value) => ({ value, label: value }))} /></label>
+            <label>角色模板<Select value={adminUserForm.role_template} onChange={(value) => {
+              const templatePermissions: Record<string, string[]> = {
+                '运营管理员': ['overview.view', 'accounts.view', 'accounts.sync', 'targets.view', 'targets.manage', 'message_sending.view', 'message_sending.create', 'tasks.view', 'tasks.manage', 'listeners.view', 'listeners.manage', 'rules.view', 'rules.publish', 'risk.view', 'risk.manage', 'archives.view', 'archives.manage', 'usage.view', 'audits.view'],
+                '账号添加专员': ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'],
+                '只读观察员': ['overview.view', 'usage.view', 'audits.view'],
+              };
+              setAdminUserForm((current) => ({ ...current, role_template: value, permissions: templatePermissions[value] ?? current.permissions, menu_permissions: templatePermissions[value] ?? current.menu_permissions }));
+            }} options={['运营管理员', '账号添加专员', '只读观察员'].map((value) => ({ value, label: value }))} /></label>
             <label>账号状态<Select value={adminUserForm.subscription_status} onChange={(value) => setAdminUserForm((current) => ({ ...current, subscription_status: value }))} options={[{ value: 'pending_activation', label: '待启用' }, { value: 'active', label: '已启用' }, { value: 'expired', label: '已停用' }]} /></label>
             <Checkbox checked={adminUserForm.is_active} onChange={(event) => setAdminUserForm((current) => ({ ...current, is_active: event.target.checked }))}>允许登录</Checkbox>
             <div className="wide-field">
-              <span className="field-label">可见菜单</span>
+              <span className="field-label">菜单与按钮权限</span>
               <div className="choice-grid">
-                {[
-                  ['overview', '运营概览'],
-                  ['accounts', '账号管理'],
-                  ['taskManagement', '任务管理'],
-                  ['groupManagement', '群聊管理'],
-                  ['usageReports', '用户用量'],
-                  ['audits', '审计安全'],
-                ].map(([value, label]) => (
-                  <Checkbox
-                    key={value}
-                    checked={adminUserForm.menu_permissions.includes(value)}
-                    onChange={(event) => {
-                      const next = event.target.checked
-                        ? [...adminUserForm.menu_permissions, value]
-                        : adminUserForm.menu_permissions.filter((item) => item !== value);
-                      setAdminUserForm((current) => ({ ...current, menu_permissions: Array.from(new Set(next)) }));
-                    }}
-                  >
-                    {label}
-                  </Checkbox>
-                ))}
+                {adminPermissionGroups.map((group) => {
+                  const [menuValue, menuLabel] = group.menu;
+                  const menuChecked = adminUserForm.permissions.includes(menuValue) || adminUserForm.permissions.includes('*');
+                  return (
+                    <div className="permission-group" key={menuValue}>
+                      <Checkbox
+                        checked={menuChecked}
+                        onChange={(event) => {
+                          const groupValues = [menuValue, ...group.buttons.map(([value]) => value)];
+                          const next = event.target.checked
+                            ? [...adminUserForm.permissions, menuValue]
+                            : adminUserForm.permissions.filter((item) => !groupValues.includes(item));
+                          const permissions = Array.from(new Set(next)).filter((item) => item === '*' || allAdminPermissions.includes(item));
+                          setAdminUserForm((current) => ({ ...current, permissions, menu_permissions: permissions }));
+                        }}
+                      >
+                        {menuLabel}
+                      </Checkbox>
+                      {menuChecked && group.buttons.length > 0 && (
+                        <div className="permission-buttons">
+                          {group.buttons.map(([value, label]) => (
+                            <Checkbox
+                              key={value}
+                              checked={adminUserForm.permissions.includes(value) || adminUserForm.permissions.includes('*')}
+                              onChange={(event) => {
+                                const next = event.target.checked
+                                  ? [...adminUserForm.permissions, menuValue, value]
+                                  : adminUserForm.permissions.filter((item) => item !== value);
+                                const permissions = Array.from(new Set(next)).filter((item) => item === '*' || allAdminPermissions.includes(item));
+                                setAdminUserForm((current) => ({ ...current, permissions, menu_permissions: permissions }));
+                              }}
+                            >
+                              {label}
+                            </Checkbox>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
             <label>Token 调整<InputNumber value={tokenAdjustmentForm.delta_tokens} onChange={(value) => setTokenAdjustmentForm((current) => ({ ...current, delta_tokens: Number(value ?? 0) }))} /></label>
@@ -145,11 +213,11 @@ export function AppModals() {
           </div>
           <Space className="modal-actions">
             <Button onClick={closeModal}>取消</Button>
-            <Button loading={adminUserForm.id ? isActionPending(`admin-user:${adminUserForm.id}:reset-password`) : false} onClick={() => {
+            <Button disabled={!adminUserForm.id} loading={adminUserForm.id ? isActionPending(`admin-user:${adminUserForm.id}:reset-password`) : false} onClick={() => {
               const user = adminUsers.find((item) => item.id === adminUserForm.id);
               if (user) void resetAdminUserPassword(user, 'user123456');
             }}>重置密码</Button>
-            <Button loading={adminUserForm.id ? isActionPending(`admin-user:${adminUserForm.id}:adjust-tokens`) : false} onClick={() => {
+            <Button disabled={!adminUserForm.id} loading={adminUserForm.id ? isActionPending(`admin-user:${adminUserForm.id}:adjust-tokens`) : false} onClick={() => {
               const user = adminUsers.find((item) => item.id === adminUserForm.id);
               if (user) void adjustAdminUserTokens(user);
             }}>调整 AI 用量</Button>
@@ -207,10 +275,28 @@ export function AppModals() {
           <div className="policy-grid">
             <label>素材标题<Input value={materialForm.title} onChange={(event) => setMaterialForm({ ...materialForm, title: event.target.value })} /></label>
             <label>素材类型<Select value={materialForm.material_type} onChange={(value) => setMaterialForm({ ...materialForm, material_type: value })} options={['文本', '图片', '表情包', '文件', '链接', '组合消息'].map((value) => ({ value, label: value }))} /></label>
+            <label>入库方式<Select value={materialForm.source_kind} disabled={modal.type === 'materialEdit'} onChange={(value) => setMaterialForm({ ...materialForm, source_kind: value, content: value === 'upload' ? '' : materialForm.content })} options={[
+              { value: 'url', label: 'URL 入库' },
+              { value: 'upload', label: '上传文件' },
+            ]} /></label>
+            {materialForm.material_type === '表情包' && <label>表情包类型<Select value={materialForm.emoji_asset_kind} onChange={(value) => setMaterialForm({ ...materialForm, emoji_asset_kind: value })} options={[
+              { value: 'image_meme', label: '图片伪表情包' },
+              { value: 'static_sticker', label: '静态 sticker' },
+              { value: 'animated_sticker', label: 'animated sticker' },
+              { value: 'video_sticker', label: 'video sticker' },
+              { value: 'custom_emoji', label: 'custom emoji' },
+            ]} /></label>}
             <label>标签<Input value={materialForm.tags} onChange={(event) => setMaterialForm({ ...materialForm, tags: event.target.value })} /></label>
-            <label className="wide-field">内容/URL<Input.TextArea value={materialForm.content} onChange={(event) => setMaterialForm({ ...materialForm, content: event.target.value })} /></label>
+            {materialForm.source_kind === 'upload' && modal.type === 'materialCreate' ? (
+              <>
+                <label className="wide-field">素材文件<input type="file" onChange={(event) => setMaterialFile(event.target.files?.[0] ?? null)} /></label>
+                <label className="wide-field">Caption<Input.TextArea value={materialForm.content} onChange={(event) => setMaterialForm({ ...materialForm, content: event.target.value })} /></label>
+              </>
+            ) : (
+              <label className="wide-field">内容/URL<Input.TextArea value={materialForm.content} onChange={(event) => setMaterialForm({ ...materialForm, content: event.target.value })} /></label>
+            )}
           </div>
-          <FormActions submitLabel={modal.type === 'materialEdit' ? '保存素材' : '新增素材'} onCancel={closeModal} onSubmit={modal.type === 'materialEdit' ? saveMaterial : createMaterial} loading={isActionPending(modal.type === 'materialEdit' ? `material:${materialForm.id ?? 'create'}:save` : 'material:create')} disabled={!materialForm.title || !materialForm.content} />
+          <FormActions submitLabel={modal.type === 'materialEdit' ? '保存素材' : '新增素材'} onCancel={closeModal} onSubmit={modal.type === 'materialEdit' ? saveMaterial : createMaterial} loading={isActionPending(modal.type === 'materialEdit' ? `material:${materialForm.id ?? 'create'}:save` : 'material:create')} disabled={!materialForm.title || (materialForm.source_kind === 'upload' && modal.type === 'materialCreate' ? !materialFile : !materialForm.content)} />
           </div>
         </Modal>
       )}
@@ -230,7 +316,7 @@ export function AppModals() {
       )}
 
       {modal?.type === 'accountPoolDetail' && accountPoolDetail && (
-        <AccountPoolDetailModal accountPoolDetail={accountPoolDetail} poolDirectAccountId={poolDirectAccountId} setPoolDirectAccountId={setPoolDirectAccountId} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} onClose={closeModal} onOpenAccountCreate={openAccountCreate} onOpenAccountDetail={openAccountDetail} onRefreshAccountPoolDetail={refreshAccountPoolDetail} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} accountName={accountName} isActionPending={isActionPending} />
+        <AccountPoolDetailModal accountPoolDetail={accountPoolDetail} poolDirectAccountId={poolDirectAccountId} setPoolDirectAccountId={setPoolDirectAccountId} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} onClose={closeModal} onOpenAccountCreate={openAccountCreate} onOpenAccountDetail={openAccountDetail} onRefreshAccountPoolDetail={refreshAccountPoolDetail} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} accountName={accountName} isActionPending={isActionPending} canCreateAccount={hasPermission(currentUser, 'accounts.create')} canManualSend={hasPermission(currentUser, 'accounts.manual_send')} />
       )}
 
       {modal?.type === 'accountPoolCreate' && (
@@ -468,7 +554,7 @@ export function AppModals() {
       )}
 
       {modal?.type === 'accountDetail' && accountDetail && (
-        <AccountDetailModal accountDetail={accountDetail} accountDetailTab={accountDetailTab} setAccountDetailTab={setAccountDetailTab} runtime={runtime} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} accountContacts={accountContacts} accounts={accounts} avatarUrl={avatarUrl} onClose={closeModal} onOpenAccountProfileEdit={openAccountProfileEdit} onQueueAccountSyncNow={queueAccountSyncNow} onRefreshAccountDetail={ctx.refreshAccountDetail} onPollVerificationCodes={pollVerificationCodes} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onConfirmClonePlan={confirmClonePlan} onRetryCloneItem={ctx.retryCloneItem} onRetryAccountProfileSync={retryAccountProfileSync} onDismissVerificationTask={dismissVerificationTask} onConfirmVerificationTask={confirmVerificationTask} onResolveGroupRestrictionTask={resolveGroupRestrictionTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} onSetCloneForm={setCloneForm} accountName={accountName} isActionPending={isActionPending} />
+        <AccountDetailModal accountDetail={accountDetail} accountDetailTab={accountDetailTab} setAccountDetailTab={setAccountDetailTab} runtime={runtime} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} accountContacts={accountContacts} accounts={accounts} avatarUrl={avatarUrl} onClose={closeModal} onOpenAccountProfileEdit={openAccountProfileEdit} onQueueAccountSyncNow={queueAccountSyncNow} onRefreshAccountDetail={ctx.refreshAccountDetail} onPollVerificationCodes={pollVerificationCodes} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onConfirmClonePlan={confirmClonePlan} onRetryCloneItem={ctx.retryCloneItem} onRetryAccountProfileSync={retryAccountProfileSync} onDismissVerificationTask={dismissVerificationTask} onConfirmVerificationTask={confirmVerificationTask} onResolveGroupRestrictionTask={resolveGroupRestrictionTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} onSetCloneForm={setCloneForm} accountName={accountName} isActionPending={isActionPending} canUpdateProfile={hasPermission(currentUser, 'accounts.update_profile')} canSyncAccount={hasPermission(currentUser, 'accounts.sync')} canViewCodes={hasPermission(currentUser, 'accounts.view_codes')} canMovePool={hasPermission(currentUser, 'accounts.pool_manage')} canClone={hasPermission(currentUser, 'accounts.clone')} />
       )}
 
     </>

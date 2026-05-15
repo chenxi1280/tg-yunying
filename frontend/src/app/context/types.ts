@@ -5,7 +5,7 @@ import type {
   TokenLedger,
   UsageLedger, UsageSummary, LoginFlow, Account, AccountPool, AccountLoginForm,
   DeveloperApp, AiProvider, PromptTemplate, TenantAiSetting,
-  Material, ContentKeywordRule, Contact, Group, MessageTask, ArchiveItem, ArchiveDetail,
+  Material, MaterialCacheHealth, ContentKeywordRule, Contact, Group, MessageTask, ArchiveItem, ArchiveDetail,
   ArchiveExport, AuditFilters, AuditLog, VerificationCode, AccountSyncRecord, VerificationTask,
   AccountCloneItem, AccountClonePlan, AccountGroup, ProfileSyncRecord,
   AccountDetail, AccountPoolDetail, GroupDetail, Tenant,
@@ -88,6 +88,8 @@ export interface AppState {
   setSelectedAiProviderId: (id: number | '') => void;
   materials: Material[];
   setMaterials: (materials: Material[]) => void;
+  materialCacheHealth: MaterialCacheHealth | null;
+  setMaterialCacheHealth: (health: MaterialCacheHealth | null) => void;
   contentKeywordRules: ContentKeywordRule[];
   setContentKeywordRules: (rules: ContentKeywordRule[]) => void;
 
@@ -188,8 +190,30 @@ export interface AppState {
   setAiProviderForm: (form: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; is_active: boolean }) => void;
   promptTemplateForm: { id: number | null; name: string; template_type: string; content: string; is_active: boolean };
   setPromptTemplateForm: (form: { id: number | null; name: string; template_type: string; content: string; is_active: boolean }) => void;
-  materialForm: { id: number | null; title: string; material_type: string; content: string; tags: string };
-  setMaterialForm: (form: { id: number | null; title: string; material_type: string; content: string; tags: string }) => void;
+  materialForm: {
+    id: number | null;
+    title: string;
+    material_type: string;
+    content: string;
+    tags: string;
+    emoji_asset_kind: string;
+    cache_ready_status: string;
+    delivery_mode: string;
+    source_kind: string;
+  };
+  materialFile: File | null;
+  setMaterialFile: (file: File | null) => void;
+  setMaterialForm: React.Dispatch<React.SetStateAction<{
+    id: number | null;
+    title: string;
+    material_type: string;
+    content: string;
+    tags: string;
+    emoji_asset_kind: string;
+    cache_ready_status: string;
+    delivery_mode: string;
+    source_kind: string;
+  }>>;
   keywordRuleForm: { id: number | null; keyword: string; match_type: string; is_active: boolean; note: string };
   setKeywordRuleForm: (form: { id: number | null; keyword: string; match_type: string; is_active: boolean; note: string }) => void;
 
@@ -280,6 +304,7 @@ export interface AppState {
   openTenantEdit: (tenant: Tenant) => void;
   saveTenantQuota: () => Promise<void>;
   openAdminUserEdit: (user: AdminUser) => void;
+  openAdminUserCreate: () => void;
   saveAdminUser: () => Promise<void>;
   resetAdminUserPassword: (user: AdminUser, newPassword: string) => Promise<void>;
   adjustAdminUserTokens: (user: AdminUser) => Promise<void>;

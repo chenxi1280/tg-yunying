@@ -6,6 +6,7 @@ import type { RuntimeConfig } from '../types';
 import { StatusBadge, useAntdTableControls } from '../components/shared';
 
 const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', '异常']);
+const ACCOUNT_RESTRICTED_STATUSES = new Set(['受限', '疑似封禁', '已封禁', 'Session失效']);
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
 
 interface Props {
@@ -29,6 +30,12 @@ interface Props {
   onHealthCheck: (account: Account) => void;
   onSyncGroups: (account: Account) => void;
   isActionPending: (key: string) => boolean;
+  canCreateAccount?: boolean;
+  canLoginAccount?: boolean;
+  canSyncAccount?: boolean;
+  canViewCodes?: boolean;
+  canMovePool?: boolean;
+  canDeleteAccount?: boolean;
 }
 
 export default function AccountsView({
@@ -52,6 +59,12 @@ export default function AccountsView({
   onHealthCheck,
   onSyncGroups,
   isActionPending,
+  canCreateAccount = true,
+  canLoginAccount = true,
+  canSyncAccount = true,
+  canViewCodes = true,
+  canMovePool = true,
+  canDeleteAccount = true,
 }: Props) {
   const accountTable = useAntdTableControls<Account>({
     rows: accounts,
@@ -73,9 +86,17 @@ export default function AccountsView({
         account.proxy_alert_status,
         account.tg_first_name,
         account.tg_last_name,
+        ACCOUNT_RESTRICTED_STATUSES.has(account.status) ? '账号级受限 受限 系统探测恢复' : '',
+        LOGIN_REQUIRED_STATUSES.has(account.status) ? '待完成登录 等待 登录' : '',
+        account.health_score < 60 ? '健康分偏低 健康' : '',
+        account.proxy_status && account.proxy_status !== 'healthy' && account.proxy_status !== '健康' ? '代理异常 代理' : '',
       ],
     ],
   });
+  const restrictedAccounts = accounts.filter((account) => ACCOUNT_RESTRICTED_STATUSES.has(account.status));
+  const loginRequiredAccounts = accounts.filter((account) => LOGIN_REQUIRED_STATUSES.has(account.status));
+  const lowHealthAccounts = accounts.filter((account) => account.health_score < 60 && !ACCOUNT_RESTRICTED_STATUSES.has(account.status));
+  const proxyBlockedAccounts = accounts.filter((account) => account.proxy_status && account.proxy_status !== 'healthy' && account.proxy_status !== '健康');
 
   const columns: ColumnsType<Account> = [
     {
@@ -140,21 +161,21 @@ export default function AccountsView({
         <Space wrap>
           {LOGIN_REQUIRED_STATUSES.has(account.status) ? (
             <>
-              <Button type="primary" size="small" onClick={() => onVerifyAccount(account)}>{account.status === '待登录' ? '完成登录' : '继续登录'}</Button>
-              <Button danger size="small" loading={isActionPending(`account:${account.id}:delete`)} onClick={() => onDeleteAccount(account)}>移除</Button>
+              {canLoginAccount && <Button type="primary" size="small" onClick={() => onVerifyAccount(account)}>{account.status === '待登录' ? '完成登录' : '继续登录'}</Button>}
+              {canDeleteAccount && <Button danger size="small" loading={isActionPending(`account:${account.id}:delete`)} onClick={() => onDeleteAccount(account)}>移除</Button>}
             </>
           ) : account.status === '在线' ? (
             <>
               <Button type="primary" size="small" loading={isActionPending(`account:${account.id}:detail`)} onClick={() => onOpenAccountDetail(account)}>详情</Button>
-              <Button size="small" loading={isActionPending(`account:${account.id}:codes`)} onClick={() => onExtractCodes(account)}>提取验证码</Button>
-              <Button size="small" loading={isActionPending(`account:${account.id}:move-pool`)} onClick={() => onMovePool(account)}>移动分组</Button>
-              <Button size="small" loading={isActionPending(`account:${account.id}:health`)} onClick={() => onHealthCheck(account)}>检查</Button>
-              <Button size="small" loading={isActionPending(`account:${account.id}:sync`)} onClick={() => onSyncGroups(account)}>同步</Button>
+              {canViewCodes && <Button size="small" loading={isActionPending(`account:${account.id}:codes`)} onClick={() => onExtractCodes(account)}>提取验证码</Button>}
+              {canMovePool && <Button size="small" loading={isActionPending(`account:${account.id}:move-pool`)} onClick={() => onMovePool(account)}>移动分组</Button>}
+              {canSyncAccount && <Button size="small" loading={isActionPending(`account:${account.id}:health`)} onClick={() => onHealthCheck(account)}>检查</Button>}
+              {canSyncAccount && <Button size="small" loading={isActionPending(`account:${account.id}:sync`)} onClick={() => onSyncGroups(account)}>同步</Button>}
             </>
           ) : (
             <>
               <Button type="primary" size="small" loading={isActionPending(`account:${account.id}:detail`)} onClick={() => onOpenAccountDetail(account)}>详情</Button>
-              <Button size="small" loading={isActionPending(`account:${account.id}:move-pool`)} onClick={() => onMovePool(account)}>移动分组</Button>
+              {canMovePool && <Button size="small" loading={isActionPending(`account:${account.id}:move-pool`)} onClick={() => onMovePool(account)}>移动分组</Button>}
             </>
           )}
         </Space>
@@ -168,12 +189,12 @@ export default function AccountsView({
       title="TG 账号管理"
       extra={(
         <Space wrap>
-          <Button onClick={onCreatePoolClick}>新增账号分组</Button>
-          <Button disabled={!runtime?.can_create_tg_account} onClick={() => onCreateAccount(false)}>新增账号</Button>
+          {canMovePool && <Button onClick={onCreatePoolClick}>新增账号分组</Button>}
+          {canCreateAccount && <Button disabled={!runtime?.can_create_tg_account} onClick={() => onCreateAccount(false)}>新增账号</Button>}
         </Space>
       )}
     >
-      <Typography.Text type="secondary">按账号分组管理，登录、资料、克隆和验证辅助都在账号详情中处理</Typography.Text>
+      <Typography.Text type="secondary">按账号分组管理；账号级受限由系统探测恢复，群管理机器拦截在账号详情内解除并重查。</Typography.Text>
       {!runtime?.can_create_tg_account && (
         <Alert
           className="sub-panel compact-panel"
@@ -196,6 +217,32 @@ export default function AccountsView({
         {selectedPool && <Button type="primary" loading={isActionPending(`account-pool:${selectedPool.id}:detail`)} onClick={() => onOpenPoolDetail(selectedPool)}>进入账号分组</Button>}
         {accountTable.searchInput}
       </Space>
+      <div className="summary-grid">
+        <Card className="summary-card" size="small">
+          <span>账号级受限</span>
+          <strong>{restrictedAccounts.length}</strong>
+          <p>系统每小时探测恢复；仅在 session 失效或凭证不可用时重新登录。</p>
+          <Button size="small" disabled={!restrictedAccounts.length} onClick={() => accountTable.setQuery('账号级受限')}>查看账号</Button>
+        </Card>
+        <Card className="summary-card" size="small">
+          <span>待完成登录</span>
+          <strong>{loginRequiredAccounts.length}</strong>
+          <p>只展示完成登录入口，验证码、扫码、2FA 按登录流程继续。</p>
+          <Button size="small" disabled={!loginRequiredAccounts.length} onClick={() => accountTable.setQuery('待完成登录')}>查看登录</Button>
+        </Card>
+        <Card className="summary-card" size="small">
+          <span>健康分偏低</span>
+          <strong>{lowHealthAccounts.length}</strong>
+          <p>先做健康检查和同步，不直接要求重新登录。</p>
+          <Button size="small" disabled={!lowHealthAccounts.length} onClick={() => accountTable.setQuery('健康分偏低')}>查看健康</Button>
+        </Card>
+        <Card className="summary-card" size="small">
+          <span>代理异常</span>
+          <strong>{proxyBlockedAccounts.length}</strong>
+          <p>本地代理异常会影响高频发送，处理入口在风控中心。</p>
+          <Button size="small" disabled={!proxyBlockedAccounts.length} onClick={() => accountTable.setQuery('代理异常')}>查看代理</Button>
+        </Card>
+      </div>
       <Table<Account>
         className="tg-table"
         rowKey="id"

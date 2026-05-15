@@ -31,6 +31,7 @@ export type CurrentUser = {
   tenant_id: number | null;
   name: string;
   role: string;
+  role_template: string;
   email: string;
   phone: string | null;
   tenant_name: string | null;
@@ -42,6 +43,10 @@ export type CurrentUser = {
   token_balance?: number;
   token_quota_total?: number;
   menu_permissions?: string[];
+  permissions?: string[];
+  permission_version?: number;
+  is_active?: boolean;
+  is_super_admin?: boolean;
 };
 
 export type Tenant = {
@@ -73,6 +78,7 @@ export type AdminUser = {
   tenant_name: string | null;
   name: string;
   role: string;
+  role_template: string;
   email: string;
   phone: string | null;
   subscription_status: string;
@@ -82,6 +88,9 @@ export type AdminUser = {
   token_balance: number;
   token_quota_total: number;
   menu_permissions: string[];
+  permissions: string[];
+  permission_version: number;
+  is_super_admin: boolean;
   is_active: boolean;
   created_at: string;
   last_login_at: string | null;
@@ -107,8 +116,10 @@ export type AdminUserForm = {
   email: string;
   phone: string;
   role: string;
+  role_template: string;
   subscription_status: string;
   menu_permissions: string[];
+  permissions: string[];
   is_active: boolean;
 };
 
@@ -453,12 +464,60 @@ export type SchedulingSetting = {
 
 export type Material = {
   id: number;
+  tenant_id: number;
   title: string;
   material_type: string;
   content: string;
   tags: string;
   review_status: string;
+  source_kind: string;
+  asset_fingerprint: string;
+  asset_version_id: number;
+  delivery_mode: string;
+  emoji_asset_kind: string;
+  gateway_type: string;
+  cache_ready_status: string;
+  last_cache_flood_wait_until: string | null;
+  tg_cache_account_id: number | null;
+  tg_cache_peer_id: string;
+  tg_cache_message_id: string;
+  tg_ref_version_id: number;
+  file_name: string;
+  mime_type: string;
+  file_size: number;
+  width: number;
+  height: number;
+  caption: string;
+  last_cache_error: string;
   usage_count: number;
+  last_used_at: string | null;
+};
+
+export type MaterialCacheStatusCount = {
+  status: string;
+  count: number;
+};
+
+export type MaterialCacheErrorItem = {
+  scope: string;
+  id: string;
+  title: string;
+  status: string;
+  reason: string;
+};
+
+export type MaterialCacheHealth = {
+  material_cache_peer_configured: boolean;
+  source_media_cache_peer_configured: boolean;
+  active_cache_account_count: number;
+  material_status_counts: MaterialCacheStatusCount[];
+  source_media_status_counts: MaterialCacheStatusCount[];
+  material_oldest_pending_at: string | null;
+  source_media_oldest_pending_at: string | null;
+  flood_wait_count: number;
+  cache_failed_count: number;
+  waiting_action_count: number;
+  recent_errors: MaterialCacheErrorItem[];
 };
 
 export type ContentKeywordRule = {
@@ -531,8 +590,12 @@ export type MessageTask = {
   status: string;
   failure_type: string | null;
   failure_detail: string | null;
+  media_sent: boolean | null;
+  media_failure_reason: string;
   sent_at: string | null;
 };
+
+export type MessageType = '文本' | '图片' | '表情包' | '文件' | '链接' | '组合消息';
 
 export type MessageSendTaskCreate = {
   account_id: number;
@@ -542,7 +605,7 @@ export type MessageSendTaskCreate = {
   group_id?: number | null;
   operation_target_id?: number | null;
   content: string;
-  message_type: '文本' | '图片' | '表情包';
+  message_type: MessageType;
   material_id?: number | null;
   jitter_min_seconds: number;
   jitter_max_seconds: number;
@@ -562,7 +625,7 @@ export type MessageSendBatchCreate = {
   account_id: number;
   targets: MessageSendTarget[];
   content: string;
-  message_type: '文本' | '图片';
+  message_type: MessageType;
   material_id?: number | null;
   dispatch_now: boolean;
   scheduled_at?: string | null;

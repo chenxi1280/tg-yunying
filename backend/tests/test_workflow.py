@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import json
 from uuid import uuid4
 
 from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage, mock_candidates
@@ -7,7 +8,7 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.gateways import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult
-from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
 from fastapi.testclient import TestClient
@@ -288,6 +289,28 @@ def test_verification_tasks_backfill_group_target_label():
         task = next(item for item in tasks if item["id"] == stale_task_id)
         assert task["target_display"] == group["title"]
         assert task["target_peer_id"] == group["tg_peer_id"]
+        assert task["issue_category"] == "group_restriction"
+
+        with SessionLocal() as session:
+            auto_task = VerificationTask(
+                tenant_id=1,
+                account_id=account["id"],
+                group_id=group["id"],
+                message_task_id=None,
+                verification_type="机器人按钮验证",
+                detected_reason="pytest auto verification",
+                suggested_action="点击按钮",
+                status="待处理",
+            )
+            session.add(auto_task)
+            session.commit()
+            auto_task_id = auto_task.id
+
+        tasks = client.get("/api/verification-tasks", headers=headers).json()
+        auto = next(item for item in tasks if item["id"] == auto_task_id)
+        assert auto["issue_category"] == "verification"
+        assert auto["can_auto_resolve"] is True
+        assert auto["resolution_entry_label"] == "执行自动处理"
 
 
 def test_manual_group_restriction_confirm_does_not_restore_sendability():
@@ -628,6 +651,10 @@ def test_auth_single_admin_and_default_operation_space():
         me = client.get("/api/auth/me", headers=headers).json()
         assert me["tenant_id"] == 1
         assert me["role"] == "系统管理员"
+        assert me["role_template"] == "系统管理员"
+        assert me["permissions"] == ["*"]
+        assert me["is_super_admin"] is True
+        assert me["permission_version"] >= 1
         assert "subscription_status" not in me
         assert login_response(client, "ops@bootstrap.local", "ops123").status_code == 401
 
@@ -637,13 +664,12 @@ def test_auth_single_admin_and_default_operation_space():
         assert client.get("/api/tg-accounts").status_code == 401
 
 
-def test_legacy_authorization_endpoints_and_tables_are_removed():
+def test_admin_users_permission_lifecycle_and_legacy_subscription_endpoints_removed():
     with TestClient(app) as client:
         headers = auth_headers(client)
         old_endpoints = [
             ("post", "/api/auth/register", {"email": "x@example.local", "password": "secret"}),
             ("post", "/api/subscription/redeem", {"code": "NOPE"}),
-            ("get", "/api/admin/users", None),
             ("get", "/api/admin/activation-codes", None),
             ("post", "/api/admin/activation-codes", {"plan_type": "monthly", "quantity": 1}),
             ("get", "/api/admin/subscription-plans", None),
@@ -654,10 +680,270 @@ def test_legacy_authorization_endpoints_and_tables_are_removed():
             response = request(path, headers=headers, json=payload) if payload is not None and method != "get" else request(path, headers=headers)
             assert response.status_code == 404, f"{path} should be removed"
 
-        with SessionLocal() as session:
-            inspector = inspect(session.bind)
-            for table_name in ["app_users", "activation_codes", "subscription_plans", "user_token_ledgers"]:
-                assert not inspector.has_table(table_name)
+        users_response = client.get("/api/admin/users", headers=headers)
+        assert users_response.status_code == 200, users_response.text
+
+        suffix = uuid4().hex[:8]
+        create_response = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"账号添加员{suffix}",
+                "email": f"account_creator_{suffix}@example.local",
+                "phone": f"+86137{int(uuid4().int % 100000000):08d}",
+                "password": "creator123",
+                "role": "后台用户",
+                "role_template": "账号添加专员",
+                "permissions": ["overview.view", "accounts.view", "accounts.create", "accounts.login", "accounts.sync"],
+                "menu_permissions": ["overview.view", "accounts.view", "accounts.create", "accounts.login", "accounts.sync"],
+            },
+        )
+        assert create_response.status_code == 200, create_response.text
+        created_user = create_response.json()
+        assert created_user["role"] == "后台用户"
+        assert created_user["role_template"] == "账号添加专员"
+        assert "accounts.create" in created_user["permissions"]
+        assert "tasks.view" not in created_user["permissions"]
+
+        duplicate_target = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"重复校验目标{suffix}",
+                "email": f"duplicate_target_{suffix}@example.local",
+                "phone": f"+86139{int(uuid4().int % 100000000):08d}",
+                "password": "duplicate123",
+                "role": "后台用户",
+                "role_template": "只读观察员",
+                "permissions": ["overview.view"],
+                "menu_permissions": ["overview.view"],
+            },
+        )
+        assert duplicate_target.status_code == 200, duplicate_target.text
+        duplicate_update = client.patch(
+            f"/api/admin/users/{duplicate_target.json()['id']}",
+            headers=headers,
+            json={"email": created_user["email"]},
+        )
+        assert duplicate_update.status_code == 400
+        assert duplicate_update.json()["detail"] == "用户邮箱或手机号已存在"
+
+        account, _ = ensure_test_workspace(client, headers)
+
+        creator_headers = auth_headers(client, created_user["email"], "creator123")
+        creator_me = client.get("/api/auth/me", headers=creator_headers)
+        assert creator_me.status_code == 200, creator_me.text
+        creator_body = creator_me.json()
+        assert creator_body["role_template"] == "账号添加专员"
+        assert "accounts.create" in creator_body["permissions"]
+
+        allowed_accounts = client.get("/api/tg-accounts", headers=creator_headers)
+        assert allowed_accounts.status_code == 200, allowed_accounts.text
+        visible_account = next(item for item in allowed_accounts.json() if item["id"] == account["id"])
+        assert visible_account["phone_number"]
+        assert visible_account["phone_masked"]
+
+        denied_tasks = client.get("/api/tasks", headers=creator_headers)
+        assert denied_tasks.status_code == 403
+        assert denied_tasks.json()["permission"] == "tasks.view"
+
+        denied_export = client.get("/api/audit-logs/export", headers=creator_headers)
+        assert denied_export.status_code == 403
+        assert denied_export.json()["permission"] == "audits.view"
+
+        denied_codes = client.get(f"/api/tg-accounts/{account['id']}/verification-codes", headers=creator_headers)
+        assert denied_codes.status_code == 403
+        assert denied_codes.json()["permission"] == "accounts.view_codes"
+
+        denied_audits = client.get("/api/audit-logs?keyword=权限拒绝", headers=headers)
+        assert denied_audits.status_code == 200, denied_audits.text
+        assert any(item["target_id"] == "accounts.view_codes" for item in denied_audits.json())
+        assert any(item["target_id"] == "audits.view" for item in denied_audits.json())
+
+        grant_codes = client.patch(
+            f"/api/admin/users/{created_user['id']}",
+            headers=headers,
+            json={
+                "permissions": [
+                    "overview.view",
+                    "accounts.view",
+                    "accounts.create",
+                    "accounts.login",
+                    "accounts.sync",
+                    "accounts.view_codes",
+                ],
+                "menu_permissions": [
+                    "overview.view",
+                    "accounts.view",
+                    "accounts.create",
+                    "accounts.login",
+                    "accounts.sync",
+                    "accounts.view_codes",
+                ],
+            },
+        )
+        assert grant_codes.status_code == 200, grant_codes.text
+
+        creator_headers = auth_headers(client, created_user["email"], "creator123")
+        codes_response = client.get(f"/api/tg-accounts/{account['id']}/verification-codes", headers=creator_headers)
+        assert codes_response.status_code == 200, codes_response.text
+        code_audits = client.get("/api/audit-logs?keyword=查看TG验证码", headers=headers)
+        assert code_audits.status_code == 200, code_audits.text
+        assert any(item["target_id"] == str(account["id"]) for item in code_audits.json())
+        export_ok = client.get("/api/audit-logs/export", headers=headers)
+        assert export_ok.status_code == 200, export_ok.text
+        assert "text/csv" in export_ok.headers["content-type"]
+
+        update_response = client.patch(
+            f"/api/admin/users/{created_user['id']}",
+            headers=headers,
+            json={
+                "permissions": ["overview.view", "accounts.view"],
+                "menu_permissions": ["overview.view", "accounts.view"],
+            },
+        )
+        assert update_response.status_code == 200, update_response.text
+        updated_user = update_response.json()
+        assert updated_user["permission_version"] == grant_codes.json()["permission_version"] + 1
+        assert "accounts.create" not in updated_user["permissions"]
+
+        stale_token_response = client.get("/api/auth/me", headers=creator_headers)
+        assert stale_token_response.status_code == 401
+
+        permission_manager = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"权限管理员{suffix}",
+                "email": f"permission_manager_{suffix}@example.local",
+                "phone": f"+86136{int(uuid4().int % 100000000):08d}",
+                "password": "permission123",
+                "role": "后台用户",
+                "role_template": "运营管理员",
+                "permissions": ["overview.view", "permissions.view", "permissions.manage"],
+                "menu_permissions": ["overview.view", "permissions.view", "permissions.manage"],
+            },
+        )
+        assert permission_manager.status_code == 200, permission_manager.text
+        permission_headers = auth_headers(client, permission_manager.json()["email"], "permission123")
+
+        system_guard = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"系统管理员保护{suffix}",
+                "email": f"system_guard_{suffix}@example.local",
+                "phone": f"+86135{int(uuid4().int % 100000000):08d}",
+                "password": "system123",
+                "role": "系统管理员",
+                "role_template": "系统管理员",
+                "permissions": ["*"],
+                "menu_permissions": ["*"],
+            },
+        )
+        assert system_guard.status_code == 200, system_guard.text
+        assert system_guard.json()["permissions"] == ["*"]
+
+        denied_system_create = client.post(
+            "/api/admin/users",
+            headers=permission_headers,
+            json={
+                "name": f"越权系统管理员{suffix}",
+                "email": f"forbidden_system_{suffix}@example.local",
+                "password": "forbidden123",
+                "role": "系统管理员",
+                "role_template": "系统管理员",
+                "permissions": ["*"],
+            },
+        )
+        assert denied_system_create.status_code == 403
+
+        denied_permission_grant = client.post(
+            "/api/admin/users",
+            headers=permission_headers,
+            json={
+                "name": f"越权权限管理员{suffix}",
+                "email": f"forbidden_permission_{suffix}@example.local",
+                "password": "forbidden123",
+                "role": "后台用户",
+                "role_template": "运营管理员",
+                "permissions": ["overview.view", "permissions.manage"],
+            },
+        )
+        assert denied_permission_grant.status_code == 403
+
+        denied_star_grant = client.post(
+            "/api/admin/users",
+            headers=permission_headers,
+            json={
+                "name": f"越权星号权限{suffix}",
+                "email": f"forbidden_star_{suffix}@example.local",
+                "password": "forbidden123",
+                "role": "后台用户",
+                "role_template": "运营管理员",
+                "permissions": ["*"],
+            },
+        )
+        assert denied_star_grant.status_code == 403
+
+        denied_patch_permission_manage = client.patch(
+            f"/api/admin/users/{created_user['id']}",
+            headers=permission_headers,
+            json={"permissions": ["overview.view", "permissions.manage"]},
+        )
+        assert denied_patch_permission_manage.status_code == 403
+
+        denied_patch_system = client.patch(
+            f"/api/admin/users/{system_guard.json()['id']}",
+            headers=permission_headers,
+            json={"name": "非系统管理员不能维护系统管理员"},
+        )
+        assert denied_patch_system.status_code == 403
+        denied_reset_system = client.post(
+            f"/api/admin/users/{system_guard.json()['id']}/reset-password",
+            headers=permission_headers,
+            json={"new_password": "blocked123"},
+        )
+        assert denied_reset_system.status_code == 403
+
+        developer_manager = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"开发应用管理员{suffix}",
+                "email": f"developer_manager_{suffix}@example.local",
+                "phone": f"+86138{int(uuid4().int % 100000000):08d}",
+                "password": "manager123",
+                "role": "后台用户",
+                "role_template": "运营管理员",
+                "permissions": ["overview.view", "system.view", "developer_apps.manage"],
+                "menu_permissions": ["overview.view", "system.view", "developer_apps.manage"],
+            },
+        )
+        assert developer_manager.status_code == 200, developer_manager.text
+        developer_headers = auth_headers(client, developer_manager.json()["email"], "manager123")
+        apps_read = client.get("/api/developer-apps", headers=developer_headers)
+        assert apps_read.status_code == 200, apps_read.text
+        created_app = client.post(
+            "/api/developer-apps",
+            headers=developer_headers,
+            json={
+                "app_name": f"开发应用权限内新增{suffix}",
+                "api_id": 900000 + int(uuid4().int % 10000),
+                "api_hash": "secret_with_developer_app_permission",
+                "max_accounts": 10,
+                "notes": "pytest",
+            },
+        )
+        assert created_app.status_code == 200, created_app.text
+        target_app = created_app.json()
+        patched_app = client.patch(
+            f"/api/developer-apps/{target_app['id']}",
+            headers=developer_headers,
+            json={"api_hash": "rotated_with_developer_app_permission"},
+        )
+        assert patched_app.status_code == 200, patched_app.text
+        assert patched_app.json()["credentials_version"] == target_app["credentials_version"] + 1
 
 
 def test_developer_app_admin_crud_hides_api_hash():
@@ -2265,6 +2551,29 @@ def test_task_center_channel_view_like_comment_execute(monkeypatch):
             assert session.get(Task, task_ids[0]).deleted_at is not None
 
 
+def test_task_center_channel_comment_capacity_check_accepts_comment_task_type():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _group = ensure_test_workspace(client, headers)
+        capacity = client.post(
+            "/api/tasks/channel-capacity-check",
+            headers=headers,
+            json={
+                "task_type": "channel_comment",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "target_per_message": 2,
+                "message_scope": "latest_n",
+                "message_count": 1,
+            },
+        )
+
+        assert capacity.status_code == 200, capacity.text
+        body = capacity.json()
+        assert body["target_per_message"] == 2
+        assert body["max_effective_per_message"] == 1
+        assert "目标评论 2" in body["warning_message"]
+
+
 def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(monkeypatch):
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.view_channel_message",
@@ -3094,6 +3403,118 @@ def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert detail["task"]["stats"]["total_actions"] == 1
         assert detail["task"]["stats"]["success_count"] == 1
+
+
+def test_group_relay_waits_for_source_media_cache_and_preserves_album_order(monkeypatch):
+    send_calls: list[list[tuple[str, str | None, str]]] = []
+
+    def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
+        send_calls.append([(segment.segment_type, segment.source, segment.caption) for segment in outbound_segments])
+        return SendResult(True, remote_message_id=f"relay-media-{len(send_calls)}")
+
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", fake_send_message)
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        remote_id = f"album-{uuid4().hex[:8]}"
+        with SessionLocal() as session:
+            db_account = session.get(TgAccount, account["id"])
+            db_account.status = AccountStatus.ACTIVE.value
+            for link in session.query(TgGroupAccount).filter_by(group_id=group["id"]):
+                link.can_send = True
+                link.is_listener = link.account_id == account["id"]
+            session.add(
+                GroupContextMessage(
+                    tenant_id=1,
+                    group_id=group["id"],
+                    listener_account_id=account["id"],
+                    sender_peer_id="pytest-media-user",
+                    sender_name="pytest",
+                    content="相册源消息",
+                    message_type="media",
+                    remote_message_id=remote_id,
+                    sent_at=datetime.now(UTC),
+                )
+            )
+            assets = [
+                SourceMediaAsset(
+                    tenant_id=1,
+                    source_group_id=group["id"],
+                    listener_account_id=account["id"],
+                    source_peer_id=group["tg_peer_id"],
+                    source_message_id=remote_id,
+                    source_media_group_id="media-group-1",
+                    media_group_index=index,
+                    media_group_total=3,
+                    media_type="photo",
+                    caption=f"图{index}",
+                    cache_status="pending_cache",
+                )
+                for index in [1, 2, 3]
+            ]
+            session.add_all(assets)
+            session.commit()
+
+        created = client.post(
+            "/api/tasks/group-relay",
+            headers=headers,
+            json={
+                "name": "pytest relay media album",
+                "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "failure_policy": {"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
+                "source_groups": [{"group_id": group["id"], "group_name": group["title"], "is_active": True}],
+                "target_group_id": group["id"],
+                "content_mode": "raw",
+                "filters": {"allowed_media_types": ["media", "photo"]},
+                "preserve_media": True,
+                "dedup_window_minutes": 60,
+            },
+        )
+        assert created.status_code == 200, created.text
+        task_id = created.json()["id"]
+        client.post(f"/api/tasks/{task_id}/start", headers=headers)
+
+        from app.services.task_center.service import drain_task_center
+        from app.services.source_media import WAITING_MATERIAL_CACHE, source_media_cached_event, wake_waiting_actions_for_source_media
+
+        assert drain_task_center(SessionLocal, 10) >= 1
+        with SessionLocal() as session:
+            action = session.query(Action).filter_by(task_id=task_id, action_type="send_message").first()
+            assert action is not None
+            assert action.status == WAITING_MATERIAL_CACHE
+            assert action.result["error_code"] == "waiting_material_cache"
+            asset_rows = list(
+                session.query(SourceMediaAsset)
+                .filter_by(source_group_id=group["id"], source_message_id=remote_id)
+                .order_by(SourceMediaAsset.media_group_index.asc())
+            )
+            assert [asset.media_group_index for asset in asset_rows] == [1, 2, 3]
+            source_media_cached_event(session, source_media_asset_id=asset_rows[0].id, cache_peer_id="cache-peer", cache_message_id="201", cache_version=1)
+            assert action.status == WAITING_MATERIAL_CACHE
+            assert action.payload.get("media_segments") in (None, [])
+            assert wake_waiting_actions_for_source_media(session, 1) == 0
+            assert action.status == WAITING_MATERIAL_CACHE
+            source_media_cached_event(session, source_media_asset_id=asset_rows[2].id, cache_peer_id="cache-peer", cache_message_id="203", cache_version=1)
+            assert wake_waiting_actions_for_source_media(session, 1) == 0
+            assert action.status == WAITING_MATERIAL_CACHE
+            asset_rows[1].cache_status = "cache_failed"
+            asset_rows[1].failure_reason = "download_failed"
+            assert wake_waiting_actions_for_source_media(session, 1) == 1
+            session.commit()
+
+        assert drain_task_center(SessionLocal, 10) >= 1
+        assert send_calls == [[
+            ("文本", None, ""),
+            ("图片", "tg-cache://cache-peer/201", "图1"),
+            ("图片", "tg-cache://cache-peer/203", "图3"),
+        ]]
+        with SessionLocal() as session:
+            action = session.query(Action).filter_by(task_id=task_id, action_type="send_message").first()
+            assert action.status == "success"
+            results = action.payload["album_segment_results"]
+            assert [item["media_group_index"] for item in results] == [1, 2, 3]
+            assert results[1]["status"] == "album_segment_failed"
 
 
 def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
@@ -4007,8 +4428,26 @@ def test_message_send_workbench_creates_private_group_channel_and_jitter_tasks(m
         material = client.post(
             "/api/materials",
             headers=headers,
-            json={"tenant_id": 1, "title": "消息发送图片", "material_type": "图片", "content": "https://trusted.example.com/message.png", "tags": "pytest"},
+            json={
+                "tenant_id": 1,
+                "title": "消息发送图片",
+                "material_type": "图片",
+                "content": "https://trusted.example.com/message.png",
+                "tags": "pytest",
+                "tg_cache_peer_id": "cache-peer",
+                "tg_cache_message_id": "101",
+            },
         ).json()
+        assert material["delivery_mode"] == "download_reupload"
+        assert material["cache_ready_status"] == "not_cached"
+        assert material["asset_fingerprint"]
+        with SessionLocal() as session:
+            db_material = session.get(Material, material["id"])
+            db_material.cache_ready_status = "ready"
+            db_material.tg_cache_account_id = account["id"]
+            db_material.tg_cache_peer_id = "cache-peer"
+            db_material.tg_cache_message_id = "101"
+            session.commit()
         channel_task = client.post(
             "/api/message-send-tasks",
             headers=headers,
@@ -4024,8 +4463,205 @@ def test_message_send_workbench_creates_private_group_channel_and_jitter_tasks(m
         )
         assert channel_task.status_code == 200, channel_task.text
         assert channel_task.json()["status"] == TaskStatus.SENT.value
+        assert channel_task.json()["media_sent"] is True
+        assert channel_task.json()["media_failure_reason"] == ""
         assert send_calls[-1]["peer_id"] == channel_target["tg_peer_id"]
-        assert send_calls[-1]["segments"] == [("图片", "https://trusted.example.com/message.png", "频道配文")]
+        assert send_calls[-1]["segments"] == [("图片", "tg-cache://cache-peer/101", "频道配文")]
+
+        sticker = client.post(
+            "/api/materials",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "title": "普通图片伪表情包",
+                "material_type": "表情包",
+                "content": "https://trusted.example.com/sticker.png",
+                "emoji_asset_kind": "image_meme",
+                "tg_cache_peer_id": "cache-peer",
+                "tg_cache_message_id": "102",
+            },
+        ).json()
+        assert sticker["cache_ready_status"] == "not_cached"
+        with SessionLocal() as session:
+            db_sticker = session.get(Material, sticker["id"])
+            db_sticker.cache_ready_status = "ready"
+            db_sticker.tg_cache_account_id = account["id"]
+            db_sticker.tg_cache_peer_id = "cache-peer"
+            db_sticker.tg_cache_message_id = "102"
+            session.commit()
+        sticker_task = client.post(
+            "/api/message-send-tasks",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "target_type": "private",
+                "target_peer_id": f"@{contact['username']}",
+                "content": "",
+                "message_type": "表情包",
+                "material_id": sticker["id"],
+                "dispatch_now": True,
+            },
+        )
+        assert sticker_task.status_code == 200, sticker_task.text
+        assert sticker_task.json()["status"] == TaskStatus.SENT.value
+        assert sticker_task.json()["media_sent"] is True
+        assert send_calls[-1]["segments"] == [("表情包", "tg-cache://cache-peer/102", "")]
+
+        manual_ready_material = client.post(
+            "/api/materials",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "title": "人工 ready 图片",
+                "material_type": "图片",
+                "content": "https://trusted.example.com/manual-ready.png",
+                "cache_ready_status": "ready",
+            },
+        ).json()
+        assert manual_ready_material["cache_ready_status"] == "not_cached"
+        manual_ready_task = client.post(
+            "/api/message-send-tasks",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "target_type": "private",
+                "target_peer_id": f"@{contact['username']}",
+                "message_type": "图片",
+                "material_id": manual_ready_material["id"],
+                "dispatch_now": True,
+            },
+        )
+        assert manual_ready_task.status_code == 400
+        assert "素材缓存不可用" in manual_ready_task.text
+
+        invalid_combo = client.post(
+            "/api/materials",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "title": "绕过缓存组合消息",
+                "material_type": "组合消息",
+                "content": json.dumps([{"type": "图片", "source": "https://trusted.example.com/bypass.png"}]),
+            },
+        ).json()
+        invalid_combo_task = client.post(
+            "/api/message-send-tasks",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "target_type": "private",
+                "target_peer_id": f"@{contact['username']}",
+                "message_type": "组合消息",
+                "material_id": invalid_combo["id"],
+                "dispatch_now": True,
+            },
+        )
+        assert invalid_combo_task.status_code == 400
+        assert "组合消息媒体段必须引用已缓存素材" in invalid_combo_task.text
+
+        valid_combo = client.post(
+            "/api/materials",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "title": "素材引用组合消息",
+                "material_type": "组合消息",
+                "content": json.dumps(["组合前置文本", {"type": "图片", "material_id": material["id"], "caption": "组合图片"}]),
+            },
+        ).json()
+        valid_combo_task = client.post(
+            "/api/message-send-tasks",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "target_type": "private",
+                "target_peer_id": f"@{contact['username']}",
+                "content": "组合开头",
+                "message_type": "组合消息",
+                "material_id": valid_combo["id"],
+                "dispatch_now": True,
+            },
+        )
+        assert valid_combo_task.status_code == 200, valid_combo_task.text
+        assert valid_combo_task.json()["media_sent"] is True
+        assert send_calls[-1]["segments"] == [
+            ("文本", None, ""),
+            ("文本", None, ""),
+            ("图片", "tg-cache://cache-peer/101", "组合图片"),
+        ]
+
+        flood_wait_material = client.post(
+            "/api/materials",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "title": "FloodWait 图片",
+                "material_type": "图片",
+                "content": "https://trusted.example.com/flood-wait.png",
+                "cache_ready_status": "flood_wait",
+            },
+        ).json()
+        flood_wait_task = client.post(
+            "/api/message-send-tasks",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "target_type": "channel",
+                "operation_target_id": channel_target["id"],
+                "content": "不能现场等待",
+                "message_type": "图片",
+                "material_id": flood_wait_material["id"],
+                "dispatch_now": True,
+            },
+        )
+        assert flood_wait_task.status_code == 400
+        assert "素材缓存不可用" in flood_wait_task.text
+
+        stale_cache_material = client.post(
+            "/api/materials",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "title": "运行期失效图片",
+                "material_type": "图片",
+                "content": "https://trusted.example.com/stale.png",
+                "tg_cache_peer_id": "cache-peer",
+                "tg_cache_message_id": "103",
+            },
+        ).json()
+        assert stale_cache_material["cache_ready_status"] == "not_cached"
+        with SessionLocal() as session:
+            db_stale = session.get(Material, stale_cache_material["id"])
+            db_stale.cache_ready_status = "ready"
+            db_stale.tg_cache_account_id = account["id"]
+            db_stale.tg_cache_peer_id = "cache-peer"
+            db_stale.tg_cache_message_id = "103"
+            session.commit()
+        stale_cache_task = client.post(
+            "/api/message-send-tasks",
+            headers=headers,
+            json={
+                "account_id": account["id"],
+                "target_type": "channel",
+                "operation_target_id": channel_target["id"],
+                "content": "缓存稍后失效",
+                "message_type": "图片",
+                "material_id": stale_cache_material["id"],
+                "dispatch_now": False,
+            },
+        )
+        assert stale_cache_task.status_code == 200, stale_cache_task.text
+        with SessionLocal() as session:
+            db_stale = session.get(Material, stale_cache_material["id"])
+            db_stale.cache_ready_status = "flood_wait"
+            session.commit()
+        stale_cache_dispatch = client.post(f"/api/message-tasks/{stale_cache_task.json()['id']}/dispatch", headers=headers)
+        assert stale_cache_dispatch.status_code == 200, stale_cache_dispatch.text
+        stale_cache_body = stale_cache_dispatch.json()
+        assert stale_cache_body["status"] == TaskStatus.FAILED.value
+        assert stale_cache_body["media_sent"] is False
+        assert stale_cache_body["media_failure_reason"] == "cache_account_flood_wait"
+        assert stale_cache_body["failure_type"] == "cache_account_flood_wait"
 
         batch_start = (datetime.now(UTC) + timedelta(minutes=10)).replace(microsecond=0)
         mixed_batch = client.post(

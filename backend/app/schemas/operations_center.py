@@ -197,6 +197,7 @@ class RuleCenterSummaryOut(BaseModel):
 class RuleTestRequest(BaseModel):
     test_type: str = "group_relay"
     test_mode: str = "rules_only"
+    simulation_scenario: str = ""
     text: str = ""
     candidates: list[str] = Field(default_factory=list)
     context: str = ""
@@ -230,10 +231,19 @@ class RuleTestCandidateOut(BaseModel):
     transformed_text: str = ""
 
 
+class RuleTestSimulationStepOut(BaseModel):
+    step: str
+    status: str
+    action: str
+    reason: str = ""
+
+
 class RuleTestOut(BaseModel):
     result: str
     test_mode: str = "rules_only"
     is_test_data: bool = True
+    simulation_scenario: str = ""
+    simulation_steps: list[RuleTestSimulationStepOut] = Field(default_factory=list)
     hits: list[RuleTestHitOut] = Field(default_factory=list)
     input_hits: list[str] = Field(default_factory=list)
     output_candidates: list[RuleTestCandidateOut] = Field(default_factory=list)
@@ -244,6 +254,10 @@ class RuleTestOut(BaseModel):
     rule_set_version_id: int | None = None
     rule_set_name: str = ""
     transformed_text: str = ""
+    material_candidate_count: int = 0
+    material_selected_id: int | None = None
+    material_action: str = ""
+    material_failure_reason: str = ""
     target_summary: str = "按绑定任务/目标路由"
     target_routes: list[RuleTestRouteOut] = Field(default_factory=list)
     account_strategy: str = "按任务账号策略选择"
@@ -381,5 +395,6 @@ __all__ = [
     "RuleTestOut",
     "RuleTestRequest",
     "RuleTestRouteOut",
+    "RuleTestSimulationStepOut",
     "RuleTrendMetricOut",
 ]

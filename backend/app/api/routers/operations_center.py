@@ -88,6 +88,7 @@ def post_rule_test(payload: RuleTestRequest, session: Session = Depends(get_sess
         payload.text,
         test_type=payload.test_type,
         test_mode=payload.test_mode,
+        simulation_scenario=payload.simulation_scenario,
         candidates=payload.candidates,
         context=payload.context,
         rule_set_version_id=payload.rule_set_version_id,

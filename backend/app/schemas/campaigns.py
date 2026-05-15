@@ -82,6 +82,9 @@ class DirectMessageTaskCreate(BaseModel):
     message_type: str = "文本"
 
 
+MESSAGE_TYPE_PATTERN = "^(文本|图片|表情包|文件|链接|组合消息)$"
+
+
 class MessageSendTaskCreate(BaseModel):
     account_id: int
     target_type: str = Field(pattern="^(private|group|channel)$")
@@ -90,7 +93,7 @@ class MessageSendTaskCreate(BaseModel):
     group_id: int | None = None
     operation_target_id: int | None = None
     content: str = ""
-    message_type: str = Field(default="文本", pattern="^(文本|图片|表情包)$")
+    message_type: str = Field(default="文本", pattern=MESSAGE_TYPE_PATTERN)
     material_id: int | None = None
     jitter_min_seconds: int = Field(default=0, ge=0)
     jitter_max_seconds: int = Field(default=0, ge=0)
@@ -110,7 +113,7 @@ class MessageSendBatchCreate(BaseModel):
     account_id: int
     targets: list[MessageSendTarget] = Field(default_factory=list, min_length=1)
     content: str = ""
-    message_type: str = Field(default="文本", pattern="^(文本|图片)$")
+    message_type: str = Field(default="文本", pattern=MESSAGE_TYPE_PATTERN)
     material_id: int | None = None
     dispatch_now: bool = True
     scheduled_at: datetime | None = None
@@ -203,6 +206,8 @@ class MessageTaskOut(ApiModel):
     idempotency_key: str
     failure_type: str | None
     failure_detail: str | None
+    media_sent: bool | None = None
+    media_failure_reason: str = ""
     scheduled_at: datetime
     sent_at: datetime | None
     created_at: datetime

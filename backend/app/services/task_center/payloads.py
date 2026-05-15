@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from typing import Any
 
@@ -47,6 +49,12 @@ class SendMessagePayload(BaseModel):
     source_remote_message_id: str = ""
     source_message_type: str = ""
     source_sent_at: datetime | None = None
+    source_media_asset_ids: list[str] = Field(default_factory=list)
+    waiting_source_media_asset_ids: list[str] = Field(default_factory=list)
+    waiting_source_media_versions: dict[str, int] = Field(default_factory=dict)
+    material_cache_wait_until: str = ""
+    media_segments: list[dict[str, Any]] = Field(default_factory=list)
+    album_segment_results: list[dict[str, Any]] = Field(default_factory=list)
     rule_set_id: int | None = None
     rule_set_name: str = ""
     rule_set_version_id: int | None = None
@@ -108,6 +116,9 @@ def validate_action_payload(action_type: str, payload: dict[str, Any]) -> BaseMo
 
 
 def _create_action(session: Session, task: Task, action_type: str, account_id: int | None, scheduled_at: datetime, payload: BaseModel) -> Action:
+    payload_data = payload.model_dump(mode="json")
+    plan_batch_key = _plan_batch_key(task, scheduled_at)
+    action_dedupe_key = _action_dedupe_key(task, plan_batch_key, action_type, account_id, payload_data)
     action = Action(
         tenant_id=task.tenant_id,
         task_id=task.id,
@@ -115,13 +126,33 @@ def _create_action(session: Session, task: Task, action_type: str, account_id: i
         action_type=action_type,
         account_id=account_id,
         scheduled_at=scheduled_at,
+        plan_batch_key=plan_batch_key,
+        action_dedupe_key=action_dedupe_key,
         status="pending",
-        payload=payload.model_dump(mode="json"),
+        payload=payload_data,
         result={},
     )
     session.add(action)
     session.flush()
     return action
+
+
+def _plan_batch_key(task: Task, scheduled_at: datetime) -> str:
+    configured = (task.stats or {}).get("current_plan_batch_key") if isinstance(task.stats, dict) else ""
+    if configured:
+        return str(configured)
+    slot = scheduled_at.isoformat() if hasattr(scheduled_at, "isoformat") else str(scheduled_at)
+    return f"{task.id}:{slot}"
+
+
+def _action_dedupe_key(task: Task, plan_batch_key: str, action_type: str, account_id: int | None, payload_data: dict[str, Any]) -> str:
+    business_parts = {
+        "action_type": action_type,
+        "account_id": account_id,
+        "payload": payload_data,
+    }
+    digest = hashlib.sha256(json.dumps(business_parts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
+    return f"{task.tenant_id}:{plan_batch_key}:{digest}"
 
 
 def create_send_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: SendMessagePayload) -> Action:

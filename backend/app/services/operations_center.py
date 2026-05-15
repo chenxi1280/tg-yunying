@@ -36,10 +36,12 @@ from app.schemas.operations_center import (
     RuleTestHitOut,
     RuleTestOut,
     RuleTestRouteOut,
+    RuleTestSimulationStepOut,
     RuleTrendMetricOut,
 )
 from app.services._common import _as_utc, _now, audit
 from app.services.rule_engine import apply_output_policy, evaluate_input_filter, task_type_labels
+from app.services.material_rules import select_material_for_policy
 from app.services.task_center.executors.group_relay import apply_transform_rules, relay_filter_expression_reason, resolve_relay_target_ids
 from app.services.task_center.fingerprints import content_fingerprint
 
@@ -895,6 +897,7 @@ def test_rules(
     text: str,
     test_type: str = "group_relay",
     test_mode: str = "rules_only",
+    simulation_scenario: str = "",
     candidates: list[str] | None = None,
     context: str = "",
     rule_set_version_id: int | None = None,
@@ -905,6 +908,7 @@ def test_rules(
     version = session.get(RuleSetVersion, rule_set_version_id) if rule_set_version_id else None
     if version and version.tenant_id != tenant_id:
         version = None
+    simulation_steps = _rule_test_media_simulation(simulation_scenario)
     rule_set = session.get(RuleSet, version.rule_set_id) if version else None
     if version:
         filters = dict(version.filters or {})
@@ -939,6 +943,12 @@ def test_rules(
         target_summary = "、".join(route.title for route in routes) if routes else "未解析到目标群，请检查 routing.target_group_ids / routes / keyword_routes"
         account_summary = _rule_test_account_summary(routes, version.account_strategy or {})
         rate_summary = _rule_test_rate_summary(version.rate_limits or {})
+        material_result = select_material_for_policy(
+            session,
+            tenant_id,
+            (version.routing or {}).get("material_policy") or {},
+            context_key=f"rule-test:{version.id}:{transformed_text}",
+        )
         block_reasons: list[str] = []
         if not filter_passed:
             block_reasons.append(filter_reason or "未通过规则集过滤")
@@ -946,6 +956,8 @@ def test_rules(
             result="规则版本预览：通过过滤，已计算转换和路由" if filter_passed else "规则版本预览：未通过过滤",
             test_mode=test_mode,
             is_test_data=True,
+            simulation_scenario=simulation_scenario,
+            simulation_steps=simulation_steps,
             hits=[],
             input_hits=input_result.hits,
             output_candidates=output_candidates,
@@ -956,6 +968,10 @@ def test_rules(
             rule_set_version_id=version.id,
             rule_set_name=rule_set.name if rule_set else "",
             transformed_text=transformed_text,
+            material_candidate_count=material_result.candidate_count,
+            material_selected_id=material_result.selected.id if material_result.selected else None,
+            material_action=material_result.action,
+            material_failure_reason=material_result.failure_reason,
             target_summary=target_summary,
             target_routes=routes,
             account_strategy=account_summary,
@@ -965,6 +981,8 @@ def test_rules(
         result="未命中规则条件",
         test_mode=test_mode,
         is_test_data=True,
+        simulation_scenario=simulation_scenario,
+        simulation_steps=simulation_steps,
         hits=[],
         should_block=False,
         block_reason="",
@@ -973,6 +991,39 @@ def test_rules(
         account_strategy="规则测试不占用账号；执行时按任务账号池、冷却和目标粘性策略选择",
         rate_limit_summary="测试不触发限流；执行时按账号冷却、小时/日上限与失败重试策略校验",
     )
+
+
+def _rule_test_media_simulation(scenario: str) -> list[RuleTestSimulationStepOut]:
+    scenario = (scenario or "").strip()
+    if not scenario:
+        return []
+    scenarios: dict[str, list[tuple[str, str, str, str]]] = {
+        "pending_cache": [
+            ("源媒体入队", "pending_cache", "等待本轮超时或按规则降级", "只创建同一个 source_media_asset_id，不在发送现场上传"),
+            ("执行项检查", "waiting_material_cache", "任务保持等待或跳过媒体", "运行中任务优先，暂停任务不唤醒发送"),
+        ],
+        "timeout_then_cached": [
+            ("等待超时", "material_cache_wait_timeout", "丢弃媒体并降级文本或跳过", "超时后执行项已经完成本轮处置"),
+            ("缓存完成事件", "late_event", "拒绝补发", "缓存完成晚于本轮超时，只记录迟到事件"),
+        ],
+        "late_cache_event": [
+            ("缓存事件到达", "stale_event", "拒绝唤醒", "事件版本早于执行项固化的素材版本或缓存版本"),
+            ("执行项状态", "unchanged", "保持已完成处置结果", "旧事件只进入审计，不改写发送结果"),
+        ],
+        "album_one_failed": [
+            ("相册分段 1", "ready", "按原顺序发送", "media_group_index=1"),
+            ("相册分段 2", "album_segment_failed", "剔除失败图", "允许去掉失败图继续发"),
+            ("相册分段 3", "ready", "保持原顺序继续发送", "后续图片不能因为中间失败而乱序"),
+        ],
+        "queue_overflow": [
+            ("等待队列检查", "material_cache_wait_queue_full", "放弃受影响素材缓存", "队列爆满时不创建人工缓存动作"),
+            ("清理等待项", "abandoned", "记录失败原因并按规则降级或跳过", "不可恢复素材暴增和兜底扫描频繁唤醒也走同类保护"),
+        ],
+    }
+    return [
+        RuleTestSimulationStepOut(step=step, status=status, action=action, reason=reason)
+        for step, status, action, reason in scenarios.get(scenario, [])
+    ]
 
 
 def _metric(key: str, label: str, value: int | float | str, detail: str = "", status: str = "") -> MetricBucketOut:

@@ -5,9 +5,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser, get_current_user
+from app.auth import CurrentUser, ensure_permission, get_current_user
 from app.database import get_session
-from app.common.http import forbidden, not_found
+from app.common.http import not_found
 from app.schemas import DeveloperAppCreate, DeveloperAppOut, DeveloperAppUpdate
 from app.services import (
     check_developer_app, create_developer_app, list_developer_apps,
@@ -22,8 +22,6 @@ def get_developer_apps(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> list[dict]:
-    if not current_user.is_platform_admin:
-        raise forbidden("platform admin required")
     return list_developer_apps(session)
 
 
@@ -33,8 +31,7 @@ def post_developer_app(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> dict:
-    if not current_user.is_platform_admin:
-        raise forbidden("platform admin required")
+    ensure_permission(current_user, "developer_apps.manage")
     try:
         return create_developer_app(session, payload, current_user.name)
     except ValueError as exc:
@@ -48,8 +45,7 @@ def patch_developer_app(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> dict:
-    if not current_user.is_platform_admin:
-        raise forbidden("platform admin required")
+    ensure_permission(current_user, "developer_apps.manage")
     try:
         return update_developer_app(session, app_id, payload, current_user.name)
     except ValueError as exc:
@@ -62,8 +58,7 @@ def post_developer_app_check(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> dict:
-    if not current_user.is_platform_admin:
-        raise forbidden("platform admin required")
+    ensure_permission(current_user, "developer_apps.manage")
     try:
         return check_developer_app(session, app_id, current_user.name)
     except ValueError as exc:
@@ -76,8 +71,7 @@ def post_developer_app_disable(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> dict:
-    if not current_user.is_platform_admin:
-        raise forbidden("platform admin required")
+    ensure_permission(current_user, "developer_apps.manage")
     try:
         return set_developer_app_active(session, app_id, False, current_user.name)
     except ValueError as exc:
@@ -90,8 +84,7 @@ def post_developer_app_enable(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> dict:
-    if not current_user.is_platform_admin:
-        raise forbidden("platform admin required")
+    ensure_permission(current_user, "developer_apps.manage")
     try:
         return set_developer_app_active(session, app_id, True, current_user.name)
     except ValueError as exc:

@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from random import choice, randint
 from typing import Any
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from .config import Settings, get_settings
 from .models import FailureType
 from .security import decrypt_session
 from .timezone import BEIJING_TZ, beijing_now
+
+
+def source_media_hint(*parts: object) -> str:
+    return hashlib.sha256("\n".join(str(part or "") for part in parts).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -115,6 +122,12 @@ class GroupMessageSnapshot:
     message_type: str = "text"
     sent_at: datetime | None = None
     is_bot: bool = False
+    caption: str = ""
+    media_type: str = ""
+    media_fingerprint: str = ""
+    media_group_id: str = ""
+    media_group_index: int = 0
+    media_group_total: int = 1
 
 
 @dataclass(frozen=True)
@@ -429,6 +442,34 @@ class TelegramGateway:
                 sent_at=now_value,
             )
         ][:limit]
+
+    def cache_source_media(
+        self,
+        account_id: int,
+        source_peer_id: str,
+        source_message_id: str,
+        cache_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        if not cache_peer_id:
+            return SendResult(False, failure_type="cache_peer_unavailable", detail="缺少源媒体缓存 peer")
+        return SendResult(True, remote_message_id=f"cache:{source_peer_id}:{source_message_id}")
+
+    def cache_material_source(
+        self,
+        account_id: int,
+        source: str,
+        cache_peer_id: str,
+        caption: str = "",
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        if not cache_peer_id:
+            return SendResult(False, failure_type="cache_peer_unavailable", detail="缺少素材缓存 peer")
+        if not source:
+            return SendResult(False, failure_type="cache_not_ready", detail="素材缺少来源")
+        return SendResult(True, remote_message_id=f"material-cache:{uuid4().hex[:8]}")
 
     def fetch_channel_messages(
         self,
@@ -824,6 +865,9 @@ class TelethonTelegramGateway(TelegramGateway):
         detail = str(exc) or exc.__class__.__name__
         if "Could not find the input entity" in detail:
             return SendResult(False, failure_type=FailureType.PEER_INVALID.value, detail="目标实体无法解析，请重新同步账号群聊/运营目标后再试")
+        custom_emoji_markers = ("CUSTOM_EMOJI", "MessageEntityCustomEmoji", "custom emoji", "document id")
+        if any(marker.lower() in detail.lower() for marker in custom_emoji_markers):
+            return SendResult(False, failure_type="custom_emoji_unavailable", detail="custom emoji 当前账号或目标不可用")
         if isinstance(exc, errors.FloodWaitError):
             return SendResult(False, failure_type=FailureType.FLOOD_WAIT.value, detail=f"FloodWait {exc.seconds} 秒")
         if isinstance(exc, getattr(errors, "SlowModeWaitError", ())):
@@ -885,14 +929,7 @@ class TelethonTelegramGateway(TelegramGateway):
                         text = "\n".join(piece for piece in [segment.content, segment.source] if piece).strip()
                         message = await client.send_message(target, text)
                     else:
-                        source = segment.source or segment.content
-                        if not source:
-                            continue
-                        try:
-                            message = await client.send_file(target, source, caption=segment.caption or segment.content or None)
-                        except Exception:
-                            fallback_text = "\n".join(piece for piece in [segment.caption or segment.content, source] if piece).strip()
-                            message = await client.send_message(target, fallback_text)
+                        message = await self._send_media_segment(client, target, segment)
                     remote_message_id = str(getattr(message, "id", remote_message_id or uuid4().hex[:8]))
             else:
                 message = await client.send_message(target, content)
@@ -900,6 +937,68 @@ class TelethonTelegramGateway(TelegramGateway):
             return SendResult(True, remote_message_id=remote_message_id)
         except Exception as exc:  # Telethon exposes many RPC subclasses; map them at the adapter boundary.
             return self._map_send_error(exc)
+
+    async def _send_media_segment(self, client: Any, target: Any, segment: OutboundSegment) -> Any:
+        source = segment.source or segment.content
+        if not source:
+            raise ValueError("媒体素材缺少可发送来源")
+        custom_emoji = self._parse_custom_emoji_source(source)
+        if custom_emoji:
+            document_id, alt = custom_emoji
+            return await self._send_custom_emoji_segment(client, target, document_id, alt, segment.caption or segment.content or "")
+        caption = segment.caption or segment.content or None
+        cache_ref = self._parse_tg_cache_source(source)
+        if not cache_ref:
+            return await client.send_file(target, source, caption=caption)
+        cache_peer, message_id = cache_ref
+        cache_target = await _resolve_telethon_target(client, cache_peer, group_id=0)
+        cached_message = await client.get_messages(cache_target, ids=message_id)
+        if not cached_message or not getattr(cached_message, "media", None):
+            raise ValueError("TG 缓存消息不可下载")
+        with tempfile.TemporaryDirectory(prefix="tg-material-reupload-") as temp_dir:
+            downloaded = await client.download_media(cached_message, file=temp_dir)
+            if not downloaded:
+                raise ValueError("TG 缓存媒体下载失败")
+            return await client.send_file(target, downloaded, caption=caption)
+
+    @staticmethod
+    def _parse_tg_cache_source(source: str) -> tuple[str, int] | None:
+        parsed = urlparse(source)
+        if parsed.scheme != "tg-cache":
+            return None
+        peer = unquote(parsed.netloc).strip()
+        message_id = parsed.path.strip("/").split("/", 1)[0]
+        if not peer or not message_id.isdigit():
+            raise ValueError("TG 缓存引用格式无效")
+        return peer, int(message_id)
+
+    @staticmethod
+    def _parse_custom_emoji_source(source: str) -> tuple[int, str] | None:
+        if not source.startswith("custom_emoji:"):
+            return None
+        parts = source.split(":", 2)
+        if len(parts) != 3 or not parts[1].isdigit() or not parts[2].strip():
+            raise ValueError("custom emoji 素材格式无效")
+        return int(parts[1]), parts[2].strip()
+
+    async def _send_custom_emoji_segment(self, client: Any, target: Any, document_id: int, alt: str, caption: str) -> Any:
+        from telethon import types
+
+        prefix = f"{caption}\n" if caption else ""
+        text = f"{prefix}{alt}"
+        entity = types.MessageEntityCustomEmoji(
+            offset=self._telegram_entity_length(prefix),
+            length=self._telegram_entity_length(alt),
+            document_id=document_id,
+        )
+        try:
+            return await client.send_message(target, text, formatting_entities=[entity])
+        except TypeError:
+            return await client.send_message(target, text, entities=[entity])
+
+    @staticmethod
+    def _telegram_entity_length(text: str) -> int:
+        return len(text.encode("utf-16-le")) // 2
 
     def send_message(
         self,
@@ -1307,6 +1406,12 @@ class TelethonTelegramGateway(TelegramGateway):
             raise RuntimeError("session is not authorized")
         target = await _resolve_telethon_target(client, peer_id, group_id=1)
         messages_resp = await client.get_messages(target, limit=limit)
+        grouped_totals: dict[str, int] = {}
+        grouped_seen: dict[str, int] = {}
+        for message in list(messages_resp or []):
+            group_id = str(getattr(message, "grouped_id", "") or "")
+            if group_id:
+                grouped_totals[group_id] = grouped_totals.get(group_id, 0) + 1
         snapshots: list[GroupMessageSnapshot] = []
         for message in list(messages_resp or []):
             text = getattr(message, "message", "") or ""
@@ -1321,14 +1426,26 @@ class TelethonTelegramGateway(TelegramGateway):
                 or sender_peer_id
                 or "未知成员"
             )
+            group_id = str(getattr(message, "grouped_id", "") or "")
+            if group_id:
+                grouped_seen[group_id] = grouped_seen.get(group_id, 0) + 1
+            media = getattr(message, "media", None)
+            media_type = type(media).__name__ if media else ""
+            remote_id = str(getattr(message, "id", uuid4().hex))
             snapshots.append(
                 GroupMessageSnapshot(
-                    remote_message_id=str(getattr(message, "id", uuid4().hex)),
+                    remote_message_id=remote_id,
                     sender_peer_id=sender_peer_id,
                     sender_name=sender_name,
                     content=text or "[media]",
-                    message_type="media" if getattr(message, "media", None) else "text",
+                    message_type="media" if media else "text",
                     sent_at=getattr(message, "date", None),
+                    caption=text,
+                    media_type=media_type,
+                    media_fingerprint=source_media_hint(peer_id, remote_id, group_id, media_type),
+                    media_group_id=group_id,
+                    media_group_index=grouped_seen.get(group_id, 0) if group_id else 0,
+                    media_group_total=grouped_totals.get(group_id, 1) if group_id else 1,
                 )
             )
         return snapshots
@@ -1342,6 +1459,100 @@ class TelethonTelegramGateway(TelegramGateway):
         limit: int = 20,
     ) -> list[GroupMessageSnapshot]:
         return self._run(self._fetch_group_messages_async(peer_id, session_ciphertext, self._usable_credentials(credentials), limit))
+
+    async def _cache_source_media_async(
+        self,
+        session_ciphertext: str | None,
+        source_peer_id: str,
+        source_message_id: str,
+        cache_peer_id: str,
+        credentials: DeveloperAppCredentials,
+    ) -> SendResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session")
+        if not cache_peer_id:
+            return SendResult(False, failure_type="cache_peer_unavailable", detail="缺少源媒体缓存 peer")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
+        try:
+            source = await _resolve_telethon_target(client, source_peer_id, group_id=0)
+            cache_target = await _resolve_telethon_target(client, cache_peer_id, group_id=0)
+            source_message = await client.get_messages(source, ids=int(source_message_id))
+            if not source_message or not getattr(source_message, "media", None):
+                return SendResult(False, failure_type="source_media_unrecoverable", detail="源媒体消息不存在或无媒体")
+            with tempfile.TemporaryDirectory(prefix="tg-source-media-cache-") as temp_dir:
+                downloaded = await client.download_media(source_message, file=temp_dir)
+                if not downloaded:
+                    return SendResult(False, failure_type="source_media_cache_failed", detail="源媒体下载失败")
+                cached = await client.send_file(cache_target, downloaded, caption=getattr(source_message, "message", "") or None)
+            return SendResult(True, remote_message_id=str(getattr(cached, "id", "")))
+        except Exception as exc:
+            return self._map_send_error(exc)
+
+    def cache_source_media(
+        self,
+        account_id: int,
+        source_peer_id: str,
+        source_message_id: str,
+        cache_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return self._run(
+            self._cache_source_media_async(
+                session_ciphertext,
+                source_peer_id,
+                source_message_id,
+                cache_peer_id,
+                self._usable_credentials(credentials),
+            )
+        )
+
+    async def _cache_material_source_async(
+        self,
+        session_ciphertext: str | None,
+        source: str,
+        cache_peer_id: str,
+        caption: str,
+        credentials: DeveloperAppCredentials,
+    ) -> SendResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session")
+        if not cache_peer_id:
+            return SendResult(False, failure_type="cache_peer_unavailable", detail="缺少素材缓存 peer")
+        if not source:
+            return SendResult(False, failure_type="cache_not_ready", detail="素材缺少来源")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
+        try:
+            cache_target = await _resolve_telethon_target(client, cache_peer_id, group_id=0)
+            cached = await client.send_file(cache_target, source, caption=caption or None)
+            return SendResult(True, remote_message_id=str(getattr(cached, "id", "")))
+        except Exception as exc:
+            return self._map_send_error(exc)
+
+    def cache_material_source(
+        self,
+        account_id: int,
+        source: str,
+        cache_peer_id: str,
+        caption: str = "",
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> SendResult:
+        return self._run(
+            self._cache_material_source_async(
+                session_ciphertext,
+                source,
+                cache_peer_id,
+                caption,
+                self._usable_credentials(credentials),
+            )
+        )
 
     async def _fetch_channel_messages_async(
         self,

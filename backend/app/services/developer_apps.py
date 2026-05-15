@@ -97,7 +97,7 @@ def create_developer_app(session: Session, payload: DeveloperAppCreate, actor: s
     )
     session.add(app)
     session.flush()
-    audit(session, tenant_id=None, actor=actor, action="新增开发者应用", target_type="developer_app", target_id=str(app.id))
+    audit(session, tenant_id=None, actor=actor, action="新增开发者应用", target_type="developer_app", target_id=str(app.id), detail="包含密钥配置")
     session.commit()
     session.refresh(app)
     return developer_app_snapshot(session, app)
@@ -110,7 +110,8 @@ def update_developer_app(session: Session, app_id: int, payload: DeveloperAppUpd
     data = payload.model_dump(exclude_unset=True)
     if data.get("app_name") is not None:
         app.app_name = data["app_name"]
-    if data.get("api_hash"):
+    secret_updated = bool(data.get("api_hash"))
+    if secret_updated:
         app.api_hash_ciphertext = encrypt_secret(data["api_hash"])
         app.credentials_version += 1
     if data.get("is_active") is not None:
@@ -121,7 +122,8 @@ def update_developer_app(session: Session, app_id: int, payload: DeveloperAppUpd
     if data.get("notes") is not None:
         app.notes = data["notes"]
     app.updated_at = _now()
-    audit(session, tenant_id=None, actor=actor, action="更新开发者应用", target_type="developer_app", target_id=str(app.id))
+    action = "更新开发者应用密钥配置" if secret_updated else "更新开发者应用"
+    audit(session, tenant_id=None, actor=actor, action=action, target_type="developer_app", target_id=str(app.id))
     session.commit()
     session.refresh(app)
     return developer_app_snapshot(session, app)

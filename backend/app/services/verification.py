@@ -144,7 +144,7 @@ def create_verification_task(
             VerificationTask.tenant_id == tenant_id,
             VerificationTask.account_id == account_id,
             VerificationTask.group_id == group_id,
-            VerificationTask.status == "待处理",
+            VerificationTask.status.in_(("待处理", "失败", "需人工处理")),
             VerificationTask.verification_type == verification_type,
         )
         .order_by(VerificationTask.id.desc())

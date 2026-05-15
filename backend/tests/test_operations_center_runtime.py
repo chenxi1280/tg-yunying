@@ -10,11 +10,12 @@ from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage
 from app.config import Settings
 from app.database import Base
 from app.gateways import SendResult, _resolve_telethon_target, _telethon_send_target
-from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgGroup, TgGroupAccount, WorkerHeartbeat
+from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskSettingsUpdate
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
 from app.security import encrypt_secret
+import app.services.accounts as account_service
 from app.services._common import _now
 from app.services.audit import audit_logs_csv, filter_audit_logs
 from app.services.archives import create_archive
@@ -27,6 +28,7 @@ from app.services.task_center.executors.group_ai_chat import ai_cycle_mode, buil
 from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
 from app.services.reports import build_overview
 from app.services.task_center.executors.group_relay import apply_transform_rules, build_plan as build_group_relay_plan, passes_relay_filters, resolve_relay_target_ids
+from app.services.task_center.executors.channel_like import build_plan as build_channel_like_plan
 from app.services.group_listeners import process_group_listener
 from app.services.task_center.listener_runtime import drain_listener_runtime, reset_listener_runtime_cache, should_collect_listener
 from app.services.task_center.fingerprints import content_fingerprint
@@ -184,6 +186,91 @@ def test_sync_all_operation_targets_collects_every_online_account(monkeypatch):
     assert [link.can_send for link in shared_links] == [True, False]
     assert shared_group.can_send is True
     assert shared_target.can_send is True
+
+
+def test_drain_account_sync_records_staggers_all_session_accounts_hourly(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(engine, future=True)
+    old_sync_time = _now() - timedelta(hours=2)
+    processed_ids: list[int] = []
+
+    def fake_process_account_sync_record(session: Session, record_id: int):
+        processed_ids.append(record_id)
+        record = session.get(TgAccountSyncRecord, record_id)
+        assert record is not None
+        record.status = "已同步"
+        record.result_count = 1
+        record.finished_at = _now()
+        session.commit()
+        return record
+
+    monkeypatch.setattr(account_service, "process_account_sync_record", fake_process_account_sync_record)
+
+    with SessionLocal() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=21, tenant_id=1, display_name="受限账号", phone_masked="21", status=AccountStatus.LIMITED.value, session_ciphertext="session-21"),
+                TgAccount(id=22, tenant_id=1, display_name="在线账号", phone_masked="22", status=AccountStatus.ACTIVE.value, session_ciphertext="session-22"),
+                TgAccount(id=23, tenant_id=1, display_name="需登录账号", phone_masked="23", status=AccountStatus.NEED_RELOGIN.value, session_ciphertext=""),
+            ]
+        )
+        session.add_all(
+            [
+                TgAccountSyncRecord(
+                    tenant_id=1,
+                    account_id=21,
+                    sync_type="health",
+                    trigger_source="scheduled",
+                    status="已同步",
+                    scheduled_at=old_sync_time,
+                    started_at=old_sync_time,
+                    finished_at=old_sync_time,
+                    created_at=old_sync_time,
+                ),
+                TgAccountSyncRecord(
+                    tenant_id=1,
+                    account_id=22,
+                    sync_type="health",
+                    trigger_source="scheduled",
+                    status="已同步",
+                    scheduled_at=old_sync_time,
+                    started_at=old_sync_time,
+                    finished_at=old_sync_time,
+                    created_at=old_sync_time,
+                ),
+            ]
+        )
+        session.commit()
+
+    processed_count = account_service.drain_account_sync_records(SessionLocal, limit=20)
+
+    with SessionLocal() as session:
+        limited_records = list(
+            session.scalars(
+                select(TgAccountSyncRecord)
+                .where(TgAccountSyncRecord.account_id == 21, TgAccountSyncRecord.created_at > old_sync_time)
+                .order_by(TgAccountSyncRecord.id.asc())
+            )
+        )
+        active_records = list(
+            session.scalars(
+                select(TgAccountSyncRecord)
+                .where(TgAccountSyncRecord.account_id == 22, TgAccountSyncRecord.created_at > old_sync_time)
+                .order_by(TgAccountSyncRecord.id.asc())
+            )
+        )
+        relogin_records = list(session.scalars(select(TgAccountSyncRecord).where(TgAccountSyncRecord.account_id == 23)))
+
+    assert processed_count == 1
+    assert len(processed_ids) == 1
+    assert [record.sync_type for record in limited_records] == ["health"]
+    assert [record.sync_type for record in active_records] == ["health"]
+    assert all(record.status == "已同步" for record in limited_records)
+    assert all(record.status == "排队中" for record in active_records)
+    assert 2 <= (active_records[0].scheduled_at - limited_records[0].scheduled_at).total_seconds() <= 4
+    assert relogin_records == []
 
 
 def test_scheduling_setting_centralizes_quiet_hours_and_default_failure_policy():
@@ -1664,6 +1751,71 @@ def test_channel_subtask_status_prefers_capacity_and_progress():
     assert _channel_subtask_status({"target_count": 50, "completed_count": 38, "running_count": 4, "capacity_shortfall": 8}) == "容量不足"
     assert _channel_subtask_status({"target_count": 50, "completed_count": 50, "running_count": 0, "capacity_shortfall": 0}) == "已达标"
     assert _channel_subtask_status({"target_count": 50, "completed_count": 10, "failed_count": 2, "running_count": 0, "capacity_shortfall": 0}) == "有失败"
+
+
+def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        accounts = [
+            TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, health_score=100 - account_id)
+            for account_id in range(101, 106)
+        ]
+        channel = OperationTarget(id=21, tenant_id=1, target_type="channel", tg_peer_id="-10021", title="容量频道", username="capacity_channel", can_send=True, auth_status="已授权运营")
+        message = ChannelMessage(id=31, tenant_id=1, channel_target_id=21, message_id=6101, message_url="https://t.me/capacity_channel/6101", content_preview="容量测试")
+
+        def make_task(task_id: str) -> Task:
+            return Task(
+                id=task_id,
+                tenant_id=1,
+                name="抖动容量",
+                type="channel_like",
+                status="running",
+                account_config={"selection_mode": "manual", "account_ids": [item.id for item in accounts], "max_concurrent": 5, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                type_config={
+                    "target_channel_id": channel.id,
+                    "message_scope": "specific",
+                    "message_ids": [message.id],
+                    "target_likes_per_message": 3,
+                    "like_count_jitter": 0.3,
+                    "allowed_reactions": ["👍"],
+                    "max_likes_per_account_per_hour": 999,
+                },
+                stats={},
+            )
+
+        upper_task = make_task("channel-like-jitter-capacity-upper")
+        lower_task = make_task("channel-like-jitter-capacity-lower")
+        session.add_all([*accounts, channel, message, upper_task, lower_task])
+        session.commit()
+
+        monkeypatch.setattr("app.services.task_center.executors.common.random.randint", lambda _lower, upper: upper)
+
+        assert build_channel_like_plan(session, upper_task) == 4
+        upper_detail = get_task_detail(session, 1, upper_task.id)
+
+        monkeypatch.setattr("app.services.task_center.executors.common.random.randint", lambda lower, _upper: lower)
+
+        assert build_channel_like_plan(session, lower_task) == 2
+        lower_detail = get_task_detail(session, 1, lower_task.id)
+
+    upper_group = upper_detail["message_groups"][0]
+    assert len(upper_detail["actions"]) == 4
+    assert len({action.account_id for action in upper_detail["actions"]}) == 4
+    assert upper_group["target_count"] == 4
+    assert upper_group["capacity_shortfall"] == 0
+    assert upper_group["subtask_status"] == "运行中"
+    assert "capacity_warning" not in upper_detail["task"]["stats"]
+
+    lower_group = lower_detail["message_groups"][0]
+    assert len(lower_detail["actions"]) == 2
+    assert lower_group["target_count"] == 2
+    assert lower_group["capacity_shortfall"] == 0
+    assert lower_group["subtask_status"] == "运行中"
+    assert "capacity_warning" not in lower_detail["task"]["stats"]
 
 
 def test_channel_like_create_defaults_to_dynamic_new_scope():

@@ -36,11 +36,21 @@ from .tenants import ensure_account_quota_available
 from .verification import list_verification_tasks, create_verification_task
 from .account_pools import account_pool_snapshot, ensure_default_account_pool, seed_account_pools
 
-ACCOUNT_SYNC_INTERVAL = timedelta(hours=6)
+ACCOUNT_SYNC_INTERVAL = timedelta(hours=1)
+ACCOUNT_SYNC_STAGGER_STEP = timedelta(seconds=3)
 ACCOUNT_SYNC_STALE_AFTER = timedelta(minutes=30)
 ACCOUNT_SYNC_QUEUE_STALE_AFTER = timedelta(hours=6)
 PROFILE_SYNC_STALE_AFTER = timedelta(minutes=30)
 PROFILE_SYNC_QUEUE_STALE_AFTER = timedelta(hours=6)
+ACCOUNT_AUTO_SYNC_SKIP_STATUSES = {
+    AccountStatus.PENDING_LOGIN.value,
+    AccountStatus.WAITING_CODE.value,
+    AccountStatus.WAITING_QR.value,
+    AccountStatus.WAITING_2FA.value,
+    AccountStatus.NEED_RELOGIN.value,
+    AccountStatus.SESSION_EXPIRED.value,
+    AccountStatus.DISABLED.value,
+}
 
 __all__ = [
     "account_contacts",
@@ -535,15 +545,21 @@ def drain_account_sync_records(session_factory, limit: int = 20) -> int:
     with session_factory() as session:
         _mark_stale_account_sync_records(session)
         cutoff = _now() - ACCOUNT_SYNC_INTERVAL
-        active_accounts = list(
+        syncable_accounts = list(
             session.scalars(
                 select(TgAccount)
-                .where(TgAccount.status == AccountStatus.ACTIVE.value, TgAccount.deleted_at.is_(None))
+                .where(
+                    TgAccount.status.not_in(ACCOUNT_AUTO_SYNC_SKIP_STATUSES),
+                    TgAccount.deleted_at.is_(None),
+                    TgAccount.session_ciphertext.is_not(None),
+                    TgAccount.session_ciphertext != "",
+                )
                 .order_by(TgAccount.id.asc())
-                .limit(50)
             )
         )
-        for account in active_accounts:
+        next_scheduled_at = _now()
+        stagger_index = 0
+        for account in syncable_accounts:
             latest = session.scalar(
                 select(TgAccountSyncRecord)
                 .where(TgAccountSyncRecord.account_id == account.id)
@@ -551,7 +567,14 @@ def drain_account_sync_records(session_factory, limit: int = 20) -> int:
                 .limit(1)
             )
             if not latest or latest.created_at <= cutoff:
-                queue_account_sync_records(session, account, trigger_source="scheduled", sync_types=["health", "profile_pull", "groups", "targets", "contacts", "codes"])
+                queue_account_sync_records(
+                    session,
+                    account,
+                    trigger_source="scheduled",
+                    sync_types=["health"],
+                    scheduled_at=next_scheduled_at + (ACCOUNT_SYNC_STAGGER_STEP * stagger_index),
+                )
+                stagger_index += 1
         session.commit()
         record_ids = list(
             session.scalars(
@@ -943,7 +966,7 @@ def account_risk_diagnostics(
     risks: list[dict] = []
     failure_actions = {
         FailureType.FLOOD_WAIT.value: ("高", "触发 FloodWait", "账号最近触发 Telegram FloodWait。", "暂停该账号任务，等待失败详情中的时间后再重试。"),
-        FailureType.ACCOUNT_LIMITED.value: ("高", "账号受限", "账号最近被判定为受限或不可用。", "系统自动探测恢复；必要时执行健康检查或重新登录。"),
+        FailureType.ACCOUNT_LIMITED.value: ("高", "账号受限", "账号最近被判定为受限或不可用。", "系统每小时自动探测恢复；必要时执行健康检查，确认需要时再重新登录。"),
         FailureType.ACCOUNT_UNAVAILABLE.value: ("中", "账号不可用", "账号最近执行时不可用。", "重新登录或检查 session。"),
         FailureType.PEER_INVALID.value: ("中", "目标不可访问", "账号最近访问目标失败。", "同步群/频道目标，确认账号仍在目标内。"),
         FailureType.GROUP_PERMISSION_DENIED.value: ("中", "群无发言权限", "账号最近在群内没有发言权限。", "进入账号详情执行解除群限制，管理员处理后重查目标能力。"),
@@ -981,7 +1004,7 @@ def account_risk_diagnostics(
     status_level = {
         AccountStatus.BANNED.value: ("高", "账号已封禁", "账号状态已标记为封禁，暂停所有发送动作。", "更换账号或重新登录确认。"),
         AccountStatus.SUSPECTED_BANNED.value: ("高", "疑似封禁", "账号状态已标记为疑似封禁，需要人工确认。", "立即做健康检查，并在 TG 客户端确认账号状态。"),
-        AccountStatus.LIMITED.value: ("高", "账号受限", "账号最近触发受限类错误，系统已暂停或降低派单优先级。", "系统自动探测恢复；需要重新登录时再执行重新登录。"),
+        AccountStatus.LIMITED.value: ("高", "账号受限", "账号最近触发受限类错误，系统已暂停或降低派单优先级。", "系统每小时自动探测恢复；需要重新登录时再执行重新登录。"),
         AccountStatus.SESSION_EXPIRED.value: ("高", "Session 失效", "账号 session 不再可用。", "重新登录账号。"),
         AccountStatus.NEED_RELOGIN.value: ("中", "需重新登录", "账号缺少可用 session 或开发者应用凭证不可用。", "重新登录账号并检查开发者应用。"),
         AccountStatus.ERROR.value: ("中", "账号异常", "账号处于异常状态。", "执行健康检查并查看最近失败记录。"),
@@ -1000,7 +1023,7 @@ def account_risk_diagnostics(
             )
             if recent:
                 recent_detail, recent_at, recent_source = recent
-                detail = f"{recent_detail}。系统已暂停或降低该账号派单；账号级限制由系统探测恢复，群内拦截需管理员解除后重查。"
+                detail = f"{recent_detail}。系统已暂停或降低该账号派单；账号级限制需要等待 TG 限制解除并由系统探测恢复，群内拦截需管理员解除后重查。"
                 source = recent_source
                 occurred_at = recent_at or occurred_at
         risks.append(_risk_item(level=level, code="ACCOUNT_STATUS", title=title, detail=detail, source=source, action=action, occurred_at=occurred_at))
@@ -1087,19 +1110,15 @@ def list_verification_codes(session: Session, account_id: int, actor: str = "普
             .limit(20)
         )
     )
-    changed = False
     for code in codes:
         if code.code_preview and _is_expired(code.expires_at):
             code.code_preview = None
             code.status = "已过期"
-            changed = True
         elif code.code_preview and not code.viewed_at:
             code.viewed_at = _now()
             code.viewed_by = actor
-            changed = True
-    if changed:
-        audit(session, tenant_id=account.tenant_id, actor=actor, action="查看TG验证码", target_type="tg_account", target_id=str(account.id))
-        session.commit()
+    audit(session, tenant_id=account.tenant_id, actor=actor, action="查看TG验证码", target_type="tg_account", target_id=str(account.id), detail=f"codes={len(codes)}")
+    session.commit()
     return codes
 
 
@@ -1151,7 +1170,7 @@ def poll_account_verification_codes(session: Session, account_id: int, actor: st
     return list_verification_codes(session, account_id, actor)
 
 
-def account_detail(session: Session, account_id: int, actor: str) -> dict:
+def account_detail(session: Session, account_id: int, actor: str, *, include_verification_codes: bool = True) -> dict:
     account = session.get(TgAccount, account_id)
     if not account:
         raise ValueError("account not found")
@@ -1161,7 +1180,7 @@ def account_detail(session: Session, account_id: int, actor: str) -> dict:
         session.commit()
         session.refresh(account)
     login_flows = list_login_flows(session, account_id)[:10]
-    codes = list_verification_codes(session, account_id, actor)
+    codes = list_verification_codes(session, account_id, actor) if include_verification_codes else []
     profile_records = list_profile_sync_records(session, account_id)
     sync_records = list_account_sync_records(session, account_id)
     contacts = account_contacts(session, account_id)
@@ -1195,16 +1214,21 @@ def account_detail(session: Session, account_id: int, actor: str) -> dict:
     if not latest_sync_time and sync_records:
         latest_sync_time = sync_records[0].created_at
     pending_due = any(record.status == "排队中" and record.scheduled_at <= now_value for record in sync_records)
+    pending_future_at = min((record.scheduled_at for record in sync_records if record.status == "排队中" and record.scheduled_at > now_value), default=None)
     running_sync = any(record.status == "同步中" for record in sync_records)
     next_sync_at = None
     sync_due = False
+    auto_sync_enabled = account.status not in ACCOUNT_AUTO_SYNC_SKIP_STATUSES and bool(account.session_ciphertext)
     sync_status_text = "账号不在线，暂停自动同步"
-    if account.status == AccountStatus.ACTIVE.value:
+    if auto_sync_enabled:
         if running_sync:
             sync_status_text = "同步中"
         elif pending_due:
             sync_due = True
             sync_status_text = "已到同步时间，等待后台执行"
+        elif pending_future_at:
+            next_sync_at = pending_future_at
+            sync_status_text = "已错峰排队，等待后台执行"
         elif latest_sync_time:
             planned_sync_at = latest_sync_time + ACCOUNT_SYNC_INTERVAL
             if planned_sync_at <= now_value:
@@ -1216,6 +1240,8 @@ def account_detail(session: Session, account_id: int, actor: str) -> dict:
         else:
             sync_due = True
             sync_status_text = "尚未同步，等待后台执行"
+        if account.status == AccountStatus.LIMITED.value and sync_status_text == "自动同步已排程":
+            sync_status_text = "账号受限，系统每小时自动探测恢复"
     return {
         "account": account,
         "risk_diagnostics": risk_diagnostics,

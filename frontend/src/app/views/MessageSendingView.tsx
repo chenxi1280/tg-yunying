@@ -4,13 +4,11 @@ import { Alert, App as AntdApp, Button, Card, Col, DatePicker, Form, Input, Moda
 import type { ColumnsType } from 'antd/es/table';
 import { MessageSquareText, RefreshCcw, Send, ShieldAlert } from 'lucide-react';
 import { StatusBadge } from '../components/shared';
-import type { Account, Contact, Material, MessageSendBatchCreate, MessageSendTarget, MessageSendingPrefill, MessageTask, OperationTarget, RiskPreflight } from '../types';
+import type { Account, Contact, Material, MessageSendBatchCreate, MessageSendTarget, MessageSendingPrefill, MessageTask, MessageType, OperationTarget, RiskPreflight } from '../types';
 import { api, ApiError } from '../../shared/api/client';
 import { formatBeijingDateTime, fromBeijingDateTimeLocalValue } from '../time';
 
 type TargetType = 'private' | 'group' | 'channel';
-type MessageType = '文本' | '图片';
-
 type Props = {
   accounts: Account[];
   materials: Material[];
@@ -38,6 +36,16 @@ const targetTypeLabels: Record<TargetType, string> = {
 };
 
 const statusOptions = ['排队中', '发送中', '已发送', '失败', '已取消'].map((status) => ({ value: status, label: status }));
+const messageTypeOptions: MessageType[] = ['文本', '图片', '表情包', '文件', '组合消息'];
+const mediaMessageTypes = new Set<MessageType>(['图片', '表情包', '文件', '组合消息']);
+const cacheBackedMessageTypes = new Set<MessageType>(['图片', '表情包', '文件']);
+const emojiKindOptions = [
+  { value: 'image_meme', label: '图片伪表情包' },
+  { value: 'static_sticker', label: '静态 sticker' },
+  { value: 'animated_sticker', label: 'animated sticker' },
+  { value: 'video_sticker', label: 'video sticker' },
+  { value: 'custom_emoji', label: 'custom emoji' },
+];
 
 function errorText(error: unknown): string {
   if (error instanceof ApiError) {
@@ -97,7 +105,7 @@ export default function MessageSendingView({
   const [manualPeer, setManualPeer] = React.useState('');
   const [manualDisplay, setManualDisplay] = React.useState('');
   const [materialOpen, setMaterialOpen] = React.useState(false);
-  const [materialForm, setMaterialForm] = React.useState({ title: '', content: '', tags: '' });
+  const [materialForm, setMaterialForm] = React.useState({ title: '', content: '', tags: '', material_type: '图片' as MessageType, emoji_asset_kind: 'image_meme', cache_ready_status: 'not_cached' });
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [preflight, setPreflight] = React.useState<RiskPreflight | null>(null);
   const [detailTask, setDetailTask] = React.useState<MessageTask | null>(null);
@@ -177,11 +185,11 @@ export default function MessageSendingView({
   }, [accounts]);
 
   const materialOptions = localMaterials
-    .filter((material) => material.review_status === '已审核' && material.material_type === '图片')
+    .filter((material) => material.review_status === '已审核' && material.material_type === messageType && (!cacheBackedMessageTypes.has(messageType) || material.cache_ready_status === 'ready'))
     .map((material) => ({
       value: material.id,
-      label: `${material.title} / ${material.content}`,
-      searchText: `${material.title} ${material.content} ${material.tags}`,
+      label: `${material.title} / ${material.cache_ready_status || 'ready'} / ${material.tags || material.content}`,
+      searchText: `${material.title} ${material.content} ${material.tags} ${material.cache_ready_status}`,
     }));
 
   const targetOptions = React.useMemo<TargetOption[]>(() => {
@@ -243,14 +251,14 @@ export default function MessageSendingView({
     if (!accountId) throw new Error('请选择发送账号');
     if (!selectedTargets.length) throw new Error('请选择发送目标');
     if (messageType === '文本' && !content.trim()) throw new Error('请输入消息内容');
-    if (messageType === '图片' && !materialId) throw new Error('请选择图片素材');
+    if (mediaMessageTypes.has(messageType) && !materialId) throw new Error(`请选择${messageType}素材`);
     if (!dispatchNow && !scheduledAt) throw new Error('请选择定时发送时间');
     return {
       account_id: accountId,
       targets: selectedTargets.map((option) => option.target),
       content: content.trim(),
       message_type: messageType,
-      material_id: messageType === '图片' ? materialId ?? null : null,
+      material_id: mediaMessageTypes.has(messageType) ? materialId ?? null : null,
       dispatch_now: dispatchNow,
       scheduled_at: dispatchNow ? null : scheduledAt,
     };
@@ -304,20 +312,25 @@ export default function MessageSendingView({
 
   async function createMaterial() {
     if (!materialForm.title.trim() || !materialForm.content.trim()) {
-      setError('请输入素材名称和图片 URL');
-      void message.error('请输入素材名称和图片 URL');
+      setError('请输入素材名称和来源 URL / 缓存引用');
+      void message.error('请输入素材名称和来源 URL / 缓存引用');
       return;
     }
     setSavingMaterial(true);
     try {
       const created = await api<Material>('/materials', {
         method: 'POST',
-        body: JSON.stringify({ ...materialForm, material_type: '图片' }),
+        body: JSON.stringify(materialForm),
       });
       setLocalMaterials((current) => [created, ...current.filter((item) => item.id !== created.id)]);
-      setMaterialId(created.id);
+      if (created.cache_ready_status === 'ready') {
+        setMaterialId(created.id);
+      }
       setMaterialOpen(false);
-      setMaterialForm({ title: '', content: '', tags: '' });
+      setMaterialForm({ title: '', content: '', tags: '', material_type: messageType, emoji_asset_kind: messageType === '表情包' ? 'image_meme' : '', cache_ready_status: 'not_cached' });
+      if (created.cache_ready_status !== 'ready') {
+        void message.info('素材已创建，等待缓存就绪后才能用于发送');
+      }
       await onRefresh();
     } catch (materialError) {
       const nextError = `创建素材失败：${errorText(materialError)}`;
@@ -366,8 +379,22 @@ export default function MessageSendingView({
   const columns: ColumnsType<MessageTask> = [
     { title: '发送账号', dataIndex: 'account_id', width: 180, render: (value) => accountLabel(value) },
     { title: '目标', dataIndex: 'target_display', width: 220, render: (value, task) => <Space direction="vertical" size={0}><span>{value || task.target_peer_id || '-'}</span><Typography.Text type="secondary">{targetTypeLabels[task.target_type as TargetType] || task.target_type}</Typography.Text></Space> },
-    { title: '类型', dataIndex: 'message_type', width: 90 },
-    { title: '内容', dataIndex: 'content', ellipsis: true, render: (value) => compactText(value) },
+    {
+      title: '媒体',
+      dataIndex: 'message_type',
+      width: 140,
+      render: (_, task) => (
+        <Space direction="vertical" size={0}>
+          <span>{task.message_type}</span>
+          {mediaMessageTypes.has(task.message_type as MessageType) && (
+            <Typography.Text type={task.media_sent ? 'success' : task.status === '失败' ? 'danger' : 'secondary'}>
+              {task.media_sent ? '图/文件已发' : task.status === '失败' ? (task.media_failure_reason || '媒体失败') : '待发送'}
+            </Typography.Text>
+          )}
+        </Space>
+      ),
+    },
+    { title: '失败原因', dataIndex: 'failure_detail', width: 180, render: (_, task) => task.status === '失败' ? (task.failure_detail || task.failure_type || task.media_failure_reason || '发送失败') : '-' },
     { title: '计划时间', dataIndex: 'scheduled_at', width: 180, render: formatTime },
     { title: '发送时间', dataIndex: 'sent_at', width: 180, render: formatTime },
     {
@@ -503,31 +530,30 @@ export default function MessageSendingView({
             <Col xs={24} md={8}>
               <Form.Item label="消息类型">
                 <Radio.Group value={messageType} onChange={(event) => { setMessageType(event.target.value); setMaterialId(undefined); }}>
-                  <Radio.Button value="文本">文本</Radio.Button>
-                  <Radio.Button value="图片">图片</Radio.Button>
+                  {messageTypeOptions.map((type) => <Radio.Button key={type} value={type}>{type}</Radio.Button>)}
                 </Radio.Group>
               </Form.Item>
             </Col>
             <Col xs={24} md={16}>
-              <Form.Item label={messageType === '文本' ? '消息内容' : '图片配文'}>
-                <Input.TextArea value={content} onChange={(event) => setContent(event.target.value)} rows={3} placeholder={messageType === '文本' ? '输入要发送的消息' : '可选，作为图片配文'} />
+              <Form.Item label={messageType === '文本' ? '消息内容' : '配文'}>
+                <Input.TextArea value={content} onChange={(event) => setContent(event.target.value)} rows={3} placeholder={messageType === '文本' ? '输入要发送的消息' : '可选，作为媒体配文'} />
               </Form.Item>
             </Col>
           </Row>
-          {messageType === '图片' && (
-            <Form.Item label="图片素材">
+          {mediaMessageTypes.has(messageType) && (
+            <Form.Item label={`${messageType}素材`}>
               <Space.Compact style={{ width: '100%' }}>
                 <Select
                   showSearch
                   allowClear
                   style={{ width: '100%' }}
-                  placeholder="选择可用图片素材"
+                  placeholder={`选择可用${messageType}素材`}
                   value={materialId}
                   onChange={setMaterialId}
                   filterOption={optionFilter}
                   options={materialOptions}
                 />
-                <Button icon={<MessageSquareText size={16} />} onClick={() => setMaterialOpen(true)}>新增素材</Button>
+                <Button icon={<MessageSquareText size={16} />} onClick={() => { setMaterialForm((form) => ({ ...form, material_type: messageType, emoji_asset_kind: messageType === '表情包' ? 'image_meme' : '' })); setMaterialOpen(true); }}>新增素材</Button>
               </Space.Compact>
             </Form.Item>
           )}
@@ -579,10 +605,18 @@ export default function MessageSendingView({
         </Form>
       </Modal>
 
-      <Modal title="新增图片素材" open={materialOpen} onCancel={() => setMaterialOpen(false)} onOk={createMaterial} confirmLoading={savingMaterial} okText="创建并选中">
+      <Modal title="新增媒体素材" open={materialOpen} onCancel={() => setMaterialOpen(false)} onOk={createMaterial} confirmLoading={savingMaterial} okText="创建并选中">
         <Form layout="vertical">
           <Form.Item label="素材名称"><Input value={materialForm.title} onChange={(event) => setMaterialForm((form) => ({ ...form, title: event.target.value }))} /></Form.Item>
-          <Form.Item label="图片 URL"><Input.TextArea value={materialForm.content} onChange={(event) => setMaterialForm((form) => ({ ...form, content: event.target.value }))} rows={3} placeholder="支持常见图片 URL / JPEG URL" /></Form.Item>
+          <Form.Item label="素材类型">
+            <Select value={materialForm.material_type} onChange={(value) => setMaterialForm((form) => ({ ...form, material_type: value, emoji_asset_kind: value === '表情包' ? 'image_meme' : '' }))} options={messageTypeOptions.filter((type) => type !== '文本').map((value) => ({ value, label: value }))} />
+          </Form.Item>
+          {materialForm.material_type === '表情包' && (
+            <Form.Item label="表情包子类型">
+              <Select value={materialForm.emoji_asset_kind} onChange={(value) => setMaterialForm((form) => ({ ...form, emoji_asset_kind: value }))} options={emojiKindOptions} />
+            </Form.Item>
+          )}
+          <Form.Item label="来源 URL / TG 缓存引用"><Input.TextArea value={materialForm.content} onChange={(event) => setMaterialForm((form) => ({ ...form, content: event.target.value }))} rows={3} placeholder="支持外部可恢复 URL，或后续由缓存队列写入 TG 缓存引用" /></Form.Item>
           <Form.Item label="标签"><Input value={materialForm.tags} onChange={(event) => setMaterialForm((form) => ({ ...form, tags: event.target.value }))} /></Form.Item>
         </Form>
       </Modal>

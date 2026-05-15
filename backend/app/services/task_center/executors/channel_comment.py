@@ -10,7 +10,7 @@ from ..account_pool import select_task_accounts
 from ..ai_generator import generate_channel_comments
 from ..pacing import schedule_times
 from ..payloads import PostCommentPayload, create_comment_action
-from .common import add_tokens, adjust_for_account_hour_limit, channel_message_payload, channel_scope, pick_channel_account, quantity_with_jitter, record_channel_capacity_warning, stats_inc, unplanned_channel_messages
+from .common import add_tokens, adjust_for_account_hour_limit, channel_message_payload, channel_scope, pick_channel_account, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning, stats_inc, unplanned_channel_messages
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -60,11 +60,13 @@ def build_plan(session: Session, task: Task) -> int:
     if not actions:
         task.last_error = ""
         return 0
-    accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, limit=len(actions))
+    target_per_message = int(config.get("target_comments_per_message") or 1)
+    _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("comment_count_jitter") or 0))
+    accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, limit=max(len(actions), max_target_per_message))
     if not accounts:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
         return 0
-    record_channel_capacity_warning(task, "回复", int(config.get("target_comments_per_message") or 1), len(accounts))
+    record_channel_capacity_warning(task, "回复", target_per_message, len(accounts))
     times = schedule_times(len(actions), task.pacing_config or {})
     created = 0
     for index, (message, content, reply_to_message_id) in enumerate(actions):

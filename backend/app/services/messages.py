@@ -42,6 +42,11 @@ from .verification import create_verification_task
 from .content_filters import tenant_keyword_rules
 from .risk_control import risk_preflight
 
+MEDIA_MESSAGE_TYPES = {"图片", "表情包", "文件", "组合消息"}
+SEGMENT_MEDIA_TYPES = {"图片", "表情包", "文件"}
+READY_CACHE_STATUS = "ready"
+UNAVAILABLE_CACHE_STATUSES = {"not_cached", "refreshing", "flood_wait", "unrecoverable", "cache_failed"}
+
 
 def _validate_message_material(session: Session, tenant_id: int, message_type: str, material_id: int | None) -> Material | None:
     if message_type == "文本":
@@ -60,7 +65,76 @@ def _validate_message_material(session: Session, tenant_id: int, message_type: s
         raise ValueError("只能使用已审核素材")
     if material.material_type != message_type:
         raise ValueError(f"请选择{message_type}素材")
+    if message_type == "组合消息":
+        _validate_combination_material(session, tenant_id, material)
+    elif message_type in SEGMENT_MEDIA_TYPES:
+        _validate_ready_media_material(session, tenant_id, message_type, material.id)
     return material
+
+
+def _material_send_source(material: Material) -> str:
+    if material.tg_cache_peer_id and material.tg_cache_message_id:
+        return f"tg-cache://{material.tg_cache_peer_id}/{material.tg_cache_message_id}"
+    return material.content
+
+
+def _material_unavailable_reason(material: Material | None) -> str | None:
+    if not material:
+        return "cache_not_ready"
+    if material.review_status != "已审核":
+        return "material_disabled"
+    if material.delivery_mode != "download_reupload":
+        return "delivery_mode_unsupported"
+    if material.material_type == "表情包" and material.emoji_asset_kind == "custom_emoji":
+        return None if re.match(r"^custom_emoji:\d+:.+$", material.content or "") else "custom_emoji_unavailable"
+    if material.material_type in MEDIA_MESSAGE_TYPES and not (material.tg_cache_peer_id and material.tg_cache_message_id):
+        return "cache_not_ready"
+    if material.cache_ready_status != READY_CACHE_STATUS:
+        if material.cache_ready_status == "flood_wait":
+            return "cache_account_flood_wait"
+        if material.cache_ready_status in {"not_cached", "refreshing"}:
+            return "cache_not_ready"
+        if material.cache_ready_status in {"unrecoverable", "cache_failed"}:
+            return "material_unrecoverable"
+        return material.cache_ready_status or "cache_not_ready"
+    return None
+
+
+def _validate_ready_media_material(session: Session, tenant_id: int, message_type: str, material_id: int | None) -> Material:
+    material = session.get(Material, material_id) if material_id else None
+    if not material or material.tenant_id != tenant_id:
+        raise ValueError("素材不存在")
+    if material.material_type != message_type:
+        raise ValueError(f"请选择{message_type}素材")
+    reason = _material_unavailable_reason(material)
+    if reason:
+        if reason == "custom_emoji_unavailable":
+            raise ValueError("custom emoji 素材格式无效或目标能力不可用")
+        raise ValueError(f"素材缓存不可用：{reason}")
+    return material
+
+
+def _validate_combination_material(session: Session, tenant_id: int, material: Material) -> None:
+    for item in _combination_items(material):
+        if not isinstance(item, dict):
+            continue
+        segment_type = str(item.get("type") or item.get("segment_type") or "文本")
+        if segment_type not in SEGMENT_MEDIA_TYPES:
+            continue
+        segment_material_id = item.get("material_id")
+        if not segment_material_id:
+            raise ValueError("组合消息媒体段必须引用已缓存素材")
+        _validate_ready_media_material(session, tenant_id, segment_type, int(segment_material_id))
+
+
+def _combination_items(material: Material) -> list:
+    try:
+        raw_segments = json.loads(material.content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"组合消息素材格式无效：{exc}") from exc
+    if not isinstance(raw_segments, list):
+        raise ValueError("组合消息素材必须是数组")
+    return raw_segments
 
 
 def _resolve_operation_target(session: Session, tenant_id: int, target_id: int, expected_type: str) -> OperationTarget:
@@ -172,6 +246,7 @@ def _message_task(
     planned_delay_seconds: int,
     scheduled_at: datetime,
 ) -> MessageTask:
+    media_sent: bool | None = None if message_type == "文本" else False
     return MessageTask(
         tenant_id=account.tenant_id,
         campaign_id=None,
@@ -181,6 +256,7 @@ def _message_task(
         content=content,
         message_type=message_type,
         material_id=material_id,
+        media_sent=media_sent,
         target_type=target_type,
         target_peer_id=target_peer_id,
         target_display=target_display,
@@ -189,6 +265,48 @@ def _message_task(
         status=TaskStatus.QUEUED.value,
         idempotency_key=f"send:{account.id}:{uuid4().hex[:12]}",
     )
+
+
+def _apply_task_material_snapshot(task: MessageTask, material: Material | None) -> None:
+    if not material:
+        task.material_asset_fingerprint = ""
+        task.material_cache_ready_status = ""
+        task.media_sent = None
+        task.media_failure_reason = ""
+        return
+    task.material_asset_fingerprint = material.asset_fingerprint or ""
+    task.material_cache_ready_status = material.cache_ready_status or ""
+    if task.message_type in MEDIA_MESSAGE_TYPES:
+        task.media_sent = False
+        task.media_failure_reason = ""
+
+
+def _execution_material_failure(session: Session, task: MessageTask) -> str | None:
+    if task.message_type not in MEDIA_MESSAGE_TYPES:
+        return None
+    material = session.get(Material, task.material_id) if task.material_id else None
+    if not material:
+        return "cache_not_ready"
+    _apply_task_material_snapshot(task, material)
+    if task.message_type == "组合消息":
+        try:
+            for item in _combination_items(material):
+                if not isinstance(item, dict):
+                    continue
+                segment_type = str(item.get("type") or item.get("segment_type") or "文本")
+                if segment_type not in SEGMENT_MEDIA_TYPES:
+                    continue
+                segment_material = session.get(Material, int(item.get("material_id") or 0))
+                reason = _material_unavailable_reason(segment_material)
+                if not segment_material or segment_material.tenant_id != task.tenant_id or segment_material.material_type != segment_type:
+                    return "cache_not_ready"
+                if reason:
+                    return reason
+        except (TypeError, ValueError):
+            return "cache_not_ready"
+        return None
+    return _material_unavailable_reason(material)
+    return None
 
 
 def _scheduling_setting(session: Session, tenant_id: int) -> SchedulingSetting:
@@ -210,7 +328,7 @@ def create_message_send_task(session: Session, payload: MessageSendTaskCreate, a
     content = payload.content.strip()
     if payload.message_type == "文本" and not content:
         raise ValueError("请输入消息内容")
-    _validate_message_material(session, account.tenant_id, payload.message_type, payload.material_id)
+    material = _validate_message_material(session, account.tenant_id, payload.message_type, payload.material_id)
     _ensure_risk_preflight_passed(session, account, [payload], content, payload.scheduled_at)
     target_type, target_peer_id, target_display, group_id = _resolve_message_target(session, account, payload)
     jitter_min = max(payload.jitter_min_seconds, 0)
@@ -232,6 +350,7 @@ def create_message_send_task(session: Session, payload: MessageSendTaskCreate, a
         scheduled_at,
     )
     session.add(task)
+    _apply_task_material_snapshot(task, material)
     session.flush()
     get_task_queue().enqueue(task.id)
     audit(
@@ -254,7 +373,7 @@ def create_message_send_tasks_batch(session: Session, payload: MessageSendBatchC
     content = payload.content.strip()
     if payload.message_type == "文本" and not content:
         raise ValueError("请输入消息内容")
-    _validate_message_material(session, account.tenant_id, payload.message_type, payload.material_id)
+    material = _validate_message_material(session, account.tenant_id, payload.message_type, payload.material_id)
     _ensure_risk_preflight_passed(session, account, payload.targets, content, payload.scheduled_at)
     setting = _scheduling_setting(session, account.tenant_id)
     jitter_min = max(int(setting.jitter_min_seconds), 0)
@@ -281,6 +400,7 @@ def create_message_send_tasks_batch(session: Session, payload: MessageSendBatchC
             planned_delay_seconds,
             scheduled_at,
         )
+        _apply_task_material_snapshot(task, material)
         session.add(task)
         session.flush()
         get_task_queue().enqueue(task.id)
@@ -408,18 +528,25 @@ def _group_last_sent_at(session: Session, task: MessageTask) -> datetime | None:
 def build_outbound_segments(session: Session, task: MessageTask) -> list[OutboundSegment]:
     material = session.get(Material, task.material_id) if task.material_id else None
     if task.message_type == "组合消息" and material:
-        try:
-            raw_segments = json.loads(material.content)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"组合消息素材格式无效：{exc}") from exc
         segments: list[OutboundSegment] = []
-        for item in raw_segments if isinstance(raw_segments, list) else []:
+        for item in _combination_items(material):
             if isinstance(item, str):
                 segments.append(OutboundSegment(segment_type="文本", content=item))
                 continue
             if not isinstance(item, dict):
                 continue
             segment_type = str(item.get("type") or item.get("segment_type") or "文本")
+            if segment_type in SEGMENT_MEDIA_TYPES:
+                segment_material = _validate_ready_media_material(session, task.tenant_id, segment_type, int(item.get("material_id") or 0))
+                segments.append(
+                    OutboundSegment(
+                        segment_type=segment_type,
+                        content=str(item.get("content") or ""),
+                        source=_material_send_source(segment_material),
+                        caption=str(item.get("caption") or segment_material.caption or ""),
+                    )
+                )
+                continue
             segments.append(
                 OutboundSegment(
                     segment_type=segment_type,
@@ -432,7 +559,9 @@ def build_outbound_segments(session: Session, task: MessageTask) -> list[Outboun
             segments.insert(0, OutboundSegment(segment_type="文本", content=task.content.strip()))
         return segments or [OutboundSegment(segment_type="文本", content=task.content)]
     if task.message_type in {"图片", "表情包", "文件"} and material:
-        return [OutboundSegment(segment_type=task.message_type, content=task.content, source=material.content, caption=task.content)]
+        source = _material_send_source(material)
+        caption = task.content or material.caption
+        return [OutboundSegment(segment_type=task.message_type, content=task.content, source=source, caption=caption)]
     if task.message_type == "链接" and material:
         return [OutboundSegment(segment_type="链接", content=task.content, source=material.content)]
     return [OutboundSegment(segment_type="文本", content=task.content)]
@@ -575,6 +704,9 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
             task.status = TaskStatus.FAILED.value
             task.failure_type = selection_failure_type or FailureType.ACCOUNT_UNAVAILABLE.value
             task.failure_detail = selection_failure_detail or ("私发任务账号不可用" if task.target_type == "private" else "没有可用于该群的在线账号")
+            if task.message_type in MEDIA_MESSAGE_TYPES:
+                task.media_sent = False
+                task.media_failure_reason = task.failure_type or "account_unavailable"
             session.add(MessageTaskAttempt(tenant_id=task.tenant_id, task_id=task.id, status=task.status, failure_type=task.failure_type, detail=task.failure_detail))
             if task.group_id:
                 create_verification_task(
@@ -626,6 +758,19 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
             else:
                 return _defer_message_task_for_capacity(session, task, capacity_decision)
 
+        material_failure = _execution_material_failure(session, task)
+        if material_failure:
+            task.status = TaskStatus.FAILED.value
+            task.failure_type = material_failure
+            task.failure_detail = f"素材媒体不可发送：{material_failure}"
+            task.media_sent = False
+            task.media_failure_reason = material_failure
+            session.add(MessageTaskAttempt(tenant_id=task.tenant_id, task_id=task.id, account_id=account.id, status=task.status, failure_type=task.failure_type, detail=task.failure_detail))
+            audit(session, tenant_id=task.tenant_id, actor="tg-worker", action="执行消息发送", target_type="message_task", target_id=str(task.id), detail=task.failure_detail)
+            session.commit()
+            session.refresh(task)
+            return task
+
         task.account_id = account.id
         task.status = TaskStatus.SENDING.value
         try:
@@ -634,6 +779,9 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
             task.status = TaskStatus.FAILED.value
             task.failure_type = "账号不可用"
             task.failure_detail = str(exc)
+            if task.message_type in MEDIA_MESSAGE_TYPES:
+                task.media_sent = False
+                task.media_failure_reason = task.failure_type
             session.add(MessageTaskAttempt(tenant_id=task.tenant_id, task_id=task.id, account_id=account.id, status=task.status, failure_type=task.failure_type, detail=task.failure_detail))
             session.commit()
             session.refresh(task)
@@ -659,6 +807,9 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
             task.status = TaskStatus.FAILED.value
             task.failure_type = FailureType.ACCOUNT_UNAVAILABLE.value
             task.failure_detail = "账号不可用"
+            if task.message_type in MEDIA_MESSAGE_TYPES:
+                task.media_sent = False
+                task.media_failure_reason = task.failure_type
             session.add(MessageTaskAttempt(tenant_id=task.tenant_id, task_id=task.id, account_id=account_id, status=task.status, failure_type=task.failure_type, detail=task.failure_detail))
             audit(session, tenant_id=task.tenant_id, actor="tg-worker", action="执行消息发送", target_type="message_task", target_id=str(task.id), detail=task.failure_detail)
             session.commit()
@@ -684,12 +835,18 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
             task.status = TaskStatus.FAILED.value
             task.failure_type = FailureType.ACCOUNT_UNAVAILABLE.value
             task.failure_detail = "账号已删除" if account else "账号不可用"
+            if task.message_type in MEDIA_MESSAGE_TYPES:
+                task.media_sent = False
+                task.media_failure_reason = task.failure_type
             detail = task.failure_detail
         elif result.ok:
             task.status = TaskStatus.SENT.value
             task.sent_at = _now()
             task.failure_type = None
             task.failure_detail = None
+            if task.message_type in MEDIA_MESSAGE_TYPES:
+                task.media_sent = True
+                task.media_failure_reason = ""
             detail = f"remote_message_id={result.remote_message_id}"
             link = session.scalar(
                 select(TgGroupAccount).where(TgGroupAccount.group_id == task.group_id, TgGroupAccount.account_id == account_id)
@@ -706,6 +863,9 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
             task.status = TaskStatus.FAILED.value
             task.failure_type = result.failure_type
             task.failure_detail = result.detail
+            if task.message_type in MEDIA_MESSAGE_TYPES:
+                task.media_sent = False
+                task.media_failure_reason = result.failure_type or "send_failed"
             detail = result.detail or ""
             if task.group_id and task.failure_type in {"群无权限", "群慢速模式", "目标无效", "未知错误"}:
                 verification_type = "慢速模式" if task.failure_type == "群慢速模式" else "需验证或关注"

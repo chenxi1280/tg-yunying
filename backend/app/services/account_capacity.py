@@ -12,7 +12,7 @@ from app.services._common import _now
 from app.services.ai_config import get_scheduling_setting
 
 
-ACTION_OCCUPIED_STATUSES = {"pending", "executing", "success"}
+ACTION_OCCUPIED_STATUSES = {"pending", "claiming", "executing", "success", "unknown_after_send"}
 MESSAGE_TASK_OCCUPIED_STATUSES = {TaskStatus.QUEUED.value, TaskStatus.SENDING.value, TaskStatus.SENT.value}
 
 

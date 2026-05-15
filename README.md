@@ -49,6 +49,9 @@
 - `TG_API_ID` / `TG_API_HASH`：本地开发者应用 seed 来源
 - `QUEUE_BACKEND`：`sync` 或 `redis`
 - `REDIS_URL`：Redis 队列地址
+- `ENABLE_REDIS_TOKEN_BUCKET`：是否启用 Dispatcher 多维 Redis token bucket；生产 compose 默认开启
+- `REDIS_TOKEN_FAIL_CLOSED`：Redis 限流不可用时是否 fail-closed；生产 compose 默认开启
+- `GLOBAL_TG_RATE_PER_SECOND` / `TASK_RATE_PER_MINUTE` / `TASK_TYPE_RATE_PER_MINUTE` / `ACCOUNT_RATE_PER_HOUR` / `PROXY_RATE_PER_MINUTE` / `TARGET_RATE_PER_MINUTE` / `MEDIA_RATE_PER_MINUTE`：多 worker 调度限流阈值
 - `LOGIN_CODE_TTL_SECONDS`：验证码展示有效期
 - `ENABLE_LEGACY_CAMPAIGN_ROUTES`：默认仅测试环境开启；开发/生产需要迁移旧 Campaign 或 AI Draft 路由时才显式开启
 - `ENABLE_LEGACY_OPERATION_TASK_ROUTES`：默认仅测试环境开启；开发/生产需要迁移旧 OperationTask 路由时才显式开启

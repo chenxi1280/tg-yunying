@@ -94,6 +94,10 @@ class MessageTask(Base):
     idempotency_key: Mapped[str] = mapped_column(String(80))
     failure_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
     failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_sent: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    media_failure_reason: Mapped[str] = mapped_column(String(80), default="")
+    material_asset_fingerprint: Mapped[str] = mapped_column(String(128), default="")
+    material_cache_ready_status: Mapped[str] = mapped_column(String(40), default="")
     scheduled_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
@@ -142,8 +146,76 @@ class Material(Base):
     content: Mapped[str] = mapped_column(Text)
     tags: Mapped[str] = mapped_column(String(240), default="")
     review_status: Mapped[str] = mapped_column(String(40), default="已审核")
+    source_kind: Mapped[str] = mapped_column(String(40), default="url")
+    asset_fingerprint: Mapped[str] = mapped_column(String(128), default="")
+    asset_version_id: Mapped[int] = mapped_column(Integer, default=1)
+    delivery_mode: Mapped[str] = mapped_column(String(40), default="download_reupload")
+    emoji_asset_kind: Mapped[str] = mapped_column(String(40), default="")
+    gateway_type: Mapped[str] = mapped_column(String(40), default="telethon")
+    cache_ready_status: Mapped[str] = mapped_column(String(40), default="not_cached")
+    last_cache_flood_wait_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tg_cache_account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
+    tg_cache_peer_id: Mapped[str] = mapped_column(String(160), default="")
+    tg_cache_message_id: Mapped[str] = mapped_column(String(160), default="")
+    tg_ref_version_id: Mapped[int] = mapped_column(Integer, default=1)
+    file_name: Mapped[str] = mapped_column(String(255), default="")
+    mime_type: Mapped[str] = mapped_column(String(120), default="")
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    caption: Mapped[str] = mapped_column(Text, default="")
+    last_cache_error: Mapped[str] = mapped_column(Text, default="")
     usage_count: Mapped[int] = mapped_column(Integer, default=0)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-__all__ = ["Campaign", "AiDraft", "MessageTask", "MessageTaskAttempt", "CampaignProcessedMessage", "Material"]
+class MaterialAssetVersion(Base):
+    __tablename__ = "material_asset_versions"
+    __table_args__ = (UniqueConstraint("material_id", "asset_version_id", name="uq_material_asset_versions_version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id"))
+    asset_version_id: Mapped[int] = mapped_column(Integer)
+    source_kind: Mapped[str] = mapped_column(String(40), default="")
+    content: Mapped[str] = mapped_column(Text, default="")
+    asset_fingerprint: Mapped[str] = mapped_column(String(128), default="")
+    file_name: Mapped[str] = mapped_column(String(255), default="")
+    mime_type: Mapped[str] = mapped_column(String(120), default="")
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    caption: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class MaterialTgRefVersion(Base):
+    __tablename__ = "material_tg_ref_versions"
+    __table_args__ = (UniqueConstraint("material_id", "tg_ref_version_id", name="uq_material_tg_ref_versions_version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id"))
+    asset_version_id: Mapped[int] = mapped_column(Integer)
+    tg_ref_version_id: Mapped[int] = mapped_column(Integer)
+    cache_status: Mapped[str] = mapped_column(String(40), default="")
+    tg_cache_account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
+    tg_cache_peer_id: Mapped[str] = mapped_column(String(160), default="")
+    tg_cache_message_id: Mapped[str] = mapped_column(String(160), default="")
+    gateway_type: Mapped[str] = mapped_column(String(40), default="")
+    failure_reason: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+__all__ = [
+    "Campaign",
+    "AiDraft",
+    "MessageTask",
+    "MessageTaskAttempt",
+    "CampaignProcessedMessage",
+    "Material",
+    "MaterialAssetVersion",
+    "MaterialTgRefVersion",
+]

@@ -14,6 +14,7 @@ interface Props {
   onToggle: (app: DeveloperApp) => void;
   onEditTenant: (tenant: Tenant) => void;
   showTenants?: boolean;
+  canManageDeveloperApps?: boolean;
   isActionPending: (key: string) => boolean;
   onOpenConfirm: (payload: {
     title: string;
@@ -24,7 +25,7 @@ interface Props {
   }) => void;
 }
 
-export default function DeveloperAppsView({ developerApps, tenants, onCreateClick, onEdit, onCheck, onToggle, onEditTenant, showTenants = true, isActionPending, onOpenConfirm }: Props) {
+export default function DeveloperAppsView({ developerApps, tenants, onCreateClick, onEdit, onCheck, onToggle, onEditTenant, showTenants = true, canManageDeveloperApps = false, isActionPending, onOpenConfirm }: Props) {
   const [detailApp, setDetailApp] = React.useState<DeveloperApp | null>(null);
   const [detailTenant, setDetailTenant] = React.useState<Tenant | null>(null);
 
@@ -33,14 +34,14 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
       <Card
         className="panel"
         title="开发者应用池"
-        extra={<Button type="primary" onClick={onCreateClick}>新增应用</Button>}
+        extra={canManageDeveloperApps ? <Button type="primary" onClick={onCreateClick}>新增应用</Button> : null}
       >
         <Typography.Text type="secondary">平台级 api_id/api_hash 凭证池，按纯轮询绑定 TG 账号</Typography.Text>
         <div className="cards-grid developer-grid">
           {!developerApps.length && (
             <Empty description="还没有开发者应用">
               <Typography.Paragraph type="secondary">请新增真实 Telegram api_id/api_hash。配置完成前，账号新增和登录入口会保持禁用。</Typography.Paragraph>
-              <Button type="primary" onClick={onCreateClick}>新增应用</Button>
+              {canManageDeveloperApps && <Button type="primary" onClick={onCreateClick}>新增应用</Button>}
             </Empty>
           )}
           {developerApps.map((app) => (
@@ -52,15 +53,15 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
               <Typography.Paragraph type="secondary">绑定 {app.assigned_accounts} / 上限 {app.max_accounts || '不限'}</Typography.Paragraph>
               <Space wrap>
                 <Button size="small" onClick={() => setDetailApp(app)}>详情</Button>
-                <Button size="small" onClick={() => onEdit(app)}>编辑</Button>
-                <Button size="small" loading={isActionPending(`developer-app:${app.id}:check`)} onClick={() => onCheck(app)}>检查</Button>
-                <Button size="small" danger={app.is_active} loading={isActionPending(`developer-app:${app.id}:toggle`)} onClick={() => onOpenConfirm({
+                {canManageDeveloperApps && <Button size="small" onClick={() => onEdit(app)}>编辑</Button>}
+                {canManageDeveloperApps && <Button size="small" loading={isActionPending(`developer-app:${app.id}:check`)} onClick={() => onCheck(app)}>检查</Button>}
+                {canManageDeveloperApps && <Button size="small" danger={app.is_active} loading={isActionPending(`developer-app:${app.id}:toggle`)} onClick={() => onOpenConfirm({
                   title: app.is_active ? '禁用开发者应用' : '启用开发者应用',
                   message: `确认${app.is_active ? '禁用' : '启用'}「${app.app_name}」？已绑定账号会继续保留绑定关系。`,
                   confirmLabel: app.is_active ? '确认禁用' : '确认启用',
                   tone: app.is_active ? 'danger' : 'normal',
                   onConfirm: () => onToggle(app),
-                })}>{app.is_active ? '禁用' : '启用'}</Button>
+                })}>{app.is_active ? '禁用' : '启用'}</Button>}
               </Space>
             </Card>
           ))}

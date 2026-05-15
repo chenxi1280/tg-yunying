@@ -16,13 +16,20 @@ from ..listener_runtime import should_collect_listener
 
 
 def quantity_with_jitter(quantity: int, jitter_ratio: float | int = 0.15) -> int:
+    lower, upper = quantity_jitter_bounds(quantity, jitter_ratio)
+    if lower == upper:
+        return lower
+    return random.randint(lower, upper)
+
+
+def quantity_jitter_bounds(quantity: int, jitter_ratio: float | int = 0.15) -> tuple[int, int]:
     base = max(0, int(quantity or 0))
     jitter = max(0.0, float(jitter_ratio or 0))
     if base <= 0 or jitter <= 0:
-        return base
+        return base, base
     lower = max(1, round(base * (1 - jitter)))
     upper = max(lower, round(base * (1 + jitter)))
-    return random.randint(lower, upper)
+    return lower, upper
 
 
 def stats_inc(task: Task, key: str, amount: int = 1) -> None:
@@ -296,6 +303,7 @@ __all__ = [
     "available_channel_accounts_for_message",
     "pick_channel_account",
     "planned_channel_message_ids",
+    "quantity_jitter_bounds",
     "quantity_with_jitter",
     "reached_daily_action_limit",
     "record_channel_capacity_warning",

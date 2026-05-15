@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -44,6 +44,19 @@ class Task(Base):
 
 class Action(Base):
     __tablename__ = "actions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "action_dedupe_key", name="uq_actions_action_dedupe_key"),
+        Index("ix_actions_due_claim", "status", "scheduled_at", "created_at"),
+        Index("ix_actions_claim_expiry", "status", "claim_expires_at"),
+        Index("ix_actions_lease_recovery", "lease_owner", "lease_expires_at"),
+        Index(
+            "uq_actions_executing_account",
+            "account_id",
+            unique=True,
+            sqlite_where=text("status = 'executing' AND account_id IS NOT NULL"),
+            postgresql_where=text("status = 'executing' AND account_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
@@ -56,10 +69,89 @@ class Action(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending")
     lease_owner: Mapped[str] = mapped_column(String(120), default="")
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_owner: Mapped[str] = mapped_column(String(120), default="")
+    claim_token: Mapped[str] = mapped_column(String(80), default="")
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    plan_batch_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    action_dedupe_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     result: Mapped[dict] = mapped_column(JSON, default=dict)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ExecutionAttempt(Base):
+    __tablename__ = "execution_attempts"
+    __table_args__ = (
+        UniqueConstraint("action_id", "attempt_no", name="uq_execution_attempts_action_attempt"),
+        Index("ix_execution_attempts_unfinished", "status", "gateway_call_started_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    action_id: Mapped[str] = mapped_column(ForeignKey("actions.id"))
+    worker_id: Mapped[str] = mapped_column(String(160), default="")
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
+    attempt_no: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(40), default="before_call")
+    before_call_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    gateway_call_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    after_call_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remote_message_id: Mapped[str] = mapped_column(String(160), default="")
+    failure_type: Mapped[str] = mapped_column(String(80), default="")
+    failure_detail: Mapped[str] = mapped_column(Text, default="")
+    result_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class DailyRuntimeStat(Base):
+    __tablename__ = "daily_runtime_stats"
+    __table_args__ = (
+        UniqueConstraint("stat_date", "dimension_type", "dimension_id", "metric_name", name="uq_daily_runtime_stats_metric"),
+        Index("ix_daily_runtime_stats_dimension", "dimension_type", "dimension_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    stat_date: Mapped[date] = mapped_column(Date)
+    dimension_type: Mapped[str] = mapped_column(String(40))
+    dimension_id: Mapped[str] = mapped_column(String(120), default="")
+    metric_name: Mapped[str] = mapped_column(String(80))
+    metric_value: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class RuntimeCleanupAudit(Base):
+    __tablename__ = "runtime_cleanup_audits"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    cleanup_date: Mapped[date] = mapped_column(Date)
+    status_counts: Mapped[dict] = mapped_column(JSON, default=dict)
+    deleted_counts: Mapped[dict] = mapped_column(JSON, default=dict)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ListenerSourceState(Base):
+    __tablename__ = "listener_source_state"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source_type", "source_peer_id", "account_id", name="uq_listener_source_state_source"),
+        Index("ix_listener_source_state_claim", "shard_key", "lease_expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    source_type: Mapped[str] = mapped_column(String(40), default="group")
+    source_peer_id: Mapped[str] = mapped_column(String(160), default="")
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
+    shard_key: Mapped[str] = mapped_column(String(80), default="")
+    lease_owner: Mapped[str] = mapped_column(String(160), default="")
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_remote_message_id: Mapped[str] = mapped_column(String(160), default="")
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    backfill_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    collect_window_seconds: Mapped[int] = mapped_column(Integer, default=30)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 class ReviewQueue(Base):
@@ -91,6 +183,45 @@ class MessageFingerprint(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class SourceMediaAsset(Base):
+    __tablename__ = "source_media_assets"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "source_group_id",
+            "source_message_id",
+            "source_media_group_id",
+            "media_group_index",
+            name="uq_source_media_assets_dedupe",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    source_group_id: Mapped[int | None] = mapped_column(ForeignKey("tg_groups.id"), nullable=True)
+    listener_account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
+    source_peer_id: Mapped[str] = mapped_column(String(160), default="")
+    source_message_id: Mapped[str] = mapped_column(String(160), default="")
+    source_media_group_id: Mapped[str] = mapped_column(String(160), default="")
+    media_group_index: Mapped[int] = mapped_column(Integer, default=0)
+    media_group_total: Mapped[int] = mapped_column(Integer, default=1)
+    album_caption_policy: Mapped[str] = mapped_column(String(40), default="per_item")
+    media_type: Mapped[str] = mapped_column(String(40), default="photo")
+    caption: Mapped[str] = mapped_column(Text, default="")
+    media_fingerprint: Mapped[str] = mapped_column(String(128), default="")
+    cache_status: Mapped[str] = mapped_column(String(40), default="pending_cache")
+    cache_version: Mapped[int] = mapped_column(Integer, default=1)
+    cache_peer_id: Mapped[str] = mapped_column(String(160), default="")
+    cache_message_id: Mapped[str] = mapped_column(String(160), default="")
+    failure_reason: Mapped[str] = mapped_column(Text, default="")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_cached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class WorkerHeartbeat(Base):
     __tablename__ = "worker_heartbeats"
 
@@ -105,4 +236,16 @@ class WorkerHeartbeat(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
-__all__ = ["Action", "MessageFingerprint", "ReviewQueue", "Task", "WorkerHeartbeat", "new_uuid"]
+__all__ = [
+    "Action",
+    "DailyRuntimeStat",
+    "ExecutionAttempt",
+    "ListenerSourceState",
+    "MessageFingerprint",
+    "ReviewQueue",
+    "RuntimeCleanupAudit",
+    "SourceMediaAsset",
+    "Task",
+    "WorkerHeartbeat",
+    "new_uuid",
+]

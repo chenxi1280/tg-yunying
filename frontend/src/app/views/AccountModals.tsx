@@ -42,6 +42,8 @@ interface AccountPoolDetailModalProps {
   onSetModal: (modal: any) => void;
   accountName: (accountId: number | null | undefined) => string;
   isActionPending: (key: string) => boolean;
+  canCreateAccount?: boolean;
+  canManualSend?: boolean;
 }
 
 export function AccountPoolDetailModal({
@@ -51,6 +53,7 @@ export function AccountPoolDetailModal({
   onRefreshAccountPoolDetail, onStartDirectMessageToContact,
   onCreateDirectMessageTask, onOpenConfirm, onSetReturnAfterVerification,
   onSetModal, accountName, isActionPending,
+  canCreateAccount = true, canManualSend = true,
 }: AccountPoolDetailModalProps) {
   return (
     <Modal className="tg-modal large" title={`${accountPoolDetail.pool.name} 账号分组`} open width={920} onCancel={onClose} footer={null} destroyOnHidden centered>
@@ -67,7 +70,7 @@ export function AccountPoolDetailModal({
         ]}
       />
       <div className="flow-sections">
-        <Card className="sub-panel compact-panel" title="账号" extra={<Button size="small" onClick={() => onOpenAccountCreate(true)}>新增账号</Button>}>
+        <Card className="sub-panel compact-panel" title="账号" extra={canCreateAccount ? <Button size="small" onClick={() => onOpenAccountCreate(true)}>新增账号</Button> : undefined}>
           <Typography.Text type="secondary">从池内账号进入详情、登录、同步和资料管理。</Typography.Text>
           <List
             className="mini-list"
@@ -108,13 +111,13 @@ export function AccountPoolDetailModal({
             </div>
             <label className="wide-field">消息内容<Input.TextArea value={directMessageForm.content} onChange={(event) => setDirectMessageForm({ ...directMessageForm, content: event.target.value })} /></label>
             <div className="wide-field detail-actions">
-              <Button type="primary" disabled={!poolDirectAccountId || !selectedDirectContact || !directMessageForm.content} onClick={() => onOpenConfirm({
+              {canManualSend && <Button type="primary" disabled={!poolDirectAccountId || !selectedDirectContact || !directMessageForm.content} onClick={() => onOpenConfirm({
                 title: '创建池内私发任务',
                 message: `确认用「${accountName(poolDirectAccountId || null)}」向「${selectedDirectContact?.display_name ?? ''}」发送这条消息？`,
                 confirmLabel: '创建并发送',
                 restoreModalType: 'accountPoolDetail',
                 onConfirm: onCreateDirectMessageTask,
-              })}>创建并发送</Button>
+              })}>创建并发送</Button>}
             </div>
           </div>
         </Card>
@@ -191,6 +194,11 @@ interface AccountDetailModalProps {
   onSetCloneForm: (form: { target_account_ids: number[]; clone_contacts: boolean; clone_groups: boolean }) => void;
   accountName: (accountId: number | null | undefined) => string;
   isActionPending: (key: string) => boolean;
+  canUpdateProfile?: boolean;
+  canSyncAccount?: boolean;
+  canViewCodes?: boolean;
+  canMovePool?: boolean;
+  canClone?: boolean;
 }
 
 export function AccountDetailModal({
@@ -205,6 +213,7 @@ export function AccountDetailModal({
   onDismissVerificationTask, onConfirmVerificationTask, onResolveGroupRestrictionTask,
   onOpenConfirm, onSetReturnAfterVerification, onSetModal,
   onSetCloneForm, accountName, isActionPending,
+  canUpdateProfile = true, canSyncAccount = true, canViewCodes = true, canMovePool = true, canClone = true,
 }: AccountDetailModalProps) {
   const [manualTargetId, setManualTargetId] = React.useState<number | null>(null);
   const [manualContent, setManualContent] = React.useState('');
@@ -215,13 +224,14 @@ export function AccountDetailModal({
   }, [accountDetail.operation_targets]);
 
   React.useEffect(() => {
+    if (!canViewCodes) return undefined;
     if (accountDetailTab !== 'TG 官方验证码') return undefined;
     void onPollVerificationCodes(true);
     const timer = window.setInterval(() => {
       void onPollVerificationCodes(true);
     }, 10000);
     return () => window.clearInterval(timer);
-  }, [accountDetail.account.id, accountDetailTab]);
+  }, [accountDetail.account.id, accountDetailTab, canViewCodes]);
 
   async function syncTargets() {
     await api(`/tg-accounts/${accountDetail.account.id}/sync-targets`, { method: 'POST' });
@@ -333,6 +343,15 @@ export function AccountDetailModal({
       return cooldownUntil.getTime() > Date.now() ? { group, cooldownUntil } : null;
     })
     .filter((item): item is { group: AccountGroup; cooldownUntil: Date } => Boolean(item));
+  const accountRestrictedRisks = accountDetail.risk_diagnostics.filter((risk) => (
+    risk.code === 'ACCOUNT_STATUS'
+    || risk.code === 'SESSION_MISSING'
+    || risk.title.includes('账号')
+    || risk.title.includes('Session')
+  ));
+  const groupRestrictionTasks = accountDetail.verification_tasks.filter((task) => task.issue_category === 'group_restriction');
+  const autoVerificationTasks = accountDetail.verification_tasks.filter((task) => task.issue_category !== 'group_restriction' && task.can_auto_resolve);
+  const manualVerificationTasks = accountDetail.verification_tasks.filter((task) => task.issue_category !== 'group_restriction' && !task.can_auto_resolve && verificationActionable(task));
 
   return (
     <Modal className="tg-modal large" title={`${accountDetail.account.display_name} 账号详情`} open width={920} onCancel={onClose} footer={null} destroyOnHidden centered>
@@ -359,18 +378,61 @@ export function AccountDetailModal({
             description={accountDetail.risk_diagnostics[0]?.detail || '当前没有受限、封禁、FloodWait、目标不可访问或待处理验证信号。'}
           />
           <Space wrap>
-            <Button type="primary" size="small" onClick={onOpenAccountProfileEdit}>编辑资料</Button>
-            <Button size="small" onClick={() => onSetModal({ type: 'accountMovePool' })}>移动分组</Button>
-            <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:sync`)} onClick={onQueueAccountSyncNow}>同步</Button>
-            <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={() => { setAccountDetailTab('TG 官方验证码'); void onPollVerificationCodes(); }}>提取验证码</Button>
+            {canUpdateProfile && <Button type="primary" size="small" onClick={onOpenAccountProfileEdit}>编辑资料</Button>}
+            {canMovePool && <Button size="small" onClick={() => onSetModal({ type: 'accountMovePool' })}>移动分组</Button>}
+            {canSyncAccount && <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:sync`)} onClick={onQueueAccountSyncNow}>同步</Button>}
+            {canViewCodes && <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={() => { setAccountDetailTab('TG 官方验证码'); void onPollVerificationCodes(); }}>提取验证码</Button>}
           </Space>
         </Space>
+      </Card>
+      <Card className="sub-panel compact-panel" size="small">
+        <div className="section-title">
+          <div>
+            <h2>处理分流</h2>
+            <span>账号级问题、群内拦截和可自动处理验证分开处理，避免把群限制误当成账号重新登录。</span>
+          </div>
+          <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:detail-refresh`)} onClick={onRefreshAccountDetail}>刷新状态</Button>
+        </div>
+        <div className="summary-grid">
+          <div className="summary-card">
+            <span>账号级受限</span>
+            <strong>{accountRestrictedRisks.length ? accountRestrictedRisks[0].title : '正常'}</strong>
+            <p>{accountRestrictedRisks[0]?.action || '系统会每小时按健康检查和同步结果判断是否恢复。'}</p>
+            <Space wrap size={6}>
+              <Button size="small" onClick={() => setAccountDetailTab('账号状态记录')}>查看状态记录</Button>
+              {canSyncAccount && <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:sync`)} onClick={onQueueAccountSyncNow}>同步探测</Button>}
+            </Space>
+          </div>
+          <div className="summary-card">
+            <span>群管理机器拦截</span>
+            <strong>{groupRestrictionTasks.length} 个目标</strong>
+            <p>{groupRestrictionTasks.length ? '管理员在群内解除后，回到这里重查目标能力。' : '暂无需要群管理员解除的目标限制。'}</p>
+            <Space wrap size={6}>
+              <Button size="small" disabled={!groupRestrictionTasks.length} onClick={() => setAccountDetailTab('验证待处理')}>查看群限制</Button>
+              {groupRestrictionTasks.slice(0, 1).map((task) => (
+                <Button key={task.id} size="small" type="primary" loading={isActionPending(`verification:${task.id}:resolve-group`)} disabled={!verificationActionable(task)} onClick={() => onResolveGroupRestrictionTask(task)}>重查最近目标</Button>
+              ))}
+            </Space>
+          </div>
+          <div className="summary-card">
+            <span>可自动验证</span>
+            <strong>{autoVerificationTasks.length} 项</strong>
+            <p>{autoVerificationTasks.length ? '关注频道、点击按钮、发送验证回复会走验证辅助动作。' : '暂无可自动执行的验证动作。'}</p>
+            <Button size="small" disabled={!autoVerificationTasks.length} onClick={() => setAccountDetailTab('验证待处理')}>处理验证</Button>
+          </div>
+          <div className="summary-card">
+            <span>其他人工事项</span>
+            <strong>{manualVerificationTasks.length} 项</strong>
+            <p>{manualVerificationTasks.length ? '需要操作员确认完成，但不会直接放行群权限。' : '暂无其他人工验证事项。'}</p>
+            <Button size="small" disabled={!manualVerificationTasks.length} onClick={() => setAccountDetailTab('验证待处理')}>查看事项</Button>
+          </div>
+        </div>
       </Card>
       <Tabs
         className="tabs-row"
         activeKey={accountDetailTab}
         onChange={setAccountDetailTab}
-        items={['资料', '账号状态记录', 'TG 官方验证码', '验证待处理', '执行记录', '克隆'].map((tabName) => ({ key: tabName, label: tabName }))}
+        items={['资料', '账号状态记录', ...(canViewCodes ? ['TG 官方验证码'] : []), '验证待处理', '执行记录', ...(canClone ? ['克隆'] : [])].map((tabName) => ({ key: tabName, label: tabName }))}
       />
 
       {accountDetailTab === '资料' && (
@@ -381,7 +443,7 @@ export function AccountDetailModal({
               <span>平台备注名用于后台识别，TG 昵称、简介和头像会通过同步任务更新到真实账号。</span>
             </div>
             <div className="row-actions">
-              <Button type="primary" size="small" onClick={onOpenAccountProfileEdit}>编辑资料</Button>
+              {canUpdateProfile && <Button type="primary" size="small" onClick={onOpenAccountProfileEdit}>编辑资料</Button>}
               <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:profile-sync`)} disabled={accountDetail.account.profile_sync_status !== '失败'} onClick={() => onOpenConfirm({
                 title: '重试资料同步',
                 message: `确认重新同步「${accountDetail.account.display_name}」的 TG 资料？`,
@@ -469,9 +531,9 @@ export function AccountDetailModal({
         </div>
       )}
 
-      {accountDetailTab === 'TG 官方验证码' && (
+      {canViewCodes && accountDetailTab === 'TG 官方验证码' && (
         <div className="flow-sections">
-          <Card className="sub-panel compact-panel" title="TG 官方验证码" extra={<Button size="small" type="primary" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={() => onPollVerificationCodes()}>同步提取官方验证码</Button>}>
+          <Card className="sub-panel compact-panel" title="TG 官方验证码" extra={canViewCodes ? <Button size="small" type="primary" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={() => onPollVerificationCodes()}>同步提取官方验证码</Button> : undefined}>
             {latestVisibleCode ? (
               <div className="verification-code-card">
                 <StatusBadge status={latestVisibleCode.code_preview ? '可查看' : latestVisibleCode.status} label={latestVisibleCode.source === 'login_flow' ? '登录验证码' : 'TG 官方验证码'} />
@@ -496,17 +558,17 @@ export function AccountDetailModal({
         </div>
       )}
 
-      {accountDetailTab === '克隆' && (
+      {canClone && accountDetailTab === '克隆' && (
         <Card className="sub-panel compact-panel">
           <div className="section-title">
             <div>
               <h2>账号克隆计划</h2>
               <span>先生成计划，再由操作员确认逐项执行；无法自动完成的项目会标记为需人工处理。</span>
             </div>
-            <Button type="primary" size="small" onClick={() => {
+            {canClone && <Button type="primary" size="small" onClick={() => {
               onSetCloneForm({ target_account_ids: accounts.filter((item) => item.id !== accountDetail.account.id).slice(0, 2).map((item) => item.id), clone_contacts: true, clone_groups: true });
               onSetModal({ type: 'accountCloneCreate' });
-            }}>新建克隆计划</Button>
+            }}>新建克隆计划</Button>}
           </div>
           <div className="mini-list">
             {accountDetail.clone_plans.map((plan) => (

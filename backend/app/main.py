@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from .api.routers import router as api_router
 from .config import get_settings
 from .database import SessionLocal, prepare_database
+from .permission_middleware import permission_middleware
 from .services import ensure_seed_data
 from .worker import run_worker
 
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
+    app.middleware("http")(permission_middleware)
     media_root = Path(settings.media_root)
     media_root.mkdir(parents=True, exist_ok=True)
     app.mount("/media", StaticFiles(directory=str(media_root)), name="media")

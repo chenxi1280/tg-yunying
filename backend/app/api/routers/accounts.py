@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 
-from collections.abc import Sequence
-
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user, require_core_feature_access, resolve_tenant_id
 from app.database import get_session
 from app.common.http import not_found
+from app.api.response_permissions import account_detail_out_for_user, account_out_for_user
 from app.models import (
     AccountCloneItem, AccountClonePlan, AccountPool, TgAccount, VerificationTask,
 )
@@ -54,9 +53,10 @@ def list_accounts(
     include_deleted: bool = False,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
-) -> Sequence[TgAccount]:
+) -> list[dict]:
     try:
-        return filter_accounts(session, resolve_tenant_id(current_user, tenant_id), page, page_size, search, status, pool_id, include_deleted)
+        accounts = filter_accounts(session, resolve_tenant_id(current_user, tenant_id), page, page_size, search, status, pool_id, include_deleted)
+        return [account_out_for_user(account, current_user) for account in accounts]
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -66,11 +66,11 @@ def post_account(
     payload: TgAccountCreate,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
-) -> TgAccount:
+) -> dict:
     require_core_feature_access(current_user)
     tenant_id = resolve_tenant_id(current_user, payload.tenant_id)
     try:
-        return create_account(session, payload.model_copy(update={"tenant_id": tenant_id}))
+        return account_out_for_user(create_account(session, payload.model_copy(update={"tenant_id": tenant_id})), current_user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -80,11 +80,11 @@ def delete_account(
     account_id: int,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
-) -> TgAccount:
+) -> dict:
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return soft_delete_account(session, account_id, current_user.name)
+        return account_out_for_user(soft_delete_account(session, account_id, current_user.name), current_user)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -95,12 +95,12 @@ def post_account_move_pool(
     payload: MoveAccountPoolRequest,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
-) -> TgAccount:
+) -> dict:
     require_core_feature_access(current_user)
     require_resource_tenant(session, current_user, TgAccount, account_id)
     require_resource_tenant(session, current_user, AccountPool, payload.pool_id)
     try:
-        return move_account_pool(session, account_id, payload.pool_id, current_user.name)
+        return account_out_for_user(move_account_pool(session, account_id, payload.pool_id, current_user.name), current_user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -134,7 +134,7 @@ def post_login_verify(
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return verify_login(session, account_id, payload.code, payload.password_2fa)
+        return account_out_for_user(verify_login(session, account_id, payload.code, payload.password_2fa), current_user)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -148,7 +148,7 @@ def post_qr_check(
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return check_qr_login(session, account_id)
+        return account_out_for_user(check_qr_login(session, account_id), current_user)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -177,7 +177,7 @@ def post_account_health_check(
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return health_check_account(session, account_id)
+        return account_out_for_user(health_check_account(session, account_id), current_user)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -247,7 +247,13 @@ def get_account_detail(
 ):
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return account_detail(session, account_id, current_user.name)
+        detail = account_detail(
+            session,
+            account_id,
+            current_user.name,
+            include_verification_codes=current_user.has_permission("accounts.view_codes"),
+        )
+        return account_detail_out_for_user(detail, current_user)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -278,7 +284,7 @@ def patch_account_profile(
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return update_account_profile(session, account_id, payload, current_user.name)
+        return account_out_for_user(update_account_profile(session, account_id, payload, current_user.name), current_user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

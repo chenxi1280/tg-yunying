@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 import traceback
+from sqlalchemy.exc import SQLAlchemyError
 from .config import get_settings
 from .database import SessionLocal
 from .models import MessageTask, TaskStatus
@@ -20,6 +21,9 @@ from .services import (
     drain_task_center,
     dispatch_task,
 )
+from .services.source_media import drain_source_media_cache
+from .services.material_cache import drain_material_cache
+from .services.temp_files import cleanup_temp_files
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +65,10 @@ def drain_once(limit: int = 100) -> int:
     remaining = max(0, remaining - account_count)
     listener_count = drain_group_listeners(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - listener_count)
+    source_media_count = _safe_optional_drain("source_media", drain_source_media_cache, SessionLocal, max(1, remaining))
+    remaining = max(0, remaining - source_media_count)
+    material_cache_count = _safe_optional_drain("material_cache", drain_material_cache, SessionLocal, max(1, remaining))
+    remaining = max(0, remaining - material_cache_count)
     continuous_count = 0
     if settings.enable_legacy_campaign_worker:
         continuous_count = drain_continuous_campaigns(SessionLocal, max(1, remaining))
@@ -72,7 +80,16 @@ def drain_once(limit: int = 100) -> int:
     task_center_count = drain_task_center(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - task_center_count)
     archive_count = drain_archives(SessionLocal, max(1, remaining))
-    return count + profile_count + account_count + listener_count + continuous_count + operation_count + task_center_count + archive_count
+    temp_cleanup_count = _safe_optional_drain("temp_files", cleanup_temp_files)
+    return count + profile_count + account_count + listener_count + source_media_count + material_cache_count + continuous_count + operation_count + task_center_count + archive_count + temp_cleanup_count
+
+
+def _safe_optional_drain(name: str, func, *args, **kwargs) -> int:
+    try:
+        return int(func(*args, **kwargs) or 0)
+    except SQLAlchemyError:
+        logger.warning("optional worker drain skipped name=%s:\n%s", name, traceback.format_exc())
+        return 0
 
 
 def run_worker(

@@ -163,6 +163,21 @@ class MaterialCreate(BaseModel):
     content: str
     tags: str = ""
     review_status: str = "已审核"
+    source_kind: str = "url"
+    asset_fingerprint: str = ""
+    delivery_mode: str = "download_reupload"
+    emoji_asset_kind: str = ""
+    gateway_type: str = "telethon"
+    cache_ready_status: str = "not_cached"
+    tg_cache_account_id: int | None = None
+    tg_cache_peer_id: str = ""
+    tg_cache_message_id: str = ""
+    file_name: str = ""
+    mime_type: str = ""
+    file_size: int = 0
+    width: int = 0
+    height: int = 0
+    caption: str = ""
 
 
 class MaterialUpdate(BaseModel):
@@ -171,6 +186,21 @@ class MaterialUpdate(BaseModel):
     content: str | None = None
     tags: str | None = None
     review_status: str | None = None
+    source_kind: str | None = None
+    asset_fingerprint: str | None = None
+    delivery_mode: str | None = None
+    emoji_asset_kind: str | None = None
+    gateway_type: str | None = None
+    cache_ready_status: str | None = None
+    tg_cache_account_id: int | None = None
+    tg_cache_peer_id: str | None = None
+    tg_cache_message_id: str | None = None
+    file_name: str | None = None
+    mime_type: str | None = None
+    file_size: int | None = None
+    width: int | None = None
+    height: int | None = None
+    caption: str | None = None
 
 
 class MaterialOut(ApiModel):
@@ -181,8 +211,54 @@ class MaterialOut(ApiModel):
     content: str
     tags: str
     review_status: str
+    source_kind: str
+    asset_fingerprint: str
+    asset_version_id: int
+    delivery_mode: str
+    emoji_asset_kind: str
+    gateway_type: str
+    cache_ready_status: str
+    last_cache_flood_wait_until: datetime | None
+    tg_cache_account_id: int | None
+    tg_cache_peer_id: str
+    tg_cache_message_id: str
+    tg_ref_version_id: int
+    file_name: str
+    mime_type: str
+    file_size: int
+    width: int
+    height: int
+    caption: str
+    last_cache_error: str
     usage_count: int
     last_used_at: datetime | None
+
+
+class MaterialCacheStatusCount(ApiModel):
+    status: str
+    count: int
+
+
+class MaterialCacheErrorItem(ApiModel):
+    scope: str
+    id: str
+    title: str
+    status: str
+    reason: str
+
+
+class MaterialCacheHealthOut(ApiModel):
+    material_cache_peer_configured: bool
+    source_media_cache_peer_configured: bool
+    active_cache_account_count: int
+    material_status_counts: list[MaterialCacheStatusCount]
+    source_media_status_counts: list[MaterialCacheStatusCount]
+    material_oldest_pending_at: datetime | None
+    source_media_oldest_pending_at: datetime | None
+    flood_wait_count: int
+    cache_failed_count: int
+    waiting_action_count: int
+    recent_errors: list[MaterialCacheErrorItem]
 
 
 # ── Content keyword rules ──

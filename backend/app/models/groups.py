@@ -109,6 +109,8 @@ class VerificationTask(Base):
     @property
     def issue_category(self) -> str:
         text = f"{self.verification_type} {self.detected_reason} {self.suggested_action}"
+        if self.can_auto_resolve:
+            return "verification"
         if self.group_id and any(keyword in text for keyword in ("群", "发言", "验证", "按钮", "关注", "慢速", "权限")):
             return "group_restriction"
         if any(keyword in text for keyword in ("账号受限", "Session", "重新登录", "不可用")):

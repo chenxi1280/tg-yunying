@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import re
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.ai_gateway import AiProviderCredentials, AiUsage, normalize_ai_model_name
 from app.auth import CurrentUser
 from app.models import (
+    AccountStatus,
+    Action,
     AiProvider,
     AiProviderHealthStatus,
     AiUsageLedger,
@@ -14,8 +19,10 @@ from app.models import (
     Material,
     PromptTemplate,
     SchedulingSetting,
+    SourceMediaAsset,
     Tenant,
     TenantAiSetting,
+    TgAccount,
     TgGroup,
 )
 from app.schemas import (
@@ -30,9 +37,143 @@ from app.schemas import (
     SchedulingSettingUpdate,
     TenantAiSettingUpdate,
 )
+from app.schemas.ai_config import MaterialCacheErrorItem, MaterialCacheHealthOut, MaterialCacheStatusCount
 from app.security import decrypt_secret, encrypt_secret
 
 from ._common import _now, ai_gateway, audit, require_tenant
+from .material_ingestion import URL_MATERIAL_TYPES, save_material_upload_temp, validate_material_url
+from .material_versions import record_material_asset_version, record_material_tg_ref_version, record_material_versions
+
+MEDIA_MATERIAL_TYPES = {"图片", "表情包", "文件", "组合消息"}
+PUBLIC_MATERIAL_SYSTEM_FIELDS = {
+    "asset_fingerprint",
+    "cache_ready_status",
+    "tg_cache_account_id",
+    "tg_cache_peer_id",
+    "tg_cache_message_id",
+}
+EMOJI_ASSET_KINDS = {"", "image_meme", "static_sticker", "animated_sticker", "video_sticker", "custom_emoji"}
+MATERIAL_CACHE_STATUSES = {"not_cached", "ready", "refreshing", "flood_wait", "unrecoverable", "cache_failed"}
+MATERIAL_DELIVERY_MODES = {"download_reupload"}
+CUSTOM_EMOJI_PATTERN = re.compile(r"^custom_emoji:(?P<document_id>\d+):(?P<alt>.+)$")
+
+
+def _material_fingerprint(payload: MaterialCreate | MaterialUpdate, existing: Material | None = None) -> str:
+    explicit = (getattr(payload, "asset_fingerprint", None) or "").strip()
+    if explicit:
+        return explicit
+    content = (getattr(payload, "content", None) or (existing.content if existing else "") or "").strip()
+    material_type = (getattr(payload, "material_type", None) or (existing.material_type if existing else "") or "").strip()
+    if not content and not material_type:
+        return ""
+    return hashlib.sha256(f"{material_type}\n{content}".encode("utf-8")).hexdigest()
+
+
+def _normalize_material_data(data: dict, existing: Material | None = None) -> dict:
+    material_type = str(data.get("material_type") if data.get("material_type") is not None else (existing.material_type if existing else "文本"))
+    if data.get("delivery_mode") in {None, ""}:
+        data["delivery_mode"] = existing.delivery_mode if existing else "download_reupload"
+    if data["delivery_mode"] not in MATERIAL_DELIVERY_MODES:
+        raise ValueError("素材发送方式仅支持 download_reupload")
+    if data.get("cache_ready_status") in {None, ""}:
+        data["cache_ready_status"] = existing.cache_ready_status if existing else "not_cached"
+    if data["cache_ready_status"] not in MATERIAL_CACHE_STATUSES:
+        raise ValueError("素材缓存状态无效")
+    emoji_kind = str(data.get("emoji_asset_kind") if data.get("emoji_asset_kind") is not None else (existing.emoji_asset_kind if existing else "") or "")
+    if emoji_kind not in EMOJI_ASSET_KINDS:
+        raise ValueError("表情包子类型无效")
+    if material_type == "表情包" and not emoji_kind:
+        data["emoji_asset_kind"] = "image_meme"
+    elif "emoji_asset_kind" not in data:
+        data["emoji_asset_kind"] = emoji_kind
+    if material_type == "表情包" and data.get("emoji_asset_kind") == "custom_emoji":
+        content = str(data.get("content") if data.get("content") is not None else (existing.content if existing else "") or "").strip()
+        if not CUSTOM_EMOJI_PATTERN.match(content):
+            raise ValueError("custom emoji 素材格式应为 custom_emoji:<document_id>:<alt>")
+    if data.get("source_kind") in {None, ""}:
+        data["source_kind"] = existing.source_kind if existing else "url"
+    if data.get("gateway_type") in {None, ""}:
+        data["gateway_type"] = existing.gateway_type if existing else "telethon"
+    should_refresh_fingerprint = existing is None or any(field in data for field in {"material_type", "content", "asset_fingerprint"})
+    if should_refresh_fingerprint and not data.get("asset_fingerprint"):
+        material_payload = MaterialCreate(**{**_material_defaults(existing), **data}) if existing is None else MaterialUpdate(**data)
+        data["asset_fingerprint"] = _material_fingerprint(material_payload, existing)
+    cache_peer = str(data.get("tg_cache_peer_id") if data.get("tg_cache_peer_id") is not None else (existing.tg_cache_peer_id if existing else "") or "")
+    cache_message_id = str(data.get("tg_cache_message_id") if data.get("tg_cache_message_id") is not None else (existing.tg_cache_message_id if existing else "") or "")
+    has_tg_cache_ref = bool(cache_peer.strip() and cache_message_id.strip())
+    if material_type == "表情包" and data.get("emoji_asset_kind") == "custom_emoji":
+        data["cache_ready_status"] = "ready"
+        data["tg_cache_account_id"] = None
+        data["tg_cache_peer_id"] = ""
+        data["tg_cache_message_id"] = ""
+    elif material_type in MEDIA_MATERIAL_TYPES:
+        if has_tg_cache_ref and data["cache_ready_status"] in {"", "not_cached"}:
+            data["cache_ready_status"] = "ready"
+        elif not has_tg_cache_ref and data["cache_ready_status"] == "ready":
+            data["cache_ready_status"] = "not_cached"
+    else:
+        data["cache_ready_status"] = "ready"
+    return data
+
+
+def _material_defaults(existing: Material | None) -> dict:
+    if existing is None:
+        return {}
+    return {
+        "tenant_id": existing.tenant_id,
+        "title": existing.title,
+        "material_type": existing.material_type,
+        "content": existing.content,
+        "tags": existing.tags,
+        "review_status": existing.review_status,
+        "source_kind": existing.source_kind,
+        "asset_fingerprint": existing.asset_fingerprint,
+        "delivery_mode": existing.delivery_mode,
+        "emoji_asset_kind": existing.emoji_asset_kind,
+        "gateway_type": existing.gateway_type,
+        "cache_ready_status": existing.cache_ready_status,
+        "tg_cache_account_id": existing.tg_cache_account_id,
+        "tg_cache_peer_id": existing.tg_cache_peer_id,
+        "tg_cache_message_id": existing.tg_cache_message_id,
+        "file_name": existing.file_name,
+        "mime_type": existing.mime_type,
+        "file_size": existing.file_size,
+        "width": existing.width,
+        "height": existing.height,
+        "caption": existing.caption,
+    }
+
+
+def _sanitize_public_material_create(data: dict) -> dict:
+    for field in PUBLIC_MATERIAL_SYSTEM_FIELDS:
+        data.pop(field, None)
+    material_type = str(data.get("material_type") or "文本")
+    emoji_kind = str(data.get("emoji_asset_kind") or "")
+    if material_type in URL_MATERIAL_TYPES and not (material_type == "表情包" and emoji_kind == "custom_emoji"):
+        data["content"] = validate_material_url(str(data.get("content") or ""), material_type=material_type)
+        data["source_kind"] = "url"
+        data["cache_ready_status"] = "not_cached"
+        data["tg_cache_account_id"] = None
+        data["tg_cache_peer_id"] = ""
+        data["tg_cache_message_id"] = ""
+    return data
+
+
+def _sanitize_public_material_update(data: dict, material: Material) -> tuple[dict, bool]:
+    for field in PUBLIC_MATERIAL_SYSTEM_FIELDS:
+        data.pop(field, None)
+    content_changed = any(field in data for field in {"material_type", "content", "asset_fingerprint"})
+    material_type = str(data.get("material_type") or material.material_type)
+    content = str(data.get("content") if data.get("content") is not None else material.content)
+    emoji_kind = str(data.get("emoji_asset_kind") if data.get("emoji_asset_kind") is not None else material.emoji_asset_kind or "")
+    if material_type in URL_MATERIAL_TYPES and content_changed and not (material_type == "表情包" and emoji_kind == "custom_emoji"):
+        data["content"] = validate_material_url(content, material_type=material_type)
+        data["source_kind"] = "url"
+        data["cache_ready_status"] = "not_cached"
+        data["tg_cache_account_id"] = None
+        data["tg_cache_peer_id"] = ""
+        data["tg_cache_message_id"] = ""
+    return data, content_changed
 
 
 def seed_ai_configuration(session: Session) -> None:
@@ -335,10 +476,65 @@ def list_materials(session: Session, tenant_id: int) -> list[Material]:
 
 def create_material(session: Session, payload: MaterialCreate, actor: str = "普通用户") -> Material:
     require_tenant(session, payload.tenant_id)
-    material = Material(**payload.model_dump())
+    data = _sanitize_public_material_create(payload.model_dump())
+    material = Material(**_normalize_material_data(data))
     session.add(material)
     session.flush()
+    record_material_versions(session, material, actor=actor)
     audit(session, tenant_id=material.tenant_id, actor=actor, action="新增素材", target_type="material", target_id=str(material.id))
+    session.commit()
+    session.refresh(material)
+    return material
+
+
+def create_uploaded_material(
+    session: Session,
+    *,
+    tenant_id: int,
+    title: str,
+    material_type: str,
+    tags: str,
+    caption: str,
+    filename: str,
+    content_type: str,
+    data: bytes,
+    emoji_asset_kind: str = "",
+    actor: str = "普通用户",
+) -> Material:
+    require_tenant(session, tenant_id)
+    path, normalized_type, fingerprint = save_material_upload_temp(
+        tenant_id=tenant_id,
+        filename=filename,
+        content_type=content_type,
+        data=data,
+        material_type=material_type,
+    )
+    material = Material(
+        **_normalize_material_data(
+            {
+                "tenant_id": tenant_id,
+                "title": title.strip(),
+                "material_type": material_type,
+                "content": str(path),
+                "tags": tags.strip(),
+                "review_status": "已审核",
+                "source_kind": "upload",
+                "asset_fingerprint": fingerprint,
+                "delivery_mode": "download_reupload",
+                "emoji_asset_kind": emoji_asset_kind or ("image_meme" if material_type == "表情包" else ""),
+                "gateway_type": "telethon",
+                "cache_ready_status": "not_cached",
+                "file_name": filename or path.name,
+                "mime_type": normalized_type,
+                "file_size": len(data),
+                "caption": caption.strip(),
+            }
+        )
+    )
+    session.add(material)
+    session.flush()
+    record_material_versions(session, material, actor=actor)
+    audit(session, tenant_id=material.tenant_id, actor=actor, action="上传素材", target_type="material", target_id=str(material.id))
     session.commit()
     session.refresh(material)
     return material
@@ -455,14 +651,124 @@ def update_material(session: Session, material_id: int, payload: MaterialUpdate,
     material = session.get(Material, material_id)
     if not material:
         raise ValueError("material not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    raw_data = payload.model_dump(exclude_unset=True)
+    data, content_changed = _sanitize_public_material_update(raw_data, material)
+    media_content_changed = content_changed and str(data.get("material_type") or material.material_type) in MEDIA_MATERIAL_TYPES
+    if media_content_changed:
+        data.update(
+            {
+                "cache_ready_status": "not_cached",
+                "tg_cache_account_id": None,
+                "tg_cache_peer_id": "",
+                "tg_cache_message_id": "",
+            }
+        )
+    data = _normalize_material_data(data, material)
+    for field, value in data.items():
         if field in {"id", "tenant_id", "created_at", "updated_at"}:
             continue
         setattr(material, field, value)
+    if content_changed:
+        material.asset_version_id += 1
+    if media_content_changed:
+        material.tg_ref_version_id += 1
+        material.last_cache_error = ""
+    if content_changed:
+        record_material_asset_version(session, material, actor=actor)
+    if media_content_changed:
+        record_material_tg_ref_version(session, material, actor=actor)
     audit(session, tenant_id=material.tenant_id, actor=actor, action="更新素材", target_type="material", target_id=str(material.id))
     session.commit()
     session.refresh(material)
     return material
+
+
+def material_cache_health(session: Session, tenant_id: int) -> MaterialCacheHealthOut:
+    require_tenant(session, tenant_id)
+
+    def count_rows(model, status_field, where_tenant) -> list[MaterialCacheStatusCount]:
+        rows = session.execute(
+            select(status_field, func.count()).where(where_tenant).group_by(status_field)
+        ).all()
+        return [MaterialCacheStatusCount(status=str(status or ""), count=int(count)) for status, count in rows]
+
+    material_counts = count_rows(Material, Material.cache_ready_status, Material.tenant_id == tenant_id)
+    source_counts = count_rows(SourceMediaAsset, SourceMediaAsset.cache_status, SourceMediaAsset.tenant_id == tenant_id)
+    material_oldest = session.scalar(
+        select(func.min(Material.last_cache_flood_wait_until)).where(
+            Material.tenant_id == tenant_id,
+            Material.cache_ready_status.in_(["not_cached", "refreshing", "flood_wait", "cache_failed"]),
+        )
+    )
+    source_oldest = session.scalar(
+        select(func.min(SourceMediaAsset.created_at)).where(
+            SourceMediaAsset.tenant_id == tenant_id,
+            SourceMediaAsset.cache_status.in_(["pending_cache", "cache_flood_wait", "cache_failed"]),
+        )
+    )
+    active_accounts = session.scalar(
+        select(func.count(TgAccount.id)).where(
+            TgAccount.tenant_id == tenant_id,
+            TgAccount.deleted_at.is_(None),
+            TgAccount.status == AccountStatus.ACTIVE.value,
+        )
+    ) or 0
+    waiting_actions = session.scalar(
+        select(func.count(Action.id)).where(
+            Action.tenant_id == tenant_id,
+            Action.status == "waiting_cache",
+        )
+    ) or 0
+    material_errors = session.scalars(
+        select(Material)
+        .where(
+            Material.tenant_id == tenant_id,
+            Material.last_cache_error != "",
+        )
+        .order_by(Material.id.desc())
+        .limit(5)
+    ).all()
+    source_errors = session.scalars(
+        select(SourceMediaAsset)
+        .where(
+            SourceMediaAsset.tenant_id == tenant_id,
+            SourceMediaAsset.failure_reason != "",
+        )
+        .order_by(SourceMediaAsset.updated_at.desc())
+        .limit(5)
+    ).all()
+    recent_errors: list[MaterialCacheErrorItem] = [
+        MaterialCacheErrorItem(scope="material", id=str(item.id), title=item.title, status=item.cache_ready_status, reason=item.last_cache_error)
+        for item in material_errors
+    ]
+    recent_errors.extend(
+        MaterialCacheErrorItem(
+            scope="source_media",
+            id=item.id,
+            title=item.source_message_id or item.media_fingerprint or "source_media",
+            status=item.cache_status,
+            reason=item.failure_reason,
+        )
+        for item in source_errors
+    )
+    flood_wait_count = sum(row.count for row in material_counts if row.status == "flood_wait") + sum(row.count for row in source_counts if row.status == "cache_flood_wait")
+    cache_failed_count = sum(row.count for row in material_counts if row.status in {"cache_failed", "unrecoverable"}) + sum(row.count for row in source_counts if row.status in {"cache_failed", "unrecoverable"})
+    from app.config import get_settings
+
+    settings = get_settings()
+    return MaterialCacheHealthOut(
+        material_cache_peer_configured=bool(settings.material_cache_peer_id),
+        source_media_cache_peer_configured=bool(settings.source_media_cache_peer_id),
+        active_cache_account_count=int(active_accounts),
+        material_status_counts=material_counts,
+        source_media_status_counts=source_counts,
+        material_oldest_pending_at=material_oldest,
+        source_media_oldest_pending_at=source_oldest,
+        flood_wait_count=flood_wait_count,
+        cache_failed_count=cache_failed_count,
+        waiting_action_count=int(waiting_actions),
+        recent_errors=recent_errors[:10],
+    )
 
 
 def list_content_keyword_rules(session: Session, tenant_id: int) -> list[ContentKeywordRule]:

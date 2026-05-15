@@ -23,6 +23,7 @@ from app.schemas import CampaignCreate, GenerateDraftsRequest
 from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, gateway, require_system_user_core_features
 from .campaigns import approve_all_drafts, create_campaign, generate_drafts
 from .developer_apps import credentials_for_account
+from .source_media import ensure_source_media_asset
 
 
 def validate_listener_accounts(session: Session, group: TgGroup, account_ids: list[int]) -> list[TgGroupAccount]:
@@ -222,6 +223,21 @@ def collect_group_context(session: Session, group: TgGroup, account_ids: list[in
             )
             session.add(message)
             session.flush()
+            if snapshot.message_type != "text":
+                ensure_source_media_asset(
+                    session,
+                    tenant_id=group.tenant_id,
+                    source_group_id=group.id,
+                    listener_account_id=account.id,
+                    source_peer_id=group.tg_peer_id,
+                    source_message_id=str(snapshot.remote_message_id),
+                    source_media_group_id=str(getattr(snapshot, "media_group_id", "") or ""),
+                    media_group_index=int(getattr(snapshot, "media_group_index", 0) or 0),
+                    media_group_total=int(getattr(snapshot, "media_group_total", 1) or 1),
+                    media_type=str(getattr(snapshot, "media_type", "") or snapshot.message_type or "media"),
+                    caption=str(getattr(snapshot, "caption", "") or content),
+                    media_fingerprint=str(getattr(snapshot, "media_fingerprint", "") or ""),
+                )
             inserted += 1
     return inserted
 

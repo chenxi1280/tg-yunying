@@ -10,27 +10,29 @@ import {
   Smartphone,
   Users,
 } from 'lucide-react';
-import { Alert, App as AntdApp, Button, Card, Form, Input, Layout, Menu, Space, Typography } from 'antd';
+import { Alert, App as AntdApp, Button, Card, Form, Input, Layout, Menu, Space, Tooltip, Typography } from 'antd';
 import { AppProvider, useAppContext } from './context';
-import OverviewView from './views/OverviewView';
-import AccountsView from './views/AccountsView';
-import SystemConfigView from './views/SystemConfigView';
-import UsageReportsView from './views/UsageReportsView';
-import GroupManagementView from './views/GroupManagementView';
-import AuditsView from './views/AuditsView';
-import OperationTargetsView from './views/OperationTargetsView';
-import TaskCenterView from './views/TaskCenterView';
-import MessageSendingView from './views/MessageSendingView';
-import ListenerCenterView from './views/ListenerCenterView';
-import RulesCenterView from './views/RulesCenterView';
-import RiskControlView from './views/RiskControlView';
-import ArchivesView from './views/ArchivesView';
-import { AppModals } from './AppModals';
 import { VIEW_ROUTES } from './routes';
 import type { ChannelMessage, MessageSendingPrefill, OperationTarget, TaskCenterPrefill, TaskCenterTaskType } from './types';
 import { api } from '../shared/api/client';
+import { canView, hasPermission } from './utils';
 
 const { Header, Sider, Content } = Layout;
+
+const AppModals = React.lazy(() => import('./AppModals').then((module) => ({ default: module.AppModals })));
+const OverviewView = React.lazy(() => import('./views/OverviewView'));
+const AccountsView = React.lazy(() => import('./views/AccountsView'));
+const SystemConfigView = React.lazy(() => import('./views/SystemConfigView'));
+const UsageReportsView = React.lazy(() => import('./views/UsageReportsView'));
+const GroupManagementView = React.lazy(() => import('./views/GroupManagementView'));
+const AuditsView = React.lazy(() => import('./views/AuditsView'));
+const OperationTargetsView = React.lazy(() => import('./views/OperationTargetsView'));
+const TaskCenterView = React.lazy(() => import('./views/TaskCenterView'));
+const MessageSendingView = React.lazy(() => import('./views/MessageSendingView'));
+const ListenerCenterView = React.lazy(() => import('./views/ListenerCenterView'));
+const RulesCenterView = React.lazy(() => import('./views/RulesCenterView'));
+const RiskControlView = React.lazy(() => import('./views/RiskControlView'));
+const ArchivesView = React.lazy(() => import('./views/ArchivesView'));
 
 type ShellNavItem = [string, string, React.ReactNode];
 
@@ -70,10 +72,10 @@ function AppShell() {
     activeView, goToView, busy, notice, setNotice, isActionPending,
     runtime, overview,
     accountPools, selectedPoolId, setSelectedPoolId, accounts, selectedPool,
-    developerApps, tenants, groups, selectedGroup, selectedGroupId, setSelectedGroupId,
+    developerApps, tenants, adminUsers, groups, selectedGroup, selectedGroupId, setSelectedGroupId,
     tasks,
     archives, archiveDetail, audits, auditFilters, setAuditFilters, groupDetail,
-    aiProviders, promptTemplates, tenantAiSetting, setTenantAiSetting, materials, contentKeywordRules,
+    aiProviders, promptTemplates, tenantAiSetting, setTenantAiSetting, materials, materialCacheHealth, contentKeywordRules,
     usageLedgers, usageSummary,
     accountDetail, accountDetailTab, setAccountDetailTab,
     accountPoolDetail, poolDirectAccountId, setPoolDirectAccountId,
@@ -84,9 +86,9 @@ function AppShell() {
     tenantForm, setTenantForm,
     aiProviderForm, setAiProviderForm,
     promptTemplateForm, setPromptTemplateForm,
-    materialForm, setMaterialForm, openPromptTemplateEdit, openMaterialEdit, openContentKeywordRuleEdit,
+    materialForm, setMaterialForm, setMaterialFile, openPromptTemplateEdit, openMaterialEdit, openContentKeywordRuleEdit,
     groupPolicy, setGroupPolicy,
-    setModal,
+    modal, setModal,
     directMessageForm, setDirectMessageForm,
     selectedDirectContact, accountContacts,
     returnAfterVerification, setReturnAfterVerification,
@@ -104,7 +106,7 @@ function AppShell() {
     authorizeSelectedGroup, createArchive, saveGroupPolicy,
     openArchiveDetail, exportArchive, rerunArchive,
     createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp,
-    openTenantEdit, saveTenantQuota,
+    openTenantEdit, saveTenantQuota, openAdminUserCreate, openAdminUserEdit,
     createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider,
     saveTenantAiSetting,
     createPromptTemplate, createMaterial,
@@ -113,7 +115,7 @@ function AppShell() {
     accountName, groupName,
   } = ctx;
 
-  const nav = SHELL_NAV_ITEMS;
+  const nav = currentUser ? SHELL_NAV_ITEMS.filter(([viewId]) => canView(currentUser, viewId)) : SHELL_NAV_ITEMS;
 
   React.useEffect(() => {
     if (!notice) return;
@@ -221,6 +223,29 @@ function AppShell() {
     );
   }
 
+  const shellStatusItems = runtime ? [
+    {
+      label: '任务通道',
+      value: runtime.queue_backend,
+      tone: 'neutral',
+    },
+    {
+      label: 'TG 连接',
+      value: runtime.telethon_configured ? '已配置' : '待配置',
+      tone: runtime.telethon_configured ? 'positive' : 'warning',
+    },
+    {
+      label: '应用池',
+      value: `${runtime.developer_app_healthy_count}/${runtime.developer_app_count} 正常`,
+      tone: runtime.developer_app_healthy_count === runtime.developer_app_count ? 'positive' : 'warning',
+    },
+    {
+      label: 'AI 服务',
+      value: `${runtime.healthy_ai_provider_count}/${runtime.ai_provider_count} 正常${runtime.mock_ai_fallback_enabled ? ' / 可回退' : ''}`,
+      tone: runtime.healthy_ai_provider_count === runtime.ai_provider_count ? 'positive' : 'warning',
+    },
+  ] : [];
+
   return (
     <Layout className="app-shell">
       <Sider className="sidebar" width={260}>
@@ -257,13 +282,25 @@ function AppShell() {
           </div>
           <Space className="top-actions">
             {busy && <Typography.Text className="busy">{busy}...</Typography.Text>}
-            <Button icon={<RefreshCcw size={18} />} loading={isActionPending('app:refresh')} onClick={() => refresh()} />
-            <Button onClick={logout}>退出</Button>
+            <Tooltip title="刷新当前数据">
+              <Button aria-label="刷新当前数据" icon={<RefreshCcw size={18} />} loading={isActionPending('app:refresh')} onClick={() => refresh()} />
+            </Tooltip>
+            <Button icon={<LockKeyhole size={16} />} onClick={logout}>退出</Button>
           </Space>
         </Header>
 
         <Content className="app-content">
-        {runtime && currentUser?.role === '系统管理员' && activeView === 'systemConfig' && (
+        {shellStatusItems.length > 0 && (
+          <div className="shell-status-strip" aria-label="运行状态">
+            {shellStatusItems.map((item) => (
+              <span key={item.label} className={`shell-status-pill ${item.tone}`}>
+                <b>{item.label}</b>
+                <small>{item.value}</small>
+              </span>
+            ))}
+          </div>
+        )}
+        {runtime && hasPermission(currentUser, 'system.view') && activeView === 'systemConfig' && (
           <Alert
             className="runtime-strip"
             type="info"
@@ -273,97 +310,113 @@ function AppShell() {
           />
         )}
 
-        {/* ===== View routing ===== */}
-        {activeView === 'overview' && overview && <OverviewView overview={overview} runtime={runtime} />}
-        {activeView === 'systemConfig' && currentUser?.role === '系统管理员' && (
-          <SystemConfigView
-            developerApps={developerApps}
-            tenants={tenants}
-            aiProviders={aiProviders}
-            promptTemplates={promptTemplates}
-            tenantAiSetting={tenantAiSetting}
-            materials={materials}
-            contentKeywordRules={contentKeywordRules}
-            currentUserRole={currentUser?.role}
-            onCreateDeveloperApp={() => setModal({ type: 'developerAppCreate' })}
-            onEditDeveloperApp={openDeveloperAppEdit}
-            onCheckDeveloperApp={checkDeveloperApp}
-            onToggleDeveloperApp={toggleDeveloperApp}
-            onEditTenant={openTenantEdit}
-            onCreateAiProvider={() => setModal({ type: 'aiProviderCreate' })}
-            onEditAiProvider={openAiProviderEdit}
-            onToggleAiProvider={toggleAiProvider}
-            onCheckAiProvider={checkAiProvider}
-            onEditTenantAi={() => setModal({ type: 'tenantAiEdit' })}
-            onCreatePromptTemplate={() => {
-              setPromptTemplateForm({
-                id: null,
-                name: '运营群活跃模板',
-                template_type: '群活跃对话计划',
-                content: '请为 {{group_title}} 围绕 {{topic}} 生成 {{count}} 条自然 Telegram 群聊发言计划，语气 {{tone}}，素材 {{materials}}，输出 JSON turns，并包含角色、意图、延迟和自动校验建议。',
-                is_active: true,
-              });
-              setModal({ type: 'promptTemplateCreate' });
-            }}
-            onCreateSlangTemplate={() => {
-              setPromptTemplateForm({
-                id: null,
-                name: '默认 AI 黑话配置',
-                template_type: 'AI黑话词表',
-                content: '老师=妓女\n开课=开始营业',
-                is_active: true,
-              });
-              setModal({ type: 'promptTemplateCreate' });
-            }}
-            onEditPromptTemplate={openPromptTemplateEdit}
-            onCreateMaterial={() => {
-              setMaterialForm({
-                id: null,
-                title: '活动表情包',
-                material_type: '表情包',
-                content: 'https://example.local/stickers/welcome.webp',
-                tags: '表情包,欢迎',
-              });
-              setModal({ type: 'materialCreate' });
-            }}
-            onEditMaterial={openMaterialEdit}
-            onCreateKeywordRule={() => setModal({ type: 'keywordRuleCreate' })}
-            onEditKeywordRule={openContentKeywordRuleEdit}
-            onOpenConfirm={openConfirm}
-            isActionPending={isActionPending}
-          />
-        )}
-        {activeView === 'usageReports' && <UsageReportsView usageLedgers={usageLedgers} usageSummary={usageSummary} currentUser={currentUser} />}
-        {activeView === 'accounts' && (
-          <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => goToView('systemConfig')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onExtractCodes={openAccountVerificationCodes} onMovePool={openAccountMovePool} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onDeleteAccount={(account) => openConfirm({ title: '移除账号', message: `确认移除 ${account.display_name}？历史任务、群归档和审计记录会保留，手机号可以重新新增。`, confirmLabel: '移除账号', tone: 'danger', onConfirm: () => deleteAccount(account) })} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} isActionPending={isActionPending} />
-        )}
-        {activeView === 'targetManagement' && <OperationTargetsView onSendToTarget={openSendFromTarget} onCreateTaskFromTarget={openTaskFromTarget} />}
-        {activeView === 'messageSending' && (
-          <MessageSendingView
-            accounts={accounts}
-            materials={materials}
-            tasks={tasks}
-            prefill={messagePrefill}
-            createMessageSendTask={createMessageSendTask}
-            onCancelTask={cancelTask}
-            onDispatchTask={dispatchTask}
-            onRetryTask={retryTask}
-            onRefresh={refresh}
-            isActionPending={isActionPending}
-          />
-        )}
-        {activeView === 'groupManagement' && (
-          <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateTask={openTaskFromGroup} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
-        )}
-        {activeView === 'taskManagement' && <TaskCenterView accounts={accounts} accountPools={accountPools} promptTemplates={promptTemplates} prefill={taskCenterPrefill} />}
-        {activeView === 'listenerCenter' && <ListenerCenterView />}
-        {activeView === 'ruleCenter' && <RulesCenterView onOpenSystemConfig={() => goToView('systemConfig')} />}
-        {activeView === 'riskControl' && <RiskControlView onOpenAccounts={() => goToView('accounts')} />}
-        {activeView === 'archives' && <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onRefresh={refresh} isActionPending={isActionPending} />}
-        {activeView === 'audits' && <AuditsView audits={audits} filters={auditFilters} setFilters={setAuditFilters} onRefresh={refresh} />}
+        <React.Suspense fallback={<Card className="panel">加载中...</Card>}>
+          {/* ===== View routing ===== */}
+          {activeView === 'overview' && overview && <OverviewView overview={overview} runtime={runtime} />}
+          {activeView === 'systemConfig' && hasPermission(currentUser, 'system.view') && (
+            <SystemConfigView
+              developerApps={developerApps}
+              tenants={tenants}
+              aiProviders={aiProviders}
+              promptTemplates={promptTemplates}
+              tenantAiSetting={tenantAiSetting}
+              materials={materials}
+              materialCacheHealth={materialCacheHealth}
+              contentKeywordRules={contentKeywordRules}
+              adminUsers={adminUsers}
+              currentUser={currentUser}
+              currentUserRole={currentUser?.role}
+              onCreateDeveloperApp={() => setModal({ type: 'developerAppCreate' })}
+              onEditDeveloperApp={openDeveloperAppEdit}
+              onCheckDeveloperApp={checkDeveloperApp}
+              onToggleDeveloperApp={toggleDeveloperApp}
+              onEditTenant={openTenantEdit}
+              onCreateAdminUser={openAdminUserCreate}
+              onEditAdminUser={openAdminUserEdit}
+              onCreateAiProvider={() => setModal({ type: 'aiProviderCreate' })}
+              onEditAiProvider={openAiProviderEdit}
+              onToggleAiProvider={toggleAiProvider}
+              onCheckAiProvider={checkAiProvider}
+              onEditTenantAi={() => setModal({ type: 'tenantAiEdit' })}
+              onCreatePromptTemplate={() => {
+                setPromptTemplateForm({
+                  id: null,
+                  name: '运营群活跃模板',
+                  template_type: '群活跃对话计划',
+                  content: '请为 {{group_title}} 围绕 {{topic}} 生成 {{count}} 条自然 Telegram 群聊发言计划，语气 {{tone}}，素材 {{materials}}，输出 JSON turns，并包含角色、意图、延迟和自动校验建议。',
+                  is_active: true,
+                });
+                setModal({ type: 'promptTemplateCreate' });
+              }}
+              onCreateSlangTemplate={() => {
+                setPromptTemplateForm({
+                  id: null,
+                  name: '默认 AI 黑话配置',
+                  template_type: 'AI黑话词表',
+                  content: '老师=妓女\n开课=开始营业',
+                  is_active: true,
+                });
+                setModal({ type: 'promptTemplateCreate' });
+              }}
+              onEditPromptTemplate={openPromptTemplateEdit}
+              onCreateMaterial={() => {
+                setMaterialForm({
+                  id: null,
+                  title: '活动表情包',
+                  material_type: '表情包',
+                  content: 'https://example.local/stickers/welcome.webp',
+                  tags: '表情包,欢迎',
+                  emoji_asset_kind: 'image_meme',
+                  cache_ready_status: 'not_cached',
+                  delivery_mode: 'download_reupload',
+                  source_kind: 'url',
+                });
+                setMaterialFile(null);
+                setModal({ type: 'materialCreate' });
+              }}
+              onEditMaterial={openMaterialEdit}
+              onCreateKeywordRule={() => setModal({ type: 'keywordRuleCreate' })}
+              onEditKeywordRule={openContentKeywordRuleEdit}
+              onOpenConfirm={openConfirm}
+              isActionPending={isActionPending}
+            />
+          )}
+          {activeView === 'usageReports' && <UsageReportsView usageLedgers={usageLedgers} usageSummary={usageSummary} currentUser={currentUser} />}
+          {activeView === 'accounts' && (
+            <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => goToView('systemConfig')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onExtractCodes={openAccountVerificationCodes} onMovePool={openAccountMovePool} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onDeleteAccount={(account) => openConfirm({ title: '移除账号', message: `确认移除 ${account.display_name}？历史任务、群归档和审计记录会保留，手机号可以重新新增。`, confirmLabel: '移除账号', tone: 'danger', onConfirm: () => deleteAccount(account) })} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} isActionPending={isActionPending} canCreateAccount={hasPermission(currentUser, 'accounts.create')} canLoginAccount={hasPermission(currentUser, 'accounts.login')} canSyncAccount={hasPermission(currentUser, 'accounts.sync')} canViewCodes={hasPermission(currentUser, 'accounts.view_codes')} canMovePool={hasPermission(currentUser, 'accounts.pool_manage')} canDeleteAccount={hasPermission(currentUser, 'accounts.delete')} />
+          )}
+          {activeView === 'targetManagement' && <OperationTargetsView onSendToTarget={openSendFromTarget} onCreateTaskFromTarget={openTaskFromTarget} />}
+          {activeView === 'messageSending' && (
+            <MessageSendingView
+              accounts={accounts}
+              materials={materials}
+              tasks={tasks}
+              prefill={messagePrefill}
+              createMessageSendTask={createMessageSendTask}
+              onCancelTask={cancelTask}
+              onDispatchTask={dispatchTask}
+              onRetryTask={retryTask}
+              onRefresh={refresh}
+              isActionPending={isActionPending}
+            />
+          )}
+          {activeView === 'groupManagement' && (
+            <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateTask={openTaskFromGroup} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
+          )}
+          {activeView === 'taskManagement' && <TaskCenterView accounts={accounts} accountPools={accountPools} promptTemplates={promptTemplates} prefill={taskCenterPrefill} />}
+          {activeView === 'listenerCenter' && <ListenerCenterView />}
+          {activeView === 'ruleCenter' && <RulesCenterView onOpenSystemConfig={() => goToView('systemConfig')} />}
+          {activeView === 'riskControl' && <RiskControlView onOpenAccounts={() => goToView('accounts')} />}
+          {activeView === 'archives' && <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onRefresh={refresh} isActionPending={isActionPending} />}
+          {activeView === 'audits' && <AuditsView audits={audits} filters={auditFilters} setFilters={setAuditFilters} onRefresh={refresh} />}
+        </React.Suspense>
 
         {/* ===== Modals ===== */}
-        <AppModals />
+        {modal && (
+          <React.Suspense fallback={null}>
+            <AppModals />
+          </React.Suspense>
+        )}
         </Content>
       </Layout>
     </Layout>

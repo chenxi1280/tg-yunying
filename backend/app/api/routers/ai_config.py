@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user, require_core_feature_access, resolve_tenant_id
@@ -17,16 +17,18 @@ from app.schemas import (
     ContentKeywordRuleCreate, ContentKeywordRuleOut, ContentKeywordRuleUpdate,
     MaterialCreate, MaterialOut, MaterialUpdate,
     PromptTemplateCreate, PromptTemplateOut, PromptTemplateUpdate,
-    SchedulingSettingOut,
+    SchedulingSettingOut, SchedulingSettingUpdate,
     TenantAiSettingOut, TenantAiSettingUpdate,
 )
+from app.schemas.ai_config import MaterialCacheHealthOut
 from app.services import (
     check_ai_provider, create_ai_provider, create_content_keyword_rule, create_material, create_prompt_template,
     get_scheduling_setting, get_tenant_ai_setting,
     list_ai_providers, list_content_keyword_rules, list_materials, list_prompt_templates,
     update_ai_provider, update_content_keyword_rule, update_material, update_prompt_template,
-    update_tenant_ai_setting,
+    update_scheduling_setting, update_tenant_ai_setting,
 )
+from app.services.ai_config import create_uploaded_material, material_cache_health
 
 router = APIRouter()
 
@@ -159,6 +161,18 @@ def get_scheduling_settings(
     return get_scheduling_setting(session, resolve_tenant_id(current_user, tenant_id))
 
 
+@router.patch("/api/scheduling-settings", response_model=SchedulingSettingOut)
+def patch_scheduling_settings(
+    payload: SchedulingSettingUpdate,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> SchedulingSetting:
+    require_core_feature_access(current_user)
+    target_tenant_id = None if current_user.is_platform_admin and tenant_id is None else resolve_tenant_id(current_user, tenant_id)
+    return update_scheduling_setting(session, target_tenant_id, payload, current_user.name)
+
+
 # ── Materials ──
 
 @router.get("/api/materials", response_model=list[MaterialOut])
@@ -170,6 +184,15 @@ def get_materials(
     return list_materials(session, resolve_tenant_id(current_user, tenant_id))
 
 
+@router.get("/api/materials/cache/health", response_model=MaterialCacheHealthOut)
+def get_material_cache_health(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return material_cache_health(session, resolve_tenant_id(current_user, tenant_id))
+
+
 @router.post("/api/materials", response_model=MaterialOut)
 def post_material(
     payload: MaterialCreate,
@@ -178,7 +201,43 @@ def post_material(
 ):
     require_core_feature_access(current_user)
     tenant_id = resolve_tenant_id(current_user, payload.tenant_id)
-    return create_material(session, payload.model_copy(update={"tenant_id": tenant_id}))
+    try:
+        return create_material(session, payload.model_copy(update={"tenant_id": tenant_id}), current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/materials/upload", response_model=MaterialOut)
+async def post_material_upload(
+    title: str = Form(...),
+    material_type: str = Form("图片"),
+    tags: str = Form(""),
+    caption: str = Form(""),
+    emoji_asset_kind: str = Form(""),
+    tenant_id: int | None = Form(None),
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    target_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    data = await file.read()
+    try:
+        return create_uploaded_material(
+            session,
+            tenant_id=target_tenant_id,
+            title=title,
+            material_type=material_type,
+            tags=tags,
+            caption=caption,
+            filename=file.filename or "material",
+            content_type=file.content_type or "",
+            data=data,
+            emoji_asset_kind=emoji_asset_kind,
+            actor=current_user.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/api/materials/{material_id}", response_model=MaterialOut)
@@ -191,9 +250,12 @@ def patch_material(
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, Material, material_id)
-        return update_material(session, material_id, payload, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
+    try:
+        return update_material(session, material_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ── Content keyword rules ──

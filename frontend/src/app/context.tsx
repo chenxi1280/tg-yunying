@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { App as AntdApp } from 'antd';
 import { API_BASE, API_ORIGIN, api, ApiError } from '../shared/api/client';
 import { operationLabel } from './components/shared';
+import { hasPermission } from './utils';
 import type {
   Overview,
   RuntimeConfig,
@@ -23,6 +24,7 @@ import type {
   PromptTemplate,
   TenantAiSetting,
   Material,
+  MaterialCacheHealth,
   ContentKeywordRule,
   Contact,
   Group,
@@ -107,8 +109,10 @@ export function AppProvider({ children }: AppProviderProps) {
     email: '',
     phone: '',
     role: '普通用户',
+    role_template: '账号添加专员',
     subscription_status: 'pending_activation',
-    menu_permissions: ['overview', 'accounts', 'taskManagement', 'groupManagement', 'usageReports'],
+    menu_permissions: ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'],
+    permissions: ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'],
     is_active: true,
   });
   const [tokenAdjustmentForm, setTokenAdjustmentForm] = useState({ delta_tokens: 500000, reason: '管理员充值' });
@@ -118,6 +122,7 @@ export function AppProvider({ children }: AppProviderProps) {
   const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
   const [tenantAiSetting, setTenantAiSetting] = useState<TenantAiSetting | null>(null);
   const [materials, setMaterials] = useState<Material[]>([]);
+  const [materialCacheHealth, setMaterialCacheHealth] = useState<MaterialCacheHealth | null>(null);
   const [contentKeywordRules, setContentKeywordRules] = useState<ContentKeywordRule[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [tasks, setTasks] = useState<MessageTask[]>([]);
@@ -216,7 +221,12 @@ export function AppProvider({ children }: AppProviderProps) {
     material_type: '表情包',
     content: 'https://example.local/stickers/welcome.webp',
     tags: '表情包,欢迎',
+    emoji_asset_kind: 'image_meme',
+    cache_ready_status: 'not_cached',
+    delivery_mode: 'download_reupload',
+    source_kind: 'url',
   });
+  const [materialFile, setMaterialFile] = useState<File | null>(null);
   const [keywordRuleForm, setKeywordRuleForm] = useState({
     id: null as number | null,
     keyword: '',
@@ -342,6 +352,7 @@ export function AppProvider({ children }: AppProviderProps) {
         api<PromptTemplate[]>('/prompt-templates'),
         api<TenantAiSetting>('/tenant-ai-settings'),
         api<Material[]>('/materials'),
+        api<MaterialCacheHealth>('/materials/cache/health'),
         api<ContentKeywordRule[]>('/content-keyword-rules'),
       ]);
       const runtimeData = settledValue(results[0], {} as RuntimeConfig);
@@ -356,10 +367,11 @@ export function AppProvider({ children }: AppProviderProps) {
       const promptTemplateData = settledValue(results[9], [] as PromptTemplate[]);
       const tenantAiData = settledValue(results[10], {} as TenantAiSetting);
       const materialData = settledValue(results[11], [] as Material[]);
-      const keywordRuleData = settledValue(results[12], [] as ContentKeywordRule[]);
-      const developerAppData = me.role === '系统管理员' ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
-      const tenantData = me.role === '系统管理员' ? await api<Tenant[]>('/tenants').catch(() => [] as Tenant[]) : [];
-      const adminUserData: AdminUser[] = [];
+      const materialCacheHealthData = settledValue(results[12], null as MaterialCacheHealth | null);
+      const keywordRuleData = settledValue(results[13], [] as ContentKeywordRule[]);
+      const developerAppData = hasPermission(me, 'system.view') ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
+      const tenantData = hasPermission(me, 'system.view') ? await api<Tenant[]>('/tenants').catch(() => [] as Tenant[]) : [];
+      const adminUserData = hasPermission(me, 'permissions.view') ? await api<AdminUser[]>('/admin/users').catch(() => [] as AdminUser[]) : [];
       const usageLedgerData: UsageLedger[] = [];
       const usageSummaryData: UsageSummary | null = null;
       setRuntime(runtimeData);
@@ -376,6 +388,7 @@ export function AppProvider({ children }: AppProviderProps) {
       setPromptTemplates(promptTemplateData);
       setTenantAiSetting(tenantAiData);
       setMaterials(materialData);
+      setMaterialCacheHealth(materialCacheHealthData);
       setContentKeywordRules(keywordRuleData);
       setGroups(groupData);
       setTasks(taskData);
@@ -1305,8 +1318,10 @@ export function AppProvider({ children }: AppProviderProps) {
       email: user.email,
       phone: user.phone ?? '',
       role: user.role,
+      role_template: user.role_template,
       subscription_status: user.subscription_status,
-      menu_permissions: user.menu_permissions.includes('*') ? ['overview', 'accounts', 'taskManagement', 'groupManagement', 'usageReports'] : user.menu_permissions,
+      menu_permissions: user.permissions?.includes('*') ? ['*'] : (user.permissions ?? user.menu_permissions),
+      permissions: user.permissions?.includes('*') ? ['*'] : (user.permissions ?? user.menu_permissions),
       is_active: user.is_active,
     });
     setSelectedAdminUserId(user.id);
@@ -1314,19 +1329,38 @@ export function AppProvider({ children }: AppProviderProps) {
     setModal({ type: 'adminUserEdit' });
   }
 
+  function openAdminUserCreate() {
+    const permissions = ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'];
+    setAdminUserForm({
+      id: null,
+      name: '',
+      email: '',
+      phone: '',
+      role: '后台用户',
+      role_template: '账号添加专员',
+      subscription_status: 'active',
+      menu_permissions: permissions,
+      permissions,
+      is_active: true,
+    });
+    setSelectedAdminUserId(null);
+    setModal({ type: 'adminUserEdit' });
+  }
+
   async function saveAdminUser() {
-    if (!adminUserForm.id) return;
     setBusy('保存用户');
     try {
-      const saved = await api<AdminUser>(`/admin/users/${adminUserForm.id}`, {
-        method: 'PATCH',
+      const saved = await api<AdminUser>(adminUserForm.id ? `/admin/users/${adminUserForm.id}` : '/admin/users', {
+        method: adminUserForm.id ? 'PATCH' : 'POST',
         body: JSON.stringify({
           name: adminUserForm.name,
           email: adminUserForm.email,
           phone: adminUserForm.phone || null,
           role: adminUserForm.role,
+          role_template: adminUserForm.role_template,
           subscription_status: adminUserForm.subscription_status,
-          menu_permissions: adminUserForm.menu_permissions,
+          menu_permissions: adminUserForm.permissions,
+          permissions: adminUserForm.permissions,
           is_active: adminUserForm.is_active,
         }),
       });
@@ -1537,10 +1571,28 @@ export function AppProvider({ children }: AppProviderProps) {
   async function createMaterial() {
     setBusy('新增素材');
     const { id: _id, ...payload } = materialForm;
-    const material = await api<Material>('/materials', {
-      method: 'POST',
-      body: JSON.stringify({ ...payload, tenant_id: currentUser?.tenant_id ?? 1 }),
-    });
+    let material: Material;
+    if (payload.source_kind === 'upload') {
+      if (!materialFile) throw new Error('请先选择素材文件');
+      const form = new FormData();
+      form.append('title', payload.title);
+      form.append('material_type', payload.material_type);
+      form.append('tags', payload.tags);
+      form.append('caption', payload.content);
+      form.append('emoji_asset_kind', payload.emoji_asset_kind);
+      form.append('tenant_id', String(currentUser?.tenant_id ?? 1));
+      form.append('file', materialFile);
+      material = await api<Material>('/materials/upload', {
+        method: 'POST',
+        body: form,
+      });
+    } else {
+      material = await api<Material>('/materials', {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, tenant_id: currentUser?.tenant_id ?? 1 }),
+      });
+    }
+    setMaterialFile(null);
     closeModal();
     showResult('素材已新增', `已新增素材：${material.title}`);
     await refresh();
@@ -1553,7 +1605,12 @@ export function AppProvider({ children }: AppProviderProps) {
       material_type: material.material_type,
       content: material.content,
       tags: material.tags,
+      emoji_asset_kind: material.emoji_asset_kind || (material.material_type === '表情包' ? 'image_meme' : ''),
+      cache_ready_status: material.cache_ready_status || 'not_cached',
+      delivery_mode: material.delivery_mode || 'download_reupload',
+      source_kind: material.source_kind || 'url',
     });
+    setMaterialFile(null);
     setModal({ type: 'materialEdit' });
   }
 
@@ -1700,6 +1757,8 @@ export function AppProvider({ children }: AppProviderProps) {
     setSelectedAiProviderId,
     materials,
     setMaterials,
+    materialCacheHealth,
+    setMaterialCacheHealth,
     contentKeywordRules,
     setContentKeywordRules,
 
@@ -1774,6 +1833,8 @@ export function AppProvider({ children }: AppProviderProps) {
     setPromptTemplateForm,
     materialForm,
     setMaterialForm,
+    materialFile,
+    setMaterialFile,
     keywordRuleForm,
     setKeywordRuleForm,
 
@@ -1858,6 +1919,7 @@ export function AppProvider({ children }: AppProviderProps) {
     checkDeveloperApp: (app) => runWithLoading(`developer-app:${app.id}:check`, '检查开发者应用', () => checkDeveloperApp(app)),
     openTenantEdit,
     saveTenantQuota: () => runWithLoading(`tenant:${tenantForm.id ?? 'current'}:save`, '保存租户配额', saveTenantQuota),
+    openAdminUserCreate,
     openAdminUserEdit,
     saveAdminUser: () => runWithLoading(`admin-user:${adminUserForm.id ?? 'current'}:save`, '保存用户', saveAdminUser),
     resetAdminUserPassword: (user, newPassword) => runWithLoading(`admin-user:${user.id}:reset-password`, '重置密码', () => resetAdminUserPassword(user, newPassword)),
