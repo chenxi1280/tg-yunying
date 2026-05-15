@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.orm import Session
 
 from app.auth import (
@@ -64,7 +64,13 @@ def auth_captcha_verify(payload: CaptchaVerifyRequest) -> dict:
 def auth_login(payload: AuthLoginRequest, session: Session = Depends(get_session)) -> dict:
     consume_captcha_token(payload.captcha_token)
     identifier = (payload.identifier or payload.email or "").strip()
-    user = authenticate_user(session, identifier, payload.password)
+    try:
+        user = authenticate_user(session, identifier, payload.password)
+    except ProgrammingError as exc:
+        if "app_users" not in str(exc):
+            raise
+        session.rollback()
+        user = None
     if user:
         audit(session, tenant_id=user.tenant_id, actor=user.name, action="后台账号登录", target_type="app_user", target_id=str(user.id))
         session.commit()

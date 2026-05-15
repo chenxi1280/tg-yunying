@@ -28,7 +28,7 @@ from app.services import (
     update_ai_provider, update_content_keyword_rule, update_material, update_prompt_template,
     update_scheduling_setting, update_tenant_ai_setting,
 )
-from app.services.ai_config import create_uploaded_material, material_cache_health
+from app.services.ai_config import create_uploaded_material, create_uploaded_materials, material_cache_health
 
 router = APIRouter()
 
@@ -233,6 +233,39 @@ async def post_material_upload(
             filename=file.filename or "material",
             content_type=file.content_type or "",
             data=data,
+            emoji_asset_kind=emoji_asset_kind,
+            actor=current_user.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/materials/upload/batch", response_model=list[MaterialOut])
+async def post_material_upload_batch(
+    title: str = Form("素材"),
+    material_type: str = Form("图片"),
+    tags: str = Form(""),
+    caption: str = Form(""),
+    emoji_asset_kind: str = Form(""),
+    tenant_id: int | None = Form(None),
+    files: list[UploadFile] = File(...),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    target_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    file_payloads: list[tuple[str, str, bytes]] = []
+    for file in files:
+        file_payloads.append((file.filename or "material", file.content_type or "", await file.read()))
+    try:
+        return create_uploaded_materials(
+            session,
+            tenant_id=target_tenant_id,
+            title=title,
+            material_type=material_type,
+            tags=tags,
+            caption=caption,
+            files=file_payloads,
             emoji_asset_kind=emoji_asset_kind,
             actor=current_user.name,
         )

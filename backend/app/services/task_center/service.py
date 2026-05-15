@@ -8,7 +8,7 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import Action, ChannelMessage, ExecutionAttempt, GroupAuthStatus, MessageFingerprint, OperationTarget, ReviewQueue, RuleSet, RuleSetVersion, Task, TgAccount, TgGroup, WorkerHeartbeat
+from app.models import Action, ChannelMessage, ExecutionAttempt, GroupAuthStatus, MessageFingerprint, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, Task, TgAccount, TgGroup, WorkerHeartbeat
 from app.schemas.task_center import (
     ChannelCapacityCheckRequest,
     ChannelCommentConfig,
@@ -216,6 +216,7 @@ def create_and_start_channel_comment_task(session: Session, tenant_id: int, payl
 def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task:
     raw_type_config = payload.model_dump(mode="json", exclude=COMMON_CREATE_FIELDS)
     raw_type_config = _normalize_operation_target_references(session, tenant_id, task_type, raw_type_config)
+    raw_type_config = _apply_default_slang_config(session, tenant_id, task_type, raw_type_config)
     type_config = _validated_type_config(task_type, raw_type_config)
     _validate_rule_binding(session, tenant_id, type_config)
     task = Task(
@@ -278,6 +279,24 @@ def _normalize_operation_target_references(session: Session, tenant_id: int, tas
         if target_group_ids:
             next_config["target_group_ids"] = list(dict.fromkeys(target_group_ids))
     return next_config
+
+
+def _apply_default_slang_config(session: Session, tenant_id: int, task_type: str, config: dict[str, Any]) -> dict[str, Any]:
+    if task_type != "group_ai_chat" or config.get("slang_prompt_template_id") or config.get("slang_terms"):
+        return config
+    template_id = session.scalar(
+        select(PromptTemplate.id)
+        .where(
+            PromptTemplate.template_type == "AI黑话词表",
+            PromptTemplate.is_active.is_(True),
+            or_(PromptTemplate.tenant_id == tenant_id, PromptTemplate.tenant_id.is_(None)),
+        )
+        .order_by(PromptTemplate.tenant_id.is_(None).asc(), PromptTemplate.id.asc())
+        .limit(1)
+    )
+    if not template_id:
+        return config
+    return {**config, "slang_prompt_template_id": int(template_id)}
 
 
 def _group_for_operation_target(session: Session, tenant_id: int, target_id: int, *, require_can_send: bool) -> tuple[OperationTarget, TgGroup]:

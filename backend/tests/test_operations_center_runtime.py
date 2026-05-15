@@ -24,7 +24,7 @@ from app.services.risk_control import update_global_policy
 from app.services.account_capacity import account_capacity_decision
 from app.services.messages import create_message_send_task, dispatch_task, validate_group_task_policy
 from app.services.operations import filter_operation_targets, operation_target_detail, sync_all_operation_targets, update_operation_target, update_operation_target_account_policy
-from app.services.task_center.executors.group_ai_chat import ai_cycle_mode, build_plan as build_group_ai_chat_plan
+from app.services.task_center.executors.group_ai_chat import _topic_relevant_context_rows, ai_cycle_mode, build_plan as build_group_ai_chat_plan
 from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
 from app.services.reports import build_overview
 from app.services.task_center.executors.group_relay import apply_transform_rules, build_plan as build_group_relay_plan, passes_relay_filters, resolve_relay_target_ids
@@ -1412,6 +1412,7 @@ def test_group_tasks_accept_operation_target_ids_as_primary_references():
                 TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群", auth_status="已授权运营", can_send=True),
                 OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="源群目标", can_send=True, auth_status="已授权运营"),
                 OperationTarget(id=22, tenant_id=1, target_type="group", tg_peer_id="-1009", title="目标群目标", can_send=True, auth_status="已授权运营"),
+                PromptTemplate(id=31, tenant_id=None, template_type="AI黑话词表", name="默认黑话", content="老师=妓女", is_active=True),
             ]
         )
         session.commit()
@@ -1425,6 +1426,7 @@ def test_group_tasks_accept_operation_target_ids_as_primary_references():
         assert ai_task.type_config["target_operation_target_id"] == 21
         assert ai_task.type_config["target_group_id"] == 7
         assert ai_task.type_config["target_group_name"] == "源群目标"
+        assert ai_task.type_config["slang_prompt_template_id"] == 31
 
         relay_task = create_group_relay_task(
             session,
@@ -2225,6 +2227,9 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
     assert captured["temperature"] == 0.75
     assert captured["max_tokens"] == 1024
     assert "MiMo 活跃群" in str(captured["prompt"])
+    assert "现场接话消息" in str(captured["prompt"])
+    assert "sequence_index" in str(captured["prompt"])
+    assert "大家怎么看" in str(captured["prompt"])
     assert "AI 黑话配置：成人行业黑话" in str(captured["system_prompt"])
     assert "老师=妓女" in str(captured["system_prompt"])
     assert "开课=开始营业" in str(captured["system_prompt"])
@@ -2405,6 +2410,7 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
                 AiDraftCandidate(persona="模板号", content="刚看到大家提到“刚看到大家提到“安师大”，这个点挺有意思，可以继续聊聊。”，这个点挺有意思，可以继续聊聊。"),
                 AiDraftCandidate(persona="营销模板号", content="顺着这个话题说，精品榜榜单，有经验的朋友也可以补充下。"),
                 AiDraftCandidate(persona="按钮说明号", content="点击底部按钮可以打开更多功能，大家怎么看？"),
+                AiDraftCandidate(persona="占位符号", content="X老师那边听说还可以，某某校区也不错。"),
                 AiDraftCandidate(persona="重复号", content="安师大这个话题可以先从校区聊起。"),
                 AiDraftCandidate(persona="重复号2", content="安师大这个话题可以先从校区聊起！"),
                 AiDraftCandidate(persona="自然号", content="安师大新校区那边最近是不是活动挺多的？"),
@@ -2427,7 +2433,8 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
             [
                 GroupContextMessage(id=41, tenant_id=1, group_id=7, listener_account_id=101, sender_name="真人用户", content="刚看到大家提到“刚看到大家提到“安师大”，这个点挺有意思，可以继续聊聊。”，这个点挺有意思，可以继续聊聊。", remote_message_id="bad", sent_at=datetime(2026, 5, 11, 10, 0, 0)),
                 GroupContextMessage(id=42, tenant_id=1, group_id=7, listener_account_id=101, sender_name="真人用户", content="顺着这个话题说，点击底部按钮可以打开更多功能，有经验的朋友也可以补充下。", remote_message_id="bad-template", sent_at=datetime(2026, 5, 11, 10, 1, 0)),
-                GroupContextMessage(id=43, tenant_id=1, group_id=7, listener_account_id=101, sender_name="真人用户", content="安师大", remote_message_id="real", sent_at=datetime(2026, 5, 11, 10, 2, 0)),
+                GroupContextMessage(id=43, tenant_id=1, group_id=7, listener_account_id=101, sender_name="系统提示", content="还没有你的定位。为了保护隐私，请点下面按钮到私聊更新定位。更新后回到本群发送“附近”，就能查询附近老师。", remote_message_id="location-noise", sent_at=datetime(2026, 5, 11, 10, 2, 0)),
+                GroupContextMessage(id=44, tenant_id=1, group_id=7, listener_account_id=101, sender_name="真人用户", content="安师大", remote_message_id="real", sent_at=datetime(2026, 5, 11, 10, 3, 0)),
             ]
         )
         session.add(
@@ -2451,11 +2458,24 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
     assert "刚看到大家提到“刚看到大家提到" not in captured_prompt["prompt"]
     assert "真人用户: 顺着这个话题说" not in captured_prompt["prompt"]
     assert "点击底部按钮" not in captured_prompt["prompt"]
+    assert "还没有你的定位" not in captured_prompt["prompt"]
     assert created == 2
     assert [action.payload["message_text"] for action in actions] == [
         "安师大这个话题可以先从校区聊起。",
         "安师大新校区那边最近是不是活动挺多的？",
     ]
+
+
+def test_group_ai_chat_context_prefers_topic_relevant_messages():
+    rows = [
+        SimpleNamespace(content="郑州精品必吃榜，踩坑包赔！"),
+        SimpleNamespace(content="老师"),
+        SimpleNamespace(content="老师质量这块我更看课后反馈。"),
+    ]
+
+    filtered = _topic_relevant_context_rows({"topic_hint": "老师质量"}, rows)
+
+    assert [row.content for row in filtered] == ["老师", "老师质量这块我更看课后反馈。"]
 
 
 def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):

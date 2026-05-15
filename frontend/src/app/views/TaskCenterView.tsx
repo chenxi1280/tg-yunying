@@ -306,6 +306,7 @@ export default function TaskCenterView({
   const channelTargets = targets.filter((target) => target.target_type === 'channel');
   const groupTargets = targets.filter((target) => target.target_type === 'group' && target.linked_group_id);
   const slangTemplates = promptTemplates.filter((template) => normalizePromptTemplateType(template.template_type) === 'AI黑话词表' && template.is_active);
+  const defaultSlangTemplateId = slangTemplates[0]?.id ?? null;
 
   async function load() {
     setLoading(true);
@@ -431,6 +432,7 @@ export default function TaskCenterView({
     setTaskType('group_ai_chat');
     form.resetFields();
     form.setFieldsValue(initialValuesForType('group_ai_chat', schedulingSetting));
+    if (defaultSlangTemplateId) form.setFieldsValue({ slang_prompt_template_id: defaultSlangTemplateId });
     setWizardStep(0);
     await ensureTaskFormData('group_ai_chat');
     setModalOpen(true);
@@ -476,7 +478,7 @@ export default function TaskCenterView({
         : [],
       account_personas: formatKeyValueMap(config.account_personas),
       slang_terms: formatKeyValueMap(config.slang_terms),
-      slang_prompt_template_id: config.slang_prompt_template_id ?? null,
+      slang_prompt_template_id: task.type === 'group_ai_chat' ? (config.slang_prompt_template_id ?? defaultSlangTemplateId) : (config.slang_prompt_template_id ?? null),
       allowed_reactions: Array.isArray(config.allowed_reactions) ? config.allowed_reactions.join(',') : config.allowed_reactions,
       reply_to_message_ids: Array.isArray(config.reply_to_message_ids) ? config.reply_to_message_ids : csvNumbers(config.reply_to_message_ids),
       monitor_account_ids: config.monitor_account_ids ?? [],
@@ -826,6 +828,7 @@ export default function TaskCenterView({
     setTaskType(nextType);
     form.resetFields();
     form.setFieldsValue(initialValuesForType(nextType, schedulingSetting));
+    if (nextType === 'group_ai_chat' && defaultSlangTemplateId) form.setFieldsValue({ slang_prompt_template_id: defaultSlangTemplateId });
     setWizardStep(0);
     void ensureTaskFormData(nextType).then(async () => {
       if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(nextType)) applyDefaultRuleSet(await ensureRuleSets(), nextType);

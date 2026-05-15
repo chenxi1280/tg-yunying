@@ -226,7 +226,7 @@ export function AppProvider({ children }: AppProviderProps) {
     delivery_mode: 'download_reupload',
     source_kind: 'url',
   });
-  const [materialFile, setMaterialFile] = useState<File | null>(null);
+  const [materialFile, setMaterialFile] = useState<File[] | null>(null);
   const [keywordRuleForm, setKeywordRuleForm] = useState({
     id: null as number | null,
     keyword: '',
@@ -1573,7 +1573,8 @@ export function AppProvider({ children }: AppProviderProps) {
     const { id: _id, ...payload } = materialForm;
     let material: Material;
     if (payload.source_kind === 'upload') {
-      if (!materialFile) throw new Error('请先选择素材文件');
+      const files = materialFile ?? [];
+      if (!files.length) throw new Error('请先选择素材文件');
       const form = new FormData();
       form.append('title', payload.title);
       form.append('material_type', payload.material_type);
@@ -1581,11 +1582,21 @@ export function AppProvider({ children }: AppProviderProps) {
       form.append('caption', payload.content);
       form.append('emoji_asset_kind', payload.emoji_asset_kind);
       form.append('tenant_id', String(currentUser?.tenant_id ?? 1));
-      form.append('file', materialFile);
-      material = await api<Material>('/materials/upload', {
-        method: 'POST',
-        body: form,
-      });
+      if (files.length === 1) {
+        form.append('file', files[0]);
+        material = await api<Material>('/materials/upload', {
+          method: 'POST',
+          body: form,
+        });
+      } else {
+        files.forEach((file) => form.append('files', file));
+        const uploaded = await api<Material[]>('/materials/upload/batch', {
+          method: 'POST',
+          body: form,
+        });
+        if (!uploaded.length) throw new Error('批量上传未返回素材');
+        material = uploaded[0];
+      }
     } else {
       material = await api<Material>('/materials', {
         method: 'POST',
@@ -1594,7 +1605,7 @@ export function AppProvider({ children }: AppProviderProps) {
     }
     setMaterialFile(null);
     closeModal();
-    showResult('素材已新增', `已新增素材：${material.title}`);
+    showResult('素材已新增', `已新增素材：${payload.source_kind === 'upload' && (materialFile?.length ?? 0) > 1 ? `${materialFile?.length ?? 0} 个文件` : material.title}`);
     await refresh();
   }
 

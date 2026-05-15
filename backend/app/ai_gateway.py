@@ -76,11 +76,11 @@ def mock_candidates(
     selected_account_ids: list[int] | None = None,
 ) -> list[AiDraftCandidate]:
     templates = [
-        "刚看了下置顶，这个话题可以先从大家最关心的点聊起。",
-        "接上面说的，我更想听听已经体验过的朋友反馈，实际用起来有没有明显变化？",
-        "这个问题可以拆开聊，先把新手最容易卡住的地方整理出来。",
-        "我补一句，如果今晚有人继续问，我可以把常见问题顺手汇总下。",
-        "感觉今天适合轻量讨论，不用刷屏，有问题慢慢抛出来就行。",
+        "我看这个点其实挺像群里前两天聊的那个情况。",
+        "先别拉太大，具体到今天这个场景会好聊一点。",
+        "要是新来的朋友问，我可能会先让他看最容易卡住的那一步。",
+        "这事我更关心实际反馈，纸面说法有时候不太准。",
+        "可以慢慢聊，别一下子把话题弄得太硬。",
     ]
     ids = material_ids or []
     account_ids = selected_account_ids or []
@@ -359,6 +359,8 @@ class AiGateway:
         try:
             parsed: Any = json.loads(clean)
         except json.JSONDecodeError:
+            if _looks_like_json_drafts_fragment(clean):
+                raise RuntimeError("AI provider returned malformed JSON drafts")
             lines = [line.strip(" -\t") for line in clean.splitlines() if line.strip()]
             return [
                 AiDraftCandidate(persona=persona_set[index % len(persona_set)], content=line[:1000], risk_level="低")
@@ -398,6 +400,17 @@ class AiGateway:
         if not candidates:
             raise RuntimeError("AI provider returned no usable drafts")
         return candidates
+
+
+def _looks_like_json_drafts_fragment(value: str) -> bool:
+    clean = value.strip().lstrip("\ufeff")
+    return (
+        clean.startswith(("{", "["))
+        or '"drafts"' in clean
+        or "'drafts'" in clean
+        or "risk_level" in clean
+        or "sequence_index" in clean
+    )
 
 
 def create_ai_gateway() -> AiGateway:

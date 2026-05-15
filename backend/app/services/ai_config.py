@@ -502,6 +502,81 @@ def create_uploaded_material(
     actor: str = "普通用户",
 ) -> Material:
     require_tenant(session, tenant_id)
+    material = _new_uploaded_material(
+        tenant_id=tenant_id,
+        title=title,
+        material_type=material_type,
+        tags=tags,
+        caption=caption,
+        filename=filename,
+        content_type=content_type,
+        data=data,
+        emoji_asset_kind=emoji_asset_kind,
+    )
+    session.add(material)
+    session.flush()
+    record_material_versions(session, material, actor=actor)
+    audit(session, tenant_id=material.tenant_id, actor=actor, action="上传素材", target_type="material", target_id=str(material.id))
+    session.commit()
+    session.refresh(material)
+    return material
+
+
+def create_uploaded_materials(
+    session: Session,
+    *,
+    tenant_id: int,
+    title: str,
+    material_type: str,
+    tags: str,
+    caption: str,
+    files: list[tuple[str, str, bytes]],
+    emoji_asset_kind: str = "",
+    actor: str = "普通用户",
+) -> list[Material]:
+    require_tenant(session, tenant_id)
+    if not files:
+        raise ValueError("请至少选择一个素材文件")
+    materials: list[Material] = []
+    multiple = len(files) > 1
+    base_title = title.strip() or "素材"
+    for index, (filename, content_type, data) in enumerate(files, start=1):
+        resolved_title = _uploaded_material_title(base_title, filename, index=index, multiple=multiple)
+        material = _new_uploaded_material(
+            tenant_id=tenant_id,
+            title=resolved_title,
+            material_type=material_type,
+            tags=tags,
+            caption=caption,
+            filename=filename,
+            content_type=content_type,
+            data=data,
+            emoji_asset_kind=emoji_asset_kind,
+        )
+        session.add(material)
+        materials.append(material)
+    session.flush()
+    for material in materials:
+        record_material_versions(session, material, actor=actor)
+        audit(session, tenant_id=material.tenant_id, actor=actor, action="批量上传素材", target_type="material", target_id=str(material.id))
+    session.commit()
+    for material in materials:
+        session.refresh(material)
+    return materials
+
+
+def _new_uploaded_material(
+    *,
+    tenant_id: int,
+    title: str,
+    material_type: str,
+    tags: str,
+    caption: str,
+    filename: str,
+    content_type: str,
+    data: bytes,
+    emoji_asset_kind: str,
+) -> Material:
     path, normalized_type, fingerprint = save_material_upload_temp(
         tenant_id=tenant_id,
         filename=filename,
@@ -531,13 +606,17 @@ def create_uploaded_material(
             }
         )
     )
-    session.add(material)
-    session.flush()
-    record_material_versions(session, material, actor=actor)
-    audit(session, tenant_id=material.tenant_id, actor=actor, action="上传素材", target_type="material", target_id=str(material.id))
-    session.commit()
-    session.refresh(material)
     return material
+
+
+def _uploaded_material_title(base_title: str, filename: str, *, index: int, multiple: bool) -> str:
+    if not multiple:
+        return base_title
+    file_stem = str(filename or "").rsplit(".", 1)[0].strip()
+    suffix = file_stem or f"{index:02d}"
+    if base_title == "素材":
+        return suffix
+    return f"{base_title}-{suffix}"
 
 
 def record_ai_usage(
@@ -846,6 +925,7 @@ __all__ = [
     "create_content_keyword_rule",
     "create_material",
     "create_prompt_template",
+    "create_uploaded_materials",
     "get_scheduling_setting",
     "get_tenant_ai_setting",
     "list_ai_providers",

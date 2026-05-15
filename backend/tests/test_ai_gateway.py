@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from app.ai_gateway import AiGateway, AiProviderCredentials, normalize_ai_model_name
 
 
@@ -166,6 +168,34 @@ def test_openai_compatible_content_list_is_extracted(monkeypatch):
 
     assert content == "OK from list"
     assert usage.total_tokens == 6
+
+
+def test_malformed_json_drafts_are_not_used_as_chat_lines(monkeypatch):
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {"content": '{"drafts": ['},
+                        "finish_reason": "length",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="malformed JSON drafts"):
+        AiGateway().generate_drafts(
+            credentials(),
+            "请输出 json drafts",
+            count=1,
+            topic="群聊",
+            tone="自然",
+            persona_set=["A"],
+            temperature=0.8,
+            max_tokens=512,
+        )
 
 
 def test_deepseek_uses_official_chat_completion_path_and_json_mode(monkeypatch):

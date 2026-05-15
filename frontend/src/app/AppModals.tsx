@@ -289,14 +289,15 @@ export function AppModals() {
             <label>标签<Input value={materialForm.tags} onChange={(event) => setMaterialForm({ ...materialForm, tags: event.target.value })} /></label>
             {materialForm.source_kind === 'upload' && modal.type === 'materialCreate' ? (
               <>
-                <label className="wide-field">素材文件<input type="file" onChange={(event) => setMaterialFile(event.target.files?.[0] ?? null)} /></label>
+                <label className="wide-field">素材文件<input type="file" multiple onChange={(event) => setMaterialFile(event.target.files ? Array.from(event.target.files) : null)} /></label>
+                {materialFile?.length ? <span className="wide-field">已选择 {materialFile.length} 个文件，批量上传后会逐个进入素材缓存队列。</span> : null}
                 <label className="wide-field">Caption<Input.TextArea value={materialForm.content} onChange={(event) => setMaterialForm({ ...materialForm, content: event.target.value })} /></label>
               </>
             ) : (
               <label className="wide-field">内容/URL<Input.TextArea value={materialForm.content} onChange={(event) => setMaterialForm({ ...materialForm, content: event.target.value })} /></label>
             )}
           </div>
-          <FormActions submitLabel={modal.type === 'materialEdit' ? '保存素材' : '新增素材'} onCancel={closeModal} onSubmit={modal.type === 'materialEdit' ? saveMaterial : createMaterial} loading={isActionPending(modal.type === 'materialEdit' ? `material:${materialForm.id ?? 'create'}:save` : 'material:create')} disabled={!materialForm.title || (materialForm.source_kind === 'upload' && modal.type === 'materialCreate' ? !materialFile : !materialForm.content)} />
+          <FormActions submitLabel={modal.type === 'materialEdit' ? '保存素材' : '新增素材'} onCancel={closeModal} onSubmit={modal.type === 'materialEdit' ? saveMaterial : createMaterial} loading={isActionPending(modal.type === 'materialEdit' ? `material:${materialForm.id ?? 'create'}:save` : 'material:create')} disabled={!materialForm.title || (materialForm.source_kind === 'upload' && modal.type === 'materialCreate' ? !(materialFile?.length) : !materialForm.content)} />
           </div>
         </Modal>
       )}

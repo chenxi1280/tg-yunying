@@ -13,7 +13,7 @@ from app.gateways import DeveloperAppCredentials, SendResult, TelethonTelegramGa
 from app.models import AccountStatus, Action, ContentKeywordRule, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, SourceMediaAsset, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.schemas.operations_center import RuleSetCreate, RuleSetVersionCreate
 from app.schemas.ai_config import MaterialCreate, MaterialUpdate
-from app.services.ai_config import create_material, create_uploaded_material, material_cache_health, update_material
+from app.services.ai_config import create_material, create_uploaded_material, create_uploaded_materials, material_cache_health, update_material
 from app.services.material_ingestion import deep_probe_material_url
 from app.services.messages import build_outbound_segments
 from app.services.operations_center import (
@@ -340,6 +340,33 @@ def test_material_cache_worker_marks_media_material_ready(monkeypatch):
         assert material.last_cache_error == ""
 
     get_settings.cache_clear()
+
+
+def test_batch_uploaded_materials_create_one_row_per_file():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        materials = create_uploaded_materials(
+            session,
+            tenant_id=1,
+            title="活群图",
+            material_type="图片",
+            tags="活群,表情",
+            caption="",
+            files=[
+                ("one.png", "image/png", b"png-one"),
+                ("two.png", "image/png", b"png-two"),
+            ],
+            actor="tester",
+        )
+
+    assert [item.title for item in materials] == ["活群图-one", "活群图-two"]
+    assert [item.cache_ready_status for item in materials] == ["not_cached", "not_cached"]
+    assert all(item.source_kind == "upload" for item in materials)
+    assert all(item.file_size > 0 for item in materials)
 
 
 def test_material_cache_worker_respects_flood_wait_retry_time(monkeypatch):

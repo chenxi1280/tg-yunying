@@ -67,7 +67,10 @@ def build_plan(session: Session, task: Task) -> int:
     history_depth = int(config.get("chat_history_depth") or 50)
     history_rows = recent_context_messages(session, group, history_depth)
     context_rows = list(reversed(history_rows[-history_depth:]))
-    usable_context_rows = [row for row in context_rows if not _looks_like_internal_prompt(row.content)]
+    usable_context_rows = _topic_relevant_context_rows(
+        config,
+        [row for row in context_rows if _is_usable_context_message(row.content)],
+    )
     mode, ramp_ratio = ai_cycle_mode(config, task.scheduled_start)
     unprocessed_rows = [
         row
@@ -360,10 +363,11 @@ def _topic_plan_summary(config: dict, group: TgGroup, topic_thread: str, turn_co
     anchors = [part.strip() for part in re.split(r"[；/]", topic_thread or "") if part.strip()]
     anchor = anchors[-1] if anchors else f"主线方向：{topic[:80]}"
     steps = [
-        f"1. 承接：围绕“{anchor[:80]}”自然接一句，不重复上一轮表达。",
-        f"2. 补充：给出一个和“{topic[:60]}”相关的具体信息点或轻量经验。",
-        "3. 互动：抛出一个容易回答的小问题，避免营销口吻。",
-        "4. 收束：简短总结并把话题带回真实用户上下文。",
+        f"1. 贴近现场：从“{anchor[:80]}”里挑一个最像真人会接的点，短句承接。",
+        f"2. 补充一点生活化细节：只给一个和“{topic[:60]}”相关的小信息或亲身口吻，不像科普。",
+        "3. 轻轻问一句：问题要小、具体、容易回，不要问“大家怎么看”。",
+        "4. 自然收一下：把话题放回上一条真人上下文，别总结成公告。",
+        "5. 换个角度闲聊：如果前面已经有人接话，就从反应、吐槽或经历切入。",
     ]
     return "\n".join(steps[: max(1, min(int(turn_count or 1), len(steps)))])
 
@@ -595,6 +599,14 @@ def _looks_like_internal_prompt(content: str) -> bool:
         "生成自然开场",
         "刚看到大家提到“刚看到大家提到",
         "[已撤回的内部提示词",
+        "刚看到大家提到",
+        "刚看到有人聊这个",
+        "看大家聊",
+        "顺着这个话题说",
+        "这个点挺有意思",
+        "这个点我也留意到了",
+        "可以继续聊聊",
+        "有经验的朋友也可以补充",
     )
     return (
         any(marker in text for marker in markers)
@@ -608,6 +620,38 @@ def _looks_like_generated_noise(content: str) -> bool:
     if _looks_like_internal_prompt(text):
         return True
     return text.count("“") + text.count("”") >= 4
+
+
+def _is_usable_context_message(content: str) -> bool:
+    text = re.sub(r"\s+", " ", str(content or "")).strip()
+    compact = re.sub(r"\s+", "", text)
+    if _looks_like_internal_prompt(text):
+        return False
+    if compact.isdigit():
+        return False
+    if len(compact) <= 8 and len(set(compact)) <= 2:
+        return False
+    return True
+
+
+def _topic_relevant_context_rows(config: dict, rows: list) -> list:
+    topic = str(config.get("topic_hint") or "").strip()
+    if not topic or not rows:
+        return rows
+    keywords = _topic_keywords(topic)
+    if not keywords:
+        return rows
+    return [row for row in rows if any(keyword in str(getattr(row, "content", "") or "") for keyword in keywords)]
+
+
+def _topic_keywords(topic: str) -> set[str]:
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff]+", " ", topic).strip()
+    parts = [part for part in re.split(r"\s+", cleaned) if len(part) >= 2]
+    keywords = set(parts)
+    for part in parts:
+        if re.fullmatch(r"[\u4e00-\u9fff]{3,}", part):
+            keywords.update(part[index:index + 2] for index in range(0, len(part) - 1))
+    return {keyword for keyword in keywords if keyword}
 
 
 def _drop_repeated_ai_messages(contents: list[str], previous_messages: list[str]) -> list[str]:

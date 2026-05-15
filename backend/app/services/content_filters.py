@@ -12,6 +12,7 @@ from app.models import ContentKeywordRule, TgGroup
 GENERATED_TEMPLATE_MARKERS = (
     "刚看到大家提到",
     "刚看到有人聊这个",
+    "看大家聊",
     "顺着这个话题说",
     "顺着刚才说的",
     "这个点挺有意思",
@@ -26,6 +27,11 @@ GENERATED_TEMPLATE_MARKERS = (
 OPERATOR_UI_MARKERS = (
     "点击底部按钮",
     "点击查看",
+    "请点下面按钮",
+    "还没有你的定位",
+    "为了保护隐私",
+    "更新后回到本群",
+    "查询附近老师",
     "积分商城",
     "提交报告",
     "约课记录",

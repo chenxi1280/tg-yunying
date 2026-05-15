@@ -201,8 +201,8 @@ export interface AppState {
     delivery_mode: string;
     source_kind: string;
   };
-  materialFile: File | null;
-  setMaterialFile: (file: File | null) => void;
+  materialFile: File[] | null;
+  setMaterialFile: (file: File[] | null) => void;
   setMaterialForm: React.Dispatch<React.SetStateAction<{
     id: number | null;
     title: string;
