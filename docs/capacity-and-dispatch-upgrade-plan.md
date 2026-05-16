@@ -512,7 +512,16 @@ target_id -> runtime_state
 
 ## 5. Telegram Gateway 升级
 
-当前 Telethon Gateway 已经有 client cache，但 1000 账号阶段需要继续增强。
+当前 Telethon Gateway 的 client 生命周期已抽离到 `backend/app/telethon_lifecycle.py`。首期增强包括：
+
+- 后台 event loop 统一管理。
+- `api_id + session` 维度 client cache。
+- `TELETHON_CLIENT_CACHE_SIZE` 控制单进程最大 client 数。
+- `TELETHON_CLIENT_IDLE_SECONDS` 控制 idle 释放。
+- 连接超时和业务操作超时参数化。
+- FastAPI shutdown 时统一 disconnect。
+
+1000 账号阶段仍需要继续用真实压测校准 cache size、idle TTL、文件描述符、代理出口和 shard 范围。
 
 ### 5.1 Client 分片
 
@@ -963,7 +972,7 @@ METRICS_INTERVAL_SECONDS=15
 用数据确认容量边界。
 ```
 
-压测内容：
+已新增首期容量模型脚本 `backend/scripts/run_capacity_benchmark.py`，并生成 `docs/capacity-report-100-300-1000.md` / `reports/capacity/latest.json`。该模型覆盖以下压测内容：
 
 - 1000 个模拟账号。
 - 20-30 个持续任务。

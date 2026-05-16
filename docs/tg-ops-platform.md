@@ -714,14 +714,19 @@ Dispatcher 并发必须受 PostgreSQL 连接池预算约束。
 - `DB_POOL_TIMEOUT`
 - `DB_POOL_RECYCLE`
 
-Telethon client 生命周期需要设计：
+Gateway 契约数据结构已抽到 `backend/app/gateway_contracts.py`，Telethon client 生命周期已从 `backend/app/gateways.py` 中抽到 `backend/app/telethon_lifecycle.py`，由独立模块管理后台 event loop、client cache、idle 释放、LRU 上限和应用停止时的 disconnect。生产参数由环境变量控制：
 
-- 每个 worker 最多加载多少账号 client。
-- client idle 多久释放。
-- worker 停止时如何 disconnect。
-- session 失效、代理切换、账号受限时如何清理 cache。
-- listener client 和 sender client 是否共享。
-- 文件描述符、内存和 event loop 队列上限。
+- `TELETHON_CLIENT_CACHE_SIZE`：单进程最多缓存的 Telethon client 数。
+- `TELETHON_CLIENT_IDLE_SECONDS`：client 空闲多久后释放。
+- `TELETHON_CLIENT_CONNECT_TIMEOUT_SECONDS`：连接超时。
+- `TELETHON_OPERATION_TIMEOUT_SECONDS`：同步业务入口等待异步 TG 调用的上限。
+
+生命周期规则：
+
+- 每个 worker 只应加载自身 shard 内账号；Dispatcher / Listener 默认不共享进程，也就不共享 client cache。
+- client cache key 首期按 `api_id + session` 维度管理；session 失效、账号受限、代理切换时应调用 lifecycle invalidate 或由后续风控处置清理。
+- FastAPI shutdown 会调用 Telethon lifecycle shutdown，尽量断开已缓存 client。
+- 单 worker 的 client 数必须小于 cache size，并结合文件描述符、内存、代理出口和 TG 延迟做真实压测。
 
 ### 15.8 Metrics 快照
 
@@ -835,6 +840,14 @@ Telethon client 生命周期需要设计：
 
 1000 账号能力必须通过压测固化，静态评估不能等同线上承载证明。
 
+当前已新增可重复的 mock gateway 容量模型：
+
+- 脚本：`backend/scripts/run_capacity_benchmark.py`
+- JSON 输出：`reports/capacity/latest.json`
+- Markdown 报告：`docs/capacity-report-100-300-1000.md`
+
+该报告用于固化容量参数和验收口径，仍不能替代真实 PostgreSQL / Redis / TG API 延迟压测。
+
 压测场景：
 
 - 100 账号 / 5 任务。
@@ -912,6 +925,63 @@ Telethon client 生命周期需要设计：
 - 更强的账号画像和 AI 长期话题编排。
 - 更完整的代理风险分析和容量预测。
 - 更细的容量自动建议和 worker 自动扩容策略。
+
+### P6：大文件拆分和边界收敛
+
+本轮已完成第一批低风险拆分：
+
+- Gateway 数据契约：`backend/app/gateway_contracts.py`。
+- Mock Gateway：`backend/app/gateway_mock.py`。
+- Telethon 生命周期：`backend/app/telethon_lifecycle.py`。
+- Task Center 字段配置：`backend/app/services/task_center/config_fields.py`。
+- Task Center 创建预检：`backend/app/services/task_center/precheck.py`。
+- Task Center 详情聚合：`backend/app/services/task_center/details.py`。
+- Task Center 工具函数：`backend/app/services/task_center/utils.py`。
+- Dispatcher 运行资源：`backend/app/services/task_center/runtime_resources.py`。
+- Task Center 审核域：`backend/app/services/task_center/reviews.py`。
+- Task Center 统计与重试：`backend/app/services/task_center/stats.py`。
+- Task Center 配置归一化：`backend/app/services/task_center/config_normalization.py`。
+- 运营中心默认规则：`backend/app/services/operations_center_defaults.py`。
+- 运营中心监听域：`backend/app/services/operations_center_listener.py`。
+- 运营中心风控/运行风险指标：`backend/app/services/operations_center_risk.py`。
+- 运营中心规则指标：`backend/app/services/operations_center_rule_metrics.py`。
+- 运营中心规则集版本管理：`backend/app/services/operations_center_rule_sets.py`。
+- 运营中心工具函数：`backend/app/services/operations_center_utils.py`。
+- Telethon 内容采集：`backend/app/gateway_telethon_content.py`。
+- Telethon 媒体发送：`backend/app/gateway_telethon_media.py`。
+- Telethon 目标解析：`backend/app/gateway_telethon_utils.py`。
+- 任务中心前端 view-model：`frontend/src/app/views/taskCenterViewModel.ts`。
+- 任务中心前端向导组件：`frontend/src/app/views/TaskCenterWizardSections.tsx`。
+- 任务中心详情弹窗：`frontend/src/app/views/TaskCenterDetailModal.tsx`。
+- App Provider 默认表单状态：`frontend/src/app/context/defaults.ts`。
+- App Provider 全局刷新：`frontend/src/app/context/refresh.ts`。
+- App Provider 操作 loading hook：`frontend/src/app/context/actionRunner.ts`。
+- App Provider 认证动作：`frontend/src/app/context/authActions.ts`。
+- App Provider 账号动作：`frontend/src/app/context/accountActions.ts`。
+- App Provider 消息动作：`frontend/src/app/context/messageActions.ts`。
+- App Provider 系统配置动作：`frontend/src/app/context/systemActions.ts`。
+- App Provider modal 编排：`frontend/src/app/context/modalState.ts`。
+- App Provider 素材/关键词动作：`frontend/src/app/context/contentActions.ts`。
+- 规则中心配置表单和规则 JSON 互转：`frontend/src/app/views/RulesCenterConfig.tsx`。
+
+当前关键文件行数：
+
+| 文件 | 当前行数 | 状态 |
+| --- | ---: | --- |
+| `backend/app/services/operations_center.py` | 780 | 监听域、默认规则、风控指标、规则指标、规则集版本管理和工具已拆；规则测试仍可继续拆 |
+| `frontend/src/app/context.tsx` | 797 | 默认值、刷新、pending action、认证、账号、消息、系统配置、素材/关键词和 modal 编排动作已拆 |
+| `backend/app/services/task_center/service.py` | 960 | 预检、详情、字段映射、reviews、stats、配置归一化已拆；CRUD、planner、recovery、role drain 仍需继续拆 |
+| `backend/app/gateways.py` | 943 | 契约、Mock、Telethon 生命周期、内容采集、媒体发送、目标解析已拆；Telethon login/profile/channel action 仍需继续拆 |
+| `frontend/src/app/views/TaskCenterView.tsx` | 873 | 创建/编辑向导、view-model 和详情弹窗已拆 |
+| `frontend/src/app/views/RulesCenterView.tsx` | 892 | 规则配置表单和配置互转已拆 |
+| `backend/app/services/task_center/dispatcher.py` | 727 | 运行资源已拆；claim/result handler 可继续拆 |
+
+后续继续拆：
+
+- `operations_center.py` 的规则测试和运营聚合报表。
+- `task_center/service.py` 的 CRUD、planner/recovery、role drain。
+- `context.tsx` 后续只做 selection state / React Query hooks 级别的渐进收敛，不再作为本轮 P6 阻塞项。
+- `RulesCenterView.tsx` 的测试器、发布面板。
 
 ---
 

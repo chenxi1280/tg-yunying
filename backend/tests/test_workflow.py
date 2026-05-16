@@ -51,7 +51,7 @@ def _cleanup_open_task_center_runtime():
         if "tasks" not in inspect(session.bind).get_table_names():
             return
         for task in session.query(Task).filter(Task.deleted_at.is_(None)):
-            task.status = "completed"
+            task.status = "stopped"
             task.next_run_at = None
         for action in session.query(Action).filter(~Action.status.in_(["success", "failed", "skipped", "unknown_after_send"])):
             action.status = "skipped"

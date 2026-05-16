@@ -133,24 +133,25 @@ for action in claimed:
 - Dispatcher 更像发送、点赞、评论和回写结果，受 FloodWait、SlowMode、代理和目标权限影响。
 - Planner 更像数据库规划和去重，不应该等待 TG 网络。
 
-当前它们仍通过同一个 worker 节奏统一 drain。规模扩大后，监听慢会影响发送，发送慢也会影响监听。
+代码层已经支持按 role drain，但部署层仍需要确保生产实际启动 planner / dispatcher / listener / recovery / metrics 等独立 worker。规模扩大后，不能再把所有角色长期放在一个综合 worker 节奏里运行。
 
 ### 3.5 大文件和多职责文件仍然存在
 
 当前代码已经比早期拆分过，但仍有明显的大文件和多职责文件。
 
-| 文件 | 行数 | 问题判断 |
-| --- | ---: | --- |
-| `backend/app/services/operations_center.py` | 2459 | 聚合了运营中心查询、规则默认值、目标/监听/任务摘要等多种职责 |
-| `frontend/src/app/context.tsx` | 1959 | App 级状态、数据加载、操作函数、UI 事件混在一起 |
-| `backend/app/services/task_center/service.py` | 1767 | 任务 CRUD、规划、drain、恢复、详情聚合混在一个服务文件里 |
-| `frontend/src/app/views/TaskCenterView.tsx` | 1711 | 任务列表、创建向导、编辑、详情、表单映射和交互状态过重 |
-| `backend/app/gateways.py` | 1685 | mock gateway、Telethon gateway、登录、发送、解析、缓存等职责过多 |
-| `backend/app/services/operations.py` | 1524 | 旧运营任务逻辑和新运营目标/任务逻辑边界需要继续收敛 |
-| `frontend/src/app/views/RulesCenterView.tsx` | 1470 | 规则列表、版本编辑、测试、发布、表单和展示逻辑较重 |
-| `frontend/src/app/types.ts` | 1363 | 类型集中度过高，容易形成全局耦合 |
+| 文件 | 当前行数 | 本轮拆分状态 | 仍需收敛 |
+| --- | ---: | --- | --- |
+| `backend/app/services/operations_center.py` | 780 | 已抽默认规则、监听域、风控指标、规则指标、工具、规则集版本管理 | 规则测试和部分运营聚合仍可继续拆 |
+| `frontend/src/app/context.tsx` | 797 | 已抽默认值、刷新、pending action、认证、账号、消息、系统配置、素材/关键词和 modal 编排动作 | 后续只保留 Provider 装配、状态声明和轻量派生值 |
+| `backend/app/services/task_center/service.py` | 960 | 已抽字段映射、预检、详情、工具、reviews、stats、配置归一化 | CRUD、planner、recovery、role drain 仍可继续分域 |
+| `backend/app/gateways.py` | 943 | 已抽契约、Mock、Telethon 生命周期、内容采集、媒体发送、目标解析 | Telethon login、profile、channel action 仍可继续拆 |
+| `frontend/src/app/views/TaskCenterView.tsx` | 873 | 已抽 view-model、创建/编辑向导、详情弹窗 | 列表交互和 action table columns 仍可继续组件化 |
+| `frontend/src/app/views/RulesCenterView.tsx` | 892 | 已抽 `RulesCenterConfig.tsx` | 规则列表、测试器、发布面板仍可继续拆 |
+| `backend/app/services/task_center/dispatcher.py` | 727 | 已抽 `runtime_resources.py` | claim、结果处理、gateway 边界仍可继续分文件 |
+| `backend/app/services/operations.py` | 1524 | 本轮未处理 | 旧运营任务逻辑和新运营目标/任务逻辑边界需要继续收敛 |
+| `frontend/src/app/types.ts` | 1363 | 本轮未处理 | 类型集中度过高，后续按 domain 拆分 |
 
-这些文件不是马上导致系统不能跑的根因，但会让后续 1000 账号能力建设变慢，尤其是任务中心和 gateway。
+这些文件不是马上导致系统不能跑的根因，但会让后续 1000 账号能力建设变慢，尤其是任务中心和 gateway。本轮已经完成第一轮 P6 边界拆分并通过构建/回归；`context.tsx`、`operations.py` 仍不应继续堆新逻辑，后续新增能力要进入对应 domain 模块。
 
 ### 3.6 同类“已设计但未完全生效”清单
 
@@ -158,17 +159,17 @@ for action in claimed:
 
 | 能力 | 当前状态 | 已有基础 | 缺口 | 实施优先级 |
 | --- | --- | --- | --- | --- |
-| Worker 角色拆分 | 未真正生效 | `WORKER_ROLE` 配置已存在 | `app.worker` 没有 `--role`，`run_worker()` / `drain_once()` 不按角色分流，生产 compose 只有一个 `worker` 服务 | P1 |
-| Planner / Dispatcher / Listener / Recovery / Metrics 分工 | 部分逻辑已存在，未物理隔离 | `drain_task_center()` 内已有规划、claim、dispatch、listener runtime、recovery | 所有能力仍在同一个 task center drain 中顺序执行 | P1 |
-| Dispatcher 有界并发 | 配置存在，未执行 | `DISPATCHER_CONCURRENCY` 配置已存在，Action claim 已有 | claim 后仍按 `for action in claimed` 顺序执行，没有并发池，也没有按 action 独立短 session 执行 | P2 |
-| Action 原子 claim | 已部分落地 | `claiming`、`claim_owner`、`claim_token`、`FOR UPDATE SKIP LOCKED`、claim 超时恢复、测试覆盖已存在 | claim 阶段还没有账号分片和公平调度；并发执行入口未接上 | P1-P2 |
+| Worker 角色拆分 | 代码已落地，部署需确认 | `app.worker --role`、`WORKER_ROLE`、手动 drain role 参数、role 测试已存在 | 生产 compose / 守护进程需要按 role 启动并监控 | P1 |
+| Planner / Dispatcher / Listener / Recovery / Metrics 分工 | 代码已分流，service 主文件仍偏集中 | `drain_task_planner/dispatcher/listener/recovery/metrics` 已存在 | 继续把 role drain 从 `service.py` 拆到独立模块，部署侧做物理隔离 | P1 |
+| Dispatcher 有界并发 | 已接入，需压测验证 | `DISPATCHER_CONCURRENCY`、线程池并发、账号 in-flight 保护已接入 | 需要 PostgreSQL / Redis / 真实任务链路压测确认连接池和吞吐边界 | P2 |
+| Action 原子 claim | 已落地 | `claiming`、`claim_owner`、`claim_token`、`FOR UPDATE SKIP LOCKED`、claim 超时恢复、测试覆盖、账号分片过滤已存在 | 继续优化公平调度和观测指标 | P1-P2 |
 | Redis token bucket | 已部分落地 | 全局、任务、任务类型、账号、代理、目标、媒体限流 key 已有，Redis 不可用默认 fail-closed | 当前实现是“立即消耗 token + reservation 标记”，释放 reservation 只删除标记，不回滚 token；这比 fail-open 安全，但不是完整 quota reservation / confirm / refund 语义 | P2 |
-| PostgreSQL 连接池参数化 | 未落地 | 当前统一通过 `database.py` 创建 engine | `create_engine(...)` 未显式配置 `pool_size`、`max_overflow`、`pool_timeout`、`pool_recycle`；Dispatcher 并发前无法做连接预算 | P2 |
+| PostgreSQL 连接池参数化 | 已初步落地 | `database.py` 已按 `DB_POOL_SIZE`、`DB_MAX_OVERFLOW`、`DB_POOL_TIMEOUT`、`DB_POOL_RECYCLE` 配置 PostgreSQL engine | 仍需把连接预算写入部署参数和 Dispatcher 并发验收，避免 worker 数放大后耗尽连接 | P2 |
 | 跨进程账号 in-flight | 部分兜底 | 进程内 `_IN_FLIGHT_ACCOUNTS`，数据库唯一索引 `uq_actions_executing_account`，冲突后恢复 pending | 没有 Redis semaphore / lock；多 worker 下会靠 DB 唯一约束挡冲突，吞吐和可观测性不如 claim 前锁定 | P3 |
-| 账号分片 | 配置存在，未执行 | `ACCOUNT_SHARD_TOTAL`、`ACCOUNT_SHARD_INDEX` 配置已存在 | claim 查询和账号转派没有使用分片条件，worker 不会只处理自己的账号 shard | P3 |
-| Listener 独立化 | 运行模型已部分具备，未独立部署 | `listener_source_state`、source lease、同窗口采集去重已存在 | Listener 仍由 `drain_task_center()` 先执行，慢监听仍会影响同一轮 task center 后续规划/投递 | P4 |
-| Metrics Worker | 未真正落地 | 运营数据 API 可实时查询 `Action` / `WorkerHeartbeat`；`daily_runtime_stats` 由运行明细清理时汇总旧数据 | 没有周期性 metrics worker 记录队列深度、oldest pending、TG 延迟、FloodWait、DB 等待等运行快照 | P5 |
-| Worker heartbeat 按角色展示 | 数据模型支持，写入未分角色 | `worker_heartbeats.process_type` 已存在 | 当前 task center heartbeat 默认 `process_type="task_center"`，不能区分 planner / dispatcher / listener / recovery / metrics | P1 |
+| 账号分片 | 已接入 claim 路径 | `ACCOUNT_SHARD_TOTAL`、`ACCOUNT_SHARD_INDEX` 配置和 claim 过滤已存在 | 扩缩 shard 时需要运维流程和压测报告 | P3 |
+| Listener 独立化 | role 路径已具备，部署需确认 | `listener_source_state`、source lease、同窗口采集去重、listener role 已存在 | 生产需独立 listener worker，避免回退到综合 worker | P4 |
+| Metrics Worker | 基础已落地，指标仍可增强 | metrics role、heartbeat、运行数据查询、daily runtime stats 已存在 | 继续补队列深度、oldest pending、TG 延迟、FloodWait、DB 等待等快照指标 | P5 |
+| Worker heartbeat 按角色展示 | 已接入角色写入 | `worker_heartbeats.process_type` 写入真实 role | 继续在运营概览强化按 role 展示和告警 | P1 |
 | Embedded worker | 仍是综合 worker | 开发环境可随 API 启动 embedded worker | embedded worker 调用同一个 `run_worker()`，角色拆分后必须限制为 dev-only all 或明确 role，生产必须保持禁用 | P1 |
 | 手动 drain endpoint | 仍是综合 drain | `/api/worker/drain-once` 仅非生产可用 | 角色拆分后需要支持 dev/test 指定 role，避免调试时误触发所有 drain | P1 |
 
@@ -506,7 +507,14 @@ Metrics Worker
 
 账号分片不只是 `account_id % total`，还要设计 worker 停掉后的接管规则。
 
-需要补充：
+本轮补充了首期实现：
+
+- 新增 `backend/app/telethon_lifecycle.py`，从 `backend/app/gateways.py` 抽离后台 event loop、client cache、idle TTL、LRU 上限、连接超时和 shutdown disconnect。
+- 新增 `backend/app/gateway_contracts.py`，从 `backend/app/gateways.py` 抽离 Gateway 对外数据契约，保留 `app.gateways` 导入兼容。
+- 新增配置 `TELETHON_CLIENT_CACHE_SIZE`、`TELETHON_CLIENT_IDLE_SECONDS`、`TELETHON_CLIENT_CONNECT_TIMEOUT_SECONDS`、`TELETHON_OPERATION_TIMEOUT_SECONDS`。
+- FastAPI lifespan 停止时调用 Telethon lifecycle shutdown，避免 worker / API 进程退出后遗留连接。
+
+仍需要在真实压测中继续校准：
 
 - 分片维度：按账号 ID、账号池、代理池还是运营目标。
 - 分片生效点：必须在 claim 前生效，账号转派也只能在本 shard 内完成。
@@ -518,7 +526,7 @@ Metrics Worker
 
 ### 9.5 PostgreSQL 连接池设计
 
-当前 `create_engine(...)` 没有显式配置 `pool_size`、`max_overflow`、`pool_timeout`。多 worker + Dispatcher 并发后，如果不先设计连接池，最先出问题的可能不是 TG，而是 DB 连接耗尽。
+当前 `create_engine(...)` 已经按环境变量显式配置 `pool_size`、`max_overflow`、`pool_timeout` 和 `pool_recycle`。多 worker + Dispatcher 并发后，仍必须把连接池预算纳入部署参数，否则最先出问题的可能不是 TG，而是 DB 连接耗尽。
 
 需要补充：
 
@@ -553,7 +561,7 @@ Metrics Worker
 - 文件描述符、内存、event loop 队列的限制。
 - listener client 和 sender client 是否共享，还是按 role 分开。
 
-建议先按账号 shard 限制每个 worker 的 client 范围，再做 cache 上限和 idle 释放。
+建议先按账号 shard 限制每个 worker 的 client 范围，再根据 `TELETHON_CLIENT_CACHE_SIZE` 和 idle TTL 校准单进程上限。
 
 ### 9.7 Metrics 快照表和页面口径
 
@@ -597,7 +605,17 @@ runtime_metric_snapshots
 
 ### 9.8 压测模型和容量报告格式
 
-1000 账号能力必须通过压测固化。需要先设计压测数据和报告格式。
+1000 账号能力必须通过压测固化。当前已新增首期容量模型脚本和报告：
+
+- `backend/scripts/run_capacity_benchmark.py`
+- `reports/capacity/latest.json`
+- `docs/capacity-report-100-300-1000.md`
+
+该脚本覆盖 100 / 300 / 1000 账号、fast / slow / flood_wait / slowmode / unknown_after_send mock gateway 模式，并输出 worker 数、并发数、claim limit、PostgreSQL pool、吞吐、oldest pending、unknown_after_send、重复发送数和单机边界。
+
+注意：这仍是 mock gateway 容量模型，不是线上 TG API 实测结论。最终发布验收必须接 PostgreSQL / Redis，并补真实任务创建与执行测试。
+
+压测数据和报告格式：
 
 压测场景至少包括：
 
@@ -695,7 +713,7 @@ runtime_metric_snapshots
 | Task Center drain 拆分 | `drain_task_center()` 同时做 listener、recovery、planner、dispatcher、retention | 拆成可单独调用的 `drain_task_planner()`、`drain_task_dispatcher()`、`drain_task_listener()`、`drain_task_recovery()`、`drain_task_metrics()` | `backend/app/services/task_center/service.py`，必要时新增 `drain.py`、`planner.py`、`recovery.py` | P1 |
 | Heartbeat 按角色写入 | 当前 task center heartbeat 不能区分真实 role | `worker_heartbeats.process_type` 写入真实角色，页面和 metrics 能按角色判断在线状态 | `backend/app/services/task_center/heartbeat.py`、`backend/app/services/task_center/service.py`、`backend/app/services/operations_center.py` | P1 |
 | Dispatcher 有界并发 | `DISPATCHER_CONCURRENCY` 已有配置，但 claim 后仍串行 `dispatch_action()` | 同一个 Dispatcher worker 内按配置并发执行不同账号 action，且每个 action 使用短 session | `backend/app/services/task_center/service.py`、`backend/app/services/task_center/dispatcher.py` | P2 |
-| PostgreSQL 连接池参数化 | `database.py` 直接 `create_engine(...)`，没有显式 pool 参数 | 增加 `DB_POOL_SIZE`、`DB_MAX_OVERFLOW`、`DB_POOL_TIMEOUT`、`DB_POOL_RECYCLE`，并用连接预算约束 dispatcher 并发 | `backend/app/config.py`、`backend/app/database.py`、部署环境模板 | P2 |
+| PostgreSQL 连接池参数化 | 已有 `DB_POOL_SIZE`、`DB_MAX_OVERFLOW`、`DB_POOL_TIMEOUT`、`DB_POOL_RECYCLE` 配置 | 用连接预算约束 worker 数、dispatcher 并发和部署环境模板 | `backend/app/config.py`、`backend/app/database.py`、部署环境模板 | P2 |
 | Gateway 调用边界更清晰 | dispatcher 中混有 claim、资源预留、gateway 调用、结果处理 | gateway 调用前后状态可恢复，`unknown_after_send` 不自动重复发送 | `backend/app/services/task_center/dispatcher.py`、`backend/app/gateways.py`、executor 文件 | P2 |
 
 ### 10.2 横向扩容和容量稳定性优化
@@ -706,21 +724,72 @@ runtime_metric_snapshots
 | 账号分片生效 | `ACCOUNT_SHARD_TOTAL` / `ACCOUNT_SHARD_INDEX` 配置存在，但 claim 和转派未使用 | claim 查询、账号转派、Telethon client 加载都限制在当前 shard | `backend/app/services/task_center/dispatcher.py`、`backend/app/services/task_center/account_pool.py`、`backend/app/services/accounts.py` | P3 |
 | Listener 独立 worker | listener runtime 仍由 task center 综合 drain 触发 | listener role 独立采集，source lease / shard 防重复，慢监听不拖慢发送 | `backend/app/services/task_center/listener_runtime.py`、`backend/app/services/task_center/service.py` | P4 |
 | Metrics 快照 | 运营数据主要实时查询，缺少容量快照 | 新增 metrics role 和 runtime snapshots，记录 pending、oldest age、吞吐、限流、worker、DB 等指标 | `backend/app/models/task_center.py` 或新增 metrics 模型、`backend/app/services/operations_center.py`、前端运营数据页 | P5 |
-| 压测脚本 | 当前没有固定 100 / 300 / 1000 账号容量报告 | 提供可重复的 mock gateway 压测，输出 worker 数、并发数、连接池和吞吐建议 | `backend/tests` 或 `backend/scripts` | P5 |
+| 压测脚本 | 已新增 mock gateway 容量模型和 100 / 300 / 1000 账号报告 | 继续接真实 PostgreSQL / Redis 压测，并把真实任务创建、claim、执行、metrics 纳入验收 | `backend/scripts/run_capacity_benchmark.py`、`docs/capacity-report-100-300-1000.md` | P5 |
 
 ### 10.3 大文件拆分优化
 
 这些拆分不作为第一步容量瓶颈修复，但必须纳入整体升级，否则后续并发、风控、metrics 会继续堆进大文件。
 
+本轮已完成 P6 第一批拆分，保留原导入兼容：
+
+- `backend/app/gateway_contracts.py`：Gateway 数据契约。
+- `backend/app/gateway_mock.py`：Mock / 本地模拟 Gateway，避免与真实 Telethon 适配器混在同一文件。
+- `backend/app/telethon_lifecycle.py`：Telethon event loop、client cache、idle prune、shutdown。
+- `backend/app/services/task_center/config_fields.py`：任务中心配置字段映射。
+- `backend/app/services/task_center/precheck.py`：任务创建前预检，聚合目标能力、规则版本、风控预检和账号容量缺口。
+- `backend/app/services/task_center/details.py`：任务详情 payload、频道子任务分组、AI cycle、转发批次和账号画像展示聚合。
+- `backend/app/services/task_center/utils.py`：任务中心通用解析工具。
+- `backend/app/services/task_center/runtime_resources.py`：Dispatcher Redis token bucket、账号 in-flight 和运行资源释放。
+- `backend/app/services/task_center/reviews.py`：任务审核列表、通过、驳回和状态校验。
+- `backend/app/services/task_center/stats.py`：任务统计刷新、失败重试、下次运行时间计算。
+- `backend/app/services/task_center/config_normalization.py`：任务配置默认值、类型配置校验、规则绑定和运营目标引用归一化。
+- `backend/app/services/operations_center_defaults.py`：运营中心默认规则集和系统规则常量。
+- `backend/app/services/operations_center_listener.py`：监听中心 summary、备用账号切换、事件去重和最近事件查询。
+- `backend/app/services/operations_center_risk.py`：运营数据里的风控、运行积压和 worker 心跳风险指标。
+- `backend/app/services/operations_center_rule_metrics.py`：规则中心摘要、冲突、执行趋势、转化和交叉维度指标。
+- `backend/app/services/operations_center_rule_sets.py`：规则集 CRUD、版本创建、发布、回滚和绑定任务查询。
+- `backend/app/services/operations_center_utils.py`：运营中心通用解析 / 时间格式化工具。
+- `backend/app/gateway_telethon_content.py`：Telethon 群/频道消息采集、评论采集、素材缓存。
+- `backend/app/gateway_telethon_media.py`：Telethon 媒体发送、TG 缓存重传、custom emoji 发送。
+- `backend/app/gateway_telethon_utils.py`：Telethon 目标解析和发送目标转换。
+- `frontend/src/app/views/taskCenterViewModel.ts`：任务中心页面纯 view-model、字段映射和格式化函数。
+- `frontend/src/app/views/TaskCenterWizardSections.tsx`：任务创建/编辑向导子组件。
+- `frontend/src/app/views/TaskCenterDetailModal.tsx`：任务详情、执行计划、AI cycle、转发批次和频道消息明细弹窗。
+- `frontend/src/app/context/defaults.ts`：App Provider 表单默认值。
+- `frontend/src/app/context/refresh.ts`：App Provider 全局刷新聚合查询。
+- `frontend/src/app/context/actionRunner.ts`：前端操作 loading / pending action hook。
+- `frontend/src/app/context/authActions.ts`：登录、注册、验证码、修改密码和退出登录动作。
+- `frontend/src/app/context/accountActions.ts`：账号详情、账号登录、账号分组、账号克隆、验证辅助和资料同步动作。
+- `frontend/src/app/context/messageActions.ts`：私发、批量发送、取消、派发、重试和手动 drain 动作。
+- `frontend/src/app/context/systemActions.ts`：开发者应用、租户配额、后台用户、AI 供应商和提示词动作。
+- `frontend/src/app/context/modalState.ts`：结果提示、错误解析、确认弹窗和关闭弹窗。
+- `frontend/src/app/context/contentActions.ts`：素材和关键词规则动作。
+- `frontend/src/app/views/RulesCenterConfig.tsx`：规则中心配置表单、规则 JSON 和可视化配置互转工具。
+
+拆分后关键文件当前行数：`operations_center.py` 780、`task_center/service.py` 960、`gateways.py` 943、`TaskCenterView.tsx` 873、`RulesCenterView.tsx` 892、`dispatcher.py` 727、`context.tsx` 797。
+`context.tsx` 已从大文件风险中降下来，本轮已经把监听、规则指标、风控指标、规则集版本、预检、详情、reviews、stats、配置归一化、Telethon 内容/媒体、Mock Gateway、规则配置表单、任务详情弹窗、认证、账号、消息、系统配置、素材关键词、modal、全局刷新和 pending action 从主文件拆出；后续新增能力必须继续进入 domain 模块，不再回填主文件。
+
+本轮已执行的验证命令：
+
+```bash
+cd frontend && npm run build
+cd backend && APP_ENV=test .venv/bin/python -m compileall -q app tests scripts
+cd backend && APP_ENV=test .venv/bin/python -m pytest -q tests/test_operations_center_runtime.py tests/test_capacity_benchmark.py tests/test_telethon_lifecycle.py tests/test_task_center_capacity_dispatch.py tests/test_worker_roles.py tests/test_task_center_role_drains.py
+cd backend && APP_ENV=test .venv/bin/python -m pytest -q tests/test_workflow.py::test_worker_drain_once_api_accepts_role tests/test_workflow.py::test_worker_drain_once_api_rejects_unknown_role tests/test_workflow.py::test_task_center_group_ai_chat_creates_and_dispatches_actions tests/test_workflow.py::test_task_center_group_ai_chat_cycles_and_picks_up_new_context tests/test_workflow.py::test_task_center_group_relay_continues_for_new_source_messages tests/test_workflow.py::test_task_center_reset_channel_view_rebuilds_from_latest_messages
+git diff --check
+```
+
+结果：前端构建通过；后端编译通过；运营中心 runtime + 容量模型 + Telethon lifecycle + 任务中心容量调度 + worker role 组合回归已通过；PostgreSQL 真实任务链路精选回归已通过。最新一次补充拆分后重新执行了前端构建、后端编译和关键 worker / task center / Telethon / rules 回归。它们证明本轮重构没有破坏关键任务创建 / drain / 执行路径，但仍不是 Redis 开启和真实 TG API 的容量实压。
+
 | 文件 | 当前问题 | 拆分目标 | 建议阶段 |
 | --- | --- | --- | --- |
-| `backend/app/services/task_center/service.py` | 任务 CRUD、规划、恢复、drain、详情聚合混在一起 | 先抽 role drain，再拆 planner / recovery / details / reviews | P1-P6 |
+| `backend/app/services/task_center/service.py` | CRUD、规划、恢复、role drain 仍集中 | 继续拆 tasks_crud / planner / recovery / drain | P1-P6 |
 | `backend/app/services/task_center/dispatcher.py` | claim、资源预留、Redis 限流、gateway 分发、结果处理集中 | 拆成 claim、runtime resources、rate limits、dispatch、result handlers | P2-P6 |
-| `backend/app/gateways.py` | Telethon login、client、send、resolve、mock gateway 混合 | 拆 gateway base、mock、telethon client、send、login、media | P2-P6 |
-| `backend/app/services/operations_center.py` | 运营中心聚合查询、摘要、规则默认值、运行状态混合 | 拆 overview、target summary、listener summary、rule bootstrap、risk summary | P5-P6 |
-| `frontend/src/app/context.tsx` | App 级状态、加载、mutation、modal、selection 混合 | 拆 React Query hooks、mutation hooks、modal state、selection state | P6 |
-| `frontend/src/app/views/TaskCenterView.tsx` | 任务列表、创建向导、编辑、详情、表单映射过重 | 拆 TaskList、TaskWizard、TaskEditor、TaskDetailDrawer、TaskActionTable、taskFormMapping | P6 |
-| `frontend/src/app/views/RulesCenterView.tsx` | 规则列表、版本编辑、测试、发布、表单混合 | 拆 RuleSetList、RuleVersionEditor、RuleTester、RulePublishPanel | P6 |
+| `backend/app/gateways.py` | Telethon login、profile、channel action 仍在主适配器 | 继续拆 telethon_login / telethon_profile / telethon_channel_actions | P2-P6 |
+| `backend/app/services/operations_center.py` | 规则测试和部分运营聚合仍集中 | 继续拆 rule_tester / operations_reports | P5-P6 |
+| `frontend/src/app/context.tsx` | Provider 仍集中声明大量 state，但业务动作已拆 | 后续可逐步迁移 selection state / React Query hooks，当前不再作为 P6 阻塞项 | P6 |
+| `frontend/src/app/views/TaskCenterView.tsx` | 页面已降到 873 行，列表交互和 columns 仍可组件化 | 继续拆 TaskList / TaskActionTableColumns | P6 |
+| `frontend/src/app/views/RulesCenterView.tsx` | 配置表单已拆，测试器和发布面板仍在主视图 | 继续拆 RuleSetList / RuleTester / RulePublishPanel | P6 |
 
 ### 10.4 本轮确认的实施优先级
 

@@ -14,6 +14,7 @@ from .config import get_settings
 from .database import SessionLocal, prepare_database
 from .permission_middleware import permission_middleware
 from .services import ensure_seed_data
+from .telethon_lifecycle import shutdown_telethon_lifecycle
 from .worker import run_worker
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if worker_thread:
             worker_thread.join(timeout=max(1.0, settings.embedded_worker_interval_seconds + 1.0))
             logger.info("Embedded worker stopped")
+        try:
+            disconnected = shutdown_telethon_lifecycle(timeout_seconds=5)
+            if disconnected:
+                logger.info("Telethon client lifecycle stopped: disconnected=%s", disconnected)
+        except Exception:
+            logger.exception("Telethon client lifecycle shutdown failed")
 
 
 def create_app() -> FastAPI:

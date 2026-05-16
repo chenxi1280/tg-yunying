@@ -1,505 +1,41 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import tempfile
-import threading
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-from random import choice, randint
 from typing import Any
-from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from .config import Settings, get_settings
+from . import gateway_telethon_content as telethon_content
+from .gateway_mock import TelegramGateway
+from .gateway_contracts import (
+    AccountHealth,
+    ArchiveSnapshot,
+    ArchivedMemberSnapshot,
+    ArchivedMessageSnapshot,
+    ChannelCommentSnapshot,
+    ChannelMessageSnapshot,
+    ContactSnapshot,
+    DeveloperAppCredentials,
+    GroupMessageSnapshot,
+    GroupSnapshot,
+    LoginChallenge,
+    OperationResult,
+    OutboundSegment,
+    ProfileUpdateResult,
+    RemoteProfile,
+    SendResult,
+    VerificationCodeSnapshot,
+)
 from .models import FailureType
 from .security import decrypt_session
-from .timezone import BEIJING_TZ, beijing_now
+from .telethon_lifecycle import TelethonClientLifecycle
+from .gateway_telethon_media import _parse_custom_emoji_source, _telegram_entity_length, send_media_segment
+from .gateway_telethon_utils import resolve_telethon_target, telethon_send_target
+from .timezone import BEIJING_TZ
 
-
-def source_media_hint(*parts: object) -> str:
-    return hashlib.sha256("\n".join(str(part or "") for part in parts).encode("utf-8")).hexdigest()
-
-
-@dataclass(frozen=True)
-class LoginChallenge:
-    status: str
-    code_preview: str | None = None
-    code_expires_at: datetime | None = None
-    qr_payload: str | None = None
-
-
-@dataclass(frozen=True)
-class SendResult:
-    ok: bool
-    remote_message_id: str | None = None
-    failure_type: str | None = None
-    detail: str | None = None
-
-
-@dataclass(frozen=True)
-class OutboundSegment:
-    segment_type: str
-    content: str = ""
-    source: str | None = None
-    caption: str = ""
-
-
-@dataclass(frozen=True)
-class ProfileUpdateResult:
-    ok: bool
-    detail: str = ""
-    failure_type: str | None = None
-
-
-@dataclass(frozen=True)
-class OperationResult:
-    ok: bool
-    status: str = "已完成"
-    failure_type: str = ""
-    detail: str = ""
-
-
-@dataclass(frozen=True)
-class GroupSnapshot:
-    tg_peer_id: str
-    title: str
-    group_type: str
-    member_count: int
-    permission_label: str
-    can_send: bool
-    slowmode_seconds: int | None = None
-    username: str | None = None
-
-
-@dataclass(frozen=True)
-class AccountHealth:
-    status: str
-    health_score: float
-    detail: str
-
-
-@dataclass(frozen=True)
-class VerificationCodeSnapshot:
-    code: str
-    raw_hint: str
-    expires_at: datetime | None
-
-
-@dataclass(frozen=True)
-class ContactSnapshot:
-    peer_id: str
-    display_name: str
-    username: str | None = None
-    phone: str | None = None
-    contact_type: str = "private"
-    is_mutual: bool = False
-    last_message_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class RemoteProfile:
-    first_name: str
-    last_name: str
-    bio: str
-    username: str | None = None
-
-
-@dataclass(frozen=True)
-class ArchivedMessageSnapshot:
-    sender_name: str
-    content: str
-    message_type: str = "text"
-    sent_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class GroupMessageSnapshot:
-    remote_message_id: str
-    sender_name: str
-    content: str
-    sender_peer_id: str = ""
-    message_type: str = "text"
-    sent_at: datetime | None = None
-    is_bot: bool = False
-    caption: str = ""
-    media_type: str = ""
-    media_fingerprint: str = ""
-    media_group_id: str = ""
-    media_group_index: int = 0
-    media_group_total: int = 1
-
-
-@dataclass(frozen=True)
-class ChannelMessageSnapshot:
-    message_id: int
-    content_preview: str = ""
-    message_url: str = ""
-    published_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class ChannelCommentSnapshot:
-    comment_message_id: int
-    parent_comment_message_id: int | None = None
-    author_peer_id: str = ""
-    author_name: str = ""
-    content_preview: str = ""
-    reply_count: int = 0
-    published_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class ArchivedMemberSnapshot:
-    display_name: str
-    username: str | None = None
-    activity_score: int = 0
-    tags: str = ""
-
-
-@dataclass(frozen=True)
-class ArchiveSnapshot:
-    messages: list[ArchivedMessageSnapshot]
-    members: list[ArchivedMemberSnapshot]
-    summary: str
-    new_group_plan: str
-
-
-@dataclass(frozen=True)
-class DeveloperAppCredentials:
-    app_id: int | None
-    api_id: int
-    api_hash: str
-    credentials_version: int
-    app_name: str = ""
-
-
-class TelegramGateway:
-    """Adapter boundary for Telethon-backed production integration."""
-
-    def __init__(self, settings: Settings | None = None) -> None:
-        self.settings = settings or get_settings()
-
-    def start_login(
-        self,
-        method: str,
-        account_id: int | None = None,
-        phone: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> LoginChallenge:
-        if method == "qr":
-            return LoginChallenge(
-                status="等待扫码",
-                qr_payload=f"tg://login?token={uuid4().hex}",
-            )
-        return LoginChallenge(
-            status="等待验证码",
-            code_preview=str(randint(10000, 99999)),
-            code_expires_at=datetime.now(BEIJING_TZ) + timedelta(seconds=self.settings.login_code_ttl_seconds),
-        )
-
-    def finish_login(
-        self,
-        code: str | None,
-        password_2fa: str | None,
-        account_id: int | None = None,
-        phone: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> tuple[str, str]:
-        if password_2fa:
-            return "在线", f"encrypted-session:{uuid4().hex}"
-        if code == "2fa":
-            return "等待2FA", ""
-        if code and len(code) >= 4:
-            return "在线", f"encrypted-session:{uuid4().hex}"
-        return "异常", ""
-
-    def send_message(
-        self,
-        account_id: int,
-        group_id: int,
-        content: str,
-        segments: list[OutboundSegment] | None = None,
-        session_ciphertext: str | None = None,
-        peer_id: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> SendResult:
-        payload_parts = [content]
-        for segment in segments or []:
-            payload_parts.extend([segment.content, segment.caption, segment.source or ""])
-        payload_text = "\n".join(piece for piece in payload_parts if piece)
-        if "违规" in payload_text or "spam" in payload_text.lower():
-            return SendResult(False, failure_type=FailureType.CONTENT_REJECTED.value, detail="内容命中禁用词")
-
-        simulated = choice(["ok", "ok", "ok", "slowmode", "limited", "flood"])
-        if simulated == "flood":
-            return SendResult(False, failure_type=FailureType.FLOOD_WAIT.value, detail="账号触发 FloodWait，建议 120 秒后重试")
-        if simulated == "slowmode":
-            return SendResult(False, failure_type=FailureType.SLOWMODE.value, detail="目标群启用慢速模式，建议延迟 60 秒")
-        if simulated == "limited":
-            return SendResult(False, failure_type=FailureType.ACCOUNT_LIMITED.value, detail="账号临时受限，已暂停派单")
-        return SendResult(True, remote_message_id=f"tg-{account_id}-{group_id}-{uuid4().hex[:8]}")
-
-    def check_account_health(
-        self,
-        session_ciphertext: str | None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> AccountHealth:
-        if not session_ciphertext:
-            return AccountHealth(status="需重新登录", health_score=45, detail="账号没有可用 session")
-        return AccountHealth(status="在线", health_score=95, detail="账号 session 可用")
-
-    def list_groups(
-        self,
-        account_id: int,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> list[GroupSnapshot]:
-        return [
-            GroupSnapshot("-100001", "星火项目交流群", "supergroup", 2480, "普通成员", True, None, "spark_group"),
-            GroupSnapshot("-100002", "新品内测频道", "channel", 836, "可发帖", True, None, "product_channel"),
-            GroupSnapshot("-100003", "海外用户增长群", "supergroup", 1289, "普通成员", True, 30, "growth_group"),
-        ]
-
-    def send_message_to_target(
-        self,
-        account_id: int,
-        target_peer_id: str,
-        content: str,
-        target_type: str = "group",
-        segments: list[OutboundSegment] | None = None,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> SendResult:
-        return self.send_message(account_id, 0, content, segments, session_ciphertext, target_peer_id, credentials)
-
-    def view_channel_message(
-        self,
-        account_id: int,
-        channel_peer_id: str,
-        message_id: int,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> OperationResult:
-        return OperationResult(True, detail=f"viewed:{channel_peer_id}:{message_id}:{account_id}")
-
-    def send_channel_reaction(
-        self,
-        account_id: int,
-        channel_peer_id: str,
-        message_id: int,
-        reaction: str,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> OperationResult:
-        if reaction.lower() in {"blocked", "不可用"}:
-            return OperationResult(False, "失败", FailureType.REACTION_UNAVAILABLE.value, "Reaction不可用")
-        return OperationResult(True, detail=f"reaction:{reaction}:{channel_peer_id}:{message_id}:{account_id}")
-
-    def reply_channel_message(
-        self,
-        account_id: int,
-        channel_peer_id: str,
-        message_id: int,
-        content: str,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-        *,
-        reply_to_message_id: int | None = None,
-    ) -> SendResult:
-        if "无评论" in content:
-            return SendResult(False, failure_type=FailureType.COMMENT_UNAVAILABLE.value, detail="频道消息不支持回复")
-        target_id = reply_to_message_id or message_id
-        return SendResult(True, remote_message_id=f"reply-{account_id}-{target_id}-{uuid4().hex[:8]}")
-
-    def probe_target_capabilities(
-        self,
-        account_id: int,
-        target_peer_id: str,
-        target_type: str,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> OperationResult:
-        return OperationResult(True, detail=f"{target_type}:{target_peer_id}:可访问")
-
-    def poll_verification_codes(
-        self,
-        account_id: int,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> list[VerificationCodeSnapshot]:
-        return [
-            VerificationCodeSnapshot(
-                code=str(randint(10000, 99999)),
-                raw_hint="TG 官方服务消息验证码",
-                expires_at=datetime.now(BEIJING_TZ) + timedelta(seconds=self.settings.login_code_ttl_seconds),
-            )
-        ]
-
-    def list_contacts(
-        self,
-        account_id: int,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> list[ContactSnapshot]:
-        return [
-            ContactSnapshot(f"mock-user-{account_id}-1", "产品负责人 Alice", "alice_ops", "+8613812345678", "private", True),
-            ContactSnapshot(f"mock-user-{account_id}-2", "渠道客户 Bob", "bob_growth", "", "private", False),
-            ContactSnapshot(f"mock-user-{account_id}-3", "测试私聊对象", "pytest_target", "", "private", False),
-            ContactSnapshot(f"mock-member-{account_id}-1", "星火群友 Leo", "spark_leo", "", "group_member", False),
-            ContactSnapshot(f"mock-member-{account_id}-2", "内测群友 Mia", "mimo_mia", "", "group_member", False),
-        ]
-
-    def clone_contact_or_group(
-        self,
-        account_id: int,
-        target_type: str,
-        peer_id: str,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> OperationResult:
-        if target_type == "private":
-            return OperationResult(True, "已完成", detail="mock 联系人已添加")
-        if target_type in {"group", "channel"}:
-            return OperationResult(True, "已完成", detail="mock 群聊/频道已加入")
-        return OperationResult(False, "需人工处理", "不支持的目标类型", "该克隆项需要人工处理")
-
-    def resolve_verification_task(
-        self,
-        account_id: int,
-        action: str,
-        target_peer_id: str | None = None,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> OperationResult:
-        if action in {"关注频道", "点击按钮", "发送验证回复"}:
-            return OperationResult(True, "已处理", detail=f"mock 已执行：{action}")
-        return OperationResult(False, "需人工处理", "复杂验证", "当前验证需要人工在 Telegram 内处理")
-
-    def update_profile(
-        self,
-        session_ciphertext: str | None,
-        *,
-        first_name: str,
-        last_name: str,
-        bio: str,
-        avatar_path: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> ProfileUpdateResult:
-        if not session_ciphertext:
-            return ProfileUpdateResult(False, "账号没有可用 session", FailureType.ACCOUNT_UNAVAILABLE.value)
-        return ProfileUpdateResult(True, "mock profile updated")
-
-    def pull_profile(
-        self,
-        account_id: int,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> RemoteProfile:
-        return RemoteProfile(first_name=f"账号{account_id}", last_name="Mock", bio="mock profile", username=f"mock_{account_id}")
-
-    def fetch_group_archive(
-        self,
-        account_id: int,
-        peer_id: str,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> ArchiveSnapshot:
-        title = f"群 {peer_id}"
-        messages = [
-            ArchivedMessageSnapshot(sender_name="活跃成员A", content=f"{title} 最近在讨论使用体验和新手 FAQ。", sent_at=beijing_now()),
-            ArchivedMessageSnapshot(sender_name="客服小助手", content="欢迎语和活动规则需要整理成固定话术。", sent_at=beijing_now()),
-            ArchivedMessageSnapshot(sender_name="老用户B", content="建议把高频问题和入群引导做成置顶。", sent_at=beijing_now()),
-        ]
-        members = [
-            ArchivedMemberSnapshot(display_name="活跃成员A", username="active_a", activity_score=95, tags="高活跃,可邀请"),
-            ArchivedMemberSnapshot(display_name="老用户B", username="senior_b", activity_score=88, tags="高活跃,可邀请"),
-            ArchivedMemberSnapshot(display_name="潜在客户C", username="lead_c", activity_score=71, tags="可邀请"),
-            ArchivedMemberSnapshot(display_name="内容贡献者D", username="creator_d", activity_score=64, tags="观察"),
-        ]
-        return ArchiveSnapshot(
-            messages=messages,
-            members=members,
-            summary=f"{title} 的活跃内容集中在欢迎引导、常见问题和真实体验反馈。",
-            new_group_plan="新群建议保留欢迎语、FAQ 置顶、前三天轻话题暖场和高活跃成员召回清单。",
-        )
-
-    def fetch_group_messages(
-        self,
-        account_id: int,
-        peer_id: str,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-        limit: int = 20,
-    ) -> list[GroupMessageSnapshot]:
-        now_value = beijing_now()
-        return [
-            GroupMessageSnapshot(
-                remote_message_id=f"mock:{peer_id}:real-user-context",
-                sender_peer_id="mock-real-user",
-                sender_name="真人用户",
-                content=f"这个 {peer_id} 里的话题现在有人在问，具体怎么参与？",
-                sent_at=now_value,
-            )
-        ][:limit]
-
-    def cache_source_media(
-        self,
-        account_id: int,
-        source_peer_id: str,
-        source_message_id: str,
-        cache_peer_id: str,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> SendResult:
-        if not cache_peer_id:
-            return SendResult(False, failure_type="cache_peer_unavailable", detail="缺少源媒体缓存 peer")
-        return SendResult(True, remote_message_id=f"cache:{source_peer_id}:{source_message_id}")
-
-    def cache_material_source(
-        self,
-        account_id: int,
-        source: str,
-        cache_peer_id: str,
-        caption: str = "",
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> SendResult:
-        if not cache_peer_id:
-            return SendResult(False, failure_type="cache_peer_unavailable", detail="缺少素材缓存 peer")
-        if not source:
-            return SendResult(False, failure_type="cache_not_ready", detail="素材缺少来源")
-        return SendResult(True, remote_message_id=f"material-cache:{uuid4().hex[:8]}")
-
-    def fetch_channel_messages(
-        self,
-        account_id: int,
-        channel_peer_id: str,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-        limit: int = 20,
-    ) -> list[ChannelMessageSnapshot]:
-        now_value = beijing_now()
-        return [
-            ChannelMessageSnapshot(
-                message_id=100000 + index,
-                content_preview=f"mock channel {channel_peer_id} message {index + 1}",
-                message_url="",
-                published_at=now_value - timedelta(minutes=index),
-            )
-            for index in range(max(1, limit))
-        ][:limit]
-
-    def fetch_channel_comments(
-        self,
-        account_id: int,
-        channel_peer_id: str,
-        message_id: int,
-        session_ciphertext: str | None = None,
-        credentials: DeveloperAppCredentials | None = None,
-        limit: int = 100,
-    ) -> list[ChannelCommentSnapshot]:
-        return []
+_resolve_telethon_target = resolve_telethon_target
+_telethon_send_target = telethon_send_target
 
 
 class TelethonTelegramGateway(TelegramGateway):
@@ -513,62 +49,28 @@ class TelethonTelegramGateway(TelegramGateway):
     creating a new connection for every operation.
     """
 
-    _loop: asyncio.AbstractEventLoop | None = None
-    _loop_thread: threading.Thread | None = None
-    _client_cache: dict[tuple[int, str], Any] = {}  # (api_id, session_str) → connected client
-    _cache_lock: threading.Lock = threading.Lock()
-
     def __init__(self, settings: Settings | None = None) -> None:
         super().__init__(settings)
+        self._lifecycle = TelethonClientLifecycle(self.settings)
         self._pending_clients: dict[int, Any] = {}
         self._pending_qr: dict[int, Any] = {}
+        self._pending_credentials: dict[int, DeveloperAppCredentials] = {}
 
     @classmethod
     def _get_or_create_loop(cls) -> asyncio.AbstractEventLoop:
-        with cls._cache_lock:
-            if cls._loop is None or cls._loop.is_closed():
-                cls._loop = asyncio.new_event_loop()
-                cls._loop_thread = threading.Thread(target=cls._loop.run_forever, daemon=True)
-                cls._loop_thread.start()
-            return cls._loop
+        return TelethonClientLifecycle.get_or_create_loop()
 
-    @staticmethod
-    def _run(coro):
+    def _run(self, coro):
         """Schedule a coroutine on the persistent event loop and block for its result."""
-        loop = TelethonTelegramGateway._get_or_create_loop()
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result(timeout=300)
+        return self._lifecycle.run(coro)
 
     def _new_client(self, credentials: DeveloperAppCredentials, raw_session: str | None = None) -> Any:
         """Create a fresh, unconnected Telethon client. Used for login flows where the session is not yet established."""
-        try:
-            from telethon import TelegramClient  # noqa: F811
-        except ImportError as exc:
-            raise RuntimeError("Telethon package is not installed") from exc
-        from telethon.sessions import StringSession
-
-        return TelegramClient(StringSession(raw_session or ""), int(credentials.api_id), credentials.api_hash)
+        return self._lifecycle.new_client(credentials, raw_session)
 
     async def _get_or_create_client(self, credentials: DeveloperAppCredentials, raw_session: str) -> Any:
         """Return a connected Telethon client from the cache, or create and connect a new one."""
-        from telethon import TelegramClient
-        from telethon.sessions import StringSession
-
-        api_id = int(credentials.api_id)
-        cache_key = (api_id, raw_session)
-        with self._cache_lock:
-            client = self._client_cache.get(cache_key)
-        if client is not None:
-            try:
-                if client.is_connected():
-                    return client
-            except Exception:
-                pass  # stale client, reconnect below
-        client = TelegramClient(StringSession(raw_session or ""), api_id, credentials.api_hash)
-        await client.connect()
-        with self._cache_lock:
-            self._client_cache[cache_key] = client
-        return client
+        return await self._lifecycle.get_or_create_client(credentials, raw_session)
 
     @staticmethod
     def _usable_phone(phone: str | None) -> str:
@@ -595,10 +97,12 @@ class TelethonTelegramGateway(TelegramGateway):
             qr_login = await client.qr_login()
             self._pending_clients[account_id] = client
             self._pending_qr[account_id] = qr_login
+            self._pending_credentials[account_id] = credentials
             return LoginChallenge(status="等待扫码", qr_payload=qr_login.url)
 
         await client.send_code_request(self._usable_phone(phone))
         self._pending_clients[account_id] = client
+        self._pending_credentials[account_id] = credentials
         return LoginChallenge(
             status="等待验证码",
             code_preview=None,
@@ -645,13 +149,9 @@ class TelethonTelegramGateway(TelegramGateway):
 
         raw_session = client.session.save()
         # Cache the now-logged-in client under its final session string
-        try:
-            creds = client._self_credentials  # noqa: private access fallback
-            api_id = getattr(creds, "api_id", None)
-        except Exception:
-            api_id = None
-        if api_id:
-            self._client_cache[(int(api_id), raw_session)] = client
+        credentials = self._pending_credentials.pop(account_id, None)
+        if credentials is not None:
+            await self._lifecycle.remember_connected_client(credentials, raw_session, client)
         else:
             await client.disconnect()
         self._pending_clients.pop(account_id, None)
@@ -690,6 +190,15 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials | None = None,
     ) -> AccountHealth:
         return self._run(self._health_async(session_ciphertext, self._usable_credentials(credentials)))
+
+    async def _authorized_client(self, session_ciphertext: str | None, credentials: DeveloperAppCredentials, *, error_message: str) -> Any:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            raise RuntimeError(error_message)
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            raise RuntimeError("session is not authorized")
+        return client
 
     async def _groups_async(
         self,
@@ -899,6 +408,9 @@ class TelethonTelegramGateway(TelegramGateway):
             return SendResult(False, failure_type=FailureType.PEER_INVALID.value, detail="目标群无效或不可访问")
         return SendResult(False, failure_type=FailureType.UNKNOWN.value, detail=detail)
 
+    _parse_custom_emoji_source = staticmethod(_parse_custom_emoji_source)
+    _telegram_entity_length = staticmethod(_telegram_entity_length)
+
     async def _send_async(
         self,
         session_ciphertext: str | None,
@@ -919,7 +431,7 @@ class TelethonTelegramGateway(TelegramGateway):
         if not await client.is_user_authorized():
             return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
         try:
-            target = await _resolve_telethon_target(client, peer_id, group_id=group_id)
+            target = await resolve_telethon_target(client, peer_id, group_id=group_id)
             remote_message_id: str | None = None
             if segments:
                 for segment in segments:
@@ -929,7 +441,7 @@ class TelethonTelegramGateway(TelegramGateway):
                         text = "\n".join(piece for piece in [segment.content, segment.source] if piece).strip()
                         message = await client.send_message(target, text)
                     else:
-                        message = await self._send_media_segment(client, target, segment)
+                        message = await send_media_segment(client, target, segment)
                     remote_message_id = str(getattr(message, "id", remote_message_id or uuid4().hex[:8]))
             else:
                 message = await client.send_message(target, content)
@@ -937,68 +449,6 @@ class TelethonTelegramGateway(TelegramGateway):
             return SendResult(True, remote_message_id=remote_message_id)
         except Exception as exc:  # Telethon exposes many RPC subclasses; map them at the adapter boundary.
             return self._map_send_error(exc)
-
-    async def _send_media_segment(self, client: Any, target: Any, segment: OutboundSegment) -> Any:
-        source = segment.source or segment.content
-        if not source:
-            raise ValueError("媒体素材缺少可发送来源")
-        custom_emoji = self._parse_custom_emoji_source(source)
-        if custom_emoji:
-            document_id, alt = custom_emoji
-            return await self._send_custom_emoji_segment(client, target, document_id, alt, segment.caption or segment.content or "")
-        caption = segment.caption or segment.content or None
-        cache_ref = self._parse_tg_cache_source(source)
-        if not cache_ref:
-            return await client.send_file(target, source, caption=caption)
-        cache_peer, message_id = cache_ref
-        cache_target = await _resolve_telethon_target(client, cache_peer, group_id=0)
-        cached_message = await client.get_messages(cache_target, ids=message_id)
-        if not cached_message or not getattr(cached_message, "media", None):
-            raise ValueError("TG 缓存消息不可下载")
-        with tempfile.TemporaryDirectory(prefix="tg-material-reupload-") as temp_dir:
-            downloaded = await client.download_media(cached_message, file=temp_dir)
-            if not downloaded:
-                raise ValueError("TG 缓存媒体下载失败")
-            return await client.send_file(target, downloaded, caption=caption)
-
-    @staticmethod
-    def _parse_tg_cache_source(source: str) -> tuple[str, int] | None:
-        parsed = urlparse(source)
-        if parsed.scheme != "tg-cache":
-            return None
-        peer = unquote(parsed.netloc).strip()
-        message_id = parsed.path.strip("/").split("/", 1)[0]
-        if not peer or not message_id.isdigit():
-            raise ValueError("TG 缓存引用格式无效")
-        return peer, int(message_id)
-
-    @staticmethod
-    def _parse_custom_emoji_source(source: str) -> tuple[int, str] | None:
-        if not source.startswith("custom_emoji:"):
-            return None
-        parts = source.split(":", 2)
-        if len(parts) != 3 or not parts[1].isdigit() or not parts[2].strip():
-            raise ValueError("custom emoji 素材格式无效")
-        return int(parts[1]), parts[2].strip()
-
-    async def _send_custom_emoji_segment(self, client: Any, target: Any, document_id: int, alt: str, caption: str) -> Any:
-        from telethon import types
-
-        prefix = f"{caption}\n" if caption else ""
-        text = f"{prefix}{alt}"
-        entity = types.MessageEntityCustomEmoji(
-            offset=self._telegram_entity_length(prefix),
-            length=self._telegram_entity_length(alt),
-            document_id=document_id,
-        )
-        try:
-            return await client.send_message(target, text, formatting_entities=[entity])
-        except TypeError:
-            return await client.send_message(target, text, entities=[entity])
-
-    @staticmethod
-    def _telegram_entity_length(text: str) -> int:
-        return len(text.encode("utf-16-le")) // 2
 
     def send_message(
         self,
@@ -1335,52 +785,8 @@ class TelethonTelegramGateway(TelegramGateway):
         session_ciphertext: str | None,
         credentials: DeveloperAppCredentials,
     ) -> ArchiveSnapshot:
-        raw_session = decrypt_session(session_ciphertext)
-        if not raw_session:
-            raise RuntimeError("archive fetch requires a valid session")
-        client = await self._get_or_create_client(credentials, raw_session)
-        if not await client.is_user_authorized():
-            raise RuntimeError("session is not authorized")
-        target = await _resolve_telethon_target(client, peer_id, group_id=1)
-        messages_resp = await client.get_messages(target, limit=50)
-        messages: list[ArchivedMessageSnapshot] = []
-        for message in list(messages_resp or []):
-            text = getattr(message, "message", "") or ""
-            if not text and not getattr(message, "media", None):
-                continue
-            sender = await message.get_sender() if hasattr(message, "get_sender") else None
-            sender_name = (
-                getattr(sender, "first_name", "") or getattr(sender, "title", "") or getattr(sender, "username", None) or "未知成员"
-            )
-            messages.append(
-                ArchivedMessageSnapshot(
-                    sender_name=sender_name,
-                    content=text or "[media]",
-                    message_type="media" if getattr(message, "media", None) else "text",
-                    sent_at=getattr(message, "date", None),
-                    is_bot=bool(getattr(sender, "bot", False)),
-                )
-            )
-        participants: list[ArchivedMemberSnapshot] = []
-        counts: dict[str, int] = {}
-        for item in messages:
-            counts[item.sender_name] = counts.get(item.sender_name, 0) + 1
-        async for participant in client.iter_participants(target, limit=80):
-            name = f"{getattr(participant, 'first_name', '')} {getattr(participant, 'last_name', '')}".strip() or getattr(participant, "username", None) or str(getattr(participant, "id", ""))
-            activity = min(100, counts.get(name, 0) * 20 + (20 if getattr(participant, "username", None) else 0))
-            tags = "可邀请" if activity >= 40 else "观察"
-            participants.append(
-                ArchivedMemberSnapshot(
-                    display_name=name,
-                    username=getattr(participant, "username", None),
-                    activity_score=activity,
-                    tags=tags,
-                )
-            )
-        participants.sort(key=lambda item: item.activity_score, reverse=True)
-        summary = "群内近期讨论已归档，可继续提炼欢迎语、FAQ 和拉新邀请名单。"
-        new_group_plan = "新群建议延续原讨论主题，先铺欢迎语和 FAQ，再召回高活跃成员种子。"
-        return ArchiveSnapshot(messages=messages[:50], members=participants[:80], summary=summary, new_group_plan=new_group_plan)
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="archive fetch requires a valid session")
+        return await telethon_content.fetch_group_archive(client, peer_id)
 
     def fetch_group_archive(
         self,
@@ -1398,57 +804,8 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials,
         limit: int,
     ) -> list[GroupMessageSnapshot]:
-        raw_session = decrypt_session(session_ciphertext)
-        if not raw_session:
-            raise RuntimeError("listener fetch requires a valid session")
-        client = await self._get_or_create_client(credentials, raw_session)
-        if not await client.is_user_authorized():
-            raise RuntimeError("session is not authorized")
-        target = await _resolve_telethon_target(client, peer_id, group_id=1)
-        messages_resp = await client.get_messages(target, limit=limit)
-        grouped_totals: dict[str, int] = {}
-        grouped_seen: dict[str, int] = {}
-        for message in list(messages_resp or []):
-            group_id = str(getattr(message, "grouped_id", "") or "")
-            if group_id:
-                grouped_totals[group_id] = grouped_totals.get(group_id, 0) + 1
-        snapshots: list[GroupMessageSnapshot] = []
-        for message in list(messages_resp or []):
-            text = getattr(message, "message", "") or ""
-            if not text and not getattr(message, "media", None):
-                continue
-            sender = await message.get_sender() if hasattr(message, "get_sender") else None
-            sender_peer_id = str(getattr(sender, "id", "") or "")
-            sender_name = (
-                getattr(sender, "first_name", "")
-                or getattr(sender, "title", "")
-                or getattr(sender, "username", None)
-                or sender_peer_id
-                or "未知成员"
-            )
-            group_id = str(getattr(message, "grouped_id", "") or "")
-            if group_id:
-                grouped_seen[group_id] = grouped_seen.get(group_id, 0) + 1
-            media = getattr(message, "media", None)
-            media_type = type(media).__name__ if media else ""
-            remote_id = str(getattr(message, "id", uuid4().hex))
-            snapshots.append(
-                GroupMessageSnapshot(
-                    remote_message_id=remote_id,
-                    sender_peer_id=sender_peer_id,
-                    sender_name=sender_name,
-                    content=text or "[media]",
-                    message_type="media" if media else "text",
-                    sent_at=getattr(message, "date", None),
-                    caption=text,
-                    media_type=media_type,
-                    media_fingerprint=source_media_hint(peer_id, remote_id, group_id, media_type),
-                    media_group_id=group_id,
-                    media_group_index=grouped_seen.get(group_id, 0) if group_id else 0,
-                    media_group_total=grouped_totals.get(group_id, 1) if group_id else 1,
-                )
-            )
-        return snapshots
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="listener fetch requires a valid session")
+        return await telethon_content.fetch_group_messages(client, peer_id, limit)
 
     def fetch_group_messages(
         self,
@@ -1476,20 +833,7 @@ class TelethonTelegramGateway(TelegramGateway):
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
             return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
-        try:
-            source = await _resolve_telethon_target(client, source_peer_id, group_id=0)
-            cache_target = await _resolve_telethon_target(client, cache_peer_id, group_id=0)
-            source_message = await client.get_messages(source, ids=int(source_message_id))
-            if not source_message or not getattr(source_message, "media", None):
-                return SendResult(False, failure_type="source_media_unrecoverable", detail="源媒体消息不存在或无媒体")
-            with tempfile.TemporaryDirectory(prefix="tg-source-media-cache-") as temp_dir:
-                downloaded = await client.download_media(source_message, file=temp_dir)
-                if not downloaded:
-                    return SendResult(False, failure_type="source_media_cache_failed", detail="源媒体下载失败")
-                cached = await client.send_file(cache_target, downloaded, caption=getattr(source_message, "message", "") or None)
-            return SendResult(True, remote_message_id=str(getattr(cached, "id", "")))
-        except Exception as exc:
-            return self._map_send_error(exc)
+        return await telethon_content.cache_source_media(client, source_peer_id, source_message_id, cache_peer_id, self._map_send_error)
 
     def cache_source_media(
         self,
@@ -1528,12 +872,7 @@ class TelethonTelegramGateway(TelegramGateway):
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
             return SendResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
-        try:
-            cache_target = await _resolve_telethon_target(client, cache_peer_id, group_id=0)
-            cached = await client.send_file(cache_target, source, caption=caption or None)
-            return SendResult(True, remote_message_id=str(getattr(cached, "id", "")))
-        except Exception as exc:
-            return self._map_send_error(exc)
+        return await telethon_content.cache_material_source(client, source, cache_peer_id, caption, self._map_send_error)
 
     def cache_material_source(
         self,
@@ -1561,32 +900,8 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials,
         limit: int,
     ) -> list[ChannelMessageSnapshot]:
-        raw_session = decrypt_session(session_ciphertext)
-        if not raw_session:
-            raise RuntimeError("channel message fetch requires a valid session")
-        client = await self._get_or_create_client(credentials, raw_session)
-        if not await client.is_user_authorized():
-            raise RuntimeError("session is not authorized")
-        target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
-        entity = await client.get_entity(target)
-        messages_resp = await client.get_messages(entity, limit=limit)
-        snapshots: list[ChannelMessageSnapshot] = []
-        username = getattr(entity, "username", None)
-        for message in list(messages_resp or []):
-            message_id = int(getattr(message, "id", 0) or 0)
-            if message_id <= 0:
-                continue
-            text = (getattr(message, "message", "") or "").strip()
-            message_url = f"https://t.me/{username}/{message_id}" if username else ""
-            snapshots.append(
-                ChannelMessageSnapshot(
-                    message_id=message_id,
-                    content_preview=text[:500],
-                    message_url=message_url,
-                    published_at=getattr(message, "date", None),
-                )
-            )
-        return snapshots
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="channel message fetch requires a valid session")
+        return await telethon_content.fetch_channel_messages(client, channel_peer_id, limit)
 
     def fetch_channel_messages(
         self,
@@ -1606,36 +921,8 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials,
         limit: int,
     ) -> list[ChannelCommentSnapshot]:
-        raw_session = decrypt_session(session_ciphertext)
-        if not raw_session:
-            raise RuntimeError("channel comment fetch requires a valid session")
-        client = await self._get_or_create_client(credentials, raw_session)
-        if not await client.is_user_authorized():
-            raise RuntimeError("session is not authorized")
-        target: int | str = int(channel_peer_id) if channel_peer_id.lstrip("-").isdigit() else channel_peer_id
-        entity = await client.get_entity(target)
-        snapshots: list[ChannelCommentSnapshot] = []
-        async for comment in client.iter_messages(entity, reply_to=message_id, limit=limit):
-            comment_id = int(getattr(comment, "id", 0) or 0)
-            if comment_id <= 0:
-                continue
-            sender = getattr(comment, "sender", None)
-            author_name = " ".join(
-                item for item in [getattr(sender, "first_name", "") or "", getattr(sender, "last_name", "") or ""] if item
-            ).strip() or getattr(sender, "title", "") or getattr(sender, "username", "") or ""
-            replies = getattr(comment, "replies", None)
-            snapshots.append(
-                ChannelCommentSnapshot(
-                    comment_message_id=comment_id,
-                    parent_comment_message_id=getattr(getattr(comment, "reply_to", None), "reply_to_msg_id", None),
-                    author_peer_id=str(getattr(sender, "id", "") or ""),
-                    author_name=author_name,
-                    content_preview=(getattr(comment, "message", "") or "").strip()[:500],
-                    reply_count=int(getattr(replies, "replies", 0) or 0),
-                    published_at=getattr(comment, "date", None),
-                )
-            )
-        return snapshots
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="channel comment fetch requires a valid session")
+        return await telethon_content.fetch_channel_comments(client, channel_peer_id, message_id, limit)
 
     def fetch_channel_comments(
         self,
@@ -1647,35 +934,6 @@ class TelethonTelegramGateway(TelegramGateway):
         limit: int = 100,
     ) -> list[ChannelCommentSnapshot]:
         return self._run(self._fetch_channel_comments_async(channel_peer_id, message_id, session_ciphertext, self._usable_credentials(credentials), limit))
-
-
-def _telethon_send_target(peer_id: str, *, group_id: int = 0) -> int | str:
-    if not peer_id.lstrip("-").isdigit():
-        return peer_id
-    raw_peer_id = int(peer_id)
-    if group_id and raw_peer_id > 0:
-        return -raw_peer_id
-    return raw_peer_id
-
-
-async def _resolve_telethon_target(client, peer_id: str, *, group_id: int = 0):
-    from telethon import utils
-
-    target = _telethon_send_target(peer_id, group_id=group_id)
-    try:
-        entity = await client.get_entity(target)
-        return getattr(entity, "migrated_to", None) or entity
-    except Exception:
-        expected_peer_id = str(target)
-        async for dialog in client.iter_dialogs():
-            entity = dialog.entity
-            resolved_entity = getattr(entity, "migrated_to", None) or entity
-            if (
-                str(utils.get_peer_id(entity)) == expected_peer_id
-                or str(utils.get_peer_id(resolved_entity)) == expected_peer_id
-            ):
-                return resolved_entity
-        raise
 
 
 def create_gateway(settings: Settings | None = None) -> TelegramGateway:

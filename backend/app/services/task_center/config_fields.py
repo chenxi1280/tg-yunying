@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+from app.schemas.task_center import (
+    ChannelCommentConfig,
+    ChannelCommentTaskCreate,
+    ChannelLikeConfig,
+    ChannelLikeTaskCreate,
+    ChannelViewConfig,
+    ChannelViewTaskCreate,
+    GroupAIChatConfig,
+    GroupAIChatTaskCreate,
+    GroupRelayConfig,
+    GroupRelayTaskCreate,
+)
+
+TYPE_CONFIG_MODELS = {
+    "group_ai_chat": GroupAIChatConfig,
+    "group_relay": GroupRelayConfig,
+    "channel_view": ChannelViewConfig,
+    "channel_like": ChannelLikeConfig,
+    "channel_comment": ChannelCommentConfig,
+}
+TASK_CREATE_MODELS = {
+    "group_ai_chat": GroupAIChatTaskCreate,
+    "group_relay": GroupRelayTaskCreate,
+    "channel_view": ChannelViewTaskCreate,
+    "channel_like": ChannelLikeTaskCreate,
+    "channel_comment": ChannelCommentTaskCreate,
+}
+CHANNEL_DYNAMIC_TASK_TYPES = {"channel_view", "channel_like", "channel_comment"}
+
+COMMON_CREATE_FIELDS = {
+    "name",
+    "priority",
+    "timezone",
+    "scheduled_start",
+    "scheduled_end",
+    "max_duration_hours",
+    "account_config",
+    "pacing_config",
+    "failure_policy",
+}
+
+COMMON_SETTINGS_FIELDS = {
+    "name",
+    "priority",
+    "timezone",
+    "scheduled_start",
+    "scheduled_end",
+    "max_duration_hours",
+    "account_config",
+    "pacing_config",
+    "failure_policy",
+}
+
+GROUP_AI_LEGACY_RUNTIME_FIELDS = {
+    "participation_jitter",
+    "silent_mode_enabled",
+    "silent_start",
+    "silent_end",
+    "silent_max_accounts",
+    "silent_messages_per_round",
+    "ramp_up_minutes",
+    "ramp_start_ratio",
+}
+
+GROUP_RELAY_LEGACY_CREATE_FIELDS = {
+    "monitor_account_ids",
+    "filters",
+    "rewrite_prompt",
+    "preserve_media",
+    "add_source_attribution",
+    "dedup_window_minutes",
+    "dedup_method",
+}
+
+CHANNEL_JITTER_FIELDS = {
+    "channel_view": {"view_count_jitter"},
+    "channel_like": {"like_count_jitter"},
+    "channel_comment": {"comment_count_jitter"},
+}
+
+LEGACY_PACING_FIELDS = {
+    "interval_seconds_min",
+    "interval_seconds_max",
+    "curve_type",
+    "curve_duration_hours",
+    "template",
+    "jitter_percent",
+    "quiet_hours",
+}
+
+TYPE_SETTINGS_FIELDS = {
+    "group_ai_chat": {
+        "target_group_id",
+        "target_operation_target_id",
+        "rule_set_id",
+        "rule_set_version_id",
+        "target_group_name",
+        "topic_hint",
+        "chat_history_depth",
+        "ai_model",
+        "system_prompt_override",
+        "slang_prompt_template_id",
+        "slang_terms",
+        "tone",
+        "language",
+        "max_message_length",
+        "participation_rate",
+        "participation_jitter",
+        "allow_account_repeat",
+        "repeat_cooldown_rounds",
+        "account_personas",
+        "messages_per_round_mode",
+        "messages_per_round",
+        "history_fetch_account_id",
+        "idle_continuation_enabled",
+        "idle_continuation_seconds",
+        "silent_mode_enabled",
+        "silent_start",
+        "silent_end",
+        "silent_max_accounts",
+        "silent_messages_per_round",
+        "ramp_up_minutes",
+        "ramp_start_ratio",
+        "context_expire_after_messages",
+    },
+    "group_relay": {
+        "source_groups",
+        "rule_set_id",
+        "rule_set_version_id",
+        "monitor_account_ids",
+        "filters",
+        "target_group_id",
+        "target_operation_target_id",
+        "target_group_ids",
+        "target_operation_target_ids",
+        "content_mode",
+        "rewrite_prompt",
+        "preserve_media",
+        "add_source_attribution",
+        "dedup_window_minutes",
+        "dedup_method",
+        "require_review",
+    },
+    "channel_view": {
+        "target_views_per_message",
+        "view_count_jitter",
+        "execution_mode",
+    },
+    "channel_like": {
+        "target_likes_per_message",
+        "like_count_jitter",
+        "reaction_type",
+        "allowed_reactions",
+        "max_likes_per_account_per_hour",
+    },
+    "channel_comment": {
+        "target_comments_per_message",
+        "comment_count_jitter",
+        "comment_mode",
+        "reply_to_message_ids",
+        "rule_set_id",
+        "rule_set_version_id",
+        "ai_model",
+        "comment_style",
+        "topic_hint",
+        "system_prompt_override",
+        "language",
+        "max_comment_length",
+        "max_comments_per_account_per_hour",
+        "require_review",
+    },
+}

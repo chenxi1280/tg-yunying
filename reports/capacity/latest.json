@@ -1,0 +1,411 @@
+{
+  "generated_at": "2026-05-16T10:01:21.197519+00:00",
+  "model": {
+    "task_actions_per_minute": {
+      "group_ai_chat": 2.4,
+      "group_relay": 3.0,
+      "channel_view": 6.0,
+      "channel_like": 4.0,
+      "channel_comment": 2.0
+    },
+    "gateway_modes": {
+      "fast": {
+        "latency_seconds": 0.25,
+        "success_ratio": 0.99,
+        "unknown_ratio": 0.0,
+        "limited_ratio": 0.0
+      },
+      "slow": {
+        "latency_seconds": 1.2,
+        "success_ratio": 0.96,
+        "unknown_ratio": 0.001,
+        "limited_ratio": 0.0
+      },
+      "flood_wait": {
+        "latency_seconds": 0.8,
+        "success_ratio": 0.88,
+        "unknown_ratio": 0.001,
+        "limited_ratio": 0.08
+      },
+      "slowmode": {
+        "latency_seconds": 0.6,
+        "success_ratio": 0.9,
+        "unknown_ratio": 0.001,
+        "limited_ratio": 0.06
+      },
+      "unknown_after_send": {
+        "latency_seconds": 0.75,
+        "success_ratio": 0.94,
+        "unknown_ratio": 0.01,
+        "limited_ratio": 0.0
+      }
+    },
+    "duration_minutes": 30,
+    "db_pool_size": 20,
+    "db_max_overflow": 20,
+    "global_tg_rate_per_second": 30,
+    "account_rate_per_hour": 120
+  },
+  "results": [
+    {
+      "scenario": "100:5",
+      "gateway_mode": "fast",
+      "duration_minutes": 30,
+      "generated_actions": 522,
+      "processed_actions": 522,
+      "backlog_actions": 0,
+      "throughput_per_minute": 17.4,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 0,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 2,
+      "recommended_dispatcher_concurrency": 5,
+      "recommended_action_claim_limit": 50,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 900,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=516",
+        "limited_or_delayed_actions=0",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "100:5",
+      "gateway_mode": "slow",
+      "duration_minutes": 30,
+      "generated_actions": 522,
+      "processed_actions": 522,
+      "backlog_actions": 0,
+      "throughput_per_minute": 17.4,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 0,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 2,
+      "recommended_dispatcher_concurrency": 5,
+      "recommended_action_claim_limit": 50,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 250,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=501",
+        "limited_or_delayed_actions=0",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "100:5",
+      "gateway_mode": "flood_wait",
+      "duration_minutes": 30,
+      "generated_actions": 522,
+      "processed_actions": 522,
+      "backlog_actions": 0,
+      "throughput_per_minute": 17.4,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 0,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 2,
+      "recommended_dispatcher_concurrency": 5,
+      "recommended_action_claim_limit": 50,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 375,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=459",
+        "limited_or_delayed_actions=41",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "100:5",
+      "gateway_mode": "slowmode",
+      "duration_minutes": 30,
+      "generated_actions": 522,
+      "processed_actions": 522,
+      "backlog_actions": 0,
+      "throughput_per_minute": 17.4,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 0,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 2,
+      "recommended_dispatcher_concurrency": 5,
+      "recommended_action_claim_limit": 50,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 500,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=469",
+        "limited_or_delayed_actions=31",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "100:5",
+      "gateway_mode": "unknown_after_send",
+      "duration_minutes": 30,
+      "generated_actions": 522,
+      "processed_actions": 522,
+      "backlog_actions": 0,
+      "throughput_per_minute": 17.4,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 5,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 2,
+      "recommended_dispatcher_concurrency": 5,
+      "recommended_action_claim_limit": 50,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 400,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=490",
+        "limited_or_delayed_actions=0",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "300:10",
+      "gateway_mode": "fast",
+      "duration_minutes": 30,
+      "generated_actions": 1044,
+      "processed_actions": 1044,
+      "backlog_actions": 0,
+      "throughput_per_minute": 34.8,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 0,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 4,
+      "recommended_dispatcher_concurrency": 7,
+      "recommended_action_claim_limit": 56,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 900,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=1033",
+        "limited_or_delayed_actions=0",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "300:10",
+      "gateway_mode": "slow",
+      "duration_minutes": 30,
+      "generated_actions": 1044,
+      "processed_actions": 1044,
+      "backlog_actions": 0,
+      "throughput_per_minute": 34.8,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 1,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 4,
+      "recommended_dispatcher_concurrency": 7,
+      "recommended_action_claim_limit": 56,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 700,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=1002",
+        "limited_or_delayed_actions=0",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "300:10",
+      "gateway_mode": "flood_wait",
+      "duration_minutes": 30,
+      "generated_actions": 1044,
+      "processed_actions": 1044,
+      "backlog_actions": 0,
+      "throughput_per_minute": 34.8,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 1,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 4,
+      "recommended_dispatcher_concurrency": 7,
+      "recommended_action_claim_limit": 56,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 900,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=918",
+        "limited_or_delayed_actions=83",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "300:10",
+      "gateway_mode": "slowmode",
+      "duration_minutes": 30,
+      "generated_actions": 1044,
+      "processed_actions": 1044,
+      "backlog_actions": 0,
+      "throughput_per_minute": 34.8,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 1,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 4,
+      "recommended_dispatcher_concurrency": 7,
+      "recommended_action_claim_limit": 56,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 900,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=939",
+        "limited_or_delayed_actions=62",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "300:10",
+      "gateway_mode": "unknown_after_send",
+      "duration_minutes": 30,
+      "generated_actions": 1044,
+      "processed_actions": 1044,
+      "backlog_actions": 0,
+      "throughput_per_minute": 34.8,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 10,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 4,
+      "recommended_dispatcher_concurrency": 7,
+      "recommended_action_claim_limit": 56,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 900,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=981",
+        "limited_or_delayed_actions=0",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "1000:30",
+      "gateway_mode": "fast",
+      "duration_minutes": 30,
+      "generated_actions": 3132,
+      "processed_actions": 3132,
+      "backlog_actions": 0,
+      "throughput_per_minute": 104.4,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 0,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 8,
+      "recommended_dispatcher_concurrency": 11,
+      "recommended_action_claim_limit": 176,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 900,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=3100",
+        "limited_or_delayed_actions=0",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "1000:30",
+      "gateway_mode": "slow",
+      "duration_minutes": 30,
+      "generated_actions": 3132,
+      "processed_actions": 3132,
+      "backlog_actions": 0,
+      "throughput_per_minute": 104.4,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 3,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 8,
+      "recommended_dispatcher_concurrency": 11,
+      "recommended_action_claim_limit": 176,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 900,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=3006",
+        "limited_or_delayed_actions=0",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "1000:30",
+      "gateway_mode": "flood_wait",
+      "duration_minutes": 30,
+      "generated_actions": 3132,
+      "processed_actions": 3132,
+      "backlog_actions": 0,
+      "throughput_per_minute": 104.4,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 3,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 8,
+      "recommended_dispatcher_concurrency": 11,
+      "recommended_action_claim_limit": 176,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 900,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=2756",
+        "limited_or_delayed_actions=250",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "1000:30",
+      "gateway_mode": "slowmode",
+      "duration_minutes": 30,
+      "generated_actions": 3132,
+      "processed_actions": 3132,
+      "backlog_actions": 0,
+      "throughput_per_minute": 104.4,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 3,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 8,
+      "recommended_dispatcher_concurrency": 11,
+      "recommended_action_claim_limit": 176,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 900,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=2818",
+        "limited_or_delayed_actions=187",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    },
+    {
+      "scenario": "1000:30",
+      "gateway_mode": "unknown_after_send",
+      "duration_minutes": 30,
+      "generated_actions": 3132,
+      "processed_actions": 3132,
+      "backlog_actions": 0,
+      "throughput_per_minute": 104.4,
+      "oldest_pending_p95_seconds": 0.0,
+      "unknown_after_send": 31,
+      "duplicate_sends": 0,
+      "recommended_dispatcher_workers": 8,
+      "recommended_dispatcher_concurrency": 11,
+      "recommended_action_claim_limit": 176,
+      "recommended_db_pool_size": 20,
+      "recommended_db_max_overflow": 20,
+      "single_node_boundary_accounts": 900,
+      "bottleneck": "generated_demand",
+      "notes": [
+        "successful_actions=2944",
+        "limited_or_delayed_actions=0",
+        "duplicate_sends fixed at 0 because the model assumes Action claim + lease + Redis account lock are enabled"
+      ]
+    }
+  ]
+}

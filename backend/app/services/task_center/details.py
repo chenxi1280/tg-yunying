@@ -1,0 +1,526 @@
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.models import Action, ChannelMessage, OperationTarget, Task, TgAccount
+
+from .executors.common import quantity_jitter_bounds
+from .executors.group_ai_chat import account_profile_summaries
+from .fingerprints import content_fingerprint
+
+
+def _task_payload(session: Session, task: Task, actions: list[Action] | None = None, *, include_detail_search: bool = True) -> dict[str, Any]:
+    target_summary = _target_summary(session, task)
+    search_parts = [
+        task.id,
+        task.name,
+        task.type,
+        task.status,
+        task.last_error,
+        target_summary,
+    ]
+    if include_detail_search:
+        search_parts.append(_task_config_search_text(session, task))
+    if actions:
+        for action in actions:
+            payload = action.payload or {}
+            search_parts.extend(
+                [
+                    action.action_type,
+                    action.status,
+                    str(payload.get("target_display") or ""),
+                    str(payload.get("message_content") or ""),
+                    str(payload.get("message_text") or ""),
+                    str(payload.get("comment_text") or ""),
+                ]
+            )
+    return {
+        "id": task.id,
+        "tenant_id": task.tenant_id,
+        "name": task.name,
+        "type": task.type,
+        "status": task.status,
+        "priority": task.priority,
+        "timezone": task.timezone,
+        "scheduled_start": task.scheduled_start,
+        "scheduled_end": task.scheduled_end,
+        "max_duration_hours": task.max_duration_hours,
+        "next_run_at": task.next_run_at,
+        "last_error": task.last_error,
+        "account_config": task.account_config or {},
+        "pacing_config": task.pacing_config or {},
+        "failure_policy": task.failure_policy or {},
+        "type_config": task.type_config or {},
+        "stats": task.stats or {},
+        "target_summary": target_summary,
+        "search_text": " ".join(str(item) for item in search_parts if item),
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+    }
+
+
+def _target_summary(session: Session, task: Task) -> str:
+    config = task.type_config or {}
+    if task.type.startswith("channel_"):
+        channel = _channel_for_config(session, task)
+        if channel:
+            return f"{channel.title} @{channel.username}" if channel.username else channel.title
+        return str(config.get("target_channel_name") or "")
+    if task.type == "group_ai_chat":
+        return str(
+            config.get("target_group_name")
+            or _operation_target_title(session, task.tenant_id, config.get("target_operation_target_id"))
+            or config.get("target_group_id")
+            or ""
+        )
+    if task.type == "group_relay":
+        sources = [
+            str(item.get("group_name") or _operation_target_title(session, task.tenant_id, item.get("operation_target_id")) or item.get("group_id") or "")
+            for item in config.get("source_groups") or []
+            if isinstance(item, dict)
+        ]
+        targets = [
+            _operation_target_title(session, task.tenant_id, item) or f"运营目标#{item}"
+            for item in config.get("target_operation_target_ids") or []
+        ]
+        targets.extend(str(item) for item in config.get("target_group_ids") or [])
+        if config.get("target_operation_target_id"):
+            label = _operation_target_title(session, task.tenant_id, config.get("target_operation_target_id")) or f"运营目标#{config.get('target_operation_target_id')}"
+            if label not in targets:
+                targets.insert(0, label)
+        if config.get("target_group_id") and str(config.get("target_group_id")) not in targets:
+            targets.insert(0, str(config.get("target_group_id")))
+        return " ".join([*sources, *targets])
+    return ""
+
+
+def _operation_target_title(session: Session, tenant_id: int, target_id: Any) -> str:
+    try:
+        parsed_id = int(target_id or 0)
+    except (TypeError, ValueError):
+        return ""
+    if not parsed_id:
+        return ""
+    target = session.get(OperationTarget, parsed_id)
+    if not target or target.tenant_id != tenant_id:
+        return ""
+    return target.title
+
+
+def _task_config_search_text(session: Session, task: Task) -> str:
+    config = task.type_config or {}
+    parts: list[str] = []
+    if task.type.startswith("channel_"):
+        channel = _channel_for_config(session, task)
+        if channel:
+            parts.extend([channel.title, channel.username, channel.tg_peer_id])
+        message_ids = [int(item) for item in config.get("message_ids") or [] if str(item).isdigit()]
+        stmt = select(ChannelMessage).where(ChannelMessage.tenant_id == task.tenant_id)
+        if channel:
+            stmt = stmt.where(ChannelMessage.channel_target_id == channel.id)
+        if message_ids:
+            stmt = stmt.where((ChannelMessage.id.in_(message_ids)) | (ChannelMessage.message_id.in_(message_ids)))
+        else:
+            stmt = stmt.limit(20)
+        for message in session.scalars(stmt):
+            parts.extend([str(message.message_id), message.content_preview, message.message_url])
+    return " ".join(part for part in parts if part)
+
+
+def _search_actions(session: Session, task: Task) -> list[Action]:
+    return list(
+        session.scalars(
+            select(Action)
+            .where(Action.task_id == task.id)
+            .order_by(Action.created_at.desc())
+            .limit(20)
+        )
+    )
+
+
+def _channel_for_config(session: Session, task: Task) -> OperationTarget | None:
+    config = task.type_config or {}
+    target_id = int(config.get("target_channel_id") or 0)
+    if not target_id:
+        return None
+    channel = session.get(OperationTarget, target_id)
+    if not channel or channel.tenant_id != task.tenant_id or channel.target_type != "channel":
+        return None
+    return channel
+
+
+def _detail_accounts(session: Session, actions: list[Action]) -> list[dict[str, Any]]:
+    ids = sorted({int(action.account_id) for action in actions if action.account_id})
+    if not ids:
+        return []
+    accounts = list(session.scalars(select(TgAccount).where(TgAccount.id.in_(ids))))
+    by_id = {account.id: account for account in accounts}
+    return [
+        {
+            "id": account_id,
+            "display_name": by_id[account_id].display_name if account_id in by_id else f"账号 #{account_id}",
+            "username": by_id[account_id].username if account_id in by_id else None,
+            "status": by_id[account_id].status if account_id in by_id else "未知",
+        }
+        for account_id in ids
+    ]
+
+
+def _message_groups(session: Session, task: Task, actions: list[Action]) -> list[dict[str, Any]]:
+    groups: dict[tuple[int | None, int | None, str], dict[str, Any]] = {}
+    message_ids = {
+        int(action.payload["channel_message_id"])
+        for action in actions
+        if isinstance(action.payload, dict) and isinstance(action.payload.get("channel_message_id"), int)
+    }
+    messages = list(session.scalars(select(ChannelMessage).where(ChannelMessage.id.in_(message_ids)))) if message_ids else []
+    messages_by_id = {message.id: message for message in messages}
+    channel_ids = {
+        int(message.channel_target_id)
+        for message in messages
+        if message.channel_target_id
+    } | {
+        int(action.payload["channel_target_id"])
+        for action in actions
+        if isinstance(action.payload, dict) and isinstance(action.payload.get("channel_target_id"), int)
+    }
+    channels = list(session.scalars(select(OperationTarget).where(OperationTarget.id.in_(channel_ids)))) if channel_ids else []
+    channels_by_id = {channel.id: channel for channel in channels}
+
+    for action in actions:
+        payload = action.payload or {}
+        if not isinstance(payload, dict) or "message_id" not in payload or "channel_id" not in payload:
+            continue
+        message = messages_by_id.get(payload.get("channel_message_id"))
+        channel_target_id = int(payload.get("channel_target_id") or (message.channel_target_id if message else 0) or 0) or None
+        channel = channels_by_id.get(channel_target_id) if channel_target_id else None
+        action_type = action.action_type
+        key = (channel_target_id, int(payload.get("message_id") or 0) or None, action_type)
+        target_count = _channel_subtask_configured_target_count(task, action_type)
+        item = groups.setdefault(
+            key,
+            {
+                "channel_target_id": channel_target_id,
+                "channel_title": channel.title if channel else str(payload.get("target_display") or ""),
+                "channel_username": channel.username if channel else "",
+                "message_id": key[1],
+                "action_type": action_type,
+                "action_label": _action_label(action_type),
+                "message_url": message.message_url if message else "",
+                "content_preview": message.content_preview if message else str(payload.get("message_content") or ""),
+                "target_count": target_count,
+                "completed_count": 0,
+                "failed_count": 0,
+                "running_count": 0,
+                "skipped_count": 0,
+                "duplicate_count": 0,
+                "capacity_shortfall": 0,
+                "subtask_status": "运行中",
+                "stats": {"target": target_count, "total": 0, "pending": 0, "executing": 0, "success": 0, "failed": 0, "skipped": 0, "duplicate": 0},
+                "actions": [],
+            },
+        )
+        item["actions"].append(action)
+        stats = item["stats"]
+        stats["total"] += 1
+        if action.status in stats:
+            stats[action.status] += 1
+        if _is_duplicate_action(action):
+            stats["duplicate"] += 1
+        if action.result and action.result.get("error_message"):
+            stats["last_error"] = action.result["error_message"]
+    for item in groups.values():
+        stats = item["stats"]
+        item["completed_count"] = int(stats.get("success") or 0)
+        item["failed_count"] = int(stats.get("failed") or 0)
+        item["running_count"] = int(stats.get("pending") or 0) + int(stats.get("executing") or 0)
+        item["skipped_count"] = int(stats.get("skipped") or 0)
+        item["duplicate_count"] = int(stats.get("duplicate") or 0)
+        total_actions = int(stats.get("total") or 0)
+        item["target_count"] = _channel_subtask_effective_target_count(task, str(item.get("action_type") or ""), total_actions)
+        item["stats"]["target"] = item["target_count"]
+        item["capacity_shortfall"] = max(int(item.get("target_count") or 0) - total_actions, 0)
+        item["subtask_status"] = _channel_subtask_status(item)
+    return sorted(groups.values(), key=lambda item: (item.get("channel_title") or "", -(item.get("message_id") or 0)))
+
+
+def _channel_subtask_configured_target_count(task: Task, action_type: str) -> int:
+    config = task.type_config or {}
+    if action_type == "view_message":
+        return int(config.get("target_views_per_message") or 0)
+    if action_type == "like_message":
+        return int(config.get("target_likes_per_message") or 0)
+    if action_type == "post_comment":
+        return int(config.get("target_comments_per_message") or 0)
+    return 0
+
+
+def _channel_subtask_effective_target_count(task: Task, action_type: str, planned_count: int) -> int:
+    configured_count = _channel_subtask_configured_target_count(task, action_type)
+    lower, upper = quantity_jitter_bounds(configured_count, _channel_subtask_jitter_ratio(task, action_type))
+    if planned_count and lower <= planned_count <= upper:
+        return planned_count
+    if planned_count < lower:
+        return lower
+    return configured_count
+
+
+def _channel_subtask_jitter_ratio(task: Task, action_type: str) -> float:
+    config = task.type_config or {}
+    if action_type == "view_message":
+        return float(config.get("view_count_jitter") or 0)
+    if action_type == "like_message":
+        return float(config.get("like_count_jitter") or 0)
+    if action_type == "post_comment":
+        return float(config.get("comment_count_jitter") or 0)
+    return 0.0
+
+
+def _action_label(action_type: str) -> str:
+    return {
+        "view_message": "浏览",
+        "like_message": "点赞",
+        "post_comment": "评论/回复",
+        "send_message": "发送",
+    }.get(action_type, action_type)
+
+
+def _is_duplicate_action(action: Action) -> bool:
+    result = action.result or {}
+    text = " ".join(str(result.get(key) or "") for key in ("error_code", "failure_type", "error_message", "detail")).lower()
+    return "duplicate" in text or "重复" in text
+
+
+def _channel_subtask_status(item: dict[str, Any]) -> str:
+    if item.get("capacity_shortfall"):
+        return "容量不足"
+    if item.get("running_count"):
+        return "运行中"
+    if item.get("target_count") and item.get("completed_count", 0) >= item["target_count"]:
+        return "已达标"
+    if item.get("failed_count"):
+        return "有失败"
+    if item.get("skipped_count"):
+        return "已跳过"
+    return "待规划"
+
+
+def _ai_cycles(actions: list[Action]) -> list[dict[str, Any]]:
+    cycles: dict[str, dict[str, Any]] = {}
+    for action in actions:
+        payload = action.payload or {}
+        if not isinstance(payload, dict):
+            continue
+        cycle_id = str(payload.get("cycle_id") or "")
+        if not cycle_id:
+            continue
+        item = cycles.setdefault(
+            cycle_id,
+            {
+                "cycle_id": cycle_id,
+                "context_message_ids": payload.get("context_message_ids") if isinstance(payload.get("context_message_ids"), list) else [],
+                "stats": {"total": 0, "pending": 0, "executing": 0, "success": 0, "failed": 0, "skipped": 0},
+                "turns": [],
+            },
+        )
+        item["turns"].append(
+            {
+                "action_id": action.id,
+                "turn_index": int(payload.get("turn_index") or len(item["turns"]) + 1),
+                "account_id": action.account_id,
+                "account_role": str(payload.get("account_role") or ""),
+                "account_memory": str(payload.get("account_memory") or ""),
+                "account_profile": str(payload.get("account_profile") or ""),
+                "topic_thread": str(payload.get("topic_thread") or ""),
+                "topic_plan": str(payload.get("topic_plan") or ""),
+                "intent": str(payload.get("intent") or ""),
+                "content": str(payload.get("message_text") or ""),
+                "status": action.status,
+                "scheduled_at": action.scheduled_at,
+                "executed_at": action.executed_at,
+                "result": action.result or {},
+            }
+        )
+        _group_stats_inc(item["stats"], action.status)
+    for item in cycles.values():
+        item["turns"].sort(key=lambda row: (row["turn_index"], row["scheduled_at"]))
+    return sorted(cycles.values(), key=lambda item: item["cycle_id"])
+
+
+def _ai_generation_records(actions: list[Action]) -> list[dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+    for action in actions:
+        payload = action.payload or {}
+        if not isinstance(payload, dict):
+            continue
+        generation_id = str(payload.get("ai_generation_id") or "")
+        if not generation_id:
+            continue
+        record = records.setdefault(
+            generation_id,
+            {
+                "generation_id": generation_id,
+                "cycle_id": str(payload.get("cycle_id") or generation_id),
+                "status": str(payload.get("ai_generation_status") or ""),
+                "generated_count": int(payload.get("ai_generation_count") or 0),
+                "token_count": int(payload.get("ai_generation_tokens") or 0),
+                "context_message_count": int(payload.get("ai_generation_context_count") or 0),
+                "account_memory_count": int(payload.get("ai_generation_memory_count") or 0),
+                "scheduled_at": action.scheduled_at,
+                "created_at": action.created_at,
+            },
+        )
+        record["generated_count"] = max(record["generated_count"], int(payload.get("ai_generation_count") or 0))
+        record["token_count"] = max(record["token_count"], int(payload.get("ai_generation_tokens") or 0))
+        record["context_message_count"] = max(record["context_message_count"], int(payload.get("ai_generation_context_count") or 0))
+        record["account_memory_count"] = max(record["account_memory_count"], int(payload.get("ai_generation_memory_count") or 0))
+        if action.created_at < record["created_at"]:
+            record["created_at"] = action.created_at
+        if action.scheduled_at < record["scheduled_at"]:
+            record["scheduled_at"] = action.scheduled_at
+    return sorted(records.values(), key=lambda item: item["created_at"], reverse=True)
+
+
+def _ai_account_profiles(session: Session, task: Task, actions: list[Action]) -> list[dict[str, Any]]:
+    if task.type != "group_ai_chat":
+        return []
+    account_ids = {int(action.account_id) for action in actions if action.account_id}
+    account_config = task.account_config if isinstance(task.account_config, dict) else {}
+    for account_id in account_config.get("account_ids") or []:
+        try:
+            account_ids.add(int(account_id))
+        except (TypeError, ValueError):
+            continue
+    if not account_ids:
+        return []
+    summaries = account_profile_summaries(session, task, sorted(account_ids), recent_limit=5)
+    if not summaries:
+        return []
+    current_counts = dict(
+        session.execute(
+            select(Action.account_id, func.count(Action.id))
+            .where(
+                Action.task_id == task.id,
+                Action.task_type == "group_ai_chat",
+                Action.action_type == "send_message",
+                Action.status == "success",
+                Action.account_id.in_(account_ids),
+            )
+            .group_by(Action.account_id)
+        ).all()
+    )
+    accounts = {account.id: account for account in session.scalars(select(TgAccount).where(TgAccount.id.in_(account_ids)))}
+    rows: list[dict[str, Any]] = []
+    for account_id in sorted(account_ids):
+        summary = summaries.get(str(account_id))
+        if not summary:
+            continue
+        current_count = int(current_counts.get(account_id) or 0)
+        total = _profile_total_success(summary)
+        account = accounts.get(account_id)
+        rows.append(
+            {
+                "account_id": account_id,
+                "display_name": account.display_name if account else f"账号 #{account_id}",
+                "username": account.username if account else None,
+                "status": account.status if account else "未知",
+                "total_success_count": total,
+                "current_task_success_count": current_count,
+                "cross_task_success_count": max(0, total - current_count),
+                "profile_summary": summary,
+            }
+        )
+    return sorted(rows, key=lambda item: (-item["total_success_count"], item["account_id"]))
+
+
+def _profile_total_success(summary: str) -> int:
+    match = re.search(r"历史成功发言\s+(\d+)\s+次", summary or "")
+    return int(match.group(1)) if match else 0
+
+
+def _relay_batches(actions: list[Action]) -> list[dict[str, Any]]:
+    batches: dict[str, dict[str, Any]] = {}
+    for action in actions:
+        payload = action.payload or {}
+        if not isinstance(payload, dict):
+            continue
+        batch_id = str(payload.get("relay_batch_id") or "")
+        if not batch_id:
+            continue
+        item = batches.setdefault(
+            batch_id,
+            {
+                "relay_batch_id": batch_id,
+                "stats": {"total": 0, "pending": 0, "executing": 0, "success": 0, "failed": 0, "skipped": 0},
+                "source_event_count": 0,
+                "material_count": 0,
+                "rule_version_count": 0,
+                "items": [],
+            },
+        )
+        relay_event_id = str(payload.get("relay_event_id") or "")
+        source_group_id = payload.get("source_group_id") if isinstance(payload.get("source_group_id"), int) else None
+        source_operation_target_id = payload.get("source_operation_target_id") if isinstance(payload.get("source_operation_target_id"), int) else None
+        original_text = str(payload.get("original_text") or "")
+        transformed_text = str(payload.get("message_text") or "")
+        material_text = original_text or transformed_text
+        source_info = str(payload.get("source_info") or "")
+        source_group_title = str(payload.get("source_group_title") or "")
+        source_sender_name = str(payload.get("source_sender_name") or "")
+        if (not source_group_title or not source_sender_name) and " / " in source_info:
+            source_group_title = source_group_title or source_info.split(" / ", 1)[0].strip()
+            source_sender_name = source_sender_name or source_info.split(" / ", 1)[1].strip()
+        source_event_key = f"{source_operation_target_id or source_group_id or '-'}:{relay_event_id or '-'}"
+        item["items"].append(
+            {
+                "action_id": action.id,
+                "relay_event_id": relay_event_id,
+                "source_event_key": source_event_key,
+                "source_group_id": source_group_id,
+                "source_operation_target_id": source_operation_target_id,
+                "operation_target_id": payload.get("operation_target_id") if isinstance(payload.get("operation_target_id"), int) else None,
+                "source_info": source_info,
+                "source_group_title": source_group_title,
+                "source_sender_name": source_sender_name,
+                "source_sender_peer_id": str(payload.get("source_sender_peer_id") or ""),
+                "source_remote_message_id": str(payload.get("source_remote_message_id") or ""),
+                "source_message_type": str(payload.get("source_message_type") or ""),
+                "source_sent_at": payload.get("source_sent_at"),
+                "target_display": str(payload.get("target_display") or ""),
+                "original_text": original_text,
+                "transformed_text": transformed_text,
+                "material_fingerprint": content_fingerprint(material_text) if material_text else "",
+                "rule_set_id": payload.get("rule_set_id") if isinstance(payload.get("rule_set_id"), int) else None,
+                "rule_set_name": str(payload.get("rule_set_name") or ""),
+                "rule_set_version_id": payload.get("rule_set_version_id") if isinstance(payload.get("rule_set_version_id"), int) else None,
+                "resolved_rule_set_version_id": payload.get("resolved_rule_set_version_id") if isinstance(payload.get("resolved_rule_set_version_id"), int) else payload.get("rule_set_version_id") if isinstance(payload.get("rule_set_version_id"), int) else None,
+                "rule_set_version": payload.get("rule_set_version") if isinstance(payload.get("rule_set_version"), int) else None,
+                "rule_binding_mode": str(payload.get("rule_binding_mode") or ""),
+                "rule_trace": payload.get("rule_trace") if isinstance(payload.get("rule_trace"), dict) else {},
+                "account_id": action.account_id,
+                "status": action.status,
+                "retry_count": int(action.retry_count or 0),
+                "scheduled_at": action.scheduled_at,
+                "executed_at": action.executed_at,
+                "result": action.result or {},
+            }
+        )
+        _group_stats_inc(item["stats"], action.status)
+    for item in batches.values():
+        item["items"].sort(key=lambda row: row["scheduled_at"])
+        item["source_event_count"] = len({row["source_event_key"] for row in item["items"] if row.get("source_event_key") and not str(row.get("source_event_key")).endswith(":-")})
+        item["material_count"] = len({row["material_fingerprint"] for row in item["items"] if row.get("material_fingerprint")})
+        item["rule_version_count"] = len({row["resolved_rule_set_version_id"] or row["rule_set_version_id"] for row in item["items"] if row.get("resolved_rule_set_version_id") or row.get("rule_set_version_id")})
+    return sorted(batches.values(), key=lambda item: item["relay_batch_id"])
+
+
+def _group_stats_inc(stats: dict[str, int], status: str) -> None:
+    stats["total"] = int(stats.get("total") or 0) + 1
+    if status in stats:
+        stats[status] = int(stats.get(status) or 0) + 1
+
+
