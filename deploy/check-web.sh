@@ -45,7 +45,14 @@ check_url() {
 
 backend_status="$(docker inspect tgyunying-backend --format '{{.State.Status}}' 2>/dev/null || true)"
 backend_health="$(docker inspect tgyunying-backend --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>/dev/null || true)"
-worker_status="$(docker inspect tgyunying-worker --format '{{.State.Status}}' 2>/dev/null || true)"
+worker_containers=(
+  tgyunying-worker-planner
+  tgyunying-worker-dispatcher-1
+  tgyunying-worker-dispatcher-2
+  tgyunying-worker-listener
+  tgyunying-worker-recovery
+  tgyunying-worker-metrics
+)
 
 if [[ "$backend_status" != "running" || ( -n "$backend_health" && "$backend_health" != "healthy" ) ]]; then
   echo "BAD backend container: status=${backend_status:-missing} health=${backend_health:-none}" >&2
@@ -54,12 +61,15 @@ if [[ "$backend_status" != "running" || ( -n "$backend_health" && "$backend_heal
 fi
 echo "OK backend container: status=$backend_status health=${backend_health:-none}"
 
-if [[ "$worker_status" != "running" ]]; then
-  echo "BAD worker container: status=${worker_status:-missing}" >&2
-  docker logs --tail 200 tgyunying-worker >&2 || true
-  exit 1
-fi
-echo "OK worker container: status=$worker_status"
+for worker_container in "${worker_containers[@]}"; do
+  worker_status="$(docker inspect "$worker_container" --format '{{.State.Status}}' 2>/dev/null || true)"
+  if [[ "$worker_status" != "running" ]]; then
+    echo "BAD worker container ${worker_container}: status=${worker_status:-missing}" >&2
+    docker logs --tail 200 "$worker_container" >&2 || true
+    exit 1
+  fi
+  echo "OK worker container ${worker_container}: status=$worker_status"
+done
 
 if [[ ! -f "${STATIC_DIR}/index.html" ]]; then
   echo "BAD frontend static index missing: ${STATIC_DIR}/index.html" >&2

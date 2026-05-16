@@ -126,16 +126,26 @@ publish_frontend_static() {
 
 docker_login_ghcr
 
+BACKEND_SERVICES=(
+  backend
+  worker-planner
+  worker-dispatcher-1
+  worker-dispatcher-2
+  worker-listener
+  worker-recovery
+  worker-metrics
+)
+
 echo "==> Pulling backend image"
-compose pull backend worker
+compose pull "${BACKEND_SERVICES[@]}"
 
 echo "==> Pulling frontend static image"
 docker pull "$TGYUNYING_FRONTEND_IMAGE"
 
 publish_frontend_static "$TGYUNYING_FRONTEND_IMAGE"
 
-echo "==> Starting backend and worker"
-compose up -d --no-build --remove-orphans backend worker
+echo "==> Starting backend and workers"
+compose up -d --no-build --remove-orphans "${BACKEND_SERVICES[@]}"
 wait_for_container_ready tgyunying-backend "${TGYUNYING_BACKEND_READY_TIMEOUT_SECONDS:-180}"
 
 echo "==> Container status"
