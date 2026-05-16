@@ -41,7 +41,7 @@ def _reserve_runtime_resources(action: Action) -> bool:
                 action.result = {
                     **(action.result or {}),
                     "runtime_resource_reason": "account_inflight_conflict",
-                    "runtime_resource_wait_seconds": 1,
+                    "runtime_resource_wait_seconds": 0,
                 }
                 return False
             _IN_FLIGHT_ACCOUNTS.add(account_id)

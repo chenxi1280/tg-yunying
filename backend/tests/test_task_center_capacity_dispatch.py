@@ -112,6 +112,7 @@ def test_claim_actions_uses_claiming_then_confirms_executing_with_account_lock()
         assert session.get(Action, "action-1").status == "executing"
         deferred = session.get(Action, "action-2")
         assert deferred.status == "pending"
+        assert deferred.scheduled_at <= _now()
         assert deferred.result["claim_released_reason"] == "account_inflight_conflict"
         dispatcher._ACTION_RESERVATIONS.clear()
         dispatcher._IN_FLIGHT_ACCOUNTS.clear()
