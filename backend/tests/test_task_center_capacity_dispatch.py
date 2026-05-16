@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -11,9 +12,19 @@ from app.gateways import SendResult
 from app.models import Action, DailyRuntimeStat, ExecutionAttempt, GroupContextMessage, ReviewQueue, RuntimeCleanupAudit, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now
 from app.services.task_center import dispatcher
+from app.services.task_center import account_pool
 from app.services.task_center.dispatcher import claim_actions
 from app.services.task_center.runtime_retention import cleanup_runtime_details
 from app.services.task_center.service import _recover_stale_executing_actions
+
+
+@pytest.fixture(autouse=True)
+def clear_dispatcher_runtime_state():
+    dispatcher._ACTION_RESERVATIONS.clear()
+    dispatcher._IN_FLIGHT_ACCOUNTS.clear()
+    yield
+    dispatcher._ACTION_RESERVATIONS.clear()
+    dispatcher._IN_FLIGHT_ACCOUNTS.clear()
 
 
 class FakeRedisTokenBucket:
@@ -37,6 +48,22 @@ class FakeRedisTokenBucket:
         return [1, 0]
 
 
+class FakeRedisAccountLock:
+    def __init__(self, *, locked: bool = True) -> None:
+        self.locked = locked
+        self.set_calls: list[tuple[str, str, bool, int]] = []
+        self.released_keys: list[str] = []
+
+    def set(self, key, token, *, nx, ex):  # noqa: ANN001
+        self.set_calls.append((str(key), str(token), bool(nx), int(ex)))
+        return self.locked
+
+    def eval(self, _script, numkeys, *args):  # noqa: ANN001
+        if numkeys == 1:
+            self.released_keys.append(str(args[0]))
+        return 1
+
+
 def _redis_bucket_settings(**overrides):
     defaults = {
         "enable_redis_token_bucket": True,
@@ -53,6 +80,10 @@ def _redis_bucket_settings(**overrides):
         "task_type_token_weights": "group_relay=2,group_ai_chat=2",
         "action_claim_limit": 100,
         "action_lease_seconds": 1800,
+        "enable_redis_account_inflight": False,
+        "redis_account_inflight_seconds": 1800,
+        "account_shard_total": 1,
+        "account_shard_index": 0,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -81,7 +112,7 @@ def test_claim_actions_uses_claiming_then_confirms_executing_with_account_lock()
         assert session.get(Action, "action-1").status == "executing"
         deferred = session.get(Action, "action-2")
         assert deferred.status == "pending"
-        assert deferred.result["claim_released_reason"] == "runtime_resource_unavailable"
+        assert deferred.result["claim_released_reason"] == "account_inflight_conflict"
         dispatcher._ACTION_RESERVATIONS.clear()
         dispatcher._IN_FLIGHT_ACCOUNTS.clear()
 
@@ -185,6 +216,45 @@ def test_dispatch_context_expired_skip_releases_reserved_account_runtime_resourc
         assert claimed.id not in dispatcher._ACTION_RESERVATIONS
 
 
+def test_gateway_exception_after_call_started_marks_unknown_after_send(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-unknown", tenant_id=1, name="unknown", type="group_relay", status="running"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
+        session.add(
+            Action(
+                id="action-unknown",
+                tenant_id=1,
+                task_id="task-unknown",
+                task_type="group_relay",
+                action_type="send_message",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"group_id": 7, "message_text": "hello", "review_approved": True},
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("socket lost after send")))
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+        assert dispatcher.dispatch_action(session, claimed) is True
+
+        refreshed = session.get(Action, "action-unknown")
+        assert refreshed.status == "unknown_after_send"
+        assert refreshed.result["error_code"] == "unknown_after_send"
+        assert 11 not in dispatcher._IN_FLIGHT_ACCOUNTS
+        assert refreshed.id not in dispatcher._ACTION_RESERVATIONS
+
+
 def test_claim_actions_db_unique_index_blocks_cross_worker_same_account_execution():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -267,7 +337,66 @@ def test_claim_actions_gets_multi_dimension_redis_token_bucket_before_executing(
         }
         assert len(dispatcher._ACTION_RESERVATIONS[action.id].redis_reservations) == 6
         dispatcher._release_runtime_resources(action)
-        assert fake_redis.released_keys == fake_redis.reservation_keys
+    assert fake_redis.released_keys == fake_redis.reservation_keys
+
+
+def test_claim_actions_filters_accounts_by_current_shard(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    settings = _redis_bucket_settings(enable_redis_token_bucket=False, account_shard_total=2, account_shard_index=1)
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(account_pool, "get_settings", lambda: settings)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=10, tenant_id=1, display_name="账号A", phone_masked="+861***0010", status="在线"),
+                TgAccount(id=11, tenant_id=1, display_name="账号B", phone_masked="+861***0011", status="在线"),
+            ]
+        )
+        session.add(Task(id="task-shard", tenant_id=1, name="shard", type="group_relay", status="running", priority=1))
+        session.add_all(
+            [
+                Action(id="action-shard-0", tenant_id=1, task_id="task-shard", task_type="group_relay", action_type="send_message", account_id=10, status="pending", scheduled_at=now_value, payload={"chat_id": "-1001", "message_text": "a"}),
+                Action(id="action-shard-1", tenant_id=1, task_id="task-shard", task_type="group_relay", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"chat_id": "-1001", "message_text": "b"}),
+            ]
+        )
+        session.commit()
+
+        claimed = claim_actions(session, limit=5, worker_id="worker-shard")
+
+        assert [action.id for action in claimed] == ["action-shard-1"]
+        assert session.get(Action, "action-shard-0").status == "pending"
+        dispatcher._ACTION_RESERVATIONS.clear()
+        dispatcher._IN_FLIGHT_ACCOUNTS.clear()
+
+
+def test_claim_actions_uses_redis_account_inflight_lock(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    fake_redis = FakeRedisAccountLock(locked=False)
+    settings = _redis_bucket_settings(enable_redis_account_inflight=True)
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "_redis_client", lambda _redis_url: fake_redis)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线"))
+        session.add(Task(id="task-redis-account-lock", tenant_id=1, name="redis account lock", type="group_relay", status="running", priority=1))
+        session.add(Action(id="action-redis-account-lock", tenant_id=1, task_id="task-redis-account-lock", task_type="group_relay", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"chat_id": "-1001", "message_text": "hello"}))
+        session.commit()
+
+        claimed = claim_actions(session, limit=1, worker_id="worker-test")
+
+        action = session.get(Action, "action-redis-account-lock")
+        assert claimed == []
+        assert action.status == "pending"
+        assert action.result["claim_released_reason"] == "account_inflight_conflict"
+        assert fake_redis.set_calls[0][0] == "inflight:account:11"
+        assert 11 not in dispatcher._IN_FLIGHT_ACCOUNTS
 
 
 def test_claim_actions_keeps_pending_and_delays_when_redis_token_bucket_is_limited(monkeypatch):

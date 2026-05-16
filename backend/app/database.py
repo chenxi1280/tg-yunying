@@ -9,6 +9,7 @@ from .config import get_settings
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DATABASE_URL = get_settings().database_url
+settings = get_settings()
 
 
 class Base(DeclarativeBase):
@@ -16,7 +17,17 @@ class Base(DeclarativeBase):
 
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {"options": "-c timezone=Asia/Shanghai"}
-engine = create_engine(DATABASE_URL, connect_args=connect_args, future=True)
+engine_kwargs = {"connect_args": connect_args, "future": True}
+if not DATABASE_URL.startswith("sqlite"):
+    engine_kwargs.update(
+        {
+            "pool_size": max(1, int(settings.db_pool_size or 5)),
+            "max_overflow": max(0, int(settings.db_max_overflow or 0)),
+            "pool_timeout": max(1, int(settings.db_pool_timeout or 30)),
+            "pool_recycle": max(60, int(settings.db_pool_recycle or 1800)),
+        }
+    )
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 

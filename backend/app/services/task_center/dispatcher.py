@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
@@ -21,7 +21,7 @@ from app.services.content_filters import filter_outbound_content, rewrite_reject
 from app.services.developer_apps import credentials_for_account
 from app.services.ai_config import get_scheduling_setting
 
-from .account_pool import select_task_accounts
+from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from .payloads import LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
@@ -36,6 +36,7 @@ _ACTION_RESERVATIONS: dict[str, "_RuntimeReservation"] = {}
 class _RuntimeReservation:
     account_id: int | None
     redis_reservations: tuple[tuple[str, str], ...] = ()
+    redis_account_lock: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,10 @@ def dispatch_action(session: Session, action: Action) -> bool:
         _fail(action, FailureType.UNKNOWN.value, payload_error_message(exc))
         return True
     except Exception as exc:  # noqa: BLE001 - worker must keep draining.
-        _fail(action, FailureType.UNKNOWN.value, str(exc))
+        if _gateway_call_started(session, action):
+            _mark_unknown_after_send(session, action, str(exc))
+        else:
+            _fail(action, FailureType.UNKNOWN.value, str(exc))
         return True
 
 
@@ -132,6 +136,9 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
         Task.status == "running",
         Task.deleted_at.is_(None),
     ]
+    shard_total, shard_index = current_account_shard()
+    if shard_total > 1:
+        filters.append(or_(Action.account_id.is_(None), (Action.account_id % shard_total) == shard_index))
     if exclude_task_ids:
         filters.append(Action.task_id.not_in(exclude_task_ids))
     if pending_review_exists is not None:
@@ -219,6 +226,15 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
     if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
         return False
+    if not account_matches_current_shard(account.id):
+        _release_claim(action, delay_seconds=30, reason="account_shard_mismatch")
+        action.result = {
+            **(action.result or {}),
+            "runtime_resource_reason": "account_shard_mismatch",
+            "shard_total": current_account_shard()[0],
+            "shard_index": current_account_shard()[1],
+        }
+        return False
     decision = account_capacity_decision(
         session,
         tenant_id=action.tenant_id,
@@ -255,16 +271,29 @@ def _reserve_runtime_resources(action: Action) -> bool:
     if account_id is not None:
         with _IN_FLIGHT_LOCK:
             if account_id in _IN_FLIGHT_ACCOUNTS:
+                action.result = {
+                    **(action.result or {}),
+                    "runtime_resource_reason": "account_inflight_conflict",
+                    "runtime_resource_wait_seconds": 1,
+                }
                 return False
             _IN_FLIGHT_ACCOUNTS.add(account_id)
     redis_reservation = _reserve_redis_token(action)
     if redis_reservation is False:
         _release_runtime_resources(action)
         return False
+    redis_account_lock = _reserve_redis_account_lock(action, account_id)
+    if redis_account_lock is False:
+        if redis_reservation:
+            for redis_key, redis_token in redis_reservation:
+                _release_redis_reservation(redis_key, redis_token)
+        _release_runtime_resources(action)
+        return False
     with _IN_FLIGHT_LOCK:
         _ACTION_RESERVATIONS[action.id] = _RuntimeReservation(
             account_id=account_id,
             redis_reservations=redis_reservation if redis_reservation else (),
+            redis_account_lock=redis_account_lock if redis_account_lock else None,
         )
     return True
 
@@ -275,6 +304,8 @@ def _release_runtime_resources(action: Action) -> None:
     if reservation:
         for redis_key, redis_token in reservation.redis_reservations:
             _release_redis_reservation(redis_key, redis_token)
+        if reservation.redis_account_lock:
+            _release_redis_reservation(*reservation.redis_account_lock)
     account_id = reservation.account_id if reservation else (int(action.account_id) if action.account_id is not None else None)
     if account_id is None:
         return
@@ -316,6 +347,33 @@ def _reserve_redis_token(action: Action) -> tuple[tuple[str, str], ...] | None |
             "runtime_resource_wait_seconds": 5,
         }
         return False
+
+
+def _reserve_redis_account_lock(action: Action, account_id: int | None) -> tuple[str, str] | None | bool:
+    settings = get_settings()
+    if not account_id or not _setting(settings, "enable_redis_account_inflight", False):
+        return None
+    lock_key = f"inflight:account:{account_id}"
+    lock_token = f"{action.id}:{uuid4()}"
+    ttl_seconds = max(30, int(_setting(settings, "redis_account_inflight_seconds", 1800) or 1800))
+    try:
+        client = _redis_client(settings.redis_url)
+        locked = client.set(lock_key, lock_token, nx=True, ex=ttl_seconds)
+    except Exception:
+        action.result = {
+            **(action.result or {}),
+            "runtime_resource_reason": "redis_account_inflight_unavailable",
+            "runtime_resource_wait_seconds": 5,
+        }
+        return False
+    if locked:
+        return lock_key, lock_token
+    action.result = {
+        **(action.result or {}),
+        "runtime_resource_reason": "account_inflight_conflict",
+        "runtime_resource_wait_seconds": 1,
+    }
+    return False
 
 
 def _redis_client(redis_url: str):
@@ -605,6 +663,27 @@ def _fail(action: Action, failure_type: str, detail: str, *, auto_check: str = "
     _release_runtime_resources(action)
 
 
+def _mark_unknown_after_send(session: Session, action: Action, detail: str) -> None:
+    action.status = "unknown_after_send"
+    _clear_action_lease(action)
+    action.result = {
+        "success": False,
+        "error_code": "unknown_after_send",
+        "error_message": detail or "执行项已进入 TG 调用边界但本地结果未知，需人工或补偿确认",
+        "auto_check": "结果未知",
+        "validation_stage": "telegram_api",
+    }
+    action.executed_at = _now()
+    attempt = _latest_open_gateway_attempt(session, action)
+    if attempt:
+        attempt.after_call_at = _now()
+        attempt.status = "result_unknown"
+        attempt.failure_type = "unknown_after_send"
+        attempt.failure_detail = detail or ""
+        attempt.result_snapshot = dict(action.result or {})
+    _release_runtime_resources(action)
+
+
 def _fail_with_policy(action: Action, failure_type: str, detail: str, *, auto_check: str = "失败", validation_stage: str = "") -> None:
     _fail(action, failure_type, detail, auto_check=auto_check, validation_stage=validation_stage)
     _apply_default_failure_policy(action, failure_type)
@@ -720,6 +799,23 @@ def _mark_gateway_call_started(session: Session, attempt: ExecutionAttempt) -> N
     attempt.gateway_call_started_at = _now()
     attempt.status = "gateway_call_started"
     session.commit()
+
+
+def _gateway_call_started(session: Session, action: Action) -> bool:
+    return _latest_open_gateway_attempt(session, action) is not None
+
+
+def _latest_open_gateway_attempt(session: Session, action: Action) -> ExecutionAttempt | None:
+    return session.scalar(
+        select(ExecutionAttempt)
+        .where(
+            ExecutionAttempt.action_id == action.id,
+            ExecutionAttempt.gateway_call_started_at.is_not(None),
+            ExecutionAttempt.after_call_at.is_(None),
+        )
+        .order_by(ExecutionAttempt.attempt_no.desc())
+        .limit(1)
+    )
 
 
 def _finish_execution_attempt(attempt: ExecutionAttempt | None, action: Action, *, remote_id: str = "", failure_type: str = "", detail: str = "") -> None:

@@ -9,7 +9,7 @@ from typing import Any, Literal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, AiUsageLedger, ChannelMessage, ContentKeywordRule, GroupArchive, GroupContextMessage, MessageFingerprint, OperationTarget, RuleSet, RuleSetVersion, SchedulingSetting, Task, TgAccount, TgGroup, TgGroupAccount, WorkerHeartbeat
+from app.models import Action, AiUsageLedger, ChannelMessage, ContentKeywordRule, GroupArchive, GroupContextMessage, MessageFingerprint, OperationTarget, RuntimeMetricSnapshot, RuleSet, RuleSetVersion, SchedulingSetting, Task, TgAccount, TgGroup, TgGroupAccount, WorkerHeartbeat
 from app.schemas.operations_center import (
     ListenerAccountOut,
     ListenerEventOut,
@@ -1285,6 +1285,7 @@ def _risk_control_metrics(session: Session, tenant_id: int) -> list[MetricBucket
     heartbeat_cutoff = _now() - timedelta(minutes=2)
     active_workers = _count(session, WorkerHeartbeat, WorkerHeartbeat.status == "active", WorkerHeartbeat.last_seen_at >= heartbeat_cutoff)
     stale_workers = _count(session, WorkerHeartbeat, WorkerHeartbeat.last_seen_at < heartbeat_cutoff)
+    runtime_metrics = _latest_runtime_metrics(session)
     quiet_value = f"{setting.quiet_start}-{setting.quiet_end}" if setting and setting.quiet_hours_enabled else "未启用"
     quiet_detail = (
         f"{setting.quiet_timezone} / 重试 {setting.default_max_retries} 次 / "
@@ -1307,7 +1308,28 @@ def _risk_control_metrics(session: Session, tenant_id: int) -> list[MetricBucket
         _metric("risk.rate_limited", "频控拦截", risk_counts["rate"], "最近 5000 个失败/跳过执行项中的上限、冷却、FloodWait 或慢速限制"),
         _metric("risk.duplicates", "重复指纹", fingerprint_total, f"去重指纹总数 / 今日新增 {fingerprints_today}"),
         _metric("risk.worker_heartbeat", "Worker 心跳", active_workers, f"2 分钟内活跃 {active_workers} / 过期 {stale_workers}"),
+        _metric(
+            "runtime.pending_actions",
+            "执行积压",
+            runtime_metrics.get("actions.pending.count", 0),
+            f"claiming {runtime_metrics.get('actions.claiming.count', 0)} / executing {runtime_metrics.get('actions.executing.count', 0)} / 最老等待 {runtime_metrics.get('actions.oldest_pending_age_seconds', 0)}s",
+        ),
+        _metric("runtime.unknown_after_send", "结果未知", runtime_metrics.get("actions.unknown_after_send.count", 0), "已进入 TG 调用边界但本地结果未知的执行项"),
     ]
+
+
+def _latest_runtime_metrics(session: Session) -> dict[str, int]:
+    latest = session.scalar(select(func.max(RuntimeMetricSnapshot.captured_at)))
+    if not latest:
+        return {}
+    rows = session.execute(
+        select(RuntimeMetricSnapshot.metric_name, RuntimeMetricSnapshot.metric_value).where(
+            RuntimeMetricSnapshot.captured_at == latest,
+            RuntimeMetricSnapshot.dimension_type == "global",
+            RuntimeMetricSnapshot.dimension_id == "all",
+        )
+    ).all()
+    return {name: int(value or 0) for name, value in rows}
 
 
 def _risk_control_details(session: Session, tenant_id: int) -> list[OperationMetricDetailOut]:

@@ -1222,6 +1222,24 @@ export type ChannelCapacityCheck = {
   warning_message: string;
 };
 
+export type TaskPrecheck = {
+  task_type: TaskCenterTaskType;
+  decision: 'allow' | 'warn' | 'block';
+  available_account_count: number;
+  candidate_account_count: number;
+  limited_account_count: number;
+  blocked_account_count: number;
+  target_ability: Array<Record<string, any>>;
+  estimated_actions: number;
+  capacity_shortfall: number;
+  rule_version: Record<string, any> | null;
+  risk_hits: string[];
+  blockers: string[];
+  warnings: string[];
+  suggested_actions: string[];
+  trace_id: string;
+};
+
 export type AccountRiskDiagnostic = {
   level: string;
   code: string;

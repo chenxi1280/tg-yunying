@@ -42,13 +42,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                 "limit": settings.embedded_worker_limit,
                 "interval_seconds": settings.embedded_worker_interval_seconds,
                 "stop_event": worker_stop_event,
+                "role": settings.worker_role,
             },
             name="tg-yunying-embedded-worker",
             daemon=True,
         )
         worker_thread.start()
         logger.info(
-            "Embedded worker started: interval=%ss limit=%s",
+            "Embedded worker started: role=%s interval=%ss limit=%s",
+            settings.worker_role,
             settings.embedded_worker_interval_seconds,
             settings.embedded_worker_limit,
         )

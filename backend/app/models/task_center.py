@@ -131,6 +131,22 @@ class RuntimeCleanupAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class RuntimeMetricSnapshot(Base):
+    __tablename__ = "runtime_metric_snapshots"
+    __table_args__ = (
+        Index("ix_runtime_metric_snapshots_captured", "captured_at"),
+        Index("ix_runtime_metric_snapshots_metric_dimension", "metric_name", "dimension_type", "dimension_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    metric_name: Mapped[str] = mapped_column(String(120))
+    dimension_type: Mapped[str] = mapped_column(String(40), default="global")
+    dimension_id: Mapped[str] = mapped_column(String(120), default="all")
+    metric_value: Mapped[int] = mapped_column(Integer, default=0)
+    tags: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class ListenerSourceState(Base):
     __tablename__ = "listener_source_state"
     __table_args__ = (
@@ -243,6 +259,7 @@ __all__ = [
     "ListenerSourceState",
     "MessageFingerprint",
     "ReviewQueue",
+    "RuntimeMetricSnapshot",
     "RuntimeCleanupAudit",
     "SourceMediaAsset",
     "Task",

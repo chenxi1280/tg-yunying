@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -8,7 +9,7 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import Action, ChannelMessage, ExecutionAttempt, GroupAuthStatus, MessageFingerprint, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, Task, TgAccount, TgGroup, WorkerHeartbeat
+from app.models import Action, ChannelMessage, ExecutionAttempt, GroupAuthStatus, MessageFingerprint, OperationTarget, PromptTemplate, ReviewQueue, RuntimeMetricSnapshot, RuleSet, RuleSetVersion, Task, TgAccount, TgGroup, WorkerHeartbeat
 from app.schemas.task_center import (
     ChannelCapacityCheckRequest,
     ChannelCommentConfig,
@@ -31,10 +32,12 @@ from app.schemas.task_center import (
     RecommendTaskAccountsRequest,
     ReviewApproveRequest,
     ReviewRejectRequest,
+    TaskPrecheckRequest,
     TaskRetryRequest,
     TaskSettingsUpdate,
     TaskUpdate,
 )
+from app.schemas.risk_control import RiskPreflightRequest
 from app.services._common import _now, audit
 
 from .account_pool import select_task_accounts
@@ -49,6 +52,7 @@ from .listener_runtime import drain_listener_runtime, invalidate_listener_collec
 from .pacing import next_run_after
 from .review import expire_reviews
 from .runtime_retention import cleanup_runtime_details
+from app.services.risk_control import risk_preflight
 from app.services.source_media import WAITING_MATERIAL_CACHE, expire_waiting_source_media_actions, wake_waiting_actions_for_source_media
 
 
@@ -58,6 +62,13 @@ TYPE_CONFIG_MODELS = {
     "channel_view": ChannelViewConfig,
     "channel_like": ChannelLikeConfig,
     "channel_comment": ChannelCommentConfig,
+}
+TASK_CREATE_MODELS = {
+    "group_ai_chat": GroupAIChatTaskCreate,
+    "group_relay": GroupRelayTaskCreate,
+    "channel_view": ChannelViewTaskCreate,
+    "channel_like": ChannelLikeTaskCreate,
+    "channel_comment": ChannelCommentTaskCreate,
 }
 CHANNEL_DYNAMIC_TASK_TYPES = {"channel_view", "channel_like", "channel_comment"}
 
@@ -83,6 +94,43 @@ COMMON_SETTINGS_FIELDS = {
     "account_config",
     "pacing_config",
     "failure_policy",
+}
+
+GROUP_AI_LEGACY_RUNTIME_FIELDS = {
+    "participation_jitter",
+    "silent_mode_enabled",
+    "silent_start",
+    "silent_end",
+    "silent_max_accounts",
+    "silent_messages_per_round",
+    "ramp_up_minutes",
+    "ramp_start_ratio",
+}
+
+GROUP_RELAY_LEGACY_CREATE_FIELDS = {
+    "monitor_account_ids",
+    "filters",
+    "rewrite_prompt",
+    "preserve_media",
+    "add_source_attribution",
+    "dedup_window_minutes",
+    "dedup_method",
+}
+
+CHANNEL_JITTER_FIELDS = {
+    "channel_view": {"view_count_jitter"},
+    "channel_like": {"like_count_jitter"},
+    "channel_comment": {"comment_count_jitter"},
+}
+
+LEGACY_PACING_FIELDS = {
+    "interval_seconds_min",
+    "interval_seconds_max",
+    "curve_type",
+    "curve_duration_hours",
+    "template",
+    "jitter_percent",
+    "quiet_hours",
 }
 
 TYPE_SETTINGS_FIELDS = {
@@ -214,7 +262,7 @@ def create_and_start_channel_comment_task(session: Session, tenant_id: int, payl
 
 
 def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task:
-    raw_type_config = payload.model_dump(mode="json", exclude=COMMON_CREATE_FIELDS)
+    raw_type_config = payload.model_dump(mode="json", exclude=COMMON_CREATE_FIELDS, exclude_unset=True)
     raw_type_config = _normalize_operation_target_references(session, tenant_id, task_type, raw_type_config)
     raw_type_config = _apply_default_slang_config(session, tenant_id, task_type, raw_type_config)
     type_config = _validated_type_config(task_type, raw_type_config)
@@ -230,7 +278,7 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
         scheduled_end=payload.scheduled_end,
         max_duration_hours=payload.max_duration_hours,
         account_config=payload.account_config.model_dump(mode="json"),
-        pacing_config=payload.pacing_config.model_dump(mode="json"),
+        pacing_config=_pacing_config_payload(payload.pacing_config),
         failure_policy=payload.failure_policy.model_dump(mode="json"),
         type_config=type_config,
         stats=_empty_stats(),
@@ -395,7 +443,7 @@ def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpd
             setattr(task, field, raw_data[field])
     for field in ["account_config", "pacing_config", "failure_policy"]:
         if field in data and data[field] is not None:
-            setattr(task, field, data[field])
+            setattr(task, field, _pacing_config_payload(raw_data[field]) if field == "pacing_config" else data[field])
     task.updated_at = _now()
     audit(session, tenant_id=tenant_id, actor=actor, action="更新任务中心任务", target_type="task", target_id=task.id)
     session.commit()
@@ -419,10 +467,19 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
             setattr(task, field, raw_data[field])
     for field in ["account_config", "pacing_config", "failure_policy"]:
         if field in data and data[field] is not None:
-            setattr(task, field, data[field])
+            setattr(task, field, _pacing_config_payload(raw_data[field]) if field == "pacing_config" else data[field])
+    if task.type == "group_ai_chat" and "pacing_config" in data and not type_updates:
+        next_config = dict(task.type_config or {})
+        for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
+            next_config.pop(field, None)
+        task.type_config = _validated_type_config(task.type, next_config)
     if type_updates:
         next_config = dict(task.type_config or {})
         next_config.update(type_updates)
+        if task.type == "group_ai_chat":
+            for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
+                if field not in type_updates:
+                    next_config.pop(field, None)
         next_config = _normalize_operation_target_references(session, tenant_id, task.type, next_config)
         task.type_config = _validated_type_config(task.type, next_config)
     _clear_unfinished_plan(session, task)
@@ -672,11 +729,256 @@ def check_channel_capacity(session: Session, tenant_id: int, payload: ChannelCap
     }
 
 
+def precheck_task_creation(session: Session, tenant_id: int, payload: TaskPrecheckRequest) -> dict[str, Any]:
+    task_type = payload.task_type
+    model = TASK_CREATE_MODELS.get(task_type)
+    if model is None:
+        raise ValueError(f"unknown task type: {task_type}")
+    trace_id = ""
+    warnings: list[str] = []
+    blockers: list[str] = []
+    risk_hits: list[str] = []
+    suggested_actions: list[str] = []
+    rule_version: dict[str, Any] | None = None
+    target_ability: list[dict[str, Any]] = []
+    estimated_actions = 0
+    capacity_shortfall = 0
+    try:
+        create_payload = model(**(payload.payload or {}))
+        raw_config = create_payload.model_dump(mode="json", exclude=COMMON_CREATE_FIELDS, exclude_unset=True)
+        normalized_config = _normalize_operation_target_references(session, tenant_id, task_type, raw_config)
+        type_config = _validated_type_config(task_type, normalized_config)
+        _validate_rule_binding(session, tenant_id, type_config)
+        rule_version = _precheck_rule_version(session, tenant_id, type_config)
+        target_ability, target_ids, target_blockers = _precheck_target_ability(session, tenant_id, task_type, type_config)
+        blockers.extend(target_blockers)
+        estimated_actions, target_per_unit = _precheck_estimated_actions(session, tenant_id, task_type, type_config)
+    except ValueError as exc:
+        blockers.append(str(exc))
+        create_payload = None
+        target_ids = []
+        target_per_unit = 1
+
+    account_config = create_payload.account_config.model_dump(mode="json") if create_payload else dict((payload.payload or {}).get("account_config") or {})
+    candidates = _precheck_candidate_accounts(session, tenant_id, account_config)
+    available_accounts = select_task_accounts(session, tenant_id, account_config, limit=max(len(candidates), 1)) if candidates else []
+    if candidates:
+        risk_payload = RiskPreflightRequest(
+            scenario="task_create",
+            task_type=task_type,
+            account_ids=[account.id for account in candidates],
+            target_ids=target_ids,
+            content_preview=_precheck_content_preview(task_type, payload.payload or {}),
+            scheduled_at=create_payload.scheduled_start if create_payload else None,
+        )
+        risk = risk_preflight(session, tenant_id, risk_payload)
+    else:
+        risk = {"decision": "block", "decision_reasons": ["no_available_account"], "available_accounts": [], "limited_accounts": [], "blocked_accounts": [], "target_warnings": [], "content_warnings": [], "proxy_warnings": [], "suggested_actions": [], "trace_id": ""}
+    trace_id = str(risk.get("trace_id") or "")
+    risk_hits = [*_as_str_list(risk.get("decision_reasons")), *_as_str_list(risk.get("target_warnings")), *_as_str_list(risk.get("content_warnings")), *_as_str_list(risk.get("proxy_warnings"))]
+    suggested_actions.extend(_as_str_list(risk.get("suggested_actions")))
+    available_count = min(len(available_accounts), len(risk.get("available_accounts") or available_accounts))
+    limited_count = len(risk.get("limited_accounts") or [])
+    blocked_count = len(risk.get("blocked_accounts") or [])
+    if estimated_actions and target_per_unit:
+        required_parallel = min(max(estimated_actions, 1), max(int(target_per_unit), 1))
+        capacity_shortfall = max(0, required_parallel - available_count)
+    if capacity_shortfall:
+        warnings.append(f"预计单轮需要 {max(int(target_per_unit), 1)} 个账号，当前可用 {available_count} 个")
+    if risk.get("decision") == "block":
+        blockers.extend(_as_str_list(risk.get("decision_reasons")) or ["风控预检阻塞"])
+    elif risk.get("decision") == "warn":
+        warnings.extend(_as_str_list(risk.get("decision_reasons")))
+    if not candidates:
+        blockers.append("没有匹配账号")
+    decision = "block" if blockers else "warn" if warnings or risk_hits or capacity_shortfall else "allow"
+    return {
+        "task_type": task_type,
+        "decision": decision,
+        "available_account_count": available_count,
+        "candidate_account_count": len(candidates),
+        "limited_account_count": limited_count,
+        "blocked_account_count": blocked_count,
+        "target_ability": target_ability,
+        "estimated_actions": estimated_actions,
+        "capacity_shortfall": capacity_shortfall,
+        "rule_version": rule_version,
+        "risk_hits": sorted(set(filter(None, risk_hits))),
+        "blockers": sorted(set(filter(None, blockers))),
+        "warnings": sorted(set(filter(None, warnings))),
+        "suggested_actions": sorted(set(filter(None, suggested_actions))),
+        "trace_id": trace_id,
+    }
+
+
+def _precheck_candidate_accounts(session: Session, tenant_id: int, account_config: dict[str, Any]) -> list[TgAccount]:
+    stmt = select(TgAccount).where(TgAccount.tenant_id == tenant_id, TgAccount.deleted_at.is_(None)).order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
+    mode = account_config.get("selection_mode") or "all"
+    if mode == "manual":
+        account_ids = _as_int_list(account_config.get("account_ids"))
+        if not account_ids:
+            return []
+        stmt = stmt.where(TgAccount.id.in_(account_ids))
+    elif mode == "group":
+        pool_id = _as_int(account_config.get("account_group_id"))
+        if not pool_id:
+            return []
+        stmt = stmt.where(TgAccount.pool_id == pool_id)
+    return list(session.scalars(stmt))
+
+
+def _precheck_rule_version(session: Session, tenant_id: int, config: dict[str, Any]) -> dict[str, Any] | None:
+    version_id = _as_int(config.get("rule_set_version_id"))
+    rule_set_id = _as_int(config.get("rule_set_id"))
+    version = session.get(RuleSetVersion, version_id) if version_id else None
+    if not version and rule_set_id:
+        rule_set = session.get(RuleSet, rule_set_id)
+        version = session.get(RuleSetVersion, rule_set.active_version_id) if rule_set and rule_set.active_version_id else None
+    if not version or version.tenant_id != tenant_id:
+        return None
+    return {"id": version.id, "rule_set_id": version.rule_set_id, "version": version.version, "status": version.status}
+
+
+def _precheck_target_ability(session: Session, tenant_id: int, task_type: str, config: dict[str, Any]) -> tuple[list[dict[str, Any]], list[int], list[str]]:
+    refs = _precheck_target_refs(task_type, config)
+    target_ids = list(dict.fromkeys([target_id for target_id, _role, _require_send in refs]))
+    abilities: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    for target_id, role, require_send in refs:
+        target = session.get(OperationTarget, target_id)
+        if not target or target.tenant_id != tenant_id:
+            blockers.append(f"运营目标 #{target_id} 不存在")
+            continue
+        authorized = target.auth_status == GroupAuthStatus.AUTHORIZED.value
+        can_task = bool(authorized and (target.can_send or not require_send))
+        if not can_task:
+            blockers.append(f"{target.title} 当前不可作为{'发送目标' if require_send else '监听来源'}创建任务")
+        abilities.append({
+            "target_id": target.id,
+            "title": target.title,
+            "target_type": target.target_type,
+            "role": role,
+            "can_send": bool(target.can_send),
+            "auth_status": target.auth_status,
+            "can_task": can_task,
+            "member_count": target.member_count,
+        })
+    return abilities, target_ids, blockers
+
+
+def _precheck_target_refs(task_type: str, config: dict[str, Any]) -> list[tuple[int, str, bool]]:
+    if task_type == "group_ai_chat":
+        return [(target_id, "send_target", True) for target_id in _as_int_list(config.get("target_operation_target_id"))]
+    if task_type == "group_relay":
+        refs: list[tuple[int, str, bool]] = []
+        refs.extend((target_id, "send_target", True) for target_id in _as_int_list(config.get("target_operation_target_ids")))
+        refs.extend((target_id, "send_target", True) for target_id in _as_int_list(config.get("target_operation_target_id")))
+        refs.extend((source_id, "listen_source", False) for source_id in [_as_int(item.get("operation_target_id")) for item in config.get("source_groups") or [] if isinstance(item, dict)] if source_id)
+        return list(dict.fromkeys(refs))
+    return [(target_id, "send_target", True) for target_id in _as_int_list(config.get("target_channel_id"))]
+
+
+def _precheck_target_ids(task_type: str, config: dict[str, Any]) -> list[int]:
+    return list(dict.fromkeys([target_id for target_id, _role, _require_send in _precheck_target_refs(task_type, config)]))
+
+
+def _precheck_estimated_actions(session: Session, tenant_id: int, task_type: str, config: dict[str, Any]) -> tuple[int, int]:
+    if task_type == "group_ai_chat":
+        count = int(config.get("messages_per_round") or 1) if config.get("messages_per_round_mode") == "manual" else 3
+        return count, count
+    if task_type == "group_relay":
+        source_count = max(1, len(config.get("source_groups") or []))
+        target_count = max(1, len(_as_int_list(config.get("target_operation_target_ids")) or _as_int_list(config.get("target_group_ids"))))
+        return source_count * target_count, target_count
+    message_count = _precheck_channel_message_count(session, tenant_id, config)
+    if task_type == "channel_view":
+        per_message = int(config.get("target_views_per_message") or 1)
+    elif task_type == "channel_like":
+        per_message = int(config.get("target_likes_per_message") or 1)
+    else:
+        per_message = int(config.get("target_comments_per_message") or 1)
+    return message_count * per_message, per_message
+
+
+def _precheck_channel_message_count(session: Session, tenant_id: int, config: dict[str, Any]) -> int:
+    scope = config.get("message_scope") or "latest_n"
+    if scope == "specific":
+        return len(config.get("message_ids") or [])
+    if scope == "latest_n":
+        return int(config.get("message_count") or 1)
+    target_id = _as_int(config.get("target_channel_id"))
+    stmt = select(func.count(ChannelMessage.id)).where(ChannelMessage.tenant_id == tenant_id)
+    if target_id:
+        stmt = stmt.where(ChannelMessage.channel_target_id == target_id)
+    if scope == "date_range":
+        if config.get("date_from"):
+            stmt = stmt.where(ChannelMessage.published_at >= config["date_from"])
+        if config.get("date_to"):
+            stmt = stmt.where(ChannelMessage.published_at <= config["date_to"])
+    count = int(session.scalar(stmt) or 0)
+    return max(1, count)
+
+
+def _precheck_content_preview(task_type: str, payload: dict[str, Any]) -> str:
+    if task_type == "group_ai_chat":
+        return str(payload.get("topic_hint") or payload.get("system_prompt_override") or "")
+    if task_type == "group_relay":
+        return str(payload.get("content_mode") or "")
+    return str(payload.get("topic_hint") or payload.get("comment_style") or payload.get("target_channel_name") or "")
+
+
+def _as_str_list(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value if item]
+    return [str(value)]
+
+
 def drain_task_center(session_factory, limit: int = 100) -> int:
     processed = 0
-    processed += drain_listener_runtime(session_factory, limit=limit).processed_count
     with session_factory() as session:
         record_worker_heartbeat(session, metadata={"limit": limit})
+        session.commit()
+    processed += _drain_task_listener(session_factory, limit=limit, process_type=None)
+    recovery_count, _ = _drain_task_recovery(session_factory, limit=limit, process_type=None)
+    processed += recovery_count
+    planner_count, future_open_action_task_ids = _drain_task_planner(session_factory, limit=limit, process_type=None)
+    processed += planner_count
+    processed += _drain_task_dispatcher(session_factory, limit=limit, exclude_task_ids=future_open_action_task_ids, process_type=None)
+    return processed
+
+
+def drain_task_listener(session_factory, limit: int = 100) -> int:
+    return _drain_task_listener(session_factory, limit=limit, process_type="listener")
+
+
+def _drain_task_listener(session_factory, *, limit: int, process_type: str | None) -> int:
+    result = drain_listener_runtime(session_factory, limit=limit)
+    if process_type:
+        with session_factory() as session:
+            record_worker_heartbeat(
+                session,
+                process_type=process_type,
+                metadata={"limit": limit, "source_count": result.source_count, "processed_count": result.processed_count},
+            )
+            session.commit()
+    return result.processed_count
+
+
+def drain_task_recovery(session_factory, limit: int = 100) -> int:
+    processed, _ = _drain_task_recovery(session_factory, limit=limit, process_type="recovery")
+    return processed
+
+
+def _drain_task_recovery(session_factory, *, limit: int, process_type: str | None) -> tuple[int, set[int]]:
+    processed = 0
+    touched_tenant_ids: set[int] = set()
+    with session_factory() as session:
+        if process_type:
+            record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
         processed += recover_expired_claims(session)
         processed += _recover_continuous_task_states(session)
         processed += _recover_stale_executing_actions(session)
@@ -686,8 +988,23 @@ def drain_task_center(session_factory, limit: int = 100) -> int:
             processed += cleanup_runtime_details(session, retention_days=settings.runtime_detail_retention_days)
         processed += expire_waiting_source_media_actions(session, limit=max(10, limit))
         tenant_ids = list(session.scalars(select(Action.tenant_id).where(Action.status == WAITING_MATERIAL_CACHE).distinct()))
+        touched_tenant_ids.update(int(tenant_id) for tenant_id in tenant_ids)
         for tenant_id in tenant_ids:
             processed += wake_waiting_actions_for_source_media(session, tenant_id=tenant_id, limit=max(10, limit))
+        session.commit()
+    return processed, touched_tenant_ids
+
+
+def drain_task_planner(session_factory, limit: int = 100) -> int:
+    processed, _ = _drain_task_planner(session_factory, limit=limit, process_type="planner")
+    return processed
+
+
+def _drain_task_planner(session_factory, *, limit: int, process_type: str | None) -> tuple[int, set[str]]:
+    processed = 0
+    with session_factory() as session:
+        if process_type:
+            record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
         _activate_pending_tasks(session)
         task_ids = list(
             session.scalars(
@@ -723,16 +1040,106 @@ def drain_task_center(session_factory, limit: int = 100) -> int:
             refresh_task_stats(session, task)
             session.commit()
             processed += created
+    return processed, future_open_action_task_ids
+
+
+def drain_task_dispatcher(session_factory, limit: int = 100) -> int:
+    return _drain_task_dispatcher(session_factory, limit=limit, exclude_task_ids=None, process_type="dispatcher")
+
+
+def _drain_task_dispatcher(session_factory, *, limit: int, exclude_task_ids: set[str] | None, process_type: str | None) -> int:
     with session_factory() as session:
-        claimed = claim_actions(session, limit=max(10, limit), exclude_task_ids=future_open_action_task_ids)
-        for action in claimed:
-            if dispatch_action(session, action):
-                processed += 1
-                refresh = session.get(Task, action.task_id)
-                if refresh:
-                    refresh_task_stats(session, refresh)
-                session.commit()
+        dialect_name = session.bind.dialect.name if session.bind else ""
+        if process_type:
+            record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
+            session.commit()
+        claimed = claim_actions(session, limit=max(10, limit), exclude_task_ids=exclude_task_ids)
+        action_ids = [action.id for action in claimed]
+    if not action_ids:
+        return 0
+    concurrency = 1 if dialect_name == "sqlite" else _dispatcher_concurrency()
+    if concurrency <= 1 or len(action_ids) == 1:
+        return sum(_dispatch_claimed_action(session_factory, action_id) for action_id in action_ids)
+    processed = 0
+    with ThreadPoolExecutor(max_workers=min(concurrency, len(action_ids)), thread_name_prefix="task-dispatcher") as executor:
+        futures = [executor.submit(_dispatch_claimed_action, session_factory, action_id) for action_id in action_ids]
+        for future in as_completed(futures):
+            processed += int(future.result() or 0)
     return processed
+
+
+def _dispatcher_concurrency() -> int:
+    settings = get_settings()
+    configured = max(1, int(settings.dispatcher_concurrency or 1))
+    db_budget = max(1, int(settings.db_pool_size or 1) + int(settings.db_max_overflow or 0) - 2)
+    return max(1, min(configured, db_budget))
+
+
+def _dispatch_claimed_action(session_factory, action_id: str) -> int:
+    with session_factory() as session:
+        action = session.get(Action, action_id)
+        if not action or action.status != "executing":
+            return 0
+        if not dispatch_action(session, action):
+            session.commit()
+            return 0
+        refresh = session.get(Task, action.task_id)
+        if refresh:
+            refresh_task_stats(session, refresh)
+        session.commit()
+        return 1
+
+
+def drain_task_metrics(session_factory, limit: int = 100) -> int:
+    now_value = _now()
+    rows: list[RuntimeMetricSnapshot] = []
+    with session_factory() as session:
+        record_worker_heartbeat(session, process_type="metrics", metadata={"limit": limit})
+        statuses = dict(session.execute(select(Action.status, func.count(Action.id)).group_by(Action.status)).all())
+        oldest_pending = session.scalar(select(func.min(Action.scheduled_at)).where(Action.status == "pending"))
+        oldest_pending_age = int((now_value - _naive_datetime(oldest_pending)).total_seconds()) if oldest_pending else 0
+        minute_cutoff = now_value - timedelta(minutes=1)
+        recent_statuses = dict(
+            session.execute(
+                select(Action.status, func.count(Action.id))
+                .where(Action.executed_at >= minute_cutoff)
+                .group_by(Action.status)
+            ).all()
+        )
+        created_last_minute = session.scalar(select(func.count(Action.id)).where(Action.created_at >= minute_cutoff)) or 0
+        heartbeat_cutoff = now_value - timedelta(minutes=2)
+        active_workers = session.scalar(select(func.count(WorkerHeartbeat.worker_id)).where(WorkerHeartbeat.last_seen_at >= heartbeat_cutoff)) or 0
+        stale_workers = session.scalar(select(func.count(WorkerHeartbeat.worker_id)).where(WorkerHeartbeat.last_seen_at < heartbeat_cutoff)) or 0
+        metrics = {
+            "actions.pending.count": int(statuses.get("pending") or 0),
+            "actions.claiming.count": int(statuses.get("claiming") or 0),
+            "actions.executing.count": int(statuses.get("executing") or 0),
+            "actions.success.count": int(statuses.get("success") or 0),
+            "actions.failed.count": int(statuses.get("failed") or 0),
+            "actions.skipped.count": int(statuses.get("skipped") or 0),
+            "actions.unknown_after_send.count": int(statuses.get("unknown_after_send") or 0),
+            "actions.created.per_minute": int(created_last_minute or 0),
+            "actions.success.per_minute": int(recent_statuses.get("success") or 0),
+            "actions.failed.per_minute": int(recent_statuses.get("failed") or 0),
+            "actions.skipped.per_minute": int(recent_statuses.get("skipped") or 0),
+            "actions.oldest_pending_age_seconds": max(0, oldest_pending_age),
+            "worker.active.count": int(active_workers or 0),
+            "worker.stale.count": int(stale_workers or 0),
+        }
+        for name, value in metrics.items():
+            rows.append(
+                RuntimeMetricSnapshot(
+                    captured_at=now_value,
+                    metric_name=name,
+                    dimension_type="global",
+                    dimension_id="all",
+                    metric_value=int(value),
+                    tags={"worker_role": "metrics"},
+                )
+            )
+        session.add_all(rows)
+        session.commit()
+    return len(rows)
 
 
 def _planning_backlog_blocked(session: Session, task: Task) -> bool:
@@ -1003,9 +1410,35 @@ def _validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, An
     if not model:
         raise ValueError(f"unknown task type: {task_type}")
     normalized = model(**(data or {})).model_dump(mode="json")
+    if task_type == "group_ai_chat":
+        for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
+            normalized.pop(field, None)
+    for field in CHANNEL_JITTER_FIELDS.get(task_type, set()):
+        normalized.pop(field, None)
     if task_type in {"group_relay", "channel_comment"}:
         normalized["require_review"] = False
     return normalized
+
+
+def _pacing_config_payload(pacing_config) -> dict[str, Any]:
+    if hasattr(pacing_config, "model_dump"):
+        data = pacing_config.model_dump(mode="json")
+    else:
+        data = dict(pacing_config or {})
+    mode = data.get("mode") or "template"
+    keep_legacy_fields = set()
+    if mode == "fixed":
+        keep_legacy_fields.update({"interval_seconds_min", "interval_seconds_max", "jitter_percent", "quiet_hours"})
+    elif mode == "curve":
+        keep_legacy_fields.update({"curve_type", "curve_duration_hours", "jitter_percent", "quiet_hours"})
+    elif mode == "template":
+        keep_legacy_fields.update({"template", "quiet_hours"})
+    for field in LEGACY_PACING_FIELDS - keep_legacy_fields:
+        data.pop(field, None)
+    for field in list(keep_legacy_fields):
+        if data.get(field) is None:
+            data.pop(field, None)
+    return data
 
 
 def _validate_rule_binding(session: Session, tenant_id: int, config: dict[str, Any]) -> None:
@@ -1015,8 +1448,8 @@ def _validate_rule_binding(session: Session, tenant_id: int, config: dict[str, A
         version = session.get(RuleSetVersion, version_id)
         if not version or version.tenant_id != tenant_id:
             raise ValueError("规则版本不存在")
-        if version.status == "draft":
-            raise ValueError("草稿规则版本不能绑定到真实任务，请先发布或复制后发布")
+        if version.status != "published":
+            raise ValueError("只能绑定已发布规则版本")
         if rule_set_id and version.rule_set_id != rule_set_id:
             raise ValueError("规则版本不属于所选规则集")
         return
@@ -1678,6 +2111,11 @@ __all__ = [
     "create_group_relay_task",
     "delete_task",
     "drain_task_center",
+    "drain_task_dispatcher",
+    "drain_task_listener",
+    "drain_task_metrics",
+    "drain_task_planner",
+    "drain_task_recovery",
     "generate_channel_comment_preview",
     "generate_group_ai_chat_preview",
     "get_task_detail",
@@ -1685,6 +2123,7 @@ __all__ = [
     "list_reviews",
     "list_tasks",
     "pause_task",
+    "precheck_task_creation",
     "recommend_accounts",
     "reject_review",
     "ReviewStateError",

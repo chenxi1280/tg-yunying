@@ -24,6 +24,18 @@ x-backend-env: &backend-env
   ENABLE_LEGACY_OPERATION_TASK_ROUTES: ${ENABLE_LEGACY_OPERATION_TASK_ROUTES:-false}
   ENABLE_LEGACY_REVIEW_ROUTES: ${ENABLE_LEGACY_REVIEW_ROUTES:-false}
   ENABLE_REDIS_TOKEN_BUCKET: ${ENABLE_REDIS_TOKEN_BUCKET:-true}
+  ENABLE_REDIS_ACCOUNT_INFLIGHT: ${ENABLE_REDIS_ACCOUNT_INFLIGHT:-true}
+  REDIS_ACCOUNT_INFLIGHT_SECONDS: ${REDIS_ACCOUNT_INFLIGHT_SECONDS:-1800}
+  WORKER_ROLE: ${WORKER_ROLE:-all}
+  WORKER_DRAIN_LIMIT: ${WORKER_DRAIN_LIMIT:-100}
+  WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-2.0}
+  DISPATCHER_CONCURRENCY: ${DISPATCHER_CONCURRENCY:-20}
+  ACCOUNT_SHARD_TOTAL: ${ACCOUNT_SHARD_TOTAL:-2}
+  ACCOUNT_SHARD_INDEX: ${ACCOUNT_SHARD_INDEX:-0}
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+  DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+  DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}
+  DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
   REDIS_TOKEN_FAIL_CLOSED: ${REDIS_TOKEN_FAIL_CLOSED:-true}
   GLOBAL_TG_RATE_PER_SECOND: ${GLOBAL_TG_RATE_PER_SECOND:-30}
   TASK_RATE_PER_MINUTE: ${TASK_RATE_PER_MINUTE:-120}
@@ -54,13 +66,96 @@ services:
     networks:
       - infra_default
 
-  worker:
+  worker-planner:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
-    container_name: tgyunying-worker
+    container_name: tgyunying-worker-planner
     restart: unless-stopped
-    command: ["python", "-m", "app.worker", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
+    command: ["python", "-m", "app.worker", "--role", "planner", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
     environment:
       <<: *backend-env
+      WORKER_ROLE: planner
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - infra_default
+
+  worker-dispatcher-1:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-dispatcher-1
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "dispatcher", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: dispatcher
+      ACCOUNT_SHARD_INDEX: ${ACCOUNT_SHARD_INDEX_1:-0}
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - infra_default
+
+  worker-dispatcher-2:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-dispatcher-2
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "dispatcher", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: dispatcher
+      ACCOUNT_SHARD_INDEX: ${ACCOUNT_SHARD_INDEX_2:-1}
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - infra_default
+
+  worker-listener:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-listener
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "listener", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: listener
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - infra_default
+
+  worker-recovery:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-recovery
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "recovery", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: recovery
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - infra_default
+
+  worker-metrics:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-metrics
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "metrics", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-10.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: metrics
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
     depends_on:

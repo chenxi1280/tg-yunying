@@ -19,6 +19,11 @@ from .services import (
     drain_operation_tasks,
     drain_profile_sync_records,
     drain_task_center,
+    drain_task_dispatcher,
+    drain_task_listener,
+    drain_task_metrics,
+    drain_task_planner,
+    drain_task_recovery,
     dispatch_task,
 )
 from .services.source_media import drain_source_media_cache
@@ -26,6 +31,7 @@ from .services.material_cache import drain_material_cache
 from .services.temp_files import cleanup_temp_files
 
 logger = logging.getLogger(__name__)
+VALID_WORKER_ROLES = {"all", "legacy", "planner", "dispatcher", "listener", "recovery", "metrics"}
 
 
 def _task_due(task_id: int) -> bool:
@@ -36,7 +42,32 @@ def _task_due(task_id: int) -> bool:
         return _as_utc(task.scheduled_at) <= _as_utc(_now())
 
 
-def drain_once(limit: int = 100) -> int:
+def _normalize_role(role: str | None = None) -> str:
+    settings = get_settings()
+    value = (role or getattr(settings, "worker_role", "all") or "all").strip().lower()
+    if value not in VALID_WORKER_ROLES:
+        raise ValueError(f"unsupported worker role: {value}")
+    return value
+
+
+def drain_once(limit: int = 100, *, role: str | None = None) -> int:
+    selected_role = _normalize_role(role)
+    if selected_role == "planner":
+        return drain_task_planner(SessionLocal, limit)
+    if selected_role == "dispatcher":
+        return drain_task_dispatcher(SessionLocal, limit)
+    if selected_role == "listener":
+        return drain_task_listener(SessionLocal, limit)
+    if selected_role == "recovery":
+        return drain_task_recovery(SessionLocal, limit)
+    if selected_role == "metrics":
+        return drain_task_metrics(SessionLocal, limit)
+    if selected_role == "legacy":
+        return _drain_legacy_once(limit)
+    return _drain_legacy_once(limit) + drain_task_center(SessionLocal, max(1, limit))
+
+
+def _drain_legacy_once(limit: int = 100) -> int:
     settings = get_settings()
     queue = get_task_queue()
     scan_limit = max(limit, queue.size())
@@ -77,11 +108,9 @@ def drain_once(limit: int = 100) -> int:
     if settings.enable_legacy_operation_task_worker:
         operation_count = drain_operation_tasks(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - operation_count)
-    task_center_count = drain_task_center(SessionLocal, max(1, remaining))
-    remaining = max(0, remaining - task_center_count)
     archive_count = drain_archives(SessionLocal, max(1, remaining))
     temp_cleanup_count = _safe_optional_drain("temp_files", cleanup_temp_files)
-    return count + profile_count + account_count + listener_count + source_media_count + material_cache_count + continuous_count + operation_count + task_center_count + archive_count + temp_cleanup_count
+    return count + profile_count + account_count + listener_count + source_media_count + material_cache_count + continuous_count + operation_count + archive_count + temp_cleanup_count
 
 
 def _safe_optional_drain(name: str, func, *args, **kwargs) -> int:
@@ -98,13 +127,15 @@ def run_worker(
     interval_seconds: float = 2.0,
     max_iterations: int | None = None,
     stop_event: threading.Event | None = None,
+    role: str | None = None,
 ) -> None:
+    selected_role = _normalize_role(role)
     iterations = 0
     while (max_iterations is None or iterations < max_iterations) and not (stop_event and stop_event.is_set()):
         try:
-            processed = drain_once(limit)
+            processed = drain_once(limit, role=selected_role)
             if processed:
-                logger.info("worker drained processed=%d", processed)
+                logger.info("worker drained role=%s processed=%d", selected_role, processed)
         except Exception:
             logger.error("worker drain failed:\n%s", traceback.format_exc())
         iterations += 1
@@ -124,13 +155,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=100, help="max items to drain per iteration")
     parser.add_argument("--interval", type=float, default=2.0, help="seconds between drain iterations")
     parser.add_argument("--iterations", type=int, default=None, help="test/dev helper: stop after N iterations")
+    parser.add_argument("--role", choices=sorted(VALID_WORKER_ROLES), default=None, help="worker role to drain; defaults to WORKER_ROLE")
     args = parser.parse_args(argv)
     if args.once:
-        processed = drain_once(args.limit)
-        print(f"processed={processed}")
+        role = _normalize_role(args.role)
+        processed = drain_once(args.limit, role=role)
+        print(f"role={role} processed={processed}")
         return 0
     try:
-        run_worker(limit=args.limit, interval_seconds=args.interval, max_iterations=args.iterations)
+        run_worker(limit=args.limit, interval_seconds=args.interval, max_iterations=args.iterations, role=args.role)
     except KeyboardInterrupt:
         logger.info("worker stopped by keyboard interrupt")
     return 0

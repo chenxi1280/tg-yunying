@@ -21,6 +21,29 @@ class QuietHours(BaseModel):
     timezone: str = "Asia/Shanghai"
 
 
+DEFAULT_HOURLY_ACTIVITY_CURVE = [10, 8, 5, 5, 0, 0, 8, 15, 35, 45, 55, 60, 45, 40, 55, 65, 70, 75, 80, 85, 70, 50, 25, 15]
+
+
+class OperationProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    template_id: str = "natural_full_day"
+    source: Literal["built_in_default", "target_recommended", "manual"] = "built_in_default"
+    hourly_activity_curve: list[int] = Field(default_factory=lambda: list(DEFAULT_HOURLY_ACTIVITY_CURVE))
+    quiet_threshold: int = Field(default=20, ge=0, le=100)
+    peak_threshold: int = Field(default=70, ge=0, le=100)
+    manual_override: bool = False
+
+    @model_validator(mode="after")
+    def validate_curve(self) -> "OperationProfile":
+        if len(self.hourly_activity_curve) != 24:
+            raise ValueError("hourly_activity_curve 必须包含 24 个小时强度点")
+        self.hourly_activity_curve = [min(100, max(0, int(item))) for item in self.hourly_activity_curve]
+        if self.peak_threshold < self.quiet_threshold:
+            self.peak_threshold = self.quiet_threshold
+        return self
+
+
 class AccountConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -44,6 +67,7 @@ class PacingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["fixed", "curve", "template"] = "template"
+    operation_profile: OperationProfile = Field(default_factory=OperationProfile)
     interval_seconds_min: int | None = Field(default=None, ge=0)
     interval_seconds_max: int | None = Field(default=None, ge=0)
     curve_type: Literal["front_heavy", "back_heavy", "random_burst", "steady"] | None = None
@@ -604,6 +628,31 @@ class ChannelCapacityCheckOut(BaseModel):
     warning_message: str = ""
 
 
+class TaskPrecheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_type: TaskTypeValue
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskPrecheckOut(ApiModel):
+    task_type: str
+    decision: Literal["allow", "warn", "block"]
+    available_account_count: int
+    candidate_account_count: int
+    limited_account_count: int
+    blocked_account_count: int
+    target_ability: list[dict[str, Any]] = Field(default_factory=list)
+    estimated_actions: int
+    capacity_shortfall: int
+    rule_version: dict[str, Any] | None = None
+    risk_hits: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    suggested_actions: list[str] = Field(default_factory=list)
+    trace_id: str = ""
+
+
 class RecommendTaskAccountsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -675,6 +724,8 @@ __all__ = [
     "TaskRelayBatchOut",
     "TaskRelayItemOut",
     "TaskOut",
+    "TaskPrecheckOut",
+    "TaskPrecheckRequest",
     "TaskRetryRequest",
     "TaskSettingsUpdate",
     "TaskUpdate",

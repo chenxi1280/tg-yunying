@@ -292,6 +292,8 @@ def _mark_listener_runtime_success(session: Session, task_ids: list[str], group_
         stats["listener_runtime_last_collect_at"] = occurred_at.isoformat()
         stats["listener_runtime_last_source_group_id"] = group_id
         stats["listener_runtime_last_collect_count"] = int(inserted or 0)
+        if inserted > 0:
+            stats.pop("idle_continuation_next_run_at", None)
         task.stats = stats
         next_run_at = _naive_datetime(task.next_run_at)
         if inserted > 0 and (next_run_at is None or next_run_at > occurred_at):

@@ -31,6 +31,8 @@ from app.schemas import (
     ReviewRejectRequest,
     TaskDetailOut,
     TaskOut,
+    TaskPrecheckOut,
+    TaskPrecheckRequest,
     TaskRetryRequest,
     TaskSettingsUpdate,
     TaskUpdate,
@@ -57,6 +59,7 @@ from app.services.task_center import (
     list_reviews,
     list_tasks,
     pause_task,
+    precheck_task_creation,
     recommend_accounts,
     reject_review,
     reset_task,
@@ -170,6 +173,14 @@ def get_tasks(
 @router.post("/api/tasks/channel-capacity-check", response_model=ChannelCapacityCheckOut)
 def post_channel_capacity_check(payload: ChannelCapacityCheckRequest, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     return check_channel_capacity(session, current_user.tenant_id or 1, payload)
+
+
+@router.post("/api/tasks/precheck", response_model=TaskPrecheckOut)
+def post_task_precheck(payload: TaskPrecheckRequest, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return precheck_task_creation(session, current_user.tenant_id or 1, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/tasks/{task_id}", response_model=TaskDetailOut)

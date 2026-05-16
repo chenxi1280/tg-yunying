@@ -7,13 +7,17 @@ from app.models import Task
 from ..account_pool import select_task_accounts
 from ..pacing import schedule_times
 from ..payloads import ViewMessagePayload, create_view_action
-from .common import adjust_for_account_hour_limit, available_channel_accounts_for_message, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
+from .common import adjust_for_account_hour_limit, available_channel_accounts_for_message, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning, unplanned_channel_messages
 
 
 def build_plan(session: Session, task: Task) -> int:
     config = task.type_config or {}
     channel, messages = channel_scope(session, task, config)
     if not channel or not messages:
+        return 0
+    messages = unplanned_channel_messages(session, task, "view_message", messages)
+    if not messages:
+        task.last_error = ""
         return 0
     target_per_message = int(config.get("target_views_per_message") or 1)
     _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("view_count_jitter") or 0))

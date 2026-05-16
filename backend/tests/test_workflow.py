@@ -40,15 +40,20 @@ def skip_legacy_task_center_flow() -> None:
 @pytest.fixture(autouse=True)
 def cleanup_continuous_task_center_tasks():
     reset_listener_runtime_cache()
+    _cleanup_open_task_center_runtime()
     yield
     reset_listener_runtime_cache()
+    _cleanup_open_task_center_runtime()
+
+
+def _cleanup_open_task_center_runtime():
     with SessionLocal() as session:
         if "tasks" not in inspect(session.bind).get_table_names():
             return
-        for task in session.query(Task).filter(Task.status.in_(["draft", "pending", "running", "paused"])):
+        for task in session.query(Task).filter(Task.deleted_at.is_(None)):
             task.status = "completed"
             task.next_run_at = None
-        for action in session.query(Action).filter(Action.status.in_(["pending", "executing"])):
+        for action in session.query(Action).filter(~Action.status.in_(["success", "failed", "skipped", "unknown_after_send"])):
             action.status = "skipped"
             action.executed_at = datetime.now(UTC).replace(tzinfo=None)
             action.result = {"success": False, "error_code": "test_cleanup", "error_message": "test cleanup"}
@@ -120,11 +125,44 @@ def test_worker_main_once_drains_single_iteration(monkeypatch, capsys):
     from app import worker
 
     calls: list[int] = []
-    monkeypatch.setattr(worker, "drain_once", lambda limit=100: calls.append(limit) or 7)
+    monkeypatch.setattr(worker, "drain_once", lambda limit=100, **_kwargs: calls.append(limit) or 7)
 
     assert worker.main(["--once", "--limit", "3"]) == 0
     assert calls == [3]
-    assert "processed=7" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "role=all" in out
+    assert "processed=7" in out
+
+
+def test_worker_drain_once_api_accepts_role(monkeypatch):
+    from app.api.routers import system as system_router
+
+    calls: list[tuple[int, str | None]] = []
+    monkeypatch.setattr(system_router, "drain_once", lambda limit=100, *, role=None: calls.append((limit, role)) or 4)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.post("/api/worker/drain-once?role=metrics", headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"processed": 4, "role": "metrics"}
+    assert calls == [(100, "metrics")]
+
+
+def test_worker_drain_once_api_rejects_unknown_role(monkeypatch):
+    from app.api.routers import system as system_router
+
+    def fake_drain_once(*_args, **_kwargs):
+        raise ValueError("unsupported worker role: nope")
+
+    monkeypatch.setattr(system_router, "drain_once", fake_drain_once)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        response = client.post("/api/worker/drain-once?role=nope", headers=headers)
+
+    assert response.status_code == 400
+    assert "unsupported worker role" in response.json()["detail"]
 
 
 def test_worker_loop_can_stop_after_iterations(monkeypatch):
@@ -132,7 +170,7 @@ def test_worker_loop_can_stop_after_iterations(monkeypatch):
 
     calls: list[int] = []
     sleeps: list[float] = []
-    monkeypatch.setattr(worker, "drain_once", lambda limit=100: calls.append(limit) or 0)
+    monkeypatch.setattr(worker, "drain_once", lambda limit=100, **_kwargs: calls.append(limit) or 0)
     monkeypatch.setattr(worker.time, "sleep", lambda seconds: sleeps.append(seconds))
 
     worker.run_worker(limit=5, interval_seconds=0.2, max_iterations=2)
@@ -148,7 +186,7 @@ def test_worker_loop_can_stop_with_event(monkeypatch):
     calls: list[int] = []
     stop_event = threading.Event()
 
-    def fake_drain_once(limit=100):
+    def fake_drain_once(limit=100, **_kwargs):
         calls.append(limit)
         stop_event.set()
         return 0

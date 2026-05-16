@@ -14,6 +14,93 @@ TEMPLATES = {
 }
 
 
+def _operation_curve(config: dict) -> list[int]:
+    profile = config.get("operation_profile") or {}
+    raw_curve = profile.get("hourly_activity_curve") if isinstance(profile, dict) else None
+    if not isinstance(raw_curve, list) or len(raw_curve) != 24:
+        return []
+    curve: list[int] = []
+    for item in raw_curve:
+        try:
+            curve.append(min(100, max(0, int(item))))
+        except (TypeError, ValueError):
+            curve.append(0)
+    return curve
+
+
+def operation_intensity(config: dict, value: datetime | None = None) -> tuple[str, float, int]:
+    current = value or _now()
+    curve = _operation_curve(config)
+    if not curve:
+        return "正常期", 1.0, 100
+    profile = config.get("operation_profile") or {}
+    quiet_threshold = int(profile.get("quiet_threshold") or 20)
+    peak_threshold = int(profile.get("peak_threshold") or 70)
+    intensity = int(curve[current.hour])
+    if intensity <= 0:
+        return "休眠期", 0.0, intensity
+    if intensity <= quiet_threshold:
+        return "低频期", max(0.05, intensity / 100), intensity
+    if intensity >= peak_threshold:
+        return "高峰期", min(1.0, intensity / 100), intensity
+    return "正常期", min(1.0, intensity / 100), intensity
+
+
+def _next_active_time(value: datetime, config: dict) -> datetime:
+    curve = _operation_curve(config)
+    if not curve:
+        return _apply_quiet_hours(value, config)
+    if curve[value.hour] > 0:
+        return value
+    cursor = value.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    for _ in range(24):
+        if curve[cursor.hour] > 0:
+            return cursor
+        cursor += timedelta(hours=1)
+    return value
+
+
+def _curve_schedule_times(total_actions: int, config: dict, start_at: datetime) -> list[datetime]:
+    curve = _operation_curve(config)
+    total_weight = sum(curve)
+    if total_weight <= 0:
+        return []
+    max_per_hour = int(config.get("max_actions_per_hour") or 0)
+    slots: list[tuple[int, int, float]] = []
+    for offset in range(24):
+        hour = (start_at.hour + offset) % 24
+        weight = curve[hour]
+        if weight <= 0:
+            continue
+        exact = total_actions * (weight / total_weight)
+        count = int(exact)
+        if max_per_hour:
+            count = min(count, max_per_hour)
+        slots.append((offset, count, exact - count))
+    assigned = sum(count for _offset, count, _fraction in slots)
+    capacity = sum((max_per_hour or total_actions) - count for _offset, count, _fraction in slots)
+    remaining = min(total_actions - assigned, max(0, capacity))
+    slots = sorted(slots, key=lambda item: item[2], reverse=True)
+    next_slots: list[tuple[int, int, float]] = []
+    for offset, count, fraction in slots:
+        if remaining > 0 and (not max_per_hour or count < max_per_hour):
+            count += 1
+            remaining -= 1
+        next_slots.append((offset, count, fraction))
+    result: list[datetime] = []
+    for offset, count, _fraction in sorted(next_slots, key=lambda item: item[0]):
+        if count <= 0:
+            continue
+        hour_start = start_at.replace(minute=0, second=0, microsecond=0) + timedelta(hours=offset)
+        if offset == 0:
+            hour_start = max(start_at, hour_start)
+        available_seconds = max(1, int(((hour_start.replace(minute=59, second=59, microsecond=0) - hour_start).total_seconds())))
+        step = max(1, available_seconds // max(count, 1))
+        for index in range(count):
+            result.append(hour_start + timedelta(seconds=min(available_seconds, index * step)))
+    return sorted(result)[:total_actions]
+
+
 def _duration_and_interval(config: dict, total: int) -> tuple[int, int, int, int]:
     mode = config.get("mode") or "template"
     if mode == "fixed":
@@ -55,8 +142,13 @@ def schedule_times(total_actions: int, config: dict, *, start_at: datetime | Non
     if total_actions <= 0:
         return []
     now = start_at or _now()
-    duration, lo, hi, jitter = _duration_and_interval(config, total_actions)
     mode = config.get("mode") or "template"
+    if mode == "fixed" and _fixed_interval_is_immediate(config):
+        return [now for _ in range(total_actions)]
+    curve_times = [] if mode == "fixed" else _curve_schedule_times(total_actions, config, now)
+    if curve_times:
+        return curve_times
+    duration, lo, hi, jitter = _duration_and_interval(config, total_actions)
     times: list[datetime] = []
     if mode == "curve":
         curve_type = config.get("curve_type") or "steady"
@@ -90,14 +182,20 @@ def schedule_times(total_actions: int, config: dict, *, start_at: datetime | Non
     return [_apply_quiet_hours(item, config) for item in sorted(times)]
 
 
+def _fixed_interval_is_immediate(config: dict) -> bool:
+    if config.get("interval_seconds_min") is None and config.get("interval_seconds_max") is None:
+        return False
+    return int(config.get("interval_seconds_min") or 0) <= 0 and int(config.get("interval_seconds_max") or 0) <= 0
+
+
 def next_run_after(config: dict) -> datetime:
     if (config.get("mode") or "template") == "fixed":
         raw_interval = config.get("interval_seconds_min")
         if raw_interval is None:
             raw_interval = config.get("interval_seconds_max")
         interval = int(300 if raw_interval is None else raw_interval)
-        return _apply_quiet_hours(_now() + timedelta(seconds=max(0, interval)), config)
-    return _apply_quiet_hours(_now() + timedelta(minutes=5), config)
+        return _next_active_time(_now() + timedelta(seconds=max(0, interval)), config)
+    return _next_active_time(_now() + timedelta(minutes=5), config)
 
 
-__all__ = ["next_run_after", "schedule_times"]
+__all__ = ["next_run_after", "operation_intensity", "schedule_times"]

@@ -133,10 +133,14 @@ def reports(
 
 
 @router.post("/api/worker/drain-once")
-def post_worker_drain_once(current_user: CurrentUser = Depends(get_current_user)) -> dict[str, int]:
+def post_worker_drain_once(role: str | None = None, current_user: CurrentUser = Depends(get_current_user)) -> dict[str, int | str]:
     if not current_user.is_platform_admin:
         raise forbidden("platform admin required")
     require_core_feature_access(current_user)
     if get_settings().app_env == "production":
         raise forbidden("worker drain endpoint is disabled in production")
-    return {"processed": drain_once()}
+    try:
+        processed = drain_once(role=role)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"role": role or get_settings().worker_role, "processed": processed}

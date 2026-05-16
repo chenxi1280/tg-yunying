@@ -36,6 +36,10 @@ os.environ["ADMIN_BOOTSTRAP_EMAIL"] = "admin@demo.local"
 os.environ["ADMIN_BOOTSTRAP_PASSWORD"] = "admin123"
 os.environ["TG_API_ID"] = ""
 os.environ["TG_API_HASH"] = ""
+os.environ["WORKER_ROLE"] = "all"
+os.environ["ACCOUNT_SHARD_TOTAL"] = "1"
+os.environ["ACCOUNT_SHARD_INDEX"] = "0"
+os.environ["ENABLE_REDIS_ACCOUNT_INFLIGHT"] = "false"
 os.environ.setdefault("AUTO_MIGRATE_ON_START", "true")
 os.environ["ENABLE_EMBEDDED_WORKER"] = "false"
 
@@ -50,7 +54,7 @@ def _reset_test_database() -> None:
         engine = create_engine(test_database_url, future=True, isolation_level="AUTOCOMMIT")
         with engine.connect() as connection:
             connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
-            connection.execute(text("CREATE SCHEMA public"))
+            connection.execute(text("CREATE SCHEMA IF NOT EXISTS public"))
         engine.dispose()
     except OperationalError:
         test_database_url = f"sqlite:///{Path(tempfile.gettempdir()) / 'tg_yunying_test.sqlite3'}"

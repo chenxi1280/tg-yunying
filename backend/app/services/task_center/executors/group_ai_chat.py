@@ -20,7 +20,7 @@ from ..account_pool import select_task_accounts
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
 from ..fingerprints import fingerprint_exists, remember_fingerprint
 from ..listener_runtime import should_collect_listener
-from ..pacing import schedule_times
+from ..pacing import operation_intensity, schedule_times
 from ..payloads import SendMessagePayload, create_send_action
 from ..targets import group_from_reference
 from .common import add_tokens, stats_inc
@@ -32,7 +32,7 @@ DEFAULT_IDLE_CONTINUATION_SECONDS = 300
 
 
 def build_plan(session: Session, task: Task) -> int:
-    config = task.type_config or {}
+    config = {**(task.type_config or {}), "pacing_config": task.pacing_config or {}}
     rule_version = bound_rule_version(session, task)
     rule_set = session.get(RuleSet, rule_version.rule_set_id) if rule_version else None
     group = group_from_reference(
@@ -381,6 +381,9 @@ def _clean_topic_text(value: str) -> str:
 
 def ai_cycle_mode(config: dict, scheduled_start: datetime | None = None, now: datetime | None = None) -> tuple[str, float]:
     current = now or _now()
+    mode, ratio, _intensity = operation_intensity(config.get("pacing_config") or config, current)
+    if (config.get("pacing_config") or {}).get("operation_profile") or config.get("operation_profile"):
+        return mode, round(ratio, 3)
     mode = "正常期"
     if config.get("silent_mode_enabled", True) and _in_time_window(current.time(), str(config.get("silent_start") or "23:00"), str(config.get("silent_end") or "08:00")):
         mode = "静默期"
@@ -641,7 +644,8 @@ def _topic_relevant_context_rows(config: dict, rows: list) -> list:
     keywords = _topic_keywords(topic)
     if not keywords:
         return rows
-    return [row for row in rows if any(keyword in str(getattr(row, "content", "") or "") for keyword in keywords)]
+    matched = [row for row in rows if any(keyword in str(getattr(row, "content", "") or "") for keyword in keywords)]
+    return matched or rows
 
 
 def _topic_keywords(topic: str) -> set[str]:

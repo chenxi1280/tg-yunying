@@ -2,6 +2,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -11,7 +12,7 @@ from app.config import Settings
 from app.database import Base
 from app.gateways import SendResult, _resolve_telethon_target, _telethon_send_target
 from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, WorkerHeartbeat
-from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskSettingsUpdate
+from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
 from app.security import encrypt_secret
@@ -29,11 +30,12 @@ from app.services.operations_center import _is_stale_heartbeat, listener_summary
 from app.services.reports import build_overview
 from app.services.task_center.executors.group_relay import apply_transform_rules, build_plan as build_group_relay_plan, passes_relay_filters, resolve_relay_target_ids
 from app.services.task_center.executors.channel_like import build_plan as build_channel_like_plan
+from app.services.task_center.pacing import schedule_times
 from app.services.group_listeners import process_group_listener
 from app.services.task_center.listener_runtime import drain_listener_runtime, reset_listener_runtime_cache, should_collect_listener
 from app.services.task_center.fingerprints import content_fingerprint
 from app.services.task_center.policies import validate_group_send_policy
-from app.services.task_center.service import _channel_subtask_status, _recover_stale_executing_actions, _retry_failed_actions, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, reset_task, stop_task, update_task_settings
+from app.services.task_center.service import _channel_subtask_status, _recover_stale_executing_actions, _retry_failed_actions, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.timezone import BEIJING_TZ, beijing_day_bounds
 
@@ -1413,6 +1415,8 @@ def test_group_tasks_accept_operation_target_ids_as_primary_references():
                 OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="源群目标", can_send=True, auth_status="已授权运营"),
                 OperationTarget(id=22, tenant_id=1, target_type="group", tg_peer_id="-1009", title="目标群目标", can_send=True, auth_status="已授权运营"),
                 PromptTemplate(id=31, tenant_id=None, template_type="AI黑话词表", name="默认黑话", content="老师=妓女", is_active=True),
+                RuleSet(id=41, tenant_id=1, name="历史规则集", status="active", active_version_id=42),
+                RuleSetVersion(id=42, tenant_id=1, rule_set_id=41, version=1, status="archived"),
             ]
         )
         session.commit()
@@ -1427,6 +1431,11 @@ def test_group_tasks_accept_operation_target_ids_as_primary_references():
         assert ai_task.type_config["target_group_id"] == 7
         assert ai_task.type_config["target_group_name"] == "源群目标"
         assert ai_task.type_config["slang_prompt_template_id"] == 31
+        assert ai_task.pacing_config["operation_profile"]["template_id"] == "natural_full_day"
+        assert len(ai_task.pacing_config["operation_profile"]["hourly_activity_curve"]) == 24
+        assert "silent_start" not in ai_task.type_config
+        assert "ramp_up_minutes" not in ai_task.type_config
+        assert "jitter_percent" not in ai_task.pacing_config
 
         relay_task = create_group_relay_task(
             session,
@@ -1444,6 +1453,167 @@ def test_group_tasks_accept_operation_target_ids_as_primary_references():
         assert relay_task.type_config["target_group_id"] == 9
         assert relay_task.type_config["target_group_ids"] == [9]
 
+        manual_curve = [0, 0, 0, 0, 0, 0, 10, 20, 40, 60, 80, 100, 80, 60, 40, 30, 50, 70, 90, 100, 80, 50, 20, 10]
+        custom_task = create_group_ai_chat_task(
+            session,
+            1,
+            GroupAIChatTaskCreate(
+                name="手动曲线 AI 活跃",
+                target_operation_target_id=21,
+                pacing_config={"operation_profile": {"template_id": "event_warmup", "source": "manual", "hourly_activity_curve": manual_curve, "manual_override": True}},
+            ),
+            "tester",
+        )
+        assert custom_task.pacing_config["operation_profile"]["source"] == "manual"
+        assert custom_task.pacing_config["operation_profile"]["hourly_activity_curve"] == manual_curve
+
+        with pytest.raises(ValueError, match="只能绑定已发布规则版本"):
+            create_group_ai_chat_task(
+                session,
+                1,
+                GroupAIChatTaskCreate(name="历史规则 AI 活跃", target_operation_target_id=21, rule_set_id=41, rule_set_version_id=42),
+                "tester",
+            )
+
+
+def test_task_creation_precheck_covers_group_and_channel_requirements():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="在线号A", phone_masked="11", status=AccountStatus.ACTIVE.value, health_score=95),
+                TgAccount(id=12, tenant_id=1, display_name="在线号B", phone_masked="12", status=AccountStatus.ACTIVE.value, health_score=90),
+                TgAccount(id=13, tenant_id=1, display_name="受限号", phone_masked="13", status=AccountStatus.LIMITED.value, health_score=30),
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="目标群", auth_status="已授权运营", can_send=True),
+                TgGroup(id=8, tenant_id=1, tg_peer_id="-1008", title="只监听源群", auth_status="已授权运营", can_send=False),
+                OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群运营对象", can_send=True, auth_status="已授权运营"),
+                OperationTarget(id=22, tenant_id=1, target_type="group", tg_peer_id="-1008", title="只监听源群运营对象", can_send=False, auth_status="已授权运营"),
+                OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-2001", title="频道运营对象", can_send=True, auth_status="已授权运营"),
+                ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=1001, content_preview="频道消息"),
+                RuleSet(id=51, tenant_id=1, name="发布规则集", status="active", active_version_id=52),
+                RuleSetVersion(id=52, tenant_id=1, rule_set_id=51, version=3, status="published"),
+            ]
+        )
+        session.commit()
+
+        ai_result = precheck_task_creation(
+            session,
+            1,
+            TaskPrecheckRequest(
+                task_type="group_ai_chat",
+                payload={
+                    "name": "AI 活跃预检",
+                    "target_operation_target_id": 21,
+                    "rule_set_id": 51,
+                    "rule_set_version_id": 52,
+                    "account_config": {"selection_mode": "manual", "account_ids": [11, 12, 13], "max_concurrent": 3, "cooldown_per_account_minutes": 0},
+                    "messages_per_round_mode": "manual",
+                    "messages_per_round": 2,
+                },
+            ),
+        )
+        assert ai_result["decision"] in {"allow", "warn"}
+        assert ai_result["candidate_account_count"] == 3
+        assert ai_result["available_account_count"] == 2
+        assert ai_result["limited_account_count"] + ai_result["blocked_account_count"] >= 1
+        assert ai_result["estimated_actions"] == 2
+        assert ai_result["target_ability"][0]["can_task"] is True
+        assert ai_result["rule_version"] == {"id": 52, "rule_set_id": 51, "version": 3, "status": "published"}
+
+        channel_result = precheck_task_creation(
+            session,
+            1,
+            TaskPrecheckRequest(
+                task_type="channel_like",
+                payload={
+                    "name": "频道点赞预检",
+                    "target_channel_id": 31,
+                    "message_scope": "specific",
+                    "message_ids": [41],
+                    "target_likes_per_message": 5,
+                    "account_config": {"selection_mode": "manual", "account_ids": [11, 12], "max_concurrent": 2, "cooldown_per_account_minutes": 0},
+                },
+            ),
+        )
+        assert channel_result["decision"] == "warn"
+        assert channel_result["estimated_actions"] == 5
+        assert channel_result["capacity_shortfall"] == 3
+        assert channel_result["target_ability"][0]["target_type"] == "channel"
+
+        relay_result = precheck_task_creation(
+            session,
+            1,
+            TaskPrecheckRequest(
+                task_type="group_relay",
+                payload={
+                    "name": "转发预检",
+                    "source_groups": [{"operation_target_id": 22}],
+                    "target_operation_target_id": 21,
+                    "target_operation_target_ids": [21],
+                    "account_config": {"selection_mode": "manual", "account_ids": [11, 12], "max_concurrent": 2, "cooldown_per_account_minutes": 0},
+                },
+            ),
+        )
+        assert relay_result["estimated_actions"] == 1
+        assert all(item["can_task"] for item in relay_result["target_ability"])
+        assert any(item["role"] == "listen_source" and item["can_send"] is False for item in relay_result["target_ability"])
+
+        view_result = precheck_task_creation(
+            session,
+            1,
+            TaskPrecheckRequest(
+                task_type="channel_view",
+                payload={
+                    "name": "浏览预检",
+                    "target_channel_id": 31,
+                    "message_scope": "specific",
+                    "message_ids": [41],
+                    "target_views_per_message": 2,
+                    "account_config": {"selection_mode": "manual", "account_ids": [11, 12], "max_concurrent": 2, "cooldown_per_account_minutes": 0},
+                },
+            ),
+        )
+        assert view_result["estimated_actions"] == 2
+        assert view_result["capacity_shortfall"] == 0
+
+        comment_result = precheck_task_creation(
+            session,
+            1,
+            TaskPrecheckRequest(
+                task_type="channel_comment",
+                payload={
+                    "name": "评论预检",
+                    "target_channel_id": 31,
+                    "message_scope": "specific",
+                    "message_ids": [41],
+                    "target_comments_per_message": 1,
+                    "rule_set_id": 51,
+                    "rule_set_version_id": 52,
+                    "account_config": {"selection_mode": "manual", "account_ids": [11], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                },
+            ),
+        )
+        assert comment_result["estimated_actions"] == 1
+        assert comment_result["rule_version"]["id"] == 52
+
+        blocked = precheck_task_creation(
+            session,
+            1,
+            TaskPrecheckRequest(
+                task_type="group_ai_chat",
+                payload={
+                    "name": "阻塞预检",
+                    "target_operation_target_id": 999,
+                    "account_config": {"selection_mode": "manual", "account_ids": [11], "cooldown_per_account_minutes": 0},
+                },
+            ),
+        )
+        assert blocked["decision"] == "block"
+        assert blocked["blockers"]
+
 
 def test_task_settings_update_normalizes_operation_target_references():
     engine = create_engine("sqlite:///:memory:", future=True)
@@ -1457,7 +1627,7 @@ def test_task_settings_update_normalizes_operation_target_references():
                 TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群资产", auth_status="已授权运营", can_send=True),
                 OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="源群目标", can_send=True, auth_status="已授权运营"),
                 OperationTarget(id=22, tenant_id=1, target_type="group", tg_peer_id="-1009", title="目标群目标", can_send=True, auth_status="已授权运营"),
-                Task(id="ai-settings", tenant_id=1, name="待编辑 AI", type="group_ai_chat", status="running", type_config={"target_group_id": 7}),
+                Task(id="ai-settings", tenant_id=1, name="待编辑 AI", type="group_ai_chat", status="running", type_config={"target_group_id": 7, "silent_start": "23:00", "ramp_up_minutes": 60}),
                 Task(id="relay-settings", tenant_id=1, name="待编辑转发", type="group_relay", status="running", type_config={"source_groups": [{"group_id": 7}], "target_group_id": 7, "target_group_ids": [7]}),
             ]
         )
@@ -1487,6 +1657,8 @@ def test_task_settings_update_normalizes_operation_target_references():
     assert ai_config["target_operation_target_id"] == 22
     assert ai_config["target_group_id"] == 9
     assert ai_config["target_group_name"] == "目标群目标"
+    assert "silent_start" not in ai_config
+    assert "ramp_up_minutes" not in ai_config
     assert relay_config["source_groups"] == [{"group_id": 7, "operation_target_id": 21, "group_name": "源群目标", "is_active": True}]
     assert relay_config["target_operation_target_id"] == 22
     assert relay_config["target_group_id"] == 9
@@ -1944,6 +2116,22 @@ def test_ai_cycle_mode_applies_silent_window_and_daily_ramp():
 
     assert ai_cycle_mode(config, datetime(2026, 5, 11, 9, 0), datetime(2026, 5, 11, 9, 15)) == ("启动期", 0.438)
     assert ai_cycle_mode(config, datetime(2026, 5, 11, 9, 0), datetime(2026, 5, 11, 23, 30)) == ("静默期", 1.0)
+
+
+def test_operation_profile_drives_schedule_and_ai_cycle_mode():
+    pacing_config = {
+        "operation_profile": {
+            "hourly_activity_curve": [0, 0, 0, 0, 0, 0, 10, 20, 40, 60, 80, 100, 80, 60, 40, 30, 50, 70, 90, 100, 80, 50, 20, 10],
+            "quiet_threshold": 20,
+            "peak_threshold": 70,
+        }
+    }
+    times = schedule_times(6, pacing_config, start_at=datetime(2026, 5, 11, 1, 10))
+    assert len(times) == 6
+    assert all(item.hour >= 6 for item in times)
+    assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 1, 30)) == ("休眠期", 0.0)
+    assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 6, 30)) == ("低频期", 0.1)
+    assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 11, 30)) == ("高峰期", 1.0)
 
 
 def test_group_ai_chat_bootstraps_without_history(monkeypatch):
