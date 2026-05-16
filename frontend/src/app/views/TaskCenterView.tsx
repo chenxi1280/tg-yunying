@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Card, Collapse, Form, Input, Modal, Space, Steps, Table, Typography } from 'antd';
+import { Alert, Button, Card, Collapse, Form, Input, Modal, Space, Steps, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, RefreshCcw } from 'lucide-react';
 import { api } from '../../shared/api/client';
@@ -265,6 +265,10 @@ export default function TaskCenterView({
       account_personas: formatKeyValueMap(config.account_personas),
       slang_terms: formatKeyValueMap(config.slang_terms),
       slang_prompt_template_id: task.type === 'group_ai_chat' ? (config.slang_prompt_template_id ?? defaultSlangTemplateId) : (config.slang_prompt_template_id ?? null),
+      filter_bot_messages: task.type === 'group_relay' ? config.filter_bot_messages !== false : config.filter_bot_messages,
+      filter_admin_messages: task.type === 'group_relay' ? Boolean(config.filter_admin_messages) : config.filter_admin_messages,
+      excluded_sender_peer_ids: Array.isArray(config.excluded_sender_peer_ids) ? config.excluded_sender_peer_ids : [],
+      excluded_sender_input: formatExcludedSenderInput(config),
       allowed_reactions: Array.isArray(config.allowed_reactions) ? config.allowed_reactions.join(',') : config.allowed_reactions,
       reply_to_message_ids: Array.isArray(config.reply_to_message_ids) ? config.reply_to_message_ids : csvNumbers(config.reply_to_message_ids),
       max_message_length: config.max_message_length ?? null,
@@ -342,6 +346,49 @@ export default function TaskCenterView({
     };
   }
 
+  function parseExcludedSenderInput(value?: string) {
+    const result = { peerIds: [] as string[], usernames: [] as string[], names: [] as string[] };
+    String(value ?? '')
+      .split(/\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .forEach((line) => {
+        const lower = line.toLowerCase();
+        if (line.startsWith('@')) {
+          result.usernames.push(line.replace(/^@+/, '').trim());
+        } else if (/^(id|peer|peer_id|sender_peer_id)[:=]/i.test(line)) {
+          result.peerIds.push(line.replace(/^[^:=]+[:=]/, '').trim());
+        } else if (/^-?\d+$/.test(line) || /^(account|user|bot)[:_-]/i.test(line)) {
+          result.peerIds.push(line);
+        } else if (lower) {
+          result.names.push(line);
+        }
+      });
+    return {
+      peerIds: Array.from(new Set(result.peerIds.filter(Boolean))),
+      usernames: Array.from(new Set(result.usernames.map((item) => item.replace(/^@+/, '').trim()).filter(Boolean))),
+      names: Array.from(new Set(result.names.filter(Boolean))),
+    };
+  }
+
+  function relaySourceFilterPayload(values: any) {
+    const parsed = parseExcludedSenderInput(values.excluded_sender_input);
+    const selectedPeerIds = Array.isArray(values.excluded_sender_peer_ids) ? values.excluded_sender_peer_ids.map(String) : [];
+    return {
+      filter_bot_messages: values.filter_bot_messages !== false,
+      filter_admin_messages: Boolean(values.filter_admin_messages),
+      excluded_sender_peer_ids: Array.from(new Set([...selectedPeerIds, ...parsed.peerIds].map((item) => item.trim()).filter(Boolean))),
+      excluded_sender_usernames: parsed.usernames,
+      excluded_sender_names: parsed.names,
+    };
+  }
+
+  function formatExcludedSenderInput(config: any): string {
+    const usernames = (Array.isArray(config.excluded_sender_usernames) ? config.excluded_sender_usernames : []).map((item: string) => `@${String(item).replace(/^@+/, '')}`);
+    const names = Array.isArray(config.excluded_sender_names) ? config.excluded_sender_names : [];
+    return [...usernames, ...names].filter(Boolean).join('\n');
+  }
+
   function createPayload(values: any): Record<string, any> {
     const base = commonPayload(values);
     if (taskType === 'group_ai_chat') {
@@ -389,6 +436,7 @@ export default function TaskCenterView({
         target_operation_target_ids: targetOperationIds,
         send_account_ids: [],
         content_mode: values.content_mode ?? 'light_rewrite',
+        ...relaySourceFilterPayload(values),
         require_review: false,
       };
     }
@@ -422,7 +470,7 @@ export default function TaskCenterView({
       return { ...base, source_groups: sourceTargetIds.length ? sourceTargetIds.map((id) => {
         const target = groupTargets.find((item) => item.id === id);
         return { operation_target_id: id, group_name: target?.title ?? '', is_active: true };
-      }) : values.source_groups ?? [], target_operation_target_id: values.target_operation_target_id ?? null, target_operation_target_ids: targetOperationIds, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, content_mode: values.content_mode ?? 'light_rewrite', require_review: false };
+      }) : values.source_groups ?? [], target_operation_target_id: values.target_operation_target_id ?? null, target_operation_target_ids: targetOperationIds, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, content_mode: values.content_mode ?? 'light_rewrite', ...relaySourceFilterPayload(values), require_review: false };
     }
     if (type === 'channel_view') {
       return { ...base, target_views_per_message: values.target_views_per_message ?? 50, execution_mode: values.execution_mode ?? 'distribute' };
@@ -543,6 +591,72 @@ export default function TaskCenterView({
       cancelText: '取消',
       okButtonProps: { danger: true },
       onOk: () => deleteTask(task),
+    });
+  }
+
+  function relayRoleLabel(role?: string, isBot?: boolean) {
+    if (isBot) return '机器人';
+    if (role === 'owner') return '群主';
+    if (role === 'admin') return '管理员';
+    if (role === 'unknown') return '未知身份';
+    return '普通成员';
+  }
+
+  function relaySourceOptionLabel(source: TaskCenterDetail['recent_relay_sources'][number]) {
+    const username = source.sender_username ? ` @${source.sender_username.replace(/^@+/, '')}` : '';
+    const peer = source.sender_peer_id ? ` / ${source.sender_peer_id}` : '';
+    const group = source.source_group_title ? ` / ${source.source_group_title}` : '';
+    return `${source.sender_name || '未知来源'}${username}${peer} / ${relayRoleLabel(source.sender_role, source.is_bot)}${group}`;
+  }
+
+  function relaySourceOptions(current: TaskCenterDetail | null) {
+    const seen = new Set<string>();
+    return (current?.recent_relay_sources ?? [])
+      .filter((source) => source.sender_peer_id)
+      .filter((source) => {
+        if (seen.has(source.sender_peer_id)) return false;
+        seen.add(source.sender_peer_id);
+        return true;
+      })
+      .map((source) => ({ value: source.sender_peer_id, label: relaySourceOptionLabel(source) }));
+  }
+
+  async function addSourceIdentityToBlocklist(source: { peerId?: string; username?: string; name?: string }) {
+    if (!detail) return;
+    const config = detail.task.type_config ?? {};
+    const payload: Record<string, any> = {};
+    if (source.peerId) {
+      payload.excluded_sender_peer_ids = Array.from(new Set([...(config.excluded_sender_peer_ids ?? []), source.peerId]));
+    } else if (source.username) {
+      payload.excluded_sender_usernames = Array.from(new Set([...(config.excluded_sender_usernames ?? []), source.username.replace(/^@+/, '')]));
+    } else if (source.name) {
+      payload.excluded_sender_names = Array.from(new Set([...(config.excluded_sender_names ?? []), source.name]));
+    }
+    if (!Object.keys(payload).length) return;
+    setActionError('');
+    try {
+      const updated = await api<TaskCenterTask>(`/tasks/${detail.task.id}/settings`, { method: 'PATCH', body: JSON.stringify(payload) });
+      setActionWarning('已加入当前任务的来源不转发名单。');
+      await load();
+      await loadDetail(updated);
+    } catch (error) {
+      setActionError(errorMessage(error));
+    }
+  }
+
+  async function addRelaySourceToBlocklist(item: TaskCenterDetail['relay_batches'][number]['items'][number]) {
+    await addSourceIdentityToBlocklist({
+      peerId: item.source_sender_peer_id,
+      username: item.source_sender_username,
+      name: item.source_sender_name,
+    });
+  }
+
+  async function addRecentRelaySourceToBlocklist(item: TaskCenterDetail['recent_relay_sources'][number]) {
+    await addSourceIdentityToBlocklist({
+      peerId: item.sender_peer_id,
+      username: item.sender_username,
+      name: item.sender_name,
     });
   }
 
@@ -747,6 +861,8 @@ export default function TaskCenterView({
   const relayItemColumns: ColumnsType<TaskCenterDetail['relay_batches'][number]['items'][number]> = [
     { title: '源群 / 发送人', key: 'source', width: 220, ellipsis: true, render: (_, item) => relaySourceDisplay(item) },
     { title: '发送人ID', dataIndex: 'source_sender_peer_id', width: 130, ellipsis: true, render: (value) => value || '-' },
+    { title: '用户名', dataIndex: 'source_sender_username', width: 140, ellipsis: true, render: (value) => value ? `@${String(value).replace(/^@+/, '')}` : '-' },
+    { title: '来源身份', key: 'source_role', width: 120, render: (_, item) => <Tag>{relayRoleLabel(item.source_sender_role, item.source_is_bot)}</Tag> },
     { title: '源消息ID', dataIndex: 'source_remote_message_id', width: 120, ellipsis: true, render: (value) => value || '-' },
     { title: '源时间', dataIndex: 'source_sent_at', width: 170, render: (value) => formatDateTime(value) },
     { title: '规则', key: 'rule', width: 180, ellipsis: true, render: (_, item) => relayRuleDisplay(item) },
@@ -759,6 +875,7 @@ export default function TaskCenterView({
     { title: '转换后', dataIndex: 'transformed_text', width: 260, ellipsis: true },
     { title: '重试', dataIndex: 'retry_count', width: 80 },
     { title: '结果', key: 'result', width: 220, render: (_, item) => item.result?.error_message || (item.result?.success === true ? '成功' : '-') },
+    { title: '来源过滤', key: 'source_filter', width: 150, fixed: 'right', render: (_, item) => <Button size="small" onClick={() => addRelaySourceToBlocklist(item)}>加入不转发名单</Button> },
   ];
 
   const formValues = Form.useWatch([], form) ?? {};
@@ -789,7 +906,7 @@ export default function TaskCenterView({
         <Form form={form} layout="vertical" initialValues={initialValuesForType(taskType, schedulingSetting)}>
           {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
           {wizardStep === 1 && <WizardTarget taskType={taskType} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} />}
-          {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} />}
+          {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} />}
           {wizardStep === 3 && (
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
               <WizardAccounts accountMode={accountMode} accounts={accounts} accountPools={accountPools} />
@@ -839,7 +956,7 @@ export default function TaskCenterView({
             </>
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>
-          <WizardTypeConfig taskType={detail?.task.type ?? taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} />
+          <WizardTypeConfig taskType={detail?.task.type ?? taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} />
           <Typography.Title level={5}>账号选择</Typography.Title>
           <WizardAccounts accountMode={editAccountMode} accounts={accounts} accountPools={accountPools} />
           <Typography.Title level={5}>节奏策略</Typography.Title>
@@ -861,6 +978,7 @@ export default function TaskCenterView({
         aiTurnColumns={aiTurnColumns}
         relayBatchColumns={relayBatchColumns}
         relayItemColumns={relayItemColumns}
+        onBlockRelaySource={(source) => void addRecentRelaySourceToBlocklist(source)}
         messageColumns={messageColumns}
         planColumns={planColumns}
         recordColumns={recordColumns}

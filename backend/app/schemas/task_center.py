@@ -195,6 +195,11 @@ class GroupRelayConfig(BaseModel):
     rewrite_prompt: str | None = None
     preserve_media: bool = False
     add_source_attribution: bool = False
+    filter_bot_messages: bool = True
+    filter_admin_messages: bool = False
+    excluded_sender_peer_ids: list[str] = Field(default_factory=list)
+    excluded_sender_usernames: list[str] = Field(default_factory=list)
+    excluded_sender_names: list[str] = Field(default_factory=list)
     dedup_window_minutes: int = Field(default=60, ge=1, le=10080)
     dedup_method: Literal["hash", "semantic", "both"] = "hash"
     require_review: bool = False
@@ -376,6 +381,11 @@ class TaskSettingsUpdate(TaskUpdate):
     rewrite_prompt: str | None = None
     preserve_media: bool | None = None
     add_source_attribution: bool | None = None
+    filter_bot_messages: bool | None = None
+    filter_admin_messages: bool | None = None
+    excluded_sender_peer_ids: list[str] | None = None
+    excluded_sender_usernames: list[str] | None = None
+    excluded_sender_names: list[str] | None = None
     dedup_window_minutes: int | None = Field(default=None, ge=1, le=10080)
     dedup_method: Literal["hash", "semantic", "both"] | None = None
     require_review: bool | None = None
@@ -539,6 +549,10 @@ class TaskRelayItemOut(BaseModel):
     source_group_title: str = ""
     source_sender_name: str = ""
     source_sender_peer_id: str = ""
+    source_sender_username: str = ""
+    source_sender_role: str = ""
+    source_is_bot: bool = False
+    source_filter_reason: str = ""
     source_remote_message_id: str = ""
     source_message_type: str = ""
     source_sent_at: datetime | None = None
@@ -570,6 +584,22 @@ class TaskRelayBatchOut(BaseModel):
     items: list[TaskRelayItemOut] = Field(default_factory=list)
 
 
+class TaskRelaySourceOut(BaseModel):
+    source_group_id: int | None = None
+    source_group_title: str = ""
+    listener_account_id: int | None = None
+    sender_peer_id: str = ""
+    sender_name: str = ""
+    sender_username: str = ""
+    sender_role: str = ""
+    is_bot: bool = False
+    source_filter_reason: str = ""
+    content: str = ""
+    message_type: str = ""
+    remote_message_id: str = ""
+    sent_at: datetime | None = None
+
+
 class TaskDetailOut(BaseModel):
     task: TaskOut
     actions: list[ActionOut]
@@ -580,6 +610,7 @@ class TaskDetailOut(BaseModel):
     ai_generation_records: list[TaskAIGenerationRecordOut] = Field(default_factory=list)
     ai_account_profiles: list[TaskAIAccountProfileOut] = Field(default_factory=list)
     relay_batches: list[TaskRelayBatchOut] = Field(default_factory=list)
+    recent_relay_sources: list[TaskRelaySourceOut] = Field(default_factory=list)
 
 
 class TaskRetryRequest(BaseModel):

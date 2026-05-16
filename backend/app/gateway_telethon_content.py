@@ -17,6 +17,22 @@ from .gateway_mock import source_media_hint
 from .gateway_telethon_utils import resolve_telethon_target
 
 
+async def _sender_role(client, target, sender) -> str:
+    if sender is None:
+        return "unknown"
+    try:
+        permissions = await client.get_permissions(target, sender)
+    except Exception:
+        return "unknown"
+    participant = getattr(permissions, "participant", None)
+    names = {type(permissions).__name__.lower(), type(participant).__name__.lower() if participant is not None else ""}
+    if getattr(permissions, "is_creator", False) or any("creator" in name for name in names):
+        return "owner"
+    if getattr(permissions, "is_admin", False) or any("admin" in name for name in names):
+        return "admin"
+    return "member"
+
+
 async def fetch_group_archive(client, peer_id: str) -> ArchiveSnapshot:
     target = await resolve_telethon_target(client, peer_id, group_id=1)
     messages_resp = await client.get_messages(target, limit=50)
@@ -73,12 +89,14 @@ async def fetch_group_messages(client, peer_id: str, limit: int) -> list[GroupMe
         if group_id:
             grouped_totals[group_id] = grouped_totals.get(group_id, 0) + 1
     snapshots: list[GroupMessageSnapshot] = []
+    sender_role_cache: dict[str, str] = {}
     for message in list(messages_resp or []):
         text = getattr(message, "message", "") or ""
         if not text and not getattr(message, "media", None):
             continue
         sender = await message.get_sender() if hasattr(message, "get_sender") else None
         sender_peer_id = str(getattr(sender, "id", "") or "")
+        sender_username = str(getattr(sender, "username", "") or "")
         sender_name = (
             getattr(sender, "first_name", "")
             or getattr(sender, "title", "")
@@ -86,6 +104,10 @@ async def fetch_group_messages(client, peer_id: str, limit: int) -> list[GroupMe
             or sender_peer_id
             or "未知成员"
         )
+        role_cache_key = sender_peer_id or f"anonymous:{sender_name}"
+        if role_cache_key not in sender_role_cache:
+            sender_role_cache[role_cache_key] = await _sender_role(client, target, sender)
+        sender_role = sender_role_cache[role_cache_key]
         group_id = str(getattr(message, "grouped_id", "") or "")
         if group_id:
             grouped_seen[group_id] = grouped_seen.get(group_id, 0) + 1
@@ -97,9 +119,12 @@ async def fetch_group_messages(client, peer_id: str, limit: int) -> list[GroupMe
                 remote_message_id=remote_id,
                 sender_peer_id=sender_peer_id,
                 sender_name=sender_name,
+                sender_username=sender_username,
                 content=text or "[media]",
                 message_type="media" if media else "text",
                 sent_at=getattr(message, "date", None),
+                is_bot=bool(getattr(sender, "bot", False)),
+                sender_role=sender_role,
                 caption=text,
                 media_type=media_type,
                 media_fingerprint=source_media_hint(peer_id, remote_id, group_id, media_type),

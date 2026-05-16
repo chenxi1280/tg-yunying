@@ -153,7 +153,9 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
             assert media_asset.media_group_index == 1
             assert media_asset.media_group_total == 2
             assert media_asset.cache_status == "pending_cache"
-            assert session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-bot-1").count() == 0
+            bot_context = session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-bot-1").one()
+            assert bot_context.is_bot is True
+            assert bot_context.sender_name == "群机器人"
             tasks = session.query(MessageTask).filter_by(group_id=group["id"]).order_by(MessageTask.id.desc()).limit(5).all()
             assert not any(task.preferred_account_id == sender["id"] and task.content == "这个功能怎么开始参与？" for task in tasks)
 

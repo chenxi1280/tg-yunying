@@ -1149,12 +1149,16 @@ export type TaskCenterDetail = {
       source_event_key: string;
       source_group_id: number | null;
       source_operation_target_id: number | null;
-      operation_target_id: number | null;
-      source_info: string;
-      source_group_title: string;
-      source_sender_name: string;
-      source_sender_peer_id: string;
-      source_remote_message_id: string;
+	      operation_target_id: number | null;
+	      source_info: string;
+	      source_group_title: string;
+	      source_sender_name: string;
+	      source_sender_peer_id: string;
+	      source_sender_username: string;
+	      source_sender_role: string;
+	      source_is_bot: boolean;
+	      source_filter_reason: string;
+	      source_remote_message_id: string;
       source_message_type: string;
       source_sent_at: string | null;
       target_display: string;
@@ -1174,9 +1178,24 @@ export type TaskCenterDetail = {
       scheduled_at: string;
       executed_at: string | null;
       result: Record<string, any>;
-    }>;
-  }>;
-};
+	    }>;
+	  }>;
+	  recent_relay_sources: Array<{
+	    source_group_id: number | null;
+	    source_group_title: string;
+	    listener_account_id: number | null;
+	    sender_peer_id: string;
+	    sender_name: string;
+	    sender_username: string;
+	    sender_role: string;
+	    is_bot: boolean;
+	    source_filter_reason: string;
+	    content: string;
+	    message_type: string;
+	    remote_message_id: string;
+	    sent_at: string | null;
+	  }>;
+	};
 
 export type MetricBucket = {
   key: string;

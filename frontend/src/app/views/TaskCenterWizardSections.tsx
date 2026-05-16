@@ -67,6 +67,7 @@ export function WizardTypeConfig({
   ruleSets = [],
   slangTemplates = [],
   comments = [],
+  relaySourceOptions = [],
   targetChannelId,
   messageScope = 'latest_n',
   messageIds,
@@ -75,6 +76,7 @@ export function WizardTypeConfig({
   ruleSets?: RuleSet[];
   slangTemplates?: PromptTemplate[];
   comments?: ChannelMessageComment[];
+  relaySourceOptions?: Array<{ value: string; label: string }>;
   targetChannelId?: number;
   messageScope?: string;
   messageIds?: Array<number | string> | string | null;
@@ -152,6 +154,34 @@ export function WizardTypeConfig({
             <Select options={[{ value: 'raw', label: '原文' }, { value: 'light_rewrite', label: '轻量改写' }, { value: 'ai_rewrite', label: 'AI 改写' }, { value: 'summary', label: '摘要' }]} />
           </Form.Item>
         </div>
+        <Collapse
+          ghost
+          items={[
+            {
+              key: 'source-filter',
+              label: '来源过滤配置',
+              children: (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <div className="form-grid">
+                    <Form.Item name="filter_bot_messages" valuePropName="checked">
+                      <Checkbox>屏蔽机器人消息</Checkbox>
+                    </Form.Item>
+                    <Form.Item name="filter_admin_messages" valuePropName="checked">
+                      <Checkbox>不转发群主和管理员消息</Checkbox>
+                    </Form.Item>
+                    <Form.Item name="excluded_sender_peer_ids" label="从最近来源发言人中选择">
+                      <Select mode="multiple" allowClear options={relaySourceOptions} placeholder="任务运行后可从最近来源发言人中选择" />
+                    </Form.Item>
+                    <Form.Item name="excluded_sender_input" label="手动粘贴 @username / sender_peer_id / 昵称">
+                      <Input.TextArea rows={3} placeholder={'一行一个\n@username\nid:123456789\n昵称'} />
+                    </Form.Item>
+                  </div>
+                  <Typography.Text type="secondary">优先保存 sender_peer_id，其次 @username；昵称只作为兜底，可能误伤同名成员。</Typography.Text>
+                </Space>
+              ),
+            },
+          ]}
+        />
       </Space>
     );
   }

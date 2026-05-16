@@ -94,6 +94,7 @@ class ArchivedMessageSnapshot:
     content: str
     message_type: str = "text"
     sent_at: datetime | None = None
+    is_bot: bool = False
 
 
 @dataclass(frozen=True)
@@ -102,9 +103,11 @@ class GroupMessageSnapshot:
     sender_name: str
     content: str
     sender_peer_id: str = ""
+    sender_username: str = ""
     message_type: str = "text"
     sent_at: datetime | None = None
     is_bot: bool = False
+    sender_role: str = "member"
     caption: str = ""
     media_type: str = ""
     media_fingerprint: str = ""

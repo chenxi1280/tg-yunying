@@ -6,10 +6,11 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, OperationTarget, Task, TgAccount
+from app.models import Action, ChannelMessage, GroupContextMessage, OperationTarget, Task, TgAccount, TgGroup
 
 from .executors.common import quantity_jitter_bounds
 from .executors.group_ai_chat import account_profile_summaries
+from .executors.group_relay import relay_source_filter_reason
 from .fingerprints import content_fingerprint
 
 
@@ -487,6 +488,10 @@ def _relay_batches(actions: list[Action]) -> list[dict[str, Any]]:
                 "source_group_title": source_group_title,
                 "source_sender_name": source_sender_name,
                 "source_sender_peer_id": str(payload.get("source_sender_peer_id") or ""),
+                "source_sender_username": str(payload.get("source_sender_username") or ""),
+                "source_sender_role": str(payload.get("source_sender_role") or ""),
+                "source_is_bot": bool(payload.get("source_is_bot") or False),
+                "source_filter_reason": str(payload.get("source_filter_reason") or ""),
                 "source_remote_message_id": str(payload.get("source_remote_message_id") or ""),
                 "source_message_type": str(payload.get("source_message_type") or ""),
                 "source_sent_at": payload.get("source_sent_at"),
@@ -518,9 +523,65 @@ def _relay_batches(actions: list[Action]) -> list[dict[str, Any]]:
     return sorted(batches.values(), key=lambda item: item["relay_batch_id"])
 
 
+def _relay_recent_sources(session: Session, task: Task, limit: int = 30) -> list[dict[str, Any]]:
+    if task.type != "group_relay":
+        return []
+    groups: list[TgGroup] = []
+    seen_group_ids: set[int] = set()
+    for item in (task.type_config or {}).get("source_groups") or []:
+        if not isinstance(item, dict) or not item.get("is_active", True):
+            continue
+        group = _group_for_relay_source(session, task.tenant_id, item)
+        if group and group.id not in seen_group_ids:
+            groups.append(group)
+            seen_group_ids.add(group.id)
+    if not groups:
+        return []
+    rows = list(
+        session.scalars(
+            select(GroupContextMessage)
+            .where(GroupContextMessage.tenant_id == task.tenant_id, GroupContextMessage.group_id.in_([group.id for group in groups]))
+            .order_by(GroupContextMessage.sent_at.desc().nullslast(), GroupContextMessage.created_at.desc())
+            .limit(limit)
+        )
+    )
+    titles = {group.id: group.title for group in groups}
+    return [
+        {
+            "source_group_id": item.group_id,
+            "source_group_title": titles.get(item.group_id, ""),
+            "listener_account_id": item.listener_account_id,
+            "sender_peer_id": item.sender_peer_id,
+            "sender_name": item.sender_name,
+            "sender_username": getattr(item, "sender_username", "") or "",
+            "sender_role": getattr(item, "sender_role", "") or "",
+            "is_bot": bool(getattr(item, "is_bot", False)),
+            "source_filter_reason": relay_source_filter_reason(item, task.type_config or {}),
+            "content": item.content,
+            "message_type": item.message_type,
+            "remote_message_id": item.remote_message_id,
+            "sent_at": item.sent_at,
+        }
+        for item in rows
+    ]
+
+
+def _group_for_relay_source(session: Session, tenant_id: int, source: dict[str, Any]) -> TgGroup | None:
+    group_id = source.get("group_id") if isinstance(source.get("group_id"), int) else None
+    if group_id:
+        group = session.get(TgGroup, group_id)
+        if group and group.tenant_id == tenant_id:
+            return group
+    operation_target_id = source.get("operation_target_id") if isinstance(source.get("operation_target_id"), int) else None
+    if not operation_target_id:
+        return None
+    target = session.get(OperationTarget, operation_target_id)
+    if not target or target.tenant_id != tenant_id:
+        return None
+    return session.scalar(select(TgGroup).where(TgGroup.tenant_id == tenant_id, TgGroup.tg_peer_id == target.tg_peer_id).limit(1))
+
+
 def _group_stats_inc(stats: dict[str, int], status: str) -> None:
     stats["total"] = int(stats.get("total") or 0) + 1
     if status in stats:
         stats[status] = int(stats.get(status) or 0) + 1
-
-

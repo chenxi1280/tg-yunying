@@ -292,6 +292,10 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   if (type === 'group_relay') {
     return {
       content_mode: 'light_rewrite',
+      filter_bot_messages: true,
+      filter_admin_messages: false,
+      excluded_sender_peer_ids: [],
+      excluded_sender_input: '',
       dedup_window_minutes: 60,
       dedup_method: 'hash',
     };
@@ -404,6 +408,10 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'target_operation_target_id',
       'target_operation_target_ids',
       'content_mode',
+      'filter_bot_messages',
+      'filter_admin_messages',
+      'excluded_sender_peer_ids',
+      'excluded_sender_input',
     ];
   }
   if (taskType === 'channel_view') {
@@ -422,7 +430,7 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
     return [...baseFields, 'target_operation_target_id', 'rule_set_id', 'rule_set_version_id', 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'slang_prompt_template_id', 'slang_terms', 'tone', 'language', 'max_message_length', 'participation_rate', 'allow_account_repeat', 'repeat_cooldown_rounds', 'account_personas', 'account_memory_depth', 'messages_per_round_mode', 'messages_per_round', 'history_fetch_account_id', 'idle_continuation_enabled', 'idle_continuation_seconds', 'context_expire_after_messages'];
   }
   if (taskType === 'group_relay') {
-    return [...baseFields, 'source_operation_target_ids', 'source_groups', 'target_operation_target_id', 'target_operation_target_ids', 'rule_set_id', 'rule_set_version_id', 'content_mode'];
+    return [...baseFields, 'source_operation_target_ids', 'source_groups', 'target_operation_target_id', 'target_operation_target_ids', 'rule_set_id', 'rule_set_version_id', 'content_mode', 'filter_bot_messages', 'filter_admin_messages', 'excluded_sender_peer_ids', 'excluded_sender_input'];
   }
   if (taskType === 'channel_view') {
     return [...baseFields, 'target_views_per_message', 'execution_mode'];

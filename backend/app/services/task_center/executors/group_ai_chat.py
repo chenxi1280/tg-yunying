@@ -69,7 +69,7 @@ def build_plan(session: Session, task: Task) -> int:
     context_rows = list(reversed(history_rows[-history_depth:]))
     usable_context_rows = _topic_relevant_context_rows(
         config,
-        [row for row in context_rows if _is_usable_context_message(row.content)],
+        [row for row in context_rows if _is_human_context_row(row) and _is_usable_context_message(row.content)],
     )
     mode, ramp_ratio = ai_cycle_mode(config, task.scheduled_start)
     unprocessed_rows = [
@@ -635,6 +635,10 @@ def _is_usable_context_message(content: str) -> bool:
     if len(compact) <= 8 and len(set(compact)) <= 2:
         return False
     return True
+
+
+def _is_human_context_row(row) -> bool:
+    return not bool(getattr(row, "is_bot", False))
 
 
 def _topic_relevant_context_rows(config: dict, rows: list) -> list:

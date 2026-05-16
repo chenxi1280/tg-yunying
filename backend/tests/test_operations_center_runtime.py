@@ -28,7 +28,7 @@ from app.services.operations import filter_operation_targets, operation_target_d
 from app.services.task_center.executors.group_ai_chat import _topic_relevant_context_rows, ai_cycle_mode, build_plan as build_group_ai_chat_plan
 from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
 from app.services.reports import build_overview
-from app.services.task_center.executors.group_relay import apply_transform_rules, build_plan as build_group_relay_plan, passes_relay_filters, resolve_relay_target_ids
+from app.services.task_center.executors.group_relay import apply_transform_rules, build_plan as build_group_relay_plan, passes_relay_filters, relay_source_filter_reason, resolve_relay_target_ids
 from app.services.task_center.executors.channel_like import build_plan as build_channel_like_plan
 from app.services.task_center.pacing import schedule_times
 from app.services.group_listeners import process_group_listener
@@ -1857,6 +1857,86 @@ def test_group_relay_rule_account_strategy_controls_sender(monkeypatch):
     assert attribution_report.total_actions == 1
     assert attribution_report.rows[0].material_fingerprint == content_fingerprint("公告：今晚活动开始")
     assert attribution_report.rows[0].retry_count == 2
+
+
+def test_group_relay_source_filter_defaults_and_allows_bot_when_disabled(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr("app.services.task_center.executors.group_relay.should_collect_listener", lambda *_args, **_kwargs: False)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=101, tenant_id=1, display_name="发送号", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=100),
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群", auth_status="已授权运营", listener_context_limit=20),
+                TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群", auth_status="已授权运营", can_send=True, listener_context_limit=20),
+                TgGroupAccount(id=901, tenant_id=1, group_id=9, account_id=101, can_send=True),
+                GroupContextMessage(
+                    id=41,
+                    tenant_id=1,
+                    group_id=7,
+                    listener_account_id=101,
+                    sender_peer_id="bot-1",
+                    sender_name="公告机器人",
+                    sender_username="notice_bot",
+                    is_bot=True,
+                    sender_role="member",
+                    content="机器人公告：今晚活动开始",
+                    remote_message_id="bot-msg-1",
+                    sent_at=datetime(2026, 5, 17, 10, 0, 0),
+                ),
+                Task(
+                    id="relay-default-bot-filter",
+                    tenant_id=1,
+                    name="默认屏蔽机器人",
+                    type="group_relay",
+                    status="running",
+                    account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                    pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                    type_config={"source_groups": [{"group_id": 7, "is_active": True}], "target_group_id": 9, "content_mode": "raw", "dedup_window_minutes": 60},
+                ),
+                Task(
+                    id="relay-allow-bot",
+                    tenant_id=1,
+                    name="允许机器人",
+                    type="group_relay",
+                    status="running",
+                    account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                    pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                    type_config={"source_groups": [{"group_id": 7, "is_active": True}], "target_group_id": 9, "content_mode": "raw", "dedup_window_minutes": 60, "filter_bot_messages": False},
+                ),
+            ]
+        )
+        session.commit()
+
+        assert build_group_relay_plan(session, session.get(Task, "relay-default-bot-filter")) == 0
+        assert session.scalar(select(func.count(Action.id)).where(Action.task_id == "relay-default-bot-filter")) == 0
+        default_detail = get_task_detail(session, 1, "relay-default-bot-filter")
+        assert default_detail["recent_relay_sources"][0]["source_filter_reason"] == "屏蔽机器人消息"
+        updated = update_task_settings(session, 1, "relay-default-bot-filter", TaskSettingsUpdate(excluded_sender_peer_ids=["bot-1"]), "pytest")
+        assert updated.type_config["excluded_sender_peer_ids"] == ["bot-1"]
+        assert build_group_relay_plan(session, session.get(Task, "relay-allow-bot")) == 1
+        action = session.scalar(select(Action).where(Action.task_id == "relay-allow-bot"))
+        detail = get_task_detail(session, 1, "relay-allow-bot")
+
+    assert action.payload["source_is_bot"] is True
+    assert action.payload["source_sender_username"] == "notice_bot"
+    assert detail["relay_batches"][0]["items"][0]["source_is_bot"] is True
+    assert detail["relay_batches"][0]["items"][0]["source_sender_username"] == "notice_bot"
+    assert detail["recent_relay_sources"][0]["is_bot"] is True
+
+
+def test_group_relay_source_filter_blocks_admin_and_excluded_senders():
+    admin_message = SimpleNamespace(is_bot=False, sender_role="admin", sender_peer_id="admin-1", sender_username="admin_user", sender_name="群管理员")
+    peer_message = SimpleNamespace(is_bot=False, sender_role="member", sender_peer_id="user-1", sender_username="user_one", sender_name="用户一")
+    username_message = SimpleNamespace(is_bot=False, sender_role="member", sender_peer_id="user-2", sender_username="target_user", sender_name="用户二")
+    name_message = SimpleNamespace(is_bot=False, sender_role="member", sender_peer_id="user-3", sender_username="", sender_name="同名用户")
+
+    assert relay_source_filter_reason(admin_message, {"filter_admin_messages": True}) == "不转发群主和管理员消息"
+    assert relay_source_filter_reason(peer_message, {"excluded_sender_peer_ids": ["user-1"]}) == "命中来源不转发名单：sender_peer_id"
+    assert relay_source_filter_reason(username_message, {"excluded_sender_usernames": ["@target_user"]}) == "命中来源不转发名单：@username"
+    assert relay_source_filter_reason(name_message, {"excluded_sender_names": ["同名用户"]}) == "昵称兜底命中来源不转发名单"
 
 
 def test_group_relay_uses_source_group_accounts_when_monitor_accounts_empty(monkeypatch):

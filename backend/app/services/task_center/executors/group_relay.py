@@ -44,6 +44,9 @@ def build_plan(session: Session, task: Task) -> int:
         if should_collect_listener("group", source.id, window_seconds=source.listener_interval_seconds):
             collect_group_context(session, source, _source_monitor_account_ids(session, task, source, monitor_account_ids))
         for message in reversed(recent_context_messages(session, source, source.listener_context_limit)):
+            source_filter_reason = relay_source_filter_reason(message, config)
+            if source_filter_reason:
+                continue
             if not passes_relay_filters(message.content, message.sender_peer_id, message.message_type, config.get("filters") or {}):
                 continue
             targets = _authorized_relay_targets(session, task, config, source.id, message.content)
@@ -88,6 +91,10 @@ def build_plan(session: Session, task: Task) -> int:
                         "source_info": f"{source.title} / {message.sender_name}",
                         "source_sender_name": message.sender_name,
                         "source_sender_peer_id": message.sender_peer_id,
+                        "source_sender_username": getattr(message, "sender_username", "") or "",
+                        "source_sender_role": getattr(message, "sender_role", "") or "",
+                        "source_is_bot": bool(getattr(message, "is_bot", False)),
+                        "source_filter_reason": source_filter_reason,
                         "source_remote_message_id": message.remote_message_id,
                         "source_message_type": message.message_type,
                         "source_sent_at": message.sent_at,
@@ -169,6 +176,10 @@ def build_plan(session: Session, task: Task) -> int:
                 source_group_title=str(candidate.get("source_group_title") or ""),
                 source_sender_name=str(candidate.get("source_sender_name") or ""),
                 source_sender_peer_id=str(candidate.get("source_sender_peer_id") or ""),
+                source_sender_username=str(candidate.get("source_sender_username") or ""),
+                source_sender_role=str(candidate.get("source_sender_role") or ""),
+                source_is_bot=bool(candidate.get("source_is_bot") or False),
+                source_filter_reason=str(candidate.get("source_filter_reason") or ""),
                 source_remote_message_id=str(candidate.get("source_remote_message_id") or ""),
                 source_message_type=str(candidate.get("source_message_type") or ""),
                 source_sent_at=candidate.get("source_sent_at"),
@@ -297,6 +308,7 @@ def _operation_target_id_for_group(session: Session, tenant_id: int, group: TgGr
 
 def effective_relay_config(session: Session, task: Task) -> dict[str, Any]:
     config = dict(task.type_config or {})
+    config = _with_source_filter_defaults(config)
     version = _bound_rule_version(session, task)
     if not version:
         return config
@@ -326,6 +338,42 @@ def effective_relay_config(session: Session, task: Task) -> dict[str, Any]:
         failure["max_retries"] = retry_policy["max_retries"]
         task.failure_policy = failure
     return config
+
+
+def _with_source_filter_defaults(config: dict[str, Any]) -> dict[str, Any]:
+    next_config = dict(config or {})
+    next_config["filter_bot_messages"] = bool(next_config.get("filter_bot_messages", True))
+    next_config["filter_admin_messages"] = bool(next_config.get("filter_admin_messages", False))
+    for field in ("excluded_sender_peer_ids", "excluded_sender_usernames", "excluded_sender_names"):
+        value = next_config.get(field)
+        next_config[field] = [str(item).strip() for item in value or [] if str(item).strip()] if isinstance(value, list) else []
+    return next_config
+
+
+def _norm_sender_value(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _norm_username(value: Any) -> str:
+    return _norm_sender_value(value).lstrip("@")
+
+
+def relay_source_filter_reason(message, config: dict[str, Any]) -> str:
+    if bool(config.get("filter_bot_messages", True)) and bool(getattr(message, "is_bot", False)):
+        return "屏蔽机器人消息"
+    role = _norm_sender_value(getattr(message, "sender_role", ""))
+    if bool(config.get("filter_admin_messages", False)) and role in {"admin", "owner"}:
+        return "不转发群主和管理员消息"
+    peer_id = _norm_sender_value(getattr(message, "sender_peer_id", ""))
+    if peer_id and peer_id in {_norm_sender_value(item) for item in config.get("excluded_sender_peer_ids") or []}:
+        return "命中来源不转发名单：sender_peer_id"
+    username = _norm_username(getattr(message, "sender_username", ""))
+    if username and username in {_norm_username(item) for item in config.get("excluded_sender_usernames") or []}:
+        return "命中来源不转发名单：@username"
+    name = _norm_sender_value(getattr(message, "sender_name", ""))
+    if name and name in {_norm_sender_value(item) for item in config.get("excluded_sender_names") or []}:
+        return "昵称兜底命中来源不转发名单"
+    return ""
 
 
 def apply_transform_rules(content: str, transforms: dict[str, Any]) -> str:
@@ -807,5 +855,6 @@ __all__ = [
     "effective_relay_config",
     "passes_relay_filters",
     "relay_filter_expression_reason",
+    "relay_source_filter_reason",
     "resolve_relay_target_ids",
 ]

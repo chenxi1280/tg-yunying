@@ -40,7 +40,7 @@ from .account_pool import select_task_accounts
 from .ai_generator import generate_channel_comments, generate_group_messages
 from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims
 from .executors import build_task_plan, reached_daily_action_limit
-from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _message_groups, _relay_batches, _search_actions, _task_payload
+from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _message_groups, _relay_batches, _relay_recent_sources, _search_actions, _task_payload
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
@@ -183,6 +183,7 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
         "ai_generation_records": _ai_generation_records(actions),
         "ai_account_profiles": _ai_account_profiles(session, task, actions),
         "relay_batches": _relay_batches(actions),
+        "recent_relay_sources": _relay_recent_sources(session, task),
     }
 
 

@@ -46,6 +46,10 @@ class SendMessagePayload(BaseModel):
     source_group_title: str = ""
     source_sender_name: str = ""
     source_sender_peer_id: str = ""
+    source_sender_username: str = ""
+    source_sender_role: str = ""
+    source_is_bot: bool = False
+    source_filter_reason: str = ""
     source_remote_message_id: str = ""
     source_message_type: str = ""
     source_sent_at: datetime | None = None

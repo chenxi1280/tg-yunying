@@ -112,7 +112,11 @@ def group_detail(session: Session, group_id: int) -> dict:
             {
                 "id": item.id,
                 "listener_account_id": item.listener_account_id,
+                "sender_peer_id": item.sender_peer_id,
                 "sender_name": item.sender_name,
+                "sender_username": getattr(item, "sender_username", "") or "",
+                "is_bot": bool(getattr(item, "is_bot", False)),
+                "sender_role": getattr(item, "sender_role", "") or "",
                 "content": item.content,
                 "message_type": item.message_type,
                 "sent_at": item.sent_at,

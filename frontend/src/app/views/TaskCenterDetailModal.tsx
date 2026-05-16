@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Descriptions, Space, Table, Typography } from 'antd';
+import { Button, Descriptions, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { TaskCenterAction, TaskCenterDetail, TaskCenterTask } from '../types';
 import { DetailModal, StatusBadge } from '../components/shared';
@@ -24,6 +24,7 @@ interface TaskCenterDetailModalProps {
   aiTurnColumns: ColumnsType<TaskCenterDetail['ai_cycles'][number]['turns'][number]>;
   relayBatchColumns: ColumnsType<TaskCenterDetail['relay_batches'][number]>;
   relayItemColumns: ColumnsType<TaskCenterDetail['relay_batches'][number]['items'][number]>;
+  onBlockRelaySource: (source: TaskCenterDetail['recent_relay_sources'][number]) => void;
   messageColumns: ColumnsType<TaskCenterDetail['message_groups'][number]>;
   planColumns: ColumnsType<TaskCenterAction>;
   recordColumns: ColumnsType<TaskCenterAction>;
@@ -49,6 +50,7 @@ export function TaskCenterDetailModal({
   aiTurnColumns,
   relayBatchColumns,
   relayItemColumns,
+  onBlockRelaySource,
   messageColumns,
   planColumns,
   recordColumns,
@@ -56,6 +58,25 @@ export function TaskCenterDetailModal({
   onRefreshTask,
   onClose,
 }: TaskCenterDetailModalProps) {
+  const relaySourceColumns: ColumnsType<TaskCenterDetail['recent_relay_sources'][number]> = [
+    { title: '源群', dataIndex: 'source_group_title', width: 180, ellipsis: true, render: (value) => value || '-' },
+    {
+      title: '发送人',
+      key: 'sender',
+      width: 220,
+      render: (_, item) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{item.sender_name || '未知来源'}</Typography.Text>
+          <Typography.Text type="secondary">{item.sender_username ? `@${item.sender_username.replace(/^@+/, '')}` : item.sender_peer_id || '-'}</Typography.Text>
+        </Space>
+      ),
+    },
+    { title: '身份', key: 'role', width: 110, render: (_, item) => <Tag>{item.is_bot ? '机器人' : item.sender_role === 'owner' ? '群主' : item.sender_role === 'admin' ? '管理员' : item.sender_role === 'unknown' ? '未知身份' : '普通成员'}</Tag> },
+    { title: '过滤命中', dataIndex: 'source_filter_reason', width: 180, ellipsis: true, render: (value) => value || '-' },
+    { title: '最近消息', dataIndex: 'content', ellipsis: true },
+    { title: '时间', dataIndex: 'sent_at', width: 170, render: (value) => formatDateTime(value) },
+    { title: '操作', key: 'action', width: 150, render: (_, item) => <Button size="small" onClick={() => onBlockRelaySource(item)}>加入不转发名单</Button> },
+  ];
   return (
     <DetailModal
       title={detail?.task.name ?? '任务详情'}
@@ -125,8 +146,21 @@ export function TaskCenterDetailModal({
                 pagination={false}
                 scroll={{ x: 820 }}
                 expandable={{
-                  expandedRowRender: (item) => <Table rowKey="action_id" columns={relayItemColumns} dataSource={item.items} pagination={false} size="small" scroll={{ x: 2200 }} />,
+                  expandedRowRender: (item) => <Table rowKey="action_id" columns={relayItemColumns} dataSource={item.items} pagination={false} size="small" scroll={{ x: 2600 }} />,
                 }}
+              />
+            </Space>
+          )}
+          {detail.task.type === 'group_relay' && detail.recent_relay_sources.length > 0 && (
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Typography.Title level={5} style={{ margin: 0 }}>最近来源发言人</Typography.Title>
+              <Table<TaskCenterDetail['recent_relay_sources'][number]>
+                rowKey={(item) => `${item.source_group_id ?? 'source'}:${item.remote_message_id || item.sender_peer_id}`}
+                columns={relaySourceColumns}
+                dataSource={detail.recent_relay_sources}
+                pagination={{ pageSize: 6 }}
+                size="small"
+                scroll={{ x: 1020 }}
               />
             </Space>
           )}

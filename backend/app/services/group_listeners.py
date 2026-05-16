@@ -200,7 +200,7 @@ def collect_group_context(session: Session, group: TgGroup, account_ids: list[in
         )
         for snapshot in snapshots:
             content = str(snapshot.content or "").strip()
-            if not content or bool(getattr(snapshot, "is_bot", False)) or _is_managed_sender(snapshot, managed_keys):
+            if not content or _is_managed_sender(snapshot, managed_keys):
                 continue
             exists = session.scalar(
                 select(GroupContextMessage.id).where(
@@ -216,6 +216,9 @@ def collect_group_context(session: Session, group: TgGroup, account_ids: list[in
                 listener_account_id=account.id,
                 sender_peer_id=str(snapshot.sender_peer_id or ""),
                 sender_name=str(snapshot.sender_name or "真人用户"),
+                sender_username=str(getattr(snapshot, "sender_username", "") or "").lstrip("@"),
+                is_bot=bool(getattr(snapshot, "is_bot", False)),
+                sender_role=str(getattr(snapshot, "sender_role", "") or "member"),
                 content=content[:4000],
                 message_type=snapshot.message_type,
                 remote_message_id=str(snapshot.remote_message_id),
@@ -250,6 +253,7 @@ def trigger_listener_auto_reply(session: Session, group: TgGroup) -> int:
                 GroupContextMessage.tenant_id == group.tenant_id,
                 GroupContextMessage.group_id == group.id,
                 GroupContextMessage.used_for_ai.is_(False),
+                GroupContextMessage.is_bot.is_(False),
             )
             .order_by(GroupContextMessage.sent_at.asc(), GroupContextMessage.id.asc())
         )
@@ -290,7 +294,7 @@ def trigger_listener_auto_reply(session: Session, group: TgGroup) -> int:
         ),
         actor="监听AI服务",
     )
-    contexts = recent_context_messages(session, group, group.listener_context_limit)
+    contexts = [item for item in recent_context_messages(session, group, group.listener_context_limit) if not bool(getattr(item, "is_bot", False))]
     listener_ids = [item.listener_account_id for item in unprocessed]
     payload = GenerateDraftsRequest(
         count=min(len(account_ids), 5),
