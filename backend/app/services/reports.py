@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -19,6 +21,7 @@ from app.models import (
     TgGroup,
     VerificationTask,
 )
+from app.services._common import _now
 from app.timezone import beijing_day_bounds
 
 
@@ -114,7 +117,69 @@ def build_overview(session: Session, tenant_id: int | None = None) -> dict:
             "listener_errors": listener_error_groups,
         },
         "risks": risks,
+        "activity_24h": _hourly_activity_24h(session, tenant_id),
     }
+
+
+def _hourly_activity_24h(session: Session, tenant_id: int | None = None) -> list[dict[str, int | float | str]]:
+    now_value = _now()
+    current_hour = now_value.replace(minute=0, second=0, microsecond=0)
+    start_hour = current_hour - timedelta(hours=23)
+    end_hour = current_hour + timedelta(hours=1)
+    buckets: dict[datetime, dict[str, int | float | str]] = {}
+    for index in range(24):
+        hour = start_hour + timedelta(hours=index)
+        buckets[hour] = {
+            "hour": hour.strftime("%H:00"),
+            "sent_messages": 0,
+            "likes": 0,
+            "comments": 0,
+            "success": 0,
+            "failed": 0,
+            "total": 0,
+            "success_rate": 0.0,
+            "failure_rate": 0.0,
+        }
+
+    filters = [
+        Action.executed_at.is_not(None),
+        Action.executed_at >= start_hour,
+        Action.executed_at < end_hour,
+        Action.action_type.in_(["send_message", "like_message", "post_comment"]),
+        Action.status.in_(["success", "failed"]),
+    ]
+    if tenant_id is not None:
+        filters.append(Action.tenant_id == tenant_id)
+
+    rows = session.execute(
+        select(Action.executed_at, Action.action_type, Action.status)
+        .where(*filters)
+        .order_by(Action.executed_at.asc())
+    ).all()
+    for executed_at, action_type, status in rows:
+        if executed_at is None:
+            continue
+        hour = executed_at.replace(minute=0, second=0, microsecond=0)
+        bucket = buckets.get(hour)
+        if bucket is None:
+            continue
+        bucket["total"] = int(bucket["total"]) + 1
+        if status == "success":
+            bucket["success"] = int(bucket["success"]) + 1
+            if action_type == "send_message":
+                bucket["sent_messages"] = int(bucket["sent_messages"]) + 1
+            elif action_type == "like_message":
+                bucket["likes"] = int(bucket["likes"]) + 1
+            elif action_type == "post_comment":
+                bucket["comments"] = int(bucket["comments"]) + 1
+        elif status == "failed":
+            bucket["failed"] = int(bucket["failed"]) + 1
+
+    for bucket in buckets.values():
+        total = int(bucket["total"])
+        bucket["success_rate"] = round(int(bucket["success"]) * 100 / total, 1) if total else 0.0
+        bucket["failure_rate"] = round(int(bucket["failed"]) * 100 / total, 1) if total else 0.0
+    return list(buckets.values())
 
 
 def build_report(session: Session, tenant_id: int | None = None) -> dict:

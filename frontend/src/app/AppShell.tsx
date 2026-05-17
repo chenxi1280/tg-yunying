@@ -223,29 +223,6 @@ function AppShell() {
     );
   }
 
-  const shellStatusItems = runtime ? [
-    {
-      label: '任务通道',
-      value: runtime.queue_backend,
-      tone: 'neutral',
-    },
-    {
-      label: 'TG 连接',
-      value: runtime.telethon_configured ? '已配置' : '待配置',
-      tone: runtime.telethon_configured ? 'positive' : 'warning',
-    },
-    {
-      label: '应用池',
-      value: `${runtime.developer_app_healthy_count}/${runtime.developer_app_count} 正常`,
-      tone: runtime.developer_app_healthy_count === runtime.developer_app_count ? 'positive' : 'warning',
-    },
-    {
-      label: 'AI 服务',
-      value: `${runtime.healthy_ai_provider_count}/${runtime.ai_provider_count} 正常${runtime.mock_ai_fallback_enabled ? ' / 可回退' : ''}`,
-      tone: runtime.healthy_ai_provider_count === runtime.ai_provider_count ? 'positive' : 'warning',
-    },
-  ] : [];
-
   return (
     <Layout className="app-shell">
       <Sider className="sidebar" width={260}>
@@ -263,10 +240,6 @@ function AppShell() {
           onClick={({ key }) => goToView(key)}
           items={nav.map(([id, label, icon]) => ({ key: id, label, icon }))}
         />
-        <Card className="side-note" size="small">
-          <ShieldAlert size={18} />
-          <span>自动任务通过规则、风控、限速和自动校验执行；发送、跳过、失败和重试都会留痕。</span>
-        </Card>
       </Sider>
 
       <Layout>
@@ -290,16 +263,6 @@ function AppShell() {
         </Header>
 
         <Content className="app-content">
-        {shellStatusItems.length > 0 && (
-          <div className="shell-status-strip" aria-label="运行状态">
-            {shellStatusItems.map((item) => (
-              <span key={item.label} className={`shell-status-pill ${item.tone}`}>
-                <b>{item.label}</b>
-                <small>{item.value}</small>
-              </span>
-            ))}
-          </div>
-        )}
         {runtime && hasPermission(currentUser, 'system.view') && activeView === 'systemConfig' && (
           <Alert
             className="runtime-strip"
@@ -312,7 +275,7 @@ function AppShell() {
 
         <React.Suspense fallback={<Card className="panel">加载中...</Card>}>
           {/* ===== View routing ===== */}
-          {activeView === 'overview' && overview && <OverviewView overview={overview} runtime={runtime} />}
+          {activeView === 'overview' && overview && <OverviewView overview={overview} />}
           {activeView === 'systemConfig' && hasPermission(currentUser, 'system.view') && (
             <SystemConfigView
               developerApps={developerApps}

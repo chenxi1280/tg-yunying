@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .api import ApiModel
 
@@ -98,6 +98,7 @@ class OverviewOut(BaseModel):
     rates: dict[str, float]
     queue: dict[str, int]
     risks: list[dict[str, Any]]
+    activity_24h: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ReportOut(BaseModel):

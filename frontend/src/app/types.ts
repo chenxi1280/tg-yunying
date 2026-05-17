@@ -3,6 +3,17 @@ export type Overview = {
   rates: Record<string, number>;
   queue: Record<string, number>;
   risks: Array<{ level: string; title: string; detail: string }>;
+  activity_24h?: Array<{
+    hour: string;
+    sent_messages: number;
+    likes: number;
+    comments: number;
+    success: number;
+    failed: number;
+    total: number;
+    success_rate: number;
+    failure_rate: number;
+  }>;
 };
 
 export type RuntimeConfig = {

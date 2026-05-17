@@ -3440,13 +3440,17 @@ def test_overview_counts_new_task_center_tasks_not_legacy_campaigns():
     Base.metadata.create_all(engine)
 
     with Session(engine) as session:
+        now_value = _now()
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-10021", title="目标群"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="监听群", listener_last_error="poll failed"))
         session.add(Task(id="task-overview", tenant_id=1, name="新版任务", type="group_ai_chat", status="running"))
         session.add(Task(id="task-overview-failed", tenant_id=1, name="失败任务", type="group_relay", status="failed"))
         session.add(Action(id="action-overview-pending", tenant_id=1, task_id="task-overview", task_type="group_ai_chat", action_type="send_message", status="pending"))
-        session.add(Action(id="action-overview-failed", tenant_id=1, task_id="task-overview-failed", task_type="group_relay", action_type="send_message", status="failed"))
+        session.add(Action(id="action-overview-failed", tenant_id=1, task_id="task-overview-failed", task_type="group_relay", action_type="send_message", status="failed", executed_at=now_value))
+        session.add(Action(id="action-overview-sent", tenant_id=1, task_id="task-overview", task_type="group_ai_chat", action_type="send_message", status="success", executed_at=now_value))
+        session.add(Action(id="action-overview-like", tenant_id=1, task_id="task-overview", task_type="channel_like", action_type="like_message", status="success", executed_at=now_value))
+        session.add(Action(id="action-overview-comment", tenant_id=1, task_id="task-overview", task_type="channel_comment", action_type="post_comment", status="success", executed_at=now_value))
         session.add(RuleSet(id=9, tenant_id=1, name="新版规则", status="active"))
         session.commit()
 
@@ -3461,6 +3465,14 @@ def test_overview_counts_new_task_center_tasks_not_legacy_campaigns():
     assert overview["queue"]["pending_actions"] == 1
     assert overview["queue"]["failed_actions"] == 1
     assert overview["queue"]["listener_errors"] == 1
+    assert len(overview["activity_24h"]) == 24
+    current_hour = now_value.replace(minute=0, second=0, microsecond=0).strftime("%H:00")
+    current_bucket = next(item for item in overview["activity_24h"] if item["hour"] == current_hour)
+    assert current_bucket["sent_messages"] == 1
+    assert current_bucket["likes"] == 1
+    assert current_bucket["comments"] == 1
+    assert current_bucket["success_rate"] == 75.0
+    assert current_bucket["failure_rate"] == 25.0
 
 
 def test_operation_targets_expose_linked_group_capability_summary():
