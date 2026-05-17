@@ -1,6 +1,8 @@
 """Single-admin auth and captcha routes."""
 from __future__ import annotations
 
+import secrets
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, ProgrammingError
@@ -147,6 +149,24 @@ def _ensure_admin_identity_available(session: Session, *, email: str | None, pho
         raise HTTPException(status_code=400, detail="用户邮箱或手机号已存在")
 
 
+def _ensure_admin_name_available(session: Session, *, name: str, excluding_user_id: int | None = None) -> None:
+    stmt = select(AppUser.id).where(AppUser.name == name.strip())
+    if excluding_user_id is not None:
+        stmt = stmt.where(AppUser.id != excluding_user_id)
+    if session.scalar(stmt):
+        raise HTTPException(status_code=400, detail="用户名称已存在")
+
+
+def _resolve_admin_email(session: Session, email: str | None) -> str:
+    if email and email.strip():
+        return email.strip().lower()
+    for _ in range(5):
+        generated = f"user_{secrets.token_hex(8)}@internal.tg-yunying.local"
+        if not session.scalar(select(AppUser.id).where(AppUser.email == generated)):
+            return generated
+    raise HTTPException(status_code=500, detail="生成用户内部标识失败")
+
+
 def _commit_admin_user_change(session: Session) -> None:
     try:
         session.commit()
@@ -198,8 +218,10 @@ def create_admin_user(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(require_permission("permissions.manage")),
 ) -> dict:
-    email = payload.email.strip().lower()
+    name = payload.name.strip()
+    email = _resolve_admin_email(session, payload.email)
     phone = normalize_phone(payload.phone)
+    _ensure_admin_name_available(session, name=name)
     _ensure_admin_identity_available(session, email=email, phone=phone)
     permissions = _final_admin_permissions(role=payload.role, role_template=payload.role_template, permissions=payload.permissions)
     _ensure_admin_mutation_allowed(
@@ -211,7 +233,7 @@ def create_admin_user(
     )
     user = AppUser(
         tenant_id=current_user.tenant_id or 1,
-        name=payload.name.strip(),
+        name=name,
         role=payload.role,
         role_template=payload.role_template,
         email=email,
@@ -266,7 +288,11 @@ def update_admin_user(
         next_phone = normalize_phone(data["phone"])
         _ensure_admin_identity_available(session, email=None, phone=next_phone, excluding_user_id=user.id)
         user.phone = next_phone
-    for field in ["name", "role", "role_template", "subscription_status", "is_active"]:
+    if "name" in data and data["name"] is not None:
+        next_name = data["name"].strip()
+        _ensure_admin_name_available(session, name=next_name, excluding_user_id=user.id)
+        user.name = next_name
+    for field in ["role", "role_template", "subscription_status", "is_active"]:
         if field in data and data[field] is not None:
             setattr(user, field, data[field].strip() if isinstance(data[field], str) else data[field])
     permissions = data.get("permissions", data.get("menu_permissions"))

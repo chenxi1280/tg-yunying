@@ -112,8 +112,7 @@ export function createSystemActions(params: SystemActionParams) {
     params.setAdminUserForm({
       id: user.id,
       name: user.name,
-      email: user.email,
-      phone: user.phone ?? '',
+      password: '',
       role: user.role,
       role_template: user.role_template,
       subscription_status: user.subscription_status,
@@ -131,8 +130,7 @@ export function createSystemActions(params: SystemActionParams) {
     params.setAdminUserForm({
       id: null,
       name: '',
-      email: '',
-      phone: '',
+      password: '',
       role: '后台用户',
       role_template: '账号添加专员',
       subscription_status: 'active',
@@ -147,19 +145,19 @@ export function createSystemActions(params: SystemActionParams) {
   async function saveAdminUser() {
     params.setBusy('保存用户');
     try {
+      const payload = {
+        name: params.adminUserForm.name,
+        role: params.adminUserForm.role,
+        role_template: params.adminUserForm.role_template,
+        subscription_status: params.adminUserForm.subscription_status,
+        menu_permissions: params.adminUserForm.permissions,
+        permissions: params.adminUserForm.permissions,
+        is_active: params.adminUserForm.is_active,
+        ...(!params.adminUserForm.id ? { password: params.adminUserForm.password } : {}),
+      };
       const saved = await api<AdminUser>(params.adminUserForm.id ? `/admin/users/${params.adminUserForm.id}` : '/admin/users', {
         method: params.adminUserForm.id ? 'PATCH' : 'POST',
-        body: JSON.stringify({
-          name: params.adminUserForm.name,
-          email: params.adminUserForm.email,
-          phone: params.adminUserForm.phone || null,
-          role: params.adminUserForm.role,
-          role_template: params.adminUserForm.role_template,
-          subscription_status: params.adminUserForm.subscription_status,
-          menu_permissions: params.adminUserForm.permissions,
-          permissions: params.adminUserForm.permissions,
-          is_active: params.adminUserForm.is_active,
-        }),
+        body: JSON.stringify(payload),
       });
       params.setNotice(`用户已保存：${saved.name}`);
       params.closeModal();

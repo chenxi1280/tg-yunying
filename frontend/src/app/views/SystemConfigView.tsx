@@ -208,7 +208,6 @@ export default function SystemConfigView({
               title={() => <Space><Button type="primary" onClick={onCreateAdminUser}>新增后台账号</Button></Space>}
               columns={[
                 { title: '名称', dataIndex: 'name' },
-                { title: '邮箱', dataIndex: 'email' },
                 { title: '账号类型', dataIndex: 'role' },
                 { title: '角色模板', dataIndex: 'role_template' },
                 { title: '状态', dataIndex: 'is_active', render: (value: boolean) => <Tag color={value ? 'green' : 'default'}>{value ? '允许登录' : '已停用'}</Tag> },

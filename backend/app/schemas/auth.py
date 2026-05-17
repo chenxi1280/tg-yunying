@@ -235,9 +235,9 @@ class AdminUserUpdate(BaseModel):
 
 class AdminUserCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
-    email: str = Field(..., min_length=3, max_length=160)
+    email: str | None = Field(default=None, min_length=3, max_length=160)
     phone: str | None = Field(default=None, max_length=40)
-    password: str = Field(default="user123456", min_length=6, max_length=80)
+    password: str = Field(..., min_length=6, max_length=80)
     role: str = Field(default="后台用户", pattern="^(系统管理员|后台用户|普通用户)$")
     role_template: str = Field(default="运营管理员", max_length=40)
     permissions: list[str] | None = None

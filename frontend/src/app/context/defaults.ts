@@ -14,8 +14,7 @@ export function defaultAdminUserForm(): AdminUserForm {
   return {
     id: null,
     name: '',
-    email: '',
-    phone: '',
+    password: '',
     role: '普通用户',
     role_template: '账号添加专员',
     subscription_status: 'pending_activation',

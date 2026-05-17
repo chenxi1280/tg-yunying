@@ -743,6 +743,27 @@ def test_admin_users_permission_lifecycle_and_legacy_subscription_endpoints_remo
         assert "accounts.create" in created_user["permissions"]
         assert "tasks.view" not in created_user["permissions"]
 
+        name_only_response = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"姓名登录用户{suffix}",
+                "password": "namepass123",
+                "role": "后台用户",
+                "role_template": "只读观察员",
+                "permissions": ["overview.view"],
+                "menu_permissions": ["overview.view"],
+            },
+        )
+        assert name_only_response.status_code == 200, name_only_response.text
+        name_only_user = name_only_response.json()
+        assert name_only_user["phone"] is None
+        assert name_only_user["email"].endswith("@internal.tg-yunying.local")
+        name_only_headers = auth_headers(client, name_only_user["name"], "namepass123")
+        name_only_me = client.get("/api/auth/me", headers=name_only_headers)
+        assert name_only_me.status_code == 200, name_only_me.text
+        assert name_only_me.json()["name"] == name_only_user["name"]
+
         duplicate_target = client.post(
             "/api/admin/users",
             headers=headers,

@@ -145,8 +145,9 @@ export function AppModals() {
       <div className="modal-body">
           <div className="policy-grid">
             <label>用户名称<Input value={adminUserForm.name} onChange={(event) => setAdminUserForm((current) => ({ ...current, name: event.target.value }))} /></label>
-            <label>邮箱<Input value={adminUserForm.email} onChange={(event) => setAdminUserForm((current) => ({ ...current, email: event.target.value }))} /></label>
-            <label>手机号<Input value={adminUserForm.phone} onChange={(event) => setAdminUserForm((current) => ({ ...current, phone: event.target.value }))} /></label>
+            {!adminUserForm.id && (
+              <label>登录密码<Input.Password value={adminUserForm.password} onChange={(event) => setAdminUserForm((current) => ({ ...current, password: event.target.value }))} /></label>
+            )}
             <label>账号类型<Select value={adminUserForm.role} onChange={(value) => setAdminUserForm((current) => ({ ...current, role: value }))} options={['后台用户', '系统管理员'].map((value) => ({ value, label: value }))} /></label>
             <label>角色模板<Select value={adminUserForm.role_template} onChange={(value) => {
               const templatePermissions: Record<string, string[]> = {
@@ -221,7 +222,7 @@ export function AppModals() {
               const user = adminUsers.find((item) => item.id === adminUserForm.id);
               if (user) void adjustAdminUserTokens(user);
             }}>调整 AI 用量</Button>
-            <Button type="primary" loading={isActionPending(`admin-user:${adminUserForm.id ?? 'current'}:save`)} onClick={saveAdminUser} disabled={!adminUserForm.name.trim() || !adminUserForm.email.trim()}>保存用户</Button>
+            <Button type="primary" loading={isActionPending(`admin-user:${adminUserForm.id ?? 'current'}:save`)} onClick={saveAdminUser} disabled={!adminUserForm.name.trim() || (!adminUserForm.id && adminUserForm.password.length < 6)}>保存用户</Button>
           </Space>
           </div>
         </Modal>

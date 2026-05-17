@@ -113,8 +113,7 @@ export type TokenLedger = {
 export type AdminUserForm = {
   id: number | null;
   name: string;
-  email: string;
-  phone: string;
+  password: string;
   role: string;
   role_template: string;
   subscription_status: string;
