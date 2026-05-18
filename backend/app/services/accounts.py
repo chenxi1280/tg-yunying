@@ -8,7 +8,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.gateways import ContactSnapshot, VerificationCodeSnapshot
+from app.integrations.telegram import ContactSnapshot, VerificationCodeSnapshot
 from app.models import (
     AccountPool,
     AccountStatus,

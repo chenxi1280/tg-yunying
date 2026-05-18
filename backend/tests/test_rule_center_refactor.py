@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.config import get_settings
-from app.gateways import DeveloperAppCredentials, SendResult, TelethonTelegramGateway
+from app.integrations.telegram import DeveloperAppCredentials, SendResult, TelethonTelegramGateway
 from app.models import AccountStatus, Action, ContentKeywordRule, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, SourceMediaAsset, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.schemas.operations_center import RuleSetCreate, RuleSetVersionCreate
 from app.schemas.ai_config import MaterialCreate, MaterialUpdate

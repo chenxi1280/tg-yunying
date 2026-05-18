@@ -5,7 +5,7 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 from app.database import SessionLocal
-from app.gateways import GroupMessageSnapshot
+from app.integrations.telegram import GroupMessageSnapshot
 from app.main import app
 from app.models import AccountStatus, Campaign, GroupContextMessage, MessageTask, SourceMediaAsset, TgGroup, TgGroupAccount
 from app.services.group_listeners import process_group_listener

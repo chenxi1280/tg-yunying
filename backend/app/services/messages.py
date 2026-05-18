@@ -27,7 +27,7 @@ from app.models import (
     TgGroupAccount,
     VerificationTask,
 )
-from app.gateways import DeveloperAppCredentials, OutboundSegment
+from app.integrations.telegram import DeveloperAppCredentials, OutboundSegment
 from app.timezone import beijing_day_bounds
 from app.task_queue import get_task_queue
 

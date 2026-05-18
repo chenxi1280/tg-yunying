@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.gateways import SendResult
+from app.integrations.telegram import SendResult
 from app.models import Action, DailyRuntimeStat, ExecutionAttempt, GroupContextMessage, ReviewQueue, RuntimeCleanupAudit, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now
 from app.services.task_center import dispatcher

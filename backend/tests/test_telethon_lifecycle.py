@@ -1,7 +1,7 @@
 import asyncio
 
 from app.config import Settings
-from app.gateways import DeveloperAppCredentials
+from app.integrations.telegram import DeveloperAppCredentials
 from app.telethon_lifecycle import TelethonClientLifecycle, shutdown_telethon_lifecycle
 
 

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.ai_gateway import create_ai_gateway
 from app.auth import CurrentUser, admin_user_payload, normalize_phone
-from app.gateways import create_gateway
+from app.integrations.telegram import create_gateway
 from app.models import (
     AuditLog,
     DeveloperAppHealthStatus,

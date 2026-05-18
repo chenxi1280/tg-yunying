@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 from app.database import SessionLocal
-from app.gateways import GroupMessageSnapshot
+from app.integrations.telegram import GroupMessageSnapshot
 from app.main import app
 from app.models import AiDraft, AiUsageLedger, Campaign, CampaignProcessedMessage, ContentKeywordRule, GroupContextMessage, MessageTask, TaskStatus, TgGroup
 from app.services.campaign_runs import build_participation_plan, light_rewrite_message, process_continuous_campaign

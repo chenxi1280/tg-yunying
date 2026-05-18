@@ -198,6 +198,9 @@ def seed_ai_configuration(session: Session) -> None:
                 "群名称：{{group_title}}\n话题方向：{{topic}}\n群运营方向：{{topic_direction}}\n语气：{{tone}}\n"
                 "人设集合：{{persona_set}}\n禁用词：{{banned_words}}\n可用素材：{{materials}}\n"
                 "要求：像真实群成员，不刷屏，不承诺收益，不输出解释。"
+                "每条优先 8-24 个字，围绕上次经历、到场感受、时间位置、照片差异、回访、下次安排或小疑问；"
+                "可以半句、省主语、少标点，不要写总结、广告语、完整观点。"
+                "禁止模板味表达：这个话题、自然接一句、换个角度、轻量推进、大家怎么看、可以继续聊聊。"
             ),
         ),
         PromptTemplate(
@@ -218,6 +221,8 @@ def seed_ai_configuration(session: Session) -> None:
                 "必须输出 json drafts。所选账号：{{selected_accounts}}。监听账号：{{listener_account}}。"
                 "真人上下文：{{conversation_context}}。要求从 A 账号开始按顺序轮流接话，"
                 "每条包含 sequence_index、persona、content、risk_level、suggested_account_id。"
+                "写法像群里随手回：短、碎、具体，多用“我上次那个”“走之前”“结束后”“下次试试”这类现场感，"
+                "少用句号逗号，不要总结上下文，不要说这个话题、自然接一句、换个角度。"
             ),
         ),
         PromptTemplate(

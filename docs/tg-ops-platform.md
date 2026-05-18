@@ -723,7 +723,7 @@ Dispatcher 并发必须受 PostgreSQL 连接池预算约束。
 - `DB_POOL_TIMEOUT`
 - `DB_POOL_RECYCLE`
 
-Gateway 契约数据结构已抽到 `backend/app/gateway_contracts.py`，Telethon client 生命周期已从 `backend/app/gateways.py` 中抽到 `backend/app/telethon_lifecycle.py`，由独立模块管理后台 event loop、client cache、idle 释放、LRU 上限和应用停止时的 disconnect。生产参数由环境变量控制：
+Gateway 契约数据结构已收敛到 `backend/app/integrations/telegram/contracts.py`，Telegram 网关适配器集中在 `backend/app/integrations/telegram/` 包内，旧 `backend/app/gateways.py` 已删除。Telethon client 生命周期已从网关适配器中抽到 `backend/app/telethon_lifecycle.py`，由独立模块管理后台 event loop、client cache、idle 释放、LRU 上限和应用停止时的 disconnect。生产参数由环境变量控制：
 
 - `TELETHON_CLIENT_CACHE_SIZE`：单进程最多缓存的 Telethon client 数。
 - `TELETHON_CLIENT_IDLE_SECONDS`：client 空闲多久后释放。
@@ -939,8 +939,8 @@ Gateway 契约数据结构已抽到 `backend/app/gateway_contracts.py`，Teletho
 
 本轮已完成第一批低风险拆分：
 
-- Gateway 数据契约：`backend/app/gateway_contracts.py`。
-- Mock Gateway：`backend/app/gateway_mock.py`。
+- Gateway 数据契约：`backend/app/integrations/telegram/contracts.py`。
+- Mock Gateway：`backend/app/integrations/telegram/mock.py`。
 - Telethon 生命周期：`backend/app/telethon_lifecycle.py`。
 - Task Center 字段配置：`backend/app/services/task_center/config_fields.py`。
 - Task Center 创建预检：`backend/app/services/task_center/precheck.py`。
@@ -956,9 +956,10 @@ Gateway 契约数据结构已抽到 `backend/app/gateway_contracts.py`，Teletho
 - 运营中心规则指标：`backend/app/services/operations_center_rule_metrics.py`。
 - 运营中心规则集版本管理：`backend/app/services/operations_center_rule_sets.py`。
 - 运营中心工具函数：`backend/app/services/operations_center_utils.py`。
-- Telethon 内容采集：`backend/app/gateway_telethon_content.py`。
-- Telethon 媒体发送：`backend/app/gateway_telethon_media.py`。
-- Telethon 目标解析：`backend/app/gateway_telethon_utils.py`。
+- Telethon 内容采集：`backend/app/integrations/telegram/telethon_content.py`。
+- Telethon 媒体发送：`backend/app/integrations/telegram/telethon_media.py`。
+- Telethon 目标解析：`backend/app/integrations/telegram/telethon_utils.py`。
+- 前端领域类型：`frontend/src/app/types/`。
 - 任务中心前端 view-model：`frontend/src/app/views/taskCenterViewModel.ts`。
 - 任务中心前端向导组件：`frontend/src/app/views/TaskCenterWizardSections.tsx`。
 - 任务中心详情弹窗：`frontend/src/app/views/TaskCenterDetailModal.tsx`。
@@ -980,7 +981,7 @@ Gateway 契约数据结构已抽到 `backend/app/gateway_contracts.py`，Teletho
 | `backend/app/services/operations_center.py` | 780 | 监听域、默认规则、风控指标、规则指标、规则集版本管理和工具已拆；规则测试仍可继续拆 |
 | `frontend/src/app/context.tsx` | 797 | 默认值、刷新、pending action、认证、账号、消息、系统配置、素材/关键词和 modal 编排动作已拆 |
 | `backend/app/services/task_center/service.py` | 960 | 预检、详情、字段映射、reviews、stats、配置归一化已拆；CRUD、planner、recovery、role drain 仍需继续拆 |
-| `backend/app/gateways.py` | 943 | 契约、Mock、Telethon 生命周期、内容采集、媒体发送、目标解析已拆；Telethon login/profile/channel action 仍需继续拆 |
+| `backend/app/integrations/telegram/gateway.py` | 943 | 契约、Mock、Telethon 生命周期、内容采集、媒体发送、目标解析已拆；Telethon login/profile/channel action 仍需继续拆 |
 | `frontend/src/app/views/TaskCenterView.tsx` | 873 | 创建/编辑向导、view-model 和详情弹窗已拆 |
 | `frontend/src/app/views/RulesCenterView.tsx` | 892 | 规则配置表单和配置互转已拆 |
 | `backend/app/services/task_center/dispatcher.py` | 727 | 运行资源已拆；claim/result handler 可继续拆 |

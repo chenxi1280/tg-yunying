@@ -142,15 +142,19 @@ def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: 
         f"上下文材料：\n{requirements or '暂无真人上下文'}\n\n"
         "先在心里判断当前群聊处在什么状态：有人刚提问、有人在吐槽、短暂停顿、还是完全冷场；"
         "然后让不同账号像真实群友一样接话，不要把任务拆成运营文案。\n\n"
+        "截图里的真人聊天规律：大家不是在写完整观点，而是在接具体经历；"
+        "常见说法是“我上次那个”“走之前问了下”“结束后还回访”“这点挺加分”“下次试试看”。"
+        "每句话只抓一个到场、照片、态度、时间、位置、回访或避坑细节，不要解释背景，不要总结价值。\n\n"
         "写法要求：\n"
-        "1. 每条都像手机上随手发的一句话：可短、可犹豫、可半句，但必须能被群友接住。\n"
-        "2. 多账号之间要有轻微关系：有人接上一句、有人补细节、有人问一句小问题；不要每条都像独立广告语。\n"
-        "3. 必须按账号角色/账号记忆区分口吻，避免所有人同一种标点、同一种长度、同一种客气话。\n"
-        "4. 标点像群聊，不要像作文：多数短句不要句号，少用逗号/顿号/分号；需要停顿时优先用空格，问句可以保留问号。\n"
-        "5. 不要复述或整段引用上下文；短词上下文要自然扩展，例如聊学校、校区、专业、活动、经历。\n"
-        "6. 禁止使用这些模板句和近似句：看大家聊、刚看到大家提到、刚看到有人聊这个、顺着这个话题说、这个点挺有意思、这个点我也留意到了、可以继续聊聊、大家怎么看、有经验的朋友也可以补充下、我补充一下。\n"
-        "7. 不要连续使用“我觉得/感觉/确实/这个/大家”开头；不要使用 xx、X老师、某某 这类占位符；不要输出引号套引号；不要带编号、解释、括号备注。\n"
-        "8. 黑话词表是理解口径，不是展示内容；该用行业口吻时自然用，不要解释词表。\n"
+        "1. 每条像手机上随手发的一句话，8-24 个字优先；可半句、可省主语、可只问一个小问题。\n"
+        "2. 内容要落到真实群友会聊的细节：到没到、照片像不像、态度稳不稳、时间卡不卡、位置远不远、回访、下次安排、避坑；不要编老师不会做的动作。\n"
+        "3. 多账号之间要像同一群人在接话：第二个人可以回“我上次那个...”，第三个人补“这个细节加分”，第四个人轻轻问一句。\n"
+        "4. 少用书面连接词，少用完整因果；可以用“还真”“没得说”“这点我记住了”“下次试试”“我之前碰到个”。\n"
+        "5. 标点像群聊，不要像作文：多数短句不要句号，少用逗号/顿号/分号；需要停顿时优先用空格，问句可以保留问号。\n"
+        "6. 不要复述或整段引用上下文；短词上下文要自然扩展成一个生活化小细节。\n"
+        "7. 禁止使用这些模板句和近似句：看大家聊、刚看到大家提到、刚看到有人聊这个、顺着这个话题说、这个点挺有意思、这个点我也留意到了、可以继续聊聊、大家怎么看、有经验的朋友也可以补充下、我补充一下、这个话题、自然接一句、换个角度、轻量推进、具体场景、值得讨论。\n"
+        "8. 不要连续使用“我觉得/感觉/确实/这个/大家”开头；不要使用 xx、X老师、某某 这类占位符；不要输出引号套引号；不要带编号、解释、括号备注。\n"
+        "9. 黑话词表是理解口径，不是展示内容；该用行业口吻时自然用，不要解释词表。\n"
         '只输出 JSON：{"drafts":[{"sequence_index":1,"reply_to_sequence_index":null,"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低"}]}'
     )
 
@@ -169,17 +173,17 @@ def _fallback_contents(topic: str, requirements: str, purpose: str, target_label
         context_text = _fallback_recent_context(requirements)
         if context_text:
             templates = [
-                f"{context_text} 这个先别说太满 具体场景不一样",
-                f"我会先看 {context_text} 里最容易卡住的那个点",
-                f"要是按 {context_text} 这个方向聊 最好拿个实际例子",
-                f"{context_text} 这个话题可以轻一点聊 不用上来就下结论",
+                f"我上次也碰到过 {context_text[:28]}",
+                f"{context_text[:28]} 这个细节我还真记得",
+                f"走之前再确认下 {context_text[:24]} 比较稳",
+                f"下次我也试试 {context_text[:28]}",
             ]
         else:
             templates = [
-                f"{topic_text} 这个方向可以先丢个小问题出来",
-                f"我看 {topic_text} 先从真实经历聊会自然一点",
-                f"{topic_text} 不用讲太满 先看群里有没有人碰到过",
-                f"今天可以轻轻带一下 {topic_text} 别刷太密",
+                f"我上次好像也遇到过 {topic_text[:28]}",
+                f"{topic_text[:28]} 这块我还想再问问",
+                f"走之前确认一下 {topic_text[:24]} 就放心点",
+                f"下次看看 {topic_text[:28]} 有没有差别",
             ]
     elif purpose == "频道评论":
         templates = [
@@ -188,7 +192,7 @@ def _fallback_contents(topic: str, requirements: str, purpose: str, target_label
             "这个角度不错，值得再讨论一下。",
         ]
     else:
-        templates = [(requirements or topic or "这个话题挺值得继续聊聊。").strip()]
+        templates = [(requirements or topic or "这事可以再看看。").strip()]
     return [templates[index % len(templates)] for index in range(max(1, count))][:count]
 
 
@@ -287,6 +291,12 @@ def _looks_like_bad_group_chat_content(content: str) -> bool:
         "这个点我也留意到了",
         "可以继续聊聊",
         "有经验的朋友也可以补充",
+        "这个话题",
+        "自然接一句",
+        "换个角度",
+        "轻量推进",
+        "具体场景",
+        "值得讨论",
     )
     if any(marker in content for marker in markers):
         return True
@@ -345,7 +355,11 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
 
 
 def _group_chat_system_prompt(slang_prompt: str) -> str:
-    base = "你只负责把 Telegram 群友的临场接话包装成 JSON；不要写运营话术、公告、总结或解释。群聊消息不要每句都补完整逗号和句号，短句可以直接收尾。"
+    base = (
+        "你只负责把 Telegram 群友的临场接话包装成 JSON；不要写运营话术、公告、总结或解释。"
+        "输出要像普通人在群里回消息：短、碎、具体，带一点上次经历、到场感受、时间位置或避坑细节。"
+        "不要每句都补完整逗号和句号，短句可以直接收尾；不要说“这个话题”“自然接一句”“换个角度”。"
+    )
     if not slang_prompt:
         return base
     return f"{base}\n\n{slang_prompt}"

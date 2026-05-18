@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 
-from app.gateways import OutboundSegment
+from app.integrations.telegram import OutboundSegment
 from app.config import get_settings
 from app.models import AccountStatus, Action, ExecutionAttempt, FailureType, GroupContextMessage, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now, gateway

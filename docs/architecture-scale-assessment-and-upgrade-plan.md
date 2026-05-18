@@ -144,12 +144,12 @@ for action in claimed:
 | `backend/app/services/operations_center.py` | 780 | 已抽默认规则、监听域、风控指标、规则指标、工具、规则集版本管理 | 规则测试和部分运营聚合仍可继续拆 |
 | `frontend/src/app/context.tsx` | 797 | 已抽默认值、刷新、pending action、认证、账号、消息、系统配置、素材/关键词和 modal 编排动作 | 后续只保留 Provider 装配、状态声明和轻量派生值 |
 | `backend/app/services/task_center/service.py` | 960 | 已抽字段映射、预检、详情、工具、reviews、stats、配置归一化 | CRUD、planner、recovery、role drain 仍可继续分域 |
-| `backend/app/gateways.py` | 943 | 已抽契约、Mock、Telethon 生命周期、内容采集、媒体发送、目标解析 | Telethon login、profile、channel action 仍可继续拆 |
+| `backend/app/integrations/telegram/gateway.py` | 943 | 已抽契约、Mock、Telethon 生命周期、内容采集、媒体发送、目标解析；旧 `app.gateways` 兼容出口已删除 | Telethon login、profile、channel action 仍可继续拆 |
 | `frontend/src/app/views/TaskCenterView.tsx` | 873 | 已抽 view-model、创建/编辑向导、详情弹窗 | 列表交互和 action table columns 仍可继续组件化 |
 | `frontend/src/app/views/RulesCenterView.tsx` | 892 | 已抽 `RulesCenterConfig.tsx` | 规则列表、测试器、发布面板仍可继续拆 |
 | `backend/app/services/task_center/dispatcher.py` | 727 | 已抽 `runtime_resources.py` | claim、结果处理、gateway 边界仍可继续分文件 |
 | `backend/app/services/operations.py` | 1524 | 本轮未处理 | 旧运营任务逻辑和新运营目标/任务逻辑边界需要继续收敛 |
-| `frontend/src/app/types.ts` | 1363 | 本轮未处理 | 类型集中度过高，后续按 domain 拆分 |
+| `frontend/src/app/types/` | 最大文件 275 | 已按 system/accounts/risk/content/messaging/archives/operations/taskCenter/ui 拆分，`../types` 导入保持兼容 | 后续新增类型进入对应 domain 文件 |
 
 这些文件不是马上导致系统不能跑的根因，但会让后续 1000 账号能力建设变慢，尤其是任务中心和 gateway。本轮已经完成第一轮 P6 边界拆分并通过构建/回归；`context.tsx`、`operations.py` 仍不应继续堆新逻辑，后续新增能力要进入对应 domain 模块。
 
@@ -509,8 +509,8 @@ Metrics Worker
 
 本轮补充了首期实现：
 
-- 新增 `backend/app/telethon_lifecycle.py`，从 `backend/app/gateways.py` 抽离后台 event loop、client cache、idle TTL、LRU 上限、连接超时和 shutdown disconnect。
-- 新增 `backend/app/gateway_contracts.py`，从 `backend/app/gateways.py` 抽离 Gateway 对外数据契约，保留 `app.gateways` 导入兼容。
+- 新增 `backend/app/telethon_lifecycle.py`，从 Telegram 网关适配器抽离后台 event loop、client cache、idle TTL、LRU 上限、连接超时和 shutdown disconnect。
+- 新增 `backend/app/integrations/telegram/contracts.py`，从 Telegram 网关适配器抽离 Gateway 对外数据契约。
 - 新增配置 `TELETHON_CLIENT_CACHE_SIZE`、`TELETHON_CLIENT_IDLE_SECONDS`、`TELETHON_CLIENT_CONNECT_TIMEOUT_SECONDS`、`TELETHON_OPERATION_TIMEOUT_SECONDS`。
 - FastAPI lifespan 停止时调用 Telethon lifecycle shutdown，避免 worker / API 进程退出后遗留连接。
 
@@ -668,7 +668,7 @@ runtime_metric_snapshots
 
 - 原测试通过。
 - 行为不变。
-- 导入路径兼容。
+- 导入路径直接收敛到 `app.integrations.telegram`。
 - 文档同步。
 
 ### 9.11 风控处置和限流结果口径
@@ -714,7 +714,7 @@ runtime_metric_snapshots
 | Heartbeat 按角色写入 | 当前 task center heartbeat 不能区分真实 role | `worker_heartbeats.process_type` 写入真实角色，页面和 metrics 能按角色判断在线状态 | `backend/app/services/task_center/heartbeat.py`、`backend/app/services/task_center/service.py`、`backend/app/services/operations_center.py` | P1 |
 | Dispatcher 有界并发 | `DISPATCHER_CONCURRENCY` 已有配置，但 claim 后仍串行 `dispatch_action()` | 同一个 Dispatcher worker 内按配置并发执行不同账号 action，且每个 action 使用短 session | `backend/app/services/task_center/service.py`、`backend/app/services/task_center/dispatcher.py` | P2 |
 | PostgreSQL 连接池参数化 | 已有 `DB_POOL_SIZE`、`DB_MAX_OVERFLOW`、`DB_POOL_TIMEOUT`、`DB_POOL_RECYCLE` 配置 | 用连接预算约束 worker 数、dispatcher 并发和部署环境模板 | `backend/app/config.py`、`backend/app/database.py`、部署环境模板 | P2 |
-| Gateway 调用边界更清晰 | dispatcher 中混有 claim、资源预留、gateway 调用、结果处理 | gateway 调用前后状态可恢复，`unknown_after_send` 不自动重复发送 | `backend/app/services/task_center/dispatcher.py`、`backend/app/gateways.py`、executor 文件 | P2 |
+| Gateway 调用边界更清晰 | dispatcher 中混有 claim、资源预留、gateway 调用、结果处理 | gateway 调用前后状态可恢复，`unknown_after_send` 不自动重复发送 | `backend/app/services/task_center/dispatcher.py`、`backend/app/integrations/telegram/gateway.py`、executor 文件 | P2 |
 
 ### 10.2 横向扩容和容量稳定性优化
 
@@ -730,10 +730,10 @@ runtime_metric_snapshots
 
 这些拆分不作为第一步容量瓶颈修复，但必须纳入整体升级，否则后续并发、风控、metrics 会继续堆进大文件。
 
-本轮已完成 P6 第一批拆分，保留原导入兼容：
+本轮已完成 P6 第一批拆分，旧导入兼容层已删除：
 
-- `backend/app/gateway_contracts.py`：Gateway 数据契约。
-- `backend/app/gateway_mock.py`：Mock / 本地模拟 Gateway，避免与真实 Telethon 适配器混在同一文件。
+- `backend/app/integrations/telegram/contracts.py`：Gateway 数据契约。
+- `backend/app/integrations/telegram/mock.py`：Mock / 本地模拟 Gateway，避免与真实 Telethon 适配器混在同一文件。
 - `backend/app/telethon_lifecycle.py`：Telethon event loop、client cache、idle prune、shutdown。
 - `backend/app/services/task_center/config_fields.py`：任务中心配置字段映射。
 - `backend/app/services/task_center/precheck.py`：任务创建前预检，聚合目标能力、规则版本、风控预检和账号容量缺口。
@@ -749,9 +749,10 @@ runtime_metric_snapshots
 - `backend/app/services/operations_center_rule_metrics.py`：规则中心摘要、冲突、执行趋势、转化和交叉维度指标。
 - `backend/app/services/operations_center_rule_sets.py`：规则集 CRUD、版本创建、发布、回滚和绑定任务查询。
 - `backend/app/services/operations_center_utils.py`：运营中心通用解析 / 时间格式化工具。
-- `backend/app/gateway_telethon_content.py`：Telethon 群/频道消息采集、评论采集、素材缓存。
-- `backend/app/gateway_telethon_media.py`：Telethon 媒体发送、TG 缓存重传、custom emoji 发送。
-- `backend/app/gateway_telethon_utils.py`：Telethon 目标解析和发送目标转换。
+- `backend/app/integrations/telegram/telethon_content.py`：Telethon 群/频道消息采集、评论采集、素材缓存。
+- `backend/app/integrations/telegram/telethon_media.py`：Telethon 媒体发送、TG 缓存重传、custom emoji 发送。
+- `backend/app/integrations/telegram/telethon_utils.py`：Telethon 目标解析和发送目标转换。
+- `frontend/src/app/types/`：前端 API / UI 类型按领域拆分，保留 `../types` 目录索引导出。
 - `frontend/src/app/views/taskCenterViewModel.ts`：任务中心页面纯 view-model、字段映射和格式化函数。
 - `frontend/src/app/views/TaskCenterWizardSections.tsx`：任务创建/编辑向导子组件。
 - `frontend/src/app/views/TaskCenterDetailModal.tsx`：任务详情、执行计划、AI cycle、转发批次和频道消息明细弹窗。
@@ -785,7 +786,7 @@ git diff --check
 | --- | --- | --- | --- |
 | `backend/app/services/task_center/service.py` | CRUD、规划、恢复、role drain 仍集中 | 继续拆 tasks_crud / planner / recovery / drain | P1-P6 |
 | `backend/app/services/task_center/dispatcher.py` | claim、资源预留、Redis 限流、gateway 分发、结果处理集中 | 拆成 claim、runtime resources、rate limits、dispatch、result handlers | P2-P6 |
-| `backend/app/gateways.py` | Telethon login、profile、channel action 仍在主适配器 | 继续拆 telethon_login / telethon_profile / telethon_channel_actions | P2-P6 |
+| `backend/app/integrations/telegram/gateway.py` | Telethon login、profile、channel action 仍在主适配器 | 继续拆 telethon_login / telethon_profile / telethon_channel_actions | P2-P6 |
 | `backend/app/services/operations_center.py` | 规则测试和部分运营聚合仍集中 | 继续拆 rule_tester / operations_reports | P5-P6 |
 | `frontend/src/app/context.tsx` | Provider 仍集中声明大量 state，但业务动作已拆 | 后续可逐步迁移 selection state / React Query hooks，当前不再作为 P6 阻塞项 | P6 |
 | `frontend/src/app/views/TaskCenterView.tsx` | 页面已降到 873 行，列表交互和 columns 仍可组件化 | 继续拆 TaskList / TaskActionTableColumns | P6 |

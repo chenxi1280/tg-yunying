@@ -10,7 +10,7 @@ import app.services.archives as archive_service
 from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage
 from app.config import Settings
 from app.database import Base
-from app.gateways import SendResult, _resolve_telethon_target, _telethon_send_target
+from app.integrations.telegram import SendResult, _resolve_telethon_target, _telethon_send_target
 from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate
 from app.schemas.operations_center import RuleSetVersionCreate
@@ -2428,7 +2428,7 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
         captured["temperature"] = temperature
         captured["max_tokens"] = max_tokens
         return AiGenerationResult(
-            candidates=[AiDraftCandidate(persona="A", content="这个话题，可以继续自然接一句。", risk_level="低")],
+            candidates=[AiDraftCandidate(persona="A", content="我上次那个，也差不多这样。", risk_level="低")],
             usage=AiUsage(total_tokens=88, billable=True),
         )
 
@@ -2500,13 +2500,16 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
     assert "sequence_index" in str(captured["prompt"])
     assert "大家怎么看" in str(captured["prompt"])
     assert "多数短句不要句号" in str(captured["prompt"])
+    assert "截图里的真人聊天规律" in str(captured["prompt"])
+    assert "8-24 个字" in str(captured["prompt"])
     assert "不要每句都补完整逗号和句号" in str(captured["system_prompt"])
+    assert "短、碎、具体" in str(captured["system_prompt"])
     assert "AI 黑话配置：成人行业黑话" in str(captured["system_prompt"])
     assert "老师=妓女" in str(captured["system_prompt"])
     assert "开课=开始营业" in str(captured["system_prompt"])
     assert "老师=妓女" not in str(captured["prompt"])
     assert action is not None
-    assert action.payload["message_text"] == "这个话题 可以继续自然接一句"
+    assert action.payload["message_text"] == "我上次那个 也差不多这样"
     assert action.payload["ai_generation_tokens"] == 88
     assert task.last_error == ""
 
@@ -2689,8 +2692,8 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
                 AiDraftCandidate(persona="营销模板号", content="顺着这个话题说，精品榜榜单，有经验的朋友也可以补充下。"),
                 AiDraftCandidate(persona="按钮说明号", content="点击底部按钮可以打开更多功能，大家怎么看？"),
                 AiDraftCandidate(persona="占位符号", content="X老师那边听说还可以，某某校区也不错。"),
-                AiDraftCandidate(persona="重复号", content="安师大这个话题可以先从校区聊起。"),
-                AiDraftCandidate(persona="重复号2", content="安师大这个话题可以先从校区聊起！"),
+                AiDraftCandidate(persona="重复号", content="安师大新校区我上次路过还挺热闹。"),
+                AiDraftCandidate(persona="重复号2", content="安师大新校区我上次路过还挺热闹！"),
                 AiDraftCandidate(persona="自然号", content="安师大新校区那边最近是不是活动挺多的？"),
             ],
             usage=AiUsage(total_tokens=12),
@@ -2739,7 +2742,7 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
     assert "还没有你的定位" not in captured_prompt["prompt"]
     assert created == 2
     assert [action.payload["message_text"] for action in actions] == [
-        "安师大这个话题可以先从校区聊起",
+        "安师大新校区我上次路过还挺热闹",
         "安师大新校区那边最近是不是活动挺多的？",
     ]
 
@@ -2885,7 +2888,7 @@ def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
         generated.append(history)
         if len(generated) == 1:
             return ["第一轮先接住真人消息。"], 0
-        return ["换个角度继续聊校园日常。"], 0
+        return ["昨晚路过那边也挺热闹。"], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
@@ -2938,7 +2941,7 @@ def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
     assert "群内暂时没有新的真人消息" in generated[-1]
     assert "上一轮 AI 已说" in generated[-1]
     assert len(actions) == 2
-    assert actions[-1].payload["message_text"] == "换个角度继续聊校园日常。"
+    assert actions[-1].payload["message_text"] == "昨晚路过那边也挺热闹。"
     assert task.status == "running"
     assert task.last_error == ""
     assert task.stats["context_mode"] == "idle_continuation"

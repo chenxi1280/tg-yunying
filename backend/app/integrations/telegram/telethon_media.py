@@ -4,8 +4,8 @@ import tempfile
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from .gateway_contracts import OutboundSegment
-from .gateway_telethon_utils import resolve_telethon_target
+from .contracts import OutboundSegment
+from .telethon_utils import resolve_telethon_target
 
 
 async def send_media_segment(client: Any, target: Any, segment: OutboundSegment) -> Any:

@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.gateways import DeveloperAppCredentials
+from app.integrations.telegram import DeveloperAppCredentials
 from app.models import (
     AccountStatus,
     DeveloperAppHealthStatus,

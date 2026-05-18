@@ -1,0 +1,234 @@
+export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment';
+
+export type TaskCenterTask = {
+  id: string;
+  tenant_id: number;
+  name: string;
+  type: TaskCenterTaskType;
+  status: string;
+  priority: number;
+  timezone: string;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  max_duration_hours: number | null;
+  next_run_at: string | null;
+  last_error: string;
+  account_config: Record<string, any>;
+  pacing_config: Record<string, any>;
+  failure_policy: Record<string, any>;
+  type_config: Record<string, any>;
+  stats: Record<string, any>;
+  target_summary?: string;
+  search_text?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskCenterAction = {
+  id: string;
+  tenant_id: number;
+  task_id: string;
+  task_type: string;
+  action_type: string;
+  account_id: number | null;
+  scheduled_at: string;
+  executed_at: string | null;
+  status: string;
+  payload: Record<string, any>;
+  result: Record<string, any>;
+  retry_count: number;
+  created_at: string;
+};
+
+export type RuleSetVersion = {
+  id: number;
+  tenant_id: number;
+  rule_set_id: number;
+  version: number;
+  status: string;
+  version_note: string;
+  filters: Record<string, any>;
+  output_checks: Record<string, any>;
+  transforms: Record<string, any>;
+  routing: Record<string, any>;
+  account_strategy: Record<string, any>;
+  rate_limits: Record<string, any>;
+  retry_policy: Record<string, any>;
+  created_by: string;
+  published_by: string;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RuleSet = {
+  id: number;
+  tenant_id: number;
+  name: string;
+  description: string;
+  status: string;
+  task_types: string[];
+  default_policy: Record<string, any>;
+  active_version_id: number | null;
+  versions: RuleSetVersion[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type RuleSetBoundTask = {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
+  binding_mode: string;
+  rule_set_id: number | null;
+  rule_set_version_id: number | null;
+  resolved_rule_set_version_id: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskCenterDetail = {
+  task: TaskCenterTask;
+  actions: TaskCenterAction[];
+  stats: Record<string, any>;
+  accounts: Array<{ id: number; display_name: string; username: string | null; status: string }>;
+  message_groups: Array<{
+    channel_target_id: number | null;
+    channel_title: string;
+    channel_username: string;
+    message_id: number | null;
+    action_type: string;
+    action_label: string;
+    message_url: string;
+    content_preview: string;
+    target_count: number;
+    completed_count: number;
+    failed_count: number;
+    running_count: number;
+    skipped_count: number;
+    duplicate_count: number;
+    capacity_shortfall: number;
+    subtask_status: string;
+    stats: Record<string, any>;
+    actions: TaskCenterAction[];
+  }>;
+  ai_cycles: Array<{
+    cycle_id: string;
+    context_message_ids: number[];
+    stats: Record<string, any>;
+    turns: Array<{
+      action_id: string;
+      turn_index: number;
+      account_id: number | null;
+      account_role: string;
+      account_memory: string;
+      account_profile: string;
+      topic_thread: string;
+      topic_plan: string;
+      intent: string;
+      content: string;
+      status: string;
+      scheduled_at: string;
+      executed_at: string | null;
+      result: Record<string, any>;
+    }>;
+  }>;
+  ai_generation_records: Array<{
+    generation_id: string;
+    cycle_id: string;
+    status: string;
+    generated_count: number;
+    token_count: number;
+    context_message_count: number;
+    account_memory_count: number;
+    scheduled_at: string | null;
+    created_at: string | null;
+  }>;
+  ai_account_profiles: Array<{
+    account_id: number;
+    display_name: string;
+    username: string | null;
+    status: string;
+    total_success_count: number;
+    current_task_success_count: number;
+    cross_task_success_count: number;
+    profile_summary: string;
+  }>;
+  relay_batches: Array<{
+    relay_batch_id: string;
+    stats: Record<string, any>;
+    source_event_count: number;
+    material_count: number;
+    rule_version_count: number;
+    items: Array<{
+      action_id: string;
+      relay_event_id: string;
+      source_event_key: string;
+      source_group_id: number | null;
+      source_operation_target_id: number | null;
+	      operation_target_id: number | null;
+	      source_info: string;
+	      source_group_title: string;
+	      source_sender_name: string;
+	      source_sender_peer_id: string;
+	      source_sender_username: string;
+	      source_sender_role: string;
+	      source_is_bot: boolean;
+	      source_filter_reason: string;
+	      source_remote_message_id: string;
+      source_message_type: string;
+      source_sent_at: string | null;
+      target_display: string;
+      original_text: string;
+      transformed_text: string;
+      material_fingerprint: string;
+      rule_set_id: number | null;
+      rule_set_name: string;
+      rule_set_version_id: number | null;
+      resolved_rule_set_version_id?: number | null;
+      rule_set_version: number | null;
+      rule_binding_mode?: string;
+      rule_trace: Record<string, any>;
+      account_id: number | null;
+      status: string;
+      retry_count: number;
+      scheduled_at: string;
+      executed_at: string | null;
+      result: Record<string, any>;
+	    }>;
+	  }>;
+	  recent_relay_sources: Array<{
+	    source_group_id: number | null;
+	    source_group_title: string;
+	    listener_account_id: number | null;
+	    sender_peer_id: string;
+	    sender_name: string;
+	    sender_username: string;
+	    sender_role: string;
+	    is_bot: boolean;
+	    source_filter_reason: string;
+	    content: string;
+	    message_type: string;
+	    remote_message_id: string;
+	    sent_at: string | null;
+	  }>;
+	};
+
+export type TaskPrecheck = {
+  task_type: TaskCenterTaskType;
+  decision: 'allow' | 'warn' | 'block';
+  available_account_count: number;
+  candidate_account_count: number;
+  limited_account_count: number;
+  blocked_account_count: number;
+  target_ability: Array<Record<string, any>>;
+  estimated_actions: number;
+  capacity_shortfall: number;
+  rule_version: Record<string, any> | null;
+  risk_hits: string[];
+  blockers: string[];
+  warnings: string[];
+  suggested_actions: string[];
+  trace_id: string;
+};

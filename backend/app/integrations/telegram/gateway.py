@@ -5,10 +5,10 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from .config import Settings, get_settings
-from . import gateway_telethon_content as telethon_content
-from .gateway_mock import TelegramGateway
-from .gateway_contracts import (
+from app.config import Settings, get_settings
+from . import telethon_content
+from .mock import TelegramGateway
+from .contracts import (
     AccountHealth,
     ArchiveSnapshot,
     ArchivedMemberSnapshot,
@@ -27,12 +27,12 @@ from .gateway_contracts import (
     SendResult,
     VerificationCodeSnapshot,
 )
-from .models import FailureType
-from .security import decrypt_session
-from .telethon_lifecycle import TelethonClientLifecycle
-from .gateway_telethon_media import _parse_custom_emoji_source, _telegram_entity_length, send_media_segment
-from .gateway_telethon_utils import resolve_telethon_target, telethon_send_target
-from .timezone import BEIJING_TZ
+from app.models import FailureType
+from app.security import decrypt_session
+from app.telethon_lifecycle import TelethonClientLifecycle
+from .telethon_media import _parse_custom_emoji_source, _telegram_entity_length, send_media_segment
+from .telethon_utils import resolve_telethon_target, telethon_send_target
+from app.timezone import BEIJING_TZ
 
 _resolve_telethon_target = resolve_telethon_target
 _telethon_send_target = telethon_send_target

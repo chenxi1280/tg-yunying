@@ -326,11 +326,11 @@ def _idle_continuation_history(config: dict, group: TgGroup, previous_ai_message
     recent_ai = " / ".join(_clean_topic_text(text) for text in previous_ai_messages[-3:])
     recent_ai = recent_ai.strip(" /")
     parts = [
-        f"群内暂时没有新的真人消息。请围绕“{topic}”自然续聊一轮，像真实群友一样轻量推进话题。",
+        f"群内暂时没有新的真人消息。请围绕“{topic}”补一句具体小事，像群友随手回消息。",
         "必须避免重复上一轮表达，不要提到系统、任务或 AI。",
     ]
     if recent_ai:
-        parts.append(f"上一轮 AI 已说：{recent_ai}。请换一个角度承接。")
+        parts.append(f"上一轮 AI 已说：{recent_ai}。请避开原句，接一个新的经历、到场感受或小问题。")
     return "\n".join(parts)
 
 
@@ -366,8 +366,8 @@ def _topic_plan_summary(config: dict, group: TgGroup, topic_thread: str, turn_co
         f"1. 贴近现场：从“{anchor[:80]}”里挑一个最像真人会接的点，短句承接。",
         f"2. 补充一点生活化细节：只给一个和“{topic[:60]}”相关的小信息或亲身口吻，不像科普。",
         "3. 轻轻问一句：问题要小、具体、容易回，不要问“大家怎么看”。",
-        "4. 自然收一下：把话题放回上一条真人上下文，别总结成公告。",
-        "5. 换个角度闲聊：如果前面已经有人接话，就从反应、吐槽或经历切入。",
+        "4. 收到一个具体细节上：把内容放回上一条真人上下文，别总结成公告。",
+        "5. 换个小细节：如果前面已经有人接话，就从反应、吐槽或经历切入。",
     ]
     return "\n".join(steps[: max(1, min(int(turn_count or 1), len(steps)))])
 
@@ -610,6 +610,11 @@ def _looks_like_internal_prompt(content: str) -> bool:
         "这个点我也留意到了",
         "可以继续聊聊",
         "有经验的朋友也可以补充",
+        "这个话题",
+        "自然接一句",
+        "换个角度",
+        "轻量推进",
+        "值得讨论",
     )
     return (
         any(marker in text for marker in markers)

@@ -7,7 +7,7 @@ from app.config import get_settings
 from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
-from app.gateways import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult
+from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult
 from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
@@ -3271,7 +3271,7 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
 
     def fake_generate_drafts(_credentials, _prompt, **_kwargs):
         generated["count"] += 1
-        contents = ["reset ai 今天先聊报名体验。", "重置之后换个角度问问活动安排。"]
+        contents = ["reset ai 今天先聊报名体验。", "重置之后我再问问活动安排。"]
         return AiGenerationResult(
             candidates=[AiDraftCandidate(persona="自然群友", content=contents[(generated["count"] - 1) % len(contents)])],
             usage=AiUsage(total_tokens=10),

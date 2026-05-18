@@ -4,7 +4,7 @@ import tempfile
 from uuid import uuid4
 from typing import Callable
 
-from .gateway_contracts import (
+from .contracts import (
     ArchiveSnapshot,
     ArchivedMemberSnapshot,
     ArchivedMessageSnapshot,
@@ -13,8 +13,8 @@ from .gateway_contracts import (
     GroupMessageSnapshot,
     SendResult,
 )
-from .gateway_mock import source_media_hint
-from .gateway_telethon_utils import resolve_telethon_target
+from .mock import source_media_hint
+from .telethon_utils import resolve_telethon_target
 
 
 async def _sender_role(client, target, sender) -> str:

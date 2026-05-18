@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 from random import choice, randint
 from uuid import uuid4
 
-from .config import Settings, get_settings
-from .gateway_contracts import (
+from app.config import Settings, get_settings
+from .contracts import (
     AccountHealth,
     ArchiveSnapshot,
     ArchivedMemberSnapshot,
@@ -25,8 +25,8 @@ from .gateway_contracts import (
     SendResult,
     VerificationCodeSnapshot,
 )
-from .models import FailureType
-from .timezone import BEIJING_TZ, beijing_now
+from app.models import FailureType
+from app.timezone import BEIJING_TZ, beijing_now
 
 
 def source_media_hint(*parts: object) -> str:
