@@ -33,6 +33,7 @@ const ListenerCenterView = React.lazy(() => import('./views/ListenerCenterView')
 const RulesCenterView = React.lazy(() => import('./views/RulesCenterView'));
 const RiskControlView = React.lazy(() => import('./views/RiskControlView'));
 const ArchivesView = React.lazy(() => import('./views/ArchivesView'));
+const AdminManualView = React.lazy(() => import('./views/AdminManualView'));
 
 type ShellNavItem = [string, string, React.ReactNode];
 
@@ -49,6 +50,7 @@ const SHELL_NAV_ITEMS: ShellNavItem[] = [
   ['usageReports', '运营数据', <Activity size={18} />],
   ['systemConfig', '系统设置', <Database size={18} />],
   ['audits', '审计记录', <LockKeyhole size={18} />],
+  ['adminManual', '操作手册', <Database size={18} />],
 ];
 
 function noticeMessageType(notice: string): 'success' | 'error' | 'warning' | 'info' {
@@ -68,7 +70,7 @@ function AppShell() {
     loginEmail, setLoginEmail, loginPassword, setLoginPassword,
     login,
     captchaChallenge, captchaInput, setCaptchaInput,
-    captchaToken, captchaError, captchaLoading, refreshCaptchaChallenge, verifyCaptcha,
+    captchaToken, captchaError, captchaLoading, refreshCaptchaChallenge,
     activeView, goToView, busy, notice, setNotice, isActionPending,
     runtime, overview,
     accountPools, selectedPoolId, setSelectedPoolId, accounts, selectedPool,
@@ -134,7 +136,14 @@ function AppShell() {
     }
   }, [activeView, currentUser, goToView, nav, token]);
 
-  const loginReady = Boolean(loginEmail.trim() && loginPassword && captchaToken && !isActionPending('auth:login'));
+  const loginReady = Boolean(
+    loginEmail.trim()
+    && loginPassword
+    && captchaChallenge
+    && (captchaToken || captchaInput.trim().length >= 5)
+    && !captchaLoading
+    && !isActionPending('auth:login'),
+  );
   function openSendFromTarget(target: OperationTarget) {
     setMessagePrefill({ target, nonce: Date.now() });
     goToView('messageSending');
@@ -172,12 +181,18 @@ function AppShell() {
     <Card className={`captcha-box ${captchaToken ? 'verified' : ''}`} size="small">
       <div className="captcha-head">
         <span>验证码</span>
-        <Button size="small" loading={captchaLoading} onClick={refreshCaptchaChallenge} disabled={captchaLoading}>
-          刷新
-        </Button>
+        <span className="captcha-refresh-hint">点击图片刷新</span>
       </div>
       <div className="captcha-code-row">
-        {captchaChallenge ? <img src={captchaChallenge.image_data_url} alt="验证码" /> : <div className="captcha-image-placeholder">加载中</div>}
+        <button
+          type="button"
+          className="captcha-image-button"
+          onClick={refreshCaptchaChallenge}
+          disabled={captchaLoading}
+          aria-label="刷新验证码"
+        >
+          {captchaChallenge ? <img src={captchaChallenge.image_data_url} alt="验证码" /> : <div className="captcha-image-placeholder">加载中</div>}
+        </button>
         <Input
           value={captchaInput}
           onChange={(event) => setCaptchaInput(event.target.value.toUpperCase())}
@@ -187,11 +202,8 @@ function AppShell() {
         />
       </div>
       <div className="captcha-actions">
-        <Button size="small" loading={captchaLoading} onClick={verifyCaptcha} disabled={!captchaChallenge || captchaLoading || Boolean(captchaToken) || captchaInput.trim().length < 5}>
-          {captchaToken ? '已通过' : captchaLoading ? '验证中' : '验证'}
-        </Button>
         <span className={captchaToken ? 'captcha-ok' : captchaError ? 'captcha-error' : ''}>
-          {captchaToken ? '验证码已通过' : captchaError || '输入图片中的数字和字母'}
+          {captchaToken ? '验证码已通过，正在登录' : captchaError || '输入图片中的数字和字母'}
         </span>
       </div>
     </Card>
@@ -216,7 +228,7 @@ function AppShell() {
               <Input.Password value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} />
             </Form.Item>
             {captchaControl}
-            <Button type="primary" block onClick={login} loading={isActionPending('auth:login')} disabled={!loginReady}>登录运营中心</Button>
+            <Button type="primary" block onClick={login} loading={isActionPending('auth:login') || captchaLoading} disabled={!loginReady}>登录运营中心</Button>
           </Form>
         </Card>
       </div>
@@ -372,6 +384,7 @@ function AppShell() {
           {activeView === 'riskControl' && <RiskControlView onOpenAccounts={() => goToView('accounts')} />}
           {activeView === 'archives' && <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onRefresh={refresh} isActionPending={isActionPending} />}
           {activeView === 'audits' && <AuditsView audits={audits} filters={auditFilters} setFilters={setAuditFilters} onRefresh={refresh} />}
+          {activeView === 'adminManual' && <AdminManualView />}
         </React.Suspense>
 
         {/* ===== Modals ===== */}

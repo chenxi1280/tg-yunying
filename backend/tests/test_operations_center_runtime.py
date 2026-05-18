@@ -26,6 +26,7 @@ from app.services.account_capacity import account_capacity_decision
 from app.services.messages import create_message_send_task, dispatch_task, validate_group_task_policy
 from app.services.operations import filter_operation_targets, operation_target_detail, sync_all_operation_targets, update_operation_target, update_operation_target_account_policy
 from app.services.task_center.executors.group_ai_chat import _topic_relevant_context_rows, ai_cycle_mode, build_plan as build_group_ai_chat_plan
+from app.services.task_center.ai_generator import _humanize_group_chat_punctuation
 from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
 from app.services.reports import build_overview
 from app.services.task_center.executors.group_relay import apply_transform_rules, build_plan as build_group_relay_plan, passes_relay_filters, relay_source_filter_reason, resolve_relay_target_ids
@@ -2427,7 +2428,7 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
         captured["temperature"] = temperature
         captured["max_tokens"] = max_tokens
         return AiGenerationResult(
-            candidates=[AiDraftCandidate(persona="A", content="这个话题可以继续自然接一句。", risk_level="低")],
+            candidates=[AiDraftCandidate(persona="A", content="这个话题，可以继续自然接一句。", risk_level="低")],
             usage=AiUsage(total_tokens=88, billable=True),
         )
 
@@ -2498,14 +2499,23 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
     assert "现场接话消息" in str(captured["prompt"])
     assert "sequence_index" in str(captured["prompt"])
     assert "大家怎么看" in str(captured["prompt"])
+    assert "多数短句不要句号" in str(captured["prompt"])
+    assert "不要每句都补完整逗号和句号" in str(captured["system_prompt"])
     assert "AI 黑话配置：成人行业黑话" in str(captured["system_prompt"])
     assert "老师=妓女" in str(captured["system_prompt"])
     assert "开课=开始营业" in str(captured["system_prompt"])
     assert "老师=妓女" not in str(captured["prompt"])
     assert action is not None
-    assert action.payload["message_text"] == "这个话题可以继续自然接一句。"
+    assert action.payload["message_text"] == "这个话题 可以继续自然接一句"
     assert action.payload["ai_generation_tokens"] == 88
     assert task.last_error == ""
+
+
+def test_group_ai_chat_punctuation_cleanup_preserves_times_and_urls():
+    cleaned = _humanize_group_chat_punctuation("9:30，到 https://example.com/a?x=1,2，可以看下。")
+
+    assert cleaned == "9:30 到 https://example.com/a?x=1,2 可以看下"
+    assert _humanize_group_chat_punctuation("我觉得,这个可以。") == "我觉得 这个可以"
 
 
 def test_group_ai_chat_invalid_slang_template_sets_visible_error(monkeypatch):
@@ -2627,7 +2637,7 @@ def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeyp
     assert captured["model_name"] == "deepseek-v4-flash"
     assert "DeepSeek 活跃群" in str(captured["prompt"])
     assert action is not None
-    assert action.payload["message_text"] == "DeepSeek 这轮也能正常接话。"
+    assert action.payload["message_text"] == "DeepSeek 这轮也能正常接话"
     assert action.payload["ai_generation_tokens"] == 66
 
 
@@ -2729,7 +2739,7 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
     assert "还没有你的定位" not in captured_prompt["prompt"]
     assert created == 2
     assert [action.payload["message_text"] for action in actions] == [
-        "安师大这个话题可以先从校区聊起。",
+        "安师大这个话题可以先从校区聊起",
         "安师大新校区那边最近是不是活动挺多的？",
     ]
 

@@ -42,10 +42,14 @@ export function createAuthActions(params: AuthActionParams) {
     }
   }
 
-  async function verifyCaptcha() {
+  async function requestCaptchaToken(): Promise<string | null> {
     if (!params.captchaChallenge) {
       params.setCaptchaError('请先刷新验证码');
-      return;
+      return null;
+    }
+    if (params.captchaInput.trim().length < 5) {
+      params.setCaptchaError('请输入图片中的数字和字母');
+      return null;
     }
     params.setCaptchaLoading(true);
     params.setCaptchaError('');
@@ -59,16 +63,23 @@ export function createAuthActions(params: AuthActionParams) {
         }),
       });
       params.setCaptchaToken(captcha.captcha_token);
+      return captcha.captcha_token;
     } catch (error) {
       params.setCaptchaError('验证码验证失败，请重新输入');
+      return null;
     } finally {
       params.setCaptchaLoading(false);
     }
   }
 
+  async function verifyCaptcha() {
+    await requestCaptchaToken();
+  }
+
   async function login() {
-    if (!params.captchaToken) {
-      params.setNotice('请先完成验证码验证');
+    const captchaToken = params.captchaToken || await requestCaptchaToken();
+    if (!captchaToken) {
+      params.setNotice('请先输入正确的验证码');
       return;
     }
     params.setBusy('登录');
@@ -80,7 +91,7 @@ export function createAuthActions(params: AuthActionParams) {
         identifier: params.loginEmail,
         email: params.loginEmail,
         password: params.loginPassword,
-        captcha_token: params.captchaToken,
+        captcha_token: captchaToken,
       }),
     });
     if (!response.ok) {

@@ -115,6 +115,33 @@ body {
   font-weight: 750;
 }
 
+.captcha-refresh-hint {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.captcha-image-button {
+  display: block;
+  width: 132px;
+  height: 44px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.captcha-image-button:disabled {
+  cursor: wait;
+}
+
+.captcha-image-button:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
 .captcha-code-row img,
 .captcha-image-placeholder {
   width: 132px;

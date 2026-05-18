@@ -33,6 +33,7 @@ const adminPermissionGroups = [
   { menu: ['risk.view', '风控中心'], buttons: [['risk.manage', '风控管理']] },
   { menu: ['archives.view', '归档中心'], buttons: [['archives.manage', '归档管理'], ['archives.export', '归档导出']] },
   { menu: ['usage.view', '运营数据'], buttons: [] },
+  { menu: ['manual.view', '操作手册'], buttons: [] },
   { menu: ['system.view', '系统设置'], buttons: [
     ['system.manage', '系统管理'],
     ['system.secrets_manage', '密钥配置'],
@@ -151,9 +152,9 @@ export function AppModals() {
             <label>账号类型<Select value={adminUserForm.role} onChange={(value) => setAdminUserForm((current) => ({ ...current, role: value }))} options={['后台用户', '系统管理员'].map((value) => ({ value, label: value }))} /></label>
             <label>角色模板<Select value={adminUserForm.role_template} onChange={(value) => {
               const templatePermissions: Record<string, string[]> = {
-                '运营管理员': ['overview.view', 'accounts.view', 'accounts.sync', 'targets.view', 'targets.manage', 'message_sending.view', 'message_sending.create', 'tasks.view', 'tasks.manage', 'listeners.view', 'listeners.manage', 'rules.view', 'rules.publish', 'risk.view', 'risk.manage', 'archives.view', 'archives.manage', 'usage.view', 'audits.view'],
+                '运营管理员': ['overview.view', 'accounts.view', 'accounts.sync', 'targets.view', 'targets.manage', 'message_sending.view', 'message_sending.create', 'tasks.view', 'tasks.manage', 'listeners.view', 'listeners.manage', 'rules.view', 'rules.publish', 'risk.view', 'risk.manage', 'archives.view', 'archives.manage', 'usage.view', 'manual.view', 'audits.view'],
                 '账号添加专员': ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'],
-                '只读观察员': ['overview.view', 'usage.view', 'audits.view'],
+                '只读观察员': ['overview.view', 'usage.view', 'manual.view', 'audits.view'],
               };
               setAdminUserForm((current) => ({ ...current, role_template: value, permissions: templatePermissions[value] ?? current.permissions, menu_permissions: templatePermissions[value] ?? current.menu_permissions }));
             }} options={['运营管理员', '账号添加专员', '只读观察员'].map((value) => ({ value, label: value }))} /></label>

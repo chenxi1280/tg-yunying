@@ -193,6 +193,149 @@
   padding-bottom: 4px;
 }
 
+.admin-manual {
+  display: grid;
+  gap: 16px;
+}
+
+.manual-section.ant-card > .ant-card-body {
+  gap: 14px;
+}
+
+.manual-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.manual-steps.ant-steps {
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.manual-steps.ant-steps .ant-steps-item {
+  min-width: 190px;
+}
+
+.manual-checklist {
+  display: grid;
+  gap: 10px;
+}
+
+.manual-check-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  color: var(--ink);
+}
+
+.manual-check-item svg {
+  margin-top: 2px;
+  color: var(--green);
+}
+
+.manual-task-list {
+  width: 100%;
+}
+
+.manual-task-row {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.manual-collapse.ant-collapse {
+  background: transparent;
+}
+
+.manual-collapse .ant-collapse-item {
+  border-color: var(--line);
+}
+
+.manual-collapse .ant-collapse-header {
+  align-items: center !important;
+}
+
+.manual-collapse .ant-collapse-header-text {
+  min-width: 0;
+}
+
+.manual-collapse .ant-collapse-header-text .ant-space {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+.manual-collapse-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(22, 119, 255, 0.12);
+  border-radius: 8px;
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.manual-module {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 22px;
+}
+
+.manual-module h5.ant-typography {
+  margin: 0 0 8px;
+}
+
+.manual-module ol,
+.manual-module ul {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--ink);
+}
+
+.manual-module li + li {
+  margin-top: 6px;
+}
+
+.manual-note.ant-typography {
+  margin-bottom: 0;
+}
+
+.manual-permission-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.manual-permission-grid > div {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.manual-permission-grid p.ant-typography {
+  margin-bottom: 0;
+  color: var(--muted);
+}
+
+@media (max-width: 980px) {
+  .manual-grid,
+  .manual-module,
+  .manual-permission-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .manual-task-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .overview-chart-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -196,6 +196,7 @@ ALL_PERMISSIONS = [
     "archives.manage",
     "archives.export",
     "usage.view",
+    "manual.view",
     "system.view",
     "system.manage",
     "system.secrets_manage",
@@ -216,6 +217,7 @@ MENU_VIEW_PERMISSIONS = {
     "risk.view",
     "archives.view",
     "usage.view",
+    "manual.view",
     "system.view",
     "permissions.view",
     "audits.view",
@@ -236,6 +238,7 @@ LEGACY_PERMISSION_MAP = {
     "archives": "archives.view",
     "groupArchives": "archives.view",
     "usageReports": "usage.view",
+    "adminManual": "manual.view",
     "systemConfig": "system.view",
     "developerApps": "system.view",
     "aiConfig": "system.view",
@@ -262,10 +265,11 @@ ROLE_TEMPLATE_PERMISSIONS = {
         "archives.view",
         "archives.manage",
         "usage.view",
+        "manual.view",
         "audits.view",
     ],
     "账号添加专员": ["overview.view", "accounts.view", "accounts.create", "accounts.login", "accounts.sync"],
-    "只读观察员": ["overview.view", "usage.view", "audits.view"],
+    "只读观察员": ["overview.view", "usage.view", "manual.view", "audits.view"],
 }
 
 DEFAULT_USER_MENU_PERMISSIONS = ROLE_TEMPLATE_PERMISSIONS["运营管理员"]

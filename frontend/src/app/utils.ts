@@ -14,6 +14,7 @@ export const VIEW_PERMISSION: Record<string, string> = {
   usageReports: 'usage.view',
   systemConfig: 'system.view',
   audits: 'audits.view',
+  adminManual: 'manual.view',
 };
 
 export function userPermissions(user: CurrentUser | null | undefined): string[] {

@@ -13,6 +13,7 @@ export const VIEW_ROUTES: Record<string, string> = {
   usageReports: '/usage-reports',
   systemConfig: '/system-config',
   audits: '/audit',
+  adminManual: '/manual',
 };
 
 export const ROUTE_VIEWS: Record<string, string> = Object.fromEntries(

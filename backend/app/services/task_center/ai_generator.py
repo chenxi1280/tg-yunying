@@ -146,10 +146,11 @@ def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: 
         "1. 每条都像手机上随手发的一句话：可短、可犹豫、可半句，但必须能被群友接住。\n"
         "2. 多账号之间要有轻微关系：有人接上一句、有人补细节、有人问一句小问题；不要每条都像独立广告语。\n"
         "3. 必须按账号角色/账号记忆区分口吻，避免所有人同一种标点、同一种长度、同一种客气话。\n"
-        "4. 不要复述或整段引用上下文；短词上下文要自然扩展，例如聊学校、校区、专业、活动、经历。\n"
-        "5. 禁止使用这些模板句和近似句：看大家聊、刚看到大家提到、刚看到有人聊这个、顺着这个话题说、这个点挺有意思、这个点我也留意到了、可以继续聊聊、大家怎么看、有经验的朋友也可以补充下、我补充一下。\n"
-        "6. 不要连续使用“我觉得/感觉/确实/这个/大家”开头；不要使用 xx、X老师、某某 这类占位符；不要输出引号套引号；不要带编号、解释、括号备注。\n"
-        "7. 黑话词表是理解口径，不是展示内容；该用行业口吻时自然用，不要解释词表。\n"
+        "4. 标点像群聊，不要像作文：多数短句不要句号，少用逗号/顿号/分号；需要停顿时优先用空格，问句可以保留问号。\n"
+        "5. 不要复述或整段引用上下文；短词上下文要自然扩展，例如聊学校、校区、专业、活动、经历。\n"
+        "6. 禁止使用这些模板句和近似句：看大家聊、刚看到大家提到、刚看到有人聊这个、顺着这个话题说、这个点挺有意思、这个点我也留意到了、可以继续聊聊、大家怎么看、有经验的朋友也可以补充下、我补充一下。\n"
+        "7. 不要连续使用“我觉得/感觉/确实/这个/大家”开头；不要使用 xx、X老师、某某 这类占位符；不要输出引号套引号；不要带编号、解释、括号备注。\n"
+        "8. 黑话词表是理解口径，不是展示内容；该用行业口吻时自然用，不要解释词表。\n"
         '只输出 JSON：{"drafts":[{"sequence_index":1,"reply_to_sequence_index":null,"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低"}]}'
     )
 
@@ -168,17 +169,17 @@ def _fallback_contents(topic: str, requirements: str, purpose: str, target_label
         context_text = _fallback_recent_context(requirements)
         if context_text:
             templates = [
-                f"{context_text} 这个先别说太满，具体场景不一样。",
-                f"我会先看 {context_text} 里最容易卡住的那个点。",
-                f"要是按 {context_text} 这个方向聊，最好拿个实际例子。",
-                f"{context_text} 这个话题可以轻一点聊，不用上来就下结论。",
+                f"{context_text} 这个先别说太满 具体场景不一样",
+                f"我会先看 {context_text} 里最容易卡住的那个点",
+                f"要是按 {context_text} 这个方向聊 最好拿个实际例子",
+                f"{context_text} 这个话题可以轻一点聊 不用上来就下结论",
             ]
         else:
             templates = [
-                f"{topic_text} 这个方向可以先丢个小问题出来。",
-                f"我看 {topic_text} 先从真实经历聊会自然一点。",
-                f"{topic_text} 不用讲太满，先看群里有没有人碰到过。",
-                f"今天可以轻轻带一下 {topic_text}，别刷太密。",
+                f"{topic_text} 这个方向可以先丢个小问题出来",
+                f"我看 {topic_text} 先从真实经历聊会自然一点",
+                f"{topic_text} 不用讲太满 先看群里有没有人碰到过",
+                f"今天可以轻轻带一下 {topic_text} 别刷太密",
             ]
     elif purpose == "频道评论":
         templates = [
@@ -249,7 +250,18 @@ def _dedupe_group_chat_contents(contents: list[str]) -> list[str]:
 def _clean_generated_content(content: str) -> str:
     cleaned = re.sub(r"\s+", " ", str(content or "")).strip()
     cleaned = re.sub(r"^(?:[-*\d.、\s]+)", "", cleaned).strip()
-    return cleaned[:2000]
+    return _humanize_group_chat_punctuation(cleaned)[:2000]
+
+
+def _humanize_group_chat_punctuation(content: str) -> str:
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"[。．.]+$", "", text).strip()
+    text = re.sub(r"[，、；：]+", " ", text)
+    text = re.sub(r"(?<=[\u4e00-\u9fff]),|,(?=[\u4e00-\u9fff])", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def _normalize_for_similarity(content: str) -> str:
@@ -333,7 +345,7 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
 
 
 def _group_chat_system_prompt(slang_prompt: str) -> str:
-    base = "你只负责把 Telegram 群友的临场接话包装成 JSON；不要写运营话术、公告、总结或解释。"
+    base = "你只负责把 Telegram 群友的临场接话包装成 JSON；不要写运营话术、公告、总结或解释。群聊消息不要每句都补完整逗号和句号，短句可以直接收尾。"
     if not slang_prompt:
         return base
     return f"{base}\n\n{slang_prompt}"
