@@ -11,10 +11,13 @@ KEEP_ARCHIVE="${KEEP_ARCHIVE:-0}"
 EXPECTED_BRANCHES="${EXPECTED_BRANCHES:-release}"
 RELEASE_SSH_ATTEMPTS="${RELEASE_SSH_ATTEMPTS:-3}"
 RELEASE_SSH_RETRY_DELAY="${RELEASE_SSH_RETRY_DELAY:-10}"
+SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-60}"
 IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-ghcr.io/chenxi1280}"
 STATIC_KEEP_RELEASES="${STATIC_KEEP_RELEASES:-5}"
 SSH_OPTS=(
-  -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT:-20}"
+  -o "BatchMode=yes"
+  -o "NumberOfPasswordPrompts=0"
+  -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}"
   -o "ServerAliveInterval=${SSH_SERVER_ALIVE_INTERVAL:-30}"
   -o "ServerAliveCountMax=${SSH_SERVER_ALIVE_COUNT_MAX:-10}"
   -o "TCPKeepAlive=yes"
@@ -134,6 +137,7 @@ require_command mktemp
 require_command tar
 require_positive_integer RELEASE_SSH_ATTEMPTS "$RELEASE_SSH_ATTEMPTS"
 require_positive_integer RELEASE_SSH_RETRY_DELAY "$RELEASE_SSH_RETRY_DELAY"
+require_positive_integer SSH_CONNECT_TIMEOUT "$SSH_CONNECT_TIMEOUT"
 
 current_branch="$(git branch --show-current)"
 if [[ -z "$current_branch" ]]; then
@@ -209,6 +213,13 @@ append_remote_env_if_set TGYUNYING_CHECK_HOST_NGINX
 append_remote_env_if_set TGYUNYING_CHECK_PUBLIC_URLS
 append_remote_env_if_set TGYUNYING_CHECK_ATTEMPTS
 append_remote_env_if_set TGYUNYING_CHECK_RETRY_DELAY_SECONDS
+
+echo "==> Checking SSH connectivity to ${USER_NAME}@${HOST}"
+if ! run_with_retries "Checking SSH connectivity" \
+  ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "true"; then
+  echo "SSH connectivity check failed before upload. If the log says 'Connection timed out during banner exchange', check the server SSH port, firewall/security group, sshd load/MaxStartups, or whether the configured port is really SSH." >&2
+  exit 1
+fi
 
 echo "==> Creating release archive for ${REF_NAME} (${short_sha})"
 git archive --format=tar.gz --output "$archive_path" "$REF_NAME"

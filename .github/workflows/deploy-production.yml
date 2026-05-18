@@ -163,6 +163,7 @@ jobs:
           DEPLOY_HOST: ${{ secrets.SILICON_VALLEY_PRODUCTION_HOST }}
           DEPLOY_USER: ${{ secrets.SILICON_VALLEY_PRODUCTION_USER }}
           DEPLOY_PORT: ${{ secrets.SILICON_VALLEY_PRODUCTION_PORT }}
+          SSH_CONNECT_TIMEOUT: ${{ vars.SSH_CONNECT_TIMEOUT }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
@@ -171,6 +172,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
           PORT="${DEPLOY_PORT:-22}"
+          CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-60}"
           cat > ~/.ssh/config <<EOF
           Host silicon-valley-production-server
             HostName ${DEPLOY_HOST}
@@ -179,7 +181,7 @@ jobs:
             IdentityFile ~/.ssh/id_ed25519
             IdentitiesOnly yes
             StrictHostKeyChecking accept-new
-            ConnectTimeout 60
+            ConnectTimeout ${CONNECT_TIMEOUT}
             ServerAliveInterval 15
             ServerAliveCountMax 8
             ControlMaster auto
@@ -204,6 +206,9 @@ jobs:
           TGYUNYING_CHECK_PUBLIC_URLS: ${{ vars.TGYUNYING_CHECK_PUBLIC_URLS }}
           TGYUNYING_CHECK_ATTEMPTS: ${{ vars.TGYUNYING_CHECK_ATTEMPTS }}
           TGYUNYING_CHECK_RETRY_DELAY_SECONDS: ${{ vars.TGYUNYING_CHECK_RETRY_DELAY_SECONDS }}
+          SSH_CONNECT_TIMEOUT: ${{ vars.SSH_CONNECT_TIMEOUT }}
+          RELEASE_SSH_ATTEMPTS: ${{ vars.RELEASE_SSH_ATTEMPTS }}
+          RELEASE_SSH_RETRY_DELAY: ${{ vars.RELEASE_SSH_RETRY_DELAY }}
         run: |
           set -euo pipefail
           BASE_DIR="${SILICON_VALLEY_PRODUCTION_BASE_DIR:-/data/tgyunying}"

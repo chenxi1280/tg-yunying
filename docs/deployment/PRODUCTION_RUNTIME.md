@@ -31,6 +31,9 @@ Repository variables:
 - `POST_DEPLOY_CHECKS_ENABLED`，默认 `true`
 - `TGYUNYING_CHECK_HOST_NGINX`，默认 `true`
 - `TGYUNYING_CHECK_PUBLIC_URLS`，默认 `true`
+- `SSH_CONNECT_TIMEOUT`，默认 `60` 秒，控制 Actions 到服务器 SSH/SCP 建连等待时间
+- `RELEASE_SSH_ATTEMPTS`，默认 `3`，控制发布脚本 SSH/SCP 重试次数
+- `RELEASE_SSH_RETRY_DELAY`，默认 `10` 秒，控制发布脚本 SSH/SCP 重试间隔
 
 正式自动部署只监听 `release` 分支，也保留 `workflow_dispatch` 手动触发。
 
@@ -86,3 +89,5 @@ curl -fsS --resolve tgyunying.example.com:443:127.0.0.1 https://tgyunying.exampl
 ```
 
 如果本机 API 正常但公网失败，优先检查宿主 Nginx 配置和域名证书，不要先改应用代码。
+
+如果 Actions 在 `Checking SSH connectivity` 或 `Uploading release archive` 阶段出现 `Connection timed out during banner exchange`，说明失败发生在 SSH 握手/服务端 banner 返回之前，应用容器还没有进入发布流程。优先检查生产服务器 SSH 端口、安全组/防火墙、`sshd` 负载或 `MaxStartups` 限制，以及 GitHub secret 里的端口是否真的是 SSH 服务。
