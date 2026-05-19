@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, Avatar, Button, Card, Progress, Segmented, Space, Table, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { Activity, CheckCircle2 } from 'lucide-react';
+import { Activity, Database, ShieldAlert } from 'lucide-react';
 import { api } from '../../shared/api/client';
 import type { Account, AccountPool } from '../types';
 import type { RuntimeConfig } from '../types';
@@ -70,7 +70,7 @@ export default function AccountsView({
   canDeleteAccount = true,
 }: Props) {
   const [selectedAccountIds, setSelectedAccountIds] = React.useState<number[]>([]);
-  const [securityDrawerMode, setSecurityDrawerMode] = React.useState<'security' | 'profile' | null>(null);
+  const [securityDrawerMode, setSecurityDrawerMode] = React.useState<'cleanup_devices' | 'set_two_fa' | 'profile' | null>(null);
   const [refreshingSecurity, setRefreshingSecurity] = React.useState(false);
   const accountTable = useAntdTableControls<Account>({
     rows: accounts,
@@ -259,8 +259,9 @@ export default function AccountsView({
       </Space>
       <Space className="pool-filter-strip" wrap>
         <Typography.Text type="secondary">已选择 {selectedAccounts.length} 个账号</Typography.Text>
-        <Button icon={<CheckCircle2 size={16} />} disabled={!selectedAccountIds.length || !canSyncAccount} onClick={() => setSecurityDrawerMode('security')}>安全加固</Button>
         <Button icon={<Activity size={16} />} disabled={!selectedAccountIds.length || !canSyncAccount} onClick={() => setSecurityDrawerMode('profile')}>资料初始化</Button>
+        <Button icon={<ShieldAlert size={16} />} disabled={!selectedAccountIds.length || !canSyncAccount} onClick={() => setSecurityDrawerMode('set_two_fa')}>设置二步密码</Button>
+        <Button icon={<Database size={16} />} disabled={!selectedAccountIds.length || !canSyncAccount} onClick={() => setSecurityDrawerMode('cleanup_devices')}>清理登录设备</Button>
         <Button disabled={!selectedAccountIds.length || !canSyncAccount} loading={refreshingSecurity} onClick={refreshSelectedSecurity}>刷新安全状态</Button>
         <Button disabled={!selectedAccountIds.length} onClick={() => setSelectedAccountIds([])}>清空选择</Button>
       </Space>
@@ -311,7 +312,7 @@ export default function AccountsView({
       />
       <AccountSecurityBatchDrawer
         open={securityDrawerMode !== null}
-        mode={securityDrawerMode ?? 'security'}
+        mode={securityDrawerMode ?? 'profile'}
         accounts={accounts}
         selectedAccountIds={selectedAccountIds}
         onClose={() => setSecurityDrawerMode(null)}

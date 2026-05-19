@@ -923,15 +923,7 @@ def _apply_preview_override(generated_item: dict[str, object], override) -> dict
 
 def _generate_profiles_with_ai(session: Session, tenant_id: int, accounts: list[TgAccount], strategy) -> list[dict[str, object]]:
     setting = get_tenant_ai_setting(session, tenant_id)
-    if not setting.ai_enabled:
-        raise RuntimeError("租户 AI 配置未启用")
-    provider = session.get(AiProvider, setting.default_provider_id) if setting.default_provider_id else None
-    if not provider or not provider.is_active or provider.health_status != AiProviderHealthStatus.HEALTHY.value:
-        provider = session.scalar(
-            select(AiProvider)
-            .where(AiProvider.is_active.is_(True), AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value)
-            .order_by(AiProvider.id.asc())
-        )
+    provider = _profile_ai_provider(session, setting.default_provider_id)
     if not provider:
         raise RuntimeError("没有健康 AI 供应商")
     credentials = ai_provider_credentials(provider)
@@ -966,6 +958,18 @@ def _generate_profiles_with_ai(session: Session, tenant_id: int, accounts: list[
         timeout=_profile_ai_timeout_seconds(count),
     )
     return _parse_ai_profile_items(raw, count, strategy)
+
+
+def _profile_ai_provider(session: Session, provider_id: int | None) -> AiProvider | None:
+    if provider_id:
+        provider = session.get(AiProvider, provider_id)
+        if provider and provider.is_active and provider.health_status == AiProviderHealthStatus.HEALTHY.value:
+            return provider
+    return session.scalar(
+        select(AiProvider)
+        .where(AiProvider.is_active.is_(True), AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value)
+        .order_by(AiProvider.id.asc())
+    )
 
 
 def _parse_ai_profile_items(raw: str, count: int, strategy) -> list[dict[str, object]]:

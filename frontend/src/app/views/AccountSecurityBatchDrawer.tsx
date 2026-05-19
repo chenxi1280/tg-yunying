@@ -1,12 +1,12 @@
 import React from 'react';
-import { Alert, Button, Checkbox, Divider, Drawer, Input, InputNumber, Select, Space, Steps, Switch, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Divider, Drawer, Input, InputNumber, Select, Space, Steps, Switch, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, CheckCircle2, RefreshCcw } from 'lucide-react';
 import { api } from '../../shared/api/client';
 import type { Account, AccountSecurityBatch, AccountSecurityBatchItem, AccountSecurityPrecheck, AccountSecurityPreviewItem } from '../types';
 import { StatusBadge } from '../components/shared';
 
-type Mode = 'security' | 'profile';
+type Mode = 'cleanup_devices' | 'set_two_fa' | 'profile';
 
 type ProfileStrategy = {
   generation_mode: string;
@@ -35,6 +35,30 @@ const ACTION_LABEL: Record<string, string> = {
   update_profile: '资料姓名简介',
   update_username: '设置 @username',
   update_avatar: '设置头像',
+};
+
+const MODE_CONFIG: Record<Mode, { title: string; alertType: 'info' | 'warning'; description: string; actions: string[]; reason: string }> = {
+  profile: {
+    title: '批量资料初始化',
+    alertType: 'info',
+    description: '只处理头像、昵称、简介和 username。必须先生成预览，再确认创建批次。',
+    actions: ['update_profile', 'update_username', 'update_avatar'],
+    reason: '批量资料初始化',
+  },
+  set_two_fa: {
+    title: '批量设置二步密码',
+    alertType: 'warning',
+    description: '只为未设置二步验证的账号生成并托管二步密码，不会修改资料或清理登录设备。',
+    actions: ['set_two_fa'],
+    reason: '批量设置二步密码',
+  },
+  cleanup_devices: {
+    title: '批量清理登录设备',
+    alertType: 'warning',
+    description: '只清理非本平台可信登录设备，保留当前平台 Session，不会修改资料或设置二步密码。',
+    actions: ['cleanup_devices'],
+    reason: '批量清理登录设备',
+  },
 };
 
 const defaultProfileStrategy: ProfileStrategy = {
@@ -103,22 +127,21 @@ export function AccountSecurityBatchDrawer({
   const [step, setStep] = React.useState(0);
   const selected = React.useMemo(() => selectedAccounts(accounts, selectedAccountIds), [accounts, selectedAccountIds]);
   const forbiddenText = profileStrategy.forbidden_words.join('，');
+  const modeConfig = MODE_CONFIG[mode];
+  const isProfileMode = mode === 'profile';
 
   React.useEffect(() => {
     if (!open) return;
-    const nextActions = mode === 'security'
-      ? ['cleanup_devices', 'set_two_fa']
-      : ['update_profile', 'update_username', 'update_avatar'];
-    setActions(nextActions);
+    setActions(modeConfig.actions);
     setProfileStrategy(defaultProfileStrategy);
     setAvatarStrategy(defaultAvatarStrategy);
-    setReason(mode === 'security' ? '批量账号安全加固' : '批量资料初始化');
+    setReason(modeConfig.reason);
     setConfirmText('');
     setPrecheck(null);
     setBatch(null);
     setEditedPreviewIds(new Set());
     setStep(0);
-  }, [mode, open]);
+  }, [modeConfig, open]);
 
   const previewOverrides = React.useMemo(() => (precheck?.items ?? []).filter((item) => editedPreviewIds.has(item.account_id)).map((item) => ({
     account_id: item.account_id,
@@ -160,8 +183,8 @@ export function AccountSecurityBatchDrawer({
     }
     setLoading(true);
     try {
-      const endpoint = mode === 'profile' ? '/tg-accounts/security-batches/profile-preview' : '/tg-accounts/security-batches/precheck';
-      const timeoutMs = mode === 'profile' ? Math.min(210_000, Math.max(60_000, selectedAccountIds.length * 5_000)) : 60_000;
+      const endpoint = isProfileMode ? '/tg-accounts/security-batches/profile-preview' : '/tg-accounts/security-batches/precheck';
+      const timeoutMs = isProfileMode ? Math.min(210_000, Math.max(60_000, selectedAccountIds.length * 5_000)) : 60_000;
       const result = await api<AccountSecurityPrecheck>(endpoint, { method: 'POST', body: JSON.stringify(payload), timeoutMs });
       setPrecheck(result);
       setEditedPreviewIds(new Set());
@@ -291,7 +314,7 @@ export function AccountSecurityBatchDrawer({
 
   return (
     <Drawer
-      title={mode === 'security' ? '批量账号安全加固' : '批量资料初始化'}
+      title={modeConfig.title}
       width={1120}
       open={open}
       destroyOnClose
@@ -300,10 +323,10 @@ export function AccountSecurityBatchDrawer({
     >
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Alert
-          type={mode === 'security' ? 'warning' : 'info'}
+          type={modeConfig.alertType}
           showIcon
           message={`已选择 ${selected.length} 个账号`}
-          description={mode === 'security' ? '预检会读取平台可信设备、外部设备和 2FA 状态；执行时保留当前平台 Session。' : '资料初始化默认使用 AI 随机命名策略，必须先预览，再确认创建批次。'}
+          description={modeConfig.description}
         />
         <Steps
           current={step}
@@ -315,75 +338,74 @@ export function AccountSecurityBatchDrawer({
         />
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Typography.Text strong>动作范围</Typography.Text>
-          <Checkbox.Group
-            value={actions}
-            onChange={(value) => setActions(value.map(String))}
-            options={(mode === 'security'
-              ? ['cleanup_devices', 'set_two_fa', 'update_profile', 'update_username', 'update_avatar']
-              : ['update_profile', 'update_username', 'update_avatar', 'cleanup_devices', 'set_two_fa']
-            ).map((value) => ({ label: ACTION_LABEL[value], value }))}
-          />
-        </Space>
-        <Divider />
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Typography.Text strong><Activity size={16} /> AI 随机命名与资料策略</Typography.Text>
           <Space wrap>
-            <Select
-              value={profileStrategy.generation_mode}
-              style={{ width: 150 }}
-              options={[
-                { label: 'AI 随机生成', value: 'ai_random' },
-                { label: '模板兜底', value: 'template' },
-                { label: '手工序号', value: 'sequence' },
-              ]}
-              onChange={(generation_mode) => setProfileStrategy((current) => ({ ...current, generation_mode }))}
-            />
-            <Select value={profileStrategy.language_style} style={{ width: 120 }} options={['中文', '英文', '混合', '东南亚'].map((value) => ({ label: value, value }))} onChange={(language_style) => setProfileStrategy((current) => ({ ...current, language_style }))} />
-            <Select value={profileStrategy.persona_style} style={{ width: 140 }} options={['自然用户', '行业用户', '客服', '社区成员'].map((value) => ({ label: value, value }))} onChange={(persona_style) => setProfileStrategy((current) => ({ ...current, persona_style }))} />
-            <Select value={profileStrategy.gender_bias} style={{ width: 110 }} options={['不限', '偏男性', '偏女性', '中性'].map((value) => ({ label: value, value }))} onChange={(gender_bias) => setProfileStrategy((current) => ({ ...current, gender_bias }))} />
-            <InputNumber min={1} max={10} value={profileStrategy.username_max_attempts} addonBefore="候选数" onChange={(username_max_attempts) => setProfileStrategy((current) => ({ ...current, username_max_attempts: username_max_attempts ?? 3 }))} />
-            <Input
-              style={{ width: 180 }}
-              value={profileStrategy.username_prefix_hint}
-              placeholder="username 前缀"
-              onChange={(event) => setProfileStrategy((current) => ({ ...current, username_prefix_hint: event.target.value }))}
-            />
+            {actions.map((value) => <Tag color="processing" key={value}>{ACTION_LABEL[value]}</Tag>)}
           </Space>
-          <Space wrap>
-            <Switch checked={profileStrategy.bio_enabled} onChange={(bio_enabled) => setProfileStrategy((current) => ({ ...current, bio_enabled }))} /> <span>生成简介</span>
-            <Switch checked={profileStrategy.username_enabled} onChange={(username_enabled) => setProfileStrategy((current) => ({ ...current, username_enabled }))} /> <span>生成 username 候选</span>
-            <Switch checked={profileStrategy.overwrite_existing} onChange={(overwrite_existing) => setProfileStrategy((current) => ({ ...current, overwrite_existing }))} /> <span>覆盖已有资料</span>
-            <Select
-              value={avatarStrategy.mode}
-              style={{ width: 160 }}
-              options={[
-                { label: '不改头像', value: 'none' },
-                { label: '随机素材池', value: 'material_random' },
-                { label: '顺序分配', value: 'sequential' },
-              ]}
-              onChange={(modeValue) => setAvatarStrategy((current) => ({ ...current, mode: modeValue }))}
-            />
-            <Input
-              style={{ width: 260 }}
-              value={forbiddenText}
-              placeholder="禁用词，用逗号分隔"
-              onChange={(event) => setProfileStrategy((current) => ({ ...current, forbidden_words: event.target.value.split(/[,，\s]+/).filter(Boolean) }))}
-            />
-          </Space>
-          <Input.TextArea
-            rows={2}
-            value={profileStrategy.custom_prompt}
-            placeholder="命名风格提示：例如 像锅巴洋芋、蕉太狼、早睡失败这种真实 TG 昵称，不要正式姓名"
-            onChange={(event) => setProfileStrategy((current) => ({ ...current, custom_prompt: event.target.value }))}
-          />
-          <Input.TextArea
-            rows={2}
-            value={avatarStrategy.avatar_sources.join('\n')}
-            placeholder="头像来源：每行一个 avatar:对象key / material:素材ID / 平台媒体文件路径"
-            onChange={(event) => setAvatarStrategy((current) => ({ ...current, avatar_sources: event.target.value.split(/\n+/).map((item) => item.trim()).filter(Boolean) }))}
-          />
-          <Input.TextArea rows={2} value={reason} placeholder="操作原因" onChange={(event) => setReason(event.target.value)} />
         </Space>
+        {isProfileMode && (
+          <>
+            <Divider />
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Typography.Text strong><Activity size={16} /> AI 随机命名与资料策略</Typography.Text>
+              <Space wrap>
+                <Select
+                  value={profileStrategy.generation_mode}
+                  style={{ width: 150 }}
+                  options={[
+                    { label: 'AI 随机生成', value: 'ai_random' },
+                    { label: '模板兜底', value: 'template' },
+                    { label: '手工序号', value: 'sequence' },
+                  ]}
+                  onChange={(generation_mode) => setProfileStrategy((current) => ({ ...current, generation_mode }))}
+                />
+                <Select value={profileStrategy.language_style} style={{ width: 120 }} options={['中文', '英文', '混合', '东南亚'].map((value) => ({ label: value, value }))} onChange={(language_style) => setProfileStrategy((current) => ({ ...current, language_style }))} />
+                <Select value={profileStrategy.persona_style} style={{ width: 140 }} options={['自然用户', '行业用户', '客服', '社区成员'].map((value) => ({ label: value, value }))} onChange={(persona_style) => setProfileStrategy((current) => ({ ...current, persona_style }))} />
+                <Select value={profileStrategy.gender_bias} style={{ width: 110 }} options={['不限', '偏男性', '偏女性', '中性'].map((value) => ({ label: value, value }))} onChange={(gender_bias) => setProfileStrategy((current) => ({ ...current, gender_bias }))} />
+                <InputNumber min={1} max={10} value={profileStrategy.username_max_attempts} addonBefore="候选数" onChange={(username_max_attempts) => setProfileStrategy((current) => ({ ...current, username_max_attempts: username_max_attempts ?? 3 }))} />
+                <Input
+                  style={{ width: 180 }}
+                  value={profileStrategy.username_prefix_hint}
+                  placeholder="username 前缀"
+                  onChange={(event) => setProfileStrategy((current) => ({ ...current, username_prefix_hint: event.target.value }))}
+                />
+              </Space>
+              <Space wrap>
+                <Switch checked={profileStrategy.bio_enabled} onChange={(bio_enabled) => setProfileStrategy((current) => ({ ...current, bio_enabled }))} /> <span>生成简介</span>
+                <Switch checked={profileStrategy.username_enabled} onChange={(username_enabled) => setProfileStrategy((current) => ({ ...current, username_enabled }))} /> <span>生成 username 候选</span>
+                <Switch checked={profileStrategy.overwrite_existing} onChange={(overwrite_existing) => setProfileStrategy((current) => ({ ...current, overwrite_existing }))} /> <span>覆盖已有资料</span>
+                <Select
+                  value={avatarStrategy.mode}
+                  style={{ width: 160 }}
+                  options={[
+                    { label: '不改头像', value: 'none' },
+                    { label: '随机素材池', value: 'material_random' },
+                    { label: '顺序分配', value: 'sequential' },
+                  ]}
+                  onChange={(modeValue) => setAvatarStrategy((current) => ({ ...current, mode: modeValue }))}
+                />
+                <Input
+                  style={{ width: 260 }}
+                  value={forbiddenText}
+                  placeholder="禁用词，用逗号分隔"
+                  onChange={(event) => setProfileStrategy((current) => ({ ...current, forbidden_words: event.target.value.split(/[,，\s]+/).filter(Boolean) }))}
+                />
+              </Space>
+              <Input.TextArea
+                rows={2}
+                value={profileStrategy.custom_prompt}
+                placeholder="命名风格提示：例如 像锅巴洋芋、蕉太狼、早睡失败这种真实 TG 昵称，不要正式姓名"
+                onChange={(event) => setProfileStrategy((current) => ({ ...current, custom_prompt: event.target.value }))}
+              />
+              <Input.TextArea
+                rows={2}
+                value={avatarStrategy.avatar_sources.join('\n')}
+                placeholder="头像来源：每行一个 avatar:对象key / material:素材ID / 平台媒体文件路径"
+                onChange={(event) => setAvatarStrategy((current) => ({ ...current, avatar_sources: event.target.value.split(/\n+/).map((item) => item.trim()).filter(Boolean) }))}
+              />
+            </Space>
+          </>
+        )}
+        <Input.TextArea rows={2} value={reason} placeholder="操作原因" onChange={(event) => setReason(event.target.value)} />
         <Space wrap>
           <Button icon={<RefreshCcw size={16} />} loading={loading} onClick={runPrecheck}>预检 / AI 生成预览</Button>
           <Button icon={<Activity size={16} />} loading={loading} onClick={runPrecheck}>重抽全部</Button>

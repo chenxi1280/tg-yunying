@@ -120,6 +120,62 @@ def test_ai_random_profile_preview_timeout_warning_is_not_marked_unavailable(mon
         assert not any("不可用" in warning for warning in warnings)
 
 
+def test_ai_random_profile_preview_uses_healthy_provider_when_tenant_ai_disabled(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="测试 AI",
+                provider_type="openai_compatible",
+                base_url="https://ai.example.test",
+                model_name="test-model",
+                api_key_ciphertext=encrypt_secret("test-key"),
+                health_status="健康",
+                is_active=True,
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=False))
+        session.commit()
+
+        calls: list[object] = []
+
+        def ai_response(credentials, *_args, **_kwargs):
+            calls.append(credentials)
+            return json.dumps(
+                {
+                    "items": [
+                        {
+                            "display_name": "锅巴洋芋",
+                            "first_name": "锅巴洋芋",
+                            "last_name": "",
+                            "bio": "看到有意思的会回两句",
+                            "username_candidates": ["guoba_yangyu", "potato_crisp"],
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ), SimpleNamespace()
+
+        monkeypatch.setattr(account_security_service.ai_gateway, "_post_openai_compatible", ai_response)
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id],
+                action_types=["update_profile", "update_username"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="ai_random"),
+            ),
+        )
+
+        item = preview.items[0]
+        assert len(calls) == 1
+        assert item.generated_display_name == "锅巴洋芋"
+        assert item.username_candidates == ["guoba_yangyu", "potato_crisp"]
+        assert not any("租户 AI 配置未启用" in warning for warning in item.warnings)
+        assert not any("AI 随机命名本次生成失败" in warning for warning in item.warnings)
+
+
 def test_ai_random_profile_preview_requests_large_batch_once(monkeypatch):
     with _session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
