@@ -4,7 +4,7 @@ import json
 import random
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -117,6 +117,7 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
     if existing:
         raise ValueError("同租户下该手机号已存在可用账号，请先移除旧账号或更换手机号")
     data["display_name"] = _account_display_name(session, payload.tenant_id, data.get("display_name") or "", phone_number or data.get("phone_masked") or "")
+    _sync_account_id_sequence(session)
     account = TgAccount(**data)
     session.add(account)
     session.flush()
@@ -124,6 +125,22 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
     session.commit()
     session.refresh(account)
     return account
+
+
+def _sync_account_id_sequence(session: Session) -> None:
+    if not session.bind or session.bind.dialect.name != "postgresql":
+        return
+    session.execute(
+        text(
+            """
+            SELECT setval(
+                pg_get_serial_sequence('tg_accounts', 'id'),
+                GREATEST(COALESCE((SELECT MAX(id) FROM tg_accounts), 0), 1),
+                COALESCE((SELECT MAX(id) FROM tg_accounts), 0) > 0
+            )
+            """
+        )
+    )
 
 
 def _account_display_name(session: Session, tenant_id: int, display_name: str, phone_value: str) -> str:

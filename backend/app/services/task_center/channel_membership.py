@@ -216,7 +216,9 @@ def linked_channel_group(session: Session, channel: OperationTarget, *, create: 
 
 
 def channel_requires_membership_gate(channel: OperationTarget) -> bool:
-    return channel.target_type == "channel"
+    if channel.target_type != "channel":
+        return False
+    return not (channel.can_send and channel.auth_status == GroupAuthStatus.AUTHORIZED.value)
 
 
 def _create_missing_membership_actions(session: Session, task: Task, channel: OperationTarget, candidates: list[TgAccount]) -> int:

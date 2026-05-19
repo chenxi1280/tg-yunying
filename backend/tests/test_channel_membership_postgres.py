@@ -162,7 +162,7 @@ def test_channel_task_blocks_main_actions_when_all_membership_fails(monkeypatch)
         assert task.last_error == "没有账号成功关注目标频道"
 
 
-def test_authorized_sendable_channel_still_requires_per_account_membership():
+def test_authorized_sendable_channel_skips_membership_precondition():
     engine = _engine()
     now_value = _now()
 
@@ -190,8 +190,8 @@ def test_authorized_sendable_channel_still_requires_per_account_membership():
         session.commit()
 
         assert build_task_plan(session, task) == 1
-        assert session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_channel_membership").count() == 1
-        assert session.query(Action).filter(Action.task_id == task.id, Action.action_type == "view_message").count() == 0
+        assert session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_channel_membership").count() == 0
+        assert session.query(Action).filter(Action.task_id == task.id, Action.action_type == "view_message").count() == 1
 
 
 def test_channel_main_action_runtime_guard_blocks_unjoined_account(monkeypatch):
