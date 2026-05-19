@@ -4,7 +4,7 @@ import json
 import random
 from datetime import datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -38,6 +38,7 @@ from .account_pools import account_pool_snapshot, ensure_default_account_pool, s
 
 ACCOUNT_SYNC_INTERVAL = timedelta(hours=1)
 ACCOUNT_SYNC_STAGGER_STEP = timedelta(seconds=3)
+GENERIC_ACCOUNT_DISPLAY_NAMES = {"", "托管账号", "新托管账号", "未命名账号"}
 ACCOUNT_SYNC_STALE_AFTER = timedelta(minutes=30)
 ACCOUNT_SYNC_QUEUE_STALE_AFTER = timedelta(hours=6)
 PROFILE_SYNC_STALE_AFTER = timedelta(minutes=30)
@@ -115,6 +116,7 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
     )
     if existing:
         raise ValueError("同租户下该手机号已存在可用账号，请先移除旧账号或更换手机号")
+    data["display_name"] = _account_display_name(session, payload.tenant_id, data.get("display_name") or "", phone_number or data.get("phone_masked") or "")
     account = TgAccount(**data)
     session.add(account)
     session.flush()
@@ -122,6 +124,24 @@ def create_account(session: Session, payload: TgAccountCreate, actor: str = "普
     session.commit()
     session.refresh(account)
     return account
+
+
+def _account_display_name(session: Session, tenant_id: int, display_name: str, phone_value: str) -> str:
+    cleaned = (display_name or "").strip()
+    if cleaned and cleaned not in GENERIC_ACCOUNT_DISPLAY_NAMES:
+        return cleaned
+    digits = "".join(char for char in (phone_value or "") if char.isdigit())
+    tail = digits[-4:] if len(digits) >= 4 else "0000"
+    now_value = _now()
+    day_start = now_value.replace(hour=0, minute=0, second=0, microsecond=0)
+    imported_today = session.scalar(
+        select(func.count(TgAccount.id)).where(
+            TgAccount.tenant_id == tenant_id,
+            TgAccount.deleted_at.is_(None),
+            TgAccount.created_at >= day_start,
+        )
+    ) or 0
+    return f"导入{now_value:%m%d}-{tail}-{imported_today + 1:03d}"
 
 
 def soft_delete_account(session: Session, account_id: int, actor: str = "普通用户", reason: str = "用户移除") -> TgAccount:

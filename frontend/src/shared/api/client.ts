@@ -12,20 +12,25 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T>(path: string, options?: RequestInit): Promise<T> {
+export interface ApiRequestOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
+export async function api<T>(path: string, options?: ApiRequestOptions): Promise<T> {
   const token = localStorage.getItem('tg_ops_token');
   const isFormData = options?.body instanceof FormData;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15_000);
+  const { timeoutMs = 15_000, ...fetchOptions } = options ?? {};
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`${API_BASE}${path}`, {
       headers: {
         ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(options?.headers ?? {}),
+        ...(fetchOptions.headers ?? {}),
       },
       signal: controller.signal,
-      ...options,
+      ...fetchOptions,
     });
     if (!response.ok) {
       const text = await response.text().catch(() => '');

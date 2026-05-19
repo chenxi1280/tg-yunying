@@ -375,8 +375,8 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
           <Form.Item name="title" label="名称" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="tg_peer_id" label="TG Peer ID / username" rules={[{ required: true }]}>
-            <Input placeholder="-100..." />
+          <Form.Item name="tg_peer_id" label="Peer ID / @username / 频道链接" rules={[{ required: true }]}>
+            <Input placeholder="@channel、https://t.me/channel、https://t.me/+invite 或 -100..." />
           </Form.Item>
           <Form.Item name="username" label="Username">
             <Input />

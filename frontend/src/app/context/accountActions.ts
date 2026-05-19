@@ -76,7 +76,7 @@ export function createAccountActions(params: AccountActionParams) {
     }
     params.setLoginAfterCreate(loginNow);
     params.setAccountCreateForm({
-      display_name: '新托管账号',
+      display_name: '',
       username: '',
       phone_number: '',
       pool_id: params.selectedPoolId || params.accountPools.find((pool) => pool.is_default)?.id || params.accountPools[0]?.id || '',
@@ -223,7 +223,7 @@ export function createAccountActions(params: AccountActionParams) {
           phone_number: params.accountCreateForm.phone_number,
         }),
       });
-      params.setAccountCreateForm({ display_name: '新托管账号', username: '', phone_number: '', pool_id: '', login_method: 'code' });
+      params.setAccountCreateForm({ display_name: '', username: '', phone_number: '', pool_id: '', login_method: 'code' });
       await params.refresh();
       await startOrResumeAccountLogin(created, params.accountCreateForm.login_method, params.accountCreateForm.login_method === 'code');
     } catch (error) {

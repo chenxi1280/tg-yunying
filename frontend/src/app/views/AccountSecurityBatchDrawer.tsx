@@ -19,6 +19,7 @@ type ProfileStrategy = {
   username_prefix_hint: string;
   username_max_attempts: number;
   forbidden_words: string[];
+  custom_prompt: string;
   overwrite_existing: boolean;
 };
 
@@ -47,6 +48,7 @@ const defaultProfileStrategy: ProfileStrategy = {
   username_prefix_hint: '',
   username_max_attempts: 3,
   forbidden_words: [],
+  custom_prompt: '像真实 TG 普通用户的随手昵称，不要正式姓名；可以像锅巴洋芋、蕉太狼、早睡失败、小熊便利店、不吃香菜这种随机网名。',
   overwrite_existing: false,
 };
 
@@ -159,7 +161,8 @@ export function AccountSecurityBatchDrawer({
     setLoading(true);
     try {
       const endpoint = mode === 'profile' ? '/tg-accounts/security-batches/profile-preview' : '/tg-accounts/security-batches/precheck';
-      const result = await api<AccountSecurityPrecheck>(endpoint, { method: 'POST', body: JSON.stringify(payload) });
+      const timeoutMs = mode === 'profile' ? Math.min(210_000, Math.max(60_000, selectedAccountIds.length * 5_000)) : 60_000;
+      const result = await api<AccountSecurityPrecheck>(endpoint, { method: 'POST', body: JSON.stringify(payload), timeoutMs });
       setPrecheck(result);
       setEditedPreviewIds(new Set());
       setBatch(null);
@@ -367,6 +370,12 @@ export function AccountSecurityBatchDrawer({
               onChange={(event) => setProfileStrategy((current) => ({ ...current, forbidden_words: event.target.value.split(/[,，\s]+/).filter(Boolean) }))}
             />
           </Space>
+          <Input.TextArea
+            rows={2}
+            value={profileStrategy.custom_prompt}
+            placeholder="命名风格提示：例如 像锅巴洋芋、蕉太狼、早睡失败这种真实 TG 昵称，不要正式姓名"
+            onChange={(event) => setProfileStrategy((current) => ({ ...current, custom_prompt: event.target.value }))}
+          />
           <Input.TextArea
             rows={2}
             value={avatarStrategy.avatar_sources.join('\n')}

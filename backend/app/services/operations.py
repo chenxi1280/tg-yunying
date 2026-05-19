@@ -304,15 +304,19 @@ def _normalize_channel_target_input(data: dict) -> dict:
     if raw_peer.startswith("@"):
         username = raw_peer.lstrip("@")
         normalized_peer = username
-    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
+    matched_link = False
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/", "https://telegram.me/", "http://telegram.me/", "telegram.me/"):
         if raw_peer.startswith(prefix):
+            matched_link = True
             tail = raw_peer.split(prefix, 1)[1].split("?", 1)[0].strip("/")
             if tail and not tail.startswith(("+", "joinchat/")):
                 username = tail
                 normalized_peer = tail
             else:
-                normalized_peer = raw_peer
+                normalized_peer = f"{prefix}{tail}" if tail else raw_peer.split("?", 1)[0].strip("/")
             break
+    if not matched_link and raw_peer.startswith("+"):
+        normalized_peer = raw_peer.split("?", 1)[0].strip("/")
     data["tg_peer_id"] = normalized_peer
     data["username"] = username
     return data

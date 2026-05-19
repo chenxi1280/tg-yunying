@@ -30,7 +30,7 @@ export function defaultAuditFilters(): AuditFilters {
 
 export function defaultAccountCreateForm() {
   return {
-    display_name: '新托管账号',
+    display_name: '',
     username: '',
     phone_number: '',
     pool_id: '' as number | '',

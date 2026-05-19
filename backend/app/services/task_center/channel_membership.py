@@ -270,7 +270,7 @@ def _membership_pacing_config(task: Task) -> dict[str, Any]:
 def _joinable_channel_reference(channel: OperationTarget) -> str:
     if channel.username:
         return f"https://t.me/{channel.username.lstrip('@')}"
-    if str(channel.tg_peer_id).startswith(("https://t.me/", "http://t.me/", "t.me/", "+")):
+    if str(channel.tg_peer_id).startswith(("https://t.me/", "http://t.me/", "t.me/", "https://telegram.me/", "http://telegram.me/", "telegram.me/", "+")):
         return str(channel.tg_peer_id)
     return ""
 

@@ -19,6 +19,7 @@ class ProfileGenerationStrategy(BaseModel):
     username_prefix_hint: str = ""
     username_max_attempts: int = Field(default=3, ge=1, le=10)
     forbidden_words: list[str] = Field(default_factory=list)
+    custom_prompt: str = Field(default="", max_length=1000)
     overwrite_existing: bool = False
 
 

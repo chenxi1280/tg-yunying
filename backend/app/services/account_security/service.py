@@ -42,16 +42,24 @@ from ..developer_apps import credentials_for_account
 
 
 USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
+SYSTEM_DISPLAY_NAME_RE = re.compile(r"^导入\d{4}-\d{2,4}-\d{3}$")
+GENERIC_DISPLAY_NAMES = {"", "托管账号", "新托管账号", "未命名账号"}
+PROFILE_AI_BASE_TIMEOUT_SECONDS = 45
+PROFILE_AI_MAX_TIMEOUT_SECONDS = 180
 PROFILE_ACTIONS = {"update_profile", "update_username", "update_avatar"}
 SECURITY_ACTIONS = {"cleanup_devices", "set_two_fa"}
 ALL_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS
 AI_NAME_POOL = [
-    ("林", "知夏", "喜欢分享日常和行业观察"),
-    ("顾", "北辰", "偶尔聊聊项目和生活"),
-    ("许", "清和", "关注新鲜事和真实体验"),
-    ("陈", "予安", "喜欢把复杂事情说简单"),
-    ("周", "景明", "记录一点有用的信息"),
-    ("沈", "南枝", "日常在线，随缘交流"),
+    ("锅巴洋芋", "", "日常在线，随缘交流"),
+    ("蕉太狼", "", "偶尔冒泡，看到就回"),
+    ("早睡失败", "", "分享一点生活碎片"),
+    ("小熊便利店", "", "路过看看，随手聊聊"),
+    ("不吃香菜", "", "慢慢看，慢慢聊"),
+    ("月亮打烊", "", "喜欢记录一些小事"),
+    ("西瓜汽水", "", "看到有意思的会回两句"),
+    ("今天也很困", "", "在线时间不固定"),
+    ("糯米团子", "", "随缘交流，别太正式"),
+    ("橘子海", "", "爱看新鲜事"),
 ]
 
 
@@ -310,9 +318,12 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
     generated = _generate_profiles(session, tenant_id, accounts, payload.profile_strategy) if needs_profile_preview else [_account_profile_preview(account) for account in accounts]
     overrides = {override.account_id: override for override in payload.preview_overrides}
     for index, account in enumerate(accounts):
-        try:
-            snapshot = refresh_account_security(session, tenant_id, account.id, actor="precheck")
-        except ValueError:
+        if set(action_types) & SECURITY_ACTIONS:
+            try:
+                snapshot = refresh_account_security(session, tenant_id, account.id, actor="precheck")
+            except ValueError:
+                snapshot = _snapshot(session, account)
+        else:
             snapshot = _snapshot(session, account)
         blockers: list[str] = []
         warnings: list[str] = []
@@ -349,11 +360,9 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
         avatar_source = str(generated_item.get("avatar_source") or _avatar_source(index, payload.avatar_strategy))
         if "update_avatar" in action_types:
             avatar_error = _validate_avatar_source(session, account, avatar_source)
-            if avatar_error and avatar_source:
-                blockers.append(avatar_error)
-                status = "manual_required"
-            elif avatar_error:
+            if avatar_error:
                 warnings.append(avatar_error)
+                avatar_source = ""
         items.append(
             AccountSecurityPreviewItem(
                 account_id=account.id,
@@ -597,7 +606,7 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
                 snapshot.two_fa_password_hint = "TG运营平台托管"
                 snapshot.two_fa_password_stored_at = _now()
         if "update_profile" in action_types:
-            display_name = item.generated_display_name if batch.overwrite_existing_profile or not account.display_name else account.display_name
+            display_name = item.generated_display_name if batch.overwrite_existing_profile or _can_replace_display_name(account.display_name) else account.display_name
             first_name = item.generated_first_name if batch.overwrite_existing_profile or not account.tg_first_name else account.tg_first_name
             last_name = item.generated_last_name if batch.overwrite_existing_profile or not account.tg_last_name else account.tg_last_name
             bio = item.generated_bio if batch.overwrite_existing_profile or not account.tg_bio else account.tg_bio
@@ -876,16 +885,26 @@ def _accounts_for_payload(session: Session, tenant_id: int, account_ids: list[in
 def _generate_profiles(session: Session, tenant_id: int, accounts: list[TgAccount], strategy) -> list[dict[str, object]]:
     if strategy.generation_mode == "ai_random":
         last_error: Exception | None = None
-        for _attempt in range(2):
-            try:
-                return _generate_profiles_with_ai(session, tenant_id, accounts, strategy)
-            except Exception as exc:  # noqa: BLE001 - surfaced as preview warning.
-                last_error = exc
+        try:
+            return _generate_profiles_with_ai(session, tenant_id, accounts, strategy)
+        except Exception as exc:  # noqa: BLE001 - surfaced as preview warning.
+            last_error = exc
         fallback = _generate_profiles_from_local_pool(accounts, strategy)
         for item in fallback:
-            item["generation_error"] = f"AI 随机命名重试后仍不可用：{last_error}"
+            item["generation_warning"] = _profile_ai_fallback_warning(last_error)
         return fallback
     return _generate_profiles_from_local_pool(accounts, strategy)
+
+
+def _profile_ai_fallback_warning(exc: Exception | None) -> str:
+    detail = str(exc) if exc else "未知错误"
+    if isinstance(exc, TimeoutError) or "timed out" in detail.lower() or "timeout" in detail.lower():
+        return f"AI 随机命名本次响应超时，已使用本地随机中文名兜底：{detail}"
+    return f"AI 随机命名本次生成失败，已使用本地随机中文名兜底：{detail}"
+
+
+def _profile_ai_timeout_seconds(account_count: int) -> int:
+    return min(PROFILE_AI_MAX_TIMEOUT_SECONDS, max(PROFILE_AI_BASE_TIMEOUT_SECONDS, account_count * 4))
 
 
 def _apply_preview_override(generated_item: dict[str, object], override) -> dict[str, object]:
@@ -919,8 +938,9 @@ def _generate_profiles_with_ai(session: Session, tenant_id: int, accounts: list[
     if credentials.base_url.startswith("mock://"):
         raise RuntimeError("当前 AI 供应商为 mock")
     count = len(accounts)
+    style_prompt = (getattr(strategy, "custom_prompt", "") or "").strip()
     prompt = (
-        f"请为 Telegram 运营账号生成 {count} 组随机账号资料。\n"
+        f"请为 Telegram 运营账号一次性生成 {count} 组随机账号资料。\n"
         f"语言风格：{strategy.language_style}\n"
         f"账号画像：{strategy.persona_style}\n"
         f"性别倾向：{strategy.gender_bias}\n"
@@ -928,17 +948,22 @@ def _generate_profiles_with_ai(session: Session, tenant_id: int, accounts: list[
         f"username 前缀提示：{strategy.username_prefix_hint or '无'}\n"
         f"每个账号 username 候选数量：{strategy.username_max_attempts}\n"
         f"禁用词：{', '.join(strategy.forbidden_words) or '无'}\n"
-        "要求：名字自然随机，避免规律序号；username 只能包含英文字母、数字、下划线，且以字母开头，长度 5-32。\n"
-        '只输出 JSON：{"items":[{"display_name":"林知夏","first_name":"知夏","last_name":"林","bio":"喜欢分享日常和行业观察","username_candidates":["linzhixia_28","zhixia_daily","lzx_notes"]}]}'
+        f"用户补充命名风格：{style_prompt or '像真实 TG 普通用户的随手昵称，不要正式姓名'}\n"
+        "昵称要求：display_name 要像真实用户网名/昵称，随机、生活化、有网感，可以是中文短语、食物、梗名、心情或轻微拟人化；"
+        "例如：锅巴洋芋、蕉太狼、早睡失败、小熊便利店、不吃香菜、月亮打烊。不要批量生成“张雨晴、李浩然、王思远”这类正式姓名，避免公司/客服/营销号口吻，避免规律序号。\n"
+        "姓名字段要求：first_name 可以直接等于 display_name；last_name 可以为空，不要强行拆成中文姓氏和名字。\n"
+        "username 要求：只能包含英文字母、数字、下划线，且以字母开头，长度 5-32；可以根据昵称意译或拼音化生成，不要包含中文。\n"
+        '只输出 JSON：{"items":[{"display_name":"锅巴洋芋","first_name":"锅巴洋芋","last_name":"","bio":"看到有意思的会回两句","username_candidates":["guoba_yangyu","potato_crisp","yangyu_daily"]}]}'
     )
     raw, _usage = ai_gateway._post_openai_compatible(  # noqa: SLF001 - reuse the repo's provider adapter for JSON generation.
         credentials,
         prompt,
         setting.temperature,
         max(setting.max_tokens, count * 256, 1200),
-        system_prompt="你是 Telegram 账号资料生成器。只输出紧凑合法 JSON，不要解释。",
+        system_prompt="你是 Telegram 账号资料生成器。生成真实、随机、生活化的 TG 用户昵称，不生成正式姓名或营销号名称；只输出紧凑合法 JSON，不要解释。",
         response_format_json=True,
         reasoning_retry_max_tokens=max(setting.max_tokens, count * 512, 2048),
+        timeout=_profile_ai_timeout_seconds(count),
     )
     return _parse_ai_profile_items(raw, count, strategy)
 
@@ -994,12 +1019,13 @@ def _generate_profiles_from_local_pool(accounts: list[TgAccount], strategy) -> l
     forbidden = {word.strip() for word in strategy.forbidden_words if word.strip()}
     results: list[dict[str, object]] = []
     for index, account in enumerate(accounts):
-        last_name, first_name, bio = AI_NAME_POOL[(account.id + index) % len(AI_NAME_POOL)]
-        display_name = f"{last_name}{first_name}"
+        display_name, suffix, bio = AI_NAME_POOL[(account.id + index) % len(AI_NAME_POOL)]
+        if suffix:
+            display_name = f"{display_name}{suffix}"
         if any(word in display_name for word in forbidden):
             display_name = f"用户{account.id}"
-            first_name = display_name
-            last_name = ""
+        first_name = display_name
+        last_name = ""
         username_base = (strategy.username_prefix_hint or _romanize_name(display_name) or f"user{account.id}").lower()
         username_base = re.sub(r"[^a-z0-9_]", "", username_base)[:20] or f"user{account.id}"
         candidates = [f"{username_base}_{account.id + offset:03d}" for offset in range(strategy.username_max_attempts)]
@@ -1018,6 +1044,11 @@ def _generate_profiles_from_local_pool(accounts: list[TgAccount], strategy) -> l
 def _romanize_name(value: str) -> str:
     # Local deterministic fallback for preview tests; live AI output can provide richer candidates.
     return "tguser"
+
+
+def _can_replace_display_name(display_name: str | None) -> bool:
+    value = (display_name or "").strip()
+    return value in GENERIC_DISPLAY_NAMES or bool(SYSTEM_DISPLAY_NAME_RE.match(value))
 
 
 def _avatar_source(index: int, strategy) -> str:

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import json
+import os
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-from app.models import AccountStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
+from app.models import AiProvider, AccountStatus, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
+from app.schemas import TgAccountCreate
 from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ProfileGenerationStrategy
 from app.security import encrypt_secret, encrypt_session
 from app.storage import save_avatar_bytes
@@ -22,10 +24,12 @@ from app.services.account_security import (
     precheck_account_security_batch,
     refresh_account_security,
 )
+from app.services.accounts import create_account
 
 
 def _session():
-    engine = create_engine("sqlite:///:memory:", future=True, connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
+    Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     return Session(engine)
 
@@ -67,27 +71,178 @@ def test_refresh_account_security_records_trusted_session_and_external_device():
         assert snapshot.profile_status == "incomplete"
 
 
-def test_precheck_uses_ai_random_profile_preview_and_flags_offline_account():
+def test_precheck_falls_back_to_local_profile_preview_and_skips_missing_avatar_source():
     with _session() as session:
-        account = _seed_account(session, status=AccountStatus.NEED_RELOGIN.value, session_value="")
+        account = _seed_account(session)
 
         preview = precheck_account_security_batch(
             session,
             1,
             AccountSecurityPrecheckRequest(
                 account_ids=[account.id],
-                action_types=["update_profile", "update_username"],
+                action_types=["update_profile", "update_username", "update_avatar"],
                 profile_strategy=ProfileGenerationStrategy(generation_mode="ai_random", forbidden_words=["违规"]),
             ),
         )
 
         item = preview.items[0]
-        assert preview.summary["manual_required"] == 1
-        assert item.precheck_status == "manual_required"
+        assert preview.summary["executable"] == 1
+        assert item.precheck_status == "executable"
         assert item.generated_display_name
         assert item.username_candidates
-        assert "账号未在线或缺少可用 session" in item.blockers
-        assert any("AI 随机命名重试后仍不可用" in blocker for blocker in item.blockers)
+        assert item.avatar_source == ""
+        assert not item.blockers
+        assert any("AI 随机命名本次生成失败" in warning for warning in item.warnings)
+        assert not any("AI 随机命名暂不可用" in warning for warning in item.warnings)
+        assert "未配置头像来源，将跳过头像设置" in item.warnings
+
+
+def test_ai_random_profile_preview_timeout_warning_is_not_marked_unavailable(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+
+        def timeout_generation(*args, **kwargs):
+            raise TimeoutError("The read operation timed out")
+
+        monkeypatch.setattr(account_security_service, "_generate_profiles_with_ai", timeout_generation)
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id],
+                action_types=["update_profile"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="ai_random"),
+            ),
+        )
+
+        warnings = preview.items[0].warnings
+        assert any("AI 随机命名本次响应超时" in warning for warning in warnings)
+        assert not any("不可用" in warning for warning in warnings)
+
+
+def test_ai_random_profile_preview_requests_large_batch_once(monkeypatch):
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TelegramDeveloperApp(
+                id=1,
+                app_name="测试开发者应用",
+                api_id=12345,
+                api_hash_ciphertext=encrypt_secret("hash"),
+                health_status="健康",
+            )
+        )
+        provider = AiProvider(
+            id=1,
+            provider_name="测试 AI",
+            provider_type="openai_compatible",
+            base_url="https://ai.example.test",
+            model_name="test-model",
+            api_key_ciphertext=encrypt_secret("test-key"),
+            health_status="健康",
+            is_active=True,
+        )
+        session.add(provider)
+        session.flush()
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True))
+        accounts = [
+            TgAccount(
+                id=index,
+                tenant_id=1,
+                display_name=f"账号{index}",
+                phone_masked=f"138****{index:04d}",
+                developer_app_id=1,
+                developer_app_version=1,
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext=encrypt_session("session"),
+                health_score=90,
+            )
+            for index in range(1, 51)
+        ]
+        session.add_all(accounts)
+        session.commit()
+
+        calls: list[dict[str, object]] = []
+
+        def batch_ai_response(credentials, prompt, temperature, max_tokens, **kwargs):
+            calls.append({"prompt": prompt, "timeout": kwargs.get("timeout"), "max_tokens": max_tokens})
+            return json.dumps(
+                {
+                    "items": [
+                        {
+                            "display_name": f"测试名{index}",
+                            "first_name": f"名{index}",
+                            "last_name": "测",
+                            "bio": "批量生成资料",
+                            "username_candidates": [f"testuser_{index:03d}"],
+                        }
+                        for index in range(1, 51)
+                    ]
+                },
+                ensure_ascii=False,
+            ), SimpleNamespace()
+
+        monkeypatch.setattr(account_security_service.ai_gateway, "_post_openai_compatible", batch_ai_response)
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id for account in accounts],
+                action_types=["update_profile", "update_username"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="ai_random", custom_prompt="像锅巴洋芋、蕉太狼这种随机网名"),
+            ),
+        )
+
+        assert len(calls) == 1
+        assert "一次性生成 50 组随机账号资料" in str(calls[0]["prompt"])
+        assert "像锅巴洋芋、蕉太狼这种随机网名" in str(calls[0]["prompt"])
+        assert calls[0]["timeout"] == 180
+        assert preview.summary["total"] == 50
+        assert preview.summary["executable"] == 50
+        assert preview.items[0].generated_display_name == "测试名1"
+        assert preview.items[-1].generated_display_name == "测试名50"
+
+
+def test_precheck_invalid_avatar_source_warns_and_keeps_batch_executable():
+    with _session() as session:
+        account = _seed_account(session)
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id],
+                action_types=["update_profile", "update_avatar"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+                avatar_strategy=AvatarStrategy(mode="sequential", avatar_sources=["material:999"]),
+            ),
+        )
+
+        item = preview.items[0]
+        assert item.precheck_status == "executable"
+        assert item.avatar_source == ""
+        assert "头像素材不存在或不属于当前租户" in item.warnings
+
+
+def test_profile_preview_does_not_refresh_security_state(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+
+        def fail_refresh(*args, **kwargs):
+            raise AssertionError("profile preview should not scan live security state")
+
+        monkeypatch.setattr(account_security_service, "refresh_account_security", fail_refresh)
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id],
+                action_types=["update_profile", "update_username", "update_avatar"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+            ),
+        )
+
+        assert preview.items[0].precheck_status == "executable"
 
 
 def test_security_only_precheck_does_not_require_ai_profile_generation():
@@ -251,3 +406,47 @@ def test_preview_overrides_are_persisted_and_existing_profile_is_not_overwritten
         assert updated.username == "existing_user"
         assert updated.avatar_object_key == existing_avatar
         assert updated.tg_first_name == "已有名"
+
+
+def test_profile_init_replaces_system_generated_display_name_with_generated_chinese_name():
+    with _session() as session:
+        account = _seed_account(session)
+        account.display_name = "导入0519-0000-001"
+        session.commit()
+        payload = AccountSecurityBatchCreate(
+            account_ids=[account.id],
+            action_types=["update_profile"],
+            confirm_text="确认加固",
+            profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+            reason="测试资料初始化名称",
+        )
+        batch = create_account_security_batch(session, 1, payload, "tester")
+
+        drain_account_security_batches(lambda: Session(session.bind), limit=10)
+        item = session.scalar(select(TgAccountSecurityBatchItem).where(TgAccountSecurityBatchItem.batch_id == batch.id))
+        updated = session.get(TgAccount, account.id)
+
+        assert updated.display_name == item.generated_display_name
+        assert updated.display_name != "导入0519-0000-001"
+
+
+def test_create_account_generates_import_time_phone_tail_sequence_name():
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TelegramDeveloperApp(
+                id=1,
+                app_name="测试开发者应用",
+                api_id=12345,
+                api_hash_ciphertext=encrypt_secret("hash"),
+                health_status="健康",
+            )
+        )
+        session.commit()
+
+        first = create_account(session, TgAccountCreate(tenant_id=1, display_name="新托管账号", phone_number="+8613800011234"), "tester")
+        second = create_account(session, TgAccountCreate(tenant_id=1, display_name="", phone_number="+8613800015678"), "tester")
+
+        assert first.display_name.endswith("-1234-001")
+        assert second.display_name.endswith("-5678-002")
+        assert first.display_name.startswith(f"导入{_now():%m%d}-")

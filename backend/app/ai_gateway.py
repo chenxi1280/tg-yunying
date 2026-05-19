@@ -189,6 +189,7 @@ class AiGateway:
         system_prompt: str = "你是一个 Telegram 群运营话术助手，只输出用户要求的 JSON。",
         response_format_json: bool = False,
         reasoning_retry_max_tokens: int | None = None,
+        timeout: int = 30,
     ) -> tuple[str, AiUsage]:
         url = self._chat_completions_url(credentials.base_url)
         headers = {"Content-Type": "application/json"}
@@ -204,7 +205,7 @@ class AiGateway:
             payload = self._chat_payload(credentials, prompt, system_prompt, temperature, token_budget, response_format_json)
             request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
             try:
-                with urllib.request.urlopen(request, timeout=30) as response:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
                     data = json.loads(response.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="ignore")
