@@ -16,7 +16,7 @@ class Tenant(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
     plan_name: Mapped[str] = mapped_column(String(80), default="试运行")
-    account_quota: Mapped[int] = mapped_column(Integer, default=50)
+    account_quota: Mapped[int] = mapped_column(Integer, default=0)
     task_quota: Mapped[int] = mapped_column(Integer, default=5000)
     telegram_bot_token_ciphertext: Mapped[str] = mapped_column(Text, default="")
     admin_chat_id: Mapped[str] = mapped_column(String(120), default="")

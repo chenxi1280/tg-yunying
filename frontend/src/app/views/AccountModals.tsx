@@ -4,7 +4,7 @@ import type { ColumnsType } from 'antd/es/table';
 import type {
   Account, AccountPool, AccountDetail, AccountPoolDetail,
   AccountClonePlan, AccountCloneItem, VerificationTask, Contact,
-  RuntimeConfig, CurrentUser, AccountGroup, MessageTask,
+  RuntimeConfig, CurrentUser, AccountGroup, MessageTask, AccountSecurityDetail, AccountAuthorizationSnapshot,
 } from '../types';
 import { FormActions, StatusBadge, useAntdTableControls } from '../components/shared';
 import { statusAccent, operationLabel, syncTypeLabel } from '../utils';
@@ -218,6 +218,8 @@ export function AccountDetailModal({
   const [manualTargetId, setManualTargetId] = React.useState<number | null>(null);
   const [manualContent, setManualContent] = React.useState('');
   const [manualSending, setManualSending] = React.useState(false);
+  const [securityDetail, setSecurityDetail] = React.useState<AccountSecurityDetail | null>(null);
+  const [securityLoading, setSecurityLoading] = React.useState(false);
 
   React.useEffect(() => {
     setManualTargetId((current) => current ?? accountDetail.operation_targets[0]?.id ?? null);
@@ -232,6 +234,40 @@ export function AccountDetailModal({
     }, 10000);
     return () => window.clearInterval(timer);
   }, [accountDetail.account.id, accountDetailTab, canViewCodes]);
+
+  React.useEffect(() => {
+    if (accountDetailTab !== '账号安全') return;
+    void loadSecurityDetail();
+  }, [accountDetail.account.id, accountDetailTab]);
+
+  async function loadSecurityDetail() {
+    setSecurityLoading(true);
+    try {
+      setSecurityDetail(await api<AccountSecurityDetail>(`/tg-accounts/${accountDetail.account.id}/security`));
+    } finally {
+      setSecurityLoading(false);
+    }
+  }
+
+  async function refreshSecurityDetail() {
+    setSecurityLoading(true);
+    try {
+      await api(`/tg-accounts/${accountDetail.account.id}/security/refresh`, { method: 'POST' });
+      setSecurityDetail(await api<AccountSecurityDetail>(`/tg-accounts/${accountDetail.account.id}/security`));
+    } finally {
+      setSecurityLoading(false);
+    }
+  }
+
+  async function createSingleSecurityBatch(action: 'cleanup-devices' | 'set-2fa') {
+    setSecurityLoading(true);
+    try {
+      await api(`/tg-accounts/${accountDetail.account.id}/security/${action}`, { method: 'POST' });
+      setSecurityDetail(await api<AccountSecurityDetail>(`/tg-accounts/${accountDetail.account.id}/security`));
+    } finally {
+      setSecurityLoading(false);
+    }
+  }
 
   async function syncTargets() {
     await api(`/tg-accounts/${accountDetail.account.id}/sync-targets`, { method: 'POST' });
@@ -285,6 +321,22 @@ export function AccountDetailModal({
     { title: '状态', key: 'status', width: 120, render: (_, task) => <StatusBadge status={task.status} /> },
     { title: '失败类型', key: 'failure', width: 130, render: (_, task) => <StatusBadge status={task.failure_type ?? '无失败'} /> },
     { title: '时间', key: 'time', width: 200, render: (_, task) => formatBeijingDateTime(task.sent_at ?? task.scheduled_at) },
+  ];
+
+  const authorizationColumns: ColumnsType<AccountAuthorizationSnapshot> = [
+    {
+      title: '设备',
+      key: 'device',
+      render: (_, authorization) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{authorization.device_model || '未知设备'}</Typography.Text>
+          <Typography.Text type="secondary">{authorization.platform || '未知平台'} / {authorization.app_name || '未知应用'} {authorization.app_version}</Typography.Text>
+        </Space>
+      ),
+    },
+    { title: '可信状态', key: 'trusted', width: 150, render: (_, authorization) => <StatusBadge status={authorization.is_current_session ? '已完成' : authorization.status} label={authorization.is_current_session ? '平台可信设备' : authorization.status} /> },
+    { title: '位置', key: 'location', width: 160, render: (_, authorization) => [authorization.country, authorization.region, authorization.ip_masked].filter(Boolean).join(' / ') || '-' },
+    { title: '最近活跃', key: 'active', width: 190, render: (_, authorization) => formatTime(authorization.date_active || authorization.scanned_at) },
   ];
 
   const groupTable = useAntdTableControls<AccountGroup>({
@@ -432,7 +484,7 @@ export function AccountDetailModal({
         className="tabs-row"
         activeKey={accountDetailTab}
         onChange={setAccountDetailTab}
-        items={['资料', '账号状态记录', ...(canViewCodes ? ['TG 官方验证码'] : []), '验证待处理', '执行记录', ...(canClone ? ['克隆'] : [])].map((tabName) => ({ key: tabName, label: tabName }))}
+        items={['资料', '账号安全', '账号状态记录', ...(canViewCodes ? ['TG 官方验证码'] : []), '验证待处理', '执行记录', ...(canClone ? ['克隆'] : [])].map((tabName) => ({ key: tabName, label: tabName }))}
       />
 
       {accountDetailTab === '资料' && (
@@ -477,6 +529,68 @@ export function AccountDetailModal({
             {!accountDetail.profile_sync_records.length && <p className="muted-line">暂无资料同步记录。</p>}
           </div>
         </Card>
+      )}
+
+      {accountDetailTab === '账号安全' && (
+        <div className="flow-sections">
+          <Card
+            className="sub-panel compact-panel"
+            title="账号安全"
+            extra={<Button size="small" loading={securityLoading} onClick={refreshSecurityDetail}>刷新设备与 2FA</Button>}
+          >
+            {securityDetail ? (
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                <Descriptions
+                  className="detail-list"
+                  size="small"
+                  column={2}
+                  items={[
+                    { key: 'trusted', label: '平台可信设备', children: <StatusBadge status={securityDetail.snapshot.trusted_session_status} /> },
+                    { key: 'external', label: '外部设备', children: `${securityDetail.snapshot.external_authorization_count} 个` },
+                    { key: 'two-fa', label: '二步验证', children: <StatusBadge status={securityDetail.snapshot.two_fa_status} /> },
+                    { key: 'profile', label: '资料状态', children: <StatusBadge status={securityDetail.snapshot.profile_status} /> },
+                    { key: 'label', label: '平台设备显示名', children: securityDetail.snapshot.trusted_device_label || '待确认' },
+                    { key: 'hardened', label: '最近加固', children: formatTime(securityDetail.snapshot.last_hardened_at) },
+                  ]}
+                />
+                <Space wrap>
+                  <Button type="primary" size="small" loading={securityLoading} disabled={!canSyncAccount} onClick={() => createSingleSecurityBatch('cleanup-devices')}>清理外部设备</Button>
+                  <Button size="small" loading={securityLoading} disabled={!canSyncAccount} onClick={() => createSingleSecurityBatch('set-2fa')}>设置二步验证</Button>
+                  <Button size="small" loading={securityLoading} disabled={!canUpdateProfile} onClick={() => onSetModal({ type: 'accountProfileEdit' })}>设置资料</Button>
+                </Space>
+                {securityDetail.snapshot.last_error && <Alert type="warning" showIcon message="最近安全处理提示" description={securityDetail.snapshot.last_error} />}
+              </Space>
+            ) : (
+              <Empty description={securityLoading ? '正在读取账号安全状态' : '暂无账号安全快照，点击刷新读取。'} />
+            )}
+          </Card>
+          <Card className="sub-panel compact-panel" title="登录设备列表">
+            <Table<AccountAuthorizationSnapshot>
+              className="tg-table"
+              rowKey="id"
+              columns={authorizationColumns}
+              dataSource={securityDetail?.authorizations ?? []}
+              pagination={false}
+              loading={securityLoading}
+              scroll={{ x: 780 }}
+              locale={{ emptyText: '暂无设备快照，请先刷新账号安全状态。' }}
+            />
+          </Card>
+          <Card className="sub-panel compact-panel" title="最近加固批次">
+            <div className="mini-list">
+              {(securityDetail?.recent_batches ?? []).map((batch) => (
+                <Card key={batch.id} className={statusAccent(batch.status)} size="small">
+                  <StatusBadge status={batch.status} />
+                  <strong>批次 #{batch.id}</strong>
+                  <span>{batch.action_types.join(' / ')}</span>
+                  <span>成功 {batch.success_count} / 失败 {batch.failed_count} / 跳过 {batch.skipped_count}</span>
+                  <span>{batch.trace_id}</span>
+                </Card>
+              ))}
+              {securityDetail && !securityDetail.recent_batches.length && <p className="muted-line">暂无账号安全加固批次。</p>}
+            </div>
+          </Card>
+        </div>
       )}
 
       {accountDetailTab === '账号状态记录' && (

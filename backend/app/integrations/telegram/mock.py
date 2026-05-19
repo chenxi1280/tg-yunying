@@ -7,10 +7,13 @@ from uuid import uuid4
 
 from app.config import Settings, get_settings
 from .contracts import (
+    AccountAuthorizationSnapshot,
     AccountHealth,
+    AccountSecurityOperationResult,
     ArchiveSnapshot,
     ArchivedMemberSnapshot,
     ArchivedMessageSnapshot,
+    ChannelMembershipResult,
     ChannelCommentSnapshot,
     ChannelMessageSnapshot,
     ContactSnapshot,
@@ -142,6 +145,20 @@ class TelegramGateway:
     ) -> OperationResult:
         return OperationResult(True, detail=f"viewed:{channel_peer_id}:{message_id}:{account_id}")
 
+    def ensure_channel_membership(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        *,
+        invite_link: str = "",
+    ) -> ChannelMembershipResult:
+        target = channel_peer_id or invite_link
+        if "blocked" in target.lower():
+            return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "频道不可访问", "failed")
+        return ChannelMembershipResult(True, detail=f"joined:{target}:{account_id}", membership_status="joined")
+
     def send_channel_reaction(
         self,
         account_id: int,
@@ -257,6 +274,136 @@ class TelegramGateway:
     ) -> RemoteProfile:
         return RemoteProfile(first_name=f"账号{account_id}", last_name="Mock", bio="mock profile", username=f"mock_{account_id}")
 
+    def list_authorizations(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> list[AccountAuthorizationSnapshot]:
+        if not session_ciphertext:
+            return []
+        now_value = beijing_now()
+        app_name = credentials.app_name if credentials else "TG运营平台"
+        api_id = credentials.api_id if credentials else 0
+        return [
+            AccountAuthorizationSnapshot(
+                authorization_hash="current-platform-session",
+                is_current=True,
+                device_model="TG运营平台-主控",
+                platform="server",
+                system_version="Linux",
+                api_id=api_id,
+                app_name=app_name,
+                app_version="1.0",
+                ip="10.0.0.8",
+                country="CN",
+                region="平台",
+                date_created=now_value - timedelta(days=2),
+                date_active=now_value,
+            ),
+            AccountAuthorizationSnapshot(
+                authorization_hash="external-mobile-session",
+                is_current=False,
+                device_model="iPhone",
+                platform="iOS",
+                system_version="17",
+                api_id=api_id,
+                app_name="Telegram",
+                app_version="10.0",
+                ip="203.0.113.88",
+                country="CN",
+                region="外部",
+                date_created=now_value - timedelta(days=15),
+                date_active=now_value - timedelta(hours=3),
+            ),
+        ]
+
+    def cleanup_authorization(
+        self,
+        session_ciphertext: str | None,
+        authorization_hash: str,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        if not session_ciphertext:
+            return AccountSecurityOperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        if authorization_hash == "current-platform-session":
+            return AccountSecurityOperationResult(False, "失败", "当前平台Session受保护", "不能退出当前平台可信设备")
+        return AccountSecurityOperationResult(True, "已清理", detail=f"mock cleaned {authorization_hash}")
+
+    def cleanup_other_authorizations(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        if not session_ciphertext:
+            return AccountSecurityOperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        return AccountSecurityOperationResult(True, "已清理", detail="mock cleaned other authorizations")
+
+    def get_two_fa_status(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        if not session_ciphertext:
+            return AccountSecurityOperationResult(False, "unknown", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        return AccountSecurityOperationResult(True, "missing", detail="mock 2FA missing")
+
+    def set_two_fa_password(
+        self,
+        session_ciphertext: str | None,
+        password: str,
+        hint: str = "",
+        recovery_email: str = "",
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        if not session_ciphertext:
+            return AccountSecurityOperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        if recovery_email and recovery_email.endswith("@confirm.test"):
+            return AccountSecurityOperationResult(True, "pending_email_confirmation", detail="mock waiting email confirmation")
+        return AccountSecurityOperationResult(True, "enabled", detail="mock 2FA enabled")
+
+    def confirm_two_fa_email(
+        self,
+        session_ciphertext: str | None,
+        code: str,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        if not session_ciphertext:
+            return AccountSecurityOperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        if not code:
+            return AccountSecurityOperationResult(False, "失败", "邮箱验证码缺失", "请输入 Telegram 恢复邮箱验证码")
+        return AccountSecurityOperationResult(True, "enabled", detail="mock 2FA email confirmed")
+
+    def update_username(
+        self,
+        session_ciphertext: str | None,
+        username: str,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        if not session_ciphertext:
+            return AccountSecurityOperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        if "taken" in username.lower():
+            return AccountSecurityOperationResult(False, "失败", "用户名被占用", f"{username} 已被占用")
+        return AccountSecurityOperationResult(True, "已设置", detail=username)
+
+    def update_profile_photo(
+        self,
+        session_ciphertext: str | None,
+        avatar_path: str,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        if not session_ciphertext:
+            return AccountSecurityOperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        if not avatar_path:
+            return AccountSecurityOperationResult(False, "失败", "头像文件缺失", "头像文件路径为空")
+        return AccountSecurityOperationResult(True, "已设置", detail="mock profile photo updated")
+
+    def read_current_authorization(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountAuthorizationSnapshot | None:
+        return next((authorization for authorization in self.list_authorizations(session_ciphertext, credentials) if authorization.is_current), None)
+
     def fetch_group_archive(
         self,
         account_id: int,
@@ -359,4 +506,3 @@ class TelegramGateway:
         limit: int = 100,
     ) -> list[ChannelCommentSnapshot]:
         return []
-

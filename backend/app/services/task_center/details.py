@@ -171,6 +171,47 @@ def _detail_accounts(session: Session, actions: list[Action]) -> list[dict[str, 
     ]
 
 
+def _membership_phase(task: Task) -> dict[str, Any]:
+    stats = task.stats or {}
+    if not isinstance(stats, dict):
+        return {}
+    return {
+        "stage": stats.get("membership_stage") or "",
+        "summary": stats.get("membership_summary") or {},
+        "joined_count": int(stats.get("membership_joined_count") or 0),
+        "need_join_count": int(stats.get("membership_need_join_count") or 0),
+        "failed_count": int(stats.get("membership_failed_count") or 0),
+    }
+
+
+def _membership_accounts(session: Session, actions: list[Action]) -> list[dict[str, Any]]:
+    rows = [action for action in actions if action.action_type == "ensure_channel_membership" and action.account_id]
+    account_ids = sorted({int(action.account_id) for action in rows if action.account_id})
+    accounts = list(session.scalars(select(TgAccount).where(TgAccount.id.in_(account_ids)))) if account_ids else []
+    by_id = {account.id: account for account in accounts}
+    result: list[dict[str, Any]] = []
+    for action in sorted(rows, key=lambda item: (int(item.account_id or 0), item.created_at)):
+        payload = action.payload or {}
+        action_result = action.result or {}
+        account_id = int(action.account_id or 0)
+        result.append(
+            {
+                "account_id": account_id,
+                "display_name": by_id[account_id].display_name if account_id in by_id else f"账号 #{account_id}",
+                "username": by_id[account_id].username if account_id in by_id else "",
+                "status": action.status,
+                "membership_status": action_result.get("membership_status") or action_result.get("error_code") or action.status,
+                "failure_reason": action_result.get("error_message") or action_result.get("detail") or "",
+                "retry_count": action.retry_count,
+                "scheduled_at": action.scheduled_at,
+                "executed_at": action.executed_at,
+                "channel_target_id": payload.get("channel_target_id"),
+                "target_display": payload.get("target_display") or "",
+            }
+        )
+    return result
+
+
 def _message_groups(session: Session, task: Task, actions: list[Action]) -> list[dict[str, Any]]:
     groups: dict[tuple[int | None, int | None, str], dict[str, Any]] = {}
     message_ids = {

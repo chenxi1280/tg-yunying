@@ -11,6 +11,7 @@ from app.schemas.task_center import TaskPrecheckRequest
 from app.services.risk_control import risk_preflight
 
 from .account_pool import select_task_accounts
+from .channel_membership import channel_membership_summary
 from .config_fields import COMMON_CREATE_FIELDS, TASK_CREATE_MODELS
 from .utils import as_int as _as_int, as_int_list as _as_int_list, as_str_list as _as_str_list
 
@@ -40,6 +41,7 @@ def run_precheck_task_creation(
     suggested_actions: list[str] = []
     rule_version: dict[str, Any] | None = None
     target_ability: list[dict[str, Any]] = []
+    membership_summary: dict[str, Any] = {}
     estimated_actions = 0
     capacity_shortfall = 0
     try:
@@ -60,6 +62,16 @@ def run_precheck_task_creation(
 
     account_config = create_payload.account_config.model_dump(mode="json") if create_payload else dict((payload.payload or {}).get("account_config") or {})
     candidates = _precheck_candidate_accounts(session, tenant_id, account_config)
+    if task_type in {"channel_view", "channel_like", "channel_comment"} and target_ability:
+        target_id = _as_int((target_ability[0] or {}).get("target_id"))
+        channel = session.get(OperationTarget, target_id) if target_id else None
+        if channel and channel.tenant_id == tenant_id and channel.target_type == "channel":
+            membership_summary = channel_membership_summary(session, tenant_id, channel, account_config, candidates=candidates)
+            membership_summary["target_resolve_status"] = channel.auth_status
+            membership_summary["estimated_duration_seconds_min"] = 0 if not membership_summary.get("need_join_account_count") else 30
+            membership_summary["estimated_duration_seconds_max"] = int(membership_summary.get("need_join_account_count") or 0) * 180
+            membership_summary["effective_interaction_account_count"] = int(membership_summary.get("joined_account_count") or 0) + int(membership_summary.get("need_join_account_count") or 0)
+            target_ability[0]["membership"] = membership_summary
     available_accounts = select_task_accounts(session, tenant_id, account_config, limit=max(len(candidates), 1)) if candidates else []
     if candidates:
         risk_payload = RiskPreflightRequest(
@@ -84,6 +96,14 @@ def run_precheck_task_creation(
         capacity_shortfall = max(0, required_parallel - available_count)
     if capacity_shortfall:
         warnings.append(f"预计单轮需要 {max(int(target_per_unit), 1)} 个账号，当前可用 {available_count} 个")
+    if membership_summary:
+        need_join = int(membership_summary.get("need_join_account_count") or 0)
+        joined = int(membership_summary.get("joined_account_count") or 0)
+        failed = int(membership_summary.get("failed_account_count") or 0)
+        if need_join:
+            warnings.append(f"频道前置关注：已关注 {joined} 个，需关注 {need_join} 个")
+        if failed:
+            warnings.append(f"频道前置关注：已有 {failed} 个账号关注失败")
     if risk.get("decision") == "block":
         blockers.extend(_as_str_list(risk.get("decision_reasons")) or ["风控预检阻塞"])
     elif risk.get("decision") == "warn":
@@ -99,6 +119,7 @@ def run_precheck_task_creation(
         "limited_account_count": limited_count,
         "blocked_account_count": blocked_count,
         "target_ability": target_ability,
+        "membership_summary": membership_summary,
         "estimated_actions": estimated_actions,
         "capacity_shortfall": capacity_shortfall,
         "rule_version": rule_version,
@@ -148,8 +169,9 @@ def _precheck_target_ability(session: Session, tenant_id: int, task_type: str, c
         if not target or target.tenant_id != tenant_id:
             blockers.append(f"运营目标 #{target_id} 不存在")
             continue
-        authorized = target.auth_status == GroupAuthStatus.AUTHORIZED.value
-        can_task = bool(authorized and (target.can_send or not require_send))
+        is_channel_task = task_type in {"channel_view", "channel_like", "channel_comment"} and target.target_type == "channel"
+        authorized = target.auth_status == GroupAuthStatus.AUTHORIZED.value or is_channel_task
+        can_task = bool(authorized and (target.can_send or not require_send or is_channel_task))
         if not can_task:
             blockers.append(f"{target.title} 当前不可作为{'发送目标' if require_send else '监听来源'}创建任务")
         abilities.append({

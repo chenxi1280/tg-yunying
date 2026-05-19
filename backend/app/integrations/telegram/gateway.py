@@ -9,10 +9,13 @@ from app.config import Settings, get_settings
 from . import telethon_content
 from .mock import TelegramGateway
 from .contracts import (
+    AccountAuthorizationSnapshot,
     AccountHealth,
+    AccountSecurityOperationResult,
     ArchiveSnapshot,
     ArchivedMemberSnapshot,
     ArchivedMessageSnapshot,
+    ChannelMembershipResult,
     ChannelCommentSnapshot,
     ChannelMessageSnapshot,
     ContactSnapshot,
@@ -36,6 +39,16 @@ from app.timezone import BEIJING_TZ
 
 _resolve_telethon_target = resolve_telethon_target
 _telethon_send_target = telethon_send_target
+
+
+def _telegram_invite_hash(value: str) -> str:
+    text = value.strip()
+    for marker in ("t.me/+", "t.me/joinchat/", "telegram.me/+", "telegram.me/joinchat/"):
+        if marker in text:
+            return text.split(marker, 1)[1].split("?", 1)[0].strip("/")
+    if text.startswith("+"):
+        return text[1:].split("?", 1)[0].strip("/")
+    return ""
 
 
 class TelethonTelegramGateway(TelegramGateway):
@@ -190,6 +203,194 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials | None = None,
     ) -> AccountHealth:
         return self._run(self._health_async(session_ciphertext, self._usable_credentials(credentials)))
+
+    async def _list_authorizations_async(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> list[AccountAuthorizationSnapshot]:
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="账号没有可用 session")
+        from telethon import functions
+
+        response = await client(functions.account.GetAuthorizationsRequest())
+        snapshots: list[AccountAuthorizationSnapshot] = []
+        for authorization in getattr(response, "authorizations", []) or []:
+            snapshots.append(
+                AccountAuthorizationSnapshot(
+                    authorization_hash=str(getattr(authorization, "hash", "")),
+                    is_current=bool(getattr(authorization, "current", False)),
+                    device_model=getattr(authorization, "device_model", "") or "",
+                    platform=getattr(authorization, "platform", "") or "",
+                    system_version=getattr(authorization, "system_version", "") or "",
+                    api_id=int(getattr(authorization, "api_id", 0) or 0),
+                    app_name=getattr(authorization, "app_name", "") or "",
+                    app_version=getattr(authorization, "app_version", "") or "",
+                    ip=getattr(authorization, "ip", "") or "",
+                    country=getattr(authorization, "country", "") or "",
+                    region=getattr(authorization, "region", "") or "",
+                    date_created=getattr(authorization, "date_created", None),
+                    date_active=getattr(authorization, "date_active", None),
+                )
+            )
+        return snapshots
+
+    def list_authorizations(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> list[AccountAuthorizationSnapshot]:
+        return self._run(self._list_authorizations_async(session_ciphertext, self._usable_credentials(credentials)))
+
+    async def _cleanup_authorization_async(
+        self,
+        session_ciphertext: str | None,
+        authorization_hash: str,
+        credentials: DeveloperAppCredentials,
+    ) -> AccountSecurityOperationResult:
+        if not authorization_hash:
+            return AccountSecurityOperationResult(False, "失败", "授权Hash缺失", "登录设备授权标识为空")
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="账号没有可用 session")
+        from telethon import functions
+
+        try:
+            await client(functions.account.ResetAuthorizationRequest(hash=int(authorization_hash)))
+        except Exception as exc:  # noqa: BLE001 - mapped for operator-facing batch detail.
+            mapped = self._map_send_error(exc)
+            return AccountSecurityOperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+        return AccountSecurityOperationResult(True, "已清理", detail="外部设备已退出")
+
+    def cleanup_authorization(
+        self,
+        session_ciphertext: str | None,
+        authorization_hash: str,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        return self._run(self._cleanup_authorization_async(session_ciphertext, authorization_hash, self._usable_credentials(credentials)))
+
+    async def _cleanup_other_authorizations_async(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> AccountSecurityOperationResult:
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="账号没有可用 session")
+        from telethon import functions
+
+        try:
+            await client(functions.auth.ResetAuthorizationsRequest())
+        except Exception as exc:  # noqa: BLE001 - keep Telegram security restriction visible.
+            mapped = self._map_send_error(exc)
+            return AccountSecurityOperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+        return AccountSecurityOperationResult(True, "已清理", detail="已退出除当前 Session 外的其他授权")
+
+    def cleanup_other_authorizations(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        return self._run(self._cleanup_other_authorizations_async(session_ciphertext, self._usable_credentials(credentials)))
+
+    async def _get_two_fa_status_async(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> AccountSecurityOperationResult:
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="账号没有可用 session")
+        from telethon import functions
+
+        try:
+            password = await client(functions.account.GetPasswordRequest())
+        except Exception as exc:  # noqa: BLE001 - operator-facing security detail.
+            mapped = self._map_send_error(exc)
+            return AccountSecurityOperationResult(False, "unknown", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+        status = "enabled" if getattr(password, "has_password", False) or getattr(password, "current_algo", None) else "missing"
+        if getattr(password, "email_unconfirmed_pattern", None):
+            status = "email_confirmation_required"
+        return AccountSecurityOperationResult(True, status, detail=status)
+
+    def get_two_fa_status(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        return self._run(self._get_two_fa_status_async(session_ciphertext, self._usable_credentials(credentials)))
+
+    async def _set_two_fa_password_async(
+        self,
+        session_ciphertext: str | None,
+        password: str,
+        credentials: DeveloperAppCredentials,
+        *,
+        hint: str = "platform managed",
+    ) -> AccountSecurityOperationResult:
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="账号没有可用 session")
+        try:
+            changed = await client.edit_2fa(new_password=password, hint=hint)
+        except Exception as exc:  # noqa: BLE001 - keep Telegram restriction visible.
+            mapped = self._map_send_error(exc)
+            detail = mapped.detail or str(exc)
+            status = "email_confirmation_required" if "email" in detail.lower() else "failed"
+            return AccountSecurityOperationResult(False, status, mapped.failure_type or FailureType.UNKNOWN.value, detail)
+        return AccountSecurityOperationResult(True, "enabled" if changed else "unchanged", detail="二步验证已设置")
+
+    def set_two_fa_password(
+        self,
+        session_ciphertext: str | None,
+        password: str,
+        credentials: DeveloperAppCredentials | None = None,
+        *,
+        hint: str = "platform managed",
+    ) -> AccountSecurityOperationResult:
+        return self._run(self._set_two_fa_password_async(session_ciphertext, password, self._usable_credentials(credentials), hint=hint))
+
+    async def _confirm_two_fa_email_async(
+        self,
+        session_ciphertext: str | None,
+        code: str,
+        credentials: DeveloperAppCredentials,
+    ) -> AccountSecurityOperationResult:
+        if not code:
+            return AccountSecurityOperationResult(False, "失败", "邮箱验证码缺失", "请输入 Telegram 恢复邮箱验证码")
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="账号没有可用 session")
+        from telethon import functions
+
+        try:
+            await client(functions.account.ConfirmPasswordEmailRequest(code=code))
+        except Exception as exc:  # noqa: BLE001 - operator-facing 2FA email detail.
+            mapped = self._map_send_error(exc)
+            return AccountSecurityOperationResult(False, "failed", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+        return AccountSecurityOperationResult(True, "enabled", detail="二步验证恢复邮箱已确认")
+
+    def confirm_two_fa_email(
+        self,
+        session_ciphertext: str | None,
+        code: str,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        return self._run(self._confirm_two_fa_email_async(session_ciphertext, code, self._usable_credentials(credentials)))
+
+    async def _update_username_async(
+        self,
+        session_ciphertext: str | None,
+        username: str,
+        credentials: DeveloperAppCredentials,
+    ) -> AccountSecurityOperationResult:
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="账号没有可用 session")
+        from telethon import functions
+
+        try:
+            await client(functions.account.UpdateUsernameRequest(username=username))
+        except Exception as exc:  # noqa: BLE001 - username conflicts/flood are normal batch outcomes.
+            mapped = self._map_send_error(exc)
+            return AccountSecurityOperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+        return AccountSecurityOperationResult(True, "已完成", detail=username)
+
+    def update_username(
+        self,
+        session_ciphertext: str | None,
+        username: str,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        return self._run(self._update_username_async(session_ciphertext, username, self._usable_credentials(credentials)))
 
     async def _authorized_client(self, session_ciphertext: str | None, credentials: DeveloperAppCredentials, *, error_message: str) -> Any:
         raw_session = decrypt_session(session_ciphertext)
@@ -496,6 +697,52 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> OperationResult:
         return self._run(self._view_channel_message_async(session_ciphertext, channel_peer_id, message_id, self._usable_credentials(credentials)))
 
+    async def _ensure_channel_membership_async(
+        self,
+        session_ciphertext: str | None,
+        channel_peer_id: str,
+        credentials: DeveloperAppCredentials,
+        invite_link: str = "",
+    ) -> ChannelMembershipResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return ChannelMembershipResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session", "failed")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return ChannelMembershipResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效", "failed")
+        try:
+            from telethon import functions
+            from telethon.errors import UserAlreadyParticipantError
+
+            target = (invite_link or channel_peer_id or "").strip()
+            if not target:
+                return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "缺少频道地址", "failed")
+            invite_hash = _telegram_invite_hash(target)
+            if invite_hash:
+                try:
+                    await client(functions.messages.ImportChatInviteRequest(invite_hash))
+                except UserAlreadyParticipantError:
+                    return ChannelMembershipResult(True, detail="already_joined", membership_status="already_joined")
+            else:
+                entity_ref: int | str = int(target) if target.lstrip("-").isdigit() else target.lstrip("@")
+                entity = await client.get_entity(entity_ref)
+                await client(functions.channels.JoinChannelRequest(entity))
+            return ChannelMembershipResult(True, detail="joined", membership_status="joined")
+        except Exception as exc:
+            mapped = self._map_send_error(exc)
+            return ChannelMembershipResult(False, "失败", mapped.failure_type or FailureType.PEER_INVALID.value, mapped.detail or str(exc), "failed")
+
+    def ensure_channel_membership(
+        self,
+        account_id: int,
+        channel_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        *,
+        invite_link: str = "",
+    ) -> ChannelMembershipResult:
+        return self._run(self._ensure_channel_membership_async(session_ciphertext, channel_peer_id, self._usable_credentials(credentials), invite_link))
+
     async def _send_channel_reaction_async(
         self,
         session_ciphertext: str | None,
@@ -657,6 +904,41 @@ class TelethonTelegramGateway(TelegramGateway):
                 avatar_path,
             )
         )
+
+    async def _update_profile_photo_async(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        avatar_path: str,
+    ) -> AccountSecurityOperationResult:
+        client = await self._authorized_client(session_ciphertext, credentials, error_message="账号没有可用 session")
+        if not avatar_path:
+            return AccountSecurityOperationResult(False, "失败", "头像文件缺失", "头像文件路径为空")
+        try:
+            from telethon import functions
+
+            uploaded = await client.upload_file(avatar_path)
+            await client(functions.photos.UploadProfilePhotoRequest(file=uploaded))
+        except Exception as exc:  # noqa: BLE001 - keep adapter-level mapping stable.
+            mapped = self._map_send_error(exc)
+            return AccountSecurityOperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+        return AccountSecurityOperationResult(True, "已设置", detail="头像已更新")
+
+    def update_profile_photo(
+        self,
+        session_ciphertext: str | None,
+        avatar_path: str,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountSecurityOperationResult:
+        return self._run(self._update_profile_photo_async(session_ciphertext, self._usable_credentials(credentials), avatar_path))
+
+    def read_current_authorization(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> AccountAuthorizationSnapshot | None:
+        authorizations = self.list_authorizations(session_ciphertext, credentials)
+        return next((authorization for authorization in authorizations if authorization.is_current), None)
 
     async def _pull_profile_async(
         self,

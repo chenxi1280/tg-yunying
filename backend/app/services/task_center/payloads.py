@@ -104,7 +104,18 @@ class PostCommentPayload(ViewMessagePayload):
     rule_binding_mode: str = ""
 
 
+class EnsureChannelMembershipPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel_id: str = Field(min_length=1)
+    channel_target_id: int
+    target_display: str = ""
+    target_username: str = ""
+    invite_link: str = ""
+
+
 PAYLOAD_MODELS = {
+    "ensure_channel_membership": EnsureChannelMembershipPayload,
     "send_message": SendMessagePayload,
     "view_message": ViewMessagePayload,
     "like_message": LikeMessagePayload,
@@ -163,6 +174,10 @@ def create_send_action(session: Session, task: Task, account_id: int | None, sch
     return _create_action(session, task, "send_message", account_id, scheduled_at, payload)
 
 
+def create_membership_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: EnsureChannelMembershipPayload) -> Action:
+    return _create_action(session, task, "ensure_channel_membership", account_id, scheduled_at, payload)
+
+
 def create_view_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: ViewMessagePayload) -> Action:
     return _create_action(session, task, "view_message", account_id, scheduled_at, payload)
 
@@ -182,12 +197,14 @@ def payload_error_message(exc: ValidationError | ValueError) -> str:
 
 
 __all__ = [
+    "EnsureChannelMembershipPayload",
     "LikeMessagePayload",
     "PostCommentPayload",
     "SendMessagePayload",
     "ViewMessagePayload",
     "create_comment_action",
     "create_like_action",
+    "create_membership_action",
     "create_send_action",
     "create_view_action",
     "payload_error_message",

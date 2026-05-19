@@ -21,7 +21,7 @@ def ensure_seed_data(session: Session) -> None:
         session.commit()
         return
 
-    tenant = Tenant(name="默认运营空间", plan_name="单空间", account_quota=50, task_quota=5000)
+    tenant = Tenant(name="默认运营空间", plan_name="单空间", account_quota=0, task_quota=5000)
     session.add(tenant)
     session.flush()
     session.add(AccountPool(tenant_id=tenant.id, name="默认账号池", description="系统默认账号分组", is_default=True))
@@ -32,7 +32,7 @@ def ensure_seed_data(session: Session) -> None:
 
 
 def create_tenant(session: Session, payload: TenantCreate) -> Tenant:
-    tenant = Tenant(**payload.model_dump())
+    tenant = Tenant(**payload.model_dump(exclude={"account_quota"}), account_quota=0)
     session.add(tenant)
     session.flush()
     seed_ai_configuration(session)

@@ -87,6 +87,11 @@ class RiskControlAccountScoreOut(ApiModel):
     proxy_status: str | None = None
     proxy_alert_status: str | None = None
     proxy_risk_reason: str = ""
+    trusted_session_status: str = "unknown"
+    two_fa_status: str = "unknown"
+    external_authorization_count: int = 0
+    security_profile_status: str = "unknown"
+    security_risk_reason: str = ""
     can_join_task: bool
 
 

@@ -389,6 +389,19 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
         </Space>
       ),
     },
+    {
+      title: '账号安全',
+      key: 'account_security',
+      width: 210,
+      render: (_, row) => (
+        <Space direction="vertical" size={2}>
+          <StatusBadge status={labelOf(row.trusted_session_status)} label={`可信 ${labelOf(row.trusted_session_status)}`} />
+          <Typography.Text type="secondary">外部设备：{row.external_authorization_count}</Typography.Text>
+          <Typography.Text type="secondary">2FA：{labelOf(row.two_fa_status)}</Typography.Text>
+          {row.security_risk_reason && <Typography.Text type="secondary">{row.security_risk_reason}</Typography.Text>}
+        </Space>
+      ),
+    },
     { title: '当前策略', dataIndex: 'current_policy', width: 130, render: (value: string) => labelOf(value) },
     { title: '小时用量', key: 'hour', width: 110, render: (_, row) => formatLimit(row.hour_usage, row.hour_limit) },
     { title: '日用量', key: 'day', width: 110, render: (_, row) => formatLimit(row.day_usage, row.day_limit) },

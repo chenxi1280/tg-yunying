@@ -27,10 +27,11 @@ def next_run_after_task(task: Task):
 
 def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
     session.flush()
-    rows = session.execute(select(Action.status, func.count(Action.id)).where(Action.task_id == task.id).group_by(Action.status)).all()
+    business_filter = Action.action_type != "ensure_channel_membership"
+    rows = session.execute(select(Action.status, func.count(Action.id)).where(Action.task_id == task.id, business_filter).group_by(Action.status)).all()
     counts = {str(status): int(count) for status, count in rows}
-    accounts_used = session.scalar(select(func.count(func.distinct(Action.account_id))).where(Action.task_id == task.id, Action.account_id.is_not(None))) or 0
-    last_action_at = session.scalar(select(func.max(Action.executed_at)).where(Action.task_id == task.id))
+    accounts_used = session.scalar(select(func.count(func.distinct(Action.account_id))).where(Action.task_id == task.id, business_filter, Action.account_id.is_not(None))) or 0
+    last_action_at = session.scalar(select(func.max(Action.executed_at)).where(Action.task_id == task.id, business_filter))
     stats = dict(task.stats or empty_stats())
     stats.update(
         {

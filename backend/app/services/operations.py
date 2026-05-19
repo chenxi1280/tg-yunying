@@ -275,21 +275,70 @@ def filter_operation_targets(
 
 
 def create_operation_target(session: Session, payload: OperationTargetCreate, actor: str) -> OperationTarget:
+    data = payload.model_dump()
+    if data["target_type"] == "channel":
+        data.update(_normalize_channel_target_input(data))
     existing = session.scalar(
         select(OperationTarget).where(
-            OperationTarget.tenant_id == payload.tenant_id,
-            OperationTarget.tg_peer_id == payload.tg_peer_id,
+            OperationTarget.tenant_id == data["tenant_id"],
+            OperationTarget.tg_peer_id == data["tg_peer_id"],
         )
     )
     if existing:
         raise ValueError("target already exists")
-    target = OperationTarget(**payload.model_dump())
+    target = OperationTarget(**data)
     session.add(target)
     session.flush()
+    if target.target_type != "channel":
+        _ensure_linked_group_for_target(session, target)
     audit(session, tenant_id=target.tenant_id, actor=actor, action="创建运营目标", target_type="operation_target", target_id=str(target.id), detail=target.title)
     session.commit()
     session.refresh(target)
     return target
+
+
+def _normalize_channel_target_input(data: dict) -> dict:
+    raw_peer = str(data.get("tg_peer_id") or "").strip()
+    username = str(data.get("username") or "").strip().lstrip("@")
+    normalized_peer = raw_peer
+    if raw_peer.startswith("@"):
+        username = raw_peer.lstrip("@")
+        normalized_peer = username
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
+        if raw_peer.startswith(prefix):
+            tail = raw_peer.split(prefix, 1)[1].split("?", 1)[0].strip("/")
+            if tail and not tail.startswith(("+", "joinchat/")):
+                username = tail
+                normalized_peer = tail
+            else:
+                normalized_peer = raw_peer
+            break
+    data["tg_peer_id"] = normalized_peer
+    data["username"] = username
+    return data
+
+
+def _ensure_linked_group_for_target(session: Session, target: OperationTarget) -> TgGroup:
+    group = _linked_group_for_target(session, target)
+    if group:
+        group.title = target.title
+        group.group_type = "channel" if target.target_type == "channel" else "supergroup"
+        group.member_count = target.member_count
+        group.auth_status = target.auth_status
+        group.can_send = target.can_send
+        return group
+    group = TgGroup(
+        tenant_id=target.tenant_id,
+        tg_peer_id=target.tg_peer_id,
+        title=target.title,
+        group_type="channel" if target.target_type == "channel" else "supergroup",
+        member_count=target.member_count,
+        auth_status=target.auth_status,
+        can_send=target.can_send,
+    )
+    session.add(group)
+    session.flush()
+    return group
 
 
 TARGET_FIELDS = {"target_type", "tg_peer_id", "title", "username", "member_count", "can_send", "auth_status"}
@@ -597,7 +646,8 @@ def _operation_target_list_payload(
     linked_group: TgGroup | None,
     links_by_group: dict[int, list[TgGroupAccount]],
 ) -> dict:
-    send_links = [link for link in links_by_group.get(linked_group.id if linked_group else 0, []) if link.can_send]
+    all_links = links_by_group.get(linked_group.id if linked_group else 0, [])
+    send_links = [link for link in all_links if link.can_send]
     listener_links = [link for link in links_by_group.get(linked_group.id if linked_group else 0, []) if link.is_listener]
     task_capabilities = _operation_target_task_capabilities(target, linked_group, send_links, listener_links)
     return {
@@ -615,7 +665,7 @@ def _operation_target_list_payload(
         "can_archive": bool(linked_group and target.target_type == "group" and target.auth_status == GroupAuthStatus.AUTHORIZED.value),
         "can_task": bool(task_capabilities),
         "task_capabilities": task_capabilities,
-        "available_send_account_count": len(send_links),
+        "available_send_account_count": len(all_links) if target.target_type == "channel" else len(send_links),
         "listener_account_count": len(listener_links),
         "last_sync_at": target.last_sync_at,
         "created_at": target.created_at,
@@ -624,6 +674,8 @@ def _operation_target_list_payload(
 
 
 def _operation_target_task_capabilities(target: OperationTarget, linked_group: TgGroup | None, send_links: list[TgGroupAccount], listener_links: list[TgGroupAccount]) -> list[str]:
+    if target.target_type == "channel" and target.auth_status == GroupAuthStatus.UNVERIFIED.value:
+        return ["频道浏览", "频道点赞", "频道评论/回复"]
     if target.auth_status != GroupAuthStatus.AUTHORIZED.value:
         return []
     if target.target_type == "channel":
@@ -1170,7 +1222,26 @@ def _task_accounts(session: Session, task: OperationTask) -> list[TgAccount]:
     ).order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
     if ids:
         stmt = stmt.where(TgAccount.id.in_(ids))
-    return list(session.scalars(stmt))
+    accounts = list(session.scalars(stmt))
+    if task.task_type in {"CHANNEL_VIEW", "CHANNEL_REACTION", "CHANNEL_REPLY"}:
+        try:
+            _message, channel = _channel_message_context(session, task)
+        except ValueError:
+            return []
+        group = _linked_group_for_target(session, channel)
+        if not group:
+            return []
+        member_ids = {
+            int(account_id)
+            for account_id in session.scalars(
+                select(TgGroupAccount.account_id).where(
+                    TgGroupAccount.tenant_id == task.tenant_id,
+                    TgGroupAccount.group_id == group.id,
+                )
+            )
+        }
+        return [account for account in accounts if account.id in member_ids]
+    return accounts
 
 
 def _channel_message_context(session: Session, task: OperationTask) -> tuple[ChannelMessage, OperationTarget]:
@@ -1194,6 +1265,9 @@ def _execute_operation_attempt(
     account = session.get(TgAccount, attempt.account_id) if attempt.account_id else None
     if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         return False, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用"
+    if task.task_type in {"CHANNEL_VIEW", "CHANNEL_REACTION", "CHANNEL_REPLY"}:
+        if not channel or not _legacy_channel_account_has_membership(session, task.tenant_id, account.id, channel):
+            return False, FailureType.ACCOUNT_UNAVAILABLE.value, "账号未关注目标频道，已拦截频道互动"
     try:
         credentials = credentials_for_account(session, account)
         if task.task_type == "MESSAGE_SEND":
@@ -1271,6 +1345,21 @@ def _execute_operation_attempt(
             account.health_score = min(account.health_score, 55)
     attempt.executed_at = _now()
     return ok, attempt.failure_type, attempt.failure_detail
+
+
+def _legacy_channel_account_has_membership(session: Session, tenant_id: int, account_id: int, channel: OperationTarget) -> bool:
+    group = _linked_group_for_target(session, channel)
+    if not group:
+        return False
+    return bool(
+        session.scalar(
+            select(TgGroupAccount.id).where(
+                TgGroupAccount.tenant_id == tenant_id,
+                TgGroupAccount.group_id == group.id,
+                TgGroupAccount.account_id == account_id,
+            )
+        )
+    )
 
 
 def _refresh_operation_task_status(session: Session, task: OperationTask, *, last_failure_type: str = "", last_failure_detail: str = "") -> None:

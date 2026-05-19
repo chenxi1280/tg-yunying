@@ -70,6 +70,7 @@ class TaskCenterActionType(StrEnum):
     VIEW_MESSAGE = "view_message"
     LIKE_MESSAGE = "like_message"
     POST_COMMENT = "post_comment"
+    ENSURE_CHANNEL_MEMBERSHIP = "ensure_channel_membership"
 
 
 class TaskCenterActionStatus(StrEnum):

@@ -1,9 +1,12 @@
 import React from 'react';
-import { Alert, Avatar, Button, Card, Progress, Segmented, Space, Table, Typography } from 'antd';
+import { Alert, Avatar, Button, Card, Progress, Segmented, Space, Table, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { Activity, CheckCircle2 } from 'lucide-react';
+import { api } from '../../shared/api/client';
 import type { Account, AccountPool } from '../types';
 import type { RuntimeConfig } from '../types';
 import { StatusBadge, useAntdTableControls } from '../components/shared';
+import { AccountSecurityBatchDrawer } from './AccountSecurityBatchDrawer';
 
 const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', '异常']);
 const ACCOUNT_RESTRICTED_STATUSES = new Set(['受限', '疑似封禁', '已封禁', 'Session失效']);
@@ -66,6 +69,9 @@ export default function AccountsView({
   canMovePool = true,
   canDeleteAccount = true,
 }: Props) {
+  const [selectedAccountIds, setSelectedAccountIds] = React.useState<number[]>([]);
+  const [securityDrawerMode, setSecurityDrawerMode] = React.useState<'security' | 'profile' | null>(null);
+  const [refreshingSecurity, setRefreshingSecurity] = React.useState(false);
   const accountTable = useAntdTableControls<Account>({
     rows: accounts,
     placeholder: '搜索账号 / username / 手机号 / 分组 / 状态 / 代理',
@@ -86,6 +92,9 @@ export default function AccountsView({
         account.proxy_alert_status,
         account.tg_first_name,
         account.tg_last_name,
+        !account.avatar_object_key ? '无头像 资料待初始化 资料不完整' : '',
+        !account.username ? '无 username 资料待初始化 资料不完整' : '',
+        !account.tg_first_name ? '昵称为空 资料待初始化 资料不完整' : '',
         ACCOUNT_RESTRICTED_STATUSES.has(account.status) ? '账号级受限 受限 系统探测恢复' : '',
         LOGIN_REQUIRED_STATUSES.has(account.status) ? '待完成登录 等待 登录' : '',
         account.health_score < 60 ? '健康分偏低 健康' : '',
@@ -97,6 +106,22 @@ export default function AccountsView({
   const loginRequiredAccounts = accounts.filter((account) => LOGIN_REQUIRED_STATUSES.has(account.status));
   const lowHealthAccounts = accounts.filter((account) => account.health_score < 60 && !ACCOUNT_RESTRICTED_STATUSES.has(account.status));
   const proxyBlockedAccounts = accounts.filter((account) => account.proxy_status && account.proxy_status !== 'healthy' && account.proxy_status !== '健康');
+  const selectedAccounts = accounts.filter((account) => selectedAccountIds.includes(account.id));
+  const incompleteProfiles = accounts.filter((account) => !account.avatar_object_key || !account.username || !account.tg_first_name);
+
+  async function refreshSelectedSecurity() {
+    if (!selectedAccountIds.length) {
+      void message.warning('请先选择账号');
+      return;
+    }
+    setRefreshingSecurity(true);
+    try {
+      await Promise.all(selectedAccountIds.map((id) => api(`/tg-accounts/${id}/security/refresh`, { method: 'POST' })));
+      void message.success(`已刷新 ${selectedAccountIds.length} 个账号安全状态`);
+    } finally {
+      setRefreshingSecurity(false);
+    }
+  }
 
   const columns: ColumnsType<Account> = [
     {
@@ -151,6 +176,21 @@ export default function AccountsView({
       key: 'health_score',
       width: 150,
       render: (score: number) => <Progress percent={score} size="small" status={score < 60 ? 'exception' : score < 80 ? 'normal' : 'success'} />,
+    },
+    {
+      title: '安全 / 资料',
+      key: 'security_profile',
+      width: 180,
+      render: (_, account) => {
+        const profileComplete = Boolean(account.avatar_object_key && account.username && account.tg_first_name);
+        return (
+          <Space direction="vertical" size={4}>
+            <StatusBadge status={account.status === '在线' ? '待确认' : '不可用'} label={account.status === '在线' ? '安全待刷新' : '安全不可用'} />
+            <StatusBadge status={profileComplete ? '已完成' : '待处理'} label={profileComplete ? '资料完整' : '资料待初始化'} />
+            <Typography.Text type="secondary">{account.username ? `@${account.username}` : '未设置 username'}</Typography.Text>
+          </Space>
+        );
+      },
     },
     {
       title: '操作',
@@ -217,6 +257,13 @@ export default function AccountsView({
         {selectedPool && <Button type="primary" loading={isActionPending(`account-pool:${selectedPool.id}:detail`)} onClick={() => onOpenPoolDetail(selectedPool)}>进入账号分组</Button>}
         {accountTable.searchInput}
       </Space>
+      <Space className="pool-filter-strip" wrap>
+        <Typography.Text type="secondary">已选择 {selectedAccounts.length} 个账号</Typography.Text>
+        <Button icon={<CheckCircle2 size={16} />} disabled={!selectedAccountIds.length || !canSyncAccount} onClick={() => setSecurityDrawerMode('security')}>安全加固</Button>
+        <Button icon={<Activity size={16} />} disabled={!selectedAccountIds.length || !canSyncAccount} onClick={() => setSecurityDrawerMode('profile')}>资料初始化</Button>
+        <Button disabled={!selectedAccountIds.length || !canSyncAccount} loading={refreshingSecurity} onClick={refreshSelectedSecurity}>刷新安全状态</Button>
+        <Button disabled={!selectedAccountIds.length} onClick={() => setSelectedAccountIds([])}>清空选择</Button>
+      </Space>
       <div className="summary-grid">
         <Card className="summary-card" size="small">
           <span>账号级受限</span>
@@ -242,15 +289,32 @@ export default function AccountsView({
           <p>本地代理异常会影响高频发送，处理入口在风控中心。</p>
           <Button size="small" disabled={!proxyBlockedAccounts.length} onClick={() => accountTable.setQuery('代理异常')}>查看代理</Button>
         </Card>
+        <Card className="summary-card" size="small">
+          <span>资料待初始化</span>
+          <strong>{incompleteProfiles.length}</strong>
+          <p>头像、昵称或 username 缺失时，可批量 AI 随机生成并预览后执行。</p>
+          <Button size="small" disabled={!incompleteProfiles.length} onClick={() => accountTable.setQuery('资料待初始化')}>查看资料</Button>
+        </Card>
       </div>
       <Table<Account>
         className="tg-table"
         rowKey="id"
         columns={columns}
         dataSource={accountTable.filteredRows}
+        rowSelection={{
+          selectedRowKeys: selectedAccountIds,
+          onChange: (keys) => setSelectedAccountIds(keys.map(Number)),
+        }}
         pagination={accountTable.pagination}
         scroll={{ x: 1280 }}
         locale={{ emptyText: '暂无 TG 账号。配置开发者应用后，可以通过手机号新增账号并启动真实 TG 登录。' }}
+      />
+      <AccountSecurityBatchDrawer
+        open={securityDrawerMode !== null}
+        mode={securityDrawerMode ?? 'security'}
+        accounts={accounts}
+        selectedAccountIds={selectedAccountIds}
+        onClose={() => setSecurityDrawerMode(null)}
       />
     </Card>
   );

@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountProxy, AccountStatus, Action, FailureType, MessageTask, ProxyAlert, SchedulingSetting, Task, TaskStatus, Tenant, TgAccount
+from app.models import AccountProxy, AccountStatus, Action, FailureType, MessageTask, ProxyAlert, SchedulingSetting, Task, TaskStatus, Tenant, TgAccount, TgAccountSecuritySnapshot
 from app.schemas import MessageSendTaskCreate
 from app.schemas.risk_control import ProxyBindingRequest, RiskPreflightRequest
 from app.services._common import _now
@@ -126,6 +126,39 @@ def test_proxy_binding_is_visible_in_account_score_and_preflight():
     assert account["can_join_task"] is True
     assert preflight["decision"] == "allow"
     assert preflight["proxy_decisions"][0]["blocks"] is False
+
+
+def test_account_security_snapshot_degrades_risk_score_and_preflight():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="安全待处理账号", phone_masked="11", status=AccountStatus.ACTIVE.value, health_score=90))
+        session.add(
+            TgAccountSecuritySnapshot(
+                tenant_id=1,
+                account_id=11,
+                trusted_session_status="confirmed",
+                two_fa_status="missing",
+                external_authorization_count=2,
+                profile_status="incomplete",
+            )
+        )
+        session.commit()
+
+        summary = risk_control_summary(session, 1)
+        preflight = risk_preflight(session, 1, RiskPreflightRequest(account_ids=[11], content_preview="正常消息"))
+
+    account = summary["account_scores"][0]
+    assert account["risk_level"] in {"C", "D"}
+    assert account["trusted_session_status"] == "confirmed"
+    assert account["two_fa_status"] == "missing"
+    assert account["external_authorization_count"] == 2
+    assert "外部登录设备" in account["security_risk_reason"]
+    assert {"外部设备未清理", "二步验证待处理", "资料待初始化"}.issubset({item["item_type"] for item in summary["disposition_queue"]})
+    assert preflight["decision"] in {"warn", "block"}
+    assert preflight["limited_accounts"] or preflight["blocked_accounts"]
 
 
 def test_disabled_proxy_creates_alert_and_blocks_preflight():

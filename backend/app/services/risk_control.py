@@ -27,6 +27,7 @@ from app.models import (
     Task,
     TaskStatus,
     TgAccount,
+    TgAccountSecuritySnapshot,
 )
 from app.schemas.risk_control import AccountProxyCreate, AccountProxyUpdate, ProxyBatchBindingRequest, ProxyBindingRequest, RiskControlGlobalPolicyUpdate, RiskPreflightRequest
 from app.security import encrypt_secret
@@ -325,6 +326,7 @@ def risk_preflight(session: Session, tenant_id: int, payload: RiskPreflightReque
     day_start = scheduled_at.replace(hour=0, minute=0, second=0, microsecond=0)
     day_usage = _usage_counts(session, tenant_id, account_ids, day_start, day_start + timedelta(days=1))
     recent_risks = _recent_risks_by_account(session, tenant_id)
+    security_snapshots = _security_snapshots_by_account(session, tenant_id, account_ids)
 
     available_accounts: list[dict[str, Any]] = []
     limited_accounts: list[dict[str, Any]] = []
@@ -332,7 +334,7 @@ def risk_preflight(session: Session, tenant_id: int, payload: RiskPreflightReque
     decision_reasons: list[str] = []
     for account in accounts:
         capacity = account_capacity_decision(session, tenant_id=tenant_id, account_id=account.id, scheduled_at=scheduled_at)
-        score = _account_score_row(account, setting, capacity, hour_usage, day_usage, recent_risks.get(account.id, ""))
+        score = _account_score_row(account, setting, capacity, hour_usage, day_usage, recent_risks.get(account.id, ""), security_snapshots.get(account.id))
         item = {
             "account_id": score["account_id"],
             "display_name": score["display_name"],
@@ -413,15 +415,17 @@ def risk_control_summary(session: Session, tenant_id: int) -> dict[str, Any]:
     hour_usage = _usage_counts(session, tenant_id, account_ids, _hour_start(now), _hour_start(now) + timedelta(hours=1))
     day_usage = _usage_counts(session, tenant_id, account_ids, now.replace(hour=0, minute=0, second=0, microsecond=0), now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
     recent_risks = _recent_risks_by_account(session, tenant_id)
+    security_snapshots = _security_snapshots_by_account(session, tenant_id, account_ids)
 
     account_scores = []
     disposition_queue = []
     for account in accounts:
         capacity = account_capacity_decision(session, tenant_id=tenant_id, account_id=account.id, scheduled_at=now)
         recent_risk = recent_risks.get(account.id, "")
-        score = _account_score_row(account, setting, capacity, hour_usage, day_usage, recent_risk)
+        security_snapshot = security_snapshots.get(account.id)
+        score = _account_score_row(account, setting, capacity, hour_usage, day_usage, recent_risk, security_snapshot)
         account_scores.append(score)
-        disposition_queue.extend(_account_dispositions(account, score, capacity, recent_risk))
+        disposition_queue.extend(_account_dispositions(account, score, capacity, recent_risk, security_snapshot))
 
     hit_records = _risk_hit_records(session, tenant_id)
     disposition_queue.extend(_hit_dispositions(hit_records))
@@ -450,16 +454,20 @@ def _account_score_row(
     hour_usage: dict[int, int],
     day_usage: dict[int, int],
     recent_risk: str,
+    security_snapshot: TgAccountSecuritySnapshot | None = None,
 ) -> dict[str, Any]:
-    score_reasons = _score_reasons(account, capacity, recent_risk)
+    score_reasons = _score_reasons(account, capacity, recent_risk, security_snapshot)
     proxy_blocked = _proxy_blocks_account(account)
+    security_blocked = _security_blocks_account(security_snapshot)
     status_blocked = account.status in BLOCKED_ACCOUNT_STATUSES
     capacity_blocked = not bool(capacity.available)
-    adjusted_score = max(0, min(100, float(account.health_score or 0) + _proxy_score_delta(account)))
-    risk_level = _risk_level(adjusted_score, status_blocked=status_blocked or proxy_blocked, capacity_blocked=capacity_blocked)
-    blocked_reason = _blocked_reason(account, capacity, recent_risk)
+    adjusted_score = max(0, min(100, float(account.health_score or 0) + _proxy_score_delta(account) + _security_score_delta(security_snapshot)))
+    risk_level = _risk_level(adjusted_score, status_blocked=status_blocked or proxy_blocked or security_blocked, capacity_blocked=capacity_blocked)
+    blocked_reason = _blocked_reason(account, capacity, recent_risk, security_snapshot)
     if proxy_blocked and not blocked_reason:
         blocked_reason = _proxy_risk_reason(account)
+    if security_blocked and not blocked_reason:
+        blocked_reason = _security_blocked_reason(security_snapshot)
     return {
         "account_id": account.id,
         "display_name": account.display_name,
@@ -484,11 +492,16 @@ def _account_score_row(
         "proxy_status": account.proxy_status,
         "proxy_alert_status": account.proxy_alert_status,
         "proxy_risk_reason": _proxy_risk_reason(account),
-        "can_join_task": account.status == AccountStatus.ACTIVE.value and risk_level in {"A", "B", "C"} and not capacity_blocked and not proxy_blocked,
+        "trusted_session_status": security_snapshot.trusted_session_status if security_snapshot else "unknown",
+        "two_fa_status": security_snapshot.two_fa_status if security_snapshot else "unknown",
+        "external_authorization_count": security_snapshot.external_authorization_count if security_snapshot else 0,
+        "security_profile_status": security_snapshot.profile_status if security_snapshot else "unknown",
+        "security_risk_reason": _security_risk_reason(security_snapshot),
+        "can_join_task": account.status == AccountStatus.ACTIVE.value and risk_level in {"A", "B", "C"} and not capacity_blocked and not proxy_blocked and not security_blocked,
     }
 
 
-def _account_dispositions(account: TgAccount, score: dict[str, Any], capacity: Any, recent_risk: str) -> list[dict[str, Any]]:
+def _account_dispositions(account: TgAccount, score: dict[str, Any], capacity: Any, recent_risk: str, security_snapshot: TgAccountSecuritySnapshot | None = None) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     if account.status in LOGIN_DISPOSITION_STATUSES:
         items.append(_queue_item(f"login:{account.id}", "待完成登录", "warning", account, "账号登录流程未完成", "去账号中心完成登录", account.created_at))
@@ -505,6 +518,7 @@ def _account_dispositions(account: TgAccount, score: dict[str, Any], capacity: A
         items.append(_queue_item(f"capacity:{account.id}:{capacity.reason_code}", "账号容量受限", "info", account, capacity.reason, "优先转派，无法转派则延后执行", capacity.defer_until))
     if _proxy_blocks_account(account):
         items.append(_queue_item(f"proxy:{account.id}:{account.proxy_id or 'missing'}", "代理异常", "critical", account, _proxy_risk_reason(account), "检查代理或切换账号绑定代理", _now()))
+    items.extend(_security_dispositions(account, security_snapshot))
     return items
 
 
@@ -680,6 +694,18 @@ def _recent_risks_by_account(session: Session, tenant_id: int) -> dict[int, str]
     return risks
 
 
+def _security_snapshots_by_account(session: Session, tenant_id: int, account_ids: list[int]) -> dict[int, TgAccountSecuritySnapshot]:
+    if not account_ids:
+        return {}
+    snapshots = session.scalars(
+        select(TgAccountSecuritySnapshot).where(
+            TgAccountSecuritySnapshot.tenant_id == tenant_id,
+            TgAccountSecuritySnapshot.account_id.in_(account_ids),
+        )
+    )
+    return {snapshot.account_id: snapshot for snapshot in snapshots}
+
+
 def _risk_hit_records(session: Session, tenant_id: int) -> list[dict[str, Any]]:
     accounts = {account.id: account.display_name for account in session.scalars(select(TgAccount).where(TgAccount.tenant_id == tenant_id))}
     records: list[dict[str, Any]] = []
@@ -824,9 +850,12 @@ def _policy_for_level(level: str, capacity_blocked: bool) -> str:
     }.get(level, "阻塞处置")
 
 
-def _blocked_reason(account: TgAccount, capacity: Any, recent_risk: str) -> str:
+def _blocked_reason(account: TgAccount, capacity: Any, recent_risk: str, security_snapshot: TgAccountSecuritySnapshot | None = None) -> str:
     if account.status in BLOCKED_ACCOUNT_STATUSES:
         return account.status
+    security_reason = _security_blocked_reason(security_snapshot)
+    if security_reason:
+        return security_reason
     if not capacity.available:
         return capacity.reason
     if account.health_score < 55:
@@ -834,7 +863,7 @@ def _blocked_reason(account: TgAccount, capacity: Any, recent_risk: str) -> str:
     return ""
 
 
-def _score_reasons(account: TgAccount, capacity: Any, recent_risk: str) -> list[str]:
+def _score_reasons(account: TgAccount, capacity: Any, recent_risk: str, security_snapshot: TgAccountSecuritySnapshot | None = None) -> list[str]:
     reasons: list[str] = []
     if account.status != AccountStatus.ACTIVE.value:
         reasons.append(f"登录状态：{account.status}")
@@ -843,11 +872,87 @@ def _score_reasons(account: TgAccount, capacity: Any, recent_risk: str) -> list[
     proxy_reason = _proxy_risk_reason(account)
     if proxy_reason:
         reasons.append(proxy_reason)
+    reasons.extend(_security_score_reasons(security_snapshot))
     if recent_risk:
         reasons.append(f"最近风险：{recent_risk}")
     if not reasons:
         reasons.append("账号状态、容量和代理检查均未命中阻塞")
     return reasons[:6]
+
+
+def _security_score_delta(snapshot: TgAccountSecuritySnapshot | None) -> int:
+    if snapshot is None:
+        return 0
+    delta = 0
+    if snapshot.trusted_session_status in {"missing", "unknown", "failed"}:
+        delta -= 35
+    if snapshot.external_authorization_count > 0:
+        delta -= min(30, 10 + snapshot.external_authorization_count * 5)
+    if snapshot.two_fa_status in {"missing", "unknown", "failed"}:
+        delta -= 20
+    elif snapshot.two_fa_status in {"email_confirmation_required", "pending_email_confirmation"}:
+        delta -= 35
+    if snapshot.profile_status in {"unknown", "incomplete", "update_failed"}:
+        delta -= 10
+    return delta
+
+
+def _security_blocks_account(snapshot: TgAccountSecuritySnapshot | None) -> bool:
+    if snapshot is None:
+        return False
+    return snapshot.trusted_session_status == "missing" or snapshot.two_fa_status in {"failed", "email_confirmation_required", "pending_email_confirmation"}
+
+
+def _security_blocked_reason(snapshot: TgAccountSecuritySnapshot | None) -> str:
+    if snapshot is None:
+        return ""
+    if snapshot.trusted_session_status == "missing":
+        return "平台可信设备无法确认"
+    if snapshot.two_fa_status == "failed":
+        return "二步验证设置失败"
+    if snapshot.two_fa_status in {"email_confirmation_required", "pending_email_confirmation"}:
+        return "二步验证待邮箱确认"
+    return ""
+
+
+def _security_risk_reason(snapshot: TgAccountSecuritySnapshot | None) -> str:
+    if snapshot is None:
+        return ""
+    reasons = _security_score_reasons(snapshot)
+    return "；".join(reasons)
+
+
+def _security_score_reasons(snapshot: TgAccountSecuritySnapshot | None) -> list[str]:
+    if snapshot is None:
+        return []
+    reasons: list[str] = []
+    if snapshot.trusted_session_status in {"missing", "unknown", "failed"}:
+        reasons.append(f"平台可信设备：{snapshot.trusted_session_status}")
+    if snapshot.external_authorization_count > 0:
+        reasons.append(f"存在 {snapshot.external_authorization_count} 个外部登录设备")
+    if snapshot.two_fa_status in {"missing", "unknown", "failed", "email_confirmation_required", "pending_email_confirmation"}:
+        reasons.append(f"二步验证：{snapshot.two_fa_status}")
+    if snapshot.profile_status in {"unknown", "incomplete", "update_failed"}:
+        reasons.append(f"资料状态：{snapshot.profile_status}")
+    return reasons
+
+
+def _security_dispositions(account: TgAccount, snapshot: TgAccountSecuritySnapshot | None) -> list[dict[str, Any]]:
+    if snapshot is None:
+        return []
+    items: list[dict[str, Any]] = []
+    occurred_at = snapshot.last_hardened_at or snapshot.updated_at
+    if snapshot.trusted_session_status in {"missing", "unknown", "failed"}:
+        severity = "critical" if snapshot.trusted_session_status == "missing" else "warning"
+        items.append(_queue_item(f"security:trusted:{account.id}", "可信设备异常", severity, account, f"平台可信设备：{snapshot.trusted_session_status}", "进入账号中心刷新设备并确认平台 Session", snapshot.last_device_scan_at or occurred_at))
+    if snapshot.external_authorization_count > 0:
+        items.append(_queue_item(f"security:external:{account.id}", "外部设备未清理", "warning", account, f"存在 {snapshot.external_authorization_count} 个外部登录设备", "进入账号中心执行安全加固，清理外部设备", snapshot.last_device_scan_at or occurred_at))
+    if snapshot.two_fa_status in {"missing", "unknown", "failed", "email_confirmation_required", "pending_email_confirmation"}:
+        severity = "critical" if snapshot.two_fa_status in {"failed", "email_confirmation_required", "pending_email_confirmation"} else "warning"
+        items.append(_queue_item(f"security:2fa:{account.id}", "二步验证待处理", severity, account, f"二步验证：{snapshot.two_fa_status}", "进入账号中心设置或确认 Telegram 二步验证", snapshot.last_2fa_check_at or occurred_at))
+    if snapshot.profile_status in {"unknown", "incomplete", "update_failed"}:
+        items.append(_queue_item(f"security:profile:{account.id}", "资料待初始化", "info", account, f"资料状态：{snapshot.profile_status}", "进入账号中心批量资料初始化，补齐头像、昵称、简介和 username", snapshot.profile_last_updated_at or occurred_at))
+    return items
 
 
 def _proxy_score_delta(account: TgAccount) -> int:

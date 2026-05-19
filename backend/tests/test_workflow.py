@@ -201,7 +201,7 @@ def ensure_developer_app(client: TestClient, headers: dict[str, str]) -> dict:
     with SessionLocal() as session:
         tenant = session.get(Tenant, 1)
         if tenant:
-            tenant.account_quota = max(tenant.account_quota, 5000)
+            tenant.account_quota = 0
             tenant.task_quota = max(tenant.task_quota, 10000)
             session.commit()
     apps = client.get("/api/developer-apps", headers=headers).json()

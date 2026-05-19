@@ -111,6 +111,138 @@ export type AccountSyncRecord = {
   created_at: string;
 };
 
+export type AccountSecurityPreviewItem = {
+  account_id: number;
+  account_name: string;
+  phone_masked: string;
+  session_status: string;
+  trusted_session_status: string;
+  external_authorization_count: number;
+  two_fa_status: string;
+  profile_status: string;
+  generated_display_name: string;
+  generated_first_name: string;
+  generated_last_name: string;
+  generated_bio: string;
+  username_candidates: string[];
+  avatar_source: string;
+  precheck_status: string;
+  blockers: string[];
+  warnings: string[];
+  suggested_actions: string[];
+};
+
+export type AccountSecurityPrecheck = {
+  batch_preview_id: string;
+  summary: Record<string, number>;
+  items: AccountSecurityPreviewItem[];
+  action_types: string[];
+  trace_id: string;
+};
+
+export type AccountSecurityBatchItem = {
+  id: number;
+  batch_id: number;
+  tenant_id: number;
+  account_id: number;
+  status: string;
+  precheck_status: string;
+  cleanup_status: string;
+  two_fa_status: string;
+  profile_status: string;
+  username_status: string;
+  avatar_status: string;
+  external_devices_before: number;
+  external_devices_after: number;
+  generated_display_name: string;
+  generated_first_name: string;
+  generated_last_name: string;
+  generated_bio: string;
+  generated_username: string;
+  username_candidates: string[];
+  avatar_source: string;
+  skipped_reason: string;
+  failure_type: string;
+  failure_detail: string;
+  next_retry_at: string | null;
+  trace_id: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+export type AccountSecurityBatch = {
+  id: number;
+  tenant_id: number;
+  action_types: string[];
+  status: string;
+  total_count: number;
+  success_count: number;
+  skipped_count: number;
+  failed_count: number;
+  created_by: string;
+  confirmed_by: string;
+  confirm_text: string;
+  password_strategy: string;
+  profile_strategy: Record<string, unknown>;
+  username_strategy: Record<string, unknown>;
+  avatar_strategy: Record<string, unknown>;
+  overwrite_existing_profile: boolean;
+  reason: string;
+  trace_id: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  items: AccountSecurityBatchItem[];
+};
+
+export type AccountAuthorizationSnapshot = {
+  id: number;
+  account_id: number;
+  batch_id: number | null;
+  authorization_hash_ciphertext: string;
+  is_platform_trusted: boolean;
+  is_current_session: boolean;
+  device_model: string;
+  platform: string;
+  system_version: string;
+  api_id: number;
+  app_name: string;
+  app_version: string;
+  ip_masked: string;
+  country: string;
+  region: string;
+  date_created: string | null;
+  date_active: string | null;
+  status: string;
+  scanned_at: string;
+};
+
+export type AccountSecuritySnapshot = {
+  id: number;
+  account_id: number;
+  trusted_session_status: string;
+  two_fa_status: string;
+  external_authorization_count: number;
+  last_device_scan_at: string | null;
+  last_2fa_check_at: string | null;
+  profile_status: string;
+  profile_last_updated_at: string | null;
+  trusted_device_label: string;
+  last_hardened_at: string | null;
+  last_error: string;
+  trace_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AccountSecurityDetail = {
+  account_id: number;
+  snapshot: AccountSecuritySnapshot;
+  authorizations: AccountAuthorizationSnapshot[];
+  recent_batches: AccountSecurityBatch[];
+};
+
 export type VerificationTask = {
   id: number;
   tenant_id: number;

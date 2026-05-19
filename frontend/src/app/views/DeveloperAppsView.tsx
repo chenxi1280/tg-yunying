@@ -68,7 +68,7 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
         </div>
       </Card>
 
-      {showTenants && <Card className="panel" title="运营空间与配额" extra={<Typography.Text type="secondary">后台统一维护运行口径、账号配额和任务配额</Typography.Text>}>
+      {showTenants && <Card className="panel" title="运营空间与配额" extra={<Typography.Text type="secondary">后台统一维护运行口径和任务配额</Typography.Text>}>
         <div className="cards-grid developer-grid">
           {tenants.map((tenant) => (
             <Card className="developer-card status-accent neutral" key={tenant.id} size="small" title={tenant.name}>
@@ -76,10 +76,10 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
                 <Badge tone="neutral">运营空间 #{tenant.id}</Badge>
                 <Badge tone="positive">{tenant.plan_name}</Badge>
               </Space>
-              <Typography.Paragraph type="secondary">账号 {tenant.account_quota} / 任务 {tenant.task_quota}</Typography.Paragraph>
+              <Typography.Paragraph type="secondary">账号 不限 / 任务 {tenant.task_quota}</Typography.Paragraph>
               <Space wrap>
                 <Button size="small" onClick={() => setDetailTenant(tenant)}>详情</Button>
-                <Button size="small" onClick={() => onEditTenant(tenant)}>编辑配额</Button>
+                <Button size="small" onClick={() => onEditTenant(tenant)}>编辑配置</Button>
               </Space>
             </Card>
           ))}
@@ -107,7 +107,7 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
           <Descriptions size="small" column={2} items={[
             { key: 'id', label: '运营空间 ID', children: detailTenant.id },
             { key: 'plan', label: '运行口径', children: detailTenant.plan_name },
-            { key: 'account_quota', label: '账号配额', children: detailTenant.account_quota },
+            { key: 'account_quota', label: '账号上限', children: '不限' },
             { key: 'task_quota', label: '任务配额', children: detailTenant.task_quota },
             { key: 'bot', label: 'Bot 配置', children: <StatusBadge status={detailTenant.telegram_bot_configured ? '已配置' : '未配置'} /> },
             { key: 'notify', label: 'AI 失败通知', children: detailTenant.notify_ai_failures_enabled ? '启用' : '关闭' },

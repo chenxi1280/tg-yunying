@@ -13,6 +13,7 @@ from .services._common import _as_utc, _now
 from .task_queue import get_task_queue
 from .services import (
     drain_account_sync_records,
+    drain_account_security_batches,
     drain_archives,
     drain_continuous_campaigns,
     drain_group_listeners,
@@ -94,6 +95,8 @@ def _drain_legacy_once(limit: int = 100) -> int:
     remaining = max(0, remaining - profile_count)
     account_count = drain_account_sync_records(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - account_count)
+    account_security_count = drain_account_security_batches(SessionLocal, max(1, remaining))
+    remaining = max(0, remaining - account_security_count)
     listener_count = drain_group_listeners(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - listener_count)
     source_media_count = _safe_optional_drain("source_media", drain_source_media_cache, SessionLocal, max(1, remaining))
@@ -110,7 +113,7 @@ def _drain_legacy_once(limit: int = 100) -> int:
     remaining = max(0, remaining - operation_count)
     archive_count = drain_archives(SessionLocal, max(1, remaining))
     temp_cleanup_count = _safe_optional_drain("temp_files", cleanup_temp_files)
-    return count + profile_count + account_count + listener_count + source_media_count + material_cache_count + continuous_count + operation_count + archive_count + temp_cleanup_count
+    return count + profile_count + account_count + account_security_count + listener_count + source_media_count + material_cache_count + continuous_count + operation_count + archive_count + temp_cleanup_count
 
 
 def _safe_optional_drain(name: str, func, *args, **kwargs) -> int:

@@ -20,11 +20,7 @@ def ensure_account_quota_available(session: Session, tenant_id: int, increment: 
     tenant = session.get(Tenant, tenant_id)
     if not tenant:
         raise ValueError("tenant not found")
-    usage = tenant_usage_snapshot(session, tenant_id)
-    if usage["accounts_used"] + increment > tenant.account_quota:
-        raise ValueError(
-            f"账号配额不足：当前已用 {usage['accounts_used']} / {tenant.account_quota}，本次需新增 {increment} 个账号"
-        )
+    return
 
 
 def ensure_task_quota_available(session: Session, tenant_id: int, increment: int = 1) -> None:
@@ -46,14 +42,12 @@ def update_tenant(session: Session, tenant_id: int, payload: TenantUpdate, actor
     for key, value in data.items():
         if key in {"id", "created_at", "updated_at"}:
             continue
+        if key == "account_quota":
+            value = 0
         if isinstance(value, str):
             value = value.strip()
         setattr(tenant, key, value)
     usage = tenant_usage_snapshot(session, tenant.id)
-    if usage["accounts_used"] > tenant.account_quota:
-        raise ValueError(
-            f"账号配额不能低于已用数量：当前已用 {usage['accounts_used']}，目标配额 {tenant.account_quota}"
-        )
     if usage["tasks_used"] > tenant.task_quota:
         raise ValueError(
             f"任务配额不能低于已用数量：当前已用 {usage['tasks_used']}，目标配额 {tenant.task_quota}"

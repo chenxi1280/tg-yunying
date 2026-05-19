@@ -605,6 +605,8 @@ class TaskDetailOut(BaseModel):
     actions: list[ActionOut]
     stats: dict[str, Any]
     accounts: list[TaskDetailAccountOut] = Field(default_factory=list)
+    membership_phase: dict[str, Any] = Field(default_factory=dict)
+    membership_accounts: list[dict[str, Any]] = Field(default_factory=list)
     message_groups: list[TaskMessageGroupOut] = Field(default_factory=list)
     ai_cycles: list[TaskAICycleOut] = Field(default_factory=list)
     ai_generation_records: list[TaskAIGenerationRecordOut] = Field(default_factory=list)
@@ -657,6 +659,7 @@ class ChannelCapacityCheckOut(BaseModel):
     max_effective_per_message: int
     will_shortfall: bool
     warning_message: str = ""
+    membership_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskPrecheckRequest(BaseModel):
@@ -674,6 +677,7 @@ class TaskPrecheckOut(ApiModel):
     limited_account_count: int
     blocked_account_count: int
     target_ability: list[dict[str, Any]] = Field(default_factory=list)
+    membership_summary: dict[str, Any] = Field(default_factory=dict)
     estimated_actions: int
     capacity_shortfall: int
     rule_version: dict[str, Any] | None = None

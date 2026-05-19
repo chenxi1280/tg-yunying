@@ -5,6 +5,7 @@ from .contracts import (
     ArchiveSnapshot,
     ArchivedMemberSnapshot,
     ArchivedMessageSnapshot,
+    ChannelMembershipResult,
     ChannelCommentSnapshot,
     ChannelMessageSnapshot,
     ContactSnapshot,
@@ -30,6 +31,7 @@ __all__ = [
     "ArchivedMessageSnapshot",
     "ChannelCommentSnapshot",
     "ChannelMessageSnapshot",
+    "ChannelMembershipResult",
     "ContactSnapshot",
     "DeveloperAppCredentials",
     "GroupMessageSnapshot",
@@ -47,4 +49,3 @@ __all__ = [
     "_resolve_telethon_target",
     "_telethon_send_target",
 ]
-

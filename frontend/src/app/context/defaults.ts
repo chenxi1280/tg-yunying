@@ -99,7 +99,7 @@ export function defaultTenantForm() {
     id: null as number | null,
     name: '',
     plan_name: '',
-    account_quota: 50,
+    account_quota: 0,
     task_quota: 5000,
   };
 }

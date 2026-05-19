@@ -11,7 +11,7 @@ from .api import ApiModel
 class TenantCreate(BaseModel):
     name: str
     plan_name: str = "试运行"
-    account_quota: int = 50
+    account_quota: int = 0
     task_quota: int = 5000
 
 

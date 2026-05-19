@@ -44,6 +44,11 @@ class OperationResult:
 
 
 @dataclass(frozen=True)
+class ChannelMembershipResult(OperationResult):
+    membership_status: str = "joined"
+
+
+@dataclass(frozen=True)
 class GroupSnapshot:
     tg_peer_id: str
     title: str
@@ -86,6 +91,32 @@ class RemoteProfile:
     last_name: str
     bio: str
     username: str | None = None
+
+
+@dataclass(frozen=True)
+class AccountAuthorizationSnapshot:
+    authorization_hash: str
+    is_current: bool
+    device_model: str
+    platform: str
+    system_version: str
+    api_id: int
+    app_name: str
+    app_version: str
+    ip: str = ""
+    country: str = ""
+    region: str = ""
+    date_created: datetime | None = None
+    date_active: datetime | None = None
+
+
+@dataclass(frozen=True)
+class AccountSecurityOperationResult:
+    ok: bool
+    status: str = "已完成"
+    failure_type: str = ""
+    detail: str = ""
+    next_retry_at: datetime | None = None
 
 
 @dataclass(frozen=True)

@@ -38,9 +38,10 @@ from app.services._common import _now, audit
 
 from .account_pool import select_task_accounts
 from .ai_generator import generate_channel_comments, generate_group_messages
+from .channel_membership import channel_membership_summary
 from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims
 from .executors import build_task_plan, reached_daily_action_limit
-from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _message_groups, _relay_batches, _relay_recent_sources, _search_actions, _task_payload
+from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _membership_accounts, _membership_phase, _message_groups, _relay_batches, _relay_recent_sources, _search_actions, _task_payload
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
@@ -172,17 +173,20 @@ def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, s
 def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str, Any]:
     task = _get_task(session, tenant_id, task_id)
     actions = list_actions(session, tenant_id, task_id)
+    business_actions = [action for action in actions if action.action_type != "ensure_channel_membership"]
     stats = refresh_task_stats(session, task)
     return {
-        "task": _task_payload(session, task, actions=actions),
-        "actions": actions,
+        "task": _task_payload(session, task, actions=business_actions),
+        "actions": business_actions,
         "stats": stats,
-        "accounts": _detail_accounts(session, actions),
-        "message_groups": _message_groups(session, task, actions),
-        "ai_cycles": _ai_cycles(actions),
-        "ai_generation_records": _ai_generation_records(actions),
-        "ai_account_profiles": _ai_account_profiles(session, task, actions),
-        "relay_batches": _relay_batches(actions),
+        "accounts": _detail_accounts(session, business_actions),
+        "membership_phase": _membership_phase(task),
+        "membership_accounts": _membership_accounts(session, actions),
+        "message_groups": _message_groups(session, task, business_actions),
+        "ai_cycles": _ai_cycles(business_actions),
+        "ai_generation_records": _ai_generation_records(business_actions),
+        "ai_account_profiles": _ai_account_profiles(session, task, business_actions),
+        "relay_batches": _relay_batches(business_actions),
         "recent_relay_sources": _relay_recent_sources(session, task),
     }
 
@@ -407,6 +411,12 @@ def check_channel_capacity(session: Session, tenant_id: int, payload: ChannelCap
         limit=payload.target_per_message,
     )
     effective_count = len(accounts)
+    membership_summary: dict[str, Any] = {}
+    if payload.target_channel_id:
+        channel = session.get(OperationTarget, int(payload.target_channel_id))
+        if channel and channel.tenant_id == tenant_id and channel.target_type == "channel":
+            membership_summary = channel_membership_summary(session, tenant_id, channel, payload.account_config.model_dump(mode="json"), candidates=accounts)
+            effective_count = int(membership_summary.get("joined_account_count") or 0) + int(membership_summary.get("need_join_account_count") or 0)
     action_label = {"channel_view": "浏览", "channel_like": "点赞", "channel_comment": "评论"}.get(payload.task_type, "互动")
     will_shortfall = payload.target_per_message > effective_count
     warning = ""
@@ -418,6 +428,7 @@ def check_channel_capacity(session: Session, tenant_id: int, payload: ChannelCap
         "max_effective_per_message": effective_count,
         "will_shortfall": will_shortfall,
         "warning_message": warning,
+        "membership_summary": membership_summary,
     }
 
 

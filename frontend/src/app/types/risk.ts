@@ -30,6 +30,11 @@ export type RiskControlAccountScore = {
   proxy_status: string | null;
   proxy_alert_status: string | null;
   proxy_risk_reason: string;
+  trusted_session_status: string;
+  two_fa_status: string;
+  external_authorization_count: number;
+  security_profile_status: string;
+  security_risk_reason: string;
   can_join_task: boolean;
 };
 

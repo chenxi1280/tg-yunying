@@ -20,7 +20,8 @@ from app.services.developer_apps import credentials_for_account
 from app.services.ai_config import get_scheduling_setting
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
-from .payloads import LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, payload_error_message, validate_action_payload
+from .channel_membership import channel_requires_membership_gate, mark_channel_membership_joined
+from .payloads import EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from . import runtime_resources as _runtime_resources
@@ -54,7 +55,11 @@ def dispatch_action(session: Session, action: Action) -> bool:
         return True
     try:
         payload = validate_action_payload(action.action_type, action.payload or {})
+        if action.action_type in {"view_message", "like_message", "post_comment"} and not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
+            return True
         credentials = credentials_for_account(session, account)
+        if action.action_type == "ensure_channel_membership":
+            return _dispatch_channel_membership(session, action, account, credentials, payload)
         if action.action_type == "send_message":
             return _dispatch_send_message(session, action, account, credentials, payload)
         if action.action_type == "view_message":
@@ -335,6 +340,45 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
     return True
 
 
+def _dispatch_channel_membership(session: Session, action: Action, account: TgAccount, credentials, payload: EnsureChannelMembershipPayload) -> bool:
+    existing_group = session.scalar(select(TgGroup).where(TgGroup.tenant_id == action.tenant_id, TgGroup.tg_peer_id == payload.channel_id))
+    if existing_group:
+        existing_link = session.scalar(
+            select(TgGroupAccount).where(
+                TgGroupAccount.tenant_id == action.tenant_id,
+                TgGroupAccount.group_id == existing_group.id,
+                TgGroupAccount.account_id == account.id,
+            )
+        )
+        if existing_link:
+            _skip(action, "already_joined", "账号已关注目标频道")
+            action.result = {**(action.result or {}), "success": True, "membership_status": "already_joined"}
+            return True
+    attempt = _begin_execution_attempt(session, action, account)
+    _mark_executing(action)
+    session.commit()
+    _mark_gateway_call_started(session, attempt)
+    result = gateway.ensure_channel_membership(
+        account.id,
+        payload.channel_id,
+        account.session_ciphertext,
+        credentials,
+        invite_link=payload.invite_link,
+    )
+    if result.ok:
+        mark_channel_membership_joined(
+            session,
+            action.tenant_id,
+            payload.channel_target_id,
+            account.id,
+            permission_label="已关注" if result.membership_status != "already_joined" else "已关注",
+        )
+    _apply_operation_result(action, account, result.ok, result.failure_type, result.detail or result.membership_status, attempt=attempt)
+    if result.ok:
+        action.result = {**(action.result or {}), "membership_status": result.membership_status or "joined"}
+    return True
+
+
 def _outbound_segments(payload: SendMessagePayload) -> list[OutboundSegment]:
     segments = [OutboundSegment(segment_type="文本", content=payload.message_text)]
     for item in payload.media_segments or []:
@@ -355,6 +399,8 @@ def _outbound_segments(payload: SendMessagePayload) -> list[OutboundSegment]:
 
 
 def _dispatch_view(action: Action, account: TgAccount, credentials, session: Session, payload: ViewMessagePayload) -> bool:
+    if not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
+        return True
     account_id = account.id
     session_ciphertext = account.session_ciphertext
     channel_peer = payload.channel_id
@@ -369,6 +415,8 @@ def _dispatch_view(action: Action, account: TgAccount, credentials, session: Ses
 
 
 def _dispatch_like(action: Action, account: TgAccount, credentials, session: Session, payload: LikeMessagePayload) -> bool:
+    if not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
+        return True
     account_id = account.id
     session_ciphertext = account.session_ciphertext
     channel_peer = payload.channel_id
@@ -384,6 +432,8 @@ def _dispatch_like(action: Action, account: TgAccount, credentials, session: Ses
 
 
 def _dispatch_comment(action: Action, account: TgAccount, credentials, session: Session, payload: PostCommentPayload) -> bool:
+    if not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
+        return True
     account_id = account.id
     session_ciphertext = account.session_ciphertext
     channel_peer = payload.channel_id
@@ -396,6 +446,47 @@ def _dispatch_comment(action: Action, account: TgAccount, credentials, session: 
     result = gateway.reply_channel_message(account_id, channel_peer, message_id, content, session_ciphertext, credentials, reply_to_message_id=payload.reply_to_message_id)
     _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
     return True
+
+
+def _ensure_channel_action_membership(session: Session, action: Action, account: TgAccount, channel_target_id: int | None) -> bool:
+    if not channel_target_id:
+        _fail_with_policy(
+            action,
+            FailureType.PEER_INVALID.value,
+            "频道互动缺少频道目标标识",
+            auto_check="拦截",
+            validation_stage="account_channel_membership",
+        )
+        return False
+    channel = session.get(OperationTarget, int(channel_target_id))
+    if channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel" and not channel_requires_membership_gate(channel):
+        return True
+    group = (
+        session.scalar(select(TgGroup).where(TgGroup.tenant_id == action.tenant_id, TgGroup.tg_peer_id == channel.tg_peer_id))
+        if channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel"
+        else None
+    )
+    link = (
+        session.scalar(
+            select(TgGroupAccount).where(
+                TgGroupAccount.tenant_id == action.tenant_id,
+                TgGroupAccount.group_id == group.id,
+                TgGroupAccount.account_id == account.id,
+            )
+        )
+        if group
+        else None
+    )
+    if link:
+        return True
+    _fail_with_policy(
+        action,
+        FailureType.ACCOUNT_UNAVAILABLE.value,
+        "账号未关注目标频道，已拦截主互动动作",
+        auto_check="拦截",
+        validation_stage="account_channel_membership",
+    )
+    return False
 
 
 def _apply_operation_result(action: Action, account: TgAccount, ok: bool, failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None) -> None:
@@ -512,6 +603,28 @@ def _replacement_account_for_action(session: Session, action: Action, account: T
     if not task:
         return None
     payload = action.payload if isinstance(action.payload, dict) else {}
+    channel_target_id = int(payload.get("channel_target_id") or 0)
+    if channel_target_id:
+        channel = session.get(OperationTarget, channel_target_id)
+        group = (
+            session.scalar(select(TgGroup).where(TgGroup.tenant_id == action.tenant_id, TgGroup.tg_peer_id == channel.tg_peer_id))
+            if channel and channel.tenant_id == action.tenant_id
+            else None
+        )
+        if not group:
+            return None
+        member_ids = list(
+            session.scalars(
+                select(TgGroupAccount.account_id).where(
+                    TgGroupAccount.tenant_id == action.tenant_id,
+                    TgGroupAccount.group_id == group.id,
+                )
+            )
+        )
+        if not member_ids:
+            return None
+        candidates = select_task_accounts(session, action.tenant_id, task.account_config or {}, scheduled_at=action.scheduled_at, limit=10)
+        return next((candidate for candidate in candidates if candidate.id != account.id and candidate.id in member_ids), None)
     group_id = int(payload.get("group_id") or 0) or None
     candidates = select_task_accounts(
         session,
