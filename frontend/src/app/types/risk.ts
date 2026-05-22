@@ -11,6 +11,7 @@ export type RiskControlAccountScore = {
   display_name: string;
   username: string | null;
   phone_masked: string;
+  phone_number?: string | null;
   pool_name: string;
   login_status: string;
   health_score: number;

@@ -124,13 +124,15 @@ class SourceGroup(BaseModel):
 
     group_id: int | None = None
     operation_target_id: int | None = None
+    target_input: str | None = None
+    target_title: str | None = None
     group_name: str = ""
     is_active: bool = True
 
     @model_validator(mode="after")
     def validate_group_reference(self) -> "SourceGroup":
-        if not self.group_id and not self.operation_target_id:
-            raise ValueError("source group requires group_id or operation_target_id")
+        if not self.group_id and not self.operation_target_id and not (self.target_input or "").strip():
+            raise ValueError("source group requires group_id, operation_target_id or target_input")
         return self
 
 
@@ -139,6 +141,9 @@ class GroupAIChatConfig(BaseModel):
 
     target_group_id: int | None = None
     target_operation_target_id: int | None = None
+    target_type: Literal["group"] = "group"
+    target_input: str | None = None
+    target_title: str | None = None
     rule_set_id: int | None = None
     rule_set_version_id: int | None = None
     target_group_name: str = ""
@@ -173,8 +178,8 @@ class GroupAIChatConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_target_reference(self) -> "GroupAIChatConfig":
-        if not self.target_group_id and not self.target_operation_target_id:
-            raise ValueError("target_group_id 或 target_operation_target_id 至少填写一个")
+        if not self.target_group_id and not self.target_operation_target_id and not (self.target_input or "").strip():
+            raise ValueError("target_group_id、target_operation_target_id 或 target_input 至少填写一个")
         return self
 
 
@@ -188,6 +193,9 @@ class GroupRelayConfig(BaseModel):
     filters: RelayFilters = Field(default_factory=RelayFilters)
     target_group_id: int | None = None
     target_operation_target_id: int | None = None
+    target_type: Literal["group"] = "group"
+    target_input: str | None = None
+    target_title: str | None = None
     target_group_ids: list[int] = Field(default_factory=list)
     target_operation_target_ids: list[int] = Field(default_factory=list)
     send_account_ids: list[int] = Field(default_factory=list)
@@ -206,8 +214,8 @@ class GroupRelayConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_relay_targets(self) -> "GroupRelayConfig":
-        if not self.target_group_id and not self.target_group_ids and not self.target_operation_target_id and not self.target_operation_target_ids:
-            raise ValueError("target_group_id、target_group_ids 或运营目标至少填写一个")
+        if not self.target_group_id and not self.target_group_ids and not self.target_operation_target_id and not self.target_operation_target_ids and not (self.target_input or "").strip():
+            raise ValueError("target_group_id、target_group_ids、运营目标或 target_input 至少填写一个")
         if self.target_group_id and self.target_group_id not in self.target_group_ids:
             self.target_group_ids = [self.target_group_id, *self.target_group_ids]
         if self.target_operation_target_id and self.target_operation_target_id not in self.target_operation_target_ids:
@@ -219,7 +227,10 @@ class GroupRelayConfig(BaseModel):
 class ChannelMessageScopeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    target_channel_id: int
+    target_channel_id: int | None = None
+    target_type: Literal["channel"] = "channel"
+    target_input: str | None = None
+    target_title: str | None = None
     target_channel_name: str = ""
     message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "latest_n"
     message_count: int | None = Field(default=10, ge=1, le=500)
@@ -229,6 +240,8 @@ class ChannelMessageScopeConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_message_scope(self) -> "ChannelMessageScopeConfig":
+        if not self.target_channel_id and not (self.target_input or "").strip():
+            raise ValueError("target_channel_id 或 target_input 至少填写一个")
         if self.message_scope == "specific" and not self.message_ids:
             raise ValueError("message_scope=specific 时 message_ids 必填")
         if self.message_scope == "date_range" and not (self.date_from or self.date_to):
@@ -677,7 +690,13 @@ class TaskPrecheckOut(ApiModel):
     limited_account_count: int
     blocked_account_count: int
     target_ability: list[dict[str, Any]] = Field(default_factory=list)
+    target_resolution: dict[str, Any] = Field(default_factory=dict)
     membership_summary: dict[str, Any] = Field(default_factory=dict)
+    ready_account_count: int = 0
+    preparable_account_count: int = 0
+    estimated_membership_actions: int = 0
+    membership_warnings: list[str] = Field(default_factory=list)
+    membership_subtask_preview: dict[str, Any] = Field(default_factory=dict)
     estimated_actions: int
     capacity_shortfall: int
     rule_version: dict[str, Any] | None = None

@@ -473,6 +473,7 @@ def _account_score_row(
         "display_name": account.display_name,
         "username": account.username,
         "phone_masked": account.phone_masked,
+        "phone_number": account.phone_number,
         "pool_name": account.pool_name,
         "login_status": account.status,
         "health_score": round(adjusted_score, 1),

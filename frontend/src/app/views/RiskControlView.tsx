@@ -8,6 +8,7 @@ import { formatBeijingDateTime } from '../time';
 import { Badge, StatCard, StatusBadge, useAntdTableControls } from '../components/shared';
 
 type RiskGlobalPolicy = RiskControlSummary['global_policy'];
+const riskAccountPhone = (account: RiskControlAccountScore) => account.phone_number || account.phone_masked;
 
 type ProxyFormValues = {
   id?: number;
@@ -369,7 +370,7 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
       render: (_, row) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{row.display_name}</Typography.Text>
-          <Typography.Text type="secondary">@{row.username ?? '未设置'} / {row.phone_masked}</Typography.Text>
+          <Typography.Text type="secondary">@{row.username ?? '未设置'} / {riskAccountPhone(row)}</Typography.Text>
           <Typography.Text type="secondary">{row.pool_name}</Typography.Text>
         </Space>
       ),

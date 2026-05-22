@@ -28,6 +28,8 @@ type TargetOption = {
   searchText: string;
   target: MessageSendTarget;
 };
+const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
+const contactPhone = (contact: Contact) => contact.phone_number || contact.phone_masked || '';
 
 const targetTypeLabels: Record<TargetType, string> = {
   private: '个人',
@@ -196,10 +198,11 @@ export default function MessageSendingView({
     const privateOptions = contacts.map((contact) => {
       const peer = contact.username ? `@${contact.username}` : contact.peer_id;
       const title = contact.display_name || peer;
+      const phone = contactPhone(contact);
       return {
         value: `private:${peer}`,
-        searchText: `${title} ${contact.username || ''} ${contact.peer_id} ${contact.phone_masked || ''}`,
-        label: <Space size={6}><Tag color="blue">个人</Tag><span>{title}</span><Typography.Text type="secondary">{contact.username || contact.peer_id}</Typography.Text></Space>,
+        searchText: `${title} ${contact.username || ''} ${contact.peer_id} ${phone}`,
+        label: <Space size={6}><Tag color="blue">个人</Tag><span>{title}</span><Typography.Text type="secondary">{contact.username || contact.peer_id} {phone ? `/ ${phone}` : ''}</Typography.Text></Space>,
         target: { target_type: 'private', target_peer_id: peer, target_display: title },
       } satisfies TargetOption;
     });
@@ -449,7 +452,7 @@ export default function MessageSendingView({
                   filterOption={optionFilter}
                   options={accounts.map((account) => ({
                     value: account.id,
-                    label: `${account.display_name} / ${account.username || '-'} / ${account.phone_masked || ''}`,
+                    label: `${account.display_name} / ${account.username || '-'} / ${accountPhone(account) || ''}`,
                   }))}
                 />
               </Form.Item>
@@ -500,7 +503,7 @@ export default function MessageSendingView({
                   filterOption={optionFilter}
                   options={onlineAccounts.map((account) => ({
                     value: account.id,
-                    label: `${account.display_name} / ${account.username || '-'} / ${account.phone_masked || ''}`,
+                    label: `${account.display_name} / ${account.username || '-'} / ${accountPhone(account) || ''}`,
                   }))}
                 />
               </Form.Item>

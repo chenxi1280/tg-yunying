@@ -102,6 +102,7 @@ class AccountSecurityPreviewItem(ApiModel):
     account_id: int
     account_name: str
     phone_masked: str
+    phone_number: str | None = None
     session_status: str
     trusted_session_status: str
     external_authorization_count: int

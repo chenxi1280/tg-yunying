@@ -43,6 +43,8 @@ class ArchivedMessageOut(ApiModel):
     sender_peer_id: str = ""
     remote_message_id: str = ""
     sender_name: str
+    sender_phone_masked: str = ""
+    sender_phone_number: str | None = None
     content: str
     message_type: str
     sent_at: datetime
@@ -54,6 +56,8 @@ class ArchivedMemberOut(ApiModel):
     peer_id: str = ""
     display_name: str
     username: str | None
+    phone_masked: str = ""
+    phone_number: str | None = None
     activity_score: int
     tags: str
     last_seen_at: datetime | None = None
@@ -87,6 +91,8 @@ class AuditLogOut(ApiModel):
     target_type: str
     target_id: str
     detail: str
+    account_display_name: str | None = None
+    account_phone_number: str | None = None
     ip_address: str
     created_at: datetime
 

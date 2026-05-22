@@ -1481,6 +1481,9 @@ def test_task_creation_precheck_covers_group_and_channel_requirements():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
+    with pytest.raises(ValueError):
+        TaskSettingsUpdate(target_input="@edit_should_not_create")
+
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add_all(
@@ -1561,6 +1564,11 @@ def test_task_creation_precheck_covers_group_and_channel_requirements():
         assert relay_result["estimated_actions"] == 1
         assert all(item["can_task"] for item in relay_result["target_ability"])
         assert any(item["role"] == "listen_source" and item["can_send"] is False for item in relay_result["target_ability"])
+        assert relay_result["target_resolution"]["sources"][0]["target_id"] == 22
+        assert relay_result["target_resolution"]["targets"][0]["target_id"] == 21
+        assert relay_result["membership_summary"]["target_count"] == 2
+        assert relay_result["estimated_membership_actions"] == 4
+        assert relay_result["membership_subtask_preview"]["pending_account_count"] == 4
 
         view_result = precheck_task_creation(
             session,
@@ -1733,8 +1741,8 @@ def test_group_executors_resolve_operation_targets_without_normalized_group_ids(
 
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-op-only-runtime")) == 1
         assert build_group_relay_plan(session, session.get(Task, "relay-op-only-runtime")) == 1
-        ai_action = session.scalar(select(Action).where(Action.task_id == "ai-op-only-runtime"))
-        relay_action = session.scalar(select(Action).where(Action.task_id == "relay-op-only-runtime"))
+        ai_action = session.scalar(select(Action).where(Action.task_id == "ai-op-only-runtime", Action.action_type == "send_message"))
+        relay_action = session.scalar(select(Action).where(Action.task_id == "relay-op-only-runtime", Action.action_type == "send_message"))
         ai_detail = get_task_detail(session, 1, "ai-op-only-runtime")
         relay_detail = get_task_detail(session, 1, "relay-op-only-runtime")
 
@@ -1747,6 +1755,77 @@ def test_group_executors_resolve_operation_targets_without_normalized_group_ids(
     assert relay_action.payload["source_operation_target_id"] == 21
     assert "源群目标" in relay_detail["task"]["target_summary"]
     assert "目标群目标" in relay_detail["task"]["target_summary"]
+
+
+def test_group_relay_operation_targets_create_membership_precondition(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    from app.integrations.telegram import ChannelMembershipResult
+    from app.services.task_center import dispatcher
+    from app.services.task_center.dispatcher import dispatch_action
+
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "ensure_channel_membership",
+        lambda *args, **kwargs: ChannelMembershipResult(True, detail="joined", membership_status="joined"),
+    )
+    monkeypatch.setattr("app.services.task_center.executors.group_relay.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_relay.rewrite_relay_content", lambda *_args, **_kwargs: ("转发内容", 0))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=101, tenant_id=1, display_name="账号A", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=100),
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群资产", auth_status="已授权运营", can_send=True, listener_context_limit=20),
+                TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群资产", auth_status="未确认", can_send=False, listener_context_limit=20),
+                OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="源群目标", can_send=True, auth_status="已授权运营"),
+                OperationTarget(id=22, tenant_id=1, target_type="group", tg_peer_id="-1009", title="待加入目标群", can_send=False, auth_status="未确认"),
+                TgGroupAccount(id=901, tenant_id=1, group_id=7, account_id=101, can_send=True, is_listener=True),
+                TgGroupAccount(id=902, tenant_id=1, group_id=9, account_id=101, can_send=False, is_listener=False),
+                GroupContextMessage(
+                    id=41,
+                    tenant_id=1,
+                    group_id=7,
+                    listener_account_id=101,
+                    sender_peer_id="user-1",
+                    sender_name="真实用户",
+                    content="需要转发的上下文",
+                    remote_message_id="relay-membership-ctx",
+                    sent_at=datetime(2026, 5, 11, 10, 0, 0),
+                ),
+                Task(
+                    id="relay-target-membership",
+                    tenant_id=1,
+                    name="转发目标准入",
+                    type="group_relay",
+                    status="running",
+                    account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                    pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                    type_config={
+                        "source_groups": [{"operation_target_id": 21, "is_active": True}],
+                        "target_operation_target_ids": [22],
+                        "content_mode": "raw",
+                        "dedup_window_minutes": 60,
+                    },
+                    stats={},
+                ),
+            ]
+        )
+        session.commit()
+
+        assert build_group_relay_plan(session, session.get(Task, "relay-target-membership")) == 2
+        membership_actions = list(session.scalars(select(Action).where(Action.task_id == "relay-target-membership", Action.action_type == "ensure_target_membership").order_by(Action.payload["channel_target_id"].as_integer())))
+        assert [action.payload["channel_target_id"] for action in membership_actions] == [21, 22]
+        assert [action.payload["target_type"] for action in membership_actions] == ["group", "group"]
+        assert [action.payload["require_send"] for action in membership_actions] == [False, True]
+        assert [(action.payload["channel_target_id"], action.status) for action in membership_actions] == [(21, "skipped"), (22, "pending")]
+        assert session.scalar(select(func.count(Action.id)).where(Action.task_id == "relay-target-membership", Action.action_type == "send_message")) == 0
+        dispatch_action(session, membership_actions[1])
+        assert build_group_relay_plan(session, session.get(Task, "relay-target-membership")) == 1
+        assert session.scalar(select(func.count(Action.id)).where(Action.task_id == "relay-target-membership", Action.action_type == "send_message")) == 1
 
 
 def test_group_relay_rule_account_strategy_controls_sender(monkeypatch):
@@ -2888,7 +2967,7 @@ def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
         generated.append(history)
         if len(generated) == 1:
             return ["第一轮先接住真人消息。"], 0
-        return ["昨晚路过那边也挺热闹。"], 0
+        return ["这会儿人少，可以先问问有没有新情况。"], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
@@ -2940,12 +3019,148 @@ def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
     assert len(generated) == 2
     assert "群内暂时没有新的真人消息" in generated[-1]
     assert "上一轮 AI 已说" in generated[-1]
+    assert "不要编具体经历" in generated[-1]
     assert len(actions) == 2
-    assert actions[-1].payload["message_text"] == "昨晚路过那边也挺热闹。"
+    assert actions[-1].payload["message_text"] == "这会儿人少，可以先问问有没有新情况。"
+    assert actions[-1].payload["chat_mode"] == "idle_warmup"
+    assert actions[-1].payload["hallucination_risk"] == ""
     assert task.status == "running"
     assert task.last_error == ""
     assert task.stats["context_mode"] == "idle_continuation"
     assert "idle_continuation_next_run_at" not in task.stats
+
+
+def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    generated: list[str] = []
+    now_value = datetime(2026, 5, 13, 11, 0, 0)
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        generated.append(history)
+        if len(generated) == 1:
+            return ["第一轮先接住真人消息。"], 0
+        return ["走之前还确认了下 挺细心"], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="校园日常"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+        session.add(
+            GroupContextMessage(
+                id=43,
+                tenant_id=1,
+                group_id=7,
+                listener_account_id=101,
+                sender_name="真人用户",
+                content="第一条真人消息",
+                remote_message_id="real-once",
+                sent_at=now_value - timedelta(minutes=10),
+            )
+        )
+        session.add(
+            Task(
+                id="ai-idle-hallucination",
+                tenant_id=1,
+                name="AI 空闲幻觉拦截",
+                type="group_ai_chat",
+                status="running",
+                account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 1, "idle_continuation_seconds": 300},
+            )
+        )
+        session.commit()
+
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-hallucination")) == 1
+        first_action = session.scalar(select(Action).where(Action.task_id == "ai-idle-hallucination"))
+        first_action.status = "success"
+        first_action.executed_at = now_value - timedelta(seconds=301)
+        first_action.payload["message_text"] = "上一轮已经聊过开场。"
+        first_action.result = {"success": True}
+        session.commit()
+
+        assert build_group_ai_chat_plan(session, session.get(Task, "ai-idle-hallucination")) == 0
+        task = session.get(Task, "ai-idle-hallucination")
+        action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-idle-hallucination"))
+
+    assert len(generated) == 2
+    assert action_count == 1
+    assert task.stats["context_mode"] == "idle_continuation"
+    assert task.stats["chat_mode"] == "idle_warmup"
+    assert task.stats["skip_reason"] == "hallucination_risk"
+    assert task.stats["hallucination_risk"] == "high"
+    assert task.last_error == "AI 候选缺少事实锚点，已跳过本轮"
+
+
+def test_group_ai_chat_semantic_clusters_drop_repeated_experience_templates(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        return [
+            "照片准是重点 上次真人没差",
+            "照片没p 本人也差不多",
+            "态度稳点真省心",
+            "这个价格还是得自己问清楚",
+        ][:count], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="群内接话"))
+        for account_id in [101, 102, 103, 104]:
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        session.add(
+            GroupContextMessage(
+                id=43,
+                tenant_id=1,
+                group_id=7,
+                listener_account_id=101,
+                sender_name="真人用户",
+                content="芳名叫啥，价格自己问吗？",
+                remote_message_id="real-price",
+                sent_at=datetime(2026, 5, 13, 10, 0, 0),
+            )
+        )
+        session.add(
+            Task(
+                id="ai-semantic-dedup",
+                tenant_id=1,
+                name="AI 语义去重",
+                type="group_ai_chat",
+                status="running",
+                account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 1, "participation_rate": 1, "participation_jitter": 0},
+            )
+        )
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, session.get(Task, "ai-semantic-dedup"))
+        actions = list(session.scalars(select(Action).where(Action.task_id == "ai-semantic-dedup").order_by(Action.created_at.asc())))
+        task = session.get(Task, "ai-semantic-dedup")
+
+    assert created == 3
+    assert [action.payload["message_text"] for action in actions] == [
+        "照片准是重点 上次真人没差",
+        "态度稳点真省心",
+        "这个价格还是得自己问清楚",
+    ]
+    assert [action.payload["semantic_cluster"] for action in actions] == [
+        "photo_real_match",
+        "stable_attitude",
+        "",
+    ]
+    assert task.stats["duplicate_risk"] == "semantic_cluster"
 
 
 def test_group_ai_chat_idle_continuation_can_be_disabled(monkeypatch):
@@ -3845,6 +4060,7 @@ def test_audit_logs_support_operational_filters():
             [
                 AuditLog(tenant_id=1, actor="admin", action="启动任务中心任务", target_type="task", target_id="task-1", detail="group_relay success"),
                 AuditLog(tenant_id=1, actor="worker", action="执行消息发送失败", target_type="message_task", target_id="99", detail="task-1 账号不可用"),
+                TgAccount(id=42, tenant_id=1, display_name="审计账号", phone_masked="+861***0042", phone_ciphertext=encrypt_secret("+8613800000042"), status="在线"),
                 AuditLog(tenant_id=1, actor="admin", action="同步TG账号", target_type="tg_account", target_id="42", detail="contacts=3"),
                 AuditLog(tenant_id=2, actor="admin", action="启动任务中心任务", target_type="task", target_id="task-2", detail="other tenant"),
             ]
@@ -3855,6 +4071,9 @@ def test_audit_logs_support_operational_filters():
         assert [item.target_id for item in filter_audit_logs(session, 1, account_id="42")] == ["42"]
         assert [item.target_id for item in filter_audit_logs(session, 1, status="failed")] == ["99"]
         assert [item.target_id for item in filter_audit_logs(session, 1, keyword="group_relay")] == ["task-1"]
+        enriched = [{"id": item.id, "tenant_id": item.tenant_id, "actor": item.actor, "action": item.action, "target_type": item.target_type, "target_id": item.target_id, "account_display_name": "审计账号", "account_phone_number": "+8613800000042", "detail": item.detail, "ip_address": item.ip_address, "created_at": item.created_at} for item in filter_audit_logs(session, 1, account_id="42")]
+        csv_text = audit_logs_csv(enriched)
+        assert "id,tenant_id,actor,action,target_type,target_id,account_display_name,account_phone_number,detail,ip_address,created_at" in csv_text
+        assert "+8613800000042" in csv_text
         csv_text = audit_logs_csv(filter_audit_logs(session, 1, task_id="task-1"))
-        assert "id,tenant_id,actor,action,target_type,target_id,detail,ip_address,created_at" in csv_text
         assert "执行消息发送失败" in csv_text

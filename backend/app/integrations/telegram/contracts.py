@@ -126,6 +126,7 @@ class ArchivedMessageSnapshot:
     message_type: str = "text"
     sent_at: datetime | None = None
     is_bot: bool = False
+    sender_phone: str | None = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +171,7 @@ class ChannelCommentSnapshot:
 class ArchivedMemberSnapshot:
     display_name: str
     username: str | None = None
+    phone: str | None = None
     activity_score: int = 0
     tags: str = ""
 

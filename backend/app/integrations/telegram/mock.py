@@ -413,14 +413,14 @@ class TelegramGateway:
     ) -> ArchiveSnapshot:
         title = f"群 {peer_id}"
         messages = [
-            ArchivedMessageSnapshot(sender_name="活跃成员A", content=f"{title} 最近在讨论使用体验和新手 FAQ。", sent_at=beijing_now()),
+            ArchivedMessageSnapshot(sender_name="活跃成员A", sender_phone="+8613811110001", content=f"{title} 最近在讨论使用体验和新手 FAQ。", sent_at=beijing_now()),
             ArchivedMessageSnapshot(sender_name="客服小助手", content="欢迎语和活动规则需要整理成固定话术。", sent_at=beijing_now()),
-            ArchivedMessageSnapshot(sender_name="老用户B", content="建议把高频问题和入群引导做成置顶。", sent_at=beijing_now()),
+            ArchivedMessageSnapshot(sender_name="老用户B", sender_phone="+8613811110002", content="建议把高频问题和入群引导做成置顶。", sent_at=beijing_now()),
         ]
         members = [
-            ArchivedMemberSnapshot(display_name="活跃成员A", username="active_a", activity_score=95, tags="高活跃,可邀请"),
-            ArchivedMemberSnapshot(display_name="老用户B", username="senior_b", activity_score=88, tags="高活跃,可邀请"),
-            ArchivedMemberSnapshot(display_name="潜在客户C", username="lead_c", activity_score=71, tags="可邀请"),
+            ArchivedMemberSnapshot(display_name="活跃成员A", username="active_a", phone="+8613811110001", activity_score=95, tags="高活跃,可邀请"),
+            ArchivedMemberSnapshot(display_name="老用户B", username="senior_b", phone="+8613811110002", activity_score=88, tags="高活跃,可邀请"),
+            ArchivedMemberSnapshot(display_name="潜在客户C", username="lead_c", phone="+8613811110003", activity_score=71, tags="可邀请"),
             ArchivedMemberSnapshot(display_name="内容贡献者D", username="creator_d", activity_score=64, tags="观察"),
         ]
         return ArchiveSnapshot(

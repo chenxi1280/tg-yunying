@@ -68,6 +68,7 @@ class RiskControlAccountScoreOut(ApiModel):
     display_name: str
     username: str | None = None
     phone_masked: str
+    phone_number: str | None = None
     pool_name: str
     login_status: str
     health_score: float

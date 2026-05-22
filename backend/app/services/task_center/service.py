@@ -151,6 +151,7 @@ def _create_task(session: Session, tenant_id: int, task_type: str, payload, acto
 
 
 def _create_and_start_task(session: Session, tenant_id: int, task_type: str, payload, actor: str) -> Task:
+    _assert_precheck_allows_start(session, tenant_id, task_type, payload.model_dump(mode="json"))
     task = _new_task(session, tenant_id, task_type, payload)
     audit(session, tenant_id=tenant_id, actor=actor, action="创建任务中心任务", target_type="task", target_id=task.id, detail=task.type)
     _mark_task_started(task)
@@ -173,14 +174,14 @@ def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, s
 def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str, Any]:
     task = _get_task(session, tenant_id, task_id)
     actions = list_actions(session, tenant_id, task_id)
-    business_actions = [action for action in actions if action.action_type != "ensure_channel_membership"]
+    business_actions = [action for action in actions if action.action_type not in {"ensure_channel_membership", "ensure_target_membership"}]
     stats = refresh_task_stats(session, task)
     return {
         "task": _task_payload(session, task, actions=business_actions),
         "actions": business_actions,
         "stats": stats,
         "accounts": _detail_accounts(session, business_actions),
-        "membership_phase": _membership_phase(task),
+        "membership_phase": _membership_phase(task, actions),
         "membership_accounts": _membership_accounts(session, actions),
         "message_groups": _message_groups(session, task, business_actions),
         "ai_cycles": _ai_cycles(business_actions),
@@ -276,6 +277,7 @@ def update_channel_comment_config(session: Session, tenant_id: int, task_id: str
 
 def start_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
     task = _get_task(session, tenant_id, task_id)
+    _assert_precheck_allows_start(session, tenant_id, task.type, _task_create_payload_for_precheck(task))
     _mark_task_started(task)
     audit(session, tenant_id=tenant_id, actor=actor, action="启动任务中心任务", target_type="task", target_id=task.id)
     session.commit()
@@ -441,6 +443,28 @@ def precheck_task_creation(session: Session, tenant_id: int, payload: TaskPreche
         validated_type_config=validated_type_config,
         validate_rule_binding=validate_rule_binding,
     )
+
+
+def _assert_precheck_allows_start(session: Session, tenant_id: int, task_type: str, payload: dict[str, Any]) -> None:
+    result = precheck_task_creation(session, tenant_id, TaskPrecheckRequest(task_type=task_type, payload=payload))
+    if result.get("decision") == "block":
+        reasons = result.get("blockers") or result.get("risk_hits") or ["任务预检阻塞"]
+        raise ValueError("；".join(str(item) for item in reasons if item))
+
+
+def _task_create_payload_for_precheck(task: Task) -> dict[str, Any]:
+    return {
+        "name": task.name,
+        "priority": task.priority,
+        "timezone": task.timezone,
+        "scheduled_start": task.scheduled_start,
+        "scheduled_end": task.scheduled_end,
+        "max_duration_hours": task.max_duration_hours,
+        "account_config": task.account_config or {},
+        "pacing_config": task.pacing_config or {},
+        "failure_policy": task.failure_policy or {},
+        **(task.type_config or {}),
+    }
 def drain_task_center(session_factory, limit: int = 100) -> int:
     processed = 0
     with session_factory() as session:

@@ -30,22 +30,29 @@ export function WizardBasics({ taskType, onTypeChange }: { taskType: TaskCenterT
   );
 }
 
-export function WizardTarget({ taskType, groupTargets, channelTargets, messages, messageScope, targetChannelId, onTargetChannelChange }: { taskType: TaskCenterTaskType; groupTargets: OperationTarget[]; channelTargets: OperationTarget[]; messages: ChannelMessage[]; messageScope: string; targetChannelId?: number; onTargetChannelChange: () => void }) {
+export function WizardTarget({ taskType, groupTargets, channelTargets, messages, messageScope, targetChannelId, onTargetChannelChange, allowInlineTarget = true }: { taskType: TaskCenterTaskType; groupTargets: OperationTarget[]; channelTargets: OperationTarget[]; messages: ChannelMessage[]; messageScope: string; targetChannelId?: number; onTargetChannelChange: () => void; allowInlineTarget?: boolean }) {
   const groupTargetOptions = groupTargets
-    .filter((target) => target.auth_status === '已授权运营')
     .map((target) => ({
       value: target.id,
-      label: `${target.title} / 可发账号 ${target.available_send_account_count} / 监听账号 ${target.listener_account_count}`,
+      label: `${target.title} / ${target.auth_status || '未确认'} / 可发账号 ${target.available_send_account_count} / 监听账号 ${target.listener_account_count}`,
     }));
   const sendableGroupTargetOptions = groupTargetOptions.filter((option) => groupTargets.find((target) => target.id === option.value)?.can_send);
   if (taskType === 'group_ai_chat') {
-    return <div className="form-grid"><Form.Item name="target_operation_target_id" label="运营目标群" rules={[{ required: true }]}><Select options={sendableGroupTargetOptions} /></Form.Item></div>;
+    return (
+      <div className="form-grid">
+        <Form.Item name="target_operation_target_id" label="已有运营目标群"><Select allowClear options={groupTargetOptions} /></Form.Item>
+        {allowInlineTarget && <Form.Item name="target_input" label="粘贴新群入口"><Input placeholder="@group_name / https://t.me/+invite / peer id" /></Form.Item>}
+        {allowInlineTarget && <Form.Item name="target_title" label="目标名称"><Input placeholder="可选，不填时使用入口作为名称" /></Form.Item>}
+      </div>
+    );
   }
   if (taskType === 'group_relay') {
     return (
       <div className="form-grid">
-        <Form.Item name="source_operation_target_ids" label="源群运营目标" rules={[{ required: true }]}><Select mode="multiple" options={groupTargetOptions} /></Form.Item>
-        <Form.Item name="target_operation_target_id" label="默认目标群" rules={[{ required: true }]}><Select options={sendableGroupTargetOptions} /></Form.Item>
+        <Form.Item name="source_operation_target_ids" label="源群运营目标"><Select mode="multiple" allowClear options={groupTargetOptions} /></Form.Item>
+        {allowInlineTarget && <Form.Item name="source_target_input" label="粘贴新源群入口"><Input placeholder="@source_group / 邀请链接" /></Form.Item>}
+        <Form.Item name="target_operation_target_id" label="默认目标群"><Select allowClear options={groupTargetOptions} /></Form.Item>
+        {allowInlineTarget && <Form.Item name="target_input" label="粘贴新目标群入口"><Input placeholder="@target_group / 邀请链接" /></Form.Item>}
         <Form.Item name="target_operation_target_ids" label="附加目标群"><Select mode="multiple" allowClear options={sendableGroupTargetOptions} /></Form.Item>
       </div>
     );
@@ -53,7 +60,9 @@ export function WizardTarget({ taskType, groupTargets, channelTargets, messages,
   const scopedMessages = messages.filter((message) => !targetChannelId || message.channel_target_id === targetChannelId);
   return (
     <div className="form-grid">
-      <Form.Item name="target_channel_id" label="目标频道" rules={[{ required: true }]}><Select options={channelTargets.map((target) => ({ value: target.id, label: target.title }))} onChange={onTargetChannelChange} /></Form.Item>
+      <Form.Item name="target_channel_id" label="已有目标频道"><Select allowClear options={channelTargets.map((target) => ({ value: target.id, label: target.title }))} onChange={onTargetChannelChange} /></Form.Item>
+      {allowInlineTarget && <Form.Item name="target_input" label="粘贴新频道入口"><Input placeholder="@channel / https://t.me/channel / https://t.me/+invite" /></Form.Item>}
+      {allowInlineTarget && <Form.Item name="target_title" label="频道名称"><Input placeholder="可选，不填时使用入口作为名称" /></Form.Item>}
       <Form.Item name="message_scope" label="消息范围"><Select options={[{ value: 'dynamic_new', label: '持续监听新消息' }, { value: 'latest_n', label: '最新 N 条' }, { value: 'all', label: '所有消息' }, { value: 'date_range', label: '日期范围' }, { value: 'specific', label: '指定消息' }]} /></Form.Item>
       {['latest_n', 'dynamic_new'].includes(messageScope) && <Form.Item name="message_count" label={messageScope === 'dynamic_new' ? '每轮采集上限' : '消息数量'} rules={[{ required: true }]}><InputNumber min={1} max={500} /></Form.Item>}
       {messageScope === 'specific' && <Form.Item name="message_ids" label="频道消息" rules={[{ required: true }]}><Select mode="multiple" options={scopedMessages.map((message) => ({ value: message.id, label: `#${message.message_id} / ${message.content_preview || message.message_url || message.id}` }))} /></Form.Item>}
@@ -328,6 +337,13 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
         : '-';
   const displayTarget = targetName(values, targets);
   const precheckStatus = loading ? '预检中' : precheck ? precheck.decision === 'allow' ? '通过' : precheck.decision === 'warn' ? '有风险' : '阻塞' : '未执行';
+  const resolution = precheck?.target_resolution;
+  const resolutionItems = [...(resolution?.sources || []), ...(resolution?.targets || [])];
+  const resolutionSummary = resolutionItems.length
+    ? resolutionItems.map((item: any) => `${item.role === 'listen_source' ? '源' : '目标'} ${item.status || 'resolved'} / #${item.target_id || '-'} / ${item.title || item.tg_peer_id || item.target_input || '-'}`).join('；')
+    : resolution?.target_id
+      ? `${resolution.status || 'resolved'} / #${resolution.target_id} / ${resolution.title || resolution.tg_peer_id || '-'}`
+      : values.target_input || values.source_target_input || '使用已有目标';
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       {precheck && (
@@ -343,7 +359,9 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       { key: 'name', label: '任务名称', children: values.name || '-' },
       { key: 'end', label: '结束时间', children: values.scheduled_end ? formatDateTime(values.scheduled_end) : '不限制' },
       { key: 'target', label: '任务目标', children: displayTarget === '-' ? targetSummary : displayTarget },
+      { key: 'targetResolution', label: '目标解析', children: resolutionSummary },
       { key: 'account', label: '账号摘要', children: precheck ? `候选 ${precheck.candidate_account_count} 个，可用 ${precheck.available_account_count} 个，受限 ${precheck.limited_account_count} 个，阻塞 ${precheck.blocked_account_count} 个` : `${account.label}，候选 ${account.total} 个，当前在线 ${account.online} 个，受限/离线 ${account.limited} 个` },
+      { key: 'membership', label: '准入前置', children: precheck?.membership_subtask_preview?.subtask_type ? `已满足 ${precheck.ready_account_count} 个，待准备 ${precheck.preparable_account_count} 个，预计准入动作 ${precheck.estimated_membership_actions} 个，进度 ${precheck.membership_subtask_preview.progress_percent ?? 0}%` : '无额外准入动作' },
       { key: 'targetAbility', label: '目标能力', children: precheck?.target_ability?.length ? precheck.target_ability.map((item) => `${item.title || item.target_id} / ${item.can_task ? '可创建任务' : item.auth_status || '不可用'}`).join('；') : displayTarget },
       { key: 'estimate', label: '预计动作量', children: precheck ? `预计 ${precheck.estimated_actions} 条，容量缺口 ${precheck.capacity_shortfall}` : '等待预检' },
       { key: 'pacing', label: '曲线摘要', children: `${operationProfileSummary(values)}；当前 ${String(profile.hour).padStart(2, '0')}:00 强度 ${profile.intensity}，${profile.mode}运行` },

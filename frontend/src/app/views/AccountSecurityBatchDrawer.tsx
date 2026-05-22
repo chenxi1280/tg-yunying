@@ -228,7 +228,7 @@ export function AccountSecurityBatchDrawer({
       render: (_, item) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{item.account_name}</Typography.Text>
-          <Typography.Text type="secondary">{item.phone_masked}</Typography.Text>
+          <Typography.Text type="secondary">{item.phone_number || item.phone_masked}</Typography.Text>
         </Space>
       ),
     },

@@ -1126,6 +1126,7 @@ def sync_account_contacts(session: Session, account_id: int, actor: str) -> list
         contact.display_name = snapshot.display_name or snapshot.username or snapshot.peer_id
         contact.username = snapshot.username
         contact.phone_masked = _contact_phone_mask(snapshot.phone)
+        contact.phone_ciphertext = encrypt_secret(snapshot.phone.strip()) if snapshot.phone and snapshot.phone.strip() else None
         contact.contact_type = snapshot.contact_type or "private"
         contact.is_mutual = bool(snapshot.is_mutual)
         contact.last_message_at = snapshot.last_message_at.replace(tzinfo=None) if snapshot.last_message_at and snapshot.last_message_at.tzinfo else snapshot.last_message_at
@@ -1321,9 +1322,6 @@ def filter_accounts(session: Session, tenant_id: int, page: int, page_size: int,
     stmt = select(TgAccount).where(TgAccount.tenant_id == tenant_id)
     if not include_deleted:
         stmt = stmt.where(TgAccount.deleted_at.is_(None))
-    if search:
-        like = f"%{search}%"
-        stmt = stmt.where(or_(TgAccount.display_name.like(like), TgAccount.username.like(like), TgAccount.phone_masked.like(like)))
     if status:
         stmt = stmt.where(TgAccount.status == status)
     if pool_id:
@@ -1331,4 +1329,19 @@ def filter_accounts(session: Session, tenant_id: int, page: int, page_size: int,
         if not pool or pool.tenant_id != tenant_id:
             raise ValueError("account pool not found")
         stmt = stmt.where(TgAccount.pool_id == pool.id)
+    needle = (search or "").strip().lower()
+    if needle:
+        accounts = list(session.scalars(stmt.order_by(TgAccount.id)))
+
+        def matches(account: TgAccount) -> bool:
+            values = [
+                account.display_name,
+                account.username,
+                account.phone_masked,
+                get_account_phone(account),
+            ]
+            return any(needle in str(value).lower() for value in values if value)
+
+        offset = (page - 1) * page_size
+        return [account for account in accounts if matches(account)][offset : offset + page_size]
     return list(session.scalars(stmt.order_by(TgAccount.id).offset((page - 1) * page_size).limit(page_size)))

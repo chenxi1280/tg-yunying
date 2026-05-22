@@ -336,7 +336,10 @@ export default function TaskCenterView({
   function channelScopePayload(values: any) {
     const channel = channelTargets.find((item) => item.id === values.target_channel_id);
     return {
-      target_channel_id: values.target_channel_id,
+      target_channel_id: values.target_channel_id ?? null,
+      target_type: 'channel',
+      target_input: values.target_input?.trim() || null,
+      target_title: values.target_title?.trim() || '',
       target_channel_name: channel?.title ?? '',
       message_scope: values.message_scope ?? 'latest_n',
       message_count: ['latest_n', 'dynamic_new'].includes(values.message_scope) ? values.message_count ?? 10 : null,
@@ -395,7 +398,10 @@ export default function TaskCenterView({
       const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
       return {
         ...base,
-        target_operation_target_id: values.target_operation_target_id,
+        target_operation_target_id: values.target_operation_target_id ?? null,
+        target_type: 'group',
+        target_input: values.target_input?.trim() || null,
+        target_title: values.target_title?.trim() || '',
         rule_set_id: values.rule_set_id ?? null,
         rule_set_version_id: values.rule_set_version_id ?? null,
         target_group_name: target?.title ?? '',
@@ -424,15 +430,22 @@ export default function TaskCenterView({
     if (taskType === 'group_relay') {
       const sourceTargetIds = csvNumbers(values.source_operation_target_ids);
       const targetOperationIds = csvNumbers(values.target_operation_target_ids);
+      const sourceGroups: any[] = sourceTargetIds.map((id) => {
+        const target = groupTargets.find((item) => item.id === id);
+        return { operation_target_id: id, group_name: target?.title ?? '', is_active: true };
+      });
+      if (values.source_target_input?.trim()) {
+        sourceGroups.push({ target_input: values.source_target_input.trim(), target_title: values.source_target_input.trim(), group_name: values.source_target_input.trim(), is_active: true });
+      }
       return {
         ...base,
-        source_groups: sourceTargetIds.map((id) => {
-          const target = groupTargets.find((item) => item.id === id);
-          return { operation_target_id: id, group_name: target?.title ?? '', is_active: true };
-        }),
+        source_groups: sourceGroups,
         rule_set_id: values.rule_set_id ?? null,
         rule_set_version_id: values.rule_set_version_id ?? null,
-        target_operation_target_id: values.target_operation_target_id,
+        target_operation_target_id: values.target_operation_target_id ?? null,
+        target_type: 'group',
+        target_input: values.target_input?.trim() || null,
+        target_title: values.target_title?.trim() || '',
         target_operation_target_ids: targetOperationIds,
         send_account_ids: [],
         content_mode: values.content_mode ?? 'light_rewrite',
@@ -467,10 +480,11 @@ export default function TaskCenterView({
     if (type === 'group_relay') {
       const sourceTargetIds = csvNumbers(values.source_operation_target_ids);
       const targetOperationIds = csvNumbers(values.target_operation_target_ids);
-      return { ...base, source_groups: sourceTargetIds.length ? sourceTargetIds.map((id) => {
+      const sourceGroups = sourceTargetIds.length ? sourceTargetIds.map((id) => {
         const target = groupTargets.find((item) => item.id === id);
         return { operation_target_id: id, group_name: target?.title ?? '', is_active: true };
-      }) : values.source_groups ?? [], target_operation_target_id: values.target_operation_target_id ?? null, target_operation_target_ids: targetOperationIds, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, content_mode: values.content_mode ?? 'light_rewrite', ...relaySourceFilterPayload(values), require_review: false };
+      }) : [...(values.source_groups ?? [])];
+      return { ...base, source_groups: sourceGroups, target_operation_target_id: values.target_operation_target_id ?? null, target_operation_target_ids: targetOperationIds, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, content_mode: values.content_mode ?? 'light_rewrite', ...relaySourceFilterPayload(values), require_review: false };
     }
     if (type === 'channel_view') {
       return { ...base, target_views_per_message: values.target_views_per_message ?? 50, execution_mode: values.execution_mode ?? 'distribute' };
@@ -952,7 +966,7 @@ export default function TaskCenterView({
           {detail && ['group_ai_chat', 'group_relay'].includes(detail.task.type) && (
             <>
               <Typography.Title level={5}>目标来源</Typography.Title>
-              <WizardTarget taskType={detail.task.type} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} />
+              <WizardTarget taskType={detail.task.type} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} allowInlineTarget={false} />
             </>
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>

@@ -171,7 +171,42 @@ def _detail_accounts(session: Session, actions: list[Action]) -> list[dict[str, 
     ]
 
 
-def _membership_phase(task: Task) -> dict[str, Any]:
+def _membership_phase(task: Task, actions: list[Action] | None = None) -> dict[str, Any]:
+    if actions:
+        rows = [action for action in actions if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}]
+        if rows:
+            success_statuses = {"success", "skipped"}
+            pending_statuses = {"pending", "claiming", "executing", "retryable_failed"}
+            joined = sum(1 for action in rows if action.status in success_statuses or bool((action.result or {}).get("success")))
+            running = sum(1 for action in rows if action.status in {"claiming", "executing"})
+            pending = sum(1 for action in rows if action.status in pending_statuses)
+            failed = sum(1 for action in rows if action.status == "failed")
+            target_count = len({(action.payload or {}).get("channel_target_id") for action in rows if (action.payload or {}).get("channel_target_id")})
+            estimated_finish_at = max([action.scheduled_at for action in rows if action.status in pending_statuses and action.scheduled_at], default=None)
+            if pending:
+                stage = "membership_running"
+            elif joined <= 0 and failed:
+                stage = "membership_blocked"
+            elif failed:
+                stage = "membership_partial"
+            else:
+                stage = "membership_ready"
+            return {
+                "stage": stage,
+                "summary": {
+                    "target_count": target_count,
+                    "action_count": len(rows),
+                    "running_account_count": running,
+                    "success_account_count": joined,
+                    "estimated_finish_at": estimated_finish_at,
+                },
+                "joined_count": joined,
+                "need_join_count": pending,
+                "failed_count": failed,
+                "running_count": running,
+                "success_count": joined,
+                "estimated_finish_at": estimated_finish_at,
+            }
     stats = task.stats or {}
     if not isinstance(stats, dict):
         return {}
@@ -185,7 +220,7 @@ def _membership_phase(task: Task) -> dict[str, Any]:
 
 
 def _membership_accounts(session: Session, actions: list[Action]) -> list[dict[str, Any]]:
-    rows = [action for action in actions if action.action_type == "ensure_channel_membership" and action.account_id]
+    rows = [action for action in actions if action.action_type in {"ensure_channel_membership", "ensure_target_membership"} and action.account_id]
     account_ids = sorted({int(action.account_id) for action in rows if action.account_id})
     accounts = list(session.scalars(select(TgAccount).where(TgAccount.id.in_(account_ids)))) if account_ids else []
     by_id = {account.id: account for account in accounts}
@@ -206,6 +241,7 @@ def _membership_accounts(session: Session, actions: list[Action]) -> list[dict[s
                 "scheduled_at": action.scheduled_at,
                 "executed_at": action.executed_at,
                 "channel_target_id": payload.get("channel_target_id"),
+                "target_type": payload.get("target_type") or "channel",
                 "target_display": payload.get("target_display") or "",
             }
         )

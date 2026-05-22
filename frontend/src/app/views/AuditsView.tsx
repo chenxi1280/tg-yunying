@@ -36,6 +36,8 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh }: P
         log.action,
         log.actor,
         log.target_type,
+        log.account_display_name,
+        log.account_phone_number,
         log.detail,
         log.created_at,
       ],
@@ -65,7 +67,7 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh }: P
       title: '对象',
       key: 'target',
       width: 220,
-      render: (_, log) => `${log.target_type} / ${log.target_id}`,
+      render: (_, log) => log.account_phone_number ? `${log.target_type} / ${log.target_id} / ${log.account_phone_number}` : `${log.target_type} / ${log.target_id}`,
     },
     {
       title: '详情',
@@ -156,6 +158,7 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh }: P
               { key: 'ip', label: '来源 IP', children: selectedAudit.ip_address || '-' },
               { key: 'action', label: '动作', children: selectedAudit.action },
               { key: 'target', label: '关联对象', children: `${selectedAudit.target_type} / ${selectedAudit.target_id}` },
+              { key: 'account', label: '账号手机号', children: selectedAudit.account_phone_number ? `${selectedAudit.account_display_name || '账号'} / ${selectedAudit.account_phone_number}` : '-' },
               { key: 'detail', label: '记录详情', children: selectedAudit.detail || '无补充详情' },
               { key: 'trace', label: '追溯口径', children: auditTraceText(selectedAudit) },
             ]}

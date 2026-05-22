@@ -575,6 +575,17 @@ class TelethonTelegramGateway(TelegramGateway):
         detail = str(exc) or exc.__class__.__name__
         if "Could not find the input entity" in detail:
             return SendResult(False, failure_type=FailureType.PEER_INVALID.value, detail="目标实体无法解析，请重新同步账号群聊/运营目标后再试")
+        comment_thread_markers = (
+            "GetDiscussionMessageRequest",
+            "DiscussionMessage",
+            "message ID used in the peer was invalid",
+        )
+        if any(marker.lower() in detail.lower() for marker in comment_thread_markers):
+            return SendResult(
+                False,
+                failure_type=FailureType.COMMENT_UNAVAILABLE.value,
+                detail="频道帖子无法解析到评论区，请确认消息ID属于频道帖子、频道已绑定讨论组，且执行账号可进入讨论组并评论",
+            )
         custom_emoji_markers = ("CUSTOM_EMOJI", "MessageEntityCustomEmoji", "custom emoji", "document id")
         if any(marker.lower() in detail.lower() for marker in custom_emoji_markers):
             return SendResult(False, failure_type="custom_emoji_unavailable", detail="custom emoji 当前账号或目标不可用")

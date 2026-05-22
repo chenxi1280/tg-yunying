@@ -7,7 +7,9 @@ from app.config import get_settings
 from app.models import AccountStatus, ArchivedMember, ArchivedMessage, GroupArchive, GroupAuthStatus, OperationTarget, TgAccount, TgGroup, TgGroupAccount
 from app.schemas import ArchiveCreate
 
-from ._common import _now, audit, gateway
+from app.security import encrypt_secret
+
+from ._common import _now, audit, gateway, mask_phone
 from .developer_apps import credentials_for_account
 
 
@@ -62,6 +64,8 @@ def _collect_archive(session: Session, archive: GroupArchive, actor: str) -> Gro
                 sender_peer_id="",
                 remote_message_id=f"archive-{archive.id}-msg-{index}",
                 sender_name=item.sender_name,
+                sender_phone_masked=mask_phone(item.sender_phone) if item.sender_phone else "",
+                sender_phone_ciphertext=encrypt_secret(item.sender_phone.strip()) if item.sender_phone and item.sender_phone.strip() else None,
                 content=item.content,
                 message_type=item.message_type,
                 sent_at=item.sent_at or _now(),
@@ -75,6 +79,8 @@ def _collect_archive(session: Session, archive: GroupArchive, actor: str) -> Gro
                 peer_id=item.username or f"archive-{archive.id}-member-{index}",
                 display_name=item.display_name,
                 username=item.username,
+                phone_masked=mask_phone(item.phone) if item.phone else "",
+                phone_ciphertext=encrypt_secret(item.phone.strip()) if item.phone and item.phone.strip() else None,
                 activity_score=item.activity_score,
                 tags=item.tags,
                 last_seen_at=_now(),
@@ -139,19 +145,23 @@ def get_archive_detail(session: Session, archive_id: int, message_search: str | 
     if not archive:
         raise ValueError("archive not found")
     message_stmt = select(ArchivedMessage).where(ArchivedMessage.archive_id == archive.id, ArchivedMessage.tenant_id == archive.tenant_id)
-    if message_search:
-        like = f"%{message_search.strip()}%"
-        message_stmt = message_stmt.where((ArchivedMessage.content.ilike(like)) | (ArchivedMessage.sender_name.ilike(like)))
     messages = list(session.scalars(message_stmt.order_by(ArchivedMessage.id)))
+    if message_search:
+        needle = message_search.strip().lower()
+        messages = [
+            message
+            for message in messages
+            if any(needle in str(value).lower() for value in [message.content, message.sender_name, message.sender_phone_number] if value)
+        ]
     member_stmt = select(ArchivedMember).where(ArchivedMember.archive_id == archive.id, ArchivedMember.tenant_id == archive.tenant_id)
     if member_search:
-        like = f"%{member_search.strip()}%"
-        member_stmt = member_stmt.where(
-            (ArchivedMember.display_name.ilike(like))
-            | (ArchivedMember.username.ilike(like))
-            | (ArchivedMember.tags.ilike(like))
-        )
-    members = list(session.scalars(member_stmt.order_by(ArchivedMember.activity_score.desc())))
+        members = [
+            member
+            for member in session.scalars(member_stmt.order_by(ArchivedMember.activity_score.desc()))
+            if any(member_search.strip().lower() in str(value).lower() for value in [member.display_name, member.username, member.phone_number, member.tags] if value)
+        ]
+    else:
+        members = list(session.scalars(member_stmt.order_by(ArchivedMember.activity_score.desc())))
     return {"archive": archive, "messages": messages, "members": members, "invite_candidates": _invite_candidates(members)}
 
 

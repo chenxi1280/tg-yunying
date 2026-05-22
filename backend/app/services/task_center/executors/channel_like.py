@@ -8,7 +8,7 @@ from ..account_pool import select_task_accounts
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import LikeMessagePayload, create_like_action
-from .common import adjust_for_account_hour_limit, available_channel_accounts_for_message, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning, unplanned_channel_messages
+from .common import adjust_for_account_hour_limit, available_channel_accounts_for_message, channel_message_account_ids, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -23,10 +23,6 @@ def build_plan(session: Session, task: Task) -> int:
     channel, messages = channel_scope(session, task, config)
     if not channel or not messages:
         return 0
-    messages = unplanned_channel_messages(session, task, "like_message", messages)
-    if not messages:
-        task.last_error = ""
-        return 0
     reactions = config.get("allowed_reactions") or ["👍"]
     target_per_message = int(config.get("target_likes_per_message") or 1)
     _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("like_count_jitter") or 0))
@@ -39,7 +35,9 @@ def build_plan(session: Session, task: Task) -> int:
     actions: list[tuple[ChannelMessage, int, str]] = []
     for message in messages:
         available_accounts = available_channel_accounts_for_message(session, task, "like_message", message, accounts)
-        quantity = min(quantity_with_jitter(target_per_message, float(config.get("like_count_jitter") or 0)), len(available_accounts))
+        desired = quantity_with_jitter(target_per_message, float(config.get("like_count_jitter") or 0))
+        used_count = len(channel_message_account_ids(session, task, "like_message", message))
+        quantity = min(max(0, desired - used_count), len(available_accounts))
         actions.extend((message, available_accounts[index].id, reactions[index % len(reactions)]) for index in range(quantity))
     if not actions:
         task.last_error = task.last_error or "没有可新增的有效点赞账号"

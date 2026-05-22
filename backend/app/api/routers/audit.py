@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user, resolve_tenant_id
 from app.database import get_session
+from app.models import TgAccount
 from app.api.response_permissions import audit_log_out_for_user
 from app.schemas import AuditLogOut
 from app.services._common import audit as write_audit
@@ -57,7 +58,7 @@ def list_audit_logs(
         start_at=parsed_start,
         end_at=parsed_end,
     )
-    return [audit_log_out_for_user(log, current_user) for log in logs]
+    return [_audit_log_with_account(session, audit_log_out_for_user(log, current_user)) for log in logs]
 
 
 @router.get("/api/audit-logs/export")
@@ -109,9 +110,25 @@ def export_audit_logs(
         detail=f"count={len(logs)}",
     )
     session.commit()
-    payload = [audit_log_out_for_user(log, current_user) for log in logs]
+    payload = [_audit_log_with_account(session, audit_log_out_for_user(log, current_user)) for log in logs]
     return Response(
         content=audit_logs_csv(payload),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="audit-logs.csv"'},
     )
+
+
+def _audit_log_with_account(session: Session, data: dict) -> dict:
+    account_id = None
+    if data.get("target_type") == "tg_account":
+        try:
+            account_id = int(data.get("target_id") or 0)
+        except (TypeError, ValueError):
+            account_id = None
+    if account_id:
+        account = session.get(TgAccount, account_id)
+        if account:
+            data = dict(data)
+            data["account_display_name"] = account.display_name
+            data["account_phone_number"] = account.phone_number
+    return data

@@ -17,9 +17,9 @@ export type ArchiveItem = {
 
 export type ArchiveDetail = {
   archive: ArchiveItem;
-  messages: Array<{ id: number; sender_name: string; sender_peer_id?: string; remote_message_id?: string; content: string; message_type: string; sent_at: string }>;
-  members: Array<{ id: number; display_name: string; username: string | null; peer_id?: string; activity_score: number; tags: string; last_seen_at?: string | null }>;
-  invite_candidates: Array<{ id: number; display_name: string; username: string | null; peer_id?: string; activity_score: number; tags: string; last_seen_at?: string | null }>;
+  messages: Array<{ id: number; sender_name: string; sender_peer_id?: string; remote_message_id?: string; sender_phone_masked?: string; sender_phone_number?: string | null; content: string; message_type: string; sent_at: string }>;
+  members: Array<{ id: number; display_name: string; username: string | null; peer_id?: string; phone_masked?: string; phone_number?: string | null; activity_score: number; tags: string; last_seen_at?: string | null }>;
+  invite_candidates: Array<{ id: number; display_name: string; username: string | null; peer_id?: string; phone_masked?: string; phone_number?: string | null; activity_score: number; tags: string; last_seen_at?: string | null }>;
 };
 
 export type ArchiveExport = ArchiveDetail & {
@@ -37,6 +37,8 @@ export type AuditLog = {
   target_type: string;
   target_id: string;
   detail: string;
+  account_display_name?: string | null;
+  account_phone_number?: string | null;
   ip_address: string;
   created_at: string;
 };

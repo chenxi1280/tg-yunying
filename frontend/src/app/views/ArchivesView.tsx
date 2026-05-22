@@ -118,17 +118,20 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
             <List
               header="消息样例"
               dataSource={currentDetail.messages}
-              renderItem={(message) => <List.Item><Typography.Text strong>{message.sender_name}：</Typography.Text>{message.content}</List.Item>}
+              renderItem={(message) => {
+                const phone = message.sender_phone_number || message.sender_phone_masked || '';
+                return <List.Item><Typography.Text strong>{message.sender_name}{phone ? ` / ${phone}` : ''}：</Typography.Text>{message.content}</List.Item>;
+              }}
             />
             <List
               header="成员清单"
               dataSource={currentDetail.members}
-              renderItem={(member) => <List.Item><Typography.Text strong>{member.display_name}</Typography.Text> @{member.username ?? '未设置'} / {member.tags} / {member.activity_score}</List.Item>}
+              renderItem={(member) => <List.Item><Typography.Text strong>{member.display_name}</Typography.Text> @{member.username ?? '未设置'} / {member.phone_number || member.phone_masked || '无手机号'} / {member.tags} / {member.activity_score}</List.Item>}
             />
             <List
               header="可邀请候选"
               dataSource={currentDetail.invite_candidates}
-              renderItem={(member) => <List.Item><Typography.Text strong>{member.display_name}</Typography.Text> @{member.username ?? '未设置'} / {member.tags} / {member.activity_score}</List.Item>}
+              renderItem={(member) => <List.Item><Typography.Text strong>{member.display_name}</Typography.Text> @{member.username ?? '未设置'} / {member.phone_number || member.phone_masked || '无手机号'} / {member.tags} / {member.activity_score}</List.Item>}
             />
           </div>
         )}

@@ -184,6 +184,7 @@ class ContactOut(ApiModel):
     display_name: str
     username: str | None
     phone_masked: str
+    phone_number: str | None = None
     contact_type: str
     is_mutual: bool
     last_message_at: datetime | None

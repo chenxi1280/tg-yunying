@@ -77,7 +77,7 @@ def _audit_value(item, key: str):
 def audit_logs_csv(logs: list[AuditLog] | list[dict]) -> str:
     output = StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "tenant_id", "actor", "action", "target_type", "target_id", "detail", "ip_address", "created_at"])
+    writer.writerow(["id", "tenant_id", "actor", "action", "target_type", "target_id", "account_display_name", "account_phone_number", "detail", "ip_address", "created_at"])
     for item in logs:
         created_at = _audit_value(item, "created_at")
         writer.writerow([
@@ -87,6 +87,8 @@ def audit_logs_csv(logs: list[AuditLog] | list[dict]) -> str:
             _audit_value(item, "action"),
             _audit_value(item, "target_type"),
             _audit_value(item, "target_id"),
+            _audit_value(item, "account_display_name") or "",
+            _audit_value(item, "account_phone_number") or "",
             _audit_value(item, "detail"),
             _audit_value(item, "ip_address"),
             created_at.isoformat() if created_at else "",

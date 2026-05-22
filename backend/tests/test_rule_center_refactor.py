@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.config import get_settings
 from app.integrations.telegram import DeveloperAppCredentials, SendResult, TelethonTelegramGateway
-from app.models import AccountStatus, Action, ContentKeywordRule, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, SourceMediaAsset, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
+from app.models import AccountStatus, Action, ContentKeywordRule, FailureType, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, SourceMediaAsset, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.schemas.operations_center import RuleSetCreate, RuleSetVersionCreate
 from app.schemas.ai_config import MaterialCreate, MaterialUpdate
 from app.services.ai_config import create_material, create_uploaded_material, create_uploaded_materials, material_cache_health, update_material
@@ -645,6 +645,16 @@ def test_custom_emoji_runtime_error_maps_to_unavailable_reason():
 
     assert result.ok is False
     assert result.failure_type == "custom_emoji_unavailable"
+
+
+def test_discussion_message_id_error_maps_to_comment_unavailable():
+    result = TelethonTelegramGateway._map_send_error(
+        RuntimeError("The message ID used in the peer was invalid (caused by GetDiscussionMessageRequest)")
+    )
+
+    assert result.ok is False
+    assert result.failure_type == FailureType.COMMENT_UNAVAILABLE.value
+    assert "消息ID属于频道帖子" in (result.detail or "")
 
 
 def test_uploaded_material_temp_file_is_removed_after_cache_success(monkeypatch, tmp_path):

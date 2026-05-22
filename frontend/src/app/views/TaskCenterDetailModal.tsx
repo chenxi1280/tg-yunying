@@ -77,6 +77,14 @@ export function TaskCenterDetailModal({
     { title: '时间', dataIndex: 'sent_at', width: 170, render: (value) => formatDateTime(value) },
     { title: '操作', key: 'action', width: 150, render: (_, item) => <Button size="small" onClick={() => onBlockRelaySource(item)}>加入不转发名单</Button> },
   ];
+  const membershipColumns: ColumnsType<Record<string, any>> = [
+    { title: '账号', key: 'account', width: 180, render: (_, item) => <Space direction="vertical" size={0}><Typography.Text strong>{item.display_name || `账号 #${item.account_id}`}</Typography.Text><Typography.Text type="secondary">{item.username ? `@${item.username}` : '-'}</Typography.Text></Space> },
+    { title: '状态', dataIndex: 'membership_status', width: 150, render: (value) => <Tag>{value || '-'}</Tag> },
+    { title: '目标', dataIndex: 'target_display', width: 180, ellipsis: true },
+    { title: '失败原因', dataIndex: 'failure_reason', ellipsis: true, render: (value) => value || '-' },
+    { title: '计划时间', dataIndex: 'scheduled_at', width: 170, render: (value) => formatDateTime(value) },
+    { title: '完成时间', dataIndex: 'executed_at', width: 170, render: (value) => formatDateTime(value) },
+  ];
   return (
     <DetailModal
       title={detail?.task.name ?? '任务详情'}
@@ -119,6 +127,27 @@ export function TaskCenterDetailModal({
               { key: 'error', label: '错误', span: 3, children: detail.task.last_error || '无' },
             ]}
           />
+          {(detail.membership_phase?.stage || detail.membership_accounts.length > 0) && (
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Typography.Title level={5} style={{ margin: 0 }}>准入前置</Typography.Title>
+              <Descriptions
+                bordered
+                size="small"
+                column={4}
+                items={[
+                  { key: 'stage', label: '状态', children: detail.membership_phase?.stage || 'not_required' },
+                  { key: 'ready', label: '已满足', children: detail.membership_phase?.joined_count ?? 0 },
+                  { key: 'pending', label: '待准备', children: detail.membership_phase?.need_join_count ?? 0 },
+                  { key: 'failed', label: '失败', children: detail.membership_phase?.failed_count ?? 0 },
+                  { key: 'running', label: '执行中', children: detail.membership_phase?.running_count ?? detail.membership_phase?.summary?.running_account_count ?? 0 },
+                  { key: 'success', label: '成功/跳过', children: detail.membership_phase?.success_count ?? detail.membership_phase?.summary?.success_account_count ?? 0 },
+                  { key: 'targets', label: '目标数', children: detail.membership_phase?.summary?.target_count ?? '-' },
+                  { key: 'eta', label: '预计完成', children: formatDateTime(detail.membership_phase?.estimated_finish_at || detail.membership_phase?.summary?.estimated_finish_at) || '-' },
+                ]}
+              />
+              <Table<Record<string, any>> rowKey={(item) => `${item.account_id}:${item.scheduled_at || ''}`} columns={membershipColumns} dataSource={detail.membership_accounts} pagination={{ pageSize: 6 }} size="small" scroll={{ x: 1050 }} />
+            </Space>
+          )}
           {detail.ai_cycles.length > 0 && (
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Typography.Title level={5} style={{ margin: 0 }}>AI 活跃循环 Cycle / Turn</Typography.Title>

@@ -6,6 +6,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import GroupAuthStatus, OperationTarget, PromptTemplate, RuleSet, RuleSetVersion, TgGroup
+from app.services._common import _now
 
 from .config_fields import (
     CHANNEL_JITTER_FIELDS,
@@ -19,9 +20,10 @@ from .utils import as_int as _as_int, as_int_list as _as_int_list
 def normalize_operation_target_references(session: Session, tenant_id: int, task_type: str, config: dict[str, Any]) -> dict[str, Any]:
     next_config = dict(config)
     if task_type == "group_ai_chat":
+        _normalize_inline_target_input(session, tenant_id, next_config, target_type="group")
         target_id = _as_int(next_config.get("target_operation_target_id"))
         if target_id:
-            target, group = _group_for_operation_target(session, tenant_id, target_id, require_can_send=True)
+            target, group = _group_for_operation_target(session, tenant_id, target_id, require_can_send=False, require_authorized=False)
             next_config["target_operation_target_id"] = target.id
             next_config["target_group_id"] = group.id
             next_config["target_group_name"] = next_config.get("target_group_name") or target.title or group.title
@@ -29,15 +31,17 @@ def normalize_operation_target_references(session: Session, tenant_id: int, task
         normalized_sources: list[dict[str, Any]] = []
         for item in next_config.get("source_groups") or []:
             source = dict(item)
+            _normalize_inline_target_input(session, tenant_id, source, target_type="group", id_field="operation_target_id", title_field="group_name")
             target_id = _as_int(source.get("operation_target_id"))
             if target_id:
-                target, group = _group_for_operation_target(session, tenant_id, target_id, require_can_send=False)
+                target, group = _group_for_operation_target(session, tenant_id, target_id, require_can_send=False, require_authorized=False)
                 source["operation_target_id"] = target.id
                 source["group_id"] = group.id
                 source["group_name"] = source.get("group_name") or target.title or group.title
             normalized_sources.append(source)
         next_config["source_groups"] = normalized_sources
 
+        _normalize_inline_target_input(session, tenant_id, next_config, target_type="group")
         target_id = _as_int(next_config.get("target_operation_target_id"))
         target_group_ids = _as_int_list(next_config.get("target_group_ids"))
         target_operation_target_ids = _as_int_list(next_config.get("target_operation_target_ids"))
@@ -45,7 +49,7 @@ def normalize_operation_target_references(session: Session, tenant_id: int, task
             target_operation_target_ids.insert(0, target_id)
         resolved_target_group_ids: list[int] = []
         for operation_target_id in target_operation_target_ids:
-            target, group = _group_for_operation_target(session, tenant_id, operation_target_id, require_can_send=True)
+            target, group = _group_for_operation_target(session, tenant_id, operation_target_id, require_can_send=False, require_authorized=False)
             resolved_target_group_ids.append(group.id)
         if resolved_target_group_ids:
             next_config["target_operation_target_ids"] = target_operation_target_ids
@@ -54,6 +58,8 @@ def normalize_operation_target_references(session: Session, tenant_id: int, task
             target_group_ids = [*resolved_target_group_ids, *target_group_ids]
         if target_group_ids:
             next_config["target_group_ids"] = list(dict.fromkeys(target_group_ids))
+    elif task_type in {"channel_view", "channel_like", "channel_comment"}:
+        _normalize_inline_target_input(session, tenant_id, next_config, target_type="channel", id_field="target_channel_id", title_field="target_channel_name")
     return next_config
 
 
@@ -134,11 +140,11 @@ def validate_rule_binding(session: Session, tenant_id: int, config: dict[str, An
             raise ValueError("规则集当前发布版本不可用")
 
 
-def _group_for_operation_target(session: Session, tenant_id: int, target_id: int, *, require_can_send: bool) -> tuple[OperationTarget, TgGroup]:
+def _group_for_operation_target(session: Session, tenant_id: int, target_id: int, *, require_can_send: bool, require_authorized: bool = True) -> tuple[OperationTarget, TgGroup]:
     target = session.get(OperationTarget, target_id)
     if not target or target.tenant_id != tenant_id or target.target_type != "group":
         raise ValueError("运营目标不存在")
-    if target.auth_status != GroupAuthStatus.AUTHORIZED.value:
+    if require_authorized and target.auth_status != GroupAuthStatus.AUTHORIZED.value:
         raise ValueError("运营目标未授权")
     if require_can_send and not target.can_send:
         raise ValueError("运营目标不可发送")
@@ -149,8 +155,104 @@ def _group_for_operation_target(session: Session, tenant_id: int, target_id: int
         )
     )
     if not group:
-        raise ValueError("运营目标未关联群资产")
+        group = TgGroup(
+            tenant_id=tenant_id,
+            tg_peer_id=target.tg_peer_id,
+            title=target.title,
+            group_type="supergroup",
+            member_count=target.member_count,
+            auth_status=target.auth_status,
+            can_send=target.can_send,
+        )
+        session.add(group)
+        session.flush()
     return target, group
+
+
+def _normalize_inline_target_input(
+    session: Session,
+    tenant_id: int,
+    config: dict[str, Any],
+    *,
+    target_type: str,
+    id_field: str = "target_operation_target_id",
+    title_field: str = "target_group_name",
+) -> None:
+    if _as_int(config.get(id_field)):
+        return
+    raw_input = str(config.get("target_input") or "").strip()
+    if not raw_input:
+        return
+    title = str(config.get("target_title") or config.get(title_field) or raw_input).strip()
+    target = _upsert_operation_target_from_input(session, tenant_id, target_type=target_type, raw_input=raw_input, title=title)
+    config[id_field] = target.id
+    config[title_field] = config.get(title_field) or target.title
+
+
+def _upsert_operation_target_from_input(session: Session, tenant_id: int, *, target_type: str, raw_input: str, title: str) -> OperationTarget:
+    normalized = _normalize_target_input(raw_input, target_type=target_type)
+    target = session.scalar(
+        select(OperationTarget).where(
+            OperationTarget.tenant_id == tenant_id,
+            OperationTarget.tg_peer_id == normalized["tg_peer_id"],
+        )
+    )
+    if target:
+        if target.target_type != target_type:
+            raise ValueError(f"运营目标 {normalized['tg_peer_id']} 已存在为 {target.target_type}，不能作为 {target_type} 使用")
+        if not target.username and normalized["username"]:
+            target.username = normalized["username"]
+        if title and target.title in {"", target.tg_peer_id}:
+            target.title = title
+        target.updated_at = _now()
+        return target
+    target = OperationTarget(
+        tenant_id=tenant_id,
+        target_type=target_type,
+        tg_peer_id=normalized["tg_peer_id"],
+        title=title or normalized["title"],
+        username=normalized["username"],
+        can_send=False,
+        auth_status=GroupAuthStatus.UNVERIFIED.value,
+    )
+    session.add(target)
+    session.flush()
+    if target_type == "group":
+        session.add(
+            TgGroup(
+                tenant_id=tenant_id,
+                tg_peer_id=target.tg_peer_id,
+                title=target.title,
+                group_type="supergroup",
+                member_count=0,
+                auth_status=target.auth_status,
+                can_send=False,
+            )
+        )
+        session.flush()
+    return target
+
+
+def _normalize_target_input(raw_input: str, *, target_type: str) -> dict[str, str]:
+    raw = raw_input.strip()
+    username = ""
+    normalized_peer = raw
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/", "https://telegram.me/", "http://telegram.me/", "telegram.me/"):
+        if raw.startswith(prefix):
+            tail = raw.split(prefix, 1)[1].split("?", 1)[0].strip("/")
+            if tail and not tail.startswith(("+", "joinchat/")):
+                username = tail
+                normalized_peer = tail
+            else:
+                normalized_peer = f"{prefix}{tail}" if tail else raw.split("?", 1)[0].strip("/")
+            break
+    else:
+        if raw.startswith("@"):
+            username = raw.lstrip("@")
+            normalized_peer = username
+        elif raw.startswith("+"):
+            normalized_peer = raw.split("?", 1)[0].strip("/")
+    return {"tg_peer_id": normalized_peer, "username": username, "title": username or raw}
 
 
 __all__ = [

@@ -11,7 +11,7 @@ from ..ai_generator import generate_channel_comments
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import PostCommentPayload, create_comment_action
-from .common import add_tokens, adjust_for_account_hour_limit, channel_message_payload, channel_scope, pick_channel_account, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning, stats_inc, unplanned_channel_messages
+from .common import add_tokens, adjust_for_account_hour_limit, channel_message_account_ids, channel_message_payload, channel_scope, pick_channel_account, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning, stats_inc
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -27,10 +27,6 @@ def build_plan(session: Session, task: Task) -> int:
         return gate.created
     channel, messages = channel_scope(session, task, config)
     if not channel or not messages:
-        return 0
-    messages = unplanned_channel_messages(session, task, "post_comment", messages)
-    if not messages:
-        task.last_error = ""
         return 0
     actions: list[tuple[ChannelMessage, str, int | None]] = []
     requested_reply_targets = [int(item) for item in config.get("reply_to_message_ids") or [] if int(item or 0) > 0]
@@ -54,7 +50,11 @@ def build_plan(session: Session, task: Task) -> int:
             if not input_result.passed:
                 stats_inc(task, "skipped_count")
                 continue
-        quantity = quantity_with_jitter(int(config.get("target_comments_per_message") or 1), float(config.get("comment_count_jitter") or 0))
+        desired = quantity_with_jitter(int(config.get("target_comments_per_message") or 1), float(config.get("comment_count_jitter") or 0))
+        used_count = len(channel_message_account_ids(session, task, "post_comment", message))
+        quantity = max(0, desired - used_count)
+        if not quantity:
+            continue
         contents, tokens = generate_channel_comments(
             session,
             task.tenant_id,

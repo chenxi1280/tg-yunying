@@ -628,6 +628,8 @@ def test_runtime_login_flows_health_and_group_authorize():
         sync_body = sync_now.json()
         assert {record["sync_type"] for record in sync_body}.issuperset({"profile_pull", "health", "groups", "contacts", "codes"})
         assert all(record["status"] != "排队中" for record in sync_body)
+        contacts = client.get(f"/api/tg-accounts/{account['id']}/contacts", headers=headers).json()
+        assert any(contact.get("phone_number") for contact in contacts)
 
         checked = client.post(f"/api/tg-accounts/{account['id']}/health-check", headers=headers).json()
         assert checked["status"] in {"在线", "受限", "需重新登录"}
@@ -681,6 +683,8 @@ def test_approve_all_retry_and_archive_detail_flow():
         detail = client.get(f"/api/archives/{archive['id']}", headers=headers).json()
         assert detail["messages"]
         assert detail["members"]
+        assert any(message.get("sender_phone_number") for message in detail["messages"])
+        assert any(member.get("phone_number") for member in detail["members"])
 
 
 def test_auth_single_admin_and_default_operation_space():

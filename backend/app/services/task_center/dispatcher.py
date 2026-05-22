@@ -20,7 +20,7 @@ from app.services.developer_apps import credentials_for_account
 from app.services.ai_config import get_scheduling_setting
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
-from .channel_membership import channel_requires_membership_gate, mark_channel_membership_joined
+from .channel_membership import mark_channel_membership_joined
 from .payloads import EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
@@ -58,7 +58,7 @@ def dispatch_action(session: Session, action: Action) -> bool:
         if action.action_type in {"view_message", "like_message", "post_comment"} and not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
             return True
         credentials = credentials_for_account(session, account)
-        if action.action_type == "ensure_channel_membership":
+        if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}:
             return _dispatch_channel_membership(session, action, account, credentials, payload)
         if action.action_type == "send_message":
             return _dispatch_send_message(session, action, account, credentials, payload)
@@ -350,8 +350,8 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
                 TgGroupAccount.account_id == account.id,
             )
         )
-        if existing_link:
-            _skip(action, "already_joined", "账号已关注目标频道")
+        if existing_link and not (payload.target_type == "group" and payload.require_send and not existing_link.can_send):
+            _skip(action, "already_joined", "账号已满足目标准入")
             action.result = {**(action.result or {}), "success": True, "membership_status": "already_joined"}
             return True
     attempt = _begin_execution_attempt(session, action, account)
@@ -371,7 +371,7 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
             action.tenant_id,
             payload.channel_target_id,
             account.id,
-            permission_label="已关注" if result.membership_status != "already_joined" else "已关注",
+            permission_label="已关注" if payload.target_type == "channel" else "已加入",
         )
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail or result.membership_status, attempt=attempt)
     if result.ok:
@@ -459,8 +459,6 @@ def _ensure_channel_action_membership(session: Session, action: Action, account:
         )
         return False
     channel = session.get(OperationTarget, int(channel_target_id))
-    if channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel" and not channel_requires_membership_gate(channel):
-        return True
     group = (
         session.scalar(select(TgGroup).where(TgGroup.tenant_id == action.tenant_id, TgGroup.tg_peer_id == channel.tg_peer_id))
         if channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel"

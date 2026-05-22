@@ -48,6 +48,7 @@ async def fetch_group_archive(client, peer_id: str) -> ArchiveSnapshot:
         messages.append(
             ArchivedMessageSnapshot(
                 sender_name=sender_name,
+                sender_phone=getattr(sender, "phone", None),
                 content=text or "[media]",
                 message_type="media" if getattr(message, "media", None) else "text",
                 sent_at=getattr(message, "date", None),
@@ -66,6 +67,7 @@ async def fetch_group_archive(client, peer_id: str) -> ArchiveSnapshot:
             ArchivedMemberSnapshot(
                 display_name=name,
                 username=getattr(participant, "username", None),
+                phone=getattr(participant, "phone", None),
                 activity_score=activity,
                 tags=tags,
             )

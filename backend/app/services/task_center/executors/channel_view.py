@@ -8,7 +8,7 @@ from ..account_pool import select_task_accounts
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import ViewMessagePayload, create_view_action
-from .common import adjust_for_account_hour_limit, available_channel_accounts_for_message, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning, unplanned_channel_messages
+from .common import adjust_for_account_hour_limit, available_channel_accounts_for_message, channel_message_account_ids, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -23,10 +23,6 @@ def build_plan(session: Session, task: Task) -> int:
     channel, messages = channel_scope(session, task, config)
     if not channel or not messages:
         return 0
-    messages = unplanned_channel_messages(session, task, "view_message", messages)
-    if not messages:
-        task.last_error = ""
-        return 0
     target_per_message = int(config.get("target_views_per_message") or 1)
     _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("view_count_jitter") or 0))
     account_scan_limit = max(max_target_per_message, int((task.account_config or {}).get("max_concurrent") or max_target_per_message))
@@ -35,13 +31,14 @@ def build_plan(session: Session, task: Task) -> int:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
         return 0
     record_channel_capacity_warning(task, "浏览", target_per_message, len(accounts))
-    actions = [
-        (message, account.id)
-        for message in messages
-        for account in available_channel_accounts_for_message(session, task, "view_message", message, accounts)[
-            : quantity_with_jitter(target_per_message, float(config.get("view_count_jitter") or 0))
-        ]
-    ]
+    actions = []
+    for message in messages:
+        desired = quantity_with_jitter(target_per_message, float(config.get("view_count_jitter") or 0))
+        used_count = len(channel_message_account_ids(session, task, "view_message", message))
+        remaining = max(0, desired - used_count)
+        if not remaining:
+            continue
+        actions.extend((message, account.id) for account in available_channel_accounts_for_message(session, task, "view_message", message, accounts)[:remaining])
     if not actions:
         task.last_error = task.last_error or "没有可新增的有效浏览账号"
         return 0

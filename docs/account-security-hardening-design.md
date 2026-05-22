@@ -159,7 +159,7 @@
 
 | 字段 | 说明 |
 | --- | --- |
-| 账号 | display_name、username、phone_masked |
+| 账号 | display_name、username、手机号 |
 | Session 状态 | 在线、需重新登录、Session 失效 |
 | 平台可信设备 | 已识别、无法识别、需要刷新 |
 | 外部设备数量 | 可清理数量 |
@@ -398,7 +398,7 @@ AI 生成输出：
 | 所有账号使用同一头像 | 操作简单，但账号相似度高，不推荐大批量使用 |
 | 从头像素材池随机分配 | 推荐，每个账号尽量不同 |
 | 按账号顺序分配头像 | 上传多张头像，按选择账号顺序一一分配 |
-| 导入映射表 | 指定 account_id / phone_masked / username 对应头像文件 |
+| 导入映射表 | 指定 account_id / 手机号 / username 对应头像文件 |
 | 只补空头像 | 已有头像不覆盖 |
 
 头像要求：
@@ -577,7 +577,7 @@ frontend/src/app/views/AccountSecurityBatchDetailModal.tsx
 
 | 字段 | 说明 |
 | --- | --- |
-| 账号 | display_name / phone_masked |
+| 账号 | display_name / 手机号 |
 | 设备清理 | 未执行 / 成功 / 失败 / 需等待 |
 | 2FA | 未执行 / 已设置 / 已存在 / 待邮箱确认 / 失败 |
 | 资料 | 成功 / 部分成功 / 失败 |

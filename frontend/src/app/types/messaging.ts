@@ -5,6 +5,7 @@ export type Contact = {
   display_name: string;
   username: string | null;
   phone_masked: string;
+  phone_number?: string | null;
   contact_type: string;
   is_mutual: boolean;
   last_message_at: string | null;

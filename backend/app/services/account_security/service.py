@@ -368,6 +368,7 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
                 account_id=account.id,
                 account_name=account.display_name,
                 phone_masked=account.phone_masked,
+                phone_number=account.phone_number,
                 session_status=account.status,
                 trusted_session_status=snapshot.trusted_session_status,
                 external_authorization_count=snapshot.external_authorization_count,

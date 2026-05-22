@@ -166,6 +166,7 @@ class TgContact(Base):
     display_name: Mapped[str] = mapped_column(String(160))
     username: Mapped[str | None] = mapped_column(String(120), nullable=True)
     phone_masked: Mapped[str] = mapped_column(String(60), default="")
+    phone_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     contact_type: Mapped[str] = mapped_column(String(40), default="private")
     is_mutual: Mapped[bool] = mapped_column(Boolean, default=False)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -173,6 +174,10 @@ class TgContact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
     account: Mapped[TgAccount] = relationship(back_populates="contacts")
+
+    @property
+    def phone_number(self) -> str | None:
+        return decrypt_secret(self.phone_ciphertext) if self.phone_ciphertext else self.phone_masked
 
 
 class TgLoginFlow(Base):

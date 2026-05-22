@@ -8,7 +8,7 @@ import re
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, RuleSet, Task, TgGroup
+from app.models import Action, OperationTarget, RuleSet, Task, TgGroup
 from app.services._common import _now
 from app.services.account_capacity import available_accounts_by_capacity, next_capacity_window
 from app.services.content_filters import filter_outbound_content, looks_like_generated_template_noise, looks_like_operator_ui_content
@@ -18,6 +18,7 @@ from app.services.material_rules import select_material_for_policy
 
 from ..account_pool import select_task_accounts
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
+from ..channel_membership import gate_channel_membership
 from ..fingerprints import fingerprint_exists, remember_fingerprint
 from ..listener_runtime import should_collect_listener
 from ..pacing import operation_intensity, schedule_times
@@ -28,19 +29,30 @@ from .common import add_tokens, stats_inc
 
 WAITING_NEW_CONTEXT_MESSAGE = "暂无新的真人上下文，等待群内新消息"
 WAITING_IDLE_CONTINUATION_MESSAGE = "持续监听中，等待新消息或空闲续聊间隔"
+AI_QUALITY_ANCHOR_SKIP_MESSAGE = "AI 候选缺少事实锚点，已跳过本轮"
+AI_QUALITY_DUPLICATE_SKIP_MESSAGE = "AI 候选语义重复风险过高，已跳过本轮"
 DEFAULT_IDLE_CONTINUATION_SECONDS = 300
+
+CHAT_MODE_REPLY = "reply"
+CHAT_MODE_IDLE_WARMUP = "idle_warmup"
+CHAT_MODE_BOOTSTRAP = "bootstrap"
 
 
 def build_plan(session: Session, task: Task) -> int:
     config = {**(task.type_config or {}), "pacing_config": task.pacing_config or {}}
     rule_version = bound_rule_version(session, task)
     rule_set = session.get(RuleSet, rule_version.rule_set_id) if rule_version else None
+    target = session.get(OperationTarget, int(config.get("target_operation_target_id") or 0)) if int(config.get("target_operation_target_id") or 0) else None
+    if target and target.tenant_id == task.tenant_id and target.target_type == "group":
+        gate = gate_channel_membership(session, task, target, require_send=True)
+        if not gate.ready:
+            return gate.created
     group = group_from_reference(
         session,
         task.tenant_id,
         group_id=int(config.get("target_group_id") or 0) or None,
         operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
-        require_authorized=True,
+        require_authorized=False,
     )
     if not group:
         task.last_error = "目标群不存在或未授权"
@@ -126,16 +138,25 @@ def build_plan(session: Session, task: Task) -> int:
         return 0
     contents = [content for content in contents if not _looks_like_generated_noise(content)]
     contents = _drop_repeated_ai_messages(contents, previous_ai_messages)
-    contents = contents[:turn_count]
+    chat_mode = _chat_mode(usable_context_rows, idle_continuation)
+    context_message_ids = [int(row.id) for row in usable_context_rows[-history_depth:]]
+    quality_items, quality_stats = _quality_filter_ai_messages(
+        contents,
+        previous_ai_messages,
+        chat_mode=chat_mode,
+        anchor_message_ids=context_message_ids,
+        limit=turn_count,
+    )
+    contents = [item["content"] for item in quality_items]
     if not contents:
-        task.last_error = AI_GENERATION_UNAVAILABLE_MESSAGE
+        _mark_quality_skip(task, config, mode, ramp_ratio, _context_mode(usable_context_rows, idle_continuation), chat_mode, quality_stats)
         return 0
     add_tokens(task, tokens)
     times = schedule_times(len(contents), task.pacing_config or {})
-    context_message_ids = [int(row.id) for row in usable_context_rows[-history_depth:]]
     context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
     created = 0
-    for index, content in enumerate(contents):
+    for index, quality_item in enumerate(quality_items):
+        content = quality_item["content"]
         if rule_version:
             policy_result = apply_output_policy(content, rule_version.output_checks or {}, rule_version.transforms or {})
             if not policy_result.allowed:
@@ -190,6 +211,12 @@ def build_plan(session: Session, task: Task) -> int:
                 topic_thread=topic_thread,
                 topic_plan=topic_plan,
                 intent=_intent_for_turn(index),
+                chat_mode=chat_mode,
+                anchor_message_ids=context_message_ids,
+                semantic_cluster=str(quality_item.get("semantic_cluster") or ""),
+                duplicate_risk=str(quality_item.get("duplicate_risk") or ""),
+                hallucination_risk=str(quality_item.get("hallucination_risk") or ""),
+                quality_skip_reason=str(quality_item.get("quality_skip_reason") or ""),
                 context_message_ids=context_message_ids,
                 context_snapshot_message_id=context_snapshot_message_id,
                 context_expire_after_messages=int(config.get("context_expire_after_messages") or 0),
@@ -220,6 +247,16 @@ def build_plan(session: Session, task: Task) -> int:
     stats["current_mode"] = mode
     stats["ramp_ratio"] = ramp_ratio
     stats["context_mode"] = _context_mode(usable_context_rows, idle_continuation)
+    stats["chat_mode"] = chat_mode
+    if quality_stats.get("duplicate_risk"):
+        stats["duplicate_risk"] = quality_stats["duplicate_risk"]
+    else:
+        stats.pop("duplicate_risk", None)
+    if quality_stats.get("hallucination_risk"):
+        stats["hallucination_risk"] = quality_stats["hallucination_risk"]
+    else:
+        stats.pop("hallucination_risk", None)
+    stats.pop("skip_reason", None)
     stats.pop("idle_continuation_next_run_at", None)
     stats.pop("force_bootstrap_once", None)
     task.last_error = ""
@@ -242,6 +279,10 @@ def _mark_waiting_context(
     stats["current_mode"] = resolved_mode
     stats["ramp_ratio"] = resolved_ratio
     stats["context_mode"] = context_mode
+    stats["chat_mode"] = "waiting_new_context"
+    stats.pop("skip_reason", None)
+    stats.pop("duplicate_risk", None)
+    stats.pop("hallucination_risk", None)
     if next_run_at:
         stats["idle_continuation_next_run_at"] = _naive_datetime(next_run_at).isoformat()
         task.next_run_at = _naive_datetime(next_run_at)
@@ -330,7 +371,7 @@ def _idle_continuation_history(config: dict, group: TgGroup, previous_ai_message
         "必须避免重复上一轮表达，不要提到系统、任务或 AI。",
     ]
     if recent_ai:
-        parts.append(f"上一轮 AI 已说：{recent_ai}。请避开原句，接一个新的经历、到场感受或小问题。")
+        parts.append(f"上一轮 AI 已说：{recent_ai}。请避开原句，只接一个轻量问题或泛化观察，不要编具体经历、到场感受、位置或回访。")
     return "\n".join(parts)
 
 
@@ -338,6 +379,40 @@ def _context_mode(context_rows: list, idle_continuation: bool) -> str:
     if idle_continuation:
         return "idle_continuation"
     return "history" if context_rows else "bootstrap"
+
+
+def _chat_mode(context_rows: list, idle_continuation: bool) -> str:
+    if idle_continuation:
+        return CHAT_MODE_IDLE_WARMUP
+    return CHAT_MODE_REPLY if context_rows else CHAT_MODE_BOOTSTRAP
+
+
+def _mark_quality_skip(
+    task: Task,
+    config: dict,
+    mode: str,
+    ramp_ratio: float,
+    context_mode: str,
+    chat_mode: str,
+    quality_stats: dict[str, str],
+) -> None:
+    stats = dict(task.stats or {})
+    stats["current_mode"] = mode
+    stats["ramp_ratio"] = ramp_ratio
+    stats["context_mode"] = context_mode
+    stats["chat_mode"] = chat_mode
+    stats["skip_reason"] = quality_stats.get("skip_reason") or "quality_gate"
+    if quality_stats.get("duplicate_risk"):
+        stats["duplicate_risk"] = quality_stats["duplicate_risk"]
+    if quality_stats.get("hallucination_risk"):
+        stats["hallucination_risk"] = quality_stats["hallucination_risk"]
+    task.stats = stats
+    if quality_stats.get("skip_reason") == "hallucination_risk":
+        task.last_error = AI_QUALITY_ANCHOR_SKIP_MESSAGE
+    elif quality_stats.get("skip_reason") == "duplicate_risk":
+        task.last_error = AI_QUALITY_DUPLICATE_SKIP_MESSAGE
+    else:
+        task.last_error = AI_GENERATION_UNAVAILABLE_MESSAGE
 
 
 def _topic_thread_summary(config: dict, group: TgGroup, context_rows: list, previous_ai_messages: list[str]) -> str:
@@ -684,6 +759,87 @@ def _drop_repeated_ai_messages(contents: list[str], previous_messages: list[str]
         seen_starts.add(start)
         accepted.append(content)
     return accepted
+
+
+def _quality_filter_ai_messages(
+    contents: list[str],
+    previous_messages: list[str],
+    *,
+    chat_mode: str,
+    anchor_message_ids: list[int],
+    limit: int,
+) -> tuple[list[dict[str, str]], dict[str, str]]:
+    accepted: list[dict[str, str]] = []
+    accepted_clusters: set[str] = set()
+    previous_clusters = {_semantic_cluster(message) for message in previous_messages}
+    previous_clusters.discard("")
+    stats: dict[str, str] = {}
+    for content in contents:
+        cluster = _semantic_cluster(content)
+        item = {
+            "content": content,
+            "semantic_cluster": cluster,
+            "duplicate_risk": "",
+            "hallucination_risk": "",
+            "quality_skip_reason": "",
+        }
+        if cluster and (cluster in accepted_clusters or cluster in previous_clusters):
+            stats["duplicate_risk"] = "semantic_cluster"
+            stats["skip_reason"] = stats.get("skip_reason") or "duplicate_risk"
+            continue
+        if _has_unanchored_idle_fact(content, chat_mode=chat_mode, anchor_message_ids=anchor_message_ids):
+            stats["hallucination_risk"] = "high"
+            stats["skip_reason"] = "hallucination_risk"
+            continue
+        accepted.append(item)
+        if cluster:
+            accepted_clusters.add(cluster)
+        if len(accepted) >= max(1, int(limit or 1)):
+            break
+    return accepted, stats
+
+
+def _semantic_cluster(content: str) -> str:
+    text = _normalize_for_similarity(content)
+    cluster_markers = [
+        ("photo_real_match", ("照片准", "照片没p", "照片没修", "没照骗", "真人没差", "本人也差不多", "见面没翻车")),
+        ("stable_attitude", ("态度稳", "不催", "不敷衍", "没催", "没加价", "挺省心")),
+        ("early_location", ("位置提前", "提前发位置", "发了位置", "没绕路", "没绕远", "跑冤枉路")),
+        ("revisit_feedback", ("结束后问", "问反馈", "回访", "下次安排", "下次约不约", "下次啥时候")),
+        ("time_punctual", ("准时到", "准点", "时间卡得准", "没干等", "没让我等", "没放鸽子")),
+    ]
+    for cluster, markers in cluster_markers:
+        if any(_normalize_for_similarity(marker) in text for marker in markers):
+            return cluster
+    return ""
+
+
+def _has_unanchored_idle_fact(content: str, *, chat_mode: str, anchor_message_ids: list[int]) -> bool:
+    if chat_mode != CHAT_MODE_IDLE_WARMUP:
+        return False
+    text = _normalize_for_similarity(content)
+    fact_markers = (
+        "走之前",
+        "结束后",
+        "回访",
+        "准时到",
+        "准点",
+        "没让我等",
+        "没干等",
+        "位置提前",
+        "提前发位置",
+        "发了位置",
+        "穿着",
+        "照片里一样",
+        "上次那个",
+        "我上次",
+        "之前约过",
+        "路过",
+    )
+    normalized_markers = [_normalize_for_similarity(marker) for marker in fact_markers]
+    if not any(marker and marker in text for marker in normalized_markers):
+        return False
+    return True
 
 
 def _normalize_for_similarity(content: str) -> str:

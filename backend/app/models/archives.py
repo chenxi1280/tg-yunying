@@ -6,6 +6,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.security import decrypt_secret
 
 from .enums import now
 
@@ -40,9 +41,15 @@ class ArchivedMessage(Base):
     sender_peer_id: Mapped[str] = mapped_column(String(120), default="")
     remote_message_id: Mapped[str] = mapped_column(String(160), default="")
     sender_name: Mapped[str] = mapped_column(String(120))
+    sender_phone_masked: Mapped[str] = mapped_column(String(60), default="")
+    sender_phone_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     content: Mapped[str] = mapped_column(Text)
     message_type: Mapped[str] = mapped_column(String(40), default="text")
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+    @property
+    def sender_phone_number(self) -> str | None:
+        return decrypt_secret(self.sender_phone_ciphertext) if self.sender_phone_ciphertext else self.sender_phone_masked
 
 
 class ArchivedMember(Base):
@@ -54,9 +61,15 @@ class ArchivedMember(Base):
     peer_id: Mapped[str] = mapped_column(String(120), default="")
     display_name: Mapped[str] = mapped_column(String(120))
     username: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    phone_masked: Mapped[str] = mapped_column(String(60), default="")
+    phone_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     activity_score: Mapped[int] = mapped_column(Integer, default=0)
     tags: Mapped[str] = mapped_column(String(160), default="")
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    @property
+    def phone_number(self) -> str | None:
+        return decrypt_secret(self.phone_ciphertext) if self.phone_ciphertext else self.phone_masked
 
 
 class AuditLog(Base):

@@ -41,6 +41,7 @@ def run_precheck_task_creation(
     suggested_actions: list[str] = []
     rule_version: dict[str, Any] | None = None
     target_ability: list[dict[str, Any]] = []
+    target_resolution: dict[str, Any] = {}
     membership_summary: dict[str, Any] = {}
     estimated_actions = 0
     capacity_shortfall = 0
@@ -49,6 +50,7 @@ def run_precheck_task_creation(
         raw_config = create_payload.model_dump(mode="json", exclude=COMMON_CREATE_FIELDS, exclude_unset=True)
         normalized_config = normalize_operation_target_references(session, tenant_id, task_type, raw_config)
         type_config = validated_type_config(task_type, normalized_config)
+        target_resolution = _precheck_target_resolution(session, tenant_id, task_type, raw_config, type_config)
         validate_rule_binding(session, tenant_id, type_config)
         rule_version = _precheck_rule_version(session, tenant_id, type_config)
         target_ability, target_ids, target_blockers = _precheck_target_ability(session, tenant_id, task_type, type_config)
@@ -62,16 +64,9 @@ def run_precheck_task_creation(
 
     account_config = create_payload.account_config.model_dump(mode="json") if create_payload else dict((payload.payload or {}).get("account_config") or {})
     candidates = _precheck_candidate_accounts(session, tenant_id, account_config)
-    if task_type in {"channel_view", "channel_like", "channel_comment"} and target_ability:
-        target_id = _as_int((target_ability[0] or {}).get("target_id"))
-        channel = session.get(OperationTarget, target_id) if target_id else None
-        if channel and channel.tenant_id == tenant_id and channel.target_type == "channel":
-            membership_summary = channel_membership_summary(session, tenant_id, channel, account_config, candidates=candidates)
-            membership_summary["target_resolve_status"] = channel.auth_status
-            membership_summary["estimated_duration_seconds_min"] = 0 if not membership_summary.get("need_join_account_count") else 30
-            membership_summary["estimated_duration_seconds_max"] = int(membership_summary.get("need_join_account_count") or 0) * 180
-            membership_summary["effective_interaction_account_count"] = int(membership_summary.get("joined_account_count") or 0) + int(membership_summary.get("need_join_account_count") or 0)
-            target_ability[0]["membership"] = membership_summary
+    if task_type in {"channel_view", "channel_like", "channel_comment", "group_ai_chat", "group_relay"} and target_ability:
+        membership_summary = _precheck_membership_summary(session, tenant_id, target_ability, account_config, candidates)
+    membership_subtask_preview = _membership_subtask_preview(membership_summary)
     available_accounts = select_task_accounts(session, tenant_id, account_config, limit=max(len(candidates), 1)) if candidates else []
     if candidates:
         risk_payload = RiskPreflightRequest(
@@ -101,11 +96,15 @@ def run_precheck_task_creation(
         joined = int(membership_summary.get("joined_account_count") or 0)
         failed = int(membership_summary.get("failed_account_count") or 0)
         if need_join:
-            warnings.append(f"频道前置关注：已关注 {joined} 个，需关注 {need_join} 个")
+            warnings.append(f"目标准入前置：已满足 {joined} 个，需准备 {need_join} 个")
         if failed:
-            warnings.append(f"频道前置关注：已有 {failed} 个账号关注失败")
+            warnings.append(f"目标准入前置：已有 {failed} 个账号准备失败")
     if risk.get("decision") == "block":
-        blockers.extend(_as_str_list(risk.get("decision_reasons")) or ["风控预检阻塞"])
+        decision_reasons = _as_str_list(risk.get("decision_reasons")) or ["风控预检阻塞"]
+        if set(decision_reasons) <= {"target_warning"} and target_ability and all(bool(item.get("can_task")) for item in target_ability):
+            warnings.extend(decision_reasons)
+        else:
+            blockers.extend(decision_reasons)
     elif risk.get("decision") == "warn":
         warnings.extend(_as_str_list(risk.get("decision_reasons")))
     if not candidates:
@@ -119,7 +118,13 @@ def run_precheck_task_creation(
         "limited_account_count": limited_count,
         "blocked_account_count": blocked_count,
         "target_ability": target_ability,
+        "target_resolution": target_resolution,
         "membership_summary": membership_summary,
+        "ready_account_count": int(membership_summary.get("joined_account_count") or 0),
+        "preparable_account_count": int(membership_summary.get("need_join_account_count") or 0),
+        "estimated_membership_actions": int(membership_summary.get("estimated_membership_actions") or 0),
+        "membership_warnings": _membership_warnings(membership_summary),
+        "membership_subtask_preview": membership_subtask_preview,
         "estimated_actions": estimated_actions,
         "capacity_shortfall": capacity_shortfall,
         "rule_version": rule_version,
@@ -170,8 +175,10 @@ def _precheck_target_ability(session: Session, tenant_id: int, task_type: str, c
             blockers.append(f"运营目标 #{target_id} 不存在")
             continue
         is_channel_task = task_type in {"channel_view", "channel_like", "channel_comment"} and target.target_type == "channel"
-        authorized = target.auth_status == GroupAuthStatus.AUTHORIZED.value or is_channel_task
-        can_task = bool(authorized and (target.can_send or not require_send or is_channel_task))
+        has_join_entry = bool(target.username or str(target.tg_peer_id).startswith(("https://t.me/", "http://t.me/", "t.me/", "https://telegram.me/", "http://telegram.me/", "telegram.me/", "+")))
+        preparable_group = target.target_type == "group" and has_join_entry
+        authorized = target.auth_status == GroupAuthStatus.AUTHORIZED.value or is_channel_task or preparable_group
+        can_task = bool(authorized and (target.can_send or not require_send or is_channel_task or preparable_group))
         if not can_task:
             blockers.append(f"{target.title} 当前不可作为{'发送目标' if require_send else '监听来源'}创建任务")
         abilities.append({
@@ -183,6 +190,7 @@ def _precheck_target_ability(session: Session, tenant_id: int, task_type: str, c
             "auth_status": target.auth_status,
             "can_task": can_task,
             "member_count": target.member_count,
+            "preparable": preparable_group or is_channel_task,
         })
     return abilities, target_ids, blockers
 
@@ -197,6 +205,152 @@ def _precheck_target_refs(task_type: str, config: dict[str, Any]) -> list[tuple[
         refs.extend((source_id, "listen_source", False) for source_id in [_as_int(item.get("operation_target_id")) for item in config.get("source_groups") or [] if isinstance(item, dict)] if source_id)
         return list(dict.fromkeys(refs))
     return [(target_id, "send_target", True) for target_id in _as_int_list(config.get("target_channel_id"))]
+
+
+def _precheck_target_resolution(session: Session, tenant_id: int, task_type: str, raw_config: dict[str, Any], type_config: dict[str, Any]) -> dict[str, Any]:
+    if task_type == "group_relay":
+        source_items: list[dict[str, Any]] = []
+        for source in raw_config.get("source_groups") or []:
+            if not isinstance(source, dict):
+                continue
+            source_id = _as_int(source.get("operation_target_id"))
+            if not source_id:
+                source_id = _matching_source_operation_target_id(source, type_config)
+            source_items.append(_target_resolution_item(session, tenant_id, source_id, source, role="listen_source"))
+        target_items: list[dict[str, Any]] = []
+        target_ids = _as_int_list(type_config.get("target_operation_target_ids"))
+        if not target_ids and _as_int(type_config.get("target_operation_target_id")):
+            target_ids = [_as_int(type_config.get("target_operation_target_id"))]
+        for target_id in target_ids:
+            target_items.append(_target_resolution_item(session, tenant_id, target_id, raw_config, role="send_target"))
+        first = (target_items or source_items or [{}])[0]
+        unresolved = [item for item in [*source_items, *target_items] if item.get("status") == "unresolved"]
+        return {
+            "status": "unresolved" if unresolved else "created_or_reused" if any((item.get("target_input") for item in [*source_items, *target_items])) else "reused",
+            "target_id": first.get("target_id"),
+            "target_type": first.get("target_type") or "group",
+            "target_input": raw_config.get("target_input") or "",
+            "title": first.get("title") or "",
+            "username": first.get("username") or "",
+            "tg_peer_id": first.get("tg_peer_id") or "",
+            "missing_join_entry": any(bool(item.get("missing_join_entry")) for item in [*source_items, *target_items]),
+            "sources": source_items,
+            "targets": target_items,
+        }
+    target_id = 0
+    if task_type in {"channel_view", "channel_like", "channel_comment"}:
+        target_id = _as_int(type_config.get("target_channel_id"))
+    elif task_type == "group_ai_chat":
+        target_id = _as_int(type_config.get("target_operation_target_id"))
+    elif task_type == "group_relay":
+        target_id = _as_int(type_config.get("target_operation_target_id")) or (_as_int_list(type_config.get("target_operation_target_ids")) or [0])[0]
+    return _target_resolution_item(session, tenant_id, target_id, raw_config, role="send_target")
+
+
+def _target_resolution_item(session: Session, tenant_id: int, target_id: int, raw_config: dict[str, Any], *, role: str) -> dict[str, Any]:
+    target = session.get(OperationTarget, target_id) if target_id else None
+    target_input = str(raw_config.get("target_input") or "").strip()
+    status = "reused" if target and not target_input else "created_or_reused" if target else "unresolved"
+    return {
+        "role": role,
+        "status": status,
+        "target_id": target.id if target else None,
+        "target_type": target.target_type if target else raw_config.get("target_type") or "group",
+        "target_input": target_input,
+        "title": target.title if target else raw_config.get("target_title") or raw_config.get("group_name") or "",
+        "username": target.username if target else "",
+        "tg_peer_id": target.tg_peer_id if target else "",
+        "missing_join_entry": bool(target and not (target.username or str(target.tg_peer_id).startswith(("https://t.me/", "http://t.me/", "t.me/", "+")))),
+    }
+
+
+def _matching_source_operation_target_id(source: dict[str, Any], type_config: dict[str, Any]) -> int:
+    source_input = str(source.get("target_input") or "").strip()
+    source_name = str(source.get("group_name") or source.get("target_title") or "").strip()
+    for item in type_config.get("source_groups") or []:
+        if not isinstance(item, dict):
+            continue
+        if source_input and source_input == str(item.get("target_input") or "").strip():
+            return _as_int(item.get("operation_target_id"))
+        if source_name and source_name == str(item.get("group_name") or "").strip():
+            return _as_int(item.get("operation_target_id"))
+    return 0
+
+
+def _precheck_membership_summary(
+    session: Session,
+    tenant_id: int,
+    target_ability: list[dict[str, Any]],
+    account_config: dict[str, Any],
+    candidates: list[TgAccount],
+) -> dict[str, Any]:
+    summaries: list[dict[str, Any]] = []
+    for ability in target_ability:
+        target_id = _as_int(ability.get("target_id"))
+        target = session.get(OperationTarget, target_id) if target_id else None
+        if not target or target.tenant_id != tenant_id or target.target_type not in {"channel", "group"}:
+            continue
+        require_send = target.target_type == "group" and ability.get("role") == "send_target"
+        summary = channel_membership_summary(session, tenant_id, target, account_config, candidates=candidates, require_send=require_send)
+        summary["target_id"] = target.id
+        summary["title"] = target.title
+        summary["role"] = ability.get("role") or ""
+        summary["target_resolve_status"] = target.auth_status
+        summary["estimated_duration_seconds_min"] = 0 if not summary.get("need_join_account_count") else 30
+        summary["estimated_duration_seconds_max"] = int(summary.get("need_join_account_count") or 0) * 180
+        summary["effective_interaction_account_count"] = int(summary.get("joined_account_count") or 0) + int(summary.get("need_join_account_count") or 0)
+        ability["membership"] = summary
+        summaries.append(summary)
+    if not summaries:
+        return {}
+    if len(summaries) == 1:
+        return summaries[0]
+    return {
+        "target_type": "mixed",
+        "subtask_type": "ensure_target_membership",
+        "target_count": len(summaries),
+        "candidate_account_count": len(candidates),
+        "joined_account_count": sum(int(item.get("joined_account_count") or 0) for item in summaries),
+        "need_join_account_count": sum(int(item.get("need_join_account_count") or 0) for item in summaries),
+        "failed_account_count": sum(int(item.get("failed_account_count") or 0) for item in summaries),
+        "blocked_account_count": sum(int(item.get("blocked_account_count") or 0) for item in summaries),
+        "estimated_membership_actions": sum(int(item.get("estimated_membership_actions") or 0) for item in summaries),
+        "estimated_duration_seconds_min": min(int(item.get("estimated_duration_seconds_min") or 0) for item in summaries),
+        "estimated_duration_seconds_max": sum(int(item.get("estimated_duration_seconds_max") or 0) for item in summaries),
+        "effective_interaction_account_count": sum(int(item.get("effective_interaction_account_count") or 0) for item in summaries),
+        "targets": summaries,
+    }
+
+
+def _membership_warnings(summary: dict[str, Any]) -> list[str]:
+    if not summary:
+        return []
+    warnings: list[str] = []
+    if int(summary.get("need_join_account_count") or 0):
+        warnings.append("部分账号需要先完成关注或加入")
+    if int(summary.get("failed_account_count") or 0):
+        warnings.append("已有账号准入失败，可在详情中查看原因")
+    return warnings
+
+
+def _membership_subtask_preview(summary: dict[str, Any]) -> dict[str, Any]:
+    if not summary:
+        return {}
+    pending = int(summary.get("need_join_account_count") or 0)
+    ready = int(summary.get("joined_account_count") or 0)
+    failed = int(summary.get("failed_account_count") or 0)
+    total = max(ready + pending + failed, 1)
+    return {
+        "subtask_type": "target_membership",
+        "status": "not_required" if pending == 0 and failed == 0 else "pending" if pending else "partial_success" if ready else "blocked",
+        "progress_percent": round((ready + failed) * 100 / total),
+        "estimated_remaining_seconds": pending * 180,
+        "ready_account_count": ready,
+        "pending_account_count": pending,
+        "failed_account_count": failed,
+        "blocked_account_count": int(summary.get("blocked_account_count") or 0),
+        "warnings": _membership_warnings(summary),
+    }
 
 
 def _precheck_estimated_actions(session: Session, tenant_id: int, task_type: str, config: dict[str, Any]) -> tuple[int, int]:

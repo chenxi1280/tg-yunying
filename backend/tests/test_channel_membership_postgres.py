@@ -10,13 +10,14 @@ from app.database import Base
 from app.integrations.telegram import ChannelMembershipResult
 from app.models import Action, ChannelMessage, OperationTarget, OperationTask, OperationTaskAttempt, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.schemas.operations import OperationTargetCreate
+from app.schemas.task_center import ChannelViewTaskCreate, TaskPrecheckRequest
 from app.services._common import _now
 from app.services.operations import create_operation_target
 from app.services.operations import _execute_operation_attempt
 from app.services.task_center import dispatcher
 from app.services.task_center.dispatcher import dispatch_action
 from app.services.task_center.executors import build_task_plan
-from app.services.task_center.service import get_task_detail
+from app.services.task_center.service import create_and_start_channel_view_task, get_task_detail, precheck_task_creation
 
 
 @pytest.fixture(autouse=True)
@@ -60,6 +61,36 @@ def test_channel_target_create_recognizes_invite_link_and_public_username():
         assert public.username == "public_channel"
 
 
+def test_task_precheck_and_create_support_inline_channel_target_input():
+    engine = _engine()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.flush()
+        session.add(TgAccount(id=10, tenant_id=1, display_name="内联目标账号", phone_masked="+861***0010", status="在线"))
+        session.commit()
+
+        payload = {
+            "name": "inline target",
+            "target_input": "@inline_channel",
+            "target_title": "内联频道",
+            "message_scope": "dynamic_new",
+            "message_count": 1,
+            "target_views_per_message": 1,
+            "account_config": {"selection_mode": "manual", "account_ids": [10]},
+        }
+        precheck = precheck_task_creation(session, 1, TaskPrecheckRequest(task_type="channel_view", payload=payload))
+        assert precheck["target_resolution"]["target_id"]
+        assert precheck["target_resolution"]["username"] == "inline_channel"
+        assert precheck["membership_subtask_preview"]["subtask_type"] == "target_membership"
+
+        task = create_and_start_channel_view_task(session, 1, ChannelViewTaskCreate(**payload), "tester")
+        assert task.status == "running"
+        assert task.type_config["target_channel_id"] == precheck["target_resolution"]["target_id"]
+        target = session.get(OperationTarget, task.type_config["target_channel_id"])
+        assert target and target.tg_peer_id == "inline_channel"
+
+
 def test_channel_task_runs_membership_precondition_before_main_actions(monkeypatch):
     engine = _engine()
     now_value = _now()
@@ -100,14 +131,15 @@ def test_channel_task_runs_membership_precondition_before_main_actions(monkeypat
         session.add_all([TgGroupAccount(tenant_id=1, group_id=601, account_id=11, can_send=True, permission_label="已关注"), ChannelMessage(id=701, tenant_id=1, channel_target_id=501, message_id=9001, content_preview="前置消息")])
         session.commit()
 
-        assert build_task_plan(session, task) == 2
-        assert session.query(Action).filter(Action.task_id == task.id, Action.action_type == "view_message").count() == 0
-        membership_actions = list(session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_channel_membership").order_by(Action.account_id.asc()))
+        assert build_task_plan(session, task) == 1
+        view_actions = list(session.query(Action).filter(Action.task_id == task.id, Action.action_type == "view_message").order_by(Action.account_id.asc()))
+        assert [action.account_id for action in view_actions] == [11]
+        membership_actions = list(session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").order_by(Action.account_id.asc()))
         assert [action.status for action in membership_actions] == ["skipped", "pending"]
         assert membership_actions[0].result["membership_status"] == "already_joined"
 
         dispatch_action(session, membership_actions[1])
-        assert build_task_plan(session, task) == 2
+        assert build_task_plan(session, task) == 1
         view_actions = list(session.query(Action).filter(Action.task_id == task.id, Action.action_type == "view_message").order_by(Action.account_id.asc()))
         assert [action.account_id for action in view_actions] == [11, 12]
         assert task.stats["membership_stage"] == "membership_ready"
@@ -153,45 +185,61 @@ def test_channel_task_blocks_main_actions_when_all_membership_fails(monkeypatch)
         session.commit()
 
         assert build_task_plan(session, task) == 1
-        action = session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_channel_membership").one()
+        action = session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").one()
         dispatch_action(session, action)
 
         assert build_task_plan(session, task) == 0
         assert session.query(Action).filter(Action.task_id == task.id, Action.action_type == "like_message").count() == 0
         assert task.stats["membership_stage"] == "membership_blocked"
-        assert task.last_error == "没有账号成功关注目标频道"
+        assert task.last_error == "没有账号成功准备目标"
 
 
-def test_authorized_sendable_channel_skips_membership_precondition():
+def test_authorized_sendable_channel_still_checks_account_membership():
     engine = _engine()
     now_value = _now()
 
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "ensure_channel_membership",
+        lambda *args, **kwargs: ChannelMembershipResult(True, detail="joined", membership_status="joined"),
+    )
     with Session(engine) as session:
-        session.add(Tenant(id=1, name="默认运营空间"))
-        session.flush()
-        session.add(TgAccount(id=25, tenant_id=1, display_name="未关注账号", phone_masked="+861***0025", status="在线"))
-        session.add(OperationTarget(id=525, tenant_id=1, target_type="channel", tg_peer_id="authorized-channel", title="已授权频道", username="authorized_channel", auth_status="已授权运营", can_send=True))
-        task = Task(
-            id="task-authorized-channel-membership",
-            tenant_id=1,
-            name="authorized membership",
-            type="channel_view",
-            status="running",
-            next_run_at=now_value,
-            account_config={"selection_mode": "manual", "account_ids": [25], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
-            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
-            failure_policy={"max_retries": 0},
-            type_config={"target_channel_id": 525, "message_scope": "specific", "message_ids": [725], "target_views_per_message": 1, "view_count_jitter": 0},
-            stats={},
-        )
-        session.add(task)
-        session.flush()
-        session.add(ChannelMessage(id=725, tenant_id=1, channel_target_id=525, message_id=9025, content_preview="已授权频道消息"))
-        session.commit()
+        try:
+            session.add(Tenant(id=1, name="默认运营空间"))
+            session.flush()
+            session.add(TgAccount(id=25, tenant_id=1, display_name="未关注账号", phone_masked="+861***0025", status="在线"))
+            session.add(OperationTarget(id=525, tenant_id=1, target_type="channel", tg_peer_id="authorized-channel", title="已授权频道", username="authorized_channel", auth_status="已授权运营", can_send=True))
+            task = Task(
+                id="task-authorized-channel-membership",
+                tenant_id=1,
+                name="authorized membership",
+                type="channel_view",
+                status="running",
+                next_run_at=now_value,
+                account_config={"selection_mode": "manual", "account_ids": [25], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                failure_policy={"max_retries": 0},
+                type_config={"target_channel_id": 525, "message_scope": "specific", "message_ids": [725], "target_views_per_message": 1, "view_count_jitter": 0},
+                stats={},
+            )
+            session.add(task)
+            session.flush()
+            session.add(ChannelMessage(id=725, tenant_id=1, channel_target_id=525, message_id=9025, content_preview="已授权频道消息"))
+            session.commit()
 
-        assert build_task_plan(session, task) == 1
-        assert session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_channel_membership").count() == 0
-        assert session.query(Action).filter(Action.task_id == task.id, Action.action_type == "view_message").count() == 1
+            assert build_task_plan(session, task) == 1
+            assert session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_channel_membership").count() == 0
+            membership_action = session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").one()
+            assert session.query(Action).filter(Action.task_id == task.id, Action.action_type == "view_message").count() == 0
+            dispatch_action(session, membership_action)
+            session.refresh(session.get(OperationTarget, 525))
+            assert session.get(OperationTarget, 525).can_send is True
+            assert build_task_plan(session, task) == 1
+            assert session.query(Action).filter(Action.task_id == task.id, Action.action_type == "view_message").count() == 1
+        finally:
+            monkeypatch.undo()
 
 
 def test_channel_main_action_runtime_guard_blocks_unjoined_account(monkeypatch):

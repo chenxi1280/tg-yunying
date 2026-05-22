@@ -115,6 +115,7 @@ export type AccountSecurityPreviewItem = {
   account_id: number;
   account_name: string;
   phone_masked: string;
+  phone_number?: string | null;
   session_status: string;
   trusted_session_status: string;
   external_authorization_count: number;

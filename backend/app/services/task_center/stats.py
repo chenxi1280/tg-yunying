@@ -27,7 +27,7 @@ def next_run_after_task(task: Task):
 
 def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
     session.flush()
-    business_filter = Action.action_type != "ensure_channel_membership"
+    business_filter = Action.action_type.notin_(["ensure_channel_membership", "ensure_target_membership"])
     rows = session.execute(select(Action.status, func.count(Action.id)).where(Action.task_id == task.id, business_filter).group_by(Action.status)).all()
     counts = {str(status): int(count) for status, count in rows}
     accounts_used = session.scalar(select(func.count(func.distinct(Action.account_id))).where(Action.task_id == task.id, business_filter, Action.account_id.is_not(None))) or 0

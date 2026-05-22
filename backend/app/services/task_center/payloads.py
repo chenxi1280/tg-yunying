@@ -29,6 +29,12 @@ class SendMessagePayload(BaseModel):
     topic_thread: str = ""
     topic_plan: str = ""
     intent: str = ""
+    chat_mode: str = ""
+    anchor_message_ids: list[int] = Field(default_factory=list)
+    semantic_cluster: str = ""
+    duplicate_risk: str = ""
+    hallucination_risk: str = ""
+    quality_skip_reason: str = ""
     context_message_ids: list[int] = Field(default_factory=list)
     context_snapshot_message_id: int | None = None
     context_expire_after_messages: int = 0
@@ -109,13 +115,16 @@ class EnsureChannelMembershipPayload(BaseModel):
 
     channel_id: str = Field(min_length=1)
     channel_target_id: int
+    target_type: str = "channel"
     target_display: str = ""
     target_username: str = ""
     invite_link: str = ""
+    require_send: bool = False
 
 
 PAYLOAD_MODELS = {
     "ensure_channel_membership": EnsureChannelMembershipPayload,
+    "ensure_target_membership": EnsureChannelMembershipPayload,
     "send_message": SendMessagePayload,
     "view_message": ViewMessagePayload,
     "like_message": LikeMessagePayload,
@@ -175,7 +184,7 @@ def create_send_action(session: Session, task: Task, account_id: int | None, sch
 
 
 def create_membership_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: EnsureChannelMembershipPayload) -> Action:
-    return _create_action(session, task, "ensure_channel_membership", account_id, scheduled_at, payload)
+    return _create_action(session, task, "ensure_target_membership", account_id, scheduled_at, payload)
 
 
 def create_view_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: ViewMessagePayload) -> Action:

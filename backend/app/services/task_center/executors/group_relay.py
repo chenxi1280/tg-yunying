@@ -21,7 +21,8 @@ from ..listener_runtime import should_collect_listener
 from ..pacing import schedule_times
 from ..payloads import SendMessagePayload, create_send_action
 from app.services.source_media import SOURCE_MEDIA_READY, ready_media_segments, register_action_waiting_for_source_media
-from ..targets import group_from_reference, group_ids_from_operation_targets
+from ..channel_membership import gate_channel_membership, linked_channel_group
+from ..targets import group_from_reference
 from .common import add_tokens, stats_inc
 
 
@@ -29,14 +30,21 @@ def build_plan(session: Session, task: Task) -> int:
     config = effective_relay_config(session, task)
     account_cache: dict[int, list[Any]] = {}
     candidate_actions: list[dict[str, Any]] = []
+    membership_actions_created = 0
     monitor_account_ids = [int(account_id) for account_id in config.get("monitor_account_ids") or []]
     for item in [item for item in config.get("source_groups") or [] if item.get("is_active", True)]:
+        source_target = _operation_target_from_id(session, task.tenant_id, item.get("operation_target_id"))
+        if source_target and source_target.target_type == "group":
+            gate = gate_channel_membership(session, task, source_target, require_send=False)
+            membership_actions_created += gate.created
+            if not gate.ready:
+                continue
         source = group_from_reference(
             session,
             task.tenant_id,
             group_id=int(item.get("group_id") or 0) or None,
             operation_target_id=int(item.get("operation_target_id") or 0) or None,
-            require_authorized=True,
+            require_authorized=False if source_target else True,
         )
         if not source:
             continue
@@ -49,7 +57,8 @@ def build_plan(session: Session, task: Task) -> int:
                 continue
             if not passes_relay_filters(message.content, message.sender_peer_id, message.message_type, config.get("filters") or {}):
                 continue
-            targets = _authorized_relay_targets(session, task, config, source.id, message.content)
+            targets, target_membership_created = _relay_targets_with_membership(session, task, config, source.id, message.content)
+            membership_actions_created += target_membership_created
             if not targets:
                 task.last_error = "目标群不存在或未授权"
                 continue
@@ -106,7 +115,7 @@ def build_plan(session: Session, task: Task) -> int:
                 )
                 remember_fingerprint(session, task.tenant_id, source_fingerprint_key, message.content)
     if not candidate_actions:
-        return 0
+        return membership_actions_created
     times = schedule_times(len(candidate_actions), task.pacing_config or {})
     batch_index = int((task.stats or {}).get("total_rounds") or 0) + 1
     relay_batch_id = f"{task.id}:batch:{batch_index}"
@@ -668,14 +677,46 @@ def resolve_relay_target_ids(config: dict[str, Any], source_group_id: int, conte
 
 
 def _authorized_relay_targets(session: Session, task: Task, config: dict[str, Any], source_group_id: int, content: str) -> list[TgGroup]:
+    targets, _created = _relay_targets_with_membership(session, task, config, source_group_id, content)
+    return targets
+
+
+def _relay_targets_with_membership(session: Session, task: Task, config: dict[str, Any], source_group_id: int, content: str) -> tuple[list[TgGroup], int]:
     targets: list[TgGroup] = []
+    created = 0
+    seen: set[int] = set()
     target_ids = resolve_relay_target_ids(config, source_group_id, content)
-    target_ids.extend(group_ids_from_operation_targets(session, task.tenant_id, _relay_target_operation_ids(config)))
     for target_id in _unique_ints(target_ids):
         target = session.get(TgGroup, target_id)
         if target and target.tenant_id == task.tenant_id and target.auth_status == GroupAuthStatus.AUTHORIZED.value:
+            seen.add(target.id)
             targets.append(target)
-    return targets
+    for operation_target_id in _relay_target_operation_ids(config):
+        operation_target = _operation_target_from_id(session, task.tenant_id, operation_target_id)
+        if not operation_target or operation_target.target_type != "group":
+            continue
+        gate = gate_channel_membership(session, task, operation_target, require_send=True)
+        created += gate.created
+        if not gate.ready:
+            continue
+        group = linked_channel_group(session, operation_target, create=False)
+        if group and group.tenant_id == task.tenant_id and group.id not in seen:
+            seen.add(group.id)
+            targets.append(group)
+    return targets, created
+
+
+def _operation_target_from_id(session: Session, tenant_id: int, target_id: Any) -> OperationTarget | None:
+    try:
+        operation_target_id = int(target_id or 0)
+    except (TypeError, ValueError):
+        return None
+    if not operation_target_id:
+        return None
+    target = session.get(OperationTarget, operation_target_id)
+    if not target or target.tenant_id != tenant_id:
+        return None
+    return target
 
 
 def _relay_target_operation_ids(config: dict[str, Any]) -> list[int]:

@@ -93,6 +93,8 @@ export type TaskCenterDetail = {
   actions: TaskCenterAction[];
   stats: Record<string, any>;
   accounts: Array<{ id: number; display_name: string; username: string | null; status: string }>;
+  membership_phase: Record<string, any>;
+  membership_accounts: Array<Record<string, any>>;
   message_groups: Array<{
     channel_target_id: number | null;
     channel_title: string;
@@ -223,6 +225,13 @@ export type TaskPrecheck = {
   limited_account_count: number;
   blocked_account_count: number;
   target_ability: Array<Record<string, any>>;
+  target_resolution: Record<string, any>;
+  membership_summary: Record<string, any>;
+  ready_account_count: number;
+  preparable_account_count: number;
+  estimated_membership_actions: number;
+  membership_warnings: string[];
+  membership_subtask_preview: Record<string, any>;
   estimated_actions: number;
   capacity_shortfall: number;
   rule_version: Record<string, any> | null;

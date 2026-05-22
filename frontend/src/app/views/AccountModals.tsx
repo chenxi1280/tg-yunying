@@ -12,6 +12,7 @@ import { api } from '../../shared/api/client';
 import { formatBeijingDateTime, parseBeijingDate } from '../time';
 
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
+const contactPhone = (contact: Contact) => contact.phone_number || contact.phone_masked || '';
 const verificationTargetLabel = (task: VerificationTask) => task.target_display || task.target_peer_id || (task.group_id ? `群聊 #${task.group_id}` : '未识别目标');
 const verificationActionLabel = (task: VerificationTask) => task.resolution_entry_label || (task.issue_category === 'group_restriction' ? '解除群限制' : '处理');
 const verificationActionable = (task: VerificationTask) => ['待处理', '失败', '需人工处理'].includes(task.status);
@@ -97,7 +98,7 @@ export function AccountPoolDetailModal({
               <Button key={contact.id} className={selectedDirectContact?.id === contact.id ? 'selected contact-pick' : 'contact-pick'} onClick={() => onStartDirectMessageToContact(contact)}>
                 <strong>{contact.display_name}</strong>
                 <span>{contact.username ? `@${contact.username}` : contact.peer_id}</span>
-                <small>{accountName(contact.account_id)} / {contact.contact_type === 'group_member' ? '群友候选' : '私聊对象'}</small>
+                <small>{accountName(contact.account_id)} / {contactPhone(contact) || '无手机号'} / {contact.contact_type === 'group_member' ? '群友候选' : '私聊对象'}</small>
               </Button>
             ))}
             {!accountPoolDetail.contacts.filter((contact) => !poolDirectAccountId || contact.account_id === poolDirectAccountId).length && (
