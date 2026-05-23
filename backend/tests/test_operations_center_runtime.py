@@ -11,7 +11,7 @@ from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage
 from app.config import Settings
 from app.database import Base
 from app.integrations.telegram import SendResult, _resolve_telethon_target, _telethon_send_target
-from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, WorkerHeartbeat
+from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
@@ -38,6 +38,7 @@ from app.services.task_center.fingerprints import content_fingerprint
 from app.services.task_center.policies import validate_group_send_policy
 from app.services.task_center.service import _channel_subtask_status, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
+from app.services.runtime_summary import upsert_operation_issue
 from app.timezone import BEIJING_TZ, beijing_day_bounds
 
 
@@ -138,6 +139,38 @@ def test_task_center_list_does_not_load_channel_message_detail():
     assert rows[0]["target_summary"] == "频道 @chan"
     assert "不应进入列表搜索" not in rows[0]["search_text"]
     assert not any("channel_messages" in statement.lower() for statement in statements)
+
+
+def test_upsert_operation_issue_flushes_new_issue_before_children():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=31, tenant_id=1, display_name="异常账号", phone_masked="31", status=AccountStatus.ACTIVE.value))
+        issue = upsert_operation_issue(
+            session,
+            tenant_id=1,
+            target_id=None,
+            issue_type="task_execution_failure",
+            failure_type="GROUP_PERMISSION_DENIED",
+            source_task_id="task-issue-flush",
+            representative_action_id="action-issue-flush",
+            affected_account_ids=[31],
+            failure_reason="账号无权限",
+            suggested_action="检查账号权限",
+        )
+        session.commit()
+        issue_id = issue.id
+
+        source = session.scalar(select(OperationIssueSource).where(OperationIssueSource.source_id == "task-issue-flush"))
+        account = session.scalar(select(OperationIssueAccount).where(OperationIssueAccount.account_id == 31))
+
+    assert issue_id
+    assert source is not None
+    assert source.issue_id == issue_id
+    assert account is not None
+    assert account.issue_id == issue_id
 
 
 def test_sync_all_operation_targets_collects_every_online_account(monkeypatch):

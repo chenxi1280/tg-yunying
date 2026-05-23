@@ -357,6 +357,7 @@ def upsert_operation_issue(
             first_seen_at=now_value,
         )
         session.add(issue)
+        session.flush()
     known_accounts = set(int(item) for item in (issue.affected_account_ids or []) if item)
     known_accounts.update(int(item) for item in affected_account_ids if item)
     issue.severity = severity

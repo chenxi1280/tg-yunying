@@ -9,7 +9,6 @@ from app.integrations.telegram import GroupMessageSnapshot
 from app.main import app
 from app.models import AccountStatus, Campaign, GroupContextMessage, MessageTask, SourceMediaAsset, TgGroup, TgGroupAccount
 from app.services.group_listeners import process_group_listener
-from app.worker import drain_once
 from tests.test_workflow import _next_test_phone, auth_headers, ensure_developer_app, ensure_test_workspace
 
 
@@ -138,7 +137,8 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
             db_group.listener_last_polled_at = None
             session.commit()
 
-        processed = drain_once()
+        with SessionLocal() as session:
+            processed = process_group_listener(session, group["id"])
         assert processed >= 1
 
         with SessionLocal() as session:
@@ -159,8 +159,9 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
             tasks = session.query(MessageTask).filter_by(group_id=group["id"]).order_by(MessageTask.id.desc()).limit(5).all()
             assert not any(task.preferred_account_id == sender["id"] and task.content == "这个功能怎么开始参与？" for task in tasks)
 
-        drain_once()
-        drain_once()
+        with SessionLocal() as session:
+            process_group_listener(session, group["id"])
+            process_group_listener(session, group["id"])
         with SessionLocal() as session:
             assert session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-real-1").count() == 1
             assert session.query(SourceMediaAsset).filter_by(source_group_id=group["id"], source_message_id="remote-media-1").count() == 1
