@@ -33,6 +33,27 @@ from app.services.account_security import (
 
 router = APIRouter()
 
+SECURITY_ACTION_TYPES = {"cleanup_devices", "set_two_fa"}
+PROFILE_ACTION_TYPES = {"update_profile", "update_username", "update_avatar"}
+
+
+def _require_batch_action_permissions(current_user: CurrentUser, action_types: list[str]) -> None:
+    actions = set(action_types or [])
+    if actions & SECURITY_ACTION_TYPES and not current_user.has_permission("accounts.security.batch"):
+        raise HTTPException(status_code=403, detail="accounts.security.batch required")
+    if actions & PROFILE_ACTION_TYPES and not current_user.has_permission("accounts.profile.batch_update"):
+        raise HTTPException(status_code=403, detail="accounts.profile.batch_update required")
+    unknown = actions - SECURITY_ACTION_TYPES - PROFILE_ACTION_TYPES
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown action_types: {', '.join(sorted(unknown))}")
+
+
+def _require_reason(reason: str) -> str:
+    reason = (reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="操作原因不能为空")
+    return reason
+
 
 @router.get("/api/tg-accounts/security/summary", response_model=AccountSecuritySummaryOut)
 def get_account_security_summary(
@@ -73,13 +94,18 @@ def post_account_security_refresh(
 @router.post("/api/tg-accounts/{account_id}/security/cleanup-devices", response_model=AccountSecurityBatchOut)
 def post_account_security_cleanup_devices(
     account_id: int,
+    payload: AccountSecurityBatchCreate,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     require_core_feature_access(current_user)
+    _require_batch_action_permissions(current_user, ["cleanup_devices"])
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        payload = AccountSecurityBatchCreate(account_ids=[account_id], action_types=["cleanup_devices"], confirm_text="确认加固", reason="单账号清理外部设备")
+        payload.account_ids = [account_id]
+        payload.action_types = ["cleanup_devices"]
+        payload.confirm_text = payload.confirm_text or "确认加固"
+        payload.reason = _require_reason(payload.reason)
         return create_account_security_batch(session, current_user.tenant_id or 1, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -88,13 +114,18 @@ def post_account_security_cleanup_devices(
 @router.post("/api/tg-accounts/{account_id}/security/set-2fa", response_model=AccountSecurityBatchOut)
 def post_account_security_set_2fa(
     account_id: int,
+    payload: AccountSecurityBatchCreate,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     require_core_feature_access(current_user)
+    _require_batch_action_permissions(current_user, ["set_two_fa"])
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        payload = AccountSecurityBatchCreate(account_ids=[account_id], action_types=["set_two_fa"], confirm_text="确认加固", reason="单账号设置二步验证")
+        payload.account_ids = [account_id]
+        payload.action_types = ["set_two_fa"]
+        payload.confirm_text = payload.confirm_text or "确认加固"
+        payload.reason = _require_reason(payload.reason)
         return create_account_security_batch(session, current_user.tenant_id or 1, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -108,11 +139,14 @@ def post_account_security_update_profile(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     require_core_feature_access(current_user)
+    _require_batch_action_permissions(current_user, ["update_profile", "update_username", "update_avatar"])
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
         payload.account_ids = [account_id]
         payload.action_types = payload.action_types or ["update_profile", "update_username", "update_avatar"]
+        _require_batch_action_permissions(current_user, payload.action_types)
         payload.confirm_text = payload.confirm_text or "确认加固"
+        payload.reason = _require_reason(payload.reason)
         return create_account_security_batch(session, current_user.tenant_id or 1, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -126,6 +160,7 @@ def post_account_security_batch_precheck(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     require_core_feature_access(current_user)
+    _require_batch_action_permissions(current_user, payload.action_types)
     try:
         return precheck_account_security_batch(session, resolve_tenant_id(current_user, tenant_id), payload)
     except ValueError as exc:
@@ -141,6 +176,7 @@ def post_account_security_profile_preview(
 ):
     require_core_feature_access(current_user)
     payload.action_types = payload.action_types or ["update_profile", "update_username", "update_avatar"]
+    _require_batch_action_permissions(current_user, payload.action_types)
     try:
         return precheck_account_security_batch(session, resolve_tenant_id(current_user, tenant_id), payload)
     except ValueError as exc:
@@ -155,6 +191,8 @@ def post_account_security_batch(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     require_core_feature_access(current_user)
+    _require_batch_action_permissions(current_user, payload.action_types)
+    payload.reason = _require_reason(payload.reason)
     try:
         return create_account_security_batch(session, resolve_tenant_id(current_user, tenant_id), payload, current_user.name)
     except ValueError as exc:

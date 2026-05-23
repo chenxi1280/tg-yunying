@@ -49,6 +49,9 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
         }
     )
     task.stats = stats
+    from app.services.runtime_summary import refresh_task_summary
+
+    refresh_task_summary(session, task)
     return stats
 
 

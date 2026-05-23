@@ -6,6 +6,7 @@ from collections.abc import Sequence
 
 from fastapi import APIRouter, Depends
 from fastapi import HTTPException
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -33,9 +34,23 @@ from app.services import (
     update_tenant,
     update_tenant_notification_settings,
 )
+from app.services._common import audit
 from app.worker import drain_once
 
 router = APIRouter()
+
+
+class WorkerDrainRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def normalize_reason(self) -> "WorkerDrainRequest":
+        self.reason = self.reason.strip()
+        if not self.reason:
+            raise ValueError("操作原因不能为空")
+        return self
 
 
 @router.get("/api/health")
@@ -133,7 +148,12 @@ def reports(
 
 
 @router.post("/api/worker/drain-once")
-def post_worker_drain_once(role: str | None = None, current_user: CurrentUser = Depends(get_current_user)) -> dict[str, int | str]:
+def post_worker_drain_once(
+    payload: WorkerDrainRequest,
+    role: str | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict[str, int | str]:
     if not current_user.is_platform_admin:
         raise forbidden("platform admin required")
     require_core_feature_access(current_user)
@@ -143,4 +163,7 @@ def post_worker_drain_once(role: str | None = None, current_user: CurrentUser = 
         processed = drain_once(role=role)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"role": role or get_settings().worker_role, "processed": processed}
+    selected_role = role or get_settings().worker_role
+    audit(session, tenant_id=current_user.tenant_id, actor=current_user.name, action="手动 drain worker", target_type="worker", target_id=selected_role, detail=f"{payload.reason}；processed={processed}")
+    session.commit()
+    return {"role": selected_role, "processed": processed}

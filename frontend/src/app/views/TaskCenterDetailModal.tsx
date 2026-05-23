@@ -3,6 +3,7 @@ import { Button, Descriptions, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { TaskCenterAction, TaskCenterDetail, TaskCenterTask } from '../types';
 import { DetailModal, StatusBadge } from '../components/shared';
+import { parseBeijingDate } from '../time';
 import { TYPE_LABEL, formatDateTime, statusLabel } from './taskCenterViewModel';
 
 type DetailProfile = {
@@ -13,6 +14,7 @@ type DetailProfile = {
 
 interface TaskCenterDetailModalProps {
   detail: TaskCenterDetail | null;
+  canManageTasks: boolean;
   supportLoading: boolean;
   plannedActions: TaskCenterAction[];
   executedActions: TaskCenterAction[];
@@ -39,6 +41,7 @@ function DetailStatusBadge({ status }: { status?: string | null }) {
 
 export function TaskCenterDetailModal({
   detail,
+  canManageTasks,
   supportLoading,
   plannedActions,
   executedActions,
@@ -58,6 +61,9 @@ export function TaskCenterDetailModal({
   onRefreshTask,
   onClose,
 }: TaskCenterDetailModalProps) {
+  const summaryUpdatedAt = detail?.task_runtime_summary?.updated_at ?? null;
+  const summaryUpdatedAtDate = parseBeijingDate(summaryUpdatedAt);
+  const summaryStale = Boolean(summaryUpdatedAtDate && Date.now() - summaryUpdatedAtDate.getTime() > 15 * 60 * 1000);
   const relaySourceColumns: ColumnsType<TaskCenterDetail['recent_relay_sources'][number]> = [
     { title: '源群', dataIndex: 'source_group_title', width: 180, ellipsis: true, render: (value) => value || '-' },
     {
@@ -92,7 +98,7 @@ export function TaskCenterDetailModal({
       size="wide"
       extra={detail && (
         <Space>
-          <Button loading={supportLoading} onClick={() => onEditTask(detail.task)}>编辑任务</Button>
+          {canManageTasks && <Button loading={supportLoading} onClick={() => onEditTask(detail.task)}>编辑任务</Button>}
           <Button onClick={() => onRefreshTask(detail.task)}>刷新</Button>
         </Space>
       )}
@@ -117,6 +123,9 @@ export function TaskCenterDetailModal({
               { key: 'curve-now', label: '当前曲线', children: detailProfile ? `${String(detailProfile.hour).padStart(2, '0')}:00 强度 ${detailProfile.intensity}，${detailProfile.mode}运行` : '-' },
               { key: 'curve-gap', label: '原因分解', children: `计划 ${detailPlannedTotal}，成功 ${detail.stats.success_count ?? 0}，失败 ${detail.stats.failure_count ?? 0}，跳过 ${detail.stats.skipped_count ?? 0}，待执行 ${plannedActions.length}` },
               { key: 'next', label: '下次运行', children: formatDateTime(detail.task.next_run_at) },
+              { key: 'summary-updated', label: '汇总更新', children: summaryUpdatedAt ? formatDateTime(summaryUpdatedAt) : '-' },
+              { key: 'summary-state', label: '汇总状态', children: !summaryUpdatedAt ? <Tag>暂无汇总</Tag> : summaryStale ? <Tag color="gold">可能延迟</Tag> : <Tag color="green">正常</Tag> },
+              { key: 'plan-link', label: '来源方案', children: detail.operation_plan_links?.length ? detail.operation_plan_links.map((item) => `#${item.plan_id}`).join('、') : '-' },
               ...(detail.task.type === 'group_ai_chat' ? [
                 { key: 'idle-enabled', label: '无人发言续聊', children: detail.task.type_config?.idle_continuation_enabled === false ? '关闭' : '开启' },
                 { key: 'idle-seconds', label: '续聊间隔', children: `${detail.task.type_config?.idle_continuation_seconds ?? 300} 秒` },
@@ -201,9 +210,9 @@ export function TaskCenterDetailModal({
                 columns={messageColumns}
                 dataSource={detail.message_groups}
                 pagination={{ pageSize: 6 }}
-                scroll={{ x: 1180 }}
+                scroll={{ x: 1680 }}
                 expandable={{
-                  expandedRowRender: (item) => <Table<TaskCenterAction> rowKey="id" columns={recordColumns} dataSource={item.actions} pagination={false} size="small" scroll={{ x: 1180 }} />,
+                  expandedRowRender: (item) => <Table<TaskCenterAction> rowKey="id" columns={recordColumns} dataSource={item.actions} pagination={false} size="small" scroll={{ x: 1680 }} />,
                 }}
               />
             </Space>
@@ -214,7 +223,7 @@ export function TaskCenterDetailModal({
           </Space>
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
             <Typography.Title level={5} style={{ margin: 0 }}>执行记录</Typography.Title>
-            <Table<TaskCenterAction> rowKey="id" columns={recordColumns} dataSource={executedActions} pagination={{ pageSize: 8 }} scroll={{ x: 1180 }} locale={{ emptyText: '暂无已执行记录' }} />
+            <Table<TaskCenterAction> rowKey="id" columns={recordColumns} dataSource={executedActions} pagination={{ pageSize: 8 }} scroll={{ x: 1680 }} locale={{ emptyText: '暂无已执行记录' }} />
           </Space>
         </Space>
       )}

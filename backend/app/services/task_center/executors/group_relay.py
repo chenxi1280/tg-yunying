@@ -34,7 +34,7 @@ def build_plan(session: Session, task: Task) -> int:
     monitor_account_ids = [int(account_id) for account_id in config.get("monitor_account_ids") or []]
     for item in [item for item in config.get("source_groups") or [] if item.get("is_active", True)]:
         source_target = _operation_target_from_id(session, task.tenant_id, item.get("operation_target_id"))
-        if source_target and source_target.target_type == "group":
+        if source_target and source_target.target_type == "group" and not item.get("group_id"):
             gate = gate_channel_membership(session, task, source_target, require_send=False)
             membership_actions_created += gate.created
             if not gate.ready:

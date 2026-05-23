@@ -71,7 +71,7 @@ def filter_audit_logs(
 def _audit_value(item, key: str):
     if isinstance(item, dict):
         return item.get(key)
-    return getattr(item, key)
+    return getattr(item, key, "")
 
 
 def audit_logs_csv(logs: list[AuditLog] | list[dict]) -> str:

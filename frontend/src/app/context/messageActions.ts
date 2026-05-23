@@ -98,7 +98,7 @@ export function createMessageActions(params: MessageActionParams) {
 
   async function drainQueue() {
     params.setBusy('处理到期发送');
-    const result = await api<{ processed: number }>('/worker/drain-once', { method: 'POST' });
+    const result = await api<{ processed: number }>('/worker/drain-once', { method: 'POST', body: JSON.stringify({ reason: '手动处理到期发送' }) });
     params.showResult('到期发送已处理', `本次已处理 ${result.processed} 条到期任务。`);
     await params.refresh();
   }

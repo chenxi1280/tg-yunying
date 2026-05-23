@@ -22,6 +22,144 @@ export type OperationTarget = {
   updated_at: string;
 };
 
+export type OperationPlanTarget = {
+  id: number;
+  tenant_id: number;
+  plan_id: number;
+  target_id: number;
+  status: string;
+  strategy_config: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OperationPlanTaskLink = {
+  id: number;
+  tenant_id: number;
+  plan_id: number;
+  target_id: number | null;
+  task_id: string;
+  relation: string;
+  status: string;
+  created_at: string;
+};
+
+export type OperationPlanGenerationRun = {
+  id: string;
+  tenant_id: number;
+  plan_id: number;
+  run_type: string;
+  status: string;
+  requested_by: string;
+  request_payload: Record<string, any>;
+  result_payload: Record<string, any>;
+  failure_detail: string;
+  created_at: string;
+  finished_at: string | null;
+};
+
+export type OperationPlan = {
+  id: number;
+  tenant_id: number;
+  name: string;
+  description: string;
+  target_type: string;
+  status: string;
+  strategy_config: Record<string, any>;
+  task_blueprints: Array<Record<string, any>>;
+  created_by: string;
+  updated_by: string;
+  created_at: string;
+  updated_at: string;
+  targets: OperationPlanTarget[];
+  task_links: OperationPlanTaskLink[];
+  latest_run: OperationPlanGenerationRun | null;
+};
+
+export type OperationPlanPreview = {
+  plan_id: number;
+  target_count: number;
+  estimated_task_count: number;
+  estimated_target_count: number;
+  account_capacity: Record<string, any>;
+  admission_actions: Array<Record<string, any>>;
+  target_previews: Array<Record<string, any>>;
+  planned_tasks: Array<Record<string, any>>;
+  blockers: string[];
+  warnings: string[];
+  run: OperationPlanGenerationRun;
+};
+
+export type OperationPlanGenerateResult = {
+  plan_id: number;
+  created_task_ids: string[];
+  linked_task_count: number;
+  run: OperationPlanGenerationRun;
+};
+
+export type OperationPlanApplyResult = {
+  plan_id: number;
+  created_task_ids: string[];
+  linked_task_count: number;
+  applied_task_ids: string[];
+  requires_confirmation: boolean;
+  impact_preview: Record<string, any>;
+  run: OperationPlanGenerationRun;
+};
+
+export type TargetRuntimeSummary = {
+  id: string;
+  tenant_id: number;
+  target_id: number;
+  status: string;
+  open_issue_count: number;
+  failed_action_count: number;
+  affected_task_count: number;
+  latest_failure_at: string | null;
+  summary: Record<string, any>;
+  updated_at: string;
+};
+
+export type OperationCenterSummary = {
+  tenant_id: number;
+  open_issue_count: number;
+  affected_target_count: number;
+  running_task_count: number;
+  failed_action_count: number;
+  affected_account_count: number;
+  latest_updated_at: string | null;
+  stale: boolean;
+};
+
+export type OperationIssue = {
+  id: string;
+  tenant_id: number;
+  target_id: number | null;
+  issue_type: string;
+  severity: string;
+  source_task_id: string;
+  representative_action_id: string;
+  affected_account_ids: number[];
+  failure_type: string;
+  failure_reason: string;
+  suggested_action: string;
+  status: string;
+  summary: Record<string, any>;
+  first_seen_at: string;
+  last_seen_at: string;
+  resolved_at: string | null;
+  updated_at: string;
+};
+
+export type OperationIssueDetail = {
+  issue: OperationIssue;
+  target: Record<string, any> | null;
+  source_task: Record<string, any> | null;
+  related_task_summary: Record<string, any> | null;
+  affected_accounts: Array<Record<string, any>>;
+  recent_failed_actions: Array<Record<string, any>>;
+};
+
 export type ChannelMessage = {
   id: number;
   tenant_id: number;

@@ -63,6 +63,7 @@ def list_audit_logs(
 
 @router.get("/api/audit-logs/export")
 def export_audit_logs(
+    reason: str,
     tenant_id: int | None = None,
     actor: str | None = None,
     action: str | None = None,
@@ -78,6 +79,9 @@ def export_audit_logs(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> Response:
+    reason = reason.strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="导出原因不能为空")
     tenant_id = resolve_tenant_id(current_user, tenant_id)
     try:
         parsed_start = datetime.fromisoformat(start_at) if start_at else None
@@ -107,7 +111,7 @@ def export_audit_logs(
         action="导出审计记录",
         target_type="audit_log",
         target_id="export",
-        detail=f"count={len(logs)}",
+        detail=f"reason={reason}; count={len(logs)}",
     )
     session.commit()
     payload = [_audit_log_with_account(session, audit_log_out_for_user(log, current_user)) for log in logs]

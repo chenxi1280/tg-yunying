@@ -120,15 +120,13 @@ def _task_config_search_text(session: Session, task: Task) -> str:
         if channel:
             parts.extend([channel.title, channel.username, channel.tg_peer_id])
         message_ids = [int(item) for item in config.get("message_ids") or [] if str(item).isdigit()]
-        stmt = select(ChannelMessage).where(ChannelMessage.tenant_id == task.tenant_id)
-        if channel:
-            stmt = stmt.where(ChannelMessage.channel_target_id == channel.id)
         if message_ids:
+            stmt = select(ChannelMessage).where(ChannelMessage.tenant_id == task.tenant_id)
+            if channel:
+                stmt = stmt.where(ChannelMessage.channel_target_id == channel.id)
             stmt = stmt.where((ChannelMessage.id.in_(message_ids)) | (ChannelMessage.message_id.in_(message_ids)))
-        else:
-            stmt = stmt.limit(20)
-        for message in session.scalars(stmt):
-            parts.extend([str(message.message_id), message.content_preview, message.message_url])
+            for message in session.scalars(stmt):
+                parts.extend([str(message.message_id), message.content_preview, message.message_url])
     return " ".join(part for part in parts if part)
 
 

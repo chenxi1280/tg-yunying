@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api import ApiModel
 from .campaigns import MessageTaskOut
@@ -54,6 +54,19 @@ class LoginStartRequest(BaseModel):
 class LoginVerifyRequest(BaseModel):
     code: str | None = None
     password_2fa: str | None = None
+
+
+class SensitiveActionReasonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def normalize_reason(self) -> "SensitiveActionReasonRequest":
+        self.reason = self.reason.strip()
+        if not self.reason:
+            raise ValueError("操作原因不能为空")
+        return self
 
 
 class AccountClonePlanCreate(BaseModel):
@@ -311,7 +324,7 @@ class AccountPoolDetailOut(BaseModel):
 __all__ = [
     "TgAccountCreate", "AccountPoolCreate", "AccountPoolUpdate",
     "MoveAccountPoolRequest", "TgAccountProfileUpdate",
-    "LoginStartRequest", "LoginVerifyRequest", "AccountClonePlanCreate",
+    "LoginStartRequest", "LoginVerifyRequest", "SensitiveActionReasonRequest", "AccountClonePlanCreate",
     "AvatarUploadOut",
     "AccountOut", "AccountPoolOut", "LoginFlowOut", "VerificationCodeOut",
     "ProfileSyncRecordOut", "AccountSyncRecordOut",

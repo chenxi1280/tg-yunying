@@ -90,7 +90,7 @@ def build_plan(session: Session, task: Task) -> int:
         if not fingerprint_exists(session, task.tenant_id, fingerprint_source, _context_fingerprint(row))
     ]
     force_bootstrap_once = bool((task.stats or {}).get("force_bootstrap_once"))
-    previous_ai_messages = _recent_ai_messages(session, task, limit=10)
+    previous_ai_messages = _recent_ai_messages(session, task, limit=_semantic_repeat_window(config))
     idle_continuation = False
     if not force_bootstrap_once and _should_wait_for_human_context(session, task, usable_context_rows, unprocessed_rows):
         idle_decision = _idle_continuation_decision(session, task, config)
@@ -145,6 +145,8 @@ def build_plan(session: Session, task: Task) -> int:
         previous_ai_messages,
         chat_mode=chat_mode,
         anchor_message_ids=context_message_ids,
+        fact_anchor_required=bool(config.get("fact_anchor_required", True)),
+        low_confidence_silence_enabled=bool(config.get("low_confidence_silence_enabled", True)),
         limit=turn_count,
     )
     contents = [item["content"] for item in quality_items]
@@ -317,6 +319,14 @@ def _idle_continuation_seconds(config: dict) -> int:
     except (TypeError, ValueError):
         value = DEFAULT_IDLE_CONTINUATION_SECONDS
     return max(30, value)
+
+
+def _semantic_repeat_window(config: dict) -> int:
+    try:
+        value = int(config.get("semantic_repeat_window") or 10)
+    except (TypeError, ValueError):
+        value = 10
+    return max(1, min(100, value))
 
 
 def _last_successful_ai_action_at(session: Session, task: Task) -> datetime | None:
@@ -767,6 +777,8 @@ def _quality_filter_ai_messages(
     *,
     chat_mode: str,
     anchor_message_ids: list[int],
+    fact_anchor_required: bool,
+    low_confidence_silence_enabled: bool,
     limit: int,
 ) -> tuple[list[dict[str, str]], dict[str, str]]:
     accepted: list[dict[str, str]] = []
@@ -787,8 +799,12 @@ def _quality_filter_ai_messages(
             stats["duplicate_risk"] = "semantic_cluster"
             stats["skip_reason"] = stats.get("skip_reason") or "duplicate_risk"
             continue
-        if _has_unanchored_idle_fact(content, chat_mode=chat_mode, anchor_message_ids=anchor_message_ids):
+        if fact_anchor_required and _has_unanchored_idle_fact(content, chat_mode=chat_mode, anchor_message_ids=anchor_message_ids):
             stats["hallucination_risk"] = "high"
+            stats["skip_reason"] = "hallucination_risk"
+            continue
+        if low_confidence_silence_enabled and chat_mode == CHAT_MODE_BOOTSTRAP and _looks_like_fact_claim(content):
+            stats["hallucination_risk"] = "low_confidence_bootstrap"
             stats["skip_reason"] = "hallucination_risk"
             continue
         accepted.append(item)
@@ -815,7 +831,7 @@ def _semantic_cluster(content: str) -> str:
 
 
 def _has_unanchored_idle_fact(content: str, *, chat_mode: str, anchor_message_ids: list[int]) -> bool:
-    if chat_mode != CHAT_MODE_IDLE_WARMUP:
+    if chat_mode not in {CHAT_MODE_IDLE_WARMUP, CHAT_MODE_BOOTSTRAP}:
         return False
     text = _normalize_for_similarity(content)
     fact_markers = (
@@ -840,6 +856,23 @@ def _has_unanchored_idle_fact(content: str, *, chat_mode: str, anchor_message_id
     if not any(marker and marker in text for marker in normalized_markers):
         return False
     return True
+
+
+def _looks_like_fact_claim(content: str) -> bool:
+    text = _normalize_for_similarity(content)
+    markers = (
+        "我上次",
+        "之前",
+        "上次那个",
+        "结束后",
+        "走之前",
+        "位置",
+        "照片",
+        "准时",
+        "回访",
+        "没让我等",
+    )
+    return any(_normalize_for_similarity(marker) in text for marker in markers)
 
 
 def _normalize_for_similarity(content: str) -> str:

@@ -172,8 +172,11 @@ ALL_PERMISSIONS = [
     "accounts.create",
     "accounts.login",
     "accounts.sync",
-    "accounts.view_codes",
-    "accounts.update_profile",
+    "accounts.codes.read",
+    "accounts.security.read",
+    "accounts.security.batch",
+    "accounts.profile.batch_update",
+    "accounts.sensitive.read",
     "accounts.delete",
     "accounts.pool_manage",
     "accounts.proxy_bind",
@@ -186,6 +189,7 @@ ALL_PERMISSIONS = [
     "message_sending.create",
     "tasks.view",
     "tasks.manage",
+    "tasks.dispatch_control",
     "listeners.view",
     "listeners.manage",
     "rules.view",
@@ -197,6 +201,8 @@ ALL_PERMISSIONS = [
     "archives.export",
     "usage.view",
     "manual.view",
+    "operation_plans.manage",
+    "operation_issues.manage",
     "system.view",
     "system.manage",
     "system.secrets_manage",
@@ -204,6 +210,7 @@ ALL_PERMISSIONS = [
     "permissions.manage",
     "audits.view",
     "audits.view_sensitive",
+    "audit.export",
 ]
 
 MENU_VIEW_PERMISSIONS = {
@@ -243,13 +250,22 @@ LEGACY_PERMISSION_MAP = {
     "developerApps": "system.view",
     "aiConfig": "system.view",
     "audits": "audits.view",
+    "accounts.view_codes": "accounts.codes.read",
+    "accounts.update_profile": "accounts.profile.batch_update",
+    "audits.export": "audit.export",
 }
 
 ROLE_TEMPLATE_PERMISSIONS = {
     "运营管理员": [
         "overview.view",
+        "operation_plans.manage",
+        "operation_issues.manage",
         "accounts.view",
         "accounts.sync",
+        "accounts.codes.read",
+        "accounts.security.read",
+        "accounts.security.batch",
+        "accounts.profile.batch_update",
         "targets.view",
         "targets.manage",
         "message_sending.view",
@@ -267,6 +283,7 @@ ROLE_TEMPLATE_PERMISSIONS = {
         "usage.view",
         "manual.view",
         "audits.view",
+        "audit.export",
     ],
     "账号添加专员": ["overview.view", "accounts.view", "accounts.create", "accounts.login", "accounts.sync"],
     "只读观察员": ["overview.view", "usage.view", "manual.view", "audits.view"],
@@ -293,6 +310,10 @@ def normalize_permissions(values: list[str] | None, *, role: str | None = None, 
         if mapped in ALL_PERMISSIONS:
             normalized.append(mapped)
     return list(dict.fromkeys(normalized))
+
+
+def canonical_permission(permission: str) -> str:
+    return LEGACY_PERMISSION_MAP.get(permission, permission)
 
 
 def parse_menu_permissions(raw: str | None, *, role: str | None = None, role_template: str | None = None) -> list[str]:
@@ -409,7 +430,8 @@ class CurrentUser:
         return self.role == "普通用户"
 
     def has_permission(self, permission: str) -> bool:
-        return self.is_platform_admin or "*" in self.permissions or permission in self.permissions
+        canonical = canonical_permission(permission)
+        return self.is_platform_admin or "*" in self.permissions or canonical in self.permissions
 
 
 def normalize_phone(phone: str | None) -> str | None:

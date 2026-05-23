@@ -28,7 +28,7 @@ export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
   channel_comment: '/tasks/channel-comment/create-and-start',
 };
 
-export const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号选择', '确认提交'];
+export const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号与节奏', '预检确认'];
 
 export const OPERATION_PROFILE_TEMPLATES = [
   { value: 'natural_full_day', label: '全天自然活跃', curve: [10, 8, 5, 5, 0, 0, 8, 15, 35, 45, 55, 60, 45, 40, 55, 65, 70, 75, 80, 85, 70, 50, 25, 15] },

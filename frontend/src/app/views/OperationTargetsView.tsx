@@ -10,6 +10,8 @@ import { formatBeijingDateTime } from '../time';
 type Props = {
   onSendToTarget: (target: OperationTarget) => void;
   onCreateTaskFromTarget: (taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment'>, target: OperationTarget, message?: ChannelMessage) => void;
+  focusTarget?: { targetId: number; nonce: number } | null;
+  onFocusTargetConsumed?: () => void;
 };
 
 function formatDateTime(value?: string | null) {
@@ -33,7 +35,7 @@ function capabilityTags(target: OperationTarget) {
   );
 }
 
-export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromTarget }: Props) {
+export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromTarget, focusTarget, onFocusTargetConsumed }: Props) {
   const { message } = AntdApp.useApp();
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -53,6 +55,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
   const [detailOpen, setDetailOpen] = React.useState(false);
   const [form] = Form.useForm();
   const [riskForm] = Form.useForm();
+  const appliedFocusNonce = React.useRef<number | null>(null);
 
   function errorMessage(error: unknown) {
     if (error instanceof ApiError) {
@@ -153,6 +156,24 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     const timer = window.setInterval(() => void load(), 60000);
     return () => window.clearInterval(timer);
   }, []);
+
+  React.useEffect(() => {
+    if (!focusTarget || appliedFocusNonce.current === focusTarget.nonce) return;
+    if (!targets.length) {
+      void load();
+      return;
+    }
+    const target = targets.find((item) => item.id === focusTarget.targetId);
+    if (!target) {
+      void message.warning(`未找到目标 #${focusTarget.targetId}`);
+      appliedFocusNonce.current = focusTarget.nonce;
+      onFocusTargetConsumed?.();
+      return;
+    }
+    appliedFocusNonce.current = focusTarget.nonce;
+    openDetail(target);
+    onFocusTargetConsumed?.();
+  }, [focusTarget, message, onFocusTargetConsumed, targets]);
 
   async function saveTarget(values: any) {
     setSaving(true);

@@ -6,6 +6,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api import ApiModel
+from .operation_plans import OperationPlanTaskLinkOut
+from .runtime_summary import TaskRuntimeSummaryOut
 
 TaskTypeValue = Literal["group_ai_chat", "group_relay", "channel_view", "channel_like", "channel_comment"]
 TaskStatusValue = Literal["draft", "pending", "running", "paused", "target_reached", "wrapping_up", "completed", "stopped", "failed", "deleted"]
@@ -175,6 +177,9 @@ class GroupAIChatConfig(BaseModel):
     ramp_up_minutes: int = Field(default=60, ge=0, le=1440)
     ramp_start_ratio: float = Field(default=0.3, ge=0.01, le=1)
     context_expire_after_messages: int = Field(default=10, ge=0, le=500)
+    fact_anchor_required: bool = True
+    semantic_repeat_window: int = Field(default=10, ge=1, le=100)
+    low_confidence_silence_enabled: bool = True
 
     @model_validator(mode="after")
     def validate_target_reference(self) -> "GroupAIChatConfig":
@@ -379,6 +384,9 @@ class TaskSettingsUpdate(TaskUpdate):
     history_fetch_account_id: int | None = None
     idle_continuation_enabled: bool | None = None
     idle_continuation_seconds: int | None = Field(default=None, ge=30, le=86400)
+    fact_anchor_required: bool | None = None
+    semantic_repeat_window: int | None = Field(default=None, ge=1, le=100)
+    low_confidence_silence_enabled: bool | None = None
     rule_set_id: int | None = None
     rule_set_version_id: int | None = None
 
@@ -459,6 +467,31 @@ class ActionOut(ApiModel):
     payload: dict[str, Any]
     result: dict[str, Any]
     retry_count: int
+    failure_type: str = ""
+    failure_reason: str = ""
+    raw_error: str = ""
+    trace_id: str = ""
+    operation_issue_id: str = ""
+    operation_issue_status: str = ""
+    operation_issue_rolled_up: bool = False
+    created_at: datetime
+
+
+class ExecutionAttemptOut(ApiModel):
+    id: str
+    tenant_id: int
+    action_id: str
+    worker_id: str
+    account_id: int | None
+    attempt_no: int
+    status: str
+    before_call_at: datetime | None
+    gateway_call_started_at: datetime | None
+    after_call_at: datetime | None
+    remote_message_id: str
+    failure_type: str
+    failure_detail: str
+    result_snapshot: dict[str, Any]
     created_at: datetime
 
 
@@ -617,6 +650,8 @@ class TaskDetailOut(BaseModel):
     task: TaskOut
     actions: list[ActionOut]
     stats: dict[str, Any]
+    task_runtime_summary: TaskRuntimeSummaryOut | None = None
+    operation_plan_links: list[OperationPlanTaskLinkOut] = Field(default_factory=list)
     accounts: list[TaskDetailAccountOut] = Field(default_factory=list)
     membership_phase: dict[str, Any] = Field(default_factory=dict)
     membership_accounts: list[dict[str, Any]] = Field(default_factory=list)
@@ -632,6 +667,19 @@ class TaskRetryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     failed_only: bool = True
+
+
+class TaskActionReasonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def normalize_reason(self) -> "TaskActionReasonRequest":
+        self.reason = self.reason.strip()
+        if not self.reason:
+            raise ValueError("操作原因不能为空")
+        return self
 
 
 class GroupAIChatTaskPreviewRequest(GroupAIChatConfig):
@@ -752,6 +800,7 @@ __all__ = [
     "ChannelViewConfig",
     "ChannelViewTaskConfigUpdate",
     "ChannelViewTaskCreate",
+    "ExecutionAttemptOut",
     "FailurePolicy",
     "GenerateTaskPreviewOut",
     "GroupAIChatConfig",
@@ -781,6 +830,7 @@ __all__ = [
     "TaskPrecheckOut",
     "TaskPrecheckRequest",
     "TaskRetryRequest",
+    "TaskActionReasonRequest",
     "TaskSettingsUpdate",
     "TaskUpdate",
 ]

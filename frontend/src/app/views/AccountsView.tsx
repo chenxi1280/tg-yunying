@@ -3,10 +3,11 @@ import { Alert, Avatar, Button, Card, Progress, Segmented, Space, Table, Typogra
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, Database, ShieldAlert } from 'lucide-react';
 import { api } from '../../shared/api/client';
-import type { Account, AccountPool } from '../types';
+import type { Account, AccountAvailabilitySummary, AccountPool } from '../types';
 import type { RuntimeConfig } from '../types';
 import { StatusBadge, useAntdTableControls } from '../components/shared';
 import { AccountSecurityBatchDrawer } from './AccountSecurityBatchDrawer';
+import { formatBeijingDateTime } from '../time';
 
 const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', '异常']);
 const ACCOUNT_RESTRICTED_STATUSES = new Set(['受限', '疑似封禁', '已封禁', 'Session失效']);
@@ -37,6 +38,9 @@ interface Props {
   canLoginAccount?: boolean;
   canSyncAccount?: boolean;
   canViewCodes?: boolean;
+  canSecurityRead?: boolean;
+  canSecurityBatch?: boolean;
+  canProfileBatchUpdate?: boolean;
   canMovePool?: boolean;
   canDeleteAccount?: boolean;
 }
@@ -66,12 +70,17 @@ export default function AccountsView({
   canLoginAccount = true,
   canSyncAccount = true,
   canViewCodes = true,
+  canSecurityRead = true,
+  canSecurityBatch = true,
+  canProfileBatchUpdate = true,
   canMovePool = true,
   canDeleteAccount = true,
 }: Props) {
   const [selectedAccountIds, setSelectedAccountIds] = React.useState<number[]>([]);
   const [securityDrawerMode, setSecurityDrawerMode] = React.useState<'cleanup_devices' | 'set_two_fa' | 'profile' | null>(null);
   const [refreshingSecurity, setRefreshingSecurity] = React.useState(false);
+  const [availabilityLoading, setAvailabilityLoading] = React.useState(false);
+  const [availabilityByAccountId, setAvailabilityByAccountId] = React.useState<Map<number, AccountAvailabilitySummary>>(new Map());
   const accountTable = useAntdTableControls<Account>({
     rows: accounts,
     placeholder: '搜索账号 / username / 手机号 / 分组 / 状态 / 代理',
@@ -85,11 +94,12 @@ export default function AccountsView({
         account.status,
         account.profile_sync_status,
         account.developer_app_name,
-        account.developer_app_health_status,
+        canSecurityRead ? account.developer_app_health_status : '',
         account.proxy_name,
-        account.proxy_local_address,
-        account.proxy_status,
-        account.proxy_alert_status,
+        canSecurityRead ? account.proxy_local_address : '',
+        canSecurityRead ? account.proxy_status : '',
+        canSecurityRead ? account.proxy_alert_status : '',
+        availabilityByAccountId.get(account.id)?.unavailable_reason,
         account.tg_first_name,
         account.tg_last_name,
         !account.avatar_object_key ? '无头像 资料待初始化 资料不完整' : '',
@@ -97,17 +107,43 @@ export default function AccountsView({
         !account.tg_first_name ? '昵称为空 资料待初始化 资料不完整' : '',
         ACCOUNT_RESTRICTED_STATUSES.has(account.status) ? '账号级受限 受限 系统探测恢复' : '',
         LOGIN_REQUIRED_STATUSES.has(account.status) ? '待完成登录 等待 登录' : '',
-        account.health_score < 60 ? '健康分偏低 健康' : '',
-        account.proxy_status && account.proxy_status !== 'healthy' && account.proxy_status !== '健康' ? '代理异常 代理' : '',
+        canSecurityRead && account.health_score < 60 ? '健康分偏低 健康' : '',
+        canSecurityRead && account.proxy_status && account.proxy_status !== 'healthy' && account.proxy_status !== '健康' ? '代理异常 代理' : '',
       ],
     ],
   });
   const restrictedAccounts = accounts.filter((account) => ACCOUNT_RESTRICTED_STATUSES.has(account.status));
   const loginRequiredAccounts = accounts.filter((account) => LOGIN_REQUIRED_STATUSES.has(account.status));
-  const lowHealthAccounts = accounts.filter((account) => account.health_score < 60 && !ACCOUNT_RESTRICTED_STATUSES.has(account.status));
-  const proxyBlockedAccounts = accounts.filter((account) => account.proxy_status && account.proxy_status !== 'healthy' && account.proxy_status !== '健康');
+  const lowHealthAccounts = canSecurityRead ? accounts.filter((account) => account.health_score < 60 && !ACCOUNT_RESTRICTED_STATUSES.has(account.status)) : [];
+  const proxyBlockedAccounts = canSecurityRead ? accounts.filter((account) => account.proxy_status && account.proxy_status !== 'healthy' && account.proxy_status !== '健康') : [];
   const selectedAccounts = accounts.filter((account) => selectedAccountIds.includes(account.id));
   const incompleteProfiles = accounts.filter((account) => !account.avatar_object_key || !account.username || !account.tg_first_name);
+  const unavailableBySummary = Array.from(availabilityByAccountId.values()).filter((item) => !item.send_available);
+
+  React.useEffect(() => {
+    void loadAvailability();
+  }, []);
+
+  async function loadAvailability() {
+    setAvailabilityLoading(true);
+    try {
+      const rows = await api<AccountAvailabilitySummary[]>('/tg-accounts/availability/summary');
+      setAvailabilityByAccountId(new Map(rows.map((item) => [item.account_id, item])));
+    } finally {
+      setAvailabilityLoading(false);
+    }
+  }
+
+  async function rebuildAvailability() {
+    setAvailabilityLoading(true);
+    try {
+      await api('/tg-accounts/availability/rebuild', { method: 'POST' });
+      await loadAvailability();
+      void message.success('账号可用性汇总已重算');
+    } finally {
+      setAvailabilityLoading(false);
+    }
+  }
 
   async function refreshSelectedSecurity() {
     if (!selectedAccountIds.length) {
@@ -163,10 +199,16 @@ export default function AccountsView({
         <Space direction="vertical" size={2}>
           <Typography.Text strong>{account.developer_app_name ? '正常' : '未绑定'}</Typography.Text>
           <Typography.Text type="secondary">{account.developer_app_name ? '登录能力已分配' : '登录时自动准备'}</Typography.Text>
-          <StatusBadge status={account.developer_app_health_status ?? '未配置'} label={account.developer_app_health_status === '健康' ? '正常' : account.developer_app_health_status ?? '未配置'} />
+          {canSecurityRead && <StatusBadge status={account.developer_app_health_status ?? '未配置'} label={account.developer_app_health_status === '健康' ? '正常' : account.developer_app_health_status ?? '未配置'} />}
           <Typography.Text type="secondary">{account.proxy_name ? `代理：${account.proxy_name}` : '代理：未绑定'}</Typography.Text>
-          <Typography.Text type="secondary">{account.proxy_local_address || '高频发送建议绑定本地代理'}</Typography.Text>
-          {account.proxy_status && <StatusBadge status={account.proxy_status} label={account.proxy_alert_status ? `${account.proxy_status} / ${account.proxy_alert_status}` : account.proxy_status} />}
+          {canSecurityRead ? (
+            <>
+              <Typography.Text type="secondary">{account.proxy_local_address || '高频发送建议绑定本地代理'}</Typography.Text>
+              {account.proxy_status && <StatusBadge status={account.proxy_status} label={account.proxy_alert_status ? `${account.proxy_status} / ${account.proxy_alert_status}` : account.proxy_status} />}
+            </>
+          ) : (
+            <Typography.Text type="secondary">需账号安全权限</Typography.Text>
+          )}
         </Space>
       ),
     },
@@ -175,7 +217,7 @@ export default function AccountsView({
       dataIndex: 'health_score',
       key: 'health_score',
       width: 150,
-      render: (score: number) => <Progress percent={score} size="small" status={score < 60 ? 'exception' : score < 80 ? 'normal' : 'success'} />,
+      render: (score: number) => canSecurityRead ? <Progress percent={score} size="small" status={score < 60 ? 'exception' : score < 80 ? 'normal' : 'success'} /> : <Typography.Text type="secondary">需账号安全权限</Typography.Text>,
     },
     {
       title: '安全 / 资料',
@@ -185,9 +227,33 @@ export default function AccountsView({
         const profileComplete = Boolean(account.avatar_object_key && account.username && account.tg_first_name);
         return (
           <Space direction="vertical" size={4}>
-            <StatusBadge status={account.status === '在线' ? '待确认' : '不可用'} label={account.status === '在线' ? '安全待刷新' : '安全不可用'} />
+            {canSecurityRead && <StatusBadge status={account.status === '在线' ? '待确认' : '不可用'} label={account.status === '在线' ? '安全待刷新' : '安全不可用'} />}
             <StatusBadge status={profileComplete ? '已完成' : '待处理'} label={profileComplete ? '资料完整' : '资料待初始化'} />
             <Typography.Text type="secondary">{account.username ? `@${account.username}` : '未设置 username'}</Typography.Text>
+          </Space>
+        );
+      },
+    },
+    {
+      title: '可用性汇总',
+      key: 'availability',
+      width: 230,
+      render: (_, account) => {
+        const availability = availabilityByAccountId.get(account.id);
+        if (!availability) {
+          return <Typography.Text type="secondary">等待汇总</Typography.Text>;
+        }
+        return (
+          <Space direction="vertical" size={4}>
+            <Space size={4} wrap>
+              <StatusBadge status={availability.send_available ? '可用' : '不可用'} label="发" />
+              <StatusBadge status={availability.listen_available ? '可用' : '不可用'} label="听" />
+              <StatusBadge status={availability.join_available ? '可用' : '不可用'} label="加" />
+              <StatusBadge status={availability.comment_available ? '可用' : '不可用'} label="评" />
+            </Space>
+            <Typography.Text type="secondary">容量 {availability.remaining_capacity}</Typography.Text>
+            <Typography.Text type={availability.unavailable_reason ? 'danger' : 'secondary'}>{availability.unavailable_reason || '可用'}</Typography.Text>
+            <Typography.Text type="secondary">更新 {formatBeijingDateTime(availability.updated_at)}</Typography.Text>
           </Space>
         );
       },
@@ -256,13 +322,14 @@ export default function AccountsView({
         />
         {selectedPool && <Button type="primary" loading={isActionPending(`account-pool:${selectedPool.id}:detail`)} onClick={() => onOpenPoolDetail(selectedPool)}>进入账号分组</Button>}
         {accountTable.searchInput}
+        {canSyncAccount && <Button loading={availabilityLoading} onClick={rebuildAvailability}>重算可用性</Button>}
       </Space>
       <Space className="pool-filter-strip" wrap>
         <Typography.Text type="secondary">已选择 {selectedAccounts.length} 个账号</Typography.Text>
-        <Button icon={<Activity size={16} />} disabled={!selectedAccountIds.length || !canSyncAccount} onClick={() => setSecurityDrawerMode('profile')}>资料初始化</Button>
-        <Button icon={<ShieldAlert size={16} />} disabled={!selectedAccountIds.length || !canSyncAccount} onClick={() => setSecurityDrawerMode('set_two_fa')}>设置二步密码</Button>
-        <Button icon={<Database size={16} />} disabled={!selectedAccountIds.length || !canSyncAccount} onClick={() => setSecurityDrawerMode('cleanup_devices')}>清理登录设备</Button>
-        <Button disabled={!selectedAccountIds.length || !canSyncAccount} loading={refreshingSecurity} onClick={refreshSelectedSecurity}>刷新安全状态</Button>
+        {canProfileBatchUpdate && <Button icon={<Activity size={16} />} disabled={!selectedAccountIds.length} onClick={() => setSecurityDrawerMode('profile')}>资料初始化</Button>}
+        {canSecurityBatch && <Button icon={<ShieldAlert size={16} />} disabled={!selectedAccountIds.length} onClick={() => setSecurityDrawerMode('set_two_fa')}>设置二步密码</Button>}
+        {canSecurityBatch && <Button icon={<Database size={16} />} disabled={!selectedAccountIds.length} onClick={() => setSecurityDrawerMode('cleanup_devices')}>清理登录设备</Button>}
+        {canSecurityRead && <Button disabled={!selectedAccountIds.length} loading={refreshingSecurity} onClick={refreshSelectedSecurity}>刷新安全状态</Button>}
         <Button disabled={!selectedAccountIds.length} onClick={() => setSelectedAccountIds([])}>清空选择</Button>
       </Space>
       <div className="summary-grid">
@@ -291,6 +358,12 @@ export default function AccountsView({
           <Button size="small" disabled={!proxyBlockedAccounts.length} onClick={() => accountTable.setQuery('代理异常')}>查看代理</Button>
         </Card>
         <Card className="summary-card" size="small">
+          <span>汇总不可用</span>
+          <strong>{unavailableBySummary.length}</strong>
+          <p>来自账号可用性读模型；汇总可能有延迟，必要时重算。</p>
+          <Button size="small" disabled={!unavailableBySummary.length} onClick={() => accountTable.setQuery('session_missing')}>查看汇总</Button>
+        </Card>
+        <Card className="summary-card" size="small">
           <span>资料待初始化</span>
           <strong>{incompleteProfiles.length}</strong>
           <p>头像、昵称或 username 缺失时，可批量 AI 随机生成并预览后执行。</p>
@@ -307,7 +380,7 @@ export default function AccountsView({
           onChange: (keys) => setSelectedAccountIds(keys.map(Number)),
         }}
         pagination={accountTable.pagination}
-        scroll={{ x: 1280 }}
+        scroll={{ x: 1510 }}
         locale={{ emptyText: '暂无 TG 账号。配置开发者应用后，可以通过手机号新增账号并启动真实 TG 登录。' }}
       />
       <AccountSecurityBatchDrawer

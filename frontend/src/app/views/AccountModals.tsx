@@ -2,7 +2,7 @@ import React from 'react';
 import { Alert, Button, Card, Descriptions, Empty, Input, List, Modal, Select, Space, Table, Tabs, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type {
-  Account, AccountPool, AccountDetail, AccountPoolDetail,
+  Account, AccountAvailabilitySummary, AccountPool, AccountDetail, AccountPoolDetail,
   AccountClonePlan, AccountCloneItem, VerificationTask, Contact,
   RuntimeConfig, CurrentUser, AccountGroup, MessageTask, AccountSecurityDetail, AccountAuthorizationSnapshot,
 } from '../types';
@@ -45,6 +45,7 @@ interface AccountPoolDetailModalProps {
   isActionPending: (key: string) => boolean;
   canCreateAccount?: boolean;
   canManualSend?: boolean;
+  canSecurityRead?: boolean;
 }
 
 export function AccountPoolDetailModal({
@@ -54,7 +55,7 @@ export function AccountPoolDetailModal({
   onRefreshAccountPoolDetail, onStartDirectMessageToContact,
   onCreateDirectMessageTask, onOpenConfirm, onSetReturnAfterVerification,
   onSetModal, accountName, isActionPending,
-  canCreateAccount = true, canManualSend = true,
+  canCreateAccount = true, canManualSend = true, canSecurityRead = true,
 }: AccountPoolDetailModalProps) {
   return (
     <Modal className="tg-modal large" title={`${accountPoolDetail.pool.name} 账号分组`} open width={920} onCancel={onClose} footer={null} destroyOnHidden centered>
@@ -81,7 +82,7 @@ export function AccountPoolDetailModal({
               <List.Item className={statusAccent(account.status)} actions={[<Button size="small" loading={isActionPending(`account:${account.id}:detail`)} onClick={() => onOpenAccountDetail(account)}>进入账号</Button>]}>
                 <List.Item.Meta
                   title={<Space><StatusBadge status={account.status} />{account.display_name}</Space>}
-                  description={`${accountPhone(account)} / 健康分 ${Math.round(account.health_score)}`}
+                  description={canSecurityRead ? `${accountPhone(account)} / 健康分 ${Math.round(account.health_score)}` : `${accountPhone(account)} / 需账号安全权限`}
                 />
               </List.Item>
             )}
@@ -174,7 +175,7 @@ interface AccountDetailModalProps {
   onOpenAccountProfileEdit: () => void;
   onQueueAccountSyncNow: () => Promise<void>;
   onRefreshAccountDetail: () => Promise<void>;
-  onPollVerificationCodes: (silent?: boolean) => Promise<void>;
+  onPollVerificationCodes: (reason: string) => Promise<void>;
   onStartDirectMessageToContact: (contact: Contact) => void;
   onCreateDirectMessageTask: () => Promise<void>;
   onConfirmClonePlan: (plan: AccountClonePlan) => Promise<void>;
@@ -195,9 +196,11 @@ interface AccountDetailModalProps {
   onSetCloneForm: (form: { target_account_ids: number[]; clone_contacts: boolean; clone_groups: boolean }) => void;
   accountName: (accountId: number | null | undefined) => string;
   isActionPending: (key: string) => boolean;
-  canUpdateProfile?: boolean;
   canSyncAccount?: boolean;
   canViewCodes?: boolean;
+  canSecurityRead?: boolean;
+  canSecurityBatch?: boolean;
+  canProfileBatchUpdate?: boolean;
   canMovePool?: boolean;
   canClone?: boolean;
 }
@@ -214,32 +217,54 @@ export function AccountDetailModal({
   onDismissVerificationTask, onConfirmVerificationTask, onResolveGroupRestrictionTask,
   onOpenConfirm, onSetReturnAfterVerification, onSetModal,
   onSetCloneForm, accountName, isActionPending,
-  canUpdateProfile = true, canSyncAccount = true, canViewCodes = true, canMovePool = true, canClone = true,
+  canSyncAccount = true, canViewCodes = true, canSecurityRead = true, canSecurityBatch = true, canProfileBatchUpdate = true,
+  canMovePool = true, canClone = true,
 }: AccountDetailModalProps) {
   const [manualTargetId, setManualTargetId] = React.useState<number | null>(null);
   const [manualContent, setManualContent] = React.useState('');
   const [manualSending, setManualSending] = React.useState(false);
   const [securityDetail, setSecurityDetail] = React.useState<AccountSecurityDetail | null>(null);
   const [securityLoading, setSecurityLoading] = React.useState(false);
+  const [codeReasonOpen, setCodeReasonOpen] = React.useState(false);
+  const [codeReason, setCodeReason] = React.useState('');
+  const [securityReasonAction, setSecurityReasonAction] = React.useState<'cleanup-devices' | 'set-2fa' | null>(null);
+  const [securityReason, setSecurityReason] = React.useState('');
+  const [availabilitySummary, setAvailabilitySummary] = React.useState<AccountAvailabilitySummary | null>(null);
+  const [availabilityLoading, setAvailabilityLoading] = React.useState(false);
 
   React.useEffect(() => {
     setManualTargetId((current) => current ?? accountDetail.operation_targets[0]?.id ?? null);
   }, [accountDetail.operation_targets]);
 
   React.useEffect(() => {
-    if (!canViewCodes) return undefined;
-    if (accountDetailTab !== 'TG 官方验证码') return undefined;
-    void onPollVerificationCodes(true);
-    const timer = window.setInterval(() => {
-      void onPollVerificationCodes(true);
-    }, 10000);
-    return () => window.clearInterval(timer);
-  }, [accountDetail.account.id, accountDetailTab, canViewCodes]);
-
-  React.useEffect(() => {
+    if (!canSecurityRead) return;
     if (accountDetailTab !== '账号安全') return;
     void loadSecurityDetail();
+  }, [accountDetail.account.id, accountDetailTab, canSecurityRead]);
+
+  React.useEffect(() => {
+    if (accountDetailTab !== '可用性') return;
+    void loadAvailabilitySummary();
   }, [accountDetail.account.id, accountDetailTab]);
+
+  async function loadAvailabilitySummary() {
+    setAvailabilityLoading(true);
+    try {
+      setAvailabilitySummary(await api<AccountAvailabilitySummary>(`/tg-accounts/${accountDetail.account.id}/availability`));
+    } finally {
+      setAvailabilityLoading(false);
+    }
+  }
+
+  async function rebuildAvailabilitySummary() {
+    setAvailabilityLoading(true);
+    try {
+      await api('/tg-accounts/availability/rebuild', { method: 'POST' });
+      setAvailabilitySummary(await api<AccountAvailabilitySummary>(`/tg-accounts/${accountDetail.account.id}/availability`));
+    } finally {
+      setAvailabilityLoading(false);
+    }
+  }
 
   async function loadSecurityDetail() {
     setSecurityLoading(true);
@@ -248,6 +273,20 @@ export function AccountDetailModal({
     } finally {
       setSecurityLoading(false);
     }
+  }
+
+  function openCodeReasonModal() {
+    setAccountDetailTab('TG 官方验证码');
+    setCodeReason('');
+    setCodeReasonOpen(true);
+  }
+
+  async function submitCodeReason() {
+    const reason = codeReason.trim();
+    if (!reason) return;
+    await onPollVerificationCodes(reason);
+    setCodeReasonOpen(false);
+    setCodeReason('');
   }
 
   async function refreshSecurityDetail() {
@@ -260,11 +299,24 @@ export function AccountDetailModal({
     }
   }
 
-  async function createSingleSecurityBatch(action: 'cleanup-devices' | 'set-2fa') {
+  function openSecurityReasonModal(action: 'cleanup-devices' | 'set-2fa') {
+    setSecurityReason('');
+    setSecurityReasonAction(action);
+  }
+
+  async function createSingleSecurityBatch() {
+    if (!securityReasonAction) return;
+    const reason = securityReason.trim();
+    if (!reason) return;
     setSecurityLoading(true);
     try {
-      await api(`/tg-accounts/${accountDetail.account.id}/security/${action}`, { method: 'POST' });
+      await api(`/tg-accounts/${accountDetail.account.id}/security/${securityReasonAction}`, {
+        method: 'POST',
+        body: JSON.stringify({ reason, confirm_text: '确认加固' }),
+      });
       setSecurityDetail(await api<AccountSecurityDetail>(`/tg-accounts/${accountDetail.account.id}/security`));
+      setSecurityReasonAction(null);
+      setSecurityReason('');
     } finally {
       setSecurityLoading(false);
     }
@@ -405,8 +457,12 @@ export function AccountDetailModal({
   const groupRestrictionTasks = accountDetail.verification_tasks.filter((task) => task.issue_category === 'group_restriction');
   const autoVerificationTasks = accountDetail.verification_tasks.filter((task) => task.issue_category !== 'group_restriction' && task.can_auto_resolve);
   const manualVerificationTasks = accountDetail.verification_tasks.filter((task) => task.issue_category !== 'group_restriction' && !task.can_auto_resolve && verificationActionable(task));
+  const availabilityUpdatedAt = availabilitySummary ? parseBeijingDate(availabilitySummary.updated_at) : null;
+  const availabilityStale = availabilityUpdatedAt ? Date.now() - availabilityUpdatedAt.getTime() > 15 * 60 * 1000 : false;
+  const availabilityTrendItems = Object.entries(availabilitySummary?.failure_trend ?? {});
 
   return (
+    <>
     <Modal className="tg-modal large" title={`${accountDetail.account.display_name} 账号详情`} open width={920} onCancel={onClose} footer={null} destroyOnHidden centered>
       <div className="modal-body">
       <div className="account-detail-summary">
@@ -431,10 +487,10 @@ export function AccountDetailModal({
             description={accountDetail.risk_diagnostics[0]?.detail || '当前没有受限、封禁、FloodWait、目标不可访问或待处理验证信号。'}
           />
           <Space wrap>
-            {canUpdateProfile && <Button type="primary" size="small" onClick={onOpenAccountProfileEdit}>编辑资料</Button>}
+            {canProfileBatchUpdate && <Button type="primary" size="small" onClick={onOpenAccountProfileEdit}>编辑资料</Button>}
             {canMovePool && <Button size="small" onClick={() => onSetModal({ type: 'accountMovePool' })}>移动分组</Button>}
             {canSyncAccount && <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:sync`)} onClick={onQueueAccountSyncNow}>同步</Button>}
-            {canViewCodes && <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={() => { setAccountDetailTab('TG 官方验证码'); void onPollVerificationCodes(); }}>提取验证码</Button>}
+            {canViewCodes && <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={openCodeReasonModal}>提取验证码</Button>}
           </Space>
         </Space>
       </Card>
@@ -485,7 +541,7 @@ export function AccountDetailModal({
         className="tabs-row"
         activeKey={accountDetailTab}
         onChange={setAccountDetailTab}
-        items={['资料', '账号安全', '账号状态记录', ...(canViewCodes ? ['TG 官方验证码'] : []), '验证待处理', '执行记录', ...(canClone ? ['克隆'] : [])].map((tabName) => ({ key: tabName, label: tabName }))}
+        items={['资料', '可用性', ...(canSecurityRead ? ['账号安全'] : []), '账号状态记录', ...(canViewCodes ? ['TG 官方验证码'] : []), '验证待处理', '执行记录', ...(canClone ? ['克隆'] : [])].map((tabName) => ({ key: tabName, label: tabName }))}
       />
 
       {accountDetailTab === '资料' && (
@@ -496,7 +552,7 @@ export function AccountDetailModal({
               <span>平台备注名用于后台识别，TG 昵称、简介和头像会通过同步任务更新到真实账号。</span>
             </div>
             <div className="row-actions">
-              {canUpdateProfile && <Button type="primary" size="small" onClick={onOpenAccountProfileEdit}>编辑资料</Button>}
+              {canProfileBatchUpdate && <Button type="primary" size="small" onClick={onOpenAccountProfileEdit}>编辑资料</Button>}
               <Button size="small" loading={isActionPending(`account:${accountDetail.account.id}:profile-sync`)} disabled={accountDetail.account.profile_sync_status !== '失败'} onClick={() => onOpenConfirm({
                 title: '重试资料同步',
                 message: `确认重新同步「${accountDetail.account.display_name}」的 TG 资料？`,
@@ -532,12 +588,67 @@ export function AccountDetailModal({
         </Card>
       )}
 
+      {accountDetailTab === '可用性' && (
+        <div className="flow-sections">
+          <Card
+            className="sub-panel compact-panel"
+            title="账号可用性"
+            extra={(
+              <Space wrap>
+                <Button size="small" loading={availabilityLoading} onClick={loadAvailabilitySummary}>刷新汇总</Button>
+                {canSyncAccount && <Button size="small" type="primary" loading={availabilityLoading} onClick={rebuildAvailabilitySummary}>重算可用性</Button>}
+              </Space>
+            )}
+          >
+            {availabilitySummary ? (
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                {availabilityStale && <Alert type="warning" showIcon message="汇总可能延迟" description="当前结果来自账号可用性读模型，调度执行前仍会再次实时校验账号状态和容量。" />}
+                <Descriptions
+                  className="detail-list"
+                  size="small"
+                  column={2}
+                  items={[
+                    { key: 'send', label: '可发送', children: <StatusBadge status={availabilitySummary.send_available ? '可用' : '不可用'} /> },
+                    { key: 'listen', label: '可监听', children: <StatusBadge status={availabilitySummary.listen_available ? '可用' : '不可用'} /> },
+                    { key: 'join', label: '可加入', children: <StatusBadge status={availabilitySummary.join_available ? '可用' : '不可用'} /> },
+                    { key: 'comment', label: '可评论', children: <StatusBadge status={availabilitySummary.comment_available ? '可用' : '不可用'} /> },
+                    { key: 'profile', label: '可改资料', children: <StatusBadge status={availabilitySummary.profile_available ? '可用' : '不可用'} /> },
+                    { key: 'codes', label: '可读验证码', children: <StatusBadge status={availabilitySummary.code_read_available ? '可用' : '不可用'} /> },
+                    { key: 'capacity', label: '剩余容量', children: availabilitySummary.remaining_capacity },
+                    { key: 'retry', label: '下次重试', children: formatTime(availabilitySummary.next_retry_at) },
+                    { key: 'reason', label: '不可用原因', children: availabilitySummary.unavailable_reason || '暂无' },
+                    { key: 'updated', label: '汇总更新时间', children: formatBeijingDateTime(availabilitySummary.updated_at) },
+                  ]}
+                />
+              </Space>
+            ) : (
+              <Empty description={availabilityLoading ? '正在读取账号可用性' : '暂无账号可用性汇总'} />
+            )}
+          </Card>
+          <Card className="sub-panel compact-panel" title="近 24 小时失败趋势">
+            {availabilityTrendItems.length ? (
+              <div className="mini-list">
+                {availabilityTrendItems.map(([status, count]) => (
+                  <Card key={status} size="small" className={statusAccent(status)}>
+                    <StatusBadge status={status} />
+                    <strong>{status}</strong>
+                    <span>{count} 条</span>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <Empty description="暂无失败趋势" />
+            )}
+          </Card>
+        </div>
+      )}
+
       {accountDetailTab === '账号安全' && (
         <div className="flow-sections">
           <Card
             className="sub-panel compact-panel"
             title="账号安全"
-            extra={<Button size="small" loading={securityLoading} onClick={refreshSecurityDetail}>刷新设备与 2FA</Button>}
+            extra={canSecurityRead ? <Button size="small" loading={securityLoading} onClick={refreshSecurityDetail}>刷新设备与 2FA</Button> : undefined}
           >
             {securityDetail ? (
               <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -555,9 +666,9 @@ export function AccountDetailModal({
                   ]}
                 />
                 <Space wrap>
-                  <Button type="primary" size="small" loading={securityLoading} disabled={!canSyncAccount} onClick={() => createSingleSecurityBatch('cleanup-devices')}>清理外部设备</Button>
-                  <Button size="small" loading={securityLoading} disabled={!canSyncAccount} onClick={() => createSingleSecurityBatch('set-2fa')}>设置二步验证</Button>
-                  <Button size="small" loading={securityLoading} disabled={!canUpdateProfile} onClick={() => onSetModal({ type: 'accountProfileEdit' })}>设置资料</Button>
+                  {canSecurityBatch && <Button type="primary" size="small" loading={securityLoading} onClick={() => openSecurityReasonModal('cleanup-devices')}>清理外部设备</Button>}
+                  {canSecurityBatch && <Button size="small" loading={securityLoading} onClick={() => openSecurityReasonModal('set-2fa')}>设置二步验证</Button>}
+                  {canProfileBatchUpdate && <Button size="small" loading={securityLoading} onClick={() => onSetModal({ type: 'accountProfileEdit' })}>设置资料</Button>}
                 </Space>
                 {securityDetail.snapshot.last_error && <Alert type="warning" showIcon message="最近安全处理提示" description={securityDetail.snapshot.last_error} />}
               </Space>
@@ -648,7 +759,7 @@ export function AccountDetailModal({
 
       {canViewCodes && accountDetailTab === 'TG 官方验证码' && (
         <div className="flow-sections">
-          <Card className="sub-panel compact-panel" title="TG 官方验证码" extra={canViewCodes ? <Button size="small" type="primary" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={() => onPollVerificationCodes()}>同步提取官方验证码</Button> : undefined}>
+          <Card className="sub-panel compact-panel" title="TG 官方验证码" extra={canViewCodes ? <Button size="small" type="primary" loading={isActionPending(`account:${accountDetail.account.id}:codes`)} onClick={openCodeReasonModal}>同步提取官方验证码</Button> : undefined}>
             {latestVisibleCode ? (
               <div className="verification-code-card">
                 <StatusBadge status={latestVisibleCode.code_preview ? '可查看' : latestVisibleCode.status} label={latestVisibleCode.source === 'login_flow' ? '登录验证码' : 'TG 官方验证码'} />
@@ -667,7 +778,7 @@ export function AccountDetailModal({
                   <span>{code.expires_at ? `有效到 ${formatBeijingDateTime(code.expires_at)}` : '等待新的验证码'}</span>
                 </Card>
               ))}
-              {!accountDetail.verification_codes.length && <p className="muted-line">没有读取到新的 TG 官方服务验证码时，保持自动轮询等待即可。</p>}
+              {!accountDetail.verification_codes.length && <p className="muted-line">填写原因后可同步提取 TG 官方服务验证码。</p>}
             </div>
           </Card>
         </div>
@@ -781,5 +892,54 @@ export function AccountDetailModal({
       )}
       </div>
     </Modal>
+    <Modal
+      title="提取 TG 官方验证码"
+      open={codeReasonOpen}
+      okText="同步提取"
+      cancelText="取消"
+      okButtonProps={{ disabled: !codeReason.trim() }}
+      confirmLoading={isActionPending(`account:${accountDetail.account.id}:codes`)}
+      onOk={() => void submitCodeReason()}
+      onCancel={() => setCodeReasonOpen(false)}
+      destroyOnHidden
+      centered
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Typography.Text>查看或同步 TG 官方验证码会写入审计记录。</Typography.Text>
+        <Input.TextArea
+          rows={3}
+          value={codeReason}
+          maxLength={255}
+          showCount
+          placeholder="填写查看原因"
+          onChange={(event) => setCodeReason(event.target.value)}
+        />
+      </Space>
+    </Modal>
+    <Modal
+      title={securityReasonAction === 'set-2fa' ? '设置二步验证' : '清理外部设备'}
+      open={Boolean(securityReasonAction)}
+      okText="确认加固"
+      cancelText="取消"
+      okButtonProps={{ danger: true, disabled: !securityReason.trim() }}
+      confirmLoading={securityLoading}
+      onOk={() => void createSingleSecurityBatch()}
+      onCancel={() => setSecurityReasonAction(null)}
+      destroyOnHidden
+      centered
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Typography.Text>账号安全加固会创建批次任务，并写入操作原因和审计记录。</Typography.Text>
+        <Input.TextArea
+          rows={3}
+          value={securityReason}
+          maxLength={255}
+          showCount
+          placeholder="填写操作原因"
+          onChange={(event) => setSecurityReason(event.target.value)}
+        />
+      </Space>
+    </Modal>
+    </>
   );
 }

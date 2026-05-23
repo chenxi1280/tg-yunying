@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.auth import CurrentUser, get_current_user, require_core_feature_access, resolve_tenant_id
 from app.database import get_session
 from app.common.http import not_found
-from app.api.response_permissions import account_detail_out_for_user, account_out_for_user
+from app.api.response_permissions import account_availability_out_for_user, account_detail_out_for_user, account_out_for_user
 from app.models import (
     AccountCloneItem, AccountClonePlan, AccountPool, TgAccount, VerificationTask,
 )
@@ -19,8 +19,8 @@ from app.schemas import (
     AvatarUploadOut, ContactOut, DirectMessageTaskCreate, GroupOut,
     LoginFlowOut, LoginStartRequest, LoginVerifyRequest, MessageTaskOut,
     ManualOperationRecordOut, ManualSendRequest, MoveAccountPoolRequest,
-    OperationTargetOut, ProfileSyncRecordOut, TgAccountCreate,
-    TgAccountProfileUpdate, VerificationCodeOut, VerificationTaskOut,
+    OperationTargetOut, ProfileSyncRecordOut, SensitiveActionReasonRequest, TgAccountCreate,
+    TgAccountProfileUpdate, VerificationCodeOut, VerificationTaskOut, AccountRuntimeSummaryOut,
 )
 from app.services import (
     account_clone_plan_detail, account_clone_plans, account_contacts,
@@ -36,6 +36,7 @@ from app.services import (
     update_account_profile, upload_account_avatar, verify_login,
     manual_send, sync_account_targets,
 )
+from app.services.runtime_summary import get_account_runtime_summary, list_account_runtime_summaries, rebuild_runtime_summaries
 
 router = APIRouter()
 
@@ -73,6 +74,44 @@ def post_account(
         return account_out_for_user(create_account(session, payload.model_copy(update={"tenant_id": tenant_id})), current_user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/tg-accounts/availability/summary", response_model=list[AccountRuntimeSummaryOut])
+def get_accounts_availability_summary(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    rows = list_account_runtime_summaries(session, resolve_tenant_id(current_user, tenant_id))
+    return [account_availability_out_for_user(row, current_user) for row in rows]
+
+
+@router.get("/api/tg-accounts/{account_id}/availability", response_model=AccountRuntimeSummaryOut)
+def get_account_availability(
+    account_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        account = session.get(TgAccount, account_id)
+        if not account:
+            raise ValueError("account not found")
+        return account_availability_out_for_user(get_account_runtime_summary(session, account.tenant_id, account_id), current_user)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/availability/rebuild")
+def post_accounts_availability_rebuild(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict[str, int]:
+    require_core_feature_access(current_user)
+    result = rebuild_runtime_summaries(session, resolve_tenant_id(current_user, tenant_id), scope="accounts")
+    session.commit()
+    return result
 
 
 @router.delete("/api/tg-accounts/{account_id}", response_model=AccountOut)
@@ -251,7 +290,7 @@ def get_account_detail(
             session,
             account_id,
             current_user.name,
-            include_verification_codes=current_user.has_permission("accounts.view_codes"),
+            include_verification_codes=False,
         )
         return account_detail_out_for_user(detail, current_user)
     except ValueError as exc:
@@ -376,12 +415,15 @@ def get_account_message_records(
 @router.get("/api/tg-accounts/{account_id}/verification-codes", response_model=list[VerificationCodeOut])
 def get_account_verification_codes(
     account_id: int,
+    reason: str,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    if not reason.strip():
+        raise HTTPException(status_code=400, detail="操作原因不能为空")
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return list_verification_codes(session, account_id, current_user.name)
+        return list_verification_codes(session, account_id, current_user.name, reason.strip())
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -389,13 +431,14 @@ def get_account_verification_codes(
 @router.post("/api/tg-accounts/{account_id}/verification-codes/poll", response_model=list[VerificationCodeOut])
 def post_account_verification_codes_poll(
     account_id: int,
+    payload: SensitiveActionReasonRequest,
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     require_core_feature_access(current_user)
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
-        return poll_account_verification_codes(session, account_id, current_user.name)
+        return poll_account_verification_codes(session, account_id, current_user.name, payload.reason)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 

@@ -38,7 +38,7 @@ const AdminManualView = React.lazy(() => import('./views/AdminManualView'));
 type ShellNavItem = [string, string, React.ReactNode];
 
 const SHELL_NAV_ITEMS: ShellNavItem[] = [
-  ['overview', '运营概览', <LayoutDashboard size={18} />],
+  ['overview', '运营中心', <LayoutDashboard size={18} />],
   ['accounts', 'TG账号管理', <Smartphone size={18} />],
   ['targetManagement', '运营目标', <Users size={18} />],
   ['messageSending', '消息发送', <MessageSquareText size={18} />],
@@ -64,6 +64,9 @@ function AppShell() {
   const { message } = AntdApp.useApp();
   const [messagePrefill, setMessagePrefill] = React.useState<MessageSendingPrefill | null>(null);
   const [taskCenterPrefill, setTaskCenterPrefill] = React.useState<TaskCenterPrefill | null>(null);
+  const [taskCenterFocus, setTaskCenterFocus] = React.useState<{ taskId: string; nonce: number } | null>(null);
+  const [targetFocus, setTargetFocus] = React.useState<{ targetId: number; nonce: number } | null>(null);
+  const [systemConfigTab, setSystemConfigTab] = React.useState('developer-apps');
   const ctx = useAppContext();
   const {
     token, currentUser,
@@ -156,6 +159,31 @@ function AppShell() {
   ) {
     setTaskCenterPrefill({ taskType, target, message: channelMessage, nonce: Date.now() });
     goToView('taskManagement');
+  }
+
+  function openTaskDetailFromOperation(taskId?: string) {
+    if (taskId) {
+      setTaskCenterFocus({ taskId, nonce: Date.now() });
+    }
+    goToView('taskManagement');
+  }
+
+  function openTargetDetailFromOperation(targetId?: number) {
+    if (targetId) {
+      setTargetFocus({ targetId, nonce: Date.now() });
+    }
+    goToView('targetManagement');
+  }
+
+  function openSystemConfig(tab: string = 'developer-apps') {
+    setSystemConfigTab(tab);
+    goToView('systemConfig');
+  }
+
+  async function openAccountDetailFromOperation(accountId: number) {
+    const account = accounts.find((item) => item.id === accountId);
+    await openAccountDetail((account ?? { id: accountId }) as Parameters<typeof openAccountDetail>[0]);
+    setAccountDetailTab('可用性');
   }
 
   async function openTaskFromGroup(groupId?: number) {
@@ -287,7 +315,17 @@ function AppShell() {
 
         <React.Suspense fallback={<Card className="panel">加载中...</Card>}>
           {/* ===== View routing ===== */}
-          {activeView === 'overview' && overview && <OverviewView overview={overview} />}
+          {activeView === 'overview' && overview && (
+            <OverviewView
+              overview={overview}
+              onOpenTargets={openTargetDetailFromOperation}
+              onOpenTaskDetail={openTaskDetailFromOperation}
+              onOpenAccounts={() => goToView('accounts')}
+              onOpenAccountDetail={openAccountDetailFromOperation}
+              onOpenRules={() => goToView('ruleCenter')}
+              onOpenRisk={() => goToView('riskControl')}
+            />
+          )}
           {activeView === 'systemConfig' && hasPermission(currentUser, 'system.view') && (
             <SystemConfigView
               developerApps={developerApps}
@@ -301,6 +339,9 @@ function AppShell() {
               adminUsers={adminUsers}
               currentUser={currentUser}
               currentUserRole={currentUser?.role}
+              runtime={runtime}
+              activeTab={systemConfigTab}
+              onTabChange={setSystemConfigTab}
               onCreateDeveloperApp={() => setModal({ type: 'developerAppCreate' })}
               onEditDeveloperApp={openDeveloperAppEdit}
               onCheckDeveloperApp={checkDeveloperApp}
@@ -358,9 +399,16 @@ function AppShell() {
           )}
           {activeView === 'usageReports' && <UsageReportsView usageLedgers={usageLedgers} usageSummary={usageSummary} currentUser={currentUser} />}
           {activeView === 'accounts' && (
-            <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => goToView('systemConfig')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onExtractCodes={openAccountVerificationCodes} onMovePool={openAccountMovePool} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onDeleteAccount={(account) => openConfirm({ title: '移除账号', message: `确认移除 ${account.display_name}？历史任务、群归档和审计记录会保留，手机号可以重新新增。`, confirmLabel: '移除账号', tone: 'danger', onConfirm: () => deleteAccount(account) })} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} isActionPending={isActionPending} canCreateAccount={hasPermission(currentUser, 'accounts.create')} canLoginAccount={hasPermission(currentUser, 'accounts.login')} canSyncAccount={hasPermission(currentUser, 'accounts.sync')} canViewCodes={hasPermission(currentUser, 'accounts.view_codes')} canMovePool={hasPermission(currentUser, 'accounts.pool_manage')} canDeleteAccount={hasPermission(currentUser, 'accounts.delete')} />
+            <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => openSystemConfig('developer-apps')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onExtractCodes={openAccountVerificationCodes} onMovePool={openAccountMovePool} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onDeleteAccount={(account) => openConfirm({ title: '移除账号', message: `确认移除 ${account.display_name}？历史任务、群归档和审计记录会保留，手机号可以重新新增。`, confirmLabel: '移除账号', tone: 'danger', onConfirm: () => deleteAccount(account) })} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} isActionPending={isActionPending} canCreateAccount={hasPermission(currentUser, 'accounts.create')} canLoginAccount={hasPermission(currentUser, 'accounts.login')} canSyncAccount={hasPermission(currentUser, 'accounts.sync')} canViewCodes={hasPermission(currentUser, 'accounts.codes.read')} canSecurityRead={hasPermission(currentUser, 'accounts.security.read')} canSecurityBatch={hasPermission(currentUser, 'accounts.security.batch')} canProfileBatchUpdate={hasPermission(currentUser, 'accounts.profile.batch_update')} canMovePool={hasPermission(currentUser, 'accounts.pool_manage')} canDeleteAccount={hasPermission(currentUser, 'accounts.delete')} />
           )}
-          {activeView === 'targetManagement' && <OperationTargetsView onSendToTarget={openSendFromTarget} onCreateTaskFromTarget={openTaskFromTarget} />}
+          {activeView === 'targetManagement' && (
+            <OperationTargetsView
+              onSendToTarget={openSendFromTarget}
+              onCreateTaskFromTarget={openTaskFromTarget}
+              focusTarget={targetFocus}
+              onFocusTargetConsumed={() => setTargetFocus(null)}
+            />
+          )}
           {activeView === 'messageSending' && (
             <MessageSendingView
               accounts={accounts}
@@ -378,12 +426,23 @@ function AppShell() {
           {activeView === 'groupManagement' && (
             <GroupManagementView groups={groups} selectedGroup={selectedGroup ?? undefined} selectedGroupId={selectedGroupId} groupDetail={groupDetail} setSelectedGroupId={setSelectedGroupId} archives={archives} archiveDetail={archiveDetail} onCreateTask={openTaskFromGroup} onCreateArchive={createArchive} onAuthorizeGroup={authorizeSelectedGroup} onEditGroupPolicy={() => setModal({ type: 'groupPolicyEdit' })} onOpenGroupDetail={openGroupDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onOpenConfirm={openConfirm} isActionPending={isActionPending} />
           )}
-          {activeView === 'taskManagement' && <TaskCenterView accounts={accounts} accountPools={accountPools} promptTemplates={promptTemplates} prefill={taskCenterPrefill} />}
+          {activeView === 'taskManagement' && (
+            <TaskCenterView
+              accounts={accounts}
+              accountPools={accountPools}
+              promptTemplates={promptTemplates}
+              prefill={taskCenterPrefill}
+              focusTask={taskCenterFocus}
+              onFocusTaskConsumed={() => setTaskCenterFocus(null)}
+              canManageTasks={hasPermission(currentUser, 'tasks.manage')}
+              canDispatchControl={hasPermission(currentUser, 'tasks.dispatch_control')}
+            />
+          )}
           {activeView === 'listenerCenter' && <ListenerCenterView />}
-          {activeView === 'ruleCenter' && <RulesCenterView onOpenSystemConfig={() => goToView('systemConfig')} />}
+          {activeView === 'ruleCenter' && <RulesCenterView onOpenSystemConfig={() => openSystemConfig('resources')} />}
           {activeView === 'riskControl' && <RiskControlView onOpenAccounts={() => goToView('accounts')} />}
           {activeView === 'archives' && <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onRefresh={refresh} isActionPending={isActionPending} />}
-          {activeView === 'audits' && <AuditsView audits={audits} filters={auditFilters} setFilters={setAuditFilters} onRefresh={refresh} />}
+          {activeView === 'audits' && <AuditsView audits={audits} filters={auditFilters} setFilters={setAuditFilters} onRefresh={refresh} canExport={hasPermission(currentUser, 'audit.export')} />}
           {activeView === 'adminManual' && <AdminManualView />}
         </React.Suspense>
 

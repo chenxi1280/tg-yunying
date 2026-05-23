@@ -8,7 +8,7 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import Action, ChannelMessage, ExecutionAttempt, MessageFingerprint, OperationTarget, ReviewQueue, RuntimeMetricSnapshot, RuleSet, RuleSetVersion, Task, TgAccount, TgGroup, WorkerHeartbeat
+from app.models import Action, ChannelMessage, ExecutionAttempt, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuntimeMetricSnapshot, RuleSet, RuleSetVersion, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
 from app.schemas.task_center import (
     ChannelCapacityCheckRequest,
     ChannelCommentConfig,
@@ -41,7 +41,7 @@ from .ai_generator import generate_channel_comments, generate_group_messages
 from .channel_membership import channel_membership_summary
 from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims
 from .executors import build_task_plan, reached_daily_action_limit
-from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _membership_accounts, _membership_phase, _message_groups, _relay_batches, _relay_recent_sources, _search_actions, _task_payload
+from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _membership_accounts, _membership_phase, _message_groups, _relay_batches, _relay_recent_sources, _task_payload
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
@@ -161,6 +161,26 @@ def _create_and_start_task(session: Session, tenant_id: int, task_type: str, pay
     return task
 
 
+def _task_payload_with_runtime_summary(session: Session, task: Task, summary: TaskRuntimeSummary | None) -> dict[str, Any]:
+    payload = _task_payload(session, task, include_detail_search=True)
+    if not summary:
+        return payload
+    stats = dict(payload.get("stats") or {})
+    stats.update(
+        {
+            "total_actions": summary.planned_count,
+            "success_count": summary.success_count,
+            "failure_count": summary.failed_count,
+            "pending_count": summary.pending_count,
+            "oldest_pending_at": summary.oldest_pending_at,
+            "latest_failure_type": summary.latest_failure_type,
+            "runtime_summary_updated_at": summary.updated_at,
+        }
+    )
+    payload["stats"] = stats
+    return payload
+
+
 def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
     stmt = select(Task).where(Task.tenant_id == tenant_id, Task.deleted_at.is_(None))
     if task_type:
@@ -168,7 +188,11 @@ def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, s
     if status:
         stmt = stmt.where(Task.status == status)
     tasks = list(session.scalars(stmt.order_by(Task.priority.asc(), Task.created_at.desc())))
-    return [_task_payload(session, task, actions=_search_actions(session, task), include_detail_search=False) for task in tasks]
+    summaries = {
+        summary.task_id: summary
+        for summary in session.scalars(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id))
+    }
+    return [_task_payload_with_runtime_summary(session, task, summaries.get(task.id)) for task in tasks]
 
 
 def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str, Any]:
@@ -176,10 +200,14 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
     actions = list_actions(session, tenant_id, task_id)
     business_actions = [action for action in actions if action.action_type not in {"ensure_channel_membership", "ensure_target_membership"}]
     stats = refresh_task_stats(session, task)
+    task_summary = session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id, TaskRuntimeSummary.task_id == task.id))
+    operation_plan_links = list(session.scalars(select(OperationPlanTaskLink).where(OperationPlanTaskLink.tenant_id == tenant_id, OperationPlanTaskLink.task_id == task.id)))
     return {
         "task": _task_payload(session, task, actions=business_actions),
-        "actions": business_actions,
+        "actions": _action_payloads_with_issue_rollup(session, tenant_id, business_actions),
         "stats": stats,
+        "task_runtime_summary": task_summary,
+        "operation_plan_links": operation_plan_links,
         "accounts": _detail_accounts(session, business_actions),
         "membership_phase": _membership_phase(task, actions),
         "membership_accounts": _membership_accounts(session, actions),
@@ -299,7 +327,7 @@ def resume_task(session: Session, tenant_id: int, task_id: str, actor: str) -> T
     return start_task(session, tenant_id, task_id, actor)
 
 
-def stop_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
+def stop_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> Task:
     task = _get_task(session, tenant_id, task_id)
     task.status = "stopped"
     task.next_run_at = None
@@ -308,13 +336,13 @@ def stop_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Tas
         action.result = {"success": False, "error_code": "task_stopped", "error_message": "任务已停止"}
         action.executed_at = _now()
     refresh_task_stats(session, task)
-    audit(session, tenant_id=tenant_id, actor=actor, action="停止任务中心任务", target_type="task", target_id=task.id)
+    audit(session, tenant_id=tenant_id, actor=actor, action="停止任务中心任务", target_type="task", target_id=task.id, detail=reason)
     session.commit()
     session.refresh(task)
     return task
 
 
-def delete_task(session: Session, tenant_id: int, task_id: str, actor: str) -> None:
+def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> None:
     task = _get_task(session, tenant_id, task_id)
     now = _now()
     for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status.in_(["pending", "executing"]))):
@@ -325,10 +353,10 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str) -> N
     task.next_run_at = None
     task.deleted_at = now
     task.deleted_by = actor
-    task.delete_reason = "用户删除"
+    task.delete_reason = reason
     task.updated_at = now
     refresh_task_stats(session, task)
-    audit(session, tenant_id=tenant_id, actor=actor, action="删除任务中心任务", target_type="task", target_id=task.id, detail=task.type)
+    audit(session, tenant_id=tenant_id, actor=actor, action="删除任务中心任务", target_type="task", target_id=task.id, detail=reason)
     session.commit()
 
 
@@ -352,7 +380,7 @@ def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetr
     return task
 
 
-def reset_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
+def reset_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> Task:
     task = _get_task(session, tenant_id, task_id)
     now = _now()
     stats = empty_stats()
@@ -367,7 +395,7 @@ def reset_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Ta
     task.last_error = ""
     task.updated_at = now
     refresh_task_stats(session, task)
-    audit(session, tenant_id=tenant_id, actor=actor, action="重置任务中心任务", target_type="task", target_id=task.id, detail=task.type)
+    audit(session, tenant_id=tenant_id, actor=actor, action="重置任务中心任务", target_type="task", target_id=task.id, detail=reason)
     session.commit()
     session.refresh(task)
     return task
@@ -380,6 +408,62 @@ def list_actions(session: Session, tenant_id: int, task_id: str | None = None, s
     if status:
         stmt = stmt.where(Action.status == status)
     return list(session.scalars(stmt.order_by(Action.scheduled_at.desc(), Action.created_at.desc()).limit(500)))
+
+
+def list_actions_page(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    *,
+    status: str | None = None,
+    action_type: str | None = None,
+    account_id: int | None = None,
+    page: int = 1,
+    page_size: int = 50,
+    sort_by: str = "scheduled_at",
+    sort_order: str = "desc",
+) -> tuple[list[dict[str, Any]], int]:
+    filters = [Action.tenant_id == tenant_id, Action.task_id == task_id]
+    if status:
+        filters.append(Action.status == status)
+    if action_type:
+        filters.append(Action.action_type == action_type)
+    if account_id is not None:
+        filters.append(Action.account_id == account_id)
+    total = session.scalar(select(func.count(Action.id)).where(*filters)) or 0
+    sort_columns = {
+        "scheduled_at": Action.scheduled_at,
+        "executed_at": Action.executed_at,
+        "created_at": Action.created_at,
+        "status": Action.status,
+        "action_type": Action.action_type,
+        "account_id": Action.account_id,
+    }
+    sort_column = sort_columns.get(sort_by, Action.scheduled_at)
+    order_expr = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+    actions = list(
+        session.scalars(
+            select(Action)
+            .where(*filters)
+            .order_by(order_expr, Action.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
+    return _action_payloads_with_issue_rollup(session, tenant_id, actions), int(total)
+
+
+def list_action_attempts(session: Session, tenant_id: int, task_id: str, action_id: str) -> list[ExecutionAttempt]:
+    action = session.get(Action, action_id)
+    if not action or action.tenant_id != tenant_id or action.task_id != task_id:
+        raise ValueError("action not found")
+    return list(
+        session.scalars(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.tenant_id == tenant_id, ExecutionAttempt.action_id == action_id)
+            .order_by(ExecutionAttempt.attempt_no.asc(), ExecutionAttempt.created_at.asc())
+        )
+    )
 
 
 def generate_group_ai_chat_preview(session: Session, tenant_id: int, payload: GroupAIChatTaskPreviewRequest) -> dict[str, list[str]]:
@@ -449,6 +533,8 @@ def _assert_precheck_allows_start(session: Session, tenant_id: int, task_type: s
     result = precheck_task_creation(session, tenant_id, TaskPrecheckRequest(task_type=task_type, payload=payload))
     if result.get("decision") == "block":
         reasons = result.get("blockers") or result.get("risk_hits") or ["任务预检阻塞"]
+        if task_type in {"channel_view", "channel_like", "channel_comment"} and set(str(item) for item in reasons) <= {"没有匹配账号", "no_available_account"}:
+            return
         raise ValueError("；".join(str(item) for item in reasons if item))
 
 
@@ -921,6 +1007,73 @@ def _invalidate_task_listener_cache(task: Task) -> None:
                 invalidate_listener_collect("group", int(item["group_id"]))
 
 
+def _action_payloads_with_issue_rollup(session: Session, tenant_id: int, actions: list[Action]) -> list[dict[str, Any]]:
+    if not actions:
+        return []
+    action_ids = [action.id for action in actions]
+    task_ids = {action.task_id for action in actions}
+    issues = list(
+        session.scalars(
+            select(OperationIssue).where(
+                OperationIssue.tenant_id == tenant_id,
+                OperationIssue.status.in_(["open", "acknowledged"]),
+                or_(OperationIssue.representative_action_id.in_(action_ids), OperationIssue.source_task_id.in_(task_ids)),
+            )
+        )
+    )
+    direct_issue = {issue.representative_action_id: issue for issue in issues if issue.representative_action_id}
+    issue_by_task_failure: dict[tuple[str, str], OperationIssue] = {}
+    for issue in issues:
+        if issue.source_task_id and issue.failure_type:
+            issue_by_task_failure.setdefault((issue.source_task_id, issue.failure_type), issue)
+    return [_action_payload(action, direct_issue.get(action.id) or issue_by_task_failure.get((action.task_id, _action_failure_type(action)))) for action in actions]
+
+
+class _ActionPayload(dict):
+    def __getattr__(self, key: str) -> Any:
+        try:
+            return self[key]
+        except KeyError as exc:
+            raise AttributeError(key) from exc
+
+
+def _action_payload(action: Action, issue: OperationIssue | None = None) -> dict[str, Any]:
+    result = action.result or {}
+    failure_type = _action_failure_type(action)
+    return _ActionPayload({
+        "id": action.id,
+        "tenant_id": action.tenant_id,
+        "task_id": action.task_id,
+        "task_type": action.task_type,
+        "action_type": action.action_type,
+        "account_id": action.account_id,
+        "scheduled_at": action.scheduled_at,
+        "executed_at": action.executed_at,
+        "status": action.status,
+        "payload": action.payload or {},
+        "result": result,
+        "retry_count": action.retry_count,
+        "failure_type": failure_type,
+        "failure_reason": _action_failure_reason(action),
+        "raw_error": str(result.get("raw_error") or result.get("raw_response") or result.get("exception") or ""),
+        "trace_id": str(result.get("trace_id") or result.get("request_id") or ""),
+        "operation_issue_id": issue.id if issue else "",
+        "operation_issue_status": issue.status if issue else "",
+        "operation_issue_rolled_up": bool(issue),
+        "created_at": action.created_at,
+    })
+
+
+def _action_failure_type(action: Action) -> str:
+    result = action.result or {}
+    return str(result.get("error_code") or result.get("failure_type") or "")
+
+
+def _action_failure_reason(action: Action) -> str:
+    result = action.result or {}
+    return str(result.get("error_message") or result.get("failure_reason") or result.get("detail") or "")
+
+
 def _naive_datetime(value):
     if value and getattr(value, "tzinfo", None):
         return value.replace(tzinfo=None)
@@ -973,6 +1126,8 @@ __all__ = [
     "generate_channel_comment_preview",
     "generate_group_ai_chat_preview",
     "get_task_detail",
+    "list_action_attempts",
+    "list_actions_page",
     "list_actions",
     "list_reviews",
     "list_tasks",

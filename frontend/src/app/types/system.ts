@@ -3,6 +3,16 @@ export type Overview = {
   rates: Record<string, number>;
   queue: Record<string, number>;
   risks: Array<{ level: string; title: string; detail: string }>;
+  operation_center?: {
+    tenant_id: number;
+    open_issue_count: number;
+    affected_target_count: number;
+    running_task_count: number;
+    failed_action_count: number;
+    affected_account_count: number;
+    latest_updated_at: string | null;
+    stale: boolean;
+  } | null;
   activity_24h?: Array<{
     hour: string;
     sent_messages: number;

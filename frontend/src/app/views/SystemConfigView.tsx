@@ -1,4 +1,4 @@
-import { Button, Space, Table, Tabs, Tag } from 'antd';
+import { Alert, Button, Card, Descriptions, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type {
   AdminUser,
   AiProvider,
@@ -11,6 +11,7 @@ import type {
   Tenant,
   TenantAiSetting,
   CurrentUser,
+  RuntimeConfig,
 } from '../types';
 import AISettingsView from './AISettingsView';
 import DeveloperAppsView from './DeveloperAppsView';
@@ -28,6 +29,9 @@ interface Props {
   adminUsers: AdminUser[];
   currentUser: CurrentUser | null;
   currentUserRole: string | undefined;
+  runtime: RuntimeConfig | null;
+  activeTab?: string;
+  onTabChange?: (key: string) => void;
   onCreateDeveloperApp: () => void;
   onEditDeveloperApp: (app: DeveloperApp) => void;
   onCheckDeveloperApp: (app: DeveloperApp) => void;
@@ -63,6 +67,9 @@ export default function SystemConfigView({
   adminUsers,
   currentUser,
   currentUserRole,
+  runtime,
+  activeTab,
+  onTabChange,
   onCreateDeveloperApp,
   onEditDeveloperApp,
   onCheckDeveloperApp,
@@ -88,7 +95,9 @@ export default function SystemConfigView({
   return (
     <Tabs
       className="config-tabs"
+      activeKey={activeTab}
       defaultActiveKey="developer-apps"
+      onChange={onTabChange}
       items={[
         {
           key: 'developer-apps',
@@ -198,7 +207,7 @@ export default function SystemConfigView({
         },
         {
           key: 'admin-users',
-          label: '账号与权限',
+          label: '后台账号权限',
           children: (
             <Table
               rowKey="id"
@@ -217,6 +226,35 @@ export default function SystemConfigView({
                 { title: '操作', render: (_, user: AdminUser) => <Button size="small" onClick={() => onEditAdminUser(user)}>编辑</Button> },
               ]}
             />
+          ),
+        },
+        {
+          key: 'runtime',
+          label: '运行配置',
+          children: (
+            <Card className="panel" title="运行配置" extra={<Typography.Text type="secondary">只读底座状态</Typography.Text>}>
+              {!runtime && <Alert type="warning" showIcon message="运行配置暂未加载" />}
+              {runtime && (
+                <Descriptions
+                  bordered
+                  size="small"
+                  column={3}
+                  items={[
+                    { key: 'env', label: '环境', children: runtime.app_env },
+                    { key: 'queue', label: '任务队列', children: runtime.queue_backend },
+                    { key: 'gateway', label: 'TG 网关', children: runtime.tg_gateway_mode },
+                    { key: 'telethon', label: 'Telethon', children: runtime.telethon_configured ? '已配置' : '待配置' },
+                    { key: 'fallback', label: '同步调度回退', children: runtime.sync_dispatch_fallback ? '开启' : '关闭' },
+                    { key: 'code_ttl', label: '验证码 TTL', children: `${runtime.code_ttl_seconds} 秒` },
+                    { key: 'developer_apps', label: '开发者应用', children: `${runtime.developer_app_healthy_count}/${runtime.developer_app_count} 正常` },
+                    { key: 'ai', label: 'AI 服务', children: `${runtime.healthy_ai_provider_count}/${runtime.ai_provider_count} 正常` },
+                    { key: 'mock_ai', label: 'AI 回退', children: runtime.mock_ai_fallback_enabled ? '开启' : '关闭' },
+                    { key: 'avatar_size', label: '头像上限', children: `${runtime.avatar_max_bytes} bytes` },
+                    { key: 'avatar_types', label: '头像类型', span: 2, children: runtime.avatar_allowed_types.join('、') || '-' },
+                  ]}
+                />
+              )}
+            </Card>
           ),
         },
       ]}

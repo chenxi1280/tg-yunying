@@ -1,6 +1,6 @@
 import React from 'react';
 import { Database } from 'lucide-react';
-import { Button, Card, Descriptions, Input, Select, Space, Table, Typography } from 'antd';
+import { Button, Card, Descriptions, Input, Modal, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { AuditFilters, AuditLog } from '../types';
 import { DetailModal, StatusBadge, useAntdTableControls } from '../components/shared';
@@ -12,6 +12,7 @@ interface Props {
   filters: AuditFilters;
   setFilters: React.Dispatch<React.SetStateAction<AuditFilters>>;
   onRefresh: () => Promise<void>;
+  canExport?: boolean;
 }
 
 const TARGET_TYPE_OPTIONS = [
@@ -24,9 +25,11 @@ const TARGET_TYPE_OPTIONS = [
   { value: 'audit', label: '审计' },
 ];
 
-export default function AuditsView({ audits, filters, setFilters, onRefresh }: Props) {
+export default function AuditsView({ audits, filters, setFilters, onRefresh, canExport = true }: Props) {
   const [selectedAudit, setSelectedAudit] = React.useState<AuditLog | null>(null);
   const [exporting, setExporting] = React.useState(false);
+  const [exportReasonOpen, setExportReasonOpen] = React.useState(false);
+  const [exportReason, setExportReason] = React.useState('');
   const auditTable = useAntdTableControls<AuditLog>({
     rows: audits,
     placeholder: '搜索动作 / 操作人 / 对象 / 详情',
@@ -91,13 +94,14 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh }: P
     },
   ];
 
-  async function exportCsv() {
+  async function exportCsv(reason: string) {
     setExporting(true);
     try {
       const params = new URLSearchParams();
       Object.entries(filters).forEach(([key, value]) => {
         if (value) params.set(key, value);
       });
+      params.set('reason', reason.trim());
       const token = localStorage.getItem('tg_ops_token');
       const response = await fetch(`${API_BASE}/audit-logs/export?${params.toString()}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
@@ -110,6 +114,8 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh }: P
       link.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
       link.click();
       window.URL.revokeObjectURL(url);
+      setExportReasonOpen(false);
+      setExportReason('');
     } finally {
       setExporting(false);
     }
@@ -132,7 +138,7 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh }: P
           <Input type="datetime-local" value={filters.start_at} onChange={(event) => setFilters((current) => ({ ...current, start_at: event.target.value }))} style={{ width: 190 }} />
           <Input type="datetime-local" value={filters.end_at} onChange={(event) => setFilters((current) => ({ ...current, end_at: event.target.value }))} style={{ width: 190 }} />
           <Button type="primary" onClick={onRefresh}>应用筛选</Button>
-          <Button loading={exporting} onClick={exportCsv}>导出 CSV</Button>
+          {canExport && <Button loading={exporting} onClick={() => setExportReasonOpen(true)}>导出 CSV</Button>}
           <Button onClick={() => setFilters({ actor: '', action: '', target_type: '', target_id: '', keyword: '', account_id: '', operation_target_id: '', task_id: '', status: '', start_at: '', end_at: '' })}>清空</Button>
         </Space>
         <Table<AuditLog>
@@ -165,6 +171,30 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh }: P
           />
         )}
       </DetailModal>
+      <Modal
+        title="导出审计记录"
+        open={exportReasonOpen}
+        okText="导出 CSV"
+        cancelText="取消"
+        okButtonProps={{ disabled: !exportReason.trim() }}
+        confirmLoading={exporting}
+        onOk={() => void exportCsv(exportReason)}
+        onCancel={() => setExportReasonOpen(false)}
+        destroyOnHidden
+        centered
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Text>导出审计记录会额外写入一条导出审计。</Typography.Text>
+          <Input.TextArea
+            rows={3}
+            value={exportReason}
+            maxLength={255}
+            showCount
+            placeholder="填写导出原因"
+            onChange={(event) => setExportReason(event.target.value)}
+          />
+        </Space>
+      </Modal>
     </>
   );
 }

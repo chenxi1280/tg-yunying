@@ -57,6 +57,23 @@ export type Account = {
   proxy_alert_status: string | null;
 };
 
+export type AccountAvailabilitySummary = {
+  id: string;
+  tenant_id: number;
+  account_id: number;
+  send_available: boolean;
+  listen_available: boolean;
+  join_available: boolean;
+  comment_available: boolean;
+  profile_available: boolean;
+  code_read_available: boolean;
+  remaining_capacity: number;
+  unavailable_reason: string;
+  next_retry_at: string | null;
+  failure_trend: Record<string, number>;
+  updated_at: string;
+};
+
 export type AccountPool = {
   id: number;
   tenant_id: number;

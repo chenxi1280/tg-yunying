@@ -12,13 +12,16 @@ const verificationTargetLabel = (task: { target_display?: string | null; target_
 );
 
 const adminPermissionGroups = [
-  { menu: ['overview.view', '运营概览'], buttons: [] },
+  { menu: ['overview.view', '运营中心'], buttons: [['operation_plans.manage', '运营方案管理'], ['operation_issues.manage', '运营异常处理']] },
   { menu: ['accounts.view', 'TG账号管理'], buttons: [
     ['accounts.create', '新增账号'],
     ['accounts.login', '账号登录'],
     ['accounts.sync', '账号同步'],
-    ['accounts.view_codes', '查看验证码'],
-    ['accounts.update_profile', '编辑资料'],
+    ['accounts.codes.read', '查看验证码'],
+    ['accounts.security.read', '账号安全查看'],
+    ['accounts.security.batch', '账号安全批次'],
+    ['accounts.profile.batch_update', '批量资料初始化'],
+    ['accounts.sensitive.read', '敏感账号状态'],
     ['accounts.delete', '删除账号'],
     ['accounts.pool_manage', '账号池管理'],
     ['accounts.proxy_bind', '代理绑定'],
@@ -27,7 +30,7 @@ const adminPermissionGroups = [
   ] },
   { menu: ['targets.view', '运营目标'], buttons: [['targets.manage', '目标管理']] },
   { menu: ['message_sending.view', '消息发送'], buttons: [['message_sending.create', '创建发送']] },
-  { menu: ['tasks.view', '任务中心'], buttons: [['tasks.manage', '任务管理']] },
+  { menu: ['tasks.view', '任务中心'], buttons: [['tasks.manage', '任务管理'], ['tasks.dispatch_control', '调度控制']] },
   { menu: ['listeners.view', '监听中心'], buttons: [['listeners.manage', '监听管理']] },
   { menu: ['rules.view', '规则中心'], buttons: [['rules.publish', '规则发布']] },
   { menu: ['risk.view', '风控中心'], buttons: [['risk.manage', '风控管理']] },
@@ -41,7 +44,7 @@ const adminPermissionGroups = [
     ['permissions.view', '账号权限'],
     ['permissions.manage', '权限管理'],
   ] },
-  { menu: ['audits.view', '审计记录'], buttons: [['audits.view_sensitive', '敏感审计']] },
+  { menu: ['audits.view', '审计记录'], buttons: [['audits.view_sensitive', '敏感审计'], ['audit.export', '审计导出']] },
 ];
 
 const flattenPermissions = (groups: typeof adminPermissionGroups) => groups.flatMap((group) => [group.menu, ...group.buttons].map(([value]) => value));
@@ -152,7 +155,7 @@ export function AppModals() {
             <label>账号类型<Select value={adminUserForm.role} onChange={(value) => setAdminUserForm((current) => ({ ...current, role: value }))} options={['后台用户', '系统管理员'].map((value) => ({ value, label: value }))} /></label>
             <label>角色模板<Select value={adminUserForm.role_template} onChange={(value) => {
               const templatePermissions: Record<string, string[]> = {
-                '运营管理员': ['overview.view', 'accounts.view', 'accounts.sync', 'targets.view', 'targets.manage', 'message_sending.view', 'message_sending.create', 'tasks.view', 'tasks.manage', 'listeners.view', 'listeners.manage', 'rules.view', 'rules.publish', 'risk.view', 'risk.manage', 'archives.view', 'archives.manage', 'usage.view', 'manual.view', 'audits.view'],
+                '运营管理员': ['overview.view', 'operation_plans.manage', 'operation_issues.manage', 'accounts.view', 'accounts.sync', 'accounts.codes.read', 'accounts.security.read', 'accounts.security.batch', 'accounts.profile.batch_update', 'targets.view', 'targets.manage', 'message_sending.view', 'message_sending.create', 'tasks.view', 'tasks.manage', 'listeners.view', 'listeners.manage', 'rules.view', 'rules.publish', 'risk.view', 'risk.manage', 'archives.view', 'archives.manage', 'usage.view', 'manual.view', 'audits.view', 'audit.export'],
                 '账号添加专员': ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'],
                 '只读观察员': ['overview.view', 'usage.view', 'manual.view', 'audits.view'],
               };
@@ -319,7 +322,7 @@ export function AppModals() {
       )}
 
       {modal?.type === 'accountPoolDetail' && accountPoolDetail && (
-        <AccountPoolDetailModal accountPoolDetail={accountPoolDetail} poolDirectAccountId={poolDirectAccountId} setPoolDirectAccountId={setPoolDirectAccountId} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} onClose={closeModal} onOpenAccountCreate={openAccountCreate} onOpenAccountDetail={openAccountDetail} onRefreshAccountPoolDetail={refreshAccountPoolDetail} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} accountName={accountName} isActionPending={isActionPending} canCreateAccount={hasPermission(currentUser, 'accounts.create')} canManualSend={hasPermission(currentUser, 'accounts.manual_send')} />
+        <AccountPoolDetailModal accountPoolDetail={accountPoolDetail} poolDirectAccountId={poolDirectAccountId} setPoolDirectAccountId={setPoolDirectAccountId} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} onClose={closeModal} onOpenAccountCreate={openAccountCreate} onOpenAccountDetail={openAccountDetail} onRefreshAccountPoolDetail={refreshAccountPoolDetail} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} accountName={accountName} isActionPending={isActionPending} canCreateAccount={hasPermission(currentUser, 'accounts.create')} canManualSend={hasPermission(currentUser, 'accounts.manual_send')} canSecurityRead={hasPermission(currentUser, 'accounts.security.read')} />
       )}
 
       {modal?.type === 'accountPoolCreate' && (
@@ -557,7 +560,7 @@ export function AppModals() {
       )}
 
       {modal?.type === 'accountDetail' && accountDetail && (
-        <AccountDetailModal accountDetail={accountDetail} accountDetailTab={accountDetailTab} setAccountDetailTab={setAccountDetailTab} runtime={runtime} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} accountContacts={accountContacts} accounts={accounts} avatarUrl={avatarUrl} onClose={closeModal} onOpenAccountProfileEdit={openAccountProfileEdit} onQueueAccountSyncNow={queueAccountSyncNow} onRefreshAccountDetail={ctx.refreshAccountDetail} onPollVerificationCodes={pollVerificationCodes} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onConfirmClonePlan={confirmClonePlan} onRetryCloneItem={ctx.retryCloneItem} onRetryAccountProfileSync={retryAccountProfileSync} onDismissVerificationTask={dismissVerificationTask} onConfirmVerificationTask={confirmVerificationTask} onResolveGroupRestrictionTask={resolveGroupRestrictionTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} onSetCloneForm={setCloneForm} accountName={accountName} isActionPending={isActionPending} canUpdateProfile={hasPermission(currentUser, 'accounts.update_profile')} canSyncAccount={hasPermission(currentUser, 'accounts.sync')} canViewCodes={hasPermission(currentUser, 'accounts.view_codes')} canMovePool={hasPermission(currentUser, 'accounts.pool_manage')} canClone={hasPermission(currentUser, 'accounts.clone')} />
+        <AccountDetailModal accountDetail={accountDetail} accountDetailTab={accountDetailTab} setAccountDetailTab={setAccountDetailTab} runtime={runtime} directMessageForm={directMessageForm} setDirectMessageForm={setDirectMessageForm} selectedDirectContact={selectedDirectContact} accountContacts={accountContacts} accounts={accounts} avatarUrl={avatarUrl} onClose={closeModal} onOpenAccountProfileEdit={openAccountProfileEdit} onQueueAccountSyncNow={queueAccountSyncNow} onRefreshAccountDetail={ctx.refreshAccountDetail} onPollVerificationCodes={pollVerificationCodes} onStartDirectMessageToContact={startDirectMessageToContact} onCreateDirectMessageTask={createDirectMessageTask} onConfirmClonePlan={confirmClonePlan} onRetryCloneItem={ctx.retryCloneItem} onRetryAccountProfileSync={retryAccountProfileSync} onDismissVerificationTask={dismissVerificationTask} onConfirmVerificationTask={confirmVerificationTask} onResolveGroupRestrictionTask={resolveGroupRestrictionTask} onOpenConfirm={openConfirm} onSetReturnAfterVerification={setReturnAfterVerification} onSetModal={ctx.setModal} onSetCloneForm={setCloneForm} accountName={accountName} isActionPending={isActionPending} canSyncAccount={hasPermission(currentUser, 'accounts.sync')} canViewCodes={hasPermission(currentUser, 'accounts.codes.read')} canSecurityRead={hasPermission(currentUser, 'accounts.security.read')} canSecurityBatch={hasPermission(currentUser, 'accounts.security.batch')} canProfileBatchUpdate={hasPermission(currentUser, 'accounts.profile.batch_update')} canMovePool={hasPermission(currentUser, 'accounts.pool_manage')} canClone={hasPermission(currentUser, 'accounts.clone')} />
       )}
 
     </>

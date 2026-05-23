@@ -533,7 +533,7 @@ def process_account_sync_record(session: Session, record_id: int) -> TgAccountSy
         elif record.sync_type == "contacts":
             result_count = len(sync_account_contacts(session, account.id, "tg-worker"))
         elif record.sync_type == "codes":
-            result_count = len(poll_account_verification_codes(session, account.id, "tg-worker"))
+            result_count = len(poll_account_verification_codes(session, account.id, "tg-worker", "系统同步账号数据"))
         elif record.sync_type == "health":
             health_check_account(session, account.id)
             result_count = 1
@@ -1136,7 +1136,7 @@ def sync_account_contacts(session: Session, account_id: int, actor: str) -> list
     return account_contacts(session, account_id)
 
 
-def list_verification_codes(session: Session, account_id: int, actor: str = "普通用户") -> list[TgVerificationCode]:
+def list_verification_codes(session: Session, account_id: int, actor: str = "普通用户", reason: str = "") -> list[TgVerificationCode]:
     account = session.get(TgAccount, account_id)
     if not account:
         raise ValueError("account not found")
@@ -1155,18 +1155,18 @@ def list_verification_codes(session: Session, account_id: int, actor: str = "普
         elif code.code_preview and not code.viewed_at:
             code.viewed_at = _now()
             code.viewed_by = actor
-    audit(session, tenant_id=account.tenant_id, actor=actor, action="查看TG验证码", target_type="tg_account", target_id=str(account.id), detail=f"codes={len(codes)}")
+    audit(session, tenant_id=account.tenant_id, actor=actor, action="查看TG验证码", target_type="tg_account", target_id=str(account.id), detail=f"reason={reason}; codes={len(codes)}")
     session.commit()
     return codes
 
 
-def poll_account_verification_codes(session: Session, account_id: int, actor: str) -> list[TgVerificationCode]:
+def poll_account_verification_codes(session: Session, account_id: int, actor: str, reason: str) -> list[TgVerificationCode]:
     account = _ensure_account_available(session.get(TgAccount, account_id))
     try:
         credentials = credentials_for_account(session, account)
         snapshots = gateway.poll_verification_codes(account.id, account.session_ciphertext, credentials)
     except Exception as exc:  # noqa: BLE001 - keep mock-mode/local debugging friendly.
-        audit(session, tenant_id=account.tenant_id, actor=actor, action="同步TG官方验证码失败", target_type="tg_account", target_id=str(account.id), detail=str(exc))
+        audit(session, tenant_id=account.tenant_id, actor=actor, action="同步TG官方验证码失败", target_type="tg_account", target_id=str(account.id), detail=f"reason={reason}; error={exc}")
         session.commit()
         if get_settings().tg_gateway_mode != "mock":
             raise ValueError(f"同步TG官方验证码失败：{exc}") from exc
@@ -1203,9 +1203,9 @@ def poll_account_verification_codes(session: Session, account_id: int, actor: st
                 raw_hint=snapshot.raw_hint,
             )
         )
-    audit(session, tenant_id=account.tenant_id, actor=actor, action="同步TG官方验证码", target_type="tg_account", target_id=str(account.id), detail=f"codes={len(snapshots)}")
+    audit(session, tenant_id=account.tenant_id, actor=actor, action="同步TG官方验证码", target_type="tg_account", target_id=str(account.id), detail=f"reason={reason}; codes={len(snapshots)}")
     session.commit()
-    return list_verification_codes(session, account_id, actor)
+    return list_verification_codes(session, account_id, actor, reason)
 
 
 def account_detail(session: Session, account_id: int, actor: str, *, include_verification_codes: bool = True) -> dict:

@@ -350,6 +350,73 @@
   min-height: 270px;
 }
 
+.operation-workbench.ant-card > .ant-card-body {
+  display: grid;
+  gap: 16px;
+}
+
+.operation-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.operation-kpi-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--surface-strong);
+  min-width: 0;
+}
+
+.operation-kpi-item span,
+.operation-kpi-item small {
+  display: block;
+  color: var(--muted);
+}
+
+.operation-kpi-item strong {
+  display: block;
+  margin: 6px 0 2px;
+  color: var(--text);
+  font-size: 24px;
+  line-height: 1.15;
+}
+
+.operation-updated {
+  display: block;
+}
+
+.operation-target-table {
+  min-width: 0;
+}
+
+.operation-issue-section {
+  display: grid;
+  gap: 10px;
+}
+
+.section-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.section-title-row h4.ant-typography {
+  margin: 0;
+}
+
+.operation-issue-drawer {
+  display: grid;
+  gap: 16px;
+}
+
+.operation-drawer-actions {
+  padding-top: 2px;
+}
+
 .chart-legend {
   display: inline-flex;
   align-items: center;
@@ -693,6 +760,10 @@
   .overview-chart-grid {
     grid-template-columns: 1fr;
   }
+
+  .operation-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 680px) {
@@ -715,6 +786,10 @@
   }
 
   .stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .operation-kpi-grid {
     grid-template-columns: 1fr;
   }
 

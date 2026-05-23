@@ -20,7 +20,7 @@ from app.services.developer_apps import credentials_for_account
 from app.services.ai_config import get_scheduling_setting
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
-from .channel_membership import mark_channel_membership_joined
+from .channel_membership import account_satisfies_authorized_target, mark_channel_membership_joined
 from .payloads import EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
@@ -459,6 +459,8 @@ def _ensure_channel_action_membership(session: Session, action: Action, account:
         )
         return False
     channel = session.get(OperationTarget, int(channel_target_id))
+    if channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel" and account_satisfies_authorized_target(channel, account):
+        return True
     group = (
         session.scalar(select(TgGroup).where(TgGroup.tenant_id == action.tenant_id, TgGroup.tg_peer_id == channel.tg_peer_id))
         if channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel"
@@ -736,14 +738,17 @@ def _apply_default_failure_policy(action: Action, failure_type: str) -> None:
         elif policy == "wait_and_retry":
             retry_after = _retry_after_seconds(action.result.get("error_message") or "")
             if retry_after > 0:
+                next_retry_at = _now() + timedelta(seconds=retry_after)
                 action.status = "pending"
-                action.scheduled_at = _now() + timedelta(seconds=retry_after)
+                action.scheduled_at = next_retry_at
                 _clear_action_lease(action)
                 action.result = {
                     **(action.result or {}),
                     "auto_check": "延后",
                     "validation_stage": "failure_policy",
                     "retry_after_seconds": retry_after,
+                    "next_retry_at": next_retry_at.isoformat(),
+                    "rate_limit_source": "telegram",
                 }
     elif failure_type == FailureType.CONTENT_REJECTED.value:
         policy = setting.default_on_content_rejected

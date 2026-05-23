@@ -268,7 +268,7 @@ export interface AppState {
   openGroupDetail: (group: Group) => Promise<void>;
   avatarUrl: (value: string) => string;
   openAccountProfileEdit: () => void;
-  pollVerificationCodes: (silent?: boolean) => Promise<void>;
+  pollVerificationCodes: (reason: string) => Promise<void>;
   createDirectMessageTask: () => Promise<void>;
   createMessageSendTask: (payload: MessageSendTaskCreate | MessageSendBatchCreate) => Promise<MessageTask[]>;
   saveAccountProfile: () => Promise<void>;

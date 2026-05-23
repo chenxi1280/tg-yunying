@@ -733,7 +733,7 @@ export function AppProvider({ children }: AppProviderProps) {
     openGroupDetail: (group) => runWithLoading(`group:${group.id}:detail`, '读取群详情', () => openGroupDetail(group)),
     avatarUrl,
     openAccountProfileEdit,
-    pollVerificationCodes: (silent = false) => silent ? pollVerificationCodes(true) : runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:codes`, '同步验证码', () => pollVerificationCodes(false)),
+    pollVerificationCodes: (reason) => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:codes`, '同步验证码', () => pollVerificationCodes(reason)),
     createDirectMessageTask: () => runWithLoading('direct-message:create', '创建私发任务', createDirectMessageTask),
     createMessageSendTask: (payload) => runWithLoading('message-send:create', '创建消息发送任务', () => createMessageSendTask(payload)),
     saveAccountProfile: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:profile:save`, '保存账号资料', saveAccountProfile),

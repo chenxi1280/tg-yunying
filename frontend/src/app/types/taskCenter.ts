@@ -37,7 +37,48 @@ export type TaskCenterAction = {
   payload: Record<string, any>;
   result: Record<string, any>;
   retry_count: number;
+  failure_type: string;
+  failure_reason: string;
+  raw_error: string;
+  trace_id: string;
+  operation_issue_id: string;
+  operation_issue_status: string;
+  operation_issue_rolled_up: boolean;
   created_at: string;
+};
+
+export type TaskExecutionAttempt = {
+  id: string;
+  tenant_id: number;
+  action_id: string;
+  worker_id: string;
+  account_id: number | null;
+  attempt_no: number;
+  status: string;
+  before_call_at: string | null;
+  gateway_call_started_at: string | null;
+  after_call_at: string | null;
+  remote_message_id: string;
+  failure_type: string;
+  failure_detail: string;
+  result_snapshot: Record<string, any>;
+  created_at: string;
+};
+
+export type TaskRuntimeSummary = {
+  id: string;
+  tenant_id: number;
+  task_id: string;
+  task_status: string;
+  target_id: number | null;
+  planned_count: number;
+  success_count: number;
+  failed_count: number;
+  pending_count: number;
+  oldest_pending_at: string | null;
+  latest_failure_type: string;
+  summary: Record<string, any>;
+  updated_at: string;
 };
 
 export type RuleSetVersion = {
@@ -92,6 +133,8 @@ export type TaskCenterDetail = {
   task: TaskCenterTask;
   actions: TaskCenterAction[];
   stats: Record<string, any>;
+  task_runtime_summary?: TaskRuntimeSummary | null;
+  operation_plan_links?: Array<{ id: number; plan_id: number; target_id: number | null; task_id: string; relation: string; status: string; created_at: string }>;
   accounts: Array<{ id: number; display_name: string; username: string | null; status: string }>;
   membership_phase: Record<string, any>;
   membership_accounts: Array<Record<string, any>>;

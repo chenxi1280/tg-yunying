@@ -31,6 +31,12 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
     candidates = candidate_accounts_for_config(session, task.tenant_id, task.account_config or {})
     summary = channel_membership_summary(session, task.tenant_id, channel, task.account_config or {}, candidates=candidates, task_id=task.id, require_send=require_send)
     stats = _merge_membership_stats(task, summary)
+    if not _target_requires_membership_for_candidates(channel, candidates, require_send=require_send):
+        stats["membership_stage"] = "membership_ready"
+        task.stats = stats
+        if task.last_error in {"正在执行关注频道前置阶段", "正在执行目标准入前置阶段", "没有账号成功准备目标"}:
+            task.last_error = ""
+        return MembershipGateResult(True)
     if not candidates:
         task.last_error = f"没有匹配账号，无法准备目标{_target_noun(channel)}"
         stats["membership_stage"] = "membership_blocked"
@@ -76,9 +82,12 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
 
 
 def channel_member_accounts(session: Session, task: Task, channel: OperationTarget, accounts: list[TgAccount]) -> list[TgAccount]:
+    if not _target_requires_membership_for_candidates(channel, accounts):
+        return accounts
     group = linked_channel_group(session, channel, create=False)
+    directly_ready_ids = {account.id for account in accounts if account_satisfies_authorized_target(channel, account)}
     if not group:
-        return []
+        return [account for account in accounts if account.id in directly_ready_ids]
     member_ids = {
         int(account_id)
         for account_id in session.scalars(
@@ -88,7 +97,7 @@ def channel_member_accounts(session: Session, task: Task, channel: OperationTarg
             )
         )
     }
-    return [account for account in accounts if account.id in member_ids]
+    return [account for account in accounts if account.id in member_ids or account.id in directly_ready_ids]
 
 
 def mark_channel_membership_joined(session: Session, tenant_id: int, channel_target_id: int, account_id: int, *, permission_label: str = "已关注") -> None:
@@ -129,7 +138,7 @@ def channel_membership_summary(
     candidate_rows = candidates if candidates is not None else candidate_accounts_for_config(session, tenant_id, account_config)
     candidate_ids = [account.id for account in candidate_rows]
     group = linked_channel_group(session, channel, create=False)
-    joined_ids: set[int] = set()
+    joined_ids: set[int] = {account.id for account in candidate_rows if account_satisfies_authorized_target(channel, account, require_send=require_send)}
     if group and candidate_ids:
         link_stmt = select(TgGroupAccount.account_id).where(
             TgGroupAccount.tenant_id == tenant_id,
@@ -138,7 +147,7 @@ def channel_membership_summary(
         )
         if require_send and channel.target_type == "group":
             link_stmt = link_stmt.where(TgGroupAccount.can_send.is_(True))
-        joined_ids = {int(account_id) for account_id in session.scalars(link_stmt)}
+        joined_ids.update(int(account_id) for account_id in session.scalars(link_stmt))
     terminal_actions = _membership_actions_by_account(session, channel.id, task_id=task_id)
     failed_ids = {
         account_id
@@ -207,9 +216,37 @@ def linked_channel_group(session: Session, channel: OperationTarget, *, create: 
 
 
 def channel_requires_membership_gate(channel: OperationTarget) -> bool:
-    if channel.target_type != "channel":
+    return target_requires_membership_gate(channel)
+
+
+def target_requires_membership_gate(target: OperationTarget, *, require_send: bool = False) -> bool:
+    if target.auth_status not in _AUTHORIZED_TARGET_VALUES:
+        return True
+    if target.target_type == "channel":
+        return not bool(target.can_send)
+    return False
+
+
+_AUTHORIZED_TARGET_VALUES = {GroupAuthStatus.AUTHORIZED.value, "已授权", "授权", "正常"}
+
+
+def account_satisfies_authorized_target(target: OperationTarget, account: TgAccount, *, require_send: bool = False) -> bool:
+    if target.auth_status not in _AUTHORIZED_TARGET_VALUES:
         return False
-    return not (channel.can_send and channel.auth_status == GroupAuthStatus.AUTHORIZED.value)
+    if require_send and not target.can_send:
+        return False
+    if target.target_type != "channel":
+        return False
+    peer_id = str(target.tg_peer_id or "")
+    return bool(target.can_send and (account.session_ciphertext or peer_id.startswith("-100")))
+
+
+def _target_requires_membership_for_candidates(target: OperationTarget, candidates: list[TgAccount], *, require_send: bool = False) -> bool:
+    if target_requires_membership_gate(target, require_send=require_send):
+        return True
+    if not candidates:
+        return False
+    return any(not account_satisfies_authorized_target(target, account, require_send=require_send) for account in candidates)
 
 
 def _create_missing_membership_actions(session: Session, task: Task, channel: OperationTarget, candidates: list[TgAccount], *, require_send: bool = False) -> int:
@@ -222,6 +259,7 @@ def _create_missing_membership_actions(session: Session, task: Task, channel: Op
     if require_send and channel.target_type == "group":
         link_stmt = link_stmt.where(TgGroupAccount.can_send.is_(True))
     joined_ids = {int(account_id) for account_id in session.scalars(link_stmt)}
+    joined_ids.update(account.id for account in candidates if account_satisfies_authorized_target(channel, account, require_send=require_send))
     missing = [account for account in candidates if account.id not in existing]
     random.shuffle(missing)
     if not missing:

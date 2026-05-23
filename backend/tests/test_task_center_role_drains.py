@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
-from app.models import AccountStatus, Action, RuntimeMetricSnapshot, Task, Tenant, TgAccount, WorkerHeartbeat
+from app.models import AccountStatus, Action, RuntimeMetricSnapshot, Task, TaskRuntimeSummary, Tenant, TgAccount, WorkerHeartbeat
 from app.services._common import _now
 from app.services.task_center import service
 
@@ -37,6 +37,33 @@ def test_role_drains_record_distinct_heartbeats(monkeypatch):
 
     assert {"listener", "recovery", "planner", "metrics"}.issubset(roles)
     assert metric_count >= 1
+
+
+def test_metrics_drain_does_not_rebuild_all_runtime_summaries() -> None:
+    SessionFactory = _session_factory()
+    now_value = _now()
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-unrelated-summary", tenant_id=1, name="不应被全量汇总", type="group_ai_chat", status="running"))
+        session.add(
+            Action(
+                id="action-unrelated-summary",
+                tenant_id=1,
+                task_id="task-unrelated-summary",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                status="failed",
+                scheduled_at=now_value,
+                executed_at=now_value,
+                result={"failure_type": "send_failed"},
+            )
+        )
+        session.commit()
+
+    assert service.drain_task_metrics(SessionFactory, 5) >= 1
+
+    with SessionFactory() as session:
+        assert session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.task_id == "task-unrelated-summary")) is None
 
 
 def test_dispatcher_role_claims_and_dispatches_without_listener(monkeypatch):

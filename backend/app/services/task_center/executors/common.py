@@ -181,6 +181,22 @@ def channel_message_account_ids(session: Session, task: Task, action_type: str, 
     return account_ids
 
 
+def channel_message_action_count(session: Session, task: Task, action_type: str, message: ChannelMessage) -> int:
+    count = 0
+    for payload in session.scalars(
+        select(Action.payload).where(
+            Action.task_id == task.id,
+            Action.action_type == action_type,
+            Action.status.in_(["pending", "executing", "success", "failed"]),
+        )
+    ):
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("channel_message_id") == message.id or payload.get("message_id") == message.message_id:
+            count += 1
+    return count
+
+
 def available_channel_accounts_for_message(session: Session, task: Task, action_type: str, message: ChannelMessage, accounts: list[TgAccount]) -> list[TgAccount]:
     used = channel_message_account_ids(session, task, action_type, message)
     return [account for account in accounts if account.id not in used]
@@ -301,6 +317,7 @@ __all__ = [
     "channel_scope",
     "collect_channel_messages",
     "available_channel_accounts_for_message",
+    "channel_message_action_count",
     "pick_channel_account",
     "planned_channel_message_ids",
     "quantity_jitter_bounds",

@@ -22,16 +22,22 @@ def _compile(method: str, pattern: str, permission: str | PermissionSet) -> Perm
 
 PERMISSION_RULES: list[PermissionRule] = [
     _compile("GET", r"^/api/overview$", "overview.view"),
-    _compile("GET", r"^/api/tg-accounts/\d+/verification-codes$", "accounts.view_codes"),
-    _compile("POST", r"^/api/tg-accounts/\d+/verification-codes/poll$", "accounts.view_codes"),
+    _compile("GET", r"^/api/tg-accounts/\d+/verification-codes$", "accounts.codes.read"),
+    _compile("POST", r"^/api/tg-accounts/\d+/verification-codes/poll$", "accounts.codes.read"),
+    _compile("GET", r"^/api/tg-accounts/security/summary$", "accounts.security.read"),
+    _compile("GET", r"^/api/tg-accounts/\d+/security$", "accounts.security.read"),
+    _compile("GET", r"^/api/tg-accounts/security-batches(?:/.*)?$", "accounts.security.read"),
     _compile("GET", r"^/api/tg-accounts(?:/.*)?$", "accounts.view"),
     _compile("GET", r"^/api/account-pools(?:/.*)?$", "accounts.view"),
     _compile("GET", r"^/api/groups(?:/.*)?$", "targets.view"),
     _compile("GET", r"^/api/operation-targets(?:/.*)?$", "targets.view"),
+    _compile("GET", r"^/api/operation-plans(?:/.*)?$", "operation_plans.manage"),
     _compile("GET", r"^/api/channel-messages(?:/.*)?$", "targets.view"),
     _compile("GET", r"^/api/message-tasks(?:/.*)?$", "message_sending.view"),
     _compile("GET", r"^/api/tasks(?:/.*)?$", "tasks.view"),
     _compile("GET", r"^/api/listeners(?:/.*)?$", "listeners.view"),
+    _compile("GET", r"^/api/operation-center/overview$", "overview.view"),
+    _compile("GET", r"^/api/operation-issues(?:/.*)?$", "operation_issues.manage"),
     _compile("GET", r"^/api/rule(?:-|_)?sets(?:/.*)?$", "rules.view"),
     _compile("GET", r"^/api/rules/summary$", "rules.view"),
     _compile("GET", r"^/api/risk-control(?:/.*)?$", "risk.view"),
@@ -40,7 +46,7 @@ PERMISSION_RULES: list[PermissionRule] = [
     _compile("GET", r"^/api/archives(?:/.*)?$", "archives.view"),
     _compile("GET", r"^/api/operation-metrics(?:/.*)?$", "usage.view"),
     _compile("GET", r"^/api/reports$", "usage.view"),
-    _compile("GET", r"^/api/audit-logs/export$", "audits.view"),
+    _compile("GET", r"^/api/audit-logs/export$", "audit.export"),
     _compile("GET", r"^/api/audit-logs(?:/.*)?$", "audits.view"),
     _compile("GET", r"^/api/audits(?:/.*)?$", "audits.view"),
     _compile("GET", r"^/api/tenants(?:/.*)?$", "system.view"),
@@ -48,10 +54,17 @@ PERMISSION_RULES: list[PermissionRule] = [
     _compile("GET", r"^/api/admin/users(?:/.*)?$", "permissions.view"),
 
     _compile("POST", r"^/api/tg-accounts$", "accounts.create"),
+    _compile("POST", r"^/api/tg-accounts/availability/rebuild$", "accounts.sync"),
     _compile("POST", r"^/api/tg-accounts/\d+/login(?:/.*)?$", "accounts.login"),
     _compile("POST", r"^/api/tg-accounts/\d+/(?:sync-groups|sync-now|sync-targets|contacts/sync|health-check|profile-sync/retry)$", "accounts.sync"),
-    _compile("PATCH", r"^/api/tg-accounts/\d+/profile$", "accounts.update_profile"),
-    _compile("POST", r"^/api/tg-accounts/\d+/avatar$", "accounts.update_profile"),
+    _compile("PATCH", r"^/api/tg-accounts/\d+/profile$", "accounts.profile.batch_update"),
+    _compile("POST", r"^/api/tg-accounts/\d+/avatar$", "accounts.profile.batch_update"),
+    _compile("POST", r"^/api/tg-accounts/\d+/security/refresh$", "accounts.security.read"),
+    _compile("POST", r"^/api/tg-accounts/\d+/security/(?:cleanup-devices|set-2fa)$", "accounts.security.batch"),
+    _compile("POST", r"^/api/tg-accounts/\d+/security/update-profile$", "accounts.profile.batch_update"),
+    _compile("POST", r"^/api/tg-accounts/security-batches/profile-preview$", "accounts.profile.batch_update"),
+    _compile("POST", r"^/api/tg-accounts/security-batches/precheck$", ("accounts.security.batch", "accounts.profile.batch_update")),
+    _compile("POST", r"^/api/tg-accounts/security-batches(?:/.*)?$", ("accounts.security.batch", "accounts.profile.batch_update")),
     _compile("DELETE", r"^/api/tg-accounts/\d+$", "accounts.delete"),
     _compile("POST", r"^/api/tg-accounts/\d+/move-pool$", "accounts.pool_manage"),
     _compile("POST", r"^/api/account-pools(?:/.*)?$", "accounts.pool_manage"),
@@ -72,9 +85,12 @@ PERMISSION_RULES: list[PermissionRule] = [
     _compile("POST", r"^/api/tenants(?:/.*)?$", "system.manage"),
     _compile("PATCH", r"^/api/tenants(?:/.*)?$", "system.manage"),
     _compile("PATCH", r"^/api/tenant-notification-settings$", "system.secrets_manage"),
-    _compile("POST", r"^/api/worker/drain-once$", "system.manage"),
+    _compile("POST", r"^/api/worker/drain-once$", "tasks.dispatch_control"),
 
     _compile("POST", r"^/api/operation-targets(?:/.*)?$", "targets.manage"),
+    _compile("POST", r"^/api/operation-issues(?:/.*)?$", "operation_issues.manage"),
+    _compile("POST", r"^/api/operation-plans(?:/.*)?$", "operation_plans.manage"),
+    _compile("PATCH", r"^/api/operation-plans(?:/.*)?$", "operation_plans.manage"),
     _compile("PATCH", r"^/api/operation-targets(?:/.*)?$", "targets.manage"),
     _compile("POST", r"^/api/channel-messages(?:/.*)?$", "targets.manage"),
     _compile("PATCH", r"^/api/groups(?:/.*)?$", "targets.manage"),
@@ -82,6 +98,7 @@ PERMISSION_RULES: list[PermissionRule] = [
     _compile("POST", r"^/api/verification-tasks(?:/.*)?$", "accounts.sync"),
 
     _compile("POST", r"^/api/message-(?:send-)?tasks(?:/.*)?$", "message_sending.create"),
+    _compile("POST", r"^/api/tasks/[^/]+/reset$", "tasks.dispatch_control"),
     _compile("POST", r"^/api/tasks(?:/.*)?$", "tasks.manage"),
     _compile("PATCH", r"^/api/tasks(?:/.*)?$", "tasks.manage"),
     _compile("DELETE", r"^/api/tasks(?:/.*)?$", "tasks.manage"),
@@ -144,8 +161,9 @@ async def permission_middleware(request: Request, call_next: Callable[[Request],
     try:
         with SessionLocal() as session:
             current_user = current_user_from_authorization(request.headers.get("authorization"), session)
-            missing_permissions = [permission for permission in permissions if not current_user.has_permission(permission)]
-            if missing_permissions:
+            has_allowed_permission = any(current_user.has_permission(permission) for permission in permissions)
+            if not has_allowed_permission:
+                missing_permissions = list(permissions)
                 _audit_permission_denied(session, current_user, request, missing_permissions)
                 return JSONResponse({"detail": "permission denied", "permission": ",".join(missing_permissions)}, status_code=403)
     except HTTPException as exc:

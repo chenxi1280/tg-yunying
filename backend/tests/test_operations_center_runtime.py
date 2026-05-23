@@ -2507,7 +2507,7 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
         captured["temperature"] = temperature
         captured["max_tokens"] = max_tokens
         return AiGenerationResult(
-            candidates=[AiDraftCandidate(persona="A", content="我上次那个，也差不多这样。", risk_level="低")],
+            candidates=[AiDraftCandidate(persona="A", content="这个点接得上，先轻轻聊两句。", risk_level="低")],
             usage=AiUsage(total_tokens=88, billable=True),
         )
 
@@ -2588,7 +2588,7 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
     assert "开课=开始营业" in str(captured["system_prompt"])
     assert "老师=妓女" not in str(captured["prompt"])
     assert action is not None
-    assert action.payload["message_text"] == "我上次那个 也差不多这样"
+    assert action.payload["message_text"] == "这个点接得上 先轻轻聊两句"
     assert action.payload["ai_generation_tokens"] == 88
     assert task.last_error == ""
 

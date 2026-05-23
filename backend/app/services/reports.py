@@ -22,6 +22,7 @@ from app.models import (
     VerificationTask,
 )
 from app.services._common import _now
+from app.services.runtime_summary import operation_center_overview
 from app.timezone import beijing_day_bounds
 
 
@@ -118,6 +119,7 @@ def build_overview(session: Session, tenant_id: int | None = None) -> dict:
         },
         "risks": risks,
         "activity_24h": _hourly_activity_24h(session, tenant_id),
+        "operation_center": operation_center_overview(session, tenant_id) if tenant_id is not None else None,
     }
 
 

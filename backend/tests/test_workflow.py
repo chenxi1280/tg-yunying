@@ -142,7 +142,7 @@ def test_worker_drain_once_api_accepts_role(monkeypatch):
 
     with TestClient(app) as client:
         headers = auth_headers(client)
-        response = client.post("/api/worker/drain-once?role=metrics", headers=headers)
+        response = client.post("/api/worker/drain-once?role=metrics", headers=headers, json={"reason": "测试手动 drain"})
 
     assert response.status_code == 200, response.text
     assert response.json() == {"processed": 4, "role": "metrics"}
@@ -159,7 +159,7 @@ def test_worker_drain_once_api_rejects_unknown_role(monkeypatch):
 
     with TestClient(app) as client:
         headers = auth_headers(client)
-        response = client.post("/api/worker/drain-once?role=nope", headers=headers)
+        response = client.post("/api/worker/drain-once?role=nope", headers=headers, json={"reason": "测试手动 drain"})
 
     assert response.status_code == 400
     assert "unsupported worker role" in response.json()["detail"]
@@ -666,7 +666,7 @@ def test_approve_all_retry_and_archive_detail_flow():
         tasks = client.post(f"/api/campaigns/{campaign['id']}/approve-all", headers=headers, json={"actor": "测试操作员"}).json()
         assert len(tasks) == 3
 
-        drained = client.post("/api/worker/drain-once", headers=headers).json()
+        drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()
         assert drained["processed"] >= 1
 
         dispatched = client.post(f"/api/message-tasks/{tasks[0]['id']}/dispatch", headers=headers).json()
@@ -810,18 +810,18 @@ def test_admin_users_permission_lifecycle_and_legacy_subscription_endpoints_remo
         assert denied_tasks.status_code == 403
         assert denied_tasks.json()["permission"] == "tasks.view"
 
-        denied_export = client.get("/api/audit-logs/export", headers=creator_headers)
+        denied_export = client.get("/api/audit-logs/export?reason=权限测试", headers=creator_headers)
         assert denied_export.status_code == 403
-        assert denied_export.json()["permission"] == "audits.view"
+        assert denied_export.json()["permission"] == "audit.export"
 
-        denied_codes = client.get(f"/api/tg-accounts/{account['id']}/verification-codes", headers=creator_headers)
+        denied_codes = client.get(f"/api/tg-accounts/{account['id']}/verification-codes?reason=权限测试", headers=creator_headers)
         assert denied_codes.status_code == 403
-        assert denied_codes.json()["permission"] == "accounts.view_codes"
+        assert denied_codes.json()["permission"] == "accounts.codes.read"
 
         denied_audits = client.get("/api/audit-logs?keyword=权限拒绝", headers=headers)
         assert denied_audits.status_code == 200, denied_audits.text
-        assert any(item["target_id"] == "accounts.view_codes" for item in denied_audits.json())
-        assert any(item["target_id"] == "audits.view" for item in denied_audits.json())
+        assert any(item["target_id"] == "accounts.codes.read" for item in denied_audits.json())
+        assert any(item["target_id"] == "audit.export" for item in denied_audits.json())
 
         grant_codes = client.patch(
             f"/api/admin/users/{created_user['id']}",
@@ -833,7 +833,7 @@ def test_admin_users_permission_lifecycle_and_legacy_subscription_endpoints_remo
                     "accounts.create",
                     "accounts.login",
                     "accounts.sync",
-                    "accounts.view_codes",
+                    "accounts.codes.read",
                 ],
                 "menu_permissions": [
                     "overview.view",
@@ -846,14 +846,16 @@ def test_admin_users_permission_lifecycle_and_legacy_subscription_endpoints_remo
             },
         )
         assert grant_codes.status_code == 200, grant_codes.text
+        assert "accounts.codes.read" in grant_codes.json()["permissions"]
+        assert "accounts.view_codes" not in grant_codes.json()["permissions"]
 
         creator_headers = auth_headers(client, created_user["email"], "creator123")
-        codes_response = client.get(f"/api/tg-accounts/{account['id']}/verification-codes", headers=creator_headers)
+        codes_response = client.get(f"/api/tg-accounts/{account['id']}/verification-codes?reason=权限测试", headers=creator_headers)
         assert codes_response.status_code == 200, codes_response.text
         code_audits = client.get("/api/audit-logs?keyword=查看TG验证码", headers=headers)
         assert code_audits.status_code == 200, code_audits.text
         assert any(item["target_id"] == str(account["id"]) for item in code_audits.json())
-        export_ok = client.get("/api/audit-logs/export", headers=headers)
+        export_ok = client.get("/api/audit-logs/export?reason=权限测试", headers=headers)
         assert export_ok.status_code == 200, export_ok.text
         assert "text/csv" in export_ok.headers["content-type"]
 
@@ -1192,7 +1194,7 @@ def test_ai_provider_prompt_material_and_jitter_flow():
         tasks = client.post(f"/api/campaigns/{campaign['id']}/approve-all", headers=headers, json={"actor": "测试操作员"}).json()
         assert [task["planned_delay_seconds"] for task in tasks] == [10, 30]
         assert tasks[0]["message_type"] == "表情包"
-        drained = client.post("/api/worker/drain-once", headers=headers).json()
+        drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()
         assert drained["processed"] == 0
 
 
@@ -1457,7 +1459,7 @@ def test_account_detail_codes_and_direct_message_queue():
         assert "groups" in detail
         assert "message_records" in detail
 
-        codes = client.post(f"/api/tg-accounts/{account['id']}/verification-codes/poll", headers=headers).json()
+        codes = client.post(f"/api/tg-accounts/{account['id']}/verification-codes/poll", headers=headers, json={"reason": "测试提取验证码"}).json()
         assert codes
         assert codes[0]["source"] == "telegram_service_message"
         assert codes[0]["code_preview"]
@@ -1559,7 +1561,7 @@ def test_account_profile_upload_save_sync_and_retry():
         assert records
         assert records[0]["status"] == "排队中"
 
-        drained = client.post("/api/worker/drain-once", headers=headers).json()
+        drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()
         assert drained["processed"] >= 1
         detail = client.get(f"/api/tg-accounts/{account['id']}/detail", headers=headers).json()
         assert detail["account"]["profile_sync_status"] == "已同步"
@@ -1736,7 +1738,7 @@ def test_account_pool_clone_plan_and_verification_tasks():
             source_account.status = AccountStatus.ACTIVE.value
             session.add(TgAccountSyncRecord(tenant_id=1, account_id=source["id"], sync_type="contacts", trigger_source="pytest", status="排队中", scheduled_at=source_account.created_at, created_at=source_account.created_at))
             session.commit()
-        drained = client.post("/api/worker/drain-once", headers=headers).json()
+        drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()
         assert drained["processed"] >= 1
 
 
@@ -2300,13 +2302,13 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
         assert started.status_code == 200, started.text
         assert started.json()["status"] == "running"
 
-        drained = client.post("/api/worker/drain-once", headers=headers).json()
+        drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()
         assert drained["processed"] >= 1
         detail = client.get(f"/api/tasks/{task['id']}", headers=headers).json()
         assert detail["task"]["stats"]["total_actions"] >= 1
         assert detail["task"]["stats"]["success_count"] >= 1
         assert detail["actions"][0]["action_type"] == "send_message"
-        client.post(f"/api/tasks/{task['id']}/stop", headers=headers)
+        client.post(f"/api/tasks/{task['id']}/stop", headers=headers, json={"reason": "测试停止任务"})
 
 
 def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
@@ -2586,7 +2588,7 @@ def test_task_center_channel_view_like_comment_execute(monkeypatch):
 
         processed = 0
         for _ in range(5):
-            processed += client.post("/api/worker/drain-once", headers=headers).json()["processed"]
+            processed += client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()["processed"]
             if len(calls) >= 3:
                 break
         assert processed >= 3
@@ -2604,7 +2606,7 @@ def test_task_center_channel_view_like_comment_execute(monkeypatch):
         assert listed_channel_tasks
         assert any("pytest 频道增长目标" in item["search_text"] and "频道增长消息" in item["search_text"] for item in listed_channel_tasks)
 
-        removed = client.delete(f"/api/tasks/{task_ids[0]}", headers=headers)
+        removed = client.request("DELETE", f"/api/tasks/{task_ids[0]}", headers=headers, json={"reason": "测试删除任务"})
         assert removed.status_code == 204, removed.text
         visible_tasks = client.get("/api/tasks", headers=headers).json()
         assert task_ids[0] not in {item["id"] for item in visible_tasks}
@@ -2732,8 +2734,8 @@ def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(mo
             task_id = created.json()["id"]
             task_ids.append(task_id)
             client.post(f"/api/tasks/{task_id}/start", headers=headers)
-            client.post("/api/worker/drain-once", headers=headers)
-            client.post("/api/worker/drain-once", headers=headers)
+            client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
+            client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
             detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
             rows = detail["actions"]
             assert len(rows) == 2
@@ -3092,7 +3094,7 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
             session.commit()
 
         fetched_ids.append(4202)
-        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
+        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert len(detail_after_reset["actions"]) == 1
@@ -3168,7 +3170,7 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatc
         assert views == [4301]
 
         fetched_ids.append(4302)
-        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
+        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert len(detail_after_reset["actions"]) == 1
@@ -3249,7 +3251,7 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
         assert comments == [(4401, old_detail["actions"][0]["payload"]["comment_text"])]
 
         fetched_ids.append(4402)
-        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
+        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert len(detail_after_reset["actions"]) == 1
@@ -3311,7 +3313,7 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
 
         drain_task_center(SessionLocal, 10)
         assert len(sends) == 1
-        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
+        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         assert len(client.get(f"/api/tasks/{task_id}", headers=headers).json()["actions"]) == 1
 
@@ -3358,7 +3360,7 @@ def test_task_center_reset_group_relay_clears_source_fingerprints():
             session.add(Action(tenant_id=1, task_id=task_id, task_type=task.type, action_type="send_message", account_id=account["id"], scheduled_at=datetime.now(UTC).replace(tzinfo=None), status="success", payload={"message_text": "old"}, result={"success": True}))
             session.commit()
 
-        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers)
+        reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         with SessionLocal() as session:
             assert session.query(Action).filter(Action.task_id == task_id).count() == 1
@@ -3686,7 +3688,7 @@ def test_task_center_pause_holds_due_actions(monkeypatch):
             session.commit()
             action_id = action.id
 
-        client.post("/api/worker/drain-once", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
         with SessionLocal() as session:
             assert session.get(Action, action_id).status == "pending"
         assert "暂停后不应发送" not in sends
@@ -3727,7 +3729,7 @@ def test_task_center_pending_reviews_do_not_starve_other_due_actions(monkeypatch
             blocked_action_id = blocked_action.id
             normal_action_id = normal_action.id
 
-        client.post("/api/worker/drain-once", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
         with SessionLocal() as session:
             assert session.get(Action, blocked_action_id).status == "pending"
             assert session.get(Action, normal_action_id).status == "success"
@@ -3944,7 +3946,7 @@ def test_task_center_send_message_payload_requires_destination(monkeypatch):
             session.commit()
             action_id = action.id
 
-        client.post("/api/worker/drain-once", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
         with SessionLocal() as session:
             row = session.get(Action, action_id)
             assert row.status == "failed"
@@ -4064,7 +4066,7 @@ def test_task_center_channel_failed_action_retries_before_task_failed(monkeypatc
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
 
-        client.post("/api/worker/drain-once", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
         with SessionLocal() as session:
             task = session.get(Task, task_id)
             action = session.query(Action).filter(Action.task_id == task_id).one()
@@ -4072,7 +4074,7 @@ def test_task_center_channel_failed_action_retries_before_task_failed(monkeypatc
             assert action.status == "failed"
             assert action.retry_count == 0
 
-        client.post("/api/worker/drain-once", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
         with SessionLocal() as session:
             task = session.get(Task, task_id)
             action = session.query(Action).filter(Action.task_id == task_id).one()
@@ -4136,7 +4138,7 @@ def test_task_center_channel_like_respects_per_account_hour_limit(monkeypatch):
         assert created.status_code == 200, created.text
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
-        client.post("/api/worker/drain-once", headers=headers)
+        client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
         with SessionLocal() as session:
             rows = list(session.query(Action).filter(Action.task_id == task_id).order_by(Action.scheduled_at.asc(), Action.id.asc()))
         assert len(rows) == 3
@@ -5224,7 +5226,7 @@ def test_archive_async_and_extended_sync_types():
             assert archive["status"] == "排队中"
             assert archive["sync_mode"] == "async"
 
-            drained = client.post("/api/worker/drain-once", headers=headers).json()
+            drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()
             assert drained["processed"] >= 1
 
             detail = client.get(f"/api/archives/{archive['id']}", headers=headers).json()
@@ -5237,7 +5239,7 @@ def test_archive_async_and_extended_sync_types():
                 session.add(TgAccountSyncRecord(tenant_id=1, account_id=account["id"], sync_type="profile_pull", trigger_source="pytest", status="排队中", scheduled_at=source_account.created_at, created_at=source_account.created_at))
                 session.commit()
 
-            drained_again = client.post("/api/worker/drain-once", headers=headers).json()
+            drained_again = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()
             assert drained_again["processed"] >= 1
             sync_records = client.get(f"/api/tg-accounts/{account['id']}/sync-records", headers=headers).json()
             assert {"health", "profile_pull"}.issubset({record["sync_type"] for record in sync_records})

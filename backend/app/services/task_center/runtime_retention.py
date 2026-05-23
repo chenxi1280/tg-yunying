@@ -23,7 +23,13 @@ def cleanup_runtime_details(session: Session, *, retention_days: int = 5, today:
     today = today or _now().date()
     cutoff_date = today - timedelta(days=retention_days)
     cutoff_dt = datetime.combine(cutoff_date, datetime.min.time())
-    rows = list(session.scalars(select(Action).where(func.coalesce(Action.executed_at, Action.scheduled_at, Action.created_at) < cutoff_dt)))
+    rows = list(
+        session.scalars(
+            select(Action).where(
+                func.coalesce(Action.executed_at, Action.scheduled_at, Action.created_at) < cutoff_dt,
+            )
+        )
+    )
     if not rows:
         return 0
     stats = _summarize_actions(rows)

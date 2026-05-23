@@ -3,7 +3,7 @@ import { Alert, Button, Card, Collapse, Form, Input, Modal, Space, Steps, Table,
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, RefreshCcw } from 'lucide-react';
 import { api } from '../../shared/api/client';
-import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskPrecheck } from '../types';
+import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskPrecheck } from '../types';
 import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
 import { fromBeijingDateTimeLocalValue } from '../time';
 import {
@@ -44,16 +44,34 @@ function TaskStatusBadge({ status }: { status?: string | null }) {
   return <StatusBadge status={status} label={statusLabel(status)} />;
 }
 
+type DangerousTaskAction = 'stop' | 'reset' | 'delete';
+
+interface DangerousTaskState {
+  task: TaskCenterTask;
+  action: DangerousTaskAction;
+  title: string;
+  content: string;
+  okText: string;
+}
+
 export default function TaskCenterView({
   accounts,
   accountPools,
   promptTemplates,
   prefill,
+  focusTask,
+  onFocusTaskConsumed,
+  canManageTasks = false,
+  canDispatchControl = false,
 }: {
   accounts: Account[];
   accountPools: AccountPool[];
   promptTemplates: PromptTemplate[];
   prefill?: TaskCenterPrefill | null;
+  focusTask?: { taskId: string; nonce: number } | null;
+  onFocusTaskConsumed?: () => void;
+  canManageTasks?: boolean;
+  canDispatchControl?: boolean;
 }) {
   const [tasks, setTasks] = React.useState<TaskCenterTask[]>([]);
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
@@ -70,6 +88,9 @@ export default function TaskCenterView({
   const [editSaving, setEditSaving] = React.useState(false);
   const [actionError, setActionError] = React.useState('');
   const [actionWarning, setActionWarning] = React.useState('');
+  const [dangerAction, setDangerAction] = React.useState<DangerousTaskState | null>(null);
+  const [dangerReason, setDangerReason] = React.useState('');
+  const [attemptDetail, setAttemptDetail] = React.useState<{ action: TaskCenterAction; attempts: TaskExecutionAttempt[]; loading: boolean } | null>(null);
   const [precheck, setPrecheck] = React.useState<TaskPrecheck | null>(null);
   const [precheckLoading, setPrecheckLoading] = React.useState(false);
   const [wizardStep, setWizardStep] = React.useState(0);
@@ -77,6 +98,7 @@ export default function TaskCenterView({
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
   const appliedPrefillNonce = React.useRef<number | null>(null);
+  const appliedFocusNonce = React.useRef<number | null>(null);
   const accountMode = Form.useWatch('selection_mode', form) ?? 'all';
   const pacingMode = Form.useWatch('pacing_mode', form) ?? 'template';
   const editAccountMode = Form.useWatch('selection_mode', editForm) ?? 'all';
@@ -205,8 +227,29 @@ export default function TaskCenterView({
     appliedPrefillNonce.current = prefill.nonce;
   }, [form, messages, prefill, schedulingSetting, targets]);
 
+  React.useEffect(() => {
+    if (!focusTask || appliedFocusNonce.current === focusTask.nonce) return;
+    appliedFocusNonce.current = focusTask.nonce;
+    setActionError('');
+    api<TaskCenterDetail>(`/tasks/${focusTask.taskId}`)
+      .then((taskDetail) => setDetail(taskDetail))
+      .catch(() => setActionError(`读取任务 ${focusTask.taskId} 详情失败`))
+      .finally(() => onFocusTaskConsumed?.());
+  }, [focusTask, onFocusTaskConsumed]);
+
   async function loadDetail(task: TaskCenterTask) {
     setDetail(await api<TaskCenterDetail>(`/tasks/${task.id}`));
+  }
+
+  async function openActionAttempts(action: TaskCenterAction) {
+    setAttemptDetail({ action, attempts: [], loading: true });
+    try {
+      const attempts = await api<TaskExecutionAttempt[]>(`/tasks/${action.task_id}/actions/${action.id}/attempts`);
+      setAttemptDetail({ action, attempts, loading: false });
+    } catch (error) {
+      setAttemptDetail(null);
+      throw error;
+    }
   }
 
   async function openCreateTask() {
@@ -558,54 +601,80 @@ export default function TaskCenterView({
     }
   }
 
-  async function taskAction(task: TaskCenterTask, name: 'start' | 'pause' | 'resume' | 'stop' | 'retry' | 'reset') {
+  async function taskAction(task: TaskCenterTask, name: 'start' | 'pause' | 'resume' | 'stop' | 'retry' | 'reset', reason?: string) {
     setBusyId(`${task.id}:${name}`);
     setActionError('');
     try {
-      await api<TaskCenterTask>(`/tasks/${task.id}/${name}`, { method: 'POST', body: name === 'retry' ? JSON.stringify({ failed_only: true }) : undefined });
+      const body = name === 'retry'
+        ? JSON.stringify({ failed_only: true })
+        : ['stop', 'reset'].includes(name)
+          ? JSON.stringify({ reason: (reason ?? '').trim() })
+          : undefined;
+      await api<TaskCenterTask>(`/tasks/${task.id}/${name}`, { method: 'POST', body });
       await load();
       if (detail?.task.id === task.id) await loadDetail(task);
+      return true;
     } catch (error) {
       setActionError(errorMessage(error));
+      return false;
     } finally {
       setBusyId('');
     }
   }
 
-  async function deleteTask(task: TaskCenterTask) {
+  async function deleteTask(task: TaskCenterTask, reason: string) {
     setBusyId(`${task.id}:delete`);
     setActionError('');
     try {
-      await api(`/tasks/${task.id}`, { method: 'DELETE' });
+      await api(`/tasks/${task.id}`, { method: 'DELETE', body: JSON.stringify({ reason: reason.trim() }) });
       if (detail?.task.id === task.id) setDetail(null);
       await load();
+      return true;
     } catch (error) {
       setActionError(errorMessage(error));
+      return false;
     } finally {
       setBusyId('');
     }
   }
 
-  function confirmResetTask(task: TaskCenterTask) {
-    Modal.confirm({
-      title: '重置并重新规划任务',
-      content: '会清空这个任务旧的执行计划和执行记录，并重新拉取消息、重新生成计划。',
-      okText: '重置',
-      cancelText: '取消',
-      okButtonProps: { danger: true },
-      onOk: () => taskAction(task, 'reset'),
-    });
+  function openDangerTaskAction(task: TaskCenterTask, action: DangerousTaskAction) {
+    const config: Record<DangerousTaskAction, Omit<DangerousTaskState, 'task' | 'action'>> = {
+      stop: {
+        title: '停止任务',
+        content: `确认停止“${task.name}”？未执行计划会标记为跳过。`,
+        okText: '停止',
+      },
+      reset: {
+        title: '重置并重新规划任务',
+        content: '会清空这个任务旧的执行计划和执行记录，并重新拉取消息、重新生成计划。',
+        okText: '重置',
+      },
+      delete: {
+        title: '删除任务',
+        content: `确认删除“${task.name}”？任务会停止并从任务中心隐藏，历史执行记录保留。`,
+        okText: '删除',
+      },
+    };
+    setActionError('');
+    setDangerReason('');
+    setDangerAction({ task, action, ...config[action] });
   }
 
-  function confirmDeleteTask(task: TaskCenterTask) {
-    Modal.confirm({
-      title: '删除任务',
-      content: `确认删除“${task.name}”？任务会停止并从任务中心隐藏，历史执行记录保留。`,
-      okText: '删除',
-      cancelText: '取消',
-      okButtonProps: { danger: true },
-      onOk: () => deleteTask(task),
-    });
+  async function confirmDangerTaskAction() {
+    if (!dangerAction) return;
+    const reason = dangerReason.trim();
+    if (!reason) {
+      setActionError('请填写操作原因');
+      return;
+    }
+    const ok = dangerAction.action === 'delete'
+      ? await deleteTask(dangerAction.task, reason)
+      : await taskAction(dangerAction.task, dangerAction.action, reason);
+    if (ok) {
+      setDangerAction(null);
+      setDangerReason('');
+    }
   }
 
   function relayRoleLabel(role?: string, isBot?: boolean) {
@@ -732,12 +801,12 @@ export default function TaskCenterView({
       fixed: 'right',
       render: (_, task) => (
         <Space className="task-action-bar" size={6}>
-          <Button size="small" loading={busyId === `${task.id}:${task.status === 'paused' ? 'resume' : 'start'}`} onClick={() => taskAction(task, task.status === 'paused' ? 'resume' : 'start')}>{task.status === 'paused' ? '恢复' : '启动'}</Button>
-          <Button size="small" disabled={task.status !== 'running'} loading={busyId === `${task.id}:pause`} onClick={() => taskAction(task, 'pause')}>暂停</Button>
-          <Button size="small" loading={busyId === `${task.id}:retry`} onClick={() => taskAction(task, 'retry')}>重试</Button>
-          <Button size="small" danger loading={busyId === `${task.id}:reset`} onClick={() => confirmResetTask(task)}>重置</Button>
-          <Button size="small" danger loading={busyId === `${task.id}:stop`} onClick={() => taskAction(task, 'stop')}>停止</Button>
-          <Button size="small" danger loading={busyId === `${task.id}:delete`} onClick={() => confirmDeleteTask(task)}>删除</Button>
+          {canManageTasks && <Button size="small" loading={busyId === `${task.id}:${task.status === 'paused' ? 'resume' : 'start'}`} onClick={() => taskAction(task, task.status === 'paused' ? 'resume' : 'start')}>{task.status === 'paused' ? '恢复' : '启动'}</Button>}
+          {canManageTasks && <Button size="small" disabled={task.status !== 'running'} loading={busyId === `${task.id}:pause`} onClick={() => taskAction(task, 'pause')}>暂停</Button>}
+          {canManageTasks && <Button size="small" loading={busyId === `${task.id}:retry`} onClick={() => taskAction(task, 'retry')}>重试</Button>}
+          {canDispatchControl && <Button size="small" danger loading={busyId === `${task.id}:reset`} onClick={() => openDangerTaskAction(task, 'reset')}>重置</Button>}
+          {canManageTasks && <Button size="small" danger loading={busyId === `${task.id}:stop`} onClick={() => openDangerTaskAction(task, 'stop')}>停止</Button>}
+          {canManageTasks && <Button size="small" danger loading={busyId === `${task.id}:delete`} onClick={() => openDangerTaskAction(task, 'delete')}>删除</Button>}
           <Button size="small" onClick={() => loadDetail(task)}>详情</Button>
         </Space>
       ),
@@ -761,7 +830,24 @@ export default function TaskCenterView({
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <TaskStatusBadge status={value} /> },
     { title: '目标', key: 'target', width: 180, render: (_, action) => actionTarget(action) },
     { title: '内容', key: 'content', ellipsis: true, render: (_, action) => actionContent(action) },
+    { title: '失败类型', key: 'failure_type', width: 140, render: (_, action) => action.failure_type || action.result?.error_code || '-' },
+    { title: '可读原因', key: 'failure_reason', width: 220, ellipsis: true, render: (_, action) => action.failure_reason || action.result?.error_message || action.result?.detail || '-' },
+    { title: '运营异常', key: 'operation_issue', width: 130, render: (_, action) => action.operation_issue_rolled_up ? <Tag color="red">已上卷 #{action.operation_issue_id.slice(0, 8)}</Tag> : '-' },
+    { title: 'Trace / 原始错误', key: 'trace', width: 220, ellipsis: true, render: (_, action) => action.trace_id || action.raw_error || '-' },
     { title: '结果', key: 'result', width: 220, render: (_, action) => actionResult(action) },
+    { title: '尝试', key: 'attempts', width: 100, render: (_, action) => <Button size="small" onClick={() => void openActionAttempts(action)}>查看</Button> },
+  ];
+
+  const attemptColumns: ColumnsType<TaskExecutionAttempt> = [
+    { title: '序号', dataIndex: 'attempt_no', width: 80 },
+    { title: '状态', dataIndex: 'status', width: 120, render: (value) => <TaskStatusBadge status={value} /> },
+    { title: 'Worker', dataIndex: 'worker_id', width: 180, ellipsis: true, render: (value) => value || '-' },
+    { title: '账号', dataIndex: 'account_id', width: 150, render: (value) => accountDisplay(detail, value) },
+    { title: '调用开始', dataIndex: 'gateway_call_started_at', width: 180, render: (value) => formatDateTime(value) },
+    { title: '完成时间', dataIndex: 'after_call_at', width: 180, render: (value) => formatDateTime(value) },
+    { title: '远端消息', dataIndex: 'remote_message_id', width: 150, ellipsis: true, render: (value) => value || '-' },
+    { title: '失败类型', dataIndex: 'failure_type', width: 150, render: (value) => value || '-' },
+    { title: '失败详情', dataIndex: 'failure_detail', ellipsis: true, render: (value) => value || '-' },
   ];
 
   const messageColumns: ColumnsType<TaskCenterDetail['message_groups'][number]> = [
@@ -906,7 +992,7 @@ export default function TaskCenterView({
         <StatCard label="执行中" value={tasks.filter((task) => task.status === 'running').length} detail="正在调度" icon={<RefreshCcw size={20} />} />
         <StatCard label="失败任务" value={tasks.filter((task) => task.status === 'failed').length} detail="需处理" icon={<Activity size={20} />} />
       </Space>
-      <Card className="panel" title="任务中心" extra={<Button type="primary" loading={supportLoading} onClick={() => void openCreateTask()}>创建任务</Button>}>
+      <Card className="panel" title="任务中心" extra={canManageTasks ? <Button type="primary" loading={supportLoading} onClick={() => void openCreateTask()}>创建任务</Button> : null}>
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         {actionWarning && <Alert className="form-alert" type="warning" showIcon message={actionWarning} />}
         <Space className="toolbar-row" wrap>{table.searchInput}<Button loading={loading} onClick={load}>刷新</Button></Space>
@@ -981,6 +1067,7 @@ export default function TaskCenterView({
 
       <TaskCenterDetailModal
         detail={detail}
+        canManageTasks={canManageTasks}
         supportLoading={supportLoading}
         plannedActions={plannedActions}
         executedActions={executedActions}
@@ -1000,6 +1087,52 @@ export default function TaskCenterView({
         onRefreshTask={(task) => void loadDetail(task)}
         onClose={() => setDetail(null)}
       />
+      <Modal
+        className="tg-modal large"
+        title={attemptDetail ? `执行尝试 ${attemptDetail.action.id}` : '执行尝试'}
+        open={Boolean(attemptDetail)}
+        width={980}
+        footer={null}
+        onCancel={() => setAttemptDetail(null)}
+        destroyOnHidden
+        centered
+      >
+        <Table<TaskExecutionAttempt>
+          className="tg-table"
+          rowKey="id"
+          columns={attemptColumns}
+          dataSource={attemptDetail?.attempts ?? []}
+          loading={attemptDetail?.loading}
+          pagination={false}
+          scroll={{ x: 1200 }}
+          locale={{ emptyText: '暂无执行尝试记录' }}
+        />
+      </Modal>
+      <Modal
+        className="tg-modal"
+        title={dangerAction?.title ?? '确认操作'}
+        open={Boolean(dangerAction)}
+        okText={dangerAction?.okText ?? '确认'}
+        cancelText="取消"
+        okButtonProps={{ danger: true, disabled: !dangerReason.trim() }}
+        confirmLoading={Boolean(dangerAction && busyId === `${dangerAction.task.id}:${dangerAction.action}`)}
+        onOk={() => void confirmDangerTaskAction()}
+        onCancel={() => setDangerAction(null)}
+        destroyOnHidden
+        centered
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Text>{dangerAction?.content}</Typography.Text>
+          <Input.TextArea
+            rows={3}
+            value={dangerReason}
+            maxLength={255}
+            showCount
+            placeholder="填写操作原因"
+            onChange={(event) => setDangerReason(event.target.value)}
+          />
+        </Space>
+      </Modal>
     </>
   );
 }

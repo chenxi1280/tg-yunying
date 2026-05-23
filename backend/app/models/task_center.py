@@ -49,6 +49,7 @@ class Action(Base):
         Index("ix_actions_due_claim", "status", "scheduled_at", "created_at"),
         Index("ix_actions_claim_expiry", "status", "claim_expires_at"),
         Index("ix_actions_lease_recovery", "lease_owner", "lease_expires_at"),
+        Index("ix_actions_task_status", "task_id", "status", "executed_at"),
         Index(
             "uq_actions_executing_account",
             "account_id",

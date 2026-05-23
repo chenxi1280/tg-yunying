@@ -85,7 +85,7 @@ def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any
     model = TYPE_CONFIG_MODELS.get(task_type)
     if not model:
         raise ValueError(f"unknown task type: {task_type}")
-    normalized = model(**(data or {})).model_dump(mode="json")
+    normalized = model(**(data or {})).model_dump(mode="json", exclude_none=True)
     if task_type == "group_ai_chat":
         for field in GROUP_AI_LEGACY_RUNTIME_FIELDS:
             normalized.pop(field, None)

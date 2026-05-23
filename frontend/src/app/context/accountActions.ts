@@ -102,9 +102,7 @@ export function createAccountActions(params: AccountActionParams) {
     params.setDirectMessageForm({ target_peer_id: '', target_display: '', content: '' });
     params.setAccountDetailTab('TG 官方验证码');
     params.setModal({ type: 'accountDetail' });
-    const codes = await api<VerificationCode[]>(`/tg-accounts/${account.id}/verification-codes/poll`, { method: 'POST' });
-    params.setAccountDetail((current) => current?.account.id === account.id ? { ...current, verification_codes: codes } : current);
-    params.setNotice(`${account.display_name} 已同步提取 TG 官方验证码。`);
+    params.setNotice('请填写查看原因后同步提取 TG 官方验证码。');
     params.setBusy('');
   }
 
@@ -423,14 +421,20 @@ export function createAccountActions(params: AccountActionParams) {
     params.setModal({ type: 'accountProfileEdit' });
   }
 
-  async function pollVerificationCodes(silent = false) {
+  async function pollVerificationCodes(reason: string) {
     if (!params.accountDetail) return;
     const accountId = params.accountDetail.account.id;
-    if (!silent) params.setBusy('同步验证码');
-    const codes = await api<VerificationCode[]>(`/tg-accounts/${accountId}/verification-codes/poll`, { method: 'POST' });
-    params.setAccountDetail((current) => current?.account.id === accountId ? { ...current, verification_codes: codes } : current);
-    if (!silent) {
+    const cleanReason = reason.trim();
+    if (!cleanReason) {
+      params.showResult('需要操作原因', '查看或同步 TG 官方验证码前必须填写原因。');
+      return;
+    }
+    params.setBusy('同步验证码');
+    try {
+      const codes = await api<VerificationCode[]>(`/tg-accounts/${accountId}/verification-codes/poll`, { method: 'POST', body: JSON.stringify({ reason: cleanReason }) });
+      params.setAccountDetail((current) => current?.account.id === accountId ? { ...current, verification_codes: codes } : current);
       params.showResult('验证码已同步', '已从 TG 官方服务消息同步最新验证码，验证码会短时展示并写入审计。');
+    } finally {
       params.setBusy('');
     }
   }

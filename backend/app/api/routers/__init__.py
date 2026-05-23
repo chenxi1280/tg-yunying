@@ -14,6 +14,7 @@ from .developer_apps import router as developer_apps_router
 from .groups import router as groups_router
 from .message_tasks import router as message_tasks_router
 from .operations import router as operations_router
+from .operation_plans import router as operation_plans_router
 from .operations_center import router as operations_center_router
 from .risk_control import router as risk_control_router
 from .system import router as system_router
@@ -30,6 +31,7 @@ for sub_router in (
     accounts_router,
     account_security_router,
     operations_router,
+    operation_plans_router,
     operations_center_router,
     risk_control_router,
     groups_router,

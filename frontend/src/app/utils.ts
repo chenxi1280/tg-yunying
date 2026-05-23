@@ -17,13 +17,20 @@ export const VIEW_PERMISSION: Record<string, string> = {
   adminManual: 'manual.view',
 };
 
+const PERMISSION_ALIASES: Record<string, string> = {
+  'accounts.view_codes': 'accounts.codes.read',
+  'accounts.update_profile': 'accounts.profile.batch_update',
+  'audits.export': 'audit.export',
+};
+
 export function userPermissions(user: CurrentUser | null | undefined): string[] {
-  return user?.permissions ?? user?.menu_permissions ?? [];
+  return (user?.permissions ?? user?.menu_permissions ?? []).map((permission) => PERMISSION_ALIASES[permission] ?? permission);
 }
 
 export function hasPermission(user: CurrentUser | null | undefined, permission: string): boolean {
   const permissions = userPermissions(user);
-  return Boolean(user?.is_super_admin || permissions.includes('*') || permissions.includes(permission));
+  const canonical = PERMISSION_ALIASES[permission] ?? permission;
+  return Boolean(user?.is_super_admin || permissions.includes('*') || permissions.includes(canonical));
 }
 
 export function canView(user: CurrentUser | null | undefined, viewId: string): boolean {

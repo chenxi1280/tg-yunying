@@ -105,6 +105,7 @@ class OverviewOut(BaseModel):
     queue: dict[str, int]
     risks: list[dict[str, Any]]
     activity_24h: list[dict[str, Any]] = Field(default_factory=list)
+    operation_center: dict[str, Any] | None = None
 
 
 class ReportOut(BaseModel):

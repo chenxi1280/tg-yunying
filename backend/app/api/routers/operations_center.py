@@ -19,6 +19,13 @@ from app.schemas.operations_center import (
     RuleTestOut,
     RuleTestRequest,
 )
+from app.schemas.runtime_summary import (
+    OperationCenterOverviewOut,
+    OperationIssueDetailOut,
+    OperationIssueOut,
+    OperationIssueStatusRequest,
+    TargetRuntimeSummaryOut,
+)
 from app.services.operations_center import (
     copy_rule_set_version,
     create_rule_set,
@@ -35,6 +42,15 @@ from app.services.operations_center import (
     switch_listener_account,
     test_rules,
     update_rule_set_config,
+)
+from app.services.runtime_summary import (
+    acknowledge_operation_issue,
+    get_operation_issue_detail,
+    ignore_operation_issue,
+    list_target_runtime_summaries,
+    list_operation_issues,
+    operation_center_overview,
+    resolve_operation_issue,
 )
 from app.common.http import not_found
 
@@ -78,6 +94,93 @@ def get_relay_attribution_report(session: Session = Depends(get_session), curren
 @router.get("/api/operation-metrics/summary", response_model=OperationMetricsOut)
 def get_operation_metrics_summary(session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     return operation_metrics_summary(session, current_user.tenant_id or 1)
+
+
+@router.get("/api/operation-center/overview", response_model=OperationCenterOverviewOut)
+def get_operation_center_overview(session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    return operation_center_overview(session, current_user.tenant_id or 1)
+
+
+@router.get("/api/operation-targets/runtime-summary", response_model=list[TargetRuntimeSummaryOut])
+def get_operation_target_runtime_summaries(session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    return list_target_runtime_summaries(session, current_user.tenant_id or 1)
+
+
+@router.get("/api/operation-issues", response_model=list[OperationIssueOut])
+def get_operation_issues(
+    target_id: int | None = None,
+    issue_type: str | None = None,
+    severity: str | None = None,
+    status: str | None = "open",
+    failure_type: str | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return list_operation_issues(
+        session,
+        current_user.tenant_id or 1,
+        target_id=target_id,
+        issue_type=issue_type,
+        severity=severity,
+        status=status,
+        failure_type=failure_type,
+    )
+
+
+@router.get("/api/operation-issues/{issue_id}", response_model=OperationIssueDetailOut)
+def get_operation_issue(issue_id: str, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return get_operation_issue_detail(session, current_user.tenant_id or 1, issue_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/operation-issues/{issue_id}/acknowledge", response_model=OperationIssueOut)
+def post_operation_issue_acknowledge(
+    issue_id: str,
+    payload: OperationIssueStatusRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        issue = acknowledge_operation_issue(session, current_user.tenant_id or 1, issue_id, current_user.name, payload.reason)
+        session.commit()
+        session.refresh(issue)
+        return issue
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/operation-issues/{issue_id}/resolve", response_model=OperationIssueOut)
+def post_operation_issue_resolve(
+    issue_id: str,
+    payload: OperationIssueStatusRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        issue = resolve_operation_issue(session, current_user.tenant_id or 1, issue_id, payload.reason, current_user.name)
+        session.commit()
+        session.refresh(issue)
+        return issue
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/operation-issues/{issue_id}/ignore", response_model=OperationIssueOut)
+def post_operation_issue_ignore(
+    issue_id: str,
+    payload: OperationIssueStatusRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        issue = ignore_operation_issue(session, current_user.tenant_id or 1, issue_id, current_user.name, payload.reason)
+        session.commit()
+        session.refresh(issue)
+        return issue
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
 
 
 @router.post("/api/rules/test", response_model=RuleTestOut)

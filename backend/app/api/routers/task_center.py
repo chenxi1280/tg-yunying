@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user
@@ -18,6 +18,7 @@ from app.schemas import (
     ChannelLikeTaskCreate,
     ChannelViewTaskConfigUpdate,
     ChannelViewTaskCreate,
+    ExecutionAttemptOut,
     GenerateTaskPreviewOut,
     GroupAIChatTaskConfigUpdate,
     GroupAIChatTaskPreviewRequest,
@@ -31,6 +32,7 @@ from app.schemas import (
     ReviewRejectRequest,
     TaskDetailOut,
     TaskOut,
+    TaskActionReasonRequest,
     TaskPrecheckOut,
     TaskPrecheckRequest,
     TaskRetryRequest,
@@ -55,7 +57,8 @@ from app.services.task_center import (
     generate_channel_comment_preview,
     generate_group_ai_chat_preview,
     get_task_detail,
-    list_actions,
+    list_actions_page,
+    list_action_attempts,
     list_reviews,
     list_tasks,
     pause_task,
@@ -208,9 +211,9 @@ def patch_task_settings(task_id: str, payload: TaskSettingsUpdate, session: Sess
 
 
 @router.delete("/api/tasks/{task_id}", status_code=204)
-def delete_task_route(task_id: str, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+def delete_task_route(task_id: str, payload: TaskActionReasonRequest, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        delete_task(session, current_user.tenant_id or 1, task_id, current_user.name)
+        delete_task(session, current_user.tenant_id or 1, task_id, current_user.name, payload.reason)
         return Response(status_code=204)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
@@ -281,9 +284,9 @@ def post_task_resume(task_id: str, session: Session = Depends(get_session), curr
 
 
 @router.post("/api/tasks/{task_id}/stop", response_model=TaskOut)
-def post_task_stop(task_id: str, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+def post_task_stop(task_id: str, payload: TaskActionReasonRequest, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return stop_task(session, current_user.tenant_id or 1, task_id, current_user.name)
+        return stop_task(session, current_user.tenant_id or 1, task_id, current_user.name, payload.reason)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -302,9 +305,9 @@ def post_task_retry(
 
 
 @router.post("/api/tasks/{task_id}/reset", response_model=TaskOut)
-def post_task_reset(task_id: str, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+def post_task_reset(task_id: str, payload: TaskActionReasonRequest, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return reset_task(session, current_user.tenant_id or 1, task_id, current_user.name)
+        return reset_task(session, current_user.tenant_id or 1, task_id, current_user.name, payload.reason)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -320,11 +323,46 @@ def get_task_stats(task_id: str, session: Session = Depends(get_session), curren
 @router.get("/api/tasks/{task_id}/actions", response_model=list[ActionOut])
 def get_task_actions(
     task_id: str,
+    response: Response,
     status: str | None = None,
+    action_type: str | None = None,
+    account_id: int | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    sort_by: str = Query(default="scheduled_at", pattern="^(scheduled_at|executed_at|created_at|status|action_type|account_id)$"),
+    sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    return list_actions(session, current_user.tenant_id or 1, task_id, status)
+    rows, total = list_actions_page(
+        session,
+        current_user.tenant_id or 1,
+        task_id,
+        status=status,
+        action_type=action_type,
+        account_id=account_id,
+        page=page,
+        page_size=page_size,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Page"] = str(page)
+    response.headers["X-Page-Size"] = str(page_size)
+    return rows
+
+
+@router.get("/api/tasks/{task_id}/actions/{action_id}/attempts", response_model=list[ExecutionAttemptOut])
+def get_task_action_attempts(
+    task_id: str,
+    action_id: str,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return list_action_attempts(session, current_user.tenant_id or 1, task_id, action_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
 
 
 @router.post("/api/tasks/recommend-accounts", response_model=list[RecommendedTaskAccountOut])
