@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Divider, Drawer, Input, InputNumber, Select, Space, Steps, Switch, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Divider, Drawer, Input, InputNumber, Modal, Select, Space, Steps, Switch, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, CheckCircle2, RefreshCcw } from 'lucide-react';
 import { api } from '../../shared/api/client';
@@ -72,7 +72,7 @@ const defaultProfileStrategy: ProfileStrategy = {
   username_prefix_hint: '',
   username_max_attempts: 3,
   forbidden_words: [],
-  custom_prompt: '像真实 TG 普通用户的随手昵称，不要正式姓名；可以像锅巴洋芋、蕉太狼、早睡失败、小熊便利店、不吃香菜这种随机网名。',
+  custom_prompt: '像真实 TG 普通用户的随手昵称，不要正式姓名；整批要明显不一样，昵称长短、简介字数、username 前缀都不要同一模板；可以像锅巴洋芋、蕉太狼、早睡失败、小熊便利店、不吃香菜这种随机网名。',
   overwrite_existing: false,
 };
 
@@ -131,7 +131,7 @@ export function AccountSecurityBatchDrawer({
   const [profileStrategy, setProfileStrategy] = React.useState<ProfileStrategy>(defaultProfileStrategy);
   const [avatarStrategy, setAvatarStrategy] = React.useState<AvatarStrategy>(defaultAvatarStrategy);
   const [reason, setReason] = React.useState('');
-  const [confirmText, setConfirmText] = React.useState('');
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [precheck, setPrecheck] = React.useState<AccountSecurityPrecheck | null>(null);
   const [precheckPayloadSignature, setPrecheckPayloadSignature] = React.useState('');
   const [batch, setBatch] = React.useState<AccountSecurityBatch | null>(null);
@@ -171,7 +171,7 @@ export function AccountSecurityBatchDrawer({
     setProfileStrategy(defaultProfileStrategy);
     setAvatarStrategy(defaultAvatarStrategy);
     setReason(modeConfig.reason);
-    setConfirmText('');
+    setConfirmOpen(false);
     setPrecheck(null);
     setPrecheckPayloadSignature('');
     setBatch(null);
@@ -214,10 +214,18 @@ export function AccountSecurityBatchDrawer({
     if (!precheck || !precheckPayloadSignature || precheckPayloadSignature === payloadSignature) return;
     setPrecheck(null);
     setBatch(null);
-    setConfirmText('');
+    setConfirmOpen(false);
     setEditedPreviewIds(new Set());
     setStep(0);
   }, [payloadSignature, precheck, precheckPayloadSignature]);
+
+  function errorMessage(error: unknown, fallback: string) {
+    return error instanceof Error ? error.message : fallback;
+  }
+
+  function mergeDraftAccountIds(ids: number[]) {
+    setDraftAccountIds((current) => Array.from(new Set([...current, ...ids])));
+  }
 
   function updatePreviewItem(accountId: number, patch: Partial<AccountSecurityPreviewItem>) {
     setPrecheck((current) => {
@@ -246,39 +254,49 @@ export function AccountSecurityBatchDrawer({
       setEditedPreviewIds(new Set());
       setBatch(null);
       setStep(1);
-      void message.success('预检完成');
+      void message.success(`预检完成：共 ${result.summary.total ?? 0} 个，可执行 ${result.summary.executable ?? 0} 个`);
+    } catch (error) {
+      void message.error(errorMessage(error, '预检失败'));
     } finally {
       setLoading(false);
     }
   }
 
-  async function createBatch() {
+  function openCreateConfirm() {
     if (!precheck) {
-      await runPrecheck();
+      void runPrecheck();
       return;
     }
     if (precheckPayloadSignature !== payloadSignature) {
       setPrecheck(null);
       setBatch(null);
-      setConfirmText('');
+      setConfirmOpen(false);
       setEditedPreviewIds(new Set());
       setStep(0);
       void message.warning('账号或策略已变化，请重新预检');
       return;
     }
-    if (confirmText !== '确认加固') {
-      void message.warning('请输入确认加固');
+    if ((precheck.summary.executable ?? 0) < 1 && editedPreviewIds.size < 1) {
+      void message.warning('当前没有可创建的账号，请处理阻塞原因后重新预检');
       return;
     }
+    setConfirmOpen(true);
+  }
+
+  async function createBatch() {
+    if (!precheck) return;
     setLoading(true);
     try {
       const result = await api<AccountSecurityBatch>('/tg-accounts/security-batches', {
         method: 'POST',
-        body: JSON.stringify({ ...payload, preview_overrides: previewOverrides, confirm_text: confirmText }),
+        body: JSON.stringify({ ...payload, preview_overrides: previewOverrides, confirm_text: '确认' }),
       });
       setBatch(result);
       setStep(2);
-      void message.success(`批次 #${result.id} 已创建`);
+      setConfirmOpen(false);
+      void message.success(`批次 #${result.id} 已创建：共 ${result.total_count} 个，成功 ${result.success_count}，失败 ${result.failed_count}，跳过 ${result.skipped_count}`);
+    } catch (error) {
+      void message.error(errorMessage(error, '创建批次失败'));
     } finally {
       setLoading(false);
     }
@@ -447,6 +465,8 @@ export function AccountSecurityBatchDrawer({
               onChange={setAccountFilter}
             />
             <Button onClick={() => setDraftAccountIds(filteredAccounts.map((account) => account.id))}>选择当前筛选</Button>
+            <Button onClick={() => mergeDraftAccountIds(filteredAccounts.slice(0, 100).map((account) => account.id))}>选当前筛选前 100 个</Button>
+            <Button onClick={() => mergeDraftAccountIds(filteredAccounts.map((account) => account.id))}>追加当前筛选全部</Button>
             <Button disabled={!draftAccountIds.length} onClick={() => setDraftAccountIds([])}>清空本批选择</Button>
           </Space>
           <Table<Account>
@@ -459,7 +479,7 @@ export function AccountSecurityBatchDrawer({
               selectedRowKeys: draftAccountIds,
               onChange: (keys) => setDraftAccountIds(keys.map(Number)),
             }}
-            pagination={{ pageSize: 6, showSizeChanger: false }}
+            pagination={{ pageSize: 100, showSizeChanger: true, pageSizeOptions: ['50', '100', '200'], showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条 / 共 ${total} 条` }}
             scroll={{ x: 820 }}
           />
         </Space>
@@ -530,13 +550,12 @@ export function AccountSecurityBatchDrawer({
         <Space wrap>
           <Button icon={<RefreshCcw size={16} />} loading={loading} onClick={runPrecheck}>预检 / AI 生成预览</Button>
           <Button icon={<Activity size={16} />} loading={loading} onClick={runPrecheck}>重抽全部</Button>
-          <Input value={confirmText} style={{ width: 160 }} placeholder="输入：确认加固" onChange={(event) => setConfirmText(event.target.value)} />
           <Button
             type="primary"
             icon={<CheckCircle2 size={16} />}
-            disabled={!precheck || confirmText !== '确认加固' || ((precheck.summary.executable ?? 0) < 1 && editedPreviewIds.size < 1)}
+            disabled={!precheck || ((precheck.summary.executable ?? 0) < 1 && editedPreviewIds.size < 1)}
             loading={loading}
-            onClick={createBatch}
+            onClick={openCreateConfirm}
           >
             确认创建批次
           </Button>
@@ -549,7 +568,7 @@ export function AccountSecurityBatchDrawer({
               rowKey="account_id"
               columns={previewColumns}
               dataSource={precheck.items}
-              pagination={{ pageSize: 6 }}
+              pagination={{ pageSize: 50, showSizeChanger: true, pageSizeOptions: ['20', '50', '100'] }}
               scroll={{ x: 920 }}
             />
           </Space>
@@ -563,12 +582,27 @@ export function AccountSecurityBatchDrawer({
               rowKey="id"
               columns={itemColumns}
               dataSource={batch.items}
-              pagination={{ pageSize: 6 }}
+              pagination={{ pageSize: 50, showSizeChanger: true, pageSizeOptions: ['20', '50', '100'] }}
               scroll={{ x: 960 }}
             />
           </Space>
         )}
       </Space>
+      <Modal
+        title={`确认创建${modeConfig.title}批次？`}
+        open={confirmOpen}
+        okText="确认"
+        cancelText="取消"
+        confirmLoading={loading}
+        onOk={createBatch}
+        onCancel={() => setConfirmOpen(false)}
+      >
+        <Space orientation="vertical" size={8}>
+          <Typography.Text>动作：{modeConfig.title}</Typography.Text>
+          <Typography.Text>账号：共 {precheck?.summary.total ?? 0} 个，可执行 {precheck?.summary.executable ?? 0} 个，需等待 {precheck?.summary.waiting ?? 0} 个，需人工处理 {precheck?.summary.manual_required ?? 0} 个。</Typography.Text>
+          <Typography.Text>原因：{reason || modeConfig.reason}</Typography.Text>
+        </Space>
+      </Modal>
     </Drawer>
   );
 }

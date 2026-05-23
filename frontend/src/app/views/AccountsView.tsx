@@ -84,6 +84,8 @@ export default function AccountsView({
   const accountTable = useAntdTableControls<Account>({
     rows: accounts,
     placeholder: '搜索账号 / username / 手机号 / 分组 / 状态 / 代理',
+    pageSize: 100,
+    pageSizeOptions: [50, 100, 200],
     search: [
       (account) => [
         account.id,

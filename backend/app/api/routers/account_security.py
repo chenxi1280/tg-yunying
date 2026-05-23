@@ -104,7 +104,7 @@ def post_account_security_cleanup_devices(
         require_resource_tenant(session, current_user, TgAccount, account_id)
         payload.account_ids = [account_id]
         payload.action_types = ["cleanup_devices"]
-        payload.confirm_text = payload.confirm_text or "确认加固"
+        payload.confirm_text = payload.confirm_text or "确认"
         payload.reason = _require_reason(payload.reason)
         return create_account_security_batch(session, current_user.tenant_id or 1, payload, current_user.name)
     except ValueError as exc:
@@ -124,7 +124,7 @@ def post_account_security_set_2fa(
         require_resource_tenant(session, current_user, TgAccount, account_id)
         payload.account_ids = [account_id]
         payload.action_types = ["set_two_fa"]
-        payload.confirm_text = payload.confirm_text or "确认加固"
+        payload.confirm_text = payload.confirm_text or "确认"
         payload.reason = _require_reason(payload.reason)
         return create_account_security_batch(session, current_user.tenant_id or 1, payload, current_user.name)
     except ValueError as exc:
@@ -145,7 +145,7 @@ def post_account_security_update_profile(
         payload.account_ids = [account_id]
         payload.action_types = payload.action_types or ["update_profile", "update_username", "update_avatar"]
         _require_batch_action_permissions(current_user, payload.action_types)
-        payload.confirm_text = payload.confirm_text or "确认加固"
+        payload.confirm_text = payload.confirm_text or "确认"
         payload.reason = _require_reason(payload.reason)
         return create_account_security_batch(session, current_user.tenant_id or 1, payload, current_user.name)
     except ValueError as exc:

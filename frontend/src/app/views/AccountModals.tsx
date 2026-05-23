@@ -312,7 +312,7 @@ export function AccountDetailModal({
     try {
       await api(`/tg-accounts/${accountDetail.account.id}/security/${securityReasonAction}`, {
         method: 'POST',
-        body: JSON.stringify({ reason, confirm_text: '确认加固' }),
+        body: JSON.stringify({ reason, confirm_text: '确认' }),
       });
       setSecurityDetail(await api<AccountSecurityDetail>(`/tg-accounts/${accountDetail.account.id}/security`));
       setSecurityReasonAction(null);
@@ -919,7 +919,7 @@ export function AccountDetailModal({
     <Modal
       title={securityReasonAction === 'set-2fa' ? '设置二步验证' : '清理外部设备'}
       open={Boolean(securityReasonAction)}
-      okText="确认加固"
+      okText="确认"
       cancelText="取消"
       okButtonProps={{ danger: true, disabled: !securityReason.trim() }}
       confirmLoading={securityLoading}

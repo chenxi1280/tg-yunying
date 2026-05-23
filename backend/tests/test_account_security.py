@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AiProvider, AccountStatus, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
+from app.models import AiProvider, AccountStatus, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
 from app.schemas import TgAccountCreate
 from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ProfileGenerationStrategy
 from app.security import encrypt_secret, encrypt_session
@@ -259,6 +259,53 @@ def test_ai_random_profile_preview_requests_large_batch_once(monkeypatch):
         assert preview.items[-1].generated_display_name == "测试名50"
 
 
+def test_local_profile_preview_diversifies_large_batches():
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TelegramDeveloperApp(
+                id=1,
+                app_name="测试开发者应用",
+                api_id=12345,
+                api_hash_ciphertext=encrypt_secret("hash"),
+                health_status="健康",
+            )
+        )
+        accounts = [
+            TgAccount(
+                id=index,
+                tenant_id=1,
+                display_name=f"导入0524-8740-{index:03d}",
+                phone_masked=f"138****{index:04d}",
+                developer_app_id=1,
+                developer_app_version=1,
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext=encrypt_session("session"),
+                health_score=90,
+            )
+            for index in range(1, 101)
+        ]
+        session.add_all(accounts)
+        session.commit()
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id for account in accounts],
+                action_types=["update_profile", "update_username"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+            ),
+        )
+
+        names = [item.generated_display_name for item in preview.items]
+        bios = [item.generated_bio for item in preview.items]
+        username_bases = {item.username_candidates[0].rsplit("_", 1)[0] for item in preview.items}
+        assert len(set(names)) == 100
+        assert len({len(bio) for bio in bios}) >= 8
+        assert len(username_bases) >= 30
+
+
 def test_precheck_invalid_avatar_source_warns_and_keeps_batch_executable():
     with _session() as session:
         account = _seed_account(session)
@@ -278,6 +325,44 @@ def test_precheck_invalid_avatar_source_warns_and_keeps_batch_executable():
         assert item.precheck_status == "executable"
         assert item.avatar_source == ""
         assert "头像素材不存在或不属于当前租户" in item.warnings
+
+
+def test_material_random_avatar_strategy_picks_reviewed_uploaded_image(tmp_path):
+    with _session() as session:
+        account = _seed_account(session)
+        avatar_path = tmp_path / "avatar.png"
+        avatar_path.write_bytes(b"\x89PNG\r\n\x1a\navatar")
+        session.add(
+            Material(
+                id=701,
+                tenant_id=1,
+                title="头像包A-avatar",
+                material_type="图片",
+                content=str(avatar_path),
+                tags="头像",
+                review_status="已审核",
+                source_kind="upload",
+                mime_type="image/png",
+                file_size=avatar_path.stat().st_size,
+            )
+        )
+        session.commit()
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id],
+                action_types=["update_avatar"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+                avatar_strategy=AvatarStrategy(mode="material_random"),
+            ),
+        )
+
+        item = preview.items[0]
+        assert item.precheck_status == "executable"
+        assert item.avatar_source == "material:701"
+        assert not item.warnings
 
 
 def test_profile_preview_does_not_refresh_security_state(monkeypatch):
@@ -364,6 +449,23 @@ def test_confirmed_batch_drains_profile_username_and_device_cleanup_independentl
         snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
         assert snapshot.external_authorization_count == 0
         assert snapshot.two_fa_password_ciphertext
+
+
+def test_modal_confirmation_text_starts_batch_without_legacy_phrase():
+    with _session() as session:
+        account = _seed_account(session)
+        payload = AccountSecurityBatchCreate(
+            account_ids=[account.id],
+            action_types=["update_profile"],
+            confirm_text="确认",
+            profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+            reason="测试弹窗确认",
+        )
+
+        batch = create_account_security_batch(session, 1, payload, "tester")
+
+        assert batch.status == "running"
+        assert batch.confirm_text == "确认"
 
 
 def test_waiting_account_security_item_is_retried_when_due(monkeypatch):

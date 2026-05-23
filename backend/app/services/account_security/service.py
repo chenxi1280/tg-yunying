@@ -16,6 +16,7 @@ from app.models import (
     AiProvider,
     AiProviderHealthStatus,
     Material,
+    MaterialGroup,
     TgAccount,
     TgAccountAuthorizationSnapshot,
     TgAccountProfileBatchRule,
@@ -49,17 +50,124 @@ PROFILE_AI_MAX_TIMEOUT_SECONDS = 180
 PROFILE_ACTIONS = {"update_profile", "update_username", "update_avatar"}
 SECURITY_ACTIONS = {"cleanup_devices", "set_two_fa"}
 ALL_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS
-AI_NAME_POOL = [
-    ("锅巴洋芋", "", "日常在线，随缘交流"),
-    ("蕉太狼", "", "偶尔冒泡，看到就回"),
-    ("早睡失败", "", "分享一点生活碎片"),
-    ("小熊便利店", "", "路过看看，随手聊聊"),
-    ("不吃香菜", "", "慢慢看，慢慢聊"),
-    ("月亮打烊", "", "喜欢记录一些小事"),
-    ("西瓜汽水", "", "看到有意思的会回两句"),
-    ("今天也很困", "", "在线时间不固定"),
-    ("糯米团子", "", "随缘交流，别太正式"),
-    ("橘子海", "", "爱看新鲜事"),
+PROFILE_NAME_PREFIXES = [
+    "锅巴",
+    "蕉太",
+    "早睡",
+    "小熊",
+    "香菜",
+    "月亮",
+    "西瓜",
+    "糯米",
+    "橘子",
+    "云朵",
+    "薄荷",
+    "汽水",
+    "青柠",
+    "山竹",
+    "奶盖",
+    "小满",
+    "晚风",
+    "松弛",
+    "芋泥",
+    "海盐",
+]
+PROFILE_NAME_SUFFIXES = [
+    "洋芋",
+    "打烊",
+    "便利店",
+    "失败",
+    "不加冰",
+    "慢半拍",
+    "看热闹",
+    "路过中",
+    "在摸鱼",
+    "今天困",
+    "小卖部",
+    "备忘录",
+    "散步中",
+    "没电了",
+    "等风来",
+    "加点糖",
+    "观察员",
+    "碎碎念",
+    "日记本",
+    "开小差",
+]
+PROFILE_BIO_POOL = [
+    "日常在线，随缘交流",
+    "看到有意思的会回两句",
+    "慢慢看，慢慢聊",
+    "偶尔冒泡，不太正式",
+    "记录一点生活碎片",
+    "在线时间不固定，路过就看看",
+    "喜欢新鲜事，也喜欢安静围观",
+    "不赶时间，看到合适的话题会接一句",
+    "今天也在认真看消息，偶尔分享小想法",
+    "偏随缘的普通用户，熟一点就多聊两句",
+    "有空会回，没空就先收藏着",
+    "看见好玩的内容会停一下，顺手聊两句",
+]
+PROFILE_BIO_TAILS = [
+    "",
+    "。",
+    "，先收藏。",
+    "，有空再细看。",
+    "，偶尔会冒泡。",
+    "，不太爱刷屏。",
+    "，看到合适的就接一句。",
+    "，更多时候安静围观。",
+    "，熟一点以后会多聊几句。",
+    "，在线的时候回复比较快。",
+]
+PROFILE_USERNAME_WORDS = [
+    "guoba",
+    "banana",
+    "sleepy",
+    "bear",
+    "mint",
+    "moon",
+    "melon",
+    "mochi",
+    "orange",
+    "cloud",
+    "soda",
+    "lime",
+    "mango",
+    "milk",
+    "yuni",
+    "wind",
+    "salt",
+    "diary",
+    "daily",
+    "street",
+    "snack",
+    "corner",
+    "garden",
+    "bubble",
+    "lofi",
+]
+PROFILE_USERNAME_TRAITS = [
+    "note",
+    "walk",
+    "chat",
+    "light",
+    "fresh",
+    "room",
+    "day",
+    "loop",
+    "talk",
+    "wave",
+    "leaf",
+    "box",
+    "cup",
+    "memo",
+    "zone",
+    "tiny",
+    "mood",
+    "ping",
+    "spot",
+    "line",
 ]
 
 
@@ -357,7 +465,7 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
         if invalid_usernames:
             blockers.append(f"username 候选格式错误：{','.join(invalid_usernames)}")
             status = "manual_required"
-        avatar_source = str(generated_item.get("avatar_source") or _avatar_source(index, payload.avatar_strategy))
+        avatar_source = str(generated_item.get("avatar_source") or _avatar_source(session, account, index, payload.avatar_strategy))
         if "update_avatar" in action_types:
             avatar_error = _validate_avatar_source(session, account, avatar_source)
             if avatar_error:
@@ -398,7 +506,7 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
 
 def create_account_security_batch(session: Session, tenant_id: int, payload: AccountSecurityBatchCreate, actor: str) -> AccountSecurityBatchOut:
     preview = precheck_account_security_batch(session, tenant_id, payload)
-    confirmed = payload.confirm_text == "确认加固"
+    confirmed = _is_batch_confirmed(payload.confirm_text)
     initial_status = "running" if confirmed and preview.summary.get("executable", 0) > 0 else "ready"
     batch = TgAccountSecurityBatch(
         tenant_id=tenant_id,
@@ -944,6 +1052,8 @@ def _generate_profiles_with_ai(session: Session, tenant_id: int, accounts: list[
         f"用户补充命名风格：{style_prompt or '像真实 TG 普通用户的随手昵称，不要正式姓名'}\n"
         "昵称要求：display_name 要像真实用户网名/昵称，随机、生活化、有网感，可以是中文短语、食物、梗名、心情或轻微拟人化；"
         "例如：锅巴洋芋、蕉太狼、早睡失败、小熊便利店、不吃香菜、月亮打烊。不要批量生成“张雨晴、李浩然、王思远”这类正式姓名，避免公司/客服/营销号口吻，避免规律序号。\n"
+        "整批差异要求：不要使用同一命名公式、同一字数、同一简介句式或同一 username 前缀批量套壳；"
+        "至少混合短昵称、长一点的生活化昵称、无厘头昵称、食物/心情/场景类昵称；简介长度也要有明显差异。\n"
         "姓名字段要求：first_name 可以直接等于 display_name；last_name 可以为空，不要强行拆成中文姓氏和名字。\n"
         "username 要求：只能包含英文字母、数字、下划线，且以字母开头，长度 5-32；可以根据昵称意译或拼音化生成，不要包含中文。\n"
         '只输出 JSON：{"items":[{"display_name":"锅巴洋芋","first_name":"锅巴洋芋","last_name":"","bio":"看到有意思的会回两句","username_candidates":["guoba_yangyu","potato_crisp","yangyu_daily"]}]}'
@@ -1024,14 +1134,16 @@ def _generate_profiles_from_local_pool(accounts: list[TgAccount], strategy) -> l
     forbidden = {word.strip() for word in strategy.forbidden_words if word.strip()}
     results: list[dict[str, object]] = []
     for index, account in enumerate(accounts):
-        display_name, suffix, bio = AI_NAME_POOL[(account.id + index) % len(AI_NAME_POOL)]
-        if suffix:
-            display_name = f"{display_name}{suffix}"
+        display_name = _local_profile_display_name(account.id, index)
+        bio = (
+            PROFILE_BIO_POOL[(account.id * 3 + index) % len(PROFILE_BIO_POOL)]
+            + PROFILE_BIO_TAILS[(account.id * 5 + index) % len(PROFILE_BIO_TAILS)]
+        )
         if any(word in display_name for word in forbidden):
             display_name = f"用户{account.id}"
         first_name = display_name
         last_name = ""
-        username_base = (strategy.username_prefix_hint or _romanize_name(display_name) or f"user{account.id}").lower()
+        username_base = (strategy.username_prefix_hint or _local_profile_username_base(account.id, index) or _romanize_name(display_name) or f"user{account.id}").lower()
         username_base = re.sub(r"[^a-z0-9_]", "", username_base)[:20] or f"user{account.id}"
         candidates = [f"{username_base}_{account.id + offset:03d}" for offset in range(strategy.username_max_attempts)]
         results.append(
@@ -1046,6 +1158,27 @@ def _generate_profiles_from_local_pool(accounts: list[TgAccount], strategy) -> l
     return results
 
 
+def _local_profile_display_name(account_id: int, index: int) -> str:
+    combo_count = len(PROFILE_NAME_PREFIXES) * len(PROFILE_NAME_SUFFIXES)
+    combo_index = (account_id * 37 + index * 101) % combo_count
+    prefix = PROFILE_NAME_PREFIXES[combo_index // len(PROFILE_NAME_SUFFIXES)]
+    suffix = PROFILE_NAME_SUFFIXES[combo_index % len(PROFILE_NAME_SUFFIXES)]
+    name = f"{prefix}{suffix}"
+    if index >= combo_count:
+        return f"{name}{index + 1}"
+    return name
+
+
+def _local_profile_username_base(account_id: int, index: int) -> str:
+    word = PROFILE_USERNAME_WORDS[(account_id + index) % len(PROFILE_USERNAME_WORDS)]
+    trait = PROFILE_USERNAME_TRAITS[(account_id * 5 + index * 2) % len(PROFILE_USERNAME_TRAITS)]
+    return f"{word}_{trait}"
+
+
+def _is_batch_confirmed(confirm_text: str) -> bool:
+    return confirm_text.strip() in {"确认", "确认创建", "确认创建批次", "确认执行", "确认加固"}
+
+
 def _romanize_name(value: str) -> str:
     # Local deterministic fallback for preview tests; live AI output can provide richer candidates.
     return "tguser"
@@ -1056,12 +1189,41 @@ def _can_replace_display_name(display_name: str | None) -> bool:
     return value in GENERIC_DISPLAY_NAMES or bool(SYSTEM_DISPLAY_NAME_RE.match(value))
 
 
-def _avatar_source(index: int, strategy) -> str:
+def _avatar_source(session: Session, account: TgAccount, index: int, strategy) -> str:
     if strategy.avatar_sources:
         return strategy.avatar_sources[index % len(strategy.avatar_sources)]
+    if strategy.mode in {"material_random", "sequential"}:
+        material_sources = _material_avatar_sources(session, account.tenant_id, strategy)
+        if material_sources:
+            source_index = index if strategy.mode == "sequential" else account.id * 7 + index * 3
+            return material_sources[source_index % len(material_sources)]
     if strategy.material_group_id:
         return f"material_group:{strategy.material_group_id}:{index + 1}"
     return ""
+
+
+def _material_avatar_sources(session: Session, tenant_id: int, strategy) -> list[str]:
+    stmt = (
+        select(Material)
+        .where(
+            Material.tenant_id == tenant_id,
+            Material.material_type == "图片",
+            Material.review_status == "已审核",
+            Material.source_kind == "upload",
+            Material.mime_type.in_(["image/jpeg", "image/png", "image/webp"]),
+            Material.content != "",
+        )
+        .order_by(Material.id.asc())
+    )
+    materials = list(session.scalars(stmt))
+    if strategy.material_group_id:
+        group = session.get(MaterialGroup, strategy.material_group_id)
+        if group and group.tenant_id == tenant_id and group.name:
+            group_name = group.name.strip()
+            materials = [material for material in materials if group_name in material.title or group_name in material.tags]
+    preferred = [material for material in materials if "头像" in f"{material.title} {material.tags}".lower() or "avatar" in f"{material.title} {material.tags}".lower()]
+    candidates = preferred or materials
+    return [f"material:{material.id}" for material in candidates if Path(material.content).exists()]
 
 
 __all__ = [
