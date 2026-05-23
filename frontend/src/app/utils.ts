@@ -12,6 +12,7 @@ export const VIEW_PERMISSION: Record<string, string> = {
   riskControl: 'risk.view',
   archives: 'archives.view',
   usageReports: 'usage.view',
+  materials: 'materials.view',
   systemConfig: 'system.view',
   audits: 'audits.view',
   adminManual: 'manual.view',

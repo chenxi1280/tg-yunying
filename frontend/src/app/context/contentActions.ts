@@ -102,6 +102,27 @@ export function createContentActions(params: ContentActionParams) {
     await params.refresh();
   }
 
+  async function disableMaterial(material: Material) {
+    params.setBusy('禁用素材');
+    const updated = await api<Material>(`/materials/${material.id}/disable`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: '素材中心手动禁用' }),
+    });
+    params.setMaterials((current) => current.map((item) => item.id === updated.id ? updated : item));
+    params.showResult('素材已禁用', `已禁用素材：${updated.title}`);
+    await params.refresh();
+  }
+
+  async function restoreMaterial(material: Material) {
+    params.setBusy('恢复素材');
+    const updated = await api<Material>(`/materials/${material.id}/restore`, {
+      method: 'POST',
+    });
+    params.setMaterials((current) => current.map((item) => item.id === updated.id ? updated : item));
+    params.showResult('素材已恢复', `已恢复素材：${updated.title}`);
+    await params.refresh();
+  }
+
   function openContentKeywordRuleEdit(rule: ContentKeywordRule) {
     params.setKeywordRuleForm({
       id: rule.id,
@@ -139,7 +160,9 @@ export function createContentActions(params: ContentActionParams) {
 
   return {
     createMaterial,
+    disableMaterial,
     openMaterialEdit,
+    restoreMaterial,
     saveMaterial,
     createContentKeywordRule,
     openContentKeywordRuleEdit,

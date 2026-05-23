@@ -171,7 +171,7 @@ export default function AccountsView({
           <Avatar src={account.avatar_preview_url ? avatarUrl(account.avatar_preview_url) : undefined}>
             {account.display_name.slice(0, 1)}
           </Avatar>
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             <Typography.Text strong>{account.display_name}</Typography.Text>
             <Typography.Text type="secondary">@{account.username ?? '未设置'} / {accountPhone(account)}</Typography.Text>
             <Typography.Text type="secondary">账号分组：{account.pool_name}</Typography.Text>
@@ -185,7 +185,7 @@ export default function AccountsView({
       key: 'status',
       width: 150,
       render: (_, account) => (
-        <Space direction="vertical" size={4}>
+        <Space orientation="vertical" size={4}>
           <StatusBadge status={account.status} />
           <StatusBadge status={account.profile_sync_status} label={`资料 ${account.profile_sync_status}`} />
         </Space>
@@ -196,7 +196,7 @@ export default function AccountsView({
       key: 'developer',
       width: 190,
       render: (_, account) => (
-        <Space direction="vertical" size={2}>
+        <Space orientation="vertical" size={2}>
           <Typography.Text strong>{account.developer_app_name ? '正常' : '未绑定'}</Typography.Text>
           <Typography.Text type="secondary">{account.developer_app_name ? '登录能力已分配' : '登录时自动准备'}</Typography.Text>
           {canSecurityRead && <StatusBadge status={account.developer_app_health_status ?? '未配置'} label={account.developer_app_health_status === '健康' ? '正常' : account.developer_app_health_status ?? '未配置'} />}
@@ -226,7 +226,7 @@ export default function AccountsView({
       render: (_, account) => {
         const profileComplete = Boolean(account.avatar_object_key && account.username && account.tg_first_name);
         return (
-          <Space direction="vertical" size={4}>
+          <Space orientation="vertical" size={4}>
             {canSecurityRead && <StatusBadge status={account.status === '在线' ? '待确认' : '不可用'} label={account.status === '在线' ? '安全待刷新' : '安全不可用'} />}
             <StatusBadge status={profileComplete ? '已完成' : '待处理'} label={profileComplete ? '资料完整' : '资料待初始化'} />
             <Typography.Text type="secondary">{account.username ? `@${account.username}` : '未设置 username'}</Typography.Text>
@@ -244,7 +244,7 @@ export default function AccountsView({
           return <Typography.Text type="secondary">等待汇总</Typography.Text>;
         }
         return (
-          <Space direction="vertical" size={4}>
+          <Space orientation="vertical" size={4}>
             <Space size={4} wrap>
               <StatusBadge status={availability.send_available ? '可用' : '不可用'} label="发" />
               <StatusBadge status={availability.listen_available ? '可用' : '不可用'} label="听" />
@@ -306,7 +306,7 @@ export default function AccountsView({
           className="sub-panel compact-panel"
           type="warning"
           showIcon
-          message="请先配置开发者应用"
+          title="请先配置开发者应用"
           description="新增 TG 账号需要可用的 Telegram api_id/api_hash。配置完成并保持健康后，账号新增和登录入口会自动启用。"
           action={<Button type="primary" size="small" onClick={onConfigureDeveloperApps}>去配置开发者应用</Button>}
         />

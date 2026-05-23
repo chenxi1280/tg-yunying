@@ -1,6 +1,6 @@
 import React from 'react';
 import { Activity, RefreshCcw, Send, ShieldAlert, Smartphone, Users } from 'lucide-react';
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Input, List, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Input, Select, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { OperationCenterSummary, OperationIssue, OperationIssueDetail, OperationPlan, OperationPlanApplyResult, OperationPlanGenerateResult, OperationPlanPreview, OperationTarget, Overview, TargetRuntimeSummary } from '../types';
 import { StatCard, Badge, StatusBadge } from '../components/shared';
@@ -10,7 +10,7 @@ import { api } from '../../shared/api/client';
 
 type ActivityPoint = NonNullable<Overview['activity_24h']>[number];
 type MetricKey = 'sent_messages' | 'likes' | 'comments' | 'success_rate' | 'failure_rate';
-type IssueAction = 'acknowledge' | 'resolve' | 'ignore';
+type IssueAction = 'claim' | 'acknowledge' | 'resolve' | 'ignore';
 type PlanEditForm = {
   name: string;
   description: string;
@@ -182,6 +182,27 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
     }
   }
 
+  async function changePlanLifecycle(plan: OperationPlan, action: 'pause' | 'resume' | 'copy' | 'archive') {
+    const labels = {
+      pause: '暂停',
+      resume: '恢复',
+      copy: '复制',
+      archive: '归档',
+    };
+    if (action === 'archive') {
+      const ok = window.confirm(`确认归档运营方案「${plan.name}」？归档后不会继续作为日常方案入口。`);
+      if (!ok) return;
+    }
+    setPlanBusy(`${plan.id}:${action}`);
+    try {
+      await api<OperationPlan>(`/operation-plans/${plan.id}/${action}`, { method: 'POST', body: JSON.stringify({}) });
+      await loadOperationData();
+      void message.success(`运营方案已${labels[action]}`);
+    } finally {
+      setPlanBusy('');
+    }
+  }
+
   function openPlanEditor(plan: OperationPlan) {
     const taskTypes = plan.task_blueprints.map((item) => String(item.task_type || item.type || '')).filter(Boolean);
     setEditingPlan(plan);
@@ -347,7 +368,7 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       key: 'target',
       width: 280,
       render: (_, row) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <Typography.Text strong>{row.target?.title ?? `目标 #${row.targetId}`}</Typography.Text>
           <Typography.Text type="secondary">{row.target?.target_type === 'channel' ? '频道' : '群'} / {row.target?.username ? `@${row.target.username}` : row.target?.tg_peer_id ?? '-'}</Typography.Text>
         </Space>
@@ -381,8 +402,9 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
     { title: '等级', dataIndex: 'severity', width: 90, render: (value) => <Badge tone={severityTone(value)}>{severityLabel(value)}</Badge> },
     { title: '目标', dataIndex: 'target_id', width: 110, render: (value) => value ? `#${value}` : '未绑定' },
     { title: '失败类型', dataIndex: 'failure_type', width: 160, render: (value) => value || '-' },
-    { title: '关联任务', dataIndex: 'source_task_id', width: 180, render: (value) => value || '-' },
-    { title: '影响账号', key: 'accounts', width: 100, render: (_, issue) => issue.affected_account_ids.length },
+    { title: '处理方式', dataIndex: 'handling_mode', width: 120, render: (value) => handlingModeLabel(value) },
+    { title: '关联任务', dataIndex: 'source_task_id', width: 180, render: (value, issue) => issue.affected_task_count || value || '-' },
+    { title: '影响账号', key: 'accounts', width: 100, render: (_, issue) => issue.affected_account_count || issue.affected_account_ids.length },
     { title: '最后出现', dataIndex: 'last_seen_at', width: 190, render: (value) => formatBeijingDateTime(value) },
     {
       title: '操作',
@@ -430,7 +452,7 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
     { title: '阻塞原因', dataIndex: 'blocking_reasons', ellipsis: true, render: (value) => renderPreviewList(value) },
   ];
   const impactColumns: ColumnsType<Record<string, any>> = [
-    { title: '任务', key: 'task', width: 250, render: (_, item) => <Space direction="vertical" size={0}><Typography.Text strong>{item.task_name || item.task_id}</Typography.Text><Typography.Text type="secondary">{item.task_type} / {item.task_status}</Typography.Text></Space> },
+    { title: '任务', key: 'task', width: 250, render: (_, item) => <Space orientation="vertical" size={0}><Typography.Text strong>{item.task_name || item.task_id}</Typography.Text><Typography.Text type="secondary">{item.task_type} / {item.task_status}</Typography.Text></Space> },
     { title: '目标', dataIndex: 'target_title', width: 190, ellipsis: true, render: (value, item) => value || (item.target_id ? `#${item.target_id}` : '-') },
     { title: '变更字段', dataIndex: 'changed_fields', width: 220, render: (value) => renderChangedFields(value) },
     { title: '是否应用', key: 'will_update', width: 110, render: (_, item) => item.will_update ? <Tag color="blue">待确认</Tag> : <Tag>不更新</Tag> },
@@ -502,44 +524,49 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       </Card>
 
       <Card className="panel" title="运营方案 / 策略模板" extra={<Button loading={planBusy === 'create'} onClick={() => void createDefaultPlan()}>新建默认方案</Button>}>
-        <List
-          className="risk-list"
-          dataSource={plans}
-          locale={{ emptyText: '暂无运营方案。先选择目标创建方案，再预览并生成任务。' }}
-          renderItem={(plan) => (
-            <List.Item
-              actions={[
-                <Button key="edit" size="small" loading={planBusy === `${plan.id}:edit`} onClick={() => openPlanEditor(plan)}>编辑方案</Button>,
-                <Button key="preview" size="small" loading={planBusy === `${plan.id}:preview`} onClick={() => void previewPlan(plan)}>生成预览</Button>,
-                <Button key="draft" size="small" loading={planBusy === `${plan.id}:draft`} onClick={() => void generatePlanTasks(plan, false)}>生成草稿</Button>,
-                <Button key="generate" type="primary" size="small" loading={planBusy === `${plan.id}:generate`} onClick={() => void generatePlanTasks(plan, true)}>生成并启动</Button>,
-                <Button key="impact" size="small" loading={planBusy === `${plan.id}:impact`} disabled={!plan.task_links.length} onClick={() => void openImpactPreview(plan)}>调整关联任务</Button>,
-              ]}
-            >
-              <List.Item.Meta
-                title={<Space><Badge tone={plan.status === 'active' ? 'positive' : 'warning'}>{plan.status}</Badge>{plan.name}</Space>}
-                description={`目标 ${plan.targets.length} 个 / 关联任务 ${plan.task_links.length} 个 / 最近效果 ${plan.latest_run?.status ?? '暂无'} / 最近异常 ${planIssueCount(plan, issues)} 个 / 最近运行 ${plan.latest_run?.run_type ?? '暂无'}`}
-              />
-            </List.Item>
-          )}
-        />
+        {plans.length ? (
+          <div className="risk-list">
+            {plans.map((plan) => {
+              const archived = plan.status === 'archived';
+              return (
+                <article key={plan.id}>
+                <div className="list-item-main">
+                  <Space wrap><Badge tone={plan.status === 'active' ? 'positive' : plan.status === 'archived' ? 'neutral' : 'warning'}>{plan.status}</Badge><strong>{plan.name}</strong></Space>
+                  <p>{`目标 ${plan.targets.length} 个 / 关联任务 ${plan.task_links.length} 个 / 最近效果 ${plan.latest_run?.status ?? '暂无'} / 最近异常 ${planIssueCount(plan, issues)} 个 / 最近运行 ${plan.latest_run?.run_type ?? '暂无'}`}</p>
+                </div>
+                <Space size={6} wrap>
+                  <Button size="small" loading={planBusy === `${plan.id}:edit`} onClick={() => openPlanEditor(plan)}>编辑方案</Button>
+                  <Button size="small" loading={planBusy === `${plan.id}:preview`} disabled={archived} onClick={() => void previewPlan(plan)}>生成预览</Button>
+                  <Button size="small" loading={planBusy === `${plan.id}:draft`} disabled={archived} onClick={() => void generatePlanTasks(plan, false)}>生成草稿</Button>
+                  <Button type="primary" size="small" loading={planBusy === `${plan.id}:generate`} disabled={archived} onClick={() => void generatePlanTasks(plan, true)}>生成并启动</Button>
+                  <Button size="small" loading={planBusy === `${plan.id}:impact`} disabled={archived || !plan.task_links.length} onClick={() => void openImpactPreview(plan)}>调整关联任务</Button>
+                  {plan.status === 'paused'
+                    ? <Button size="small" loading={planBusy === `${plan.id}:resume`} onClick={() => void changePlanLifecycle(plan, 'resume')}>恢复</Button>
+                    : <Button size="small" loading={planBusy === `${plan.id}:pause`} disabled={archived} onClick={() => void changePlanLifecycle(plan, 'pause')}>暂停</Button>}
+                  <Button size="small" loading={planBusy === `${plan.id}:copy`} onClick={() => void changePlanLifecycle(plan, 'copy')}>复制</Button>
+                  <Button size="small" danger loading={planBusy === `${plan.id}:archive`} disabled={archived} onClick={() => void changePlanLifecycle(plan, 'archive')}>归档</Button>
+                </Space>
+                </article>
+              );
+            })}
+          </div>
+        ) : <Empty description="暂无运营方案。先选择目标创建方案，再预览并生成任务。" />}
       </Card>
 
       <Card className="panel" title="风险提醒" extra={<Typography.Text type="secondary">保留账号、目标、监听与执行风险</Typography.Text>}>
-        <List
-          className="risk-list"
-          dataSource={overview.risks}
-          locale={{ emptyText: '暂无风险提醒。' }}
-          renderItem={(risk) => (
-            <List.Item>
-              <List.Item.Meta
-                avatar={<Badge tone={riskTone(risk.level)}>{risk.level}</Badge>}
-                title={risk.title}
-                description={risk.detail}
-              />
-            </List.Item>
-          )}
-        />
+        {overview.risks?.length ? (
+          <div className="risk-list">
+            {overview.risks.map((risk, index) => (
+              <article key={`${risk.level}:${risk.title}:${index}`}>
+                <Badge tone={riskTone(risk.level)}>{risk.level}</Badge>
+                <div>
+                  <strong>{risk.title}</strong>
+                  <p>{risk.detail}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : <Empty description="暂无风险提醒。" />}
       </Card>
 
       <div className="overview-chart-grid">
@@ -557,12 +584,12 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       <Drawer
         title={editingPlan ? `编辑方案：${editingPlan.name}` : '编辑方案'}
         open={planEditOpen}
-        width={760}
+        size="large"
         onClose={() => setPlanEditOpen(false)}
         destroyOnHidden
         extra={<Button type="primary" loading={editingPlan ? planBusy === `${editingPlan.id}:edit` : false} onClick={() => void savePlanEditor()}>保存方案</Button>}
       >
-        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={16} style={{ width: '100%' }}>
           <label className="form-field">
             <span>方案名称</span>
             <Input value={planEditForm.name} onChange={(event) => setPlanEditForm((form) => ({ ...form, name: event.target.value }))} maxLength={160} />
@@ -618,14 +645,14 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       <Drawer
         title={impactPlan ? `关联任务影响预览：${impactPlan.name}` : '关联任务影响预览'}
         open={impactOpen}
-        width={980}
+        size="large"
         onClose={() => setImpactOpen(false)}
         destroyOnHidden
         extra={<Button type="primary" danger loading={impactPlan ? planBusy === `${impactPlan.id}:apply` : false} disabled={!impactResult?.impact_preview?.changed_task_count} onClick={() => void confirmImpactApply()}>确认应用</Button>}
       >
         {!impactResult && <div className="sub-panel compact-panel">生成影响预览中...</div>}
         {impactResult && (
-          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={16} style={{ width: '100%' }}>
             <Descriptions
               bordered
               column={4}
@@ -666,13 +693,13 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       <Drawer
         title={`方案生成预览${planPreviewTitle ? `：${planPreviewTitle}` : ''}`}
         open={planPreviewOpen}
-        width={960}
+        size="large"
         onClose={() => setPlanPreviewOpen(false)}
         destroyOnHidden
       >
         {!planPreview && <div className="sub-panel compact-panel">生成中...</div>}
         {planPreview && (
-          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={16} style={{ width: '100%' }}>
             <Descriptions
               bordered
               column={4}
@@ -722,11 +749,12 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       <Drawer
         title={issueDetail?.issue ? `目标异常 ${issueDetail.issue.id}` : '目标异常'}
         open={issueDrawerOpen}
-        width={920}
+        size="large"
         onClose={() => setIssueDrawerOpen(false)}
         destroyOnHidden
         extra={issueDetail?.issue && (
           <Space>
+            <Button size="small" loading={issueBusy === 'claim'} onClick={() => void changeIssueStatus('claim')}>认领处理</Button>
             <Button size="small" loading={issueBusy === 'acknowledge'} onClick={() => void changeIssueStatus('acknowledge')}>确认异常</Button>
             <Button size="small" loading={issueBusy === 'resolve'} onClick={() => void changeIssueStatus('resolve')}>标记解决</Button>
             <Button size="small" danger loading={issueBusy === 'ignore'} onClick={() => void changeIssueStatus('ignore')}>忽略</Button>
@@ -745,8 +773,12 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
                 { key: 'severity', label: '等级', children: <Badge tone={severityTone(issueDetail.issue.severity)}>{severityLabel(issueDetail.issue.severity)}</Badge> },
                 { key: 'target', label: '目标', children: issueDetail.target?.title ?? (issueDetail.issue.target_id ? `#${issueDetail.issue.target_id}` : '-') },
                 { key: 'task', label: '关联任务', children: issueDetail.source_task?.name ?? issueDetail.issue.source_task_id ?? '-' },
+                { key: 'counts', label: '影响范围', children: `任务 ${issueDetail.issue.affected_task_count || 0} / 账号 ${issueDetail.issue.affected_account_count || issueDetail.affected_accounts.length}` },
+                { key: 'mode', label: '处理方式', children: handlingModeLabel(issueDetail.issue.handling_mode) },
                 { key: 'failure_type', label: '失败类型', children: issueDetail.issue.failure_type || '-' },
                 { key: 'last_seen', label: '最后出现', children: formatBeijingDateTime(issueDetail.issue.last_seen_at) },
+                { key: 'claimed_by', label: '处理负责人', children: issueDetail.issue.claimed_by ? `${issueDetail.issue.claimed_by} / ${formatBeijingDateTime(issueDetail.issue.claimed_at)}` : '-' },
+                { key: 'return_to', label: '返回上下文', span: 2, children: returnToLabel(issueDetail.issue.return_to) },
                 { key: 'failure_reason', label: '失败原因', span: 2, children: issueDetail.issue.failure_reason || '-' },
                 { key: 'suggested_action', label: '建议动作', span: 2, children: issueDetail.issue.suggested_action || '-' },
               ]}
@@ -760,25 +792,43 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
             </Space>
             <div className="operation-issue-section">
               <div className="section-title-row">
+                <Typography.Title level={4}>来源明细</Typography.Title>
+                <Typography.Text type="secondary">{issueDetail.sources.length} 条来源 / {issueDetail.issue_accounts.length} 个账号影响</Typography.Text>
+              </div>
+              <Table<Record<string, any>>
+                className="tg-table"
+                rowKey="id"
+                columns={[
+                  { title: '来源类型', dataIndex: 'source_type', width: 110 },
+                  { title: '来源 ID', dataIndex: 'source_id', ellipsis: true },
+                  { title: '失败类型', dataIndex: 'failure_type', width: 160, render: (value) => value || '-' },
+                  { title: '最近出现', dataIndex: 'latest_seen_at', width: 180, render: (value) => formatBeijingDateTime(value) },
+                ]}
+                dataSource={issueDetail.sources}
+                pagination={{ pageSize: 6 }}
+                scroll={{ x: 760 }}
+                locale={{ emptyText: '暂无来源明细。' }}
+                size="small"
+              />
+            </div>
+            <div className="operation-issue-section">
+              <div className="section-title-row">
                 <Typography.Title level={4}>影响账号</Typography.Title>
                 <Typography.Text type="secondary">{issueDetail.affected_accounts.length} 个</Typography.Text>
               </div>
-              <List
-                dataSource={issueDetail.affected_accounts}
-                locale={{ emptyText: '暂无账号影响明细。' }}
-                renderItem={(account) => (
-                  <List.Item
-                    actions={[
-                      <Button key="detail" size="small" icon={<Smartphone size={14} />} onClick={() => onOpenAccountDetail?.(Number(account.id))}>账号详情</Button>,
-                    ]}
-                  >
-                    <List.Item.Meta
-                      title={account.display_name ?? `账号 #${account.id}`}
-                      description={`@${account.username ?? '未设置'} / ${account.status ?? '-'} / 健康分 ${account.health_score ?? '-'}`}
-                    />
-                  </List.Item>
-                )}
-              />
+              {issueDetail.affected_accounts.length ? (
+                <div className="risk-list">
+                  {issueDetail.affected_accounts.map((account) => (
+                    <article key={account.id}>
+                      <div>
+                        <strong>{account.display_name ?? `账号 #${account.id}`}</strong>
+                        <p>{`@${account.username ?? '未设置'} / ${account.status ?? '-'} / 健康分 ${account.health_score ?? '-'}`}</p>
+                      </div>
+                      <Button size="small" icon={<Smartphone size={14} />} onClick={() => onOpenAccountDetail?.(Number(account.id))}>账号详情</Button>
+                    </article>
+                  ))}
+                </div>
+              ) : <Empty description="暂无账号影响明细。" />}
             </div>
             <div className="operation-issue-section">
               <div className="section-title-row">
@@ -836,9 +886,30 @@ function severityLabel(value?: string) {
 }
 
 function issueActionLabel(action: IssueAction) {
+  if (action === 'claim') return '认领处理';
   if (action === 'acknowledge') return '确认异常';
   if (action === 'resolve') return '标记解决';
   return '忽略异常';
+}
+
+function handlingModeLabel(value?: string) {
+  if (value === 'modal') return '弹窗处理';
+  if (value === 'drawer') return '抽屉处理';
+  if (value === 'deep_link') return '深链跳转';
+  return value || '-';
+}
+
+function returnToLabel(value?: Record<string, any>) {
+  if (!value || Object.keys(value).length === 0) return '-';
+  const filters = value.filters && typeof value.filters === 'object' ? value.filters : {};
+  const parts = [
+    value.page ? `页面 ${value.page}` : '',
+    value.target_id ? `目标 #${value.target_id}` : '',
+    value.task_id ? `任务 ${value.task_id}` : '',
+    value.source_issue_id ? `来源 ${value.source_issue_id}` : '',
+    filters.status ? `状态 ${filters.status}` : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' / ') : '-';
 }
 
 function renderPreviewList(value?: unknown) {
@@ -955,8 +1026,8 @@ function LineChart({ data, series, maxValue, suffix }: { data: ActivityPoint[]; 
   return (
     <div className="chart-wrap">
       <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="24小时折线图">
-        {yTicks.map((tick) => (
-          <g key={tick}>
+        {yTicks.map((tick, index) => (
+          <g key={`${tick}:${index}`}>
             <line className="chart-grid-line" x1={padding.left} x2={width - padding.right} y1={yFor(tick)} y2={yFor(tick)} />
             <text className="chart-axis-label" x={padding.left - 10} y={yFor(tick) + 4} textAnchor="end">{tick}{suffix}</text>
           </g>

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import defaultdict
+from typing import Any
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -17,11 +19,17 @@ from app.models import (
     Campaign,
     ContentKeywordRule,
     Material,
+    MessageTask,
+    OperationPlanGenerationRun,
+    OperationPlanTarget,
+    OperationPlanTemplate,
     PromptTemplate,
+    RuleSetVersion,
     SchedulingSetting,
     SourceMediaAsset,
     Tenant,
     TenantAiSetting,
+    TgAccountSecurityBatchItem,
     TgAccount,
     TgGroup,
 )
@@ -37,7 +45,7 @@ from app.schemas import (
     SchedulingSettingUpdate,
     TenantAiSettingUpdate,
 )
-from app.schemas.ai_config import MaterialCacheErrorItem, MaterialCacheHealthOut, MaterialCacheStatusCount
+from app.schemas.ai_config import MaterialCacheErrorItem, MaterialCacheHealthOut, MaterialCacheStatusCount, MaterialReferenceSummary
 from app.security import decrypt_secret, encrypt_secret
 
 from ._common import _now, ai_gateway, audit, require_tenant
@@ -475,8 +483,220 @@ def update_scheduling_setting(session: Session, tenant_id: int | None, payload: 
     return setting
 
 
+def _material_id_matches(value: Any, material_id: int) -> bool:
+    if value is None:
+        return False
+    material_id_text = str(material_id)
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value == material_id
+    if isinstance(value, str):
+        parts = [part.strip().removeprefix("material:") for part in re.split(r"[,，\s]+", value) if part.strip()]
+        return material_id_text in parts
+    if isinstance(value, list | tuple | set):
+        return any(_material_id_matches(item, material_id) for item in value)
+    return False
+
+
+def _material_ids_from_value(value: Any, material_ids: set[int], *, material_key: bool = False) -> set[int]:
+    if value is None or isinstance(value, bool):
+        return set()
+    if isinstance(value, int):
+        return {value} if material_key and value in material_ids else set()
+    if isinstance(value, str):
+        if not material_key:
+            return set()
+        matched: set[int] = set()
+        for part in (item.strip().removeprefix("material:") for item in re.split(r"[,，\s]+", value) if item.strip()):
+            if part.isdigit():
+                parsed = int(part)
+                if parsed in material_ids:
+                    matched.add(parsed)
+        return matched
+    if isinstance(value, dict):
+        matched: set[int] = set()
+        for key, item in value.items():
+            matched.update(_material_ids_from_value(item, material_ids, material_key=key in {"material_id", "material_ids", "materials", "avatar_source"}))
+        return matched
+    if isinstance(value, list | tuple | set):
+        matched: set[int] = set()
+        for item in value:
+            matched.update(_material_ids_from_value(item, material_ids, material_key=material_key))
+        return matched
+    return set()
+
+
+def _json_mentions_material(value: Any, material_id: int) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"material_id", "material_ids", "materials", "avatar_source"} and _material_id_matches(item, material_id):
+                return True
+            if _json_mentions_material(item, material_id):
+                return True
+        return False
+    if isinstance(value, list | tuple | set):
+        return any(_json_mentions_material(item, material_id) for item in value)
+    return False
+
+
+def _count_json_references(session: Session, stmt, fields: list[str], material_id: int) -> int:
+    count = 0
+    for row in session.scalars(stmt):
+        for field in fields:
+            if _json_mentions_material(getattr(row, field, None), material_id):
+                count += 1
+                break
+    return count
+
+
+def _count_json_references_for_materials(session: Session, stmt, fields: list[str], material_ids: set[int]) -> dict[int, int]:
+    counts: dict[int, int] = defaultdict(int)
+    if not material_ids:
+        return {}
+    for row in session.scalars(stmt):
+        row_material_ids: set[int] = set()
+        for field in fields:
+            row_material_ids.update(_material_ids_from_value(getattr(row, field, None), material_ids))
+        for material_id in row_material_ids:
+            counts[material_id] += 1
+    return dict(counts)
+
+
+def material_reference_summary(session: Session, tenant_id: int, material_id: int) -> MaterialReferenceSummary:
+    message_task_count = session.scalar(
+        select(func.count(MessageTask.id)).where(
+            MessageTask.tenant_id == tenant_id,
+            MessageTask.material_id == material_id,
+        )
+    ) or 0
+    action_count = _count_json_references(
+        session,
+        select(Action).where(Action.tenant_id == tenant_id),
+        ["payload", "result"],
+        material_id,
+    )
+    rule_version_count = _count_json_references(
+        session,
+        select(RuleSetVersion).where(RuleSetVersion.tenant_id == tenant_id),
+        ["filters", "output_checks", "transforms", "routing", "account_strategy", "rate_limits", "retry_policy"],
+        material_id,
+    )
+    operation_plan_count = (
+        _count_json_references(
+            session,
+            select(OperationPlanTemplate).where(OperationPlanTemplate.tenant_id == tenant_id),
+            ["strategy_config", "task_blueprints"],
+            material_id,
+        )
+        + _count_json_references(
+            session,
+            select(OperationPlanTarget).where(OperationPlanTarget.tenant_id == tenant_id),
+            ["strategy_config"],
+            material_id,
+        )
+        + _count_json_references(
+            session,
+            select(OperationPlanGenerationRun).where(OperationPlanGenerationRun.tenant_id == tenant_id),
+            ["request_payload", "result_payload"],
+            material_id,
+        )
+    )
+    account_profile_batch_count = session.scalar(
+        select(func.count(TgAccountSecurityBatchItem.id)).where(
+            TgAccountSecurityBatchItem.tenant_id == tenant_id,
+            TgAccountSecurityBatchItem.avatar_source.in_([str(material_id), f"material:{material_id}"]),
+        )
+    ) or 0
+    total_count = int(message_task_count) + action_count + rule_version_count + operation_plan_count + int(account_profile_batch_count)
+    return MaterialReferenceSummary(
+        message_task_count=int(message_task_count),
+        action_count=action_count,
+        rule_version_count=rule_version_count,
+        operation_plan_count=operation_plan_count,
+        account_profile_batch_count=int(account_profile_batch_count),
+        total_count=total_count,
+    )
+
+
+def material_reference_summaries(session: Session, tenant_id: int, material_ids: list[int]) -> dict[int, MaterialReferenceSummary]:
+    material_id_set = set(material_ids)
+    summaries = {material_id: MaterialReferenceSummary() for material_id in material_ids}
+    if not material_id_set:
+        return summaries
+
+    for material_id, count in session.execute(
+        select(MessageTask.material_id, func.count(MessageTask.id))
+        .where(MessageTask.tenant_id == tenant_id, MessageTask.material_id.in_(material_id_set))
+        .group_by(MessageTask.material_id)
+    ):
+        summaries[int(material_id)].message_task_count = int(count or 0)
+
+    for material_id, count in _count_json_references_for_materials(
+        session,
+        select(Action).where(Action.tenant_id == tenant_id),
+        ["payload", "result"],
+        material_id_set,
+    ).items():
+        summaries[material_id].action_count = count
+
+    for material_id, count in _count_json_references_for_materials(
+        session,
+        select(RuleSetVersion).where(RuleSetVersion.tenant_id == tenant_id),
+        ["filters", "output_checks", "transforms", "routing", "account_strategy", "rate_limits", "retry_policy"],
+        material_id_set,
+    ).items():
+        summaries[material_id].rule_version_count = count
+
+    operation_plan_counts: dict[int, int] = defaultdict(int)
+    for stmt, fields in (
+        (select(OperationPlanTemplate).where(OperationPlanTemplate.tenant_id == tenant_id), ["strategy_config", "task_blueprints"]),
+        (select(OperationPlanTarget).where(OperationPlanTarget.tenant_id == tenant_id), ["strategy_config"]),
+        (select(OperationPlanGenerationRun).where(OperationPlanGenerationRun.tenant_id == tenant_id), ["request_payload", "result_payload"]),
+    ):
+        for material_id, count in _count_json_references_for_materials(session, stmt, fields, material_id_set).items():
+            operation_plan_counts[material_id] += count
+    for material_id, count in operation_plan_counts.items():
+        summaries[material_id].operation_plan_count = int(count)
+
+    for avatar_source, count in session.execute(
+        select(TgAccountSecurityBatchItem.avatar_source, func.count(TgAccountSecurityBatchItem.id))
+        .where(
+            TgAccountSecurityBatchItem.tenant_id == tenant_id,
+            TgAccountSecurityBatchItem.avatar_source.in_([item for material_id in material_id_set for item in (str(material_id), f"material:{material_id}")]),
+        )
+        .group_by(TgAccountSecurityBatchItem.avatar_source)
+    ):
+        matched_ids = _material_ids_from_value(avatar_source, material_id_set, material_key=True)
+        for material_id in matched_ids:
+            summaries[material_id].account_profile_batch_count += int(count or 0)
+
+    for summary in summaries.values():
+        summary.total_count = (
+            summary.message_task_count
+            + summary.action_count
+            + summary.rule_version_count
+            + summary.operation_plan_count
+            + summary.account_profile_batch_count
+        )
+    return summaries
+
+
+def _attach_material_reference_summary(session: Session, material: Material) -> Material:
+    summary = material_reference_summary(session, material.tenant_id, material.id)
+    material.reference_summary = summary
+    material.referenced_by_count = summary.total_count
+    return material
+
+
 def list_materials(session: Session, tenant_id: int) -> list[Material]:
-    return list(session.scalars(select(Material).where(Material.tenant_id == tenant_id).order_by(Material.id.desc())))
+    materials = list(session.scalars(select(Material).where(Material.tenant_id == tenant_id).order_by(Material.id.desc())))
+    summaries = material_reference_summaries(session, tenant_id, [material.id for material in materials])
+    for material in materials:
+        summary = summaries.get(material.id, MaterialReferenceSummary())
+        material.reference_summary = summary
+        material.referenced_by_count = summary.total_count
+    return materials
 
 
 def create_material(session: Session, payload: MaterialCreate, actor: str = "普通用户") -> Material:
@@ -489,7 +709,7 @@ def create_material(session: Session, payload: MaterialCreate, actor: str = "普
     audit(session, tenant_id=material.tenant_id, actor=actor, action="新增素材", target_type="material", target_id=str(material.id))
     session.commit()
     session.refresh(material)
-    return material
+    return _attach_material_reference_summary(session, material)
 
 
 def create_uploaded_material(
@@ -524,7 +744,7 @@ def create_uploaded_material(
     audit(session, tenant_id=material.tenant_id, actor=actor, action="上传素材", target_type="material", target_id=str(material.id))
     session.commit()
     session.refresh(material)
-    return material
+    return _attach_material_reference_summary(session, material)
 
 
 def create_uploaded_materials(
@@ -567,6 +787,7 @@ def create_uploaded_materials(
     session.commit()
     for material in materials:
         session.refresh(material)
+        _attach_material_reference_summary(session, material)
     return materials
 
 
@@ -764,7 +985,40 @@ def update_material(session: Session, material_id: int, payload: MaterialUpdate,
     audit(session, tenant_id=material.tenant_id, actor=actor, action="更新素材", target_type="material", target_id=str(material.id))
     session.commit()
     session.refresh(material)
-    return material
+    return _attach_material_reference_summary(session, material)
+
+
+def disable_material(session: Session, material_id: int, actor: str, *, reason: str = "") -> Material:
+    material = session.get(Material, material_id)
+    if not material:
+        raise ValueError("material not found")
+    material.review_status = "已禁用"
+    summary = material_reference_summary(session, material.tenant_id, material.id)
+    detail = f"reason={reason.strip() or '未填写'}; referenced_by={summary.total_count}"
+    audit(session, tenant_id=material.tenant_id, actor=actor, action="禁用素材", target_type="material", target_id=str(material.id), detail=detail)
+    session.commit()
+    session.refresh(material)
+    return _attach_material_reference_summary(session, material)
+
+
+def restore_material(session: Session, material_id: int, actor: str) -> Material:
+    material = session.get(Material, material_id)
+    if not material:
+        raise ValueError("material not found")
+    material.review_status = "已审核"
+    summary = material_reference_summary(session, material.tenant_id, material.id)
+    audit(
+        session,
+        tenant_id=material.tenant_id,
+        actor=actor,
+        action="恢复素材",
+        target_type="material",
+        target_id=str(material.id),
+        detail=f"referenced_by={summary.total_count}",
+    )
+    session.commit()
+    session.refresh(material)
+    return _attach_material_reference_summary(session, material)
 
 
 def material_cache_health(session: Session, tenant_id: int) -> MaterialCacheHealthOut:
@@ -931,6 +1185,7 @@ __all__ = [
     "create_material",
     "create_prompt_template",
     "create_uploaded_materials",
+    "disable_material",
     "get_scheduling_setting",
     "get_tenant_ai_setting",
     "list_ai_providers",
@@ -939,8 +1194,10 @@ __all__ = [
     "list_prompt_templates",
     "list_usage_ledgers",
     "list_usage_summary",
+    "material_reference_summaries",
     "record_ai_usage",
     "require_ai_token_balance",
+    "restore_material",
     "seed_ai_configuration",
     "deduct_ai_usage_tokens",
     "update_ai_provider",

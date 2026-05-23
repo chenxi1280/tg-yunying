@@ -77,6 +77,7 @@ def update_operation_plan(session: Session, tenant_id: int, plan_id: int, payloa
 
 def preview_operation_plan(session: Session, tenant_id: int, plan_id: int, payload: OperationPlanGenerateRequest, actor: str) -> dict[str, Any]:
     plan = _get_plan(session, tenant_id, plan_id)
+    _ensure_plan_not_archived(plan)
     planned_tasks, blockers, warnings = _planned_tasks(session, tenant_id, plan, payload.target_ids)
     target_rows = _targets_for_plan(session, tenant_id, plan, payload.target_ids)
     preview = _preview_breakdown(session, tenant_id, target_rows, planned_tasks, blockers)
@@ -107,6 +108,7 @@ def preview_operation_plan(session: Session, tenant_id: int, plan_id: int, paylo
 
 def generate_operation_plan_tasks(session: Session, tenant_id: int, plan_id: int, payload: OperationPlanGenerateRequest, actor: str) -> dict[str, Any]:
     plan = _get_plan(session, tenant_id, plan_id)
+    _ensure_plan_not_archived(plan)
     planned_tasks, blockers, warnings = _planned_tasks(session, tenant_id, plan, payload.target_ids)
     if blockers:
         run = _record_run(
@@ -169,6 +171,7 @@ def generate_operation_plan_tasks(session: Session, tenant_id: int, plan_id: int
 
 def apply_operation_plan_to_linked_tasks(session: Session, tenant_id: int, plan_id: int, payload: OperationPlanGenerateRequest, actor: str) -> dict[str, Any]:
     plan = _get_plan(session, tenant_id, plan_id)
+    _ensure_plan_not_archived(plan)
     impact_preview = _linked_task_impact_preview(session, tenant_id, plan)
     if payload.confirm_apply and not payload.reason.strip():
         raise ValueError("应用关联任务调整必须填写原因")
@@ -220,10 +223,60 @@ def apply_operation_plan_to_linked_tasks(session: Session, tenant_id: int, plan_
 
 def pause_operation_plan(session: Session, tenant_id: int, plan_id: int, actor: str) -> dict[str, Any]:
     plan = _get_plan(session, tenant_id, plan_id)
+    _ensure_plan_not_archived(plan)
     plan.status = "paused"
     plan.updated_by = actor
     plan.updated_at = _now()
+    _record_run(session, tenant_id, plan.id, "pause", actor, {}, {"status": plan.status})
     audit(session, tenant_id=tenant_id, actor=actor, action="暂停运营方案", target_type="operation_plan", target_id=str(plan.id), detail=plan.name)
+    session.commit()
+    return _plan_payload(session, plan)
+
+
+def resume_operation_plan(session: Session, tenant_id: int, plan_id: int, actor: str) -> dict[str, Any]:
+    plan = _get_plan(session, tenant_id, plan_id)
+    _ensure_plan_not_archived(plan)
+    plan.status = "active"
+    plan.updated_by = actor
+    plan.updated_at = _now()
+    _record_run(session, tenant_id, plan.id, "resume", actor, {}, {"status": plan.status})
+    audit(session, tenant_id=tenant_id, actor=actor, action="恢复运营方案", target_type="operation_plan", target_id=str(plan.id), detail=plan.name)
+    session.commit()
+    return _plan_payload(session, plan)
+
+
+def copy_operation_plan(session: Session, tenant_id: int, plan_id: int, actor: str) -> dict[str, Any]:
+    plan = _get_plan(session, tenant_id, plan_id)
+    copied = OperationPlanTemplate(
+        tenant_id=tenant_id,
+        name=f"{plan.name} 副本",
+        description=plan.description,
+        target_type=plan.target_type,
+        status="draft",
+        strategy_config=dict(plan.strategy_config or {}),
+        task_blueprints=list(plan.task_blueprints or []),
+        created_by=actor,
+        updated_by=actor,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    session.add(copied)
+    session.flush()
+    target_ids = [target.target_id for target in _plan_targets(session, plan.id) if target.status != "archived"]
+    _replace_plan_targets(session, tenant_id, copied, target_ids)
+    _record_run(session, tenant_id, copied.id, "copy", actor, {"source_plan_id": plan.id}, {"status": copied.status, "target_ids": target_ids})
+    audit(session, tenant_id=tenant_id, actor=actor, action="复制运营方案", target_type="operation_plan", target_id=str(copied.id), detail=f"source={plan.id}; name={copied.name}")
+    session.commit()
+    return _plan_payload(session, copied)
+
+
+def archive_operation_plan(session: Session, tenant_id: int, plan_id: int, actor: str) -> dict[str, Any]:
+    plan = _get_plan(session, tenant_id, plan_id)
+    plan.status = "archived"
+    plan.updated_by = actor
+    plan.updated_at = _now()
+    _record_run(session, tenant_id, plan.id, "archive", actor, {}, {"status": plan.status})
+    audit(session, tenant_id=tenant_id, actor=actor, action="归档运营方案", target_type="operation_plan", target_id=str(plan.id), detail=plan.name)
     session.commit()
     return _plan_payload(session, plan)
 
@@ -244,6 +297,11 @@ def _get_plan(session: Session, tenant_id: int, plan_id: int) -> OperationPlanTe
     if not plan or plan.tenant_id != tenant_id:
         raise ValueError("operation plan not found")
     return plan
+
+
+def _ensure_plan_not_archived(plan: OperationPlanTemplate) -> None:
+    if plan.status == "archived":
+        raise ValueError("运营方案已归档，不能继续生成或调整任务")
 
 
 def _replace_plan_targets(session: Session, tenant_id: int, plan: OperationPlanTemplate, target_ids: list[int]) -> None:
@@ -630,6 +688,8 @@ def _default_failure_policy() -> dict[str, Any]:
 
 __all__ = [
     "apply_operation_plan_to_linked_tasks",
+    "archive_operation_plan",
+    "copy_operation_plan",
     "create_operation_plan",
     "generate_operation_plan_tasks",
     "get_operation_plan",
@@ -637,5 +697,6 @@ __all__ = [
     "list_operation_plans",
     "pause_operation_plan",
     "preview_operation_plan",
+    "resume_operation_plan",
     "update_operation_plan",
 ]

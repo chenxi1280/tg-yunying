@@ -29,6 +29,7 @@ const AuditsView = React.lazy(() => import('./views/AuditsView'));
 const OperationTargetsView = React.lazy(() => import('./views/OperationTargetsView'));
 const TaskCenterView = React.lazy(() => import('./views/TaskCenterView'));
 const MessageSendingView = React.lazy(() => import('./views/MessageSendingView'));
+const MaterialsView = React.lazy(() => import('./views/MaterialsView'));
 const ListenerCenterView = React.lazy(() => import('./views/ListenerCenterView'));
 const RulesCenterView = React.lazy(() => import('./views/RulesCenterView'));
 const RiskControlView = React.lazy(() => import('./views/RiskControlView'));
@@ -42,6 +43,7 @@ const SHELL_NAV_ITEMS: ShellNavItem[] = [
   ['accounts', 'TG账号管理', <Smartphone size={18} />],
   ['targetManagement', '运营目标', <Users size={18} />],
   ['messageSending', '消息发送', <MessageSquareText size={18} />],
+  ['materials', '素材中心', <Database size={18} />],
   ['taskManagement', '任务中心', <Activity size={18} />],
   ['listenerCenter', '监听中心', <RefreshCcw size={18} />],
   ['ruleCenter', '规则中心', <ShieldAlert size={18} />],
@@ -91,7 +93,7 @@ function AppShell() {
     tenantForm, setTenantForm,
     aiProviderForm, setAiProviderForm,
     promptTemplateForm, setPromptTemplateForm,
-    materialForm, setMaterialForm, setMaterialFile, openPromptTemplateEdit, openMaterialEdit, openContentKeywordRuleEdit,
+    materialForm, setMaterialForm, setMaterialFile, openPromptTemplateEdit, openMaterialEdit, disableMaterial, restoreMaterial, openContentKeywordRuleEdit,
     groupPolicy, setGroupPolicy,
     modal, setModal,
     directMessageForm, setDirectMessageForm,
@@ -308,7 +310,7 @@ function AppShell() {
             className="runtime-strip"
             type="info"
             showIcon
-            message="系统诊断"
+            title="系统诊断"
             description={`任务通道：${runtime.queue_backend} / TG 连接：${runtime.telethon_configured ? '已配置' : '待配置'} / 应用池：${runtime.developer_app_healthy_count}/${runtime.developer_app_count} 正常 / AI 服务：${runtime.healthy_ai_provider_count}/${runtime.ai_provider_count} 正常${runtime.mock_ai_fallback_enabled ? ' / 可回退' : ''}`}
           />
         )}
@@ -419,6 +421,34 @@ function AppShell() {
               onCancelTask={cancelTask}
               onDispatchTask={dispatchTask}
               onRetryTask={retryTask}
+              onRefresh={refresh}
+              isActionPending={isActionPending}
+            />
+          )}
+          {activeView === 'materials' && hasPermission(currentUser, 'materials.view') && (
+            <MaterialsView
+              materials={materials}
+              materialCacheHealth={materialCacheHealth}
+              canUploadMaterials={hasPermission(currentUser, 'materials.upload')}
+              canManageMaterials={hasPermission(currentUser, 'materials.manage')}
+              onCreateMaterial={() => {
+                setMaterialForm({
+                  id: null,
+                  title: '活动表情包',
+                  material_type: '表情包',
+                  content: 'https://example.local/stickers/welcome.webp',
+                  tags: '表情包,欢迎',
+                  emoji_asset_kind: 'image_meme',
+                  cache_ready_status: 'not_cached',
+                  delivery_mode: 'download_reupload',
+                  source_kind: 'upload',
+                });
+                setMaterialFile(null);
+                setModal({ type: 'materialCreate' });
+              }}
+              onEditMaterial={openMaterialEdit}
+              onDisableMaterial={disableMaterial}
+              onRestoreMaterial={restoreMaterial}
               onRefresh={refresh}
               isActionPending={isActionPending}
             />

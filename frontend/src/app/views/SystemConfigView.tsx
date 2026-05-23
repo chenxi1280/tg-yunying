@@ -178,10 +178,11 @@ export default function SystemConfigView({
         },
         {
           key: 'resources',
-          label: '提示词与素材',
+          label: '提示词与素材运行配置',
           children: (
             <AISettingsView
               section="resources"
+              showMaterialAssets={false}
               aiProviders={aiProviders}
               promptTemplates={promptTemplates}
               tenantAiSetting={tenantAiSetting}

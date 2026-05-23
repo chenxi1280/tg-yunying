@@ -26,6 +26,7 @@ interface Props {
   onCreateKeywordRule: () => void;
   onEditKeywordRule: (rule: ContentKeywordRule) => void;
   isActionPending: (key: string) => boolean;
+  showMaterialAssets?: boolean;
 }
 
 export default function AISettingsView({
@@ -50,6 +51,7 @@ export default function AISettingsView({
   onCreateKeywordRule,
   onEditKeywordRule,
   isActionPending,
+  showMaterialAssets = true,
 }: Props) {
   const showProviders = section === 'all' || section === 'providers';
   const showResources = section === 'all' || section === 'resources';
@@ -113,10 +115,14 @@ export default function AISettingsView({
 
       {showResources && <Card
         className="panel"
-        title="提示词与素材"
-        extra={<Space><Button size="small" onClick={onCreatePromptTemplate}>新增提示词</Button><Button size="small" onClick={onCreateMaterial}>新增素材</Button></Space>}
+        title={showMaterialAssets ? '提示词与素材' : '提示词与素材运行配置'}
+        extra={<Space><Button size="small" onClick={onCreatePromptTemplate}>新增提示词</Button>{showMaterialAssets && <Button size="small" onClick={onCreateMaterial}>新增素材</Button>}</Space>}
       >
-        <Typography.Text type="secondary">系统决策提示词自动选择业务模板；素材先支持图片和表情包</Typography.Text>
+        <Typography.Text type="secondary">
+          {showMaterialAssets
+            ? '系统决策提示词自动选择业务模板；素材先支持图片和表情包'
+            : '系统设置维护提示词和素材缓存运行状态；表情包、头像包、图片和文件素材请到素材中心上传维护'}
+        </Typography.Text>
         {materialCacheHealth && (
           <>
             <div className="summary-grid">
@@ -147,7 +153,7 @@ export default function AISettingsView({
                 dataSource={materialCacheHealth.recent_errors.slice(0, 5)}
                 renderItem={(item) => (
                   <List.Item>
-                    <Space direction="vertical" size={0}>
+                    <Space orientation="vertical" size={0}>
                       <Typography.Text>{item.scope === 'source_media' ? '源媒体' : '素材'} {item.title}</Typography.Text>
                       <Typography.Text type="secondary">{item.status} / {item.reason || '无失败原因'}</Typography.Text>
                     </Space>
@@ -161,9 +167,9 @@ export default function AISettingsView({
           className="mini-list"
           dataSource={[
             ...businessPromptTemplates.slice(0, 6).map((template) => ({ kind: 'template' as const, item: template })),
-            ...materials.slice(0, 4).map((material) => ({ kind: 'material' as const, item: material })),
+            ...(showMaterialAssets ? materials.slice(0, 4).map((material) => ({ kind: 'material' as const, item: material })) : []),
           ]}
-          locale={{ emptyText: '暂无提示词或素材。可以先新增提示词模板，再创建素材。' }}
+          locale={{ emptyText: showMaterialAssets ? '暂无提示词或素材。可以先新增提示词模板，再创建素材。' : '暂无提示词模板。素材日常维护请进入素材中心。' }}
           renderItem={(entry) => {
             if (entry.kind === 'template') {
               const template = entry.item;

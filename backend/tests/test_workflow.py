@@ -1010,6 +1010,69 @@ def test_admin_users_permission_lifecycle_and_legacy_subscription_endpoints_remo
         assert patched_app.status_code == 200, patched_app.text
         assert patched_app.json()["credentials_version"] == target_app["credentials_version"] + 1
 
+        material_manager = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"素材管理员{suffix}",
+                "email": f"material_manager_{suffix}@example.local",
+                "phone": f"+86134{int(uuid4().int % 100000000):08d}",
+                "password": "material123",
+                "role": "后台用户",
+                "role_template": "运营管理员",
+                "permissions": ["overview.view", "materials.view", "materials.upload", "materials.manage"],
+                "menu_permissions": ["overview.view", "materials.view", "materials.upload", "materials.manage"],
+            },
+        )
+        assert material_manager.status_code == 200, material_manager.text
+        assert "materials.view" in material_manager.json()["permissions"]
+        assert "materials.upload" in material_manager.json()["permissions"]
+        material_headers = auth_headers(client, material_manager.json()["email"], "material123")
+        material_read = client.get("/api/materials", headers=material_headers)
+        assert material_read.status_code == 200, material_read.text
+        material_created = client.post(
+            "/api/materials",
+            headers=material_headers,
+            json={
+                "tenant_id": 1,
+                "title": f"素材中心权限素材{suffix}",
+                "material_type": "表情包",
+                "content": "https://example.local/stickers/material-center.webp",
+                "tags": "pytest,素材中心",
+            },
+        )
+        assert material_created.status_code == 200, material_created.text
+        material_disabled = client.post(
+            f"/api/materials/{material_created.json()['id']}/disable",
+            headers=material_headers,
+            json={"reason": "pytest 禁用引用保护"},
+        )
+        assert material_disabled.status_code == 200, material_disabled.text
+        assert material_disabled.json()["review_status"] == "已禁用"
+        material_restored = client.post(f"/api/materials/{material_created.json()['id']}/restore", headers=material_headers)
+        assert material_restored.status_code == 200, material_restored.text
+        assert material_restored.json()["review_status"] == "已审核"
+
+        system_only = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"系统只读{suffix}",
+                "email": f"system_only_{suffix}@example.local",
+                "phone": f"+86133{int(uuid4().int % 100000000):08d}",
+                "password": "systemonly123",
+                "role": "后台用户",
+                "role_template": "运营管理员",
+                "permissions": ["overview.view", "system.view"],
+                "menu_permissions": ["overview.view", "system.view"],
+            },
+        )
+        assert system_only.status_code == 200, system_only.text
+        system_only_headers = auth_headers(client, system_only.json()["email"], "systemonly123")
+        material_denied = client.get("/api/materials", headers=system_only_headers)
+        assert material_denied.status_code == 403
+        assert material_denied.json()["permission"] == "materials.view"
+
 
 def test_developer_app_admin_crud_hides_api_hash():
     with TestClient(app) as client:

@@ -11,6 +11,8 @@ from app.models import (
     AccountRuntimeSummary,
     Action,
     OperationIssue,
+    OperationIssueAccount,
+    OperationIssueSource,
     OperationTarget,
     TargetRuntimeSummary,
     Task,
@@ -29,6 +31,7 @@ PENDING_STATUSES = {"pending", "claiming", "executing", "retryable_failed", "unk
 UNRESOLVED_FAILURE_STATUSES = {"failed", "retryable_failed", "unknown_after_send"}
 RISK_SIGNAL_STATUSES = {"failed", "skipped", "retryable_failed", "unknown_after_send"}
 SECURITY_RETRY_STATUSES = {"pending", "waiting", "failed", "partial_success"}
+FAILURE_TYPE_CODES = {item.value: item.name for item in FailureType}
 
 
 def refresh_task_summary(session: Session, task: Task) -> TaskRuntimeSummary:
@@ -59,17 +62,19 @@ def refresh_task_summary(session: Session, task: Task) -> TaskRuntimeSummary:
     }
     summary.updated_at = _now()
     if latest_failure:
+        latest_failure_type = summary.latest_failure_type
         upsert_operation_issue(
             session,
             tenant_id=task.tenant_id,
             target_id=target_id,
             issue_type=_issue_type(latest_failure),
-            failure_type=summary.latest_failure_type,
+            failure_type=latest_failure_type,
             source_task_id=task.id,
             representative_action_id=latest_failure.id,
             affected_account_ids=[latest_failure.account_id] if latest_failure.account_id else [],
             failure_reason=_failure_reason(latest_failure),
-            suggested_action=_suggested_action(summary.latest_failure_type),
+            suggested_action=_suggested_action(latest_failure_type),
+            handling_mode=_handling_mode(latest_failure_type),
         )
     elif not any(counts.get(status, 0) for status in UNRESOLVED_FAILURE_STATUSES):
         _resolve_task_issues_if_recovered(session, task)
@@ -186,6 +191,7 @@ def upsert_operation_issue(
     failure_reason: str,
     suggested_action: str,
     severity: str = "warning",
+    handling_mode: str = "modal",
 ) -> OperationIssue:
     now_value = _now()
     issue = session.scalar(
@@ -211,12 +217,22 @@ def upsert_operation_issue(
     issue.severity = severity
     issue.source_task_id = source_task_id
     issue.representative_action_id = representative_action_id
+    issue.affected_task_count = _issue_source_count(session, tenant_id, issue.id, "task") + (0 if _issue_has_source(session, tenant_id, issue.id, "task", source_task_id) else 1)
+    issue.affected_account_count = len(known_accounts)
     issue.affected_account_ids = sorted(known_accounts)
     issue.failure_reason = failure_reason
     issue.suggested_action = suggested_action
+    issue.handling_mode = handling_mode
+    issue.return_to = _issue_return_to(issue, source_task_id=source_task_id, representative_action_id=representative_action_id)
     issue.last_seen_at = now_value
     issue.updated_at = now_value
     issue.summary = {**(issue.summary or {}), "hit_count": int((issue.summary or {}).get("hit_count") or 0) + 1}
+    _upsert_issue_source(session, tenant_id, issue.id, "task", source_task_id, failure_type, now_value, {"representative_action_id": representative_action_id})
+    _upsert_issue_source(session, tenant_id, issue.id, "action", representative_action_id, failure_type, now_value, {"source_task_id": source_task_id})
+    for account_id in known_accounts:
+        _upsert_issue_account(session, tenant_id, issue.id, account_id, "execution_failure", now_value, {"source_task_id": source_task_id})
+    issue.affected_task_count = _issue_source_count(session, tenant_id, issue.id, "task")
+    issue.affected_account_count = _issue_account_count(session, tenant_id, issue.id)
     return issue
 
 
@@ -363,15 +379,51 @@ def get_operation_issue_detail(session: Session, tenant_id: int, issue_id: str) 
         )
     ) if issue.source_task_id else []
     account_ids = [int(item) for item in (issue.affected_account_ids or []) if item]
+    sources = list(
+        session.scalars(
+            select(OperationIssueSource)
+            .where(OperationIssueSource.tenant_id == tenant_id, OperationIssueSource.issue_id == issue.id)
+            .order_by(OperationIssueSource.latest_seen_at.desc())
+            .limit(50)
+        )
+    )
+    issue_accounts = list(
+        session.scalars(
+            select(OperationIssueAccount)
+            .where(OperationIssueAccount.tenant_id == tenant_id, OperationIssueAccount.issue_id == issue.id)
+            .order_by(OperationIssueAccount.latest_seen_at.desc())
+            .limit(50)
+        )
+    )
+    if not account_ids:
+        account_ids = [item.account_id for item in issue_accounts]
     accounts = list(session.scalars(select(TgAccount).where(TgAccount.tenant_id == tenant_id, TgAccount.id.in_(account_ids)))) if account_ids else []
     return {
         "issue": issue,
         "target": _target_payload(target),
         "source_task": _task_light_payload(task),
         "related_task_summary": task_summary,
+        "sources": sources,
+        "issue_accounts": issue_accounts,
         "affected_accounts": [_account_light_payload(account) for account in accounts],
         "recent_failed_actions": [_failed_action_payload(action, task) for action in failed_actions],
     }
+
+
+def claim_operation_issue(session: Session, tenant_id: int, issue_id: str, actor: str, reason: str = "") -> OperationIssue:
+    issue = _get_operation_issue(session, tenant_id, issue_id)
+    now_value = _now()
+    issue.claimed_by = actor
+    issue.claimed_at = now_value
+    issue.updated_at = now_value
+    issue.summary = {
+        **(issue.summary or {}),
+        "claimed_by": actor,
+        "claim_reason": reason,
+        "claimed_at": now_value.isoformat(),
+    }
+    audit(session, tenant_id=tenant_id, actor=actor, action="认领运营异常", target_type="operation_issue", target_id=issue.id, detail=reason)
+    return issue
 
 
 def acknowledge_operation_issue(session: Session, tenant_id: int, issue_id: str, actor: str, reason: str) -> OperationIssue:
@@ -461,7 +513,7 @@ def _failure_type(action: Action | None) -> str:
     if not action:
         return ""
     result = action.result or {}
-    return str(result.get("failure_type") or result.get("error_code") or result.get("error") or "unknown")
+    return _failure_type_code(str(result.get("failure_type") or result.get("error_code") or result.get("error") or "unknown"))
 
 
 def _failure_reason(action: Action | None) -> str:
@@ -482,12 +534,135 @@ def _issue_type(action: Action) -> str:
 def _suggested_action(failure_type: str) -> str:
     mapping = {
         "COMMENT_UNAVAILABLE": "检查频道讨论组绑定和账号评论权限",
-        "account_unavailable": "检查账号在线、代理和风控状态",
-        "content_rejected": "检查规则中心拦截和素材策略",
-        FailureType.FLOOD_WAIT.value: "等待 Telegram FloodWait 解除后再恢复该账号",
-        FailureType.SLOWMODE.value: "等待目标慢速模式窗口结束后再恢复发送",
+        "ACCOUNT_UNAVAILABLE": "检查账号在线、代理和风控状态",
+        "CONTENT_REJECTED": "检查规则中心拦截和素材策略",
+        "FLOOD_WAIT": "等待 Telegram FloodWait 解除后再恢复该账号",
+        "SLOWMODE": "等待目标慢速模式窗口结束后再恢复发送",
     }
     return mapping.get(failure_type, "查看任务详情和账号状态后处理")
+
+
+def _failure_type_code(failure_type: str) -> str:
+    return FAILURE_TYPE_CODES.get(failure_type, failure_type)
+
+
+def _handling_mode(failure_type: str) -> str:
+    if failure_type in {"COMMENT_UNAVAILABLE", "PEER_INVALID", "CONTENT_REJECTED"}:
+        return "drawer"
+    if failure_type in {"ACCOUNT_UNAVAILABLE", "FLOOD_WAIT", "SLOWMODE"}:
+        return "drawer"
+    return "deep_link"
+
+
+def _issue_return_to(issue: OperationIssue, *, source_task_id: str, representative_action_id: str) -> dict[str, Any]:
+    return {
+        "page": "overview",
+        "source_issue_id": issue.id,
+        "target_id": issue.target_id,
+        "task_id": source_task_id,
+        "action_id": representative_action_id,
+        "default_tab": "issues",
+        "filters": {
+            "target_id": issue.target_id,
+            "issue_type": issue.issue_type,
+            "failure_type": issue.failure_type,
+            "status": issue.status,
+        },
+    }
+
+
+def _issue_has_source(session: Session, tenant_id: int, issue_id: str, source_type: str, source_id: str) -> bool:
+    if not source_id:
+        return False
+    return bool(
+        session.scalar(
+            select(OperationIssueSource.id)
+            .where(
+                OperationIssueSource.tenant_id == tenant_id,
+                OperationIssueSource.issue_id == issue_id,
+                OperationIssueSource.source_type == source_type,
+                OperationIssueSource.source_id == source_id,
+            )
+            .limit(1)
+        )
+    )
+
+
+def _issue_source_count(session: Session, tenant_id: int, issue_id: str, source_type: str) -> int:
+    return int(
+        session.scalar(
+            select(func.count(OperationIssueSource.id)).where(
+                OperationIssueSource.tenant_id == tenant_id,
+                OperationIssueSource.issue_id == issue_id,
+                OperationIssueSource.source_type == source_type,
+            )
+        )
+        or 0
+    )
+
+
+def _issue_account_count(session: Session, tenant_id: int, issue_id: str) -> int:
+    return int(
+        session.scalar(
+            select(func.count(OperationIssueAccount.id)).where(
+                OperationIssueAccount.tenant_id == tenant_id,
+                OperationIssueAccount.issue_id == issue_id,
+            )
+        )
+        or 0
+    )
+
+
+def _upsert_issue_source(
+    session: Session,
+    tenant_id: int,
+    issue_id: str,
+    source_type: str,
+    source_id: str,
+    failure_type: str,
+    latest_seen_at: datetime,
+    summary: dict[str, Any],
+) -> None:
+    if not source_id:
+        return
+    source = session.scalar(
+        select(OperationIssueSource).where(
+            OperationIssueSource.tenant_id == tenant_id,
+            OperationIssueSource.issue_id == issue_id,
+            OperationIssueSource.source_type == source_type,
+            OperationIssueSource.source_id == source_id,
+        )
+    )
+    if not source:
+        source = OperationIssueSource(tenant_id=tenant_id, issue_id=issue_id, source_type=source_type, source_id=source_id)
+        session.add(source)
+    source.failure_type = failure_type
+    source.latest_seen_at = latest_seen_at
+    source.summary = summary
+
+
+def _upsert_issue_account(
+    session: Session,
+    tenant_id: int,
+    issue_id: str,
+    account_id: int,
+    impact_type: str,
+    latest_seen_at: datetime,
+    summary: dict[str, Any],
+) -> None:
+    account = session.scalar(
+        select(OperationIssueAccount).where(
+            OperationIssueAccount.tenant_id == tenant_id,
+            OperationIssueAccount.issue_id == issue_id,
+            OperationIssueAccount.account_id == account_id,
+            OperationIssueAccount.impact_type == impact_type,
+        )
+    )
+    if not account:
+        account = OperationIssueAccount(tenant_id=tenant_id, issue_id=issue_id, account_id=account_id, impact_type=impact_type)
+        session.add(account)
+    account.latest_seen_at = latest_seen_at
+    account.summary = summary
 
 
 def _account_rate_limit_signal(session: Session, tenant_id: int, account_id: int, recent_cutoff: datetime) -> tuple[datetime | None, str, int]:
@@ -783,6 +958,7 @@ def _failed_action_payload(action: Action, task: Task | None) -> dict[str, Any]:
 
 __all__ = [
     "acknowledge_operation_issue",
+    "claim_operation_issue",
     "get_operation_issue_detail",
     "rebuild_runtime_summaries",
     "get_account_runtime_summary",

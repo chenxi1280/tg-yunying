@@ -226,7 +226,7 @@ export function AccountSecurityBatchDrawer({
       width: 180,
       fixed: 'left',
       render: (_, item) => (
-        <Space direction="vertical" size={0}>
+        <Space orientation="vertical" size={0}>
           <Typography.Text strong>{item.account_name}</Typography.Text>
           <Typography.Text type="secondary">{item.phone_number || item.phone_masked}</Typography.Text>
         </Space>
@@ -236,7 +236,7 @@ export function AccountSecurityBatchDrawer({
       title: '安全状态',
       width: 180,
       render: (_, item) => (
-        <Space direction="vertical" size={2}>
+        <Space orientation="vertical" size={2}>
           <StatusBadge status={item.trusted_session_status} label={`可信设备 ${item.trusted_session_status}`} />
           <Typography.Text type="secondary">外部设备：{item.external_authorization_count}</Typography.Text>
           <Typography.Text type="secondary">2FA：{item.two_fa_status}</Typography.Text>
@@ -247,7 +247,7 @@ export function AccountSecurityBatchDrawer({
       title: '资料预览（可编辑）',
       width: 320,
       render: (_, item) => (
-        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={6} style={{ width: '100%' }}>
           <Input
             size="small"
             value={item.generated_display_name}
@@ -293,7 +293,7 @@ export function AccountSecurityBatchDrawer({
       title: '校验',
       width: 220,
       render: (_, item) => (
-        <Space direction="vertical" size={4}>
+        <Space orientation="vertical" size={4}>
           <StatusBadge status={item.precheck_status} label={statusText(item.precheck_status)} />
           {item.blockers.map((blocker) => <Tag color="red" key={blocker}>{blocker}</Tag>)}
           {item.warnings.map((warning) => <Tag color="gold" key={warning}>{warning}</Tag>)}
@@ -315,17 +315,17 @@ export function AccountSecurityBatchDrawer({
   return (
     <Drawer
       title={modeConfig.title}
-      width={1120}
+      size={1120}
       open={open}
-      destroyOnClose
+      destroyOnHidden
       onClose={onClose}
       extra={<Button onClick={onClose}>关闭</Button>}
     >
-      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Space orientation="vertical" size={16} style={{ width: '100%' }}>
         <Alert
           type={modeConfig.alertType}
           showIcon
-          message={`已选择 ${selected.length} 个账号`}
+          title={`已选择 ${selected.length} 个账号`}
           description={modeConfig.description}
         />
         <Steps
@@ -336,7 +336,7 @@ export function AccountSecurityBatchDrawer({
             { title: '批次结果' },
           ]}
         />
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space orientation="vertical" size={12} style={{ width: '100%' }}>
           <Typography.Text strong>动作范围</Typography.Text>
           <Space wrap>
             {actions.map((value) => <Tag color="processing" key={value}>{ACTION_LABEL[value]}</Tag>)}
@@ -345,7 +345,7 @@ export function AccountSecurityBatchDrawer({
         {isProfileMode && (
           <>
             <Divider />
-            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Space orientation="vertical" size={12} style={{ width: '100%' }}>
               <Typography.Text strong><Activity size={16} /> AI 随机命名与资料策略</Typography.Text>
               <Space wrap>
                 <Select
@@ -421,7 +421,7 @@ export function AccountSecurityBatchDrawer({
           </Button>
         </Space>
         {precheck && (
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={8} style={{ width: '100%' }}>
             <Typography.Text strong>预检汇总：共 {precheck.summary.total ?? 0} 个，可执行 {precheck.summary.executable ?? 0} 个，需等待 {precheck.summary.waiting ?? 0} 个，需人工处理 {precheck.summary.manual_required ?? 0} 个</Typography.Text>
             <Table<AccountSecurityPreviewItem>
               className="tg-table"
@@ -434,7 +434,7 @@ export function AccountSecurityBatchDrawer({
           </Space>
         )}
         {batch && (
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Space orientation="vertical" size={8} style={{ width: '100%' }}>
             <Typography.Text strong>批次 #{batch.id}：{statusText(batch.status)}，成功 {batch.success_count}，失败 {batch.failed_count}，跳过 {batch.skipped_count}</Typography.Text>
             <Typography.Text type="secondary">trace_id：{batch.trace_id}</Typography.Text>
             <Table<AccountSecurityBatchItem>

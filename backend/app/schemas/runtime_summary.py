@@ -62,10 +62,16 @@ class OperationIssueOut(ApiModel):
     severity: str
     source_task_id: str
     representative_action_id: str
+    affected_task_count: int = 0
+    affected_account_count: int = 0
     affected_account_ids: list[int] = []
     failure_type: str
     failure_reason: str
     suggested_action: str
+    handling_mode: str = "modal"
+    return_to: dict[str, Any] = {}
+    claimed_by: str = ""
+    claimed_at: datetime | None = None
     status: str
     summary: dict[str, Any] = {}
     first_seen_at: datetime
@@ -90,11 +96,34 @@ class OperationIssueFailureActionOut(ApiModel):
     result: dict[str, Any] = {}
 
 
+class OperationIssueSourceOut(ApiModel):
+    id: str
+    tenant_id: int
+    issue_id: str
+    source_type: str
+    source_id: str
+    failure_type: str
+    latest_seen_at: datetime
+    summary: dict[str, Any] = {}
+
+
+class OperationIssueAccountOut(ApiModel):
+    id: str
+    tenant_id: int
+    issue_id: str
+    account_id: int
+    impact_type: str
+    latest_seen_at: datetime
+    summary: dict[str, Any] = {}
+
+
 class OperationIssueDetailOut(BaseModel):
     issue: OperationIssueOut
     target: dict[str, Any] | None = None
     source_task: dict[str, Any] | None = None
     related_task_summary: TaskRuntimeSummaryOut | None = None
+    sources: list[OperationIssueSourceOut] = []
+    issue_accounts: list[OperationIssueAccountOut] = []
     affected_accounts: list[dict[str, Any]] = []
     recent_failed_actions: list[OperationIssueFailureActionOut] = []
 
@@ -124,9 +153,11 @@ class OperationIssueStatusRequest(BaseModel):
 __all__ = [
     "AccountRuntimeSummaryOut",
     "OperationCenterOverviewOut",
+    "OperationIssueAccountOut",
     "OperationIssueDetailOut",
     "OperationIssueFailureActionOut",
     "OperationIssueOut",
+    "OperationIssueSourceOut",
     "OperationIssueStatusRequest",
     "TargetRuntimeSummaryOut",
     "TaskRuntimeSummaryOut",

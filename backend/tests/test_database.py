@@ -31,3 +31,21 @@ def test_alembic_revision_ids_fit_version_table() -> None:
                 too_long.append(f"{migration.name}:{revision}")
 
     assert not too_long
+
+
+def test_repair_admin_tables_downgrade_preserves_existing_auth_tables() -> None:
+    migration = Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0046_repair_admin_tables.py"
+    tree = ast.parse(migration.read_text(), filename=str(migration))
+    downgrade = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "downgrade")
+    dropped_tables: list[str] = []
+
+    for node in ast.walk(downgrade):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != "drop_table":
+            continue
+        if node.args and isinstance(node.args[0], ast.Constant):
+            dropped_tables.append(str(node.args[0].value))
+
+    assert "app_users" not in dropped_tables
+    assert "user_token_ledgers" not in dropped_tables

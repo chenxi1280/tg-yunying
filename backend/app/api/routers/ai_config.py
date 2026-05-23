@@ -15,7 +15,7 @@ from app.repositories.tenant import require_resource_tenant
 from app.schemas import (
     AiProviderCreate, AiProviderOut, AiProviderUpdate,
     ContentKeywordRuleCreate, ContentKeywordRuleOut, ContentKeywordRuleUpdate,
-    MaterialCreate, MaterialOut, MaterialUpdate,
+    MaterialActionRequest, MaterialCreate, MaterialOut, MaterialUpdate,
     PromptTemplateCreate, PromptTemplateOut, PromptTemplateUpdate,
     SchedulingSettingOut, SchedulingSettingUpdate,
     TenantAiSettingOut, TenantAiSettingUpdate,
@@ -23,8 +23,10 @@ from app.schemas import (
 from app.schemas.ai_config import MaterialCacheHealthOut
 from app.services import (
     check_ai_provider, create_ai_provider, create_content_keyword_rule, create_material, create_prompt_template,
+    disable_material,
     get_scheduling_setting, get_tenant_ai_setting,
     list_ai_providers, list_content_keyword_rules, list_materials, list_prompt_templates,
+    restore_material,
     update_ai_provider, update_content_keyword_rule, update_material, update_prompt_template,
     update_scheduling_setting, update_tenant_ai_setting,
 )
@@ -287,6 +289,41 @@ def patch_material(
         raise not_found(str(exc)) from exc
     try:
         return update_material(session, material_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/materials/{material_id}/disable", response_model=MaterialOut)
+def post_material_disable(
+    material_id: int,
+    payload: MaterialActionRequest | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        require_resource_tenant(session, current_user, Material, material_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+    try:
+        return disable_material(session, material_id, current_user.name, reason=(payload.reason if payload else ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/materials/{material_id}/restore", response_model=MaterialOut)
+def post_material_restore(
+    material_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        require_resource_tenant(session, current_user, Material, material_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+    try:
+        return restore_material(session, material_id, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -203,6 +203,19 @@ class MaterialUpdate(BaseModel):
     caption: str | None = None
 
 
+class MaterialReferenceSummary(ApiModel):
+    message_task_count: int = 0
+    action_count: int = 0
+    rule_version_count: int = 0
+    operation_plan_count: int = 0
+    account_profile_batch_count: int = 0
+    total_count: int = 0
+
+
+class MaterialActionRequest(BaseModel):
+    reason: str = ""
+
+
 class MaterialOut(ApiModel):
     id: int
     tenant_id: int
@@ -232,6 +245,8 @@ class MaterialOut(ApiModel):
     last_cache_error: str
     usage_count: int
     last_used_at: datetime | None
+    referenced_by_count: int = 0
+    reference_summary: MaterialReferenceSummary = Field(default_factory=MaterialReferenceSummary)
 
 
 class MaterialCacheStatusCount(ApiModel):
@@ -333,7 +348,8 @@ __all__ = [
     "PromptTemplateCreate", "PromptTemplateUpdate", "PromptTemplateOut",
     "TenantAiSettingUpdate", "TenantAiSettingOut",
     "SchedulingSettingUpdate", "SchedulingSettingOut",
-    "MaterialCreate", "MaterialUpdate", "MaterialOut",
+    "MaterialActionRequest", "MaterialCreate", "MaterialReferenceSummary", "MaterialUpdate", "MaterialOut",
+    "MaterialCacheErrorItem", "MaterialCacheHealthOut", "MaterialCacheStatusCount",
     "ContentKeywordRuleCreate", "ContentKeywordRuleUpdate", "ContentKeywordRuleOut",
     "AiUsageLedgerOut", "AiUsageSummaryOut",
 ]

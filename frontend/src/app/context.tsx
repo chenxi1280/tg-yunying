@@ -270,7 +270,9 @@ export function AppProvider({ children }: AppProviderProps) {
 
   const {
     createMaterial,
+    disableMaterial,
     openMaterialEdit,
+    restoreMaterial,
     saveMaterial,
     createContentKeywordRule,
     openContentKeywordRuleEdit,
@@ -783,7 +785,9 @@ export function AppProvider({ children }: AppProviderProps) {
     openPromptTemplateEdit,
     savePromptTemplate: () => runWithLoading(`prompt-template:${promptTemplateForm.id ?? 'create'}:save`, promptTemplateForm.id ? '保存提示词' : '新增提示词', savePromptTemplate),
     createMaterial: () => runWithLoading('material:create', '新增素材', createMaterial),
+    disableMaterial: (material) => runWithLoading(`material:${material.id}:disable`, '禁用素材', () => disableMaterial(material)),
     openMaterialEdit,
+    restoreMaterial: (material) => runWithLoading(`material:${material.id}:restore`, '恢复素材', () => restoreMaterial(material)),
     saveMaterial: () => runWithLoading(`material:${materialForm.id ?? 'create'}:save`, materialForm.id ? '保存素材' : '新增素材', saveMaterial),
     createContentKeywordRule: () => runWithLoading('keyword-rule:create', '新增关键词', createContentKeywordRule),
     openContentKeywordRuleEdit,

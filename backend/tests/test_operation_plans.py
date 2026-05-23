@@ -5,7 +5,17 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import OperationPlanTaskLink, OperationTarget, Task, Tenant
 from app.schemas.operation_plans import OperationPlanCreate, OperationPlanGenerateRequest, OperationPlanUpdate
-from app.services.operation_plans import apply_operation_plan_to_linked_tasks, create_operation_plan, generate_operation_plan_tasks, preview_operation_plan, update_operation_plan
+from app.services.operation_plans import (
+    apply_operation_plan_to_linked_tasks,
+    archive_operation_plan,
+    copy_operation_plan,
+    create_operation_plan,
+    generate_operation_plan_tasks,
+    pause_operation_plan,
+    preview_operation_plan,
+    resume_operation_plan,
+    update_operation_plan,
+)
 
 
 def _sqlite_session() -> Session:
@@ -127,3 +137,54 @@ def test_group_relay_operation_plan_requires_source_groups_before_generating_tas
         assert any("转发监听任务缺少来源群" in item for item in preview["blockers"])
         assert generated["created_task_ids"] == []
         assert session.query(Task).count() == 0
+
+
+def test_operation_plan_lifecycle_resume_copy_and_archive() -> None:
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=51, tenant_id=1, target_type="channel", tg_peer_id="-10051", title="频道目标", can_send=True))
+        session.commit()
+
+        plan = create_operation_plan(
+            session,
+            1,
+            OperationPlanCreate(
+                name="频道互动方案",
+                target_type="channel",
+                target_ids=[51],
+                strategy_config={"cadence": "daily"},
+                task_blueprints=[{"task_type": "channel_like", "name": "频道点赞"}],
+            ),
+            "tester",
+        )
+        generated = generate_operation_plan_tasks(
+            session,
+            1,
+            plan["id"],
+            OperationPlanGenerateRequest(auto_start=False, reason="创建草稿"),
+            "tester",
+        )
+        assert generated["linked_task_count"] == 1
+
+        paused = pause_operation_plan(session, 1, plan["id"], "tester")
+        assert paused["status"] == "paused"
+        resumed = resume_operation_plan(session, 1, plan["id"], "tester")
+        assert resumed["status"] == "active"
+
+        copied = copy_operation_plan(session, 1, plan["id"], "tester")
+        assert copied["id"] != plan["id"]
+        assert copied["name"] == "频道互动方案 副本"
+        assert copied["status"] == "draft"
+        assert [target.target_id for target in copied["targets"]] == [51]
+        assert copied["task_blueprints"] == plan["task_blueprints"]
+        assert copied["task_links"] == []
+
+        archived = archive_operation_plan(session, 1, plan["id"], "tester")
+        assert archived["status"] == "archived"
+
+        with pytest.raises(ValueError, match="已归档"):
+            preview_operation_plan(session, 1, plan["id"], OperationPlanGenerateRequest(), "tester")
+        with pytest.raises(ValueError, match="已归档"):
+            generate_operation_plan_tasks(session, 1, plan["id"], OperationPlanGenerateRequest(auto_start=True, reason="归档后生成"), "tester")
+        with pytest.raises(ValueError, match="已归档"):
+            apply_operation_plan_to_linked_tasks(session, 1, plan["id"], OperationPlanGenerateRequest(reason="归档后调整"), "tester")

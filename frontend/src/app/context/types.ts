@@ -318,7 +318,9 @@ export interface AppState {
   openPromptTemplateEdit: (template: PromptTemplate) => void;
   savePromptTemplate: () => Promise<void>;
   createMaterial: () => Promise<void>;
+  disableMaterial: (material: Material) => Promise<void>;
   openMaterialEdit: (material: Material) => void;
+  restoreMaterial: (material: Material) => Promise<void>;
   saveMaterial: () => Promise<void>;
   createContentKeywordRule: () => Promise<void>;
   openContentKeywordRuleEdit: (rule: ContentKeywordRule) => void;

@@ -139,10 +139,16 @@ export type OperationIssue = {
   severity: string;
   source_task_id: string;
   representative_action_id: string;
+  affected_task_count: number;
+  affected_account_count: number;
   affected_account_ids: number[];
   failure_type: string;
   failure_reason: string;
   suggested_action: string;
+  handling_mode: 'modal' | 'drawer' | 'deep_link' | string;
+  return_to: Record<string, any>;
+  claimed_by: string;
+  claimed_at: string | null;
   status: string;
   summary: Record<string, any>;
   first_seen_at: string;
@@ -156,6 +162,8 @@ export type OperationIssueDetail = {
   target: Record<string, any> | null;
   source_task: Record<string, any> | null;
   related_task_summary: Record<string, any> | null;
+  sources: Array<Record<string, any>>;
+  issue_accounts: Array<Record<string, any>>;
   affected_accounts: Array<Record<string, any>>;
   recent_failed_actions: Array<Record<string, any>>;
 };

@@ -89,6 +89,15 @@ export type Material = {
   last_cache_error: string;
   usage_count: number;
   last_used_at: string | null;
+  referenced_by_count: number;
+  reference_summary: {
+    message_task_count: number;
+    action_count: number;
+    rule_version_count: number;
+    operation_plan_count: number;
+    account_profile_batch_count: number;
+    total_count: number;
+  };
 };
 
 export type MaterialCacheStatusCount = {

@@ -10,10 +10,11 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.config import get_settings
 from app.integrations.telegram import DeveloperAppCredentials, SendResult, TelethonTelegramGateway
-from app.models import AccountStatus, Action, ContentKeywordRule, FailureType, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, SourceMediaAsset, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
+from app.models import AccountStatus, Action, ContentKeywordRule, FailureType, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, OperationPlanTemplate, RuleSetVersion, SourceMediaAsset, Task, Tenant, TgAccount, TgAccountSecurityBatchItem, TgGroup, TgGroupAccount
 from app.schemas.operations_center import RuleSetCreate, RuleSetVersionCreate
 from app.schemas.ai_config import MaterialCreate, MaterialUpdate
-from app.services.ai_config import create_material, create_uploaded_material, create_uploaded_materials, material_cache_health, update_material
+from app.services import ai_config as ai_config_service
+from app.services.ai_config import create_material, create_uploaded_material, create_uploaded_materials, disable_material, list_materials, material_cache_health, restore_material, update_material
 from app.services.material_ingestion import deep_probe_material_url
 from app.services.messages import build_outbound_segments
 from app.services.operations_center import (
@@ -553,6 +554,112 @@ def test_material_update_content_change_clears_cache_refs():
     assert updated.tg_cache_message_id == ""
     assert updated.asset_version_id == 3
     assert updated.tg_ref_version_id == 4
+
+
+def test_material_center_reference_summary_disable_and_restore():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        material = Material(
+            id=9110,
+            tenant_id=1,
+            title="引用保护图片",
+            material_type="图片",
+            content="https://trusted.example.com/ref.png",
+            tags="头像包,活动图",
+            review_status="已审核",
+            cache_ready_status="ready",
+        )
+        session.add(material)
+        session.add(
+            MessageTask(
+                tenant_id=1,
+                content="引用图片",
+                message_type="图片",
+                material_id=9110,
+                idempotency_key="material-reference-task",
+            )
+        )
+        session.add(
+            Action(
+                id="material-reference-action",
+                tenant_id=1,
+                task_id="task-material-reference",
+                task_type="group_relay",
+                action_type="send_message",
+                payload={"media_segments": [{"material_id": 9110}]},
+            )
+        )
+        session.add(
+            RuleSetVersion(
+                tenant_id=1,
+                rule_set_id=1,
+                version=1,
+                status="published",
+                routing={"material_policy": {"material_id": 9110}},
+            )
+        )
+        session.add(
+            OperationPlanTemplate(
+                tenant_id=1,
+                name="素材运营方案",
+                strategy_config={"material_id": 9110},
+                task_blueprints=[],
+            )
+        )
+        session.add(
+            TgAccountSecurityBatchItem(
+                batch_id=1,
+                tenant_id=1,
+                account_id=101,
+                avatar_source="material:9110",
+            )
+        )
+        session.commit()
+
+        listed = list_materials(session, 1)[0]
+        summary = listed.reference_summary
+        disabled = disable_material(session, 9110, "tester", reason="素材被投诉，先下线")
+        disabled_status = disabled.review_status
+        disabled_total = disabled.reference_summary.total_count
+        restored = restore_material(session, 9110, "tester")
+
+    assert summary.message_task_count == 1
+    assert summary.action_count == 1
+    assert summary.rule_version_count == 1
+    assert summary.operation_plan_count == 1
+    assert summary.account_profile_batch_count == 1
+    assert summary.total_count == 5
+    assert disabled_status == "已禁用"
+    assert disabled_total == 5
+    assert restored.review_status == "已审核"
+    assert restored.reference_summary.total_count == 5
+
+
+def test_material_list_uses_batch_reference_summary(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    def fail_single_material_summary(*_args, **_kwargs):
+        raise AssertionError("list_materials should not compute references material-by-material")
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                Material(id=9201, tenant_id=1, title="素材一", material_type="图片", content="https://example.local/1.png"),
+                Material(id=9202, tenant_id=1, title="素材二", material_type="图片", content="https://example.local/2.png"),
+            ]
+        )
+        session.commit()
+
+        monkeypatch.setattr(ai_config_service, "material_reference_summary", fail_single_material_summary)
+        listed = list_materials(session, 1)
+
+    assert [item.id for item in listed] == [9202, 9201]
+    assert [item.reference_summary.total_count for item in listed] == [0, 0]
 
 
 def test_material_asset_and_tg_ref_versions_are_recorded(monkeypatch):

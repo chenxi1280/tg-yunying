@@ -45,6 +45,7 @@ from app.services.operations_center import (
 )
 from app.services.runtime_summary import (
     acknowledge_operation_issue,
+    claim_operation_issue,
     get_operation_issue_detail,
     ignore_operation_issue,
     list_target_runtime_summaries,
@@ -144,6 +145,22 @@ def post_operation_issue_acknowledge(
 ):
     try:
         issue = acknowledge_operation_issue(session, current_user.tenant_id or 1, issue_id, current_user.name, payload.reason)
+        session.commit()
+        session.refresh(issue)
+        return issue
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/operation-issues/{issue_id}/claim", response_model=OperationIssueOut)
+def post_operation_issue_claim(
+    issue_id: str,
+    payload: OperationIssueStatusRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        issue = claim_operation_issue(session, current_user.tenant_id or 1, issue_id, current_user.name, payload.reason)
         session.commit()
         session.refresh(issue)
         return issue

@@ -18,6 +18,8 @@ from app.schemas import (
 )
 from app.services import (
     apply_operation_plan_to_linked_tasks,
+    archive_operation_plan,
+    copy_operation_plan,
     create_operation_plan,
     generate_operation_plan_tasks,
     get_operation_plan,
@@ -25,6 +27,7 @@ from app.services import (
     list_operation_plans,
     pause_operation_plan,
     preview_operation_plan,
+    resume_operation_plan,
     update_operation_plan,
 )
 
@@ -89,6 +92,30 @@ def post_operation_plan_apply(plan_id: int, payload: OperationPlanGenerateReques
 def post_operation_plan_pause(plan_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
         return pause_operation_plan(session, current_user.tenant_id or 1, plan_id, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/operation-plans/{plan_id}/resume", response_model=OperationPlanOut)
+def post_operation_plan_resume(plan_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return resume_operation_plan(session, current_user.tenant_id or 1, plan_id, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/operation-plans/{plan_id}/copy", response_model=OperationPlanOut)
+def post_operation_plan_copy(plan_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return copy_operation_plan(session, current_user.tenant_id or 1, plan_id, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/operation-plans/{plan_id}/archive", response_model=OperationPlanOut)
+def post_operation_plan_archive(plan_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return archive_operation_plan(session, current_user.tenant_id or 1, plan_id, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 

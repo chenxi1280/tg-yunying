@@ -30,6 +30,7 @@ const adminPermissionGroups = [
   ] },
   { menu: ['targets.view', '运营目标'], buttons: [['targets.manage', '目标管理']] },
   { menu: ['message_sending.view', '消息发送'], buttons: [['message_sending.create', '创建发送']] },
+  { menu: ['materials.view', '素材中心'], buttons: [['materials.upload', '素材上传'], ['materials.manage', '素材管理']] },
   { menu: ['tasks.view', '任务中心'], buttons: [['tasks.manage', '任务管理'], ['tasks.dispatch_control', '调度控制']] },
   { menu: ['listeners.view', '监听中心'], buttons: [['listeners.manage', '监听管理']] },
   { menu: ['rules.view', '规则中心'], buttons: [['rules.publish', '规则发布']] },
@@ -155,7 +156,7 @@ export function AppModals() {
             <label>账号类型<Select value={adminUserForm.role} onChange={(value) => setAdminUserForm((current) => ({ ...current, role: value }))} options={['后台用户', '系统管理员'].map((value) => ({ value, label: value }))} /></label>
             <label>角色模板<Select value={adminUserForm.role_template} onChange={(value) => {
               const templatePermissions: Record<string, string[]> = {
-                '运营管理员': ['overview.view', 'operation_plans.manage', 'operation_issues.manage', 'accounts.view', 'accounts.sync', 'accounts.codes.read', 'accounts.security.read', 'accounts.security.batch', 'accounts.profile.batch_update', 'targets.view', 'targets.manage', 'message_sending.view', 'message_sending.create', 'tasks.view', 'tasks.manage', 'listeners.view', 'listeners.manage', 'rules.view', 'rules.publish', 'risk.view', 'risk.manage', 'archives.view', 'archives.manage', 'usage.view', 'manual.view', 'audits.view', 'audit.export'],
+                '运营管理员': ['overview.view', 'operation_plans.manage', 'operation_issues.manage', 'accounts.view', 'accounts.sync', 'accounts.codes.read', 'accounts.security.read', 'accounts.security.batch', 'accounts.profile.batch_update', 'targets.view', 'targets.manage', 'message_sending.view', 'message_sending.create', 'materials.view', 'materials.upload', 'materials.manage', 'tasks.view', 'tasks.manage', 'listeners.view', 'listeners.manage', 'rules.view', 'rules.publish', 'risk.view', 'risk.manage', 'archives.view', 'archives.manage', 'usage.view', 'manual.view', 'audits.view', 'audit.export'],
                 '账号添加专员': ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'],
                 '只读观察员': ['overview.view', 'usage.view', 'manual.view', 'audits.view'],
               };

@@ -2,10 +2,10 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, AccountStatus, OperationIssue, OperationTarget, Task, Tenant, TgAccount
+from app.models import Action, AccountStatus, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, Task, Tenant, TgAccount
 from app.models.enums import FailureType
 from app.services._common import _now
-from app.services.runtime_summary import acknowledge_operation_issue, get_operation_issue_detail, list_operation_issues, refresh_task_summary
+from app.services.runtime_summary import acknowledge_operation_issue, claim_operation_issue, get_operation_issue_detail, list_operation_issues, refresh_task_summary
 
 
 def _sqlite_session() -> Session:
@@ -53,7 +53,18 @@ def test_failed_task_summary_opens_and_resolves_operation_issue() -> None:
         assert issue.status == "open"
         assert issue.target_id == 21
         assert issue.affected_account_ids == [11]
+        assert issue.affected_account_count == 1
+        assert issue.affected_task_count == 1
+        assert issue.handling_mode == "drawer"
+        assert issue.return_to["source_issue_id"] == issue.id
+        assert issue.return_to["target_id"] == 21
+        assert issue.return_to["task_id"] == "task-issue"
+        assert detail["sources"][0].source_id == "action-failed"
+        assert detail["sources"][0].source_type == "action"
+        assert detail["issue_accounts"][0].account_id == 11
         assert detail["recent_failed_actions"][0]["id"] == "action-failed"
+        assert session.query(OperationIssueSource).filter_by(issue_id=issue.id).count() == 2
+        assert session.query(OperationIssueAccount).filter_by(issue_id=issue.id).count() == 1
 
         action.status = "success"
         action.result = {}
@@ -90,4 +101,35 @@ def test_acknowledge_operation_issue_moves_issue_out_of_open_status() -> None:
 
         assert issue.status == "acknowledged"
         assert issue.summary["acknowledged_by"] == "tester"
+        assert issue.claimed_by == ""
         assert list_operation_issues(session, 1, status="open") == []
+
+
+def test_claim_operation_issue_sets_owner_without_acknowledging() -> None:
+    now = _now()
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            OperationIssue(
+                id="issue-claim",
+                tenant_id=1,
+                target_id=22,
+                issue_type="task_failure",
+                severity="warning",
+                failure_type="send_failed",
+                status="open",
+                first_seen_at=now,
+                last_seen_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+        issue = claim_operation_issue(session, 1, "issue-claim", "tester", "接手排查")
+        session.flush()
+
+        assert issue.status == "open"
+        assert issue.claimed_by == "tester"
+        assert issue.claimed_at is not None
+        assert issue.summary["claimed_by"] == "tester"
+        assert issue.summary["claim_reason"] == "接手排查"

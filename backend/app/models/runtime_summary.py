@@ -89,10 +89,16 @@ class OperationIssue(Base):
     severity: Mapped[str] = mapped_column(String(40), default="warning")
     source_task_id: Mapped[str] = mapped_column(String(36), default="")
     representative_action_id: Mapped[str] = mapped_column(String(36), default="")
+    affected_task_count: Mapped[int] = mapped_column(Integer, default=0)
+    affected_account_count: Mapped[int] = mapped_column(Integer, default=0)
     affected_account_ids: Mapped[list] = mapped_column(JSON, default=list)
     failure_type: Mapped[str] = mapped_column(String(80), default="")
     failure_reason: Mapped[str] = mapped_column(Text, default="")
     suggested_action: Mapped[str] = mapped_column(Text, default="")
+    handling_mode: Mapped[str] = mapped_column(String(30), default="modal")
+    return_to: Mapped[dict] = mapped_column(JSON, default=dict)
+    claimed_by: Mapped[str] = mapped_column(String(100), default="")
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="open")
     summary: Mapped[dict] = mapped_column(JSON, default=dict)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -101,9 +107,44 @@ class OperationIssue(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class OperationIssueSource(Base):
+    __tablename__ = "operation_issue_sources"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "issue_id", "source_type", "source_id", name="uq_operation_issue_sources_source"),
+        Index("ix_operation_issue_sources_issue", "tenant_id", "issue_id", "latest_seen_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    issue_id: Mapped[str] = mapped_column(ForeignKey("operation_issue.id"))
+    source_type: Mapped[str] = mapped_column(String(40), default="")
+    source_id: Mapped[str] = mapped_column(String(80), default="")
+    failure_type: Mapped[str] = mapped_column(String(80), default="")
+    latest_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class OperationIssueAccount(Base):
+    __tablename__ = "operation_issue_accounts"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "issue_id", "account_id", "impact_type", name="uq_operation_issue_accounts_account"),
+        Index("ix_operation_issue_accounts_issue", "tenant_id", "issue_id", "latest_seen_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    issue_id: Mapped[str] = mapped_column(ForeignKey("operation_issue.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    impact_type: Mapped[str] = mapped_column(String(80), default="execution_failure")
+    latest_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 __all__ = [
     "AccountRuntimeSummary",
     "OperationIssue",
+    "OperationIssueAccount",
+    "OperationIssueSource",
     "TargetRuntimeSummary",
     "TaskRuntimeSummary",
 ]
