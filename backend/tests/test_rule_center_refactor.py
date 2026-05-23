@@ -348,6 +348,89 @@ def test_material_cache_worker_marks_media_material_ready(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_material_cache_worker_tries_next_active_account_when_first_cannot_cache(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setenv("MATERIAL_CACHE_PEER_ID", "material-cache-peer")
+    get_settings.cache_clear()
+    attempted_accounts: list[int] = []
+    monkeypatch.setattr(
+        "app.services.developer_apps.credentials_for_account",
+        lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+    )
+
+    def fake_cache_material(account_id, *args, **kwargs):
+        attempted_accounts.append(account_id)
+        if account_id == 102:
+            return SendResult(True, remote_message_id="material-502")
+        return SendResult(False, failure_type="GROUP_PERMISSION_DENIED", detail="no cache permission")
+
+    monkeypatch.setattr("app.services.material_cache.gateway.cache_material_source", fake_cache_material)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="无权限缓存号", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=95, session_ciphertext="session-101"))
+        session.add(TgAccount(id=102, tenant_id=1, display_name="有权限缓存号", phone_masked="102", status=AccountStatus.ACTIVE.value, health_score=95, session_ciphertext="session-102"))
+        session.add(Material(id=9002, tenant_id=1, title="待缓存图片", material_type="图片", content="https://trusted.example.com/material.png", cache_ready_status="not_cached"))
+        session.commit()
+
+    def factory():
+        return Session(engine)
+
+    assert drain_material_cache(factory, limit=10) == 1
+
+    with Session(engine) as session:
+        material = session.get(Material, 9002)
+
+    assert attempted_accounts == [101, 102]
+    assert material.cache_ready_status == "ready"
+    assert material.tg_cache_account_id == 102
+    assert material.tg_cache_message_id == "material-502"
+
+    get_settings.cache_clear()
+
+
+def test_material_cache_worker_prefers_configured_cache_account(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    attempted_accounts: list[int] = []
+    monkeypatch.setattr(
+        "app.services.developer_apps.credentials_for_account",
+        lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+    )
+    monkeypatch.setattr(
+        "app.services.material_cache.gateway.cache_material_source",
+        lambda account_id, *args, **kwargs: attempted_accounts.append(account_id) or SendResult(True, remote_message_id="material-503"),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="自动优先号", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=99, session_ciphertext="session-101"))
+        session.add(TgAccount(id=102, tenant_id=1, display_name="指定缓存号", phone_masked="102", status=AccountStatus.ACTIVE.value, health_score=80, session_ciphertext="session-102"))
+        ai_config_service.update_material_cache_config(
+            session,
+            tenant_id=1,
+            material_cache_input="https://t.me/cache_target",
+            source_media_cache_input=None,
+            material_cache_account_id=102,
+            actor="pytest",
+        )
+        session.add(Material(id=9003, tenant_id=1, title="待缓存图片", material_type="图片", content="https://trusted.example.com/material.png", cache_ready_status="not_cached"))
+        session.commit()
+
+    def factory():
+        return Session(engine)
+
+    assert drain_material_cache(factory, limit=10) == 1
+
+    with Session(engine) as session:
+        material = session.get(Material, 9003)
+
+    assert attempted_accounts == [102]
+    assert material.cache_ready_status == "ready"
+    assert material.tg_cache_account_id == 102
+
+
 def test_batch_uploaded_materials_create_one_row_per_file():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -401,8 +484,12 @@ def test_material_cache_config_normalizes_admin_links_and_overrides_env(monkeypa
     assert saved.material_cache.raw_input == "https://t.me/c/1234567890/55397"
     assert saved.material_cache.normalized_peer == "-1001234567890"
     assert saved.material_cache.source == "saved"
+    assert "已保存为 -1001234567890" in saved.material_cache.last_error
+    assert "没有可用缓存账号" in saved.material_cache.last_error
     assert saved.source_media_cache.raw_input == "@example_cache"
     assert saved.source_media_cache.normalized_peer == "@example_cache"
+    assert "已保存为 @example_cache" in saved.source_media_cache.last_error
+    assert "没有可用缓存账号" in saved.source_media_cache.last_error
     assert material_peer == "-1001234567890"
     assert source_peer == "@example_cache"
     assert health.material_cache_peer_configured is True
@@ -410,6 +497,129 @@ def test_material_cache_config_normalizes_admin_links_and_overrides_env(monkeypa
     assert "更新素材缓存频道配置" in audit_actions
 
     get_settings.cache_clear()
+
+
+def test_cache_config_normalizes_public_link_and_explains_probe_failure(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(
+        "app.services.developer_apps.credentials_for_account",
+        lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+    )
+    monkeypatch.setattr(ai_config_service.gateway, "probe_target_capabilities", lambda *args, **kwargs: type("_Probe", (), {"ok": False})())
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="缓存号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        session.commit()
+        result = ai_config_service.update_material_cache_config(
+            session,
+            tenant_id=1,
+            material_cache_input="https://t.me/yangyunipingdap",
+            source_media_cache_input=None,
+            actor="pytest",
+        )
+
+    assert result.material_cache.raw_input == "https://t.me/yangyunipingdap"
+    assert result.material_cache.normalized_peer == "@yangyunipingdap"
+    assert "已保存为 @yangyunipingdap" in result.material_cache.last_error
+    assert "加入该频道" in result.material_cache.last_error
+    assert "发消息/发帖权限" in result.material_cache.last_error
+
+
+def test_cache_config_uses_later_active_account_when_first_probe_fails(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    probed_accounts: list[int] = []
+    monkeypatch.setattr(
+        "app.services.developer_apps.credentials_for_account",
+        lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+    )
+
+    def fake_probe(account_id, *args, **kwargs):
+        probed_accounts.append(account_id)
+        return type("_Probe", (), {"ok": account_id == 102})()
+
+    monkeypatch.setattr(ai_config_service.gateway, "probe_target_capabilities", fake_probe)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="无权限缓存号", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=95, session_ciphertext="session-101"))
+        session.add(TgAccount(id=102, tenant_id=1, display_name="有权限缓存号", phone_masked="102", status=AccountStatus.ACTIVE.value, health_score=95, session_ciphertext="session-102"))
+        session.commit()
+        result = ai_config_service.update_material_cache_config(
+            session,
+            tenant_id=1,
+            material_cache_input="https://t.me/yangyunipingdap",
+            source_media_cache_input=None,
+            actor="pytest",
+        )
+
+    assert probed_accounts == [101, 102]
+    assert result.material_cache.normalized_peer == "@yangyunipingdap"
+    assert result.material_cache.last_error == ""
+
+
+def test_cache_config_prefers_selected_cache_account_for_probe(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    probed_accounts: list[int] = []
+    monkeypatch.setattr(
+        "app.services.developer_apps.credentials_for_account",
+        lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+    )
+
+    def fake_probe(account_id, *args, **kwargs):
+        probed_accounts.append(account_id)
+        return type("_Probe", (), {"ok": True})()
+
+    monkeypatch.setattr(ai_config_service.gateway, "probe_target_capabilities", fake_probe)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="自动优先号", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=99, session_ciphertext="session-101"))
+        session.add(TgAccount(id=102, tenant_id=1, display_name="指定缓存号", phone_masked="102", status=AccountStatus.ACTIVE.value, health_score=80, session_ciphertext="session-102"))
+        session.commit()
+        result = ai_config_service.update_material_cache_config(
+            session,
+            tenant_id=1,
+            material_cache_input="https://t.me/yangyunipingdap",
+            source_media_cache_input=None,
+            material_cache_account_id=102,
+            actor="pytest",
+        )
+
+    assert probed_accounts == [102]
+    assert result.cache_account is not None
+    assert result.cache_account.id == 102
+    assert result.cache_account.display_name == "指定缓存号"
+    assert result.material_cache.last_error == ""
+
+
+def test_cache_config_rejects_cache_account_from_another_tenant():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Tenant(id=2, name="其它空间"))
+        session.add(TgAccount(id=202, tenant_id=2, display_name="其它租户账号", phone_masked="202", status=AccountStatus.ACTIVE.value, session_ciphertext="session-202"))
+        session.commit()
+        try:
+            ai_config_service.update_material_cache_config(
+                session,
+                tenant_id=1,
+                material_cache_input="https://t.me/yangyunipingdap",
+                source_media_cache_input=None,
+                material_cache_account_id=202,
+                actor="pytest",
+            )
+        except ValueError as exc:
+            error = str(exc)
+        else:
+            error = ""
+
+    assert error == "缓存执行账号不存在或不属于当前租户"
 
 
 def test_zip_material_import_persists_result_and_skips_invalid_entries():
@@ -589,8 +799,10 @@ def test_cache_config_records_friendly_error_when_probe_fails(monkeypatch):
             actor="pytest",
         )
 
-    assert result.material_cache.last_error == "缓存频道不可访问 / 账号无权限"
-    assert result.source_media_cache.last_error == "缓存频道不可访问 / 账号无权限"
+    assert "已保存为 @broken_cache" in result.material_cache.last_error
+    assert "发消息/发帖权限" in result.material_cache.last_error
+    assert "已保存为 @source_cache" in result.source_media_cache.last_error
+    assert "发消息/发帖权限" in result.source_media_cache.last_error
 
 
 def test_telethon_cache_probe_fails_when_permissions_cannot_be_confirmed(monkeypatch):

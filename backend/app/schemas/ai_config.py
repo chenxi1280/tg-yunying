@@ -360,14 +360,25 @@ class CacheChannelConfigOut(ApiModel):
     last_error: str = ""
 
 
+class CacheExecutionAccountOut(ApiModel):
+    id: int
+    display_name: str
+    username: str | None = None
+    phone_masked: str = ""
+    status: str = ""
+    health_score: float = 0
+
+
 class MaterialCacheConfigUpdate(BaseModel):
     material_cache_input: str | None = None
     source_media_cache_input: str | None = None
+    material_cache_account_id: int | None = None
 
 
 class MaterialCacheConfigOut(ApiModel):
     material_cache: CacheChannelConfigOut
     source_media_cache: CacheChannelConfigOut
+    cache_account: CacheExecutionAccountOut | None = None
     health: MaterialCacheHealthOut
 
 
@@ -469,7 +480,7 @@ __all__ = [
     "TenantAiSettingUpdate", "TenantAiSettingOut",
     "SchedulingSettingUpdate", "SchedulingSettingOut",
     "MaterialActionRequest", "MaterialCreate", "MaterialReferenceSummary", "MaterialUpdate", "MaterialOut",
-    "CacheChannelConfigOut", "MaterialCacheConfigOut", "MaterialCacheConfigUpdate",
+    "CacheChannelConfigOut", "CacheExecutionAccountOut", "MaterialCacheConfigOut", "MaterialCacheConfigUpdate",
     "MaterialImportItemOut", "MaterialImportResultOut",
     "MaterialCacheErrorItem", "MaterialCacheHealthOut", "MaterialCacheStatusCount",
     "ContentKeywordRuleCreate", "ContentKeywordRuleUpdate", "ContentKeywordRuleOut",

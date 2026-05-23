@@ -1,6 +1,7 @@
 import { Alert, Button, Card, Descriptions, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type {
   AdminUser,
+  Account,
   AiProvider,
   ConfirmPayload,
   ContentKeywordRule,
@@ -22,6 +23,7 @@ interface Props {
   developerApps: DeveloperApp[];
   tenants: Tenant[];
   aiProviders: AiProvider[];
+  accounts: Account[];
   promptTemplates: PromptTemplate[];
   tenantAiSetting: TenantAiSetting | null;
   materials: Material[];
@@ -62,6 +64,7 @@ export default function SystemConfigView({
   developerApps,
   tenants,
   aiProviders,
+  accounts,
   promptTemplates,
   tenantAiSetting,
   materials,
@@ -130,6 +133,7 @@ export default function SystemConfigView({
             <AISettingsView
               section="providers"
               aiProviders={aiProviders}
+              accounts={accounts}
               promptTemplates={promptTemplates}
               tenantAiSetting={tenantAiSetting}
               materials={materials}
@@ -164,6 +168,7 @@ export default function SystemConfigView({
             <AISettingsView
               section="slang"
               aiProviders={aiProviders}
+              accounts={accounts}
               promptTemplates={promptTemplates}
               tenantAiSetting={tenantAiSetting}
               materials={materials}
@@ -199,6 +204,7 @@ export default function SystemConfigView({
               section="resources"
               showMaterialAssets={false}
               aiProviders={aiProviders}
+              accounts={accounts}
               promptTemplates={promptTemplates}
               tenantAiSetting={tenantAiSetting}
               materials={materials}

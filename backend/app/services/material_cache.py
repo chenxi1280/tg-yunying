@@ -4,8 +4,8 @@ from datetime import timedelta
 
 from sqlalchemy import select
 
-from app.models import AccountStatus, Material, TgAccount
-from app.services.ai_config import resolve_material_cache_peer_id
+from app.models import Material, TgAccount
+from app.services.ai_config import cache_candidate_accounts, resolve_material_cache_account_id, resolve_material_cache_peer_id
 from app.services._common import _now, gateway
 from app.services.material_ingestion import is_platform_temp_path, remove_platform_temp_file
 from app.services.material_versions import record_material_tg_ref_version
@@ -36,26 +36,32 @@ def drain_material_cache(session_factory, limit: int = 20) -> int:
                 continue
             if material.cache_ready_status == "flood_wait" and material.last_cache_flood_wait_until and material.last_cache_flood_wait_until > _now():
                 continue
-            account = _cache_account(session, material)
-            if not account:
+            accounts = _cache_accounts(session, material)
+            if not accounts:
                 _mark_material_cache_failed(material, "cache_account_unavailable")
                 processed += 1
                 continue
-            try:
-                from app.services.developer_apps import credentials_for_account
+            from app.services.developer_apps import credentials_for_account
 
-                credentials = credentials_for_account(session, account)
-                material.cache_ready_status = "refreshing"
-                result = gateway.cache_material_source(
-                    account.id,
-                    material.content,
-                    cache_peer_id,
-                    material.caption or "",
-                    account.session_ciphertext,
-                    credentials,
-                )
-            except Exception as exc:  # noqa: BLE001 - worker keeps draining.
-                result = type("_MaterialCacheResult", (), {"ok": False, "failure_type": "cache_failed", "detail": str(exc), "remote_message_id": ""})()
+            result = None
+            account = None
+            material.cache_ready_status = "refreshing"
+            for candidate in accounts:
+                try:
+                    credentials = credentials_for_account(session, candidate)
+                    result = gateway.cache_material_source(
+                        candidate.id,
+                        material.content,
+                        cache_peer_id,
+                        material.caption or "",
+                        candidate.session_ciphertext,
+                        credentials,
+                    )
+                except Exception as exc:  # noqa: BLE001 - try the next active account before marking the material failed.
+                    result = type("_MaterialCacheResult", (), {"ok": False, "failure_type": "cache_failed", "detail": str(exc), "remote_message_id": ""})()
+                if result.ok and result.remote_message_id:
+                    account = candidate
+                    break
             if result.ok and result.remote_message_id:
                 source_was_temp = is_platform_temp_path(material.content)
                 remove_platform_temp_file(material.content)
@@ -82,17 +88,9 @@ def drain_material_cache(session_factory, limit: int = 20) -> int:
     return processed
 
 
-def _cache_account(session, material: Material) -> TgAccount | None:
-    if material.tg_cache_account_id:
-        account = session.get(TgAccount, material.tg_cache_account_id)
-        if account and account.deleted_at is None and account.status == AccountStatus.ACTIVE.value:
-            return account
-    return session.scalar(
-        select(TgAccount)
-        .where(TgAccount.tenant_id == material.tenant_id, TgAccount.deleted_at.is_(None), TgAccount.status == AccountStatus.ACTIVE.value)
-        .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
-        .limit(1)
-    )
+def _cache_accounts(session, material: Material) -> list[TgAccount]:
+    preferred_account_id = material.tg_cache_account_id or resolve_material_cache_account_id(session, material.tenant_id)
+    return cache_candidate_accounts(session, material.tenant_id, preferred_account_id)
 
 
 def _mark_material_cache_failed(material: Material, reason: str) -> None:

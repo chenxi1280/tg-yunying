@@ -1,7 +1,7 @@
 import React from 'react';
-import { Alert, Button, Card, Descriptions, Empty, Form, Input, List, Space, Typography } from 'antd';
+import { Alert, App as AntdApp, Button, Card, Descriptions, Empty, Form, Input, List, Select, Space, Typography } from 'antd';
 import { api } from '../../shared/api/client';
-import type { AiProvider, PromptTemplate, TenantAiSetting, Material, MaterialCacheConfig, MaterialCacheHealth, ContentKeywordRule } from '../types';
+import type { Account, AiProvider, PromptTemplate, TenantAiSetting, Material, MaterialCacheConfig, MaterialCacheHealth, ContentKeywordRule } from '../types';
 import { StatusBadge, Badge } from '../components/shared';
 import { statusAccent } from '../utils';
 
@@ -10,6 +10,7 @@ interface Props {
   aiProviders: AiProvider[];
   promptTemplates: PromptTemplate[];
   tenantAiSetting: TenantAiSetting | null;
+  accounts?: Account[];
   materials: Material[];
   materialCacheHealth: MaterialCacheHealth | null;
   materialCacheConfig: MaterialCacheConfig | null;
@@ -40,6 +41,7 @@ export default function AISettingsView({
   aiProviders,
   promptTemplates,
   tenantAiSetting,
+  accounts = [],
   materials,
   materialCacheHealth,
   materialCacheConfig,
@@ -64,6 +66,7 @@ export default function AISettingsView({
   isActionPending,
   showMaterialAssets = true,
 }: Props) {
+  const { message } = AntdApp.useApp();
   const showProviders = section === 'all' || section === 'providers';
   const showResources = section === 'all' || section === 'resources';
   const showSlang = section === 'all' || section === 'slang';
@@ -77,18 +80,39 @@ export default function AISettingsView({
     cacheForm.setFieldsValue({
       material_cache_input: materialCacheConfig?.material_cache.raw_input ?? '',
       source_media_cache_input: materialCacheConfig?.source_media_cache.raw_input ?? '',
+      material_cache_account_id: materialCacheConfig?.cache_account?.id ?? undefined,
     });
   }, [cacheForm, materialCacheConfig]);
 
-  async function saveMaterialCacheConfig(values: { material_cache_input?: string; source_media_cache_input?: string }) {
+  const cacheAccountOptions = React.useMemo(
+    () => accounts
+      .filter((account) => !account.deleted_at)
+      .map((account) => {
+        const username = account.username ? `@${account.username}` : '@-';
+        const label = `${account.display_name} / ${account.phone_number || account.phone_masked || '-'} / ${username} / ${account.status} / 健康分 ${Math.round(account.health_score ?? 0)}`;
+        return { value: account.id, label };
+      }),
+    [accounts],
+  );
+
+  async function saveMaterialCacheConfig(values: { material_cache_input?: string; source_media_cache_input?: string; material_cache_account_id?: number | null }) {
     setSavingCacheConfig(true);
     setCacheConfigError('');
     try {
-      await api<MaterialCacheConfig>('/materials/cache/config', {
+      const saved = await api<MaterialCacheConfig>('/materials/cache/config', {
         method: 'PATCH',
-        body: JSON.stringify(values),
+        body: JSON.stringify({
+          ...values,
+          material_cache_account_id: values.material_cache_account_id ?? null,
+        }),
       });
       await onSavedMaterialCacheConfig();
+      const warning = saved.material_cache.last_error || saved.source_media_cache.last_error;
+      if (warning) {
+        void message.warning(warning);
+      } else {
+        void message.success('缓存配置已保存');
+      }
     } catch (error) {
       setCacheConfigError(error instanceof Error ? error.message : '保存缓存频道配置失败');
     } finally {
@@ -176,6 +200,19 @@ export default function AISettingsView({
                 <Input placeholder="缓存频道链接 / @username / t.me/c/..." />
               </Form.Item>
               {materialCacheConfig?.material_cache.last_error && <Alert type="warning" showIcon message={materialCacheConfig.material_cache.last_error} style={{ marginBottom: 12 }} />}
+              <Form.Item
+                label="缓存执行账号"
+                name="material_cache_account_id"
+                extra={materialCacheConfig?.cache_account ? `当前：${materialCacheConfig.cache_account.display_name} / ${materialCacheConfig.cache_account.phone_masked} / ${materialCacheConfig.cache_account.username ? `@${materialCacheConfig.cache_account.username}` : '@-'} / ${materialCacheConfig.cache_account.status}` : '不选择时按在线账号健康分自动尝试'}
+              >
+                <Select
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="按手机号 / 备注名 / @username 搜索缓存执行账号"
+                  options={cacheAccountOptions}
+                />
+              </Form.Item>
               <Form.Item
                 label="源媒体缓存频道"
                 name="source_media_cache_input"

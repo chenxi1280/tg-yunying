@@ -134,9 +134,19 @@ export type CacheChannelConfig = {
   last_error: string;
 };
 
+export type CacheExecutionAccount = {
+  id: number;
+  display_name: string;
+  username: string | null;
+  phone_masked: string;
+  status: string;
+  health_score: number;
+};
+
 export type MaterialCacheConfig = {
   material_cache: CacheChannelConfig;
   source_media_cache: CacheChannelConfig;
+  cache_account: CacheExecutionAccount | null;
   health: MaterialCacheHealth;
 };
 

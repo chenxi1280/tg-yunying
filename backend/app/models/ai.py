@@ -95,6 +95,7 @@ class MaterialCacheConfig(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     material_cache_input: Mapped[str] = mapped_column(String(300), default="")
     material_cache_peer_id: Mapped[str] = mapped_column(String(160), default="")
+    material_cache_account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
     source_media_cache_input: Mapped[str] = mapped_column(String(300), default="")
     source_media_cache_peer_id: Mapped[str] = mapped_column(String(160), default="")
     material_cache_last_error: Mapped[str] = mapped_column(Text, default="")

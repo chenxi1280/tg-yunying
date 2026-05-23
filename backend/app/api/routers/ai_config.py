@@ -273,12 +273,17 @@ def patch_materials_cache_config(
 ):
     require_core_feature_access(current_user)
     try:
+        update_kwargs = {
+            "session": session,
+            "tenant_id": resolve_tenant_id(current_user, tenant_id),
+            "material_cache_input": payload.material_cache_input,
+            "source_media_cache_input": payload.source_media_cache_input,
+            "actor": current_user.name,
+        }
+        if "material_cache_account_id" in payload.model_fields_set:
+            update_kwargs["material_cache_account_id"] = payload.material_cache_account_id
         return update_material_cache_config(
-            session,
-            tenant_id=resolve_tenant_id(current_user, tenant_id),
-            material_cache_input=payload.material_cache_input,
-            source_media_cache_input=payload.source_media_cache_input,
-            actor=current_user.name,
+            **update_kwargs,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

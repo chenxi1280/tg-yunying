@@ -58,6 +58,7 @@ from app.schemas import (
 )
 from app.schemas.ai_config import (
     CacheChannelConfigOut,
+    CacheExecutionAccountOut,
     MaterialCacheConfigOut,
     MaterialCacheErrorItem,
     MaterialCacheHealthOut,
@@ -1354,6 +1355,7 @@ def restore_material(session: Session, material_id: int, actor: str) -> Material
 
 USERNAME_PATTERN = re.compile(r"^@[A-Za-z0-9_]{1,64}$")
 PEER_ID_PATTERN = re.compile(r"^-100\d{5,}$")
+_UNSET = object()
 
 
 def normalize_cache_channel_input(value: str) -> str:
@@ -1396,33 +1398,91 @@ def _cache_channel_out(raw_input: str, normalized_peer: str, env_value: str, las
     return CacheChannelConfigOut(raw_input="", normalized_peer="", source="empty", last_error=last_error)
 
 
-def _validate_cache_channel_access(session: Session, tenant_id: int, normalized_peer: str) -> str:
+def _cache_channel_no_account_error(normalized_peer: str) -> str:
+    return f"已保存为 {normalized_peer}，但当前没有可用缓存账号；请先启用一个 TG 账号，并把该账号加入缓存频道。"
+
+
+def _cache_channel_permission_error(normalized_peer: str) -> str:
+    return f"已保存为 {normalized_peer}，但缓存账号暂不可访问或无发布权限；请将系统缓存账号加入该频道并授予发消息/发帖权限。"
+
+
+def _cache_selected_account_unavailable_error(normalized_peer: str) -> str:
+    return f"已保存为 {normalized_peer}，但指定缓存执行账号不可用；请重新登录该账号或改选在线账号。"
+
+
+def _cache_selected_account_fallback_warning(normalized_peer: str) -> str:
+    return f"已保存为 {normalized_peer}，但指定缓存执行账号暂不可访问或无发布权限；系统已验证备用缓存账号可用，请检查指定账号权限。"
+
+
+def cache_candidate_accounts(session: Session, tenant_id: int, preferred_account_id: int | None = None) -> list[TgAccount]:
+    accounts = list(
+        session.scalars(
+            select(TgAccount)
+            .where(TgAccount.tenant_id == tenant_id, TgAccount.deleted_at.is_(None), TgAccount.status == AccountStatus.ACTIVE.value)
+            .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
+        )
+    )
+    if not preferred_account_id:
+        return accounts
+    preferred = [account for account in accounts if account.id == preferred_account_id]
+    if not preferred:
+        return accounts
+    return preferred + [account for account in accounts if account.id != preferred_account_id]
+
+
+def _cache_account_out(account: TgAccount | None) -> CacheExecutionAccountOut | None:
+    if not account:
+        return None
+    return CacheExecutionAccountOut(
+        id=account.id,
+        display_name=account.display_name,
+        username=account.username,
+        phone_masked=account.phone_masked,
+        status=account.status,
+        health_score=float(account.health_score or 0),
+    )
+
+
+def _validate_cache_account_id(session: Session, tenant_id: int, account_id: int | None) -> TgAccount | None:
+    if not account_id:
+        return None
+    account = session.get(TgAccount, account_id)
+    if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
+        raise ValueError("缓存执行账号不存在或不属于当前租户")
+    return account
+
+
+def _validate_cache_channel_access(session: Session, tenant_id: int, normalized_peer: str, preferred_account_id: int | None = None) -> str:
     if not normalized_peer:
         return ""
-    account = session.scalar(
-        select(TgAccount)
-        .where(TgAccount.tenant_id == tenant_id, TgAccount.deleted_at.is_(None), TgAccount.status == AccountStatus.ACTIVE.value)
-        .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
-        .limit(1)
-    )
-    if not account:
-        return "缓存频道不可访问 / 账号无权限"
-    try:
-        from app.services.developer_apps import credentials_for_account
+    accounts = cache_candidate_accounts(session, tenant_id)
+    if not accounts:
+        return _cache_channel_no_account_error(normalized_peer)
+    if preferred_account_id and all(account.id != preferred_account_id for account in accounts):
+        return _cache_selected_account_unavailable_error(normalized_peer)
+    accounts = cache_candidate_accounts(session, tenant_id, preferred_account_id)
+    from app.services.developer_apps import credentials_for_account
 
-        credentials = credentials_for_account(session, account)
-        result = gateway.probe_target_capabilities(
-            account.id,
-            normalized_peer,
-            "channel",
-            account.session_ciphertext,
-            credentials,
-        )
-    except Exception:  # noqa: BLE001 - health surfaces a friendly operator message.
-        return "缓存频道不可访问 / 账号无权限"
-    if not getattr(result, "ok", False):
-        return "缓存频道不可访问 / 账号无权限"
-    return ""
+    preferred_failed = False
+    for account in accounts:
+        try:
+            credentials = credentials_for_account(session, account)
+            result = gateway.probe_target_capabilities(
+                account.id,
+                normalized_peer,
+                "channel",
+                account.session_ciphertext,
+                credentials,
+            )
+        except Exception:  # noqa: BLE001 - try the next active account before surfacing a friendly message.
+            if preferred_account_id and account.id == preferred_account_id:
+                preferred_failed = True
+            continue
+        if getattr(result, "ok", False):
+            return _cache_selected_account_fallback_warning(normalized_peer) if preferred_failed else ""
+        if preferred_account_id and account.id == preferred_account_id:
+            preferred_failed = True
+    return _cache_channel_permission_error(normalized_peer)
 
 
 def resolve_material_cache_peer_id(session: Session, tenant_id: int) -> str:
@@ -1430,6 +1490,11 @@ def resolve_material_cache_peer_id(session: Session, tenant_id: int) -> str:
     if config and config.material_cache_peer_id:
         return config.material_cache_peer_id
     return get_settings().material_cache_peer_id
+
+
+def resolve_material_cache_account_id(session: Session, tenant_id: int) -> int | None:
+    config = _get_material_cache_config(session, tenant_id)
+    return config.material_cache_account_id if config else None
 
 
 def resolve_source_media_cache_peer_id(session: Session, tenant_id: int) -> str:
@@ -1456,6 +1521,7 @@ def get_material_cache_config(session: Session, tenant_id: int) -> MaterialCache
             settings.source_media_cache_peer_id,
             config.source_media_cache_last_error if config else "",
         ),
+        cache_account=_cache_account_out(session.get(TgAccount, config.material_cache_account_id) if config and config.material_cache_account_id else None),
         health=material_cache_health(session, tenant_id),
     )
 
@@ -1466,6 +1532,7 @@ def update_material_cache_config(
     tenant_id: int,
     material_cache_input: str | None,
     source_media_cache_input: str | None,
+    material_cache_account_id: int | None | object = _UNSET,
     actor: str,
 ) -> MaterialCacheConfigOut:
     require_tenant(session, tenant_id)
@@ -1473,14 +1540,19 @@ def update_material_cache_config(
     if not config:
         config = MaterialCacheConfig(tenant_id=tenant_id)
         session.add(config)
+    if material_cache_account_id is not _UNSET:
+        account = _validate_cache_account_id(session, tenant_id, material_cache_account_id)
+        config.material_cache_account_id = account.id if account else None
     if material_cache_input is not None:
         config.material_cache_input = material_cache_input.strip()
         config.material_cache_peer_id = normalize_cache_channel_input(config.material_cache_input)
-        config.material_cache_last_error = _validate_cache_channel_access(session, tenant_id, config.material_cache_peer_id)
+        config.material_cache_last_error = _validate_cache_channel_access(session, tenant_id, config.material_cache_peer_id, config.material_cache_account_id)
+    elif material_cache_account_id is not _UNSET and config.material_cache_peer_id:
+        config.material_cache_last_error = _validate_cache_channel_access(session, tenant_id, config.material_cache_peer_id, config.material_cache_account_id)
     if source_media_cache_input is not None:
         config.source_media_cache_input = source_media_cache_input.strip()
         config.source_media_cache_peer_id = normalize_cache_channel_input(config.source_media_cache_input)
-        config.source_media_cache_last_error = _validate_cache_channel_access(session, tenant_id, config.source_media_cache_peer_id)
+        config.source_media_cache_last_error = _validate_cache_channel_access(session, tenant_id, config.source_media_cache_peer_id, config.material_cache_account_id)
     config.updated_at = _now()
     audit(
         session,
@@ -1489,7 +1561,7 @@ def update_material_cache_config(
         action="更新素材缓存频道配置",
         target_type="material_cache_config",
         target_id=str(tenant_id),
-        detail=f"material={config.material_cache_peer_id or 'env'}; source_media={config.source_media_cache_peer_id or 'env'}",
+        detail=f"material={config.material_cache_peer_id or 'env'}; source_media={config.source_media_cache_peer_id or 'env'}; cache_account={config.material_cache_account_id or 'auto'}",
     )
     session.commit()
     return get_material_cache_config(session, tenant_id)
@@ -1650,6 +1722,7 @@ def update_content_keyword_rule(session: Session, rule_id: int, payload: Content
 
 __all__ = [
     "ai_provider_credentials",
+    "cache_candidate_accounts",
     "check_ai_provider",
     "create_ai_provider",
     "create_content_keyword_rule",
@@ -1672,6 +1745,7 @@ __all__ = [
     "material_references",
     "material_reference_summaries",
     "record_ai_usage",
+    "resolve_material_cache_account_id",
     "refresh_material_cache",
     "require_ai_token_balance",
     "restore_material",

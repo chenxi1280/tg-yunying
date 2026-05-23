@@ -336,6 +336,7 @@ function AppShell() {
               developerApps={developerApps}
               tenants={tenants}
               aiProviders={aiProviders}
+              accounts={accounts}
               promptTemplates={promptTemplates}
               tenantAiSetting={tenantAiSetting}
               materials={materials}
