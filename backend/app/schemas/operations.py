@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .api import ApiModel
 
@@ -108,6 +108,9 @@ class OperationTargetAccountOut(BaseModel):
     permission_label: str = ""
     can_send: bool = False
     is_listener: bool = False
+    admission_status: str = "unknown"
+    admission_failure_reason: str = ""
+    admission_retryable: bool = False
     last_sent_at: datetime | None = None
 
 
@@ -115,6 +118,18 @@ class OperationTargetAccountUpdate(BaseModel):
     permission_label: str | None = Field(default=None, max_length=80)
     can_send: bool | None = None
     is_listener: bool | None = None
+
+
+class OperationTargetAdmissionRetryRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=300)
+    account_ids: list[int] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_reason(self) -> "OperationTargetAdmissionRetryRequest":
+        self.reason = self.reason.strip()
+        if not self.reason:
+            raise ValueError("重试原因不能为空")
+        return self
 
 
 class OperationTargetGroupMessageOut(BaseModel):
@@ -194,6 +209,7 @@ class OperationTargetDetailOut(BaseModel):
     risk: OperationTargetRiskOut = Field(default_factory=OperationTargetRiskOut)
     sync_error: str = ""
     stats: dict[str, Any] = {}
+    admission_retry: dict[str, Any] = Field(default_factory=dict)
 
 
 class OperationTargetMessageSyncOut(BaseModel):
@@ -301,6 +317,7 @@ __all__ = [
     "ChannelMessageOut",
     "OperationTargetAccountOut",
     "OperationTargetAccountUpdate",
+    "OperationTargetAdmissionRetryRequest",
     "OperationTargetGroupMessageOut",
     "OperationTargetLinkedGroupOut",
     "OperationTargetDetailOut",

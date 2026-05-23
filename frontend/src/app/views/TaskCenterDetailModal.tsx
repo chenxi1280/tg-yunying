@@ -81,7 +81,7 @@ export function TaskCenterDetailModal({
     { title: '过滤命中', dataIndex: 'source_filter_reason', width: 180, ellipsis: true, render: (value) => value || '-' },
     { title: '最近消息', dataIndex: 'content', ellipsis: true },
     { title: '时间', dataIndex: 'sent_at', width: 170, render: (value) => formatDateTime(value) },
-    { title: '操作', key: 'action', width: 150, render: (_, item) => <Button size="small" onClick={() => onBlockRelaySource(item)}>加入不转发名单</Button> },
+    { title: '操作', key: 'action', width: 150, render: (_, item) => canManageTasks ? <Button size="small" onClick={() => onBlockRelaySource(item)}>加入不转发名单</Button> : '-' },
   ];
   const membershipColumns: ColumnsType<Record<string, any>> = [
     { title: '账号', key: 'account', width: 180, render: (_, item) => <Space direction="vertical" size={0}><Typography.Text strong>{item.display_name || `账号 #${item.account_id}`}</Typography.Text><Typography.Text type="secondary">{item.username ? `@${item.username}` : '-'}</Typography.Text></Space> },

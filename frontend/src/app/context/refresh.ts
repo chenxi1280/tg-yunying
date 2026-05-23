@@ -13,7 +13,9 @@ import type {
   DeveloperApp,
   Group,
   Material,
+  MaterialCacheConfig,
   MaterialCacheHealth,
+  MaterialImportResult,
   MessageTask,
   Overview,
   PromptTemplate,
@@ -52,7 +54,9 @@ export type AppSnapshot = {
   promptTemplates: PromptTemplate[];
   tenantAiSetting: TenantAiSetting;
   materials: Material[];
+  materialCacheConfig: MaterialCacheConfig | null;
   materialCacheHealth: MaterialCacheHealth | null;
+  materialImports: MaterialImportResult[];
   contentKeywordRules: ContentKeywordRule[];
   groups: Group[];
   tasks: MessageTask[];
@@ -77,7 +81,7 @@ export async function loadAppSnapshot({
     api<AccountPool[]>('/account-pools'),
     api<Account[]>(accountQuery),
     api<Group[]>('/groups'),
-    api<MessageTask[]>(`/message-tasks${taskStatusFilter ? `?status=${encodeURIComponent(taskStatusFilter)}` : ''}`),
+    api<MessageTask[]>(`/message-send-tasks${taskStatusFilter ? `?status=${encodeURIComponent(taskStatusFilter)}` : ''}`),
     api<ArchiveItem[]>('/archives'),
     api<AuditLog[]>(auditQuery(auditFilters)),
     api<AiProvider[]>('/ai-providers'),
@@ -85,6 +89,8 @@ export async function loadAppSnapshot({
     api<TenantAiSetting>('/tenant-ai-settings'),
     api<Material[]>('/materials'),
     api<MaterialCacheHealth>('/materials/cache/health'),
+    api<MaterialCacheConfig>('/materials/cache/config'),
+    api<MaterialImportResult[]>('/material-imports'),
     api<ContentKeywordRule[]>('/content-keyword-rules'),
   ]);
   const developerApps = hasPermission(me, 'system.view') ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
@@ -105,7 +111,9 @@ export async function loadAppSnapshot({
     tenantAiSetting: settledValue(results[10], {} as TenantAiSetting),
     materials: settledValue(results[11], [] as Material[]),
     materialCacheHealth: settledValue(results[12], null as MaterialCacheHealth | null),
-    contentKeywordRules: settledValue(results[13], [] as ContentKeywordRule[]),
+    materialCacheConfig: settledValue(results[13], null as MaterialCacheConfig | null),
+    materialImports: settledValue(results[14], [] as MaterialImportResult[]),
+    contentKeywordRules: settledValue(results[15], [] as ContentKeywordRule[]),
     developerApps,
     tenants,
     adminUsers,

@@ -197,8 +197,15 @@ export function WizardTypeConfig({
   if (taskType === 'channel_view') {
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
-        <div className="form-grid"><Form.Item name="target_views_per_message" label="预计每条浏览"><InputNumber min={1} /></Form.Item></div>
-        <Collapse ghost items={[{ key: 'advanced', label: '高级设置', children: <div className="form-grid"><Form.Item name="execution_mode" label="执行模式"><Select options={[{ value: 'distribute', label: '均匀分配' }, { value: 'burst', label: '尽快完成' }]} /></Form.Item></div> }]} />
+        <Alert type="info" showIcon message="频道浏览按帖子、日期和账号补量：同一天同一账号同一帖子只会规划一次浏览。" />
+        <div className="form-grid">
+          <Form.Item name="per_message_daily_view_target" label="每条帖子每日浏览量"><InputNumber min={1} max={10000} /></Form.Item>
+          <Form.Item name="per_message_total_view_target" label="每条帖子累计目标"><InputNumber min={1} max={100000} /></Form.Item>
+          <Form.Item name="listen_new_messages" valuePropName="checked">
+            <Checkbox>持续监听任务启动后的新帖</Checkbox>
+          </Form.Item>
+        </div>
+        <Collapse ghost items={[{ key: 'advanced', label: '高级设置', children: <div className="form-grid"><Form.Item name="message_active_days" label="帖子有效期（天）"><InputNumber min={1} max={365} /></Form.Item><Form.Item name="task_daily_view_safety_cap" label="任务每日安全上限"><InputNumber min={1} max={100000} /></Form.Item><Form.Item name="max_views_per_account_per_day" label="每号每日浏览上限"><InputNumber min={1} max={10000} /></Form.Item><Form.Item name="execution_mode" label="执行模式"><Select options={[{ value: 'distribute', label: '均匀分配' }, { value: 'burst', label: '尽快完成' }]} /></Form.Item></div> }]} />
       </Space>
     );
   }

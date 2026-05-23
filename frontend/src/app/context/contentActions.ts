@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { api } from '../../shared/api/client';
-import type { ContentKeywordRule, CurrentUser, Material, ModalState } from '../types';
+import type { ContentKeywordRule, CurrentUser, Material, MaterialImportResult, ModalState } from '../types';
 
 type MaterialFormState = {
   id: number | null;
@@ -45,6 +45,21 @@ export function createContentActions(params: ContentActionParams) {
       form.append('caption', payload.content);
       form.append('emoji_asset_kind', payload.emoji_asset_kind);
       form.append('tenant_id', String(params.currentUser?.tenant_id ?? 1));
+      const zipFiles = files.filter((file) => file.name.toLowerCase().endsWith('.zip') || file.type === 'application/zip' || file.type === 'application/x-zip-compressed');
+      if (zipFiles.length) {
+        if (files.length > 1 || zipFiles.length > 1) throw new Error('ZIP 导入一次只支持选择一个压缩包');
+        form.append('file', zipFiles[0]);
+        const result = await api<MaterialImportResult>('/materials/upload/zip', {
+          method: 'POST',
+          body: form,
+          timeoutMs: 60_000,
+        });
+        params.setMaterialFile(null);
+        params.closeModal();
+        params.setModal({ type: 'materialImportResult', payload: result });
+        await params.refresh();
+        return;
+      }
       if (files.length === 1) {
         form.append('file', files[0]);
         material = await api<Material>('/materials/upload', {

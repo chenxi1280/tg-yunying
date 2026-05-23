@@ -18,6 +18,8 @@ from app.services.operations_center_defaults import (
 )
 from app.services.operations_center_utils import as_int as _as_int, iso as _iso
 
+VERSION_DIFF_FIELDS = ("filters", "output_checks", "transforms", "routing", "account_strategy", "rate_limits", "retry_policy")
+
 
 def list_rule_sets(session: Session, tenant_id: int) -> list[RuleSetOut]:
     _ensure_default_rule_set(session, tenant_id)
@@ -180,8 +182,10 @@ def create_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, 
 
 def update_rule_set_config(session: Session, tenant_id: int, rule_set_id: int, payload: RuleSetVersionCreate, actor: str) -> RuleSetOut:
     rule_set = _get_rule_set(session, tenant_id, rule_set_id)
+    current = session.get(RuleSetVersion, rule_set.active_version_id) if rule_set.active_version_id else None
     latest = session.scalar(select(RuleSetVersion.version).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()).limit(1)) or 0
     version = _new_rule_set_version(session, tenant_id, rule_set.id, int(latest) + 1, payload, actor)
+    diff_fields = _version_diff_fields(current, version) if current else list(VERSION_DIFF_FIELDS)
     for old_version in session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id, RuleSetVersion.status == "published")):
         old_version.status = "archived"
         old_version.updated_at = _now()
@@ -191,27 +195,46 @@ def update_rule_set_config(session: Session, tenant_id: int, rule_set_id: int, p
     version.updated_at = _now()
     rule_set.active_version_id = version.id
     rule_set.updated_at = _now()
-    audit(session, tenant_id=tenant_id, actor=actor, action="更新规则集配置并发布", target_type="rule_set", target_id=str(rule_set.id), detail=f"v{version.version}")
+    from_label = f"v{current.version}" if current else "-"
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="更新规则集配置并发布",
+        target_type="rule_set",
+        target_id=str(rule_set.id),
+        detail=_version_action_detail(f"{from_label}->v{version.version}", payload.publish_reason or payload.version_note, diff_fields),
+    )
     session.commit()
     session.refresh(rule_set)
     return _rule_set_out(rule_set, list(session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()))))
 
 
-def copy_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, version_id: int, actor: str) -> RuleSetOut:
+def copy_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, version_id: int, actor: str, reason: str = "") -> RuleSetOut:
     rule_set = _get_rule_set(session, tenant_id, rule_set_id)
     source = _get_rule_set_version(session, tenant_id, rule_set.id, version_id)
     latest = session.scalar(select(RuleSetVersion.version).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()).limit(1)) or 0
     payload = _version_payload_from_row(source, version_note=f"复制自 v{source.version}")
     version = _new_rule_set_version(session, tenant_id, rule_set.id, int(latest) + 1, payload, actor)
-    audit(session, tenant_id=tenant_id, actor=actor, action="复制规则集版本为草稿", target_type="rule_set", target_id=str(rule_set.id), detail=f"v{source.version}->v{version.version}")
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="复制规则集版本为草稿",
+        target_type="rule_set",
+        target_id=str(rule_set.id),
+        detail=_version_action_detail(f"v{source.version}->v{version.version}", reason, _version_diff_fields(source, version)),
+    )
     session.commit()
     session.refresh(rule_set)
     return _rule_set_out(rule_set, list(session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()))))
 
 
-def publish_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, version_id: int, actor: str) -> RuleSetOut:
+def publish_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, version_id: int, actor: str, reason: str = "") -> RuleSetOut:
     rule_set = _get_rule_set(session, tenant_id, rule_set_id)
     version = _get_rule_set_version(session, tenant_id, rule_set.id, version_id)
+    current = session.get(RuleSetVersion, rule_set.active_version_id) if rule_set.active_version_id else None
+    diff_fields = _version_diff_fields(current, version) if current else VERSION_DIFF_FIELDS
     for old_version in session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id, RuleSetVersion.status == "published")):
         old_version.status = "archived"
     version.status = "published"
@@ -220,15 +243,26 @@ def publish_rule_set_version(session: Session, tenant_id: int, rule_set_id: int,
     version.updated_at = _now()
     rule_set.active_version_id = version.id
     rule_set.updated_at = _now()
-    audit(session, tenant_id=tenant_id, actor=actor, action="发布规则集版本", target_type="rule_set", target_id=str(rule_set.id), detail=f"v{version.version}")
+    from_label = f"v{current.version}" if current else "-"
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="发布规则集版本",
+        target_type="rule_set",
+        target_id=str(rule_set.id),
+        detail=_version_action_detail(f"{from_label}->v{version.version}", reason, diff_fields),
+    )
     session.commit()
     session.refresh(rule_set)
     return _rule_set_out(rule_set, list(session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()))))
 
 
-def rollback_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, version_id: int, actor: str) -> RuleSetOut:
+def rollback_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, version_id: int, actor: str, reason: str = "") -> RuleSetOut:
     rule_set = _get_rule_set(session, tenant_id, rule_set_id)
     source = _get_rule_set_version(session, tenant_id, rule_set.id, version_id)
+    current = session.get(RuleSetVersion, rule_set.active_version_id) if rule_set.active_version_id else None
+    diff_fields = _version_diff_fields(current, source) if current else VERSION_DIFF_FIELDS
     latest = session.scalar(select(RuleSetVersion.version).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()).limit(1)) or 0
     payload = _version_payload_from_row(source, version_note=f"回滚自 v{source.version}")
     version = _new_rule_set_version(session, tenant_id, rule_set.id, int(latest) + 1, payload, actor)
@@ -240,7 +274,16 @@ def rollback_rule_set_version(session: Session, tenant_id: int, rule_set_id: int
     version.updated_at = _now()
     rule_set.active_version_id = version.id
     rule_set.updated_at = _now()
-    audit(session, tenant_id=tenant_id, actor=actor, action="回滚规则集版本", target_type="rule_set", target_id=str(rule_set.id), detail=f"v{source.version}->v{version.version}")
+    from_label = f"v{current.version}" if current else "-"
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="回滚规则集版本",
+        target_type="rule_set",
+        target_id=str(rule_set.id),
+        detail=_version_action_detail(f"{from_label}->v{version.version}; source=v{source.version}", reason, diff_fields),
+    )
     session.commit()
     session.refresh(rule_set)
     return _rule_set_out(rule_set, list(session.scalars(select(RuleSetVersion).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()))))
@@ -306,6 +349,22 @@ def _version_payload_from_row(version: RuleSetVersion, *, version_note: str) -> 
     )
 
 
+def _version_diff_fields(before: RuleSetVersion | None, after: RuleSetVersion) -> list[str]:
+    if before is None:
+        return list(VERSION_DIFF_FIELDS)
+    changed: list[str] = []
+    for field in VERSION_DIFF_FIELDS:
+        if (getattr(before, field) or {}) != (getattr(after, field) or {}):
+            changed.append(field)
+    return changed
+
+
+def _version_action_detail(change: str, reason: str, diff_fields: list[str]) -> str:
+    cleaned_reason = (reason or "").strip() or "未填写"
+    diff = ",".join(diff_fields) if diff_fields else "none"
+    return f"{change}; reason={cleaned_reason}; diff={diff}"
+
+
 def _new_rule_set_version(session: Session, tenant_id: int, rule_set_id: int, version: int, payload: RuleSetVersionCreate, actor: str) -> RuleSetVersion:
     row = RuleSetVersion(
         tenant_id=tenant_id,
@@ -363,4 +422,3 @@ def _rule_set_out(rule_set: RuleSet, versions: list[RuleSetVersion]) -> RuleSetO
         created_at=_iso(rule_set.created_at) or "",
         updated_at=_iso(rule_set.updated_at) or "",
     )
-

@@ -127,6 +127,42 @@ export type MaterialCacheHealth = {
   recent_errors: MaterialCacheErrorItem[];
 };
 
+export type CacheChannelConfig = {
+  raw_input: string;
+  normalized_peer: string;
+  source: 'saved' | 'env' | 'empty';
+  last_error: string;
+};
+
+export type MaterialCacheConfig = {
+  material_cache: CacheChannelConfig;
+  source_media_cache: CacheChannelConfig;
+  health: MaterialCacheHealth;
+};
+
+export type MaterialImportItem = {
+  file_name: string;
+  status: 'created' | 'skipped' | 'failed';
+  reason: string;
+  material_id: number | null;
+  file_size: number;
+};
+
+export type MaterialImportResult = {
+  import_id: string;
+  source_filename: string;
+  import_type: string;
+  target_group_name: string;
+  status: string;
+  total_count: number;
+  success_count: number;
+  failed_count: number;
+  skipped_count: number;
+  duplicate_count: number;
+  oversize_count: number;
+  items: MaterialImportItem[];
+};
+
 export type ContentKeywordRule = {
   id: number;
   tenant_id: number;

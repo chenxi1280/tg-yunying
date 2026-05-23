@@ -104,9 +104,11 @@ function formatLimit(used: number, limit: number) {
 
 interface Props {
   onOpenAccounts: () => void;
+  canManageRisk?: boolean;
+  canManageProxies?: boolean;
 }
 
-export default function RiskControlView({ onOpenAccounts }: Props) {
+export default function RiskControlView({ onOpenAccounts, canManageRisk = false, canManageProxies = false }: Props) {
   const { message, modal } = AntdApp.useApp();
   const [summary, setSummary] = React.useState<RiskControlSummary | null>(null);
   const [proxies, setProxies] = React.useState<AccountProxy[]>([]);
@@ -160,6 +162,7 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
   });
 
   async function checkProxy(proxyId: number) {
+    if (!canManageProxies) return;
     setCheckingProxyId(proxyId);
     setError('');
     try {
@@ -177,12 +180,14 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
   }
 
   function openPolicyEdit() {
+    if (!canManageRisk) return;
     if (!summary?.global_policy) return;
     policyForm.setFieldsValue(summary.global_policy);
     setPolicyOpen(true);
   }
 
   async function savePolicy() {
+    if (!canManageRisk) return;
     const values = await policyForm.validateFields();
     setPolicySaving(true);
     setError('');
@@ -202,6 +207,7 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
   }
 
   function openProxyCreate() {
+    if (!canManageProxies) return;
     proxyForm.setFieldsValue({
       id: undefined,
       name: '',
@@ -220,6 +226,7 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
   }
 
   function openProxyEdit(proxy: AccountProxy) {
+    if (!canManageProxies) return;
     proxyForm.setFieldsValue({
       id: proxy.id,
       name: proxy.name,
@@ -238,6 +245,7 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
   }
 
   async function saveProxy() {
+    if (!canManageProxies) return;
     const values = await proxyForm.validateFields();
     const isEdit = Boolean(values.id);
     setProxySaving(true);
@@ -286,6 +294,7 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
   }
 
   async function disableProxy(proxy: AccountProxy) {
+    if (!canManageProxies) return;
     modal.confirm({
       title: `禁用代理 ${proxy.name}`,
       content: '禁用后，绑定该代理的账号会被风控阻塞，直到重新启用或切换代理。',
@@ -304,6 +313,7 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
   }
 
   async function handleProxyAlert(alertId: number, action: 'acknowledge' | 'resolve') {
+    if (!canManageProxies) return;
     const key = `proxy-alert:${alertId}:${action}`;
     setHandlingAction(key);
     setError('');
@@ -334,6 +344,9 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
   function renderDispositionActions(row: RiskDispositionItem) {
     const alertId = proxyAlertIdFromKey(row.key);
     const proxyId = proxyIdFromDisposition(row);
+    if ((alertId || proxyId) && !canManageProxies) {
+      return <Typography.Text type="secondary">需要代理管理权限</Typography.Text>;
+    }
     if (alertId) {
       return (
         <Space size={6} wrap>
@@ -444,7 +457,7 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
       key: 'actions',
       width: 180,
       fixed: 'right',
-      render: (_, row) => row.id ? (
+      render: (_, row) => canManageProxies && row.id ? (
         <Space size={6} wrap>
           <Button size="small" loading={handlingAction === `proxy-alert:${row.id}:acknowledge`} onClick={() => void handleProxyAlert(row.id!, 'acknowledge')}>处理中</Button>
           <Button size="small" type="primary" loading={handlingAction === `proxy-alert:${row.id}:resolve`} onClick={() => void handleProxyAlert(row.id!, 'resolve')}>恢复</Button>
@@ -478,13 +491,16 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
       key: 'actions',
       width: 230,
       fixed: 'right',
-      render: (_, row) => (
-        <Space size={6} wrap>
-          <Button size="small" onClick={() => openProxyEdit(row)}>编辑</Button>
-          <Button size="small" icon={<RefreshCcw size={14} />} loading={checkingProxyId === row.id} onClick={() => void checkProxy(row.id)}>检查</Button>
-          <Button size="small" danger disabled={row.status === 'disabled'} onClick={() => void disableProxy(row)}>禁用</Button>
-        </Space>
-      ),
+      render: (_, row) => {
+        if (!canManageProxies) return null;
+        return (
+          <Space size={6} wrap>
+            <Button size="small" onClick={() => openProxyEdit(row)}>编辑</Button>
+            <Button size="small" icon={<RefreshCcw size={14} />} loading={checkingProxyId === row.id} onClick={() => void checkProxy(row.id)}>检查</Button>
+            <Button size="small" danger disabled={row.status === 'disabled'} onClick={() => void disableProxy(row)}>禁用</Button>
+          </Space>
+        );
+      },
     },
   ];
 
@@ -547,7 +563,7 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
               children: policy ? (
                 <Space direction="vertical" size={12} className="full-width">
                   <Space className="table-toolbar" wrap>
-                    <Button type="primary" onClick={openPolicyEdit}>编辑全局策略</Button>
+                      {canManageRisk && <Button type="primary" onClick={openPolicyEdit}>编辑全局策略</Button>}
                     <Typography.Text type="secondary">策略在风控中心维护，任务级配置只能在全局边界内收紧。</Typography.Text>
                   </Space>
                   <Descriptions bordered size="small" column={{ xs: 1, sm: 2, lg: 3 }}>
@@ -633,7 +649,7 @@ export default function RiskControlView({ onOpenAccounts }: Props) {
               children: (
                 <Space direction="vertical" size={16} className="full-width">
                   <Space className="table-toolbar" wrap>
-                    <Button type="primary" onClick={openProxyCreate}>新增代理资源</Button>
+                    {canManageProxies && <Button type="primary" onClick={openProxyCreate}>新增代理资源</Button>}
                     <Typography.Text type="secondary">只维护 socks5/http 本地地址，不管理机场订阅或节点。</Typography.Text>
                   </Space>
                   <Table<AccountProxy>

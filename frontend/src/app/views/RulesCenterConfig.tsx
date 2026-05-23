@@ -80,6 +80,7 @@ export function defaultRuleFormValues() {
     output_failure: 'transform_once_drop',
     version_binding: 'follow_current',
     version_note: '配置编辑自动生成',
+    publish_reason: '',
     visual_forbidden_keywords: '',
     visual_forbid_links: false,
     visual_forbid_mentions: true,
@@ -154,6 +155,7 @@ export function ruleFormValuesFromVersion(ruleSet: RuleSet, groupTargets: Operat
     visual_output_max_length: outputChecks.max_length ?? null,
     visual_output_failure_strategy: outputChecks.failure_strategy ?? outputChecks.on_failure ?? 'transform_once_drop',
     version_note: version.version_note ?? '',
+    publish_reason: '',
   };
 }
 
@@ -309,6 +311,11 @@ export function RuleSetForm({ form, includeBasics = false, groupTargets = [] }: 
         </div>
       )}
       <Form.Item name="version_note" label="版本说明"><Input placeholder="例如：调整关键词、输出校验或路由策略" /></Form.Item>
+      {!includeBasics && (
+        <Form.Item name="publish_reason" label="发布原因" rules={[{ required: true, whitespace: true, message: '请输入发布原因' }]}>
+          <Input.TextArea rows={2} placeholder="说明为什么发布此配置，会写入审计记录" />
+        </Form.Item>
+      )}
       <Card size="small" title="规则配置" extra={<Button size="small" onClick={applyVisualTemplate}>同步高级配置</Button>}>
         <div className="form-grid">
           <Form.Item name="visual_keyword_whitelist" label="白名单关键词"><Input placeholder="公告, 活动" /></Form.Item>

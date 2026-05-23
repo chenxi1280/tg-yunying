@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 import json
 from uuid import uuid4
+from zipfile import ZipFile
 
 from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage, mock_candidates
 from app.config import get_settings
@@ -8,7 +10,7 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult
-from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
 from fastapi.testclient import TestClient
@@ -197,6 +199,74 @@ def test_worker_loop_can_stop_with_event(monkeypatch):
     assert calls == [4]
 
 
+def test_listener_center_events_errors_and_reset_watermark_api():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        with SessionLocal() as session:
+            session.add(TgGroup(id=7007, tenant_id=1, tg_peer_id="-1007007", title="pytest listener group", auth_status="已授权运营", listener_enabled=True, listener_last_polled_at=datetime(2026, 5, 11, 10, 5, 0), listener_last_error="poll failed"))
+            session.add(TgAccount(id=7012, tenant_id=1, display_name="pytest listener", username="pytest_listener", phone_masked="7012", status=AccountStatus.ACTIVE.value, health_score=80))
+            session.flush()
+            session.add(TgGroupAccount(id=7071, tenant_id=1, group_id=7007, account_id=7012, can_send=True, is_listener=True))
+            session.add(
+                GroupContextMessage(
+                    tenant_id=1,
+                    group_id=7007,
+                    listener_account_id=7012,
+                    sender_peer_id="sender-api",
+                    sender_name="API 来源",
+                    sender_username="api_sender",
+                    sender_role="admin",
+                    is_bot=True,
+                    content="接口事件",
+                    message_type="text",
+                    remote_message_id="api-m1",
+                    sent_at=datetime(2026, 5, 11, 10, 0, 0),
+                )
+            )
+            session.add(
+                ListenerSourceState(
+                    tenant_id=1,
+                    source_type="group",
+                    source_peer_id="-1007007",
+                    account_id=7012,
+                    shard_key="group:-1007007",
+                    last_remote_message_id="api-m1",
+                    last_event_at=datetime(2026, 5, 11, 10, 0, 0),
+                    backfill_until=datetime(2026, 5, 11, 9, 0, 0),
+                    last_error="state failed",
+                )
+            )
+            session.add(Task(id="pytest-listener-task", tenant_id=1, name="pytest listener task", type="group_relay", status="running", type_config={"source_groups": [{"group_id": 7007, "is_active": True}], "monitor_account_ids": [7012]}))
+            session.commit()
+
+        events = client.get("/api/listeners/group/7007/events", headers=headers)
+        errors = client.get("/api/listeners/group/7007/errors", headers=headers)
+        rejected = client.post("/api/listeners/group/7007/reset-watermark", headers=headers, json={"reason": "pytest", "confirm_text": ""})
+        reset = client.post("/api/listeners/group/7007/reset-watermark", headers=headers, json={"reason": "pytest reset watermark", "confirm_text": "确认重置"})
+
+        assert events.status_code == 200, events.text
+        assert events.json()[0]["sender_peer_id"] == "sender-api"
+        assert events.json()[0]["sender_username"] == "api_sender"
+        assert events.json()[0]["is_bot"] is True
+        assert errors.status_code == 200, errors.text
+        assert {item["error_message"] for item in errors.json()} == {"poll failed", "state failed"}
+        assert rejected.status_code == 400
+        assert "请输入确认重置" in rejected.text
+        assert reset.status_code == 200, reset.text
+        reset_row = next(item for item in reset.json()["items"] if item["key"] == "group:7007")
+        assert reset_row["last_error"] == ""
+        with SessionLocal() as session:
+            group = session.get(TgGroup, 7007)
+            state = session.query(ListenerSourceState).filter_by(source_peer_id="-1007007").first()
+            audit_log = session.query(AuditLog).filter_by(target_id="7007", action="重置监听水位").order_by(AuditLog.id.desc()).first()
+            assert group.listener_last_polled_at is None
+            assert group.listener_last_error == ""
+            assert state.last_remote_message_id == ""
+            assert state.last_error == ""
+            assert audit_log is not None
+            assert "pytest reset watermark" in audit_log.detail
+
+
 def ensure_developer_app(client: TestClient, headers: dict[str, str]) -> dict:
     with SessionLocal() as session:
         tenant = session.get(Tenant, 1)
@@ -288,7 +358,7 @@ def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[
 def test_clean_seed_requires_config_before_account_create():
     with TestClient(app) as client:
         headers = auth_headers(client)
-        runtime = client.get("/api/config/runtime").json()
+        runtime = client.get("/api/config/runtime", headers=headers).json()
         assert runtime["can_create_tg_account"] is False
         assert runtime["developer_app_count"] == 0
         assert runtime["ai_provider_count"] == 0
@@ -612,7 +682,7 @@ def test_expired_code_flow_does_not_block_submitted_code():
 def test_runtime_login_flows_health_and_group_authorize():
     with TestClient(app) as client:
         headers = auth_headers(client)
-        runtime = client.get("/api/config/runtime").json()
+        runtime = client.get("/api/config/runtime", headers=headers).json()
         assert runtime["tg_gateway_mode"] in {"mock", "telethon"}
 
         account, group = ensure_test_workspace(client, headers)
@@ -1052,6 +1122,32 @@ def test_admin_users_permission_lifecycle_and_legacy_subscription_endpoints_remo
         material_restored = client.post(f"/api/materials/{material_created.json()['id']}/restore", headers=material_headers)
         assert material_restored.status_code == 200, material_restored.text
         assert material_restored.json()["review_status"] == "已审核"
+        archive = BytesIO()
+        with ZipFile(archive, "w") as zip_file:
+            zip_file.writestr("zip-one.png", b"\x89PNG\r\n\x1a\nzip-image")
+            zip_file.writestr("readme.txt", b"not-image")
+        zip_import = client.post(
+            "/api/materials/upload/zip",
+            headers=material_headers,
+            data={"title": "权限图包", "material_type": "图片", "tags": "zip"},
+            files={"file": ("materials.zip", archive.getvalue(), "application/zip")},
+        )
+        assert zip_import.status_code == 200, zip_import.text
+        assert zip_import.json()["success_count"] == 1
+        import_result = client.get(f"/api/material-imports/{zip_import.json()['import_id']}", headers=material_headers)
+        assert import_result.status_code == 200, import_result.text
+        assert import_result.json()["skipped_count"] == 1
+        import_results = client.get("/api/material-imports", headers=material_headers)
+        assert import_results.status_code == 200, import_results.text
+        assert import_results.json()[0]["import_id"] == zip_import.json()["import_id"]
+
+        cache_config = client.patch(
+            "/api/materials/cache/config",
+            headers=headers,
+            json={"material_cache_input": "https://t.me/c/1234567890/1", "source_media_cache_input": "@source_cache"},
+        )
+        assert cache_config.status_code == 200, cache_config.text
+        assert cache_config.json()["material_cache"]["normalized_peer"] == "-1001234567890"
 
         system_only = client.post(
             "/api/admin/users",
@@ -1072,6 +1168,335 @@ def test_admin_users_permission_lifecycle_and_legacy_subscription_endpoints_remo
         material_denied = client.get("/api/materials", headers=system_only_headers)
         assert material_denied.status_code == 403
         assert material_denied.json()["permission"] == "materials.view"
+        config_read = client.get("/api/materials/cache/config", headers=system_only_headers)
+        assert config_read.status_code == 200, config_read.text
+        config_write_denied = client.patch(
+            "/api/materials/cache/config",
+            headers=system_only_headers,
+            json={"material_cache_input": "@denied"},
+        )
+        assert config_write_denied.status_code == 403
+        assert config_write_denied.json()["permission"] == "system.manage"
+
+
+def test_message_sending_manage_permission_controls_write_endpoints():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        suffix = uuid4().hex[:8]
+        manager_response = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"消息发送管理员{suffix}",
+                "email": f"message_manager_{suffix}@example.local",
+                "password": "message123",
+                "role": "后台用户",
+                "role_template": "运营管理员",
+                "permissions": ["overview.view", "message_sending.view", "message_sending.manage"],
+                "menu_permissions": ["overview.view", "message_sending.view", "message_sending.manage"],
+            },
+        )
+        assert manager_response.status_code == 200, manager_response.text
+        manager_headers = auth_headers(client, manager_response.json()["email"], "message123")
+        manager_me = client.get("/api/auth/me", headers=manager_headers)
+        assert manager_me.status_code == 200, manager_me.text
+        assert "message_sending.manage" in manager_me.json()["permissions"]
+        assert "message_sending.create" not in manager_me.json()["permissions"]
+
+        viewer_response = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"消息发送只读{suffix}",
+                "email": f"message_viewer_{suffix}@example.local",
+                "password": "message123",
+                "role": "后台用户",
+                "role_template": "只读观察员",
+                "permissions": ["overview.view", "message_sending.view"],
+                "menu_permissions": ["overview.view", "message_sending.view"],
+            },
+        )
+        assert viewer_response.status_code == 200, viewer_response.text
+        viewer_headers = auth_headers(client, viewer_response.json()["email"], "message123")
+
+        allowed_create = client.post("/api/message-send-tasks", headers=manager_headers, json={})
+        assert allowed_create.status_code != 403
+        denied_create = client.post("/api/message-send-tasks", headers=viewer_headers, json={})
+        assert denied_create.status_code == 403
+        assert denied_create.json()["permission"] == "message_sending.manage"
+
+        for path in ["/api/message-tasks/999999/dispatch", "/api/message-tasks/999999/retry", "/api/message-tasks/999999/cancel"]:
+            payload = {"dispatch_now": False} if path.endswith("/retry") else {"actor": "pytest"}
+            allowed = client.post(path, headers=manager_headers, json=payload)
+            assert allowed.status_code != 403, f"{path} should accept message_sending.manage before resource validation"
+            denied = client.post(path, headers=viewer_headers, json=payload)
+            assert denied.status_code == 403, path
+            assert denied.json()["permission"] == "message_sending.manage"
+
+
+def test_operation_issue_read_only_can_view_but_not_change_status():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        suffix = uuid4().hex[:8]
+        viewer_response = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"异常只读员{suffix}",
+                "email": f"issue_viewer_{suffix}@example.local",
+                "password": "viewer123",
+                "role": "后台用户",
+                "role_template": "只读观察员",
+                "permissions": ["overview.view"],
+                "menu_permissions": ["overview.view"],
+            },
+        )
+        assert viewer_response.status_code == 200, viewer_response.text
+        viewer_headers = auth_headers(client, viewer_response.json()["email"], "viewer123")
+
+        issue_list = client.get("/api/operation-issues", headers=viewer_headers)
+        assert issue_list.status_code == 200, issue_list.text
+
+        missing_detail = client.get("/api/operation-issues/not-found", headers=viewer_headers)
+        assert missing_detail.status_code == 404, missing_detail.text
+
+        for action in ["claim", "acknowledge", "resolve", "ignore"]:
+            denied = client.post(
+                f"/api/operation-issues/not-found/{action}",
+                headers=viewer_headers,
+                json={"reason": "只读权限不能处理异常"},
+            )
+            assert denied.status_code == 403
+            assert denied.json()["permission"] == "operation_issues.manage"
+
+
+def test_sensitive_read_routes_deny_low_permission_direct_calls():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        suffix = uuid4().hex[:8]
+        viewer_response = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"敏感只读员{suffix}",
+                "email": f"sensitive_viewer_{suffix}@example.local",
+                "password": "viewer123",
+                "role": "后台用户",
+                "role_template": "只读观察员",
+                "permissions": ["overview.view"],
+                "menu_permissions": ["overview.view"],
+            },
+        )
+        assert viewer_response.status_code == 200, viewer_response.text
+        viewer_headers = auth_headers(client, viewer_response.json()["email"], "viewer123")
+
+        denied_routes = [
+            ("/api/config/runtime", "system.view"),
+            ("/api/account-clone-plans", "accounts.clone"),
+            ("/api/verification-tasks", "accounts.sync"),
+            ("/api/tg-accounts/1/verification-tasks", "accounts.sync"),
+            ("/api/groups/1/verification-tasks", "accounts.sync"),
+            ("/api/channel-comments", "targets.view"),
+            ("/api/rules/relay-attribution/report", "rules.view"),
+        ]
+        for path, permission in denied_routes:
+            response = client.get(path, headers=viewer_headers)
+            assert response.status_code == 403, path
+            assert response.json()["permission"] == permission
+
+
+def test_material_prd_api_surface_detail_versions_references_refresh_and_groups():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        suffix = uuid4().hex[:8]
+        created = client.post(
+            "/api/materials",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "title": f"素材API对齐{suffix}",
+                "material_type": "图片",
+                "content": "https://trusted.example.com/material-api-v1.png",
+                "tags": f"api,{suffix}",
+                "tg_cache_peer_id": "cache-peer",
+                "tg_cache_message_id": "1001",
+            },
+        )
+        assert created.status_code == 200, created.text
+        material_id = created.json()["id"]
+
+        with SessionLocal() as session:
+            session.add(
+                Task(
+                    id=f"material-api-task-{suffix}",
+                    tenant_id=1,
+                    name="素材 API 引用任务",
+                    type="group_relay",
+                    status="active",
+                )
+            )
+            session.flush()
+            session.add(
+                MessageTask(
+                    tenant_id=1,
+                    content="素材引用",
+                    message_type="图片",
+                    material_id=material_id,
+                    idempotency_key=f"material-api-{suffix}",
+                )
+            )
+            session.add(
+                Action(
+                    id=f"material-api-action-{suffix}",
+                    tenant_id=1,
+                    task_id=f"material-api-task-{suffix}",
+                    task_type="group_relay",
+                    action_type="send_message",
+                    payload={"media_segments": [{"material_id": material_id}]},
+                )
+            )
+            session.commit()
+
+        detail = client.get(f"/api/materials/{material_id}", headers=headers)
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["id"] == material_id
+        assert detail.json()["reference_summary"]["total_count"] == 2
+
+        version_response = client.post(
+            f"/api/materials/{material_id}/versions",
+            headers=headers,
+            json={"content": "https://trusted.example.com/material-api-v2.png", "caption": "第二版"},
+        )
+        assert version_response.status_code == 200, version_response.text
+        assert version_response.json()["asset_version_id"] == 2
+
+        versions = client.get(f"/api/materials/{material_id}/versions", headers=headers)
+        assert versions.status_code == 200, versions.text
+        assert [item["asset_version_id"] for item in versions.json()["asset_versions"]] == [2, 1]
+        assert versions.json()["tg_ref_versions"][0]["tg_ref_version_id"] == version_response.json()["tg_ref_version_id"]
+
+        references = client.get(f"/api/materials/{material_id}/references", headers=headers)
+        assert references.status_code == 200, references.text
+        assert references.json()["summary"]["message_task_count"] == 1
+        assert references.json()["summary"]["action_count"] == 1
+
+        refresh = client.post(
+            f"/api/materials/{material_id}/refresh-cache",
+            headers=headers,
+            json={"reason": "重新缓存素材"},
+        )
+        assert refresh.status_code == 200, refresh.text
+        assert refresh.json()["cache_ready_status"] == "not_cached"
+        assert refresh.json()["tg_cache_peer_id"] == ""
+
+        composite = client.post(
+            "/api/materials",
+            headers=headers,
+            json={
+                "tenant_id": 1,
+                "title": f"组合消息{suffix}",
+                "material_type": "组合消息",
+                "content": "图文组合",
+                "tags": f"api,{suffix}",
+            },
+        )
+        assert composite.status_code == 200, composite.text
+        composite_refresh = client.post(
+            f"/api/materials/{composite.json()['id']}/refresh-cache",
+            headers=headers,
+            json={"reason": "组合消息不应进入缓存队列"},
+        )
+        assert composite_refresh.status_code == 400
+        assert "不支持刷新缓存" in composite_refresh.json()["detail"]
+
+        group = client.post(
+            "/api/material-groups",
+            headers=headers,
+            json={"name": f"活动素材{suffix}", "group_type": "图片", "description": "API 分组"},
+        )
+        assert group.status_code == 200, group.text
+        group_id = group.json()["id"]
+        groups = client.get("/api/material-groups", headers=headers)
+        assert groups.status_code == 200, groups.text
+        assert any(item["id"] == group_id for item in groups.json())
+        patched_group = client.patch(
+            f"/api/material-groups/{group_id}",
+            headers=headers,
+            json={"name": f"活动素材更新{suffix}", "is_active": False},
+        )
+        assert patched_group.status_code == 200, patched_group.text
+        assert patched_group.json()["name"].startswith("活动素材更新")
+        assert patched_group.json()["is_active"] is False
+
+
+def test_message_send_task_prd_list_detail_and_precheck_endpoints():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        route_methods = {(route.path, method) for route in app.routes for method in getattr(route, "methods", set())}
+        assert ("/api/message-send-tasks/{task_id}/dispatch", "POST") in route_methods
+        assert ("/api/message-send-tasks/{task_id}/retry", "POST") in route_methods
+        assert ("/api/message-send-tasks/{task_id}/cancel", "POST") in route_methods
+        suffix = uuid4().hex[:8]
+        with SessionLocal() as session:
+            account = TgAccount(
+                tenant_id=1,
+                display_name=f"消息发送接口账号{suffix}",
+                username=f"message_api_{suffix}",
+                phone_masked=f"+message-api-{suffix}",
+                status=AccountStatus.ACTIVE.value,
+                health_score=100,
+            )
+            target = OperationTarget(
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id=f"pytest-message-api-{suffix}",
+                title="消息发送接口目标",
+                can_send=True,
+                auth_status="已授权运营",
+            )
+            session.add_all([account, target])
+            session.flush()
+            task = MessageTask(
+                tenant_id=1,
+                account_id=account.id,
+                preferred_account_id=account.id,
+                content="PRD 命名接口消息",
+                message_type="文本",
+                target_type="group",
+                target_peer_id=target.tg_peer_id,
+                target_display=target.title,
+                status=TaskStatus.QUEUED.value,
+                idempotency_key=f"pytest-message-api-{suffix}",
+                scheduled_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+            session.add(task)
+            session.commit()
+            task_id = task.id
+
+        list_response = client.get("/api/message-send-tasks", headers=headers)
+        detail_response = client.get(f"/api/message-send-tasks/{task_id}", headers=headers)
+        precheck_response = client.post(f"/api/message-send-tasks/{task_id}/precheck", headers=headers)
+        missing_dispatch = client.post("/api/message-send-tasks/999999999/dispatch", headers=headers)
+        missing_retry = client.post("/api/message-send-tasks/999999999/retry", headers=headers, json={"dispatch_now": False})
+        missing_cancel = client.post("/api/message-send-tasks/999999999/cancel", headers=headers, json={"actor": "pytest"})
+        missing_detail = client.get("/api/message-send-tasks/999999999", headers=headers)
+
+        assert list_response.status_code == 200, list_response.text
+        assert any(item["id"] == task_id for item in list_response.json())
+        assert detail_response.status_code == 200, detail_response.text
+        detail = detail_response.json()
+        assert detail["id"] == task_id
+        assert detail["content"] == "PRD 命名接口消息"
+        assert detail["operation_issue_rolled_up"] is False
+        assert precheck_response.status_code == 200, precheck_response.text
+        precheck = precheck_response.json()
+        assert precheck["decision"] in {"allow", "warn"}
+        assert precheck["available_accounts"][0]["account_id"] == detail["account_id"]
+        assert precheck["target_warnings"] == []
+        assert missing_dispatch.status_code == 404
+        assert missing_retry.status_code == 404
+        assert missing_cancel.status_code == 404
+        assert missing_detail.status_code == 404
 
 
 def test_developer_app_admin_crud_hides_api_hash():
@@ -1183,7 +1608,7 @@ def test_ai_provider_prompt_material_and_jitter_flow():
     skip_legacy_task_center_flow()
     with TestClient(app) as client:
         headers = auth_headers(client)
-        runtime = client.get("/api/config/runtime").json()
+        runtime = client.get("/api/config/runtime", headers=headers).json()
         assert "ai_provider_count" in runtime
 
         providers = client.get("/api/ai-providers", headers=headers).json()
@@ -2181,6 +2606,98 @@ def test_operation_target_detail_returns_group_context_messages():
         assert patched_account["can_send"] is False
         assert patched_account["is_listener"] is False
         assert patched_account["permission_label"] == "风控观察"
+
+
+def test_operation_target_admission_retry_endpoint_updates_detail_and_audit(monkeypatch):
+    seen_accounts: list[int] = []
+
+    def fake_list_groups(account_id: int, *_args, **_kwargs):
+        seen_accounts.append(account_id)
+        return [
+            GroupSnapshot(
+                tg_peer_id=f"pytest-admission-group-{suffix}",
+                title="pytest 准入群",
+                group_type="supergroup",
+                member_count=18,
+                permission_label="可发言",
+                can_send=True,
+                username="pytest_admission",
+            )
+        ]
+
+    monkeypatch.setattr("app.services.operations.credentials_for_account", lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=1, api_hash="hash", credentials_version=1))
+    monkeypatch.setattr("app.services.operations.gateway.list_groups", fake_list_groups)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        with SessionLocal() as session:
+            suffix = uuid4().hex[:8]
+            account = TgAccount(
+                tenant_id=1,
+                display_name="pytest 准入账号",
+                username=f"pytest_admission_{suffix}",
+                phone_masked=f"+admission-{suffix}",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="encrypted-session:pytest",
+            )
+            group = TgGroup(
+                tenant_id=1,
+                tg_peer_id=f"pytest-admission-group-{suffix}",
+                title="pytest 准入群",
+                group_type="supergroup",
+                member_count=18,
+                auth_status="只读",
+                can_send=False,
+            )
+            session.add_all([account, group])
+            session.flush()
+            target = OperationTarget(
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id=group.tg_peer_id,
+                title=group.title,
+                member_count=group.member_count,
+                can_send=False,
+                auth_status="只读",
+            )
+            session.add(target)
+            session.flush()
+            session.add(TgGroupAccount(tenant_id=1, group_id=group.id, account_id=account.id, permission_label="禁言", can_send=False))
+            session.commit()
+            target_id = target.id
+            account_id = account.id
+
+        before = client.get(f"/api/operation-targets/{target_id}/detail", headers=headers)
+        assert before.status_code == 200, before.text
+        before_account = next(item for item in before.json()["accounts"] if item["id"] == account_id)
+        assert before_account["admission_status"] == "failed"
+
+        blank_reason = client.post(
+            f"/api/operation-targets/{target_id}/admission/retry",
+            headers=headers,
+            json={"reason": "   ", "account_ids": [account_id]},
+        )
+        assert blank_reason.status_code == 422, blank_reason.text
+        assert "重试原因不能为空" in blank_reason.text
+
+        retried = client.post(
+            f"/api/operation-targets/{target_id}/admission/retry",
+            headers=headers,
+            json={"reason": "管理员已解除限制", "account_ids": [account_id]},
+        )
+        assert retried.status_code == 200, retried.text
+        body = retried.json()
+        retried_account = next(item for item in body["accounts"] if item["id"] == account_id)
+
+        with SessionLocal() as session:
+            audit_row = session.query(AuditLog).filter(AuditLog.action == "重试目标准入", AuditLog.target_id == str(target_id)).order_by(AuditLog.id.desc()).first()
+
+    assert seen_accounts == [account_id]
+    assert body["admission_retry"]["recovered_account_count"] == 1
+    assert body["target"]["can_send"] is True
+    assert retried_account["admission_status"] == "ready"
+    assert audit_row is not None
+    assert "reason=管理员已解除限制" in audit_row.detail
 
 
 def test_operation_target_sync_messages_collects_channel_messages(monkeypatch):
@@ -4439,6 +4956,100 @@ def test_task_center_settings_accepts_target_scope_refresh():
         assert "target_group_id" in response.text
 
 
+def test_task_center_source_filter_override_endpoint_records_reason_and_identity():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        _account, group = ensure_test_workspace(client, headers)
+        now = datetime.now(UTC).replace(tzinfo=None)
+        with SessionLocal() as session:
+            task = Task(
+                tenant_id=1,
+                name="pytest source override",
+                type="group_relay",
+                status="running",
+                next_run_at=now + timedelta(days=1),
+                account_config={"selection_mode": "all", "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 60, "interval_seconds_max": 60},
+                failure_policy={"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
+                type_config={
+                    "source_groups": [{"group_id": group["id"], "is_active": True}],
+                    "target_group_id": group["id"],
+                    "target_group_ids": [group["id"]],
+                    "content_mode": "raw",
+                    "excluded_sender_peer_ids": ["old-peer"],
+                },
+                stats={},
+            )
+            session.add(task)
+            session.commit()
+            task_id = task.id
+
+        response = client.post(
+            f"/api/tasks/{task_id}/source-filter-overrides",
+            headers=headers,
+            json={
+                "sender_peer_id": "sender-42",
+                "sender_username": "@pytest_sender",
+                "sender_name": "来源用户",
+                "source_action_id": "action-42",
+                "source_action": "源群消息 action-42",
+                "reason": "测试从任务详情加入不转发名单",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["type_config"]["excluded_sender_peer_ids"] == ["old-peer", "sender-42"]
+        assert body["type_config"]["excluded_sender_usernames"] == ["pytest_sender"]
+        assert body["type_config"]["excluded_sender_names"] == ["来源用户"]
+        with SessionLocal() as session:
+            audit_log = session.query(AuditLog).filter_by(target_id=task_id, action="添加任务来源过滤覆盖").order_by(AuditLog.id.desc()).first()
+            assert audit_log is not None
+            assert audit_log.actor == "admin@demo.local"
+            assert "sender-42" in audit_log.detail
+            assert "pytest_sender" in audit_log.detail
+            assert "action-42" in audit_log.detail
+            assert "测试从任务详情加入不转发名单" in audit_log.detail
+
+
+def test_task_center_source_filter_override_requires_source_action():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        _account, group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            task = Task(
+                tenant_id=1,
+                name="pytest source override missing action",
+                type="group_relay",
+                status="running",
+                account_config={"selection_mode": "all", "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+                pacing_config={"mode": "fixed", "interval_seconds_min": 60, "interval_seconds_max": 60},
+                failure_policy={"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
+                type_config={
+                    "source_groups": [{"group_id": group["id"], "is_active": True}],
+                    "target_group_id": group["id"],
+                    "target_group_ids": [group["id"]],
+                    "content_mode": "raw",
+                },
+                stats={},
+            )
+            session.add(task)
+            session.commit()
+            task_id = task.id
+
+        response = client.post(
+            f"/api/tasks/{task_id}/source-filter-overrides",
+            headers=headers,
+            json={
+                "sender_peer_id": "sender-no-action",
+                "reason": "缺失来源动作应拒绝",
+            },
+        )
+
+        assert response.status_code == 422, response.text
+        assert "source_action_id 或 source_action 至少提供一个" in response.text
+
+
 def test_message_send_workbench_creates_private_group_channel_and_jitter_tasks(monkeypatch):
     send_calls: list[dict] = []
 
@@ -5201,6 +5812,64 @@ def test_group_policy_enforcement_material_usage_and_reports(monkeypatch):
         report = client.get("/api/reports", headers=headers).json()
         assert report["groups"]["daily_messages"] >= 1
         assert report["tasks"]["avg_delay_seconds"] >= 0
+
+
+def test_operation_metrics_prd_reports_and_export_endpoints():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        suffix = uuid4().hex[:8]
+        viewer_response = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"运营数据只读{suffix}",
+                "email": f"usage_viewer_{suffix}@example.local",
+                "password": "usage123",
+                "role": "后台用户",
+                "role_template": "只读观察员",
+                "permissions": ["overview.view", "usage.view"],
+                "menu_permissions": ["overview.view", "usage.view"],
+            },
+        )
+        assert viewer_response.status_code == 200, viewer_response.text
+        viewer_headers = auth_headers(client, viewer_response.json()["email"], "usage123")
+        exporter_response = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"运营数据导出{suffix}",
+                "email": f"usage_exporter_{suffix}@example.local",
+                "password": "usage123",
+                "role": "后台用户",
+                "role_template": "运营管理员",
+                "permissions": ["overview.view", "usage.view", "usage.export"],
+                "menu_permissions": ["overview.view", "usage.view", "usage.export"],
+            },
+        )
+        assert exporter_response.status_code == 200, exporter_response.text
+        exporter_headers = auth_headers(client, exporter_response.json()["email"], "usage123")
+
+        report = client.get("/api/operation-metrics/reports", headers=viewer_headers)
+        assert report.status_code == 200, report.text
+        report_body = report.json()
+        assert {"accounts", "groups", "tasks", "tenant"}.issubset(report_body)
+
+        denied_export = client.post("/api/operation-metrics/export", headers=viewer_headers, json={"reason": "只读不能导出"})
+        assert denied_export.status_code == 403
+        assert denied_export.json()["permission"] == "usage.export"
+
+        missing_reason = client.post("/api/operation-metrics/export", headers=exporter_headers, json={"reason": "   "})
+        assert missing_reason.status_code == 422
+
+        exported = client.post("/api/operation-metrics/export", headers=exporter_headers, json={"reason": "pytest 运营指标导出"})
+        assert exported.status_code == 200, exported.text
+        assert "text/csv" in exported.headers["content-type"]
+        assert "operation-metrics.csv" in exported.headers["content-disposition"]
+        assert "section,key,value" in exported.text
+
+        audit_logs = client.get("/api/audit-logs?target_type=operation_metrics&target_id=export", headers=headers)
+        assert audit_logs.status_code == 200, audit_logs.text
+        assert any("pytest 运营指标导出" in item["detail"] for item in audit_logs.json())
 
 
 def test_account_deleted_during_dispatch_does_not_send(monkeypatch):

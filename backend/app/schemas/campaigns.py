@@ -206,6 +206,9 @@ class MessageTaskOut(ApiModel):
     idempotency_key: str
     failure_type: str | None
     failure_detail: str | None
+    operation_issue_id: str = ""
+    operation_issue_status: str = ""
+    operation_issue_rolled_up: bool = False
     media_sent: bool | None = None
     media_failure_reason: str = ""
     scheduled_at: datetime

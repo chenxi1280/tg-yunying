@@ -305,6 +305,12 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       message_scope: 'dynamic_new',
       message_count: 10,
       target_views_per_message: 50,
+      listen_new_messages: true,
+      per_message_daily_view_target: 50,
+      per_message_total_view_target: 300,
+      message_active_days: 3,
+      task_daily_view_safety_cap: 500,
+      max_views_per_account_per_day: 20,
       execution_mode: 'distribute',
     };
   }
@@ -415,7 +421,7 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
     ];
   }
   if (taskType === 'channel_view') {
-    return [...baseFields, ...channelScopeFields(messageScope), 'target_views_per_message'];
+    return [...baseFields, ...channelScopeFields(messageScope), 'listen_new_messages', 'per_message_daily_view_target', 'per_message_total_view_target', 'message_active_days', 'task_daily_view_safety_cap', 'max_views_per_account_per_day', 'target_views_per_message'];
   }
   if (taskType === 'channel_like') {
     return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'reaction_type', 'allowed_reactions'];
@@ -433,7 +439,7 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
     return [...baseFields, 'source_operation_target_ids', 'source_groups', 'target_operation_target_id', 'target_operation_target_ids', 'rule_set_id', 'rule_set_version_id', 'content_mode', 'filter_bot_messages', 'filter_admin_messages', 'excluded_sender_peer_ids', 'excluded_sender_input'];
   }
   if (taskType === 'channel_view') {
-    return [...baseFields, 'target_views_per_message', 'execution_mode'];
+    return [...baseFields, 'listen_new_messages', 'per_message_daily_view_target', 'per_message_total_view_target', 'message_active_days', 'task_daily_view_safety_cap', 'max_views_per_account_per_day', 'target_views_per_message', 'execution_mode'];
   }
   if (taskType === 'channel_like') {
     return [...baseFields, 'target_likes_per_message', 'reaction_type', 'allowed_reactions', 'max_likes_per_account_per_hour'];

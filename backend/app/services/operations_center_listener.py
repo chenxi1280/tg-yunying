@@ -9,6 +9,7 @@ from app.models import (
     Action,
     ChannelMessage,
     GroupContextMessage,
+    ListenerSourceState,
     MessageFingerprint,
     OperationTarget,
     Task,
@@ -18,6 +19,7 @@ from app.models import (
 )
 from app.schemas.operations_center import (
     ListenerAccountOut,
+    ListenerErrorOut,
     ListenerEventOut,
     ListenerSnapshotOut,
     ListenerSummaryOut,
@@ -167,6 +169,91 @@ def switch_listener_account(session: Session, tenant_id: int, object_type: str, 
         target_type="tg_group",
         target_id=str(group.id),
         detail=f"backup_account={backup_account.id}; disabled={disabled_ids}",
+    )
+    session.commit()
+    return listener_summary(session, tenant_id)
+
+
+def list_listener_events(session: Session, tenant_id: int, object_type: str, object_id: int, *, limit: int = 50) -> list[ListenerEventOut]:
+    _listener_peer(session, tenant_id, object_type, object_id)
+    safe_limit = min(200, max(1, limit))
+    if object_type == "channel":
+        return _channel_recent_events(session, tenant_id, object_id, limit=safe_limit)
+    if object_type == "group":
+        return _group_recent_events(session, tenant_id, object_id, limit=safe_limit)
+    raise ValueError("监听对象类型不支持")
+
+
+def list_listener_errors(session: Session, tenant_id: int, object_type: str, object_id: int) -> list[ListenerErrorOut]:
+    peer_id = _listener_peer(session, tenant_id, object_type, object_id)
+    errors: list[ListenerErrorOut] = []
+    if object_type == "group":
+        group = session.get(TgGroup, object_id)
+        if group and group.listener_last_error:
+            errors.append(
+                ListenerErrorOut(
+                    id=f"group:{group.id}:last_error",
+                    object_type="group",
+                    object_id=group.id,
+                    source_peer_id=group.tg_peer_id,
+                    source="listener_object",
+                    error_message=group.listener_last_error,
+                    occurred_at=iso(group.listener_last_polled_at),
+                )
+            )
+    for state in _listener_source_states(session, tenant_id, object_type, peer_id):
+        if not state.last_error:
+            continue
+        account = session.get(TgAccount, state.account_id) if state.account_id else None
+        errors.append(
+            ListenerErrorOut(
+                id=state.id,
+                object_type=object_type,  # type: ignore[arg-type]
+                object_id=object_id,
+                source_peer_id=state.source_peer_id,
+                account_id=state.account_id,
+                account_display=account.display_name if account else "",
+                source="source_state",
+                error_message=state.last_error,
+                last_remote_message_id=state.last_remote_message_id,
+                occurred_at=iso(state.updated_at),
+            )
+        )
+    return errors
+
+
+def reset_listener_watermark(session: Session, tenant_id: int, object_type: str, object_id: int, *, reason: str, actor: str, confirm_text: str) -> ListenerSummaryOut:
+    if (confirm_text or "").strip() != "确认重置":
+        raise ValueError("请输入确认重置")
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("请填写重置原因")
+    peer_id = _listener_peer(session, tenant_id, object_type, object_id)
+    states = _listener_source_states(session, tenant_id, object_type, peer_id)
+    for state in states:
+        state.last_remote_message_id = ""
+        state.last_event_at = None
+        state.backfill_until = None
+        state.last_error = ""
+    target_type = "operation_target"
+    if object_type == "group":
+        group = session.get(TgGroup, object_id)
+        if group:
+            group.listener_last_polled_at = None
+            group.listener_last_error = ""
+            target_type = "tg_group"
+    elif object_type == "channel":
+        channel = session.get(OperationTarget, object_id)
+        if channel:
+            channel.last_sync_at = None
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="重置监听水位",
+        target_type=target_type,
+        target_id=str(object_id),
+        detail=f"object_type={object_type}; peer_id={peer_id}; states={len(states)}; reason={reason}",
     )
     session.commit()
     return listener_summary(session, tenant_id)
@@ -528,13 +615,41 @@ def _group_last_event_at(session: Session, tenant_id: int, group_id: int) -> dat
     )
 
 
-def _channel_recent_events(session: Session, tenant_id: int, channel_target_id: int) -> list[ListenerEventOut]:
+def _listener_peer(session: Session, tenant_id: int, object_type: str, object_id: int) -> str:
+    if object_type == "group":
+        group = session.get(TgGroup, object_id)
+        if not group or group.tenant_id != tenant_id:
+            raise ValueError("监听对象不存在")
+        return group.tg_peer_id
+    if object_type == "channel":
+        channel = session.get(OperationTarget, object_id)
+        if not channel or channel.tenant_id != tenant_id or channel.target_type != "channel":
+            raise ValueError("频道监听对象不存在")
+        return channel.tg_peer_id
+    raise ValueError("监听对象类型不支持")
+
+
+def _listener_source_states(session: Session, tenant_id: int, object_type: str, peer_id: str) -> list[ListenerSourceState]:
+    return list(
+        session.scalars(
+            select(ListenerSourceState)
+            .where(
+                ListenerSourceState.tenant_id == tenant_id,
+                ListenerSourceState.source_type == object_type,
+                ListenerSourceState.source_peer_id == peer_id,
+            )
+            .order_by(ListenerSourceState.updated_at.desc())
+        )
+    )
+
+
+def _channel_recent_events(session: Session, tenant_id: int, channel_target_id: int, *, limit: int = 5) -> list[ListenerEventOut]:
     rows = list(
         session.scalars(
             select(ChannelMessage)
             .where(ChannelMessage.tenant_id == tenant_id, ChannelMessage.channel_target_id == channel_target_id)
             .order_by(ChannelMessage.published_at.desc().nullslast(), ChannelMessage.created_at.desc())
-            .limit(5)
+            .limit(limit)
         )
     )
     return [
@@ -542,19 +657,20 @@ def _channel_recent_events(session: Session, tenant_id: int, channel_target_id: 
             id=item.id,
             event_type="channel_message",
             content=item.content_preview or item.message_url or f"频道消息 #{item.message_id}",
+            remote_message_id=str(item.message_id),
             occurred_at=iso(item.published_at or item.created_at),
         )
         for item in rows
     ]
 
 
-def _group_recent_events(session: Session, tenant_id: int, group_id: int) -> list[ListenerEventOut]:
+def _group_recent_events(session: Session, tenant_id: int, group_id: int, *, limit: int = 5) -> list[ListenerEventOut]:
     rows = list(
         session.scalars(
             select(GroupContextMessage)
             .where(GroupContextMessage.tenant_id == tenant_id, GroupContextMessage.group_id == group_id)
             .order_by(GroupContextMessage.sent_at.desc().nullslast(), GroupContextMessage.created_at.desc())
-            .limit(5)
+            .limit(limit)
         )
     )
     return [
@@ -564,10 +680,15 @@ def _group_recent_events(session: Session, tenant_id: int, group_id: int) -> lis
             content=item.content,
             account_id=item.listener_account_id,
             sender_name=item.sender_name,
+            sender_peer_id=item.sender_peer_id,
+            sender_username=item.sender_username,
+            sender_role=item.sender_role,
+            is_bot=item.is_bot,
+            remote_message_id=item.remote_message_id,
             occurred_at=iso(item.sent_at or item.created_at),
         )
         for item in rows
     ]
 
 
-__all__ = ["listener_summary", "switch_listener_account"]
+__all__ = ["list_listener_errors", "list_listener_events", "listener_summary", "reset_listener_watermark", "switch_listener_account"]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ListenerAccountOut(BaseModel):
@@ -27,7 +27,30 @@ class ListenerEventOut(BaseModel):
     content: str
     account_id: int | None = None
     sender_name: str = ""
+    sender_peer_id: str = ""
+    sender_username: str = ""
+    sender_role: str = ""
+    is_bot: bool = False
+    remote_message_id: str = ""
     occurred_at: str | None = None
+
+
+class ListenerErrorOut(BaseModel):
+    id: str
+    object_type: Literal["channel", "group"]
+    object_id: int
+    source_peer_id: str = ""
+    account_id: int | None = None
+    account_display: str = ""
+    source: str = ""
+    error_message: str
+    last_remote_message_id: str = ""
+    occurred_at: str | None = None
+
+
+class ListenerWatermarkResetRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=500)
+    confirm_text: str = ""
 
 
 class ListenerSnapshotOut(BaseModel):
@@ -266,6 +289,7 @@ class RuleTestOut(BaseModel):
 
 class RuleSetVersionCreate(BaseModel):
     version_note: str = ""
+    publish_reason: str = ""
     filters: dict[str, Any] = Field(default_factory=dict)
     output_checks: dict[str, Any] = Field(default_factory=dict)
     transforms: dict[str, Any] = Field(default_factory=dict)
@@ -273,6 +297,10 @@ class RuleSetVersionCreate(BaseModel):
     account_strategy: dict[str, Any] = Field(default_factory=dict)
     rate_limits: dict[str, Any] = Field(default_factory=dict)
     retry_policy: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuleSetVersionActionRequest(BaseModel):
+    reason: str = ""
 
 
 class RuleSetCreate(RuleSetVersionCreate):
@@ -366,15 +394,30 @@ class OperationMetricsOut(BaseModel):
     risk_details: list[OperationMetricDetailOut] = Field(default_factory=list)
 
 
+class OperationMetricsExportRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=255)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("导出原因不能为空")
+        return value
+
+
 __all__ = [
     "ListenerAccountOut",
+    "ListenerErrorOut",
     "ListenerEventOut",
     "ListenerSnapshotOut",
     "ListenerSummaryOut",
     "ListenerSwitchRequest",
     "ListenerTaskOut",
+    "ListenerWatermarkResetRequest",
     "MetricBucketOut",
     "OperationMetricDetailOut",
+    "OperationMetricsExportRequest",
     "OperationMetricsOut",
     "RuleCenterSummaryOut",
     "RuleConflictOut",

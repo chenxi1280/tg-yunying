@@ -860,7 +860,50 @@ class TelethonTelegramGateway(TelegramGateway):
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
-        return OperationResult(True, detail=f"{target_type}:{target_peer_id}:待真实执行时确认权限")
+        if not credentials:
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "开发者应用不可用")
+        return self._run(
+            self._probe_target_capabilities_async(
+                raw_session,
+                target_peer_id,
+                target_type,
+                self._usable_credentials(credentials),
+            )
+        )
+
+    async def _probe_target_capabilities_async(
+        self,
+        raw_session: str,
+        target_peer_id: str,
+        target_type: str,
+        credentials: DeveloperAppCredentials,
+    ) -> OperationResult:
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
+        try:
+            target = await resolve_telethon_target(client, target_peer_id, group_id=0)
+            default_rights = getattr(target, "default_banned_rights", None)
+            if default_rights and getattr(default_rights, "send_messages", False):
+                return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "缓存频道不可访问 / 账号无权限")
+            if hasattr(client, "get_permissions"):
+                try:
+                    permissions = await client.get_permissions(target, "me")
+                    can_send = bool(
+                        getattr(permissions, "send_messages", False)
+                        or getattr(permissions, "post_messages", False)
+                        or getattr(permissions, "is_admin", False)
+                    )
+                    if not can_send:
+                        return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "缓存频道不可访问 / 账号无权限")
+                except Exception:
+                    return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "缓存频道不可访问 / 账号无权限")
+            else:
+                return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "缓存频道不可访问 / 账号无权限")
+            return OperationResult(True, detail=f"{target_type}:{target_peer_id}:可访问")
+        except Exception as exc:  # Telethon exposes many RPC subclasses; map them at the adapter boundary.
+            mapped = self._map_send_error(exc)
+            return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, "缓存频道不可访问 / 账号无权限")
 
     async def _update_profile_async(
         self,

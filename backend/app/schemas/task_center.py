@@ -256,9 +256,40 @@ class ChannelMessageScopeConfig(BaseModel):
 
 class ChannelViewConfig(ChannelMessageScopeConfig):
     message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "dynamic_new"
-    target_views_per_message: int = Field(default=50, ge=1, le=10000)
+    initial_message_scope: Literal["latest_n", "today_new", "date_range", "specific", "new_only"] | None = None
+    latest_message_count: int | None = Field(default=None, ge=1, le=500)
+    listen_new_messages: bool = True
+    per_message_daily_view_target: int | None = Field(default=None, ge=1, le=10000)
+    per_message_total_view_target: int | None = Field(default=None, ge=1, le=100000)
+    message_active_days: int = Field(default=3, ge=1, le=365)
+    task_daily_view_safety_cap: int | None = Field(default=None, ge=1, le=100000)
+    max_views_per_account_per_day: int | None = Field(default=None, ge=1, le=10000)
+    target_views_per_message: int | None = Field(default=None, ge=1, le=10000)
     view_count_jitter: float = Field(default=0.2, ge=0, le=1)
     execution_mode: Literal["distribute", "burst"] = "distribute"
+
+    @model_validator(mode="after")
+    def normalize_post_level_view_targets(self) -> "ChannelViewConfig":
+        legacy_target = self.target_views_per_message
+        if self.initial_message_scope:
+            scope_map = {
+                "latest_n": "latest_n",
+                "today_new": "date_range",
+                "date_range": "date_range",
+                "specific": "specific",
+                "new_only": "dynamic_new",
+            }
+            self.message_scope = scope_map[self.initial_message_scope]
+        if self.latest_message_count is not None:
+            self.message_count = self.latest_message_count
+        if self.per_message_daily_view_target is None:
+            self.per_message_daily_view_target = legacy_target or 50
+        if self.per_message_total_view_target is None:
+            self.per_message_total_view_target = legacy_target or 300
+        self.target_views_per_message = self.per_message_daily_view_target
+        if self.per_message_total_view_target < self.per_message_daily_view_target:
+            self.per_message_total_view_target = self.per_message_daily_view_target
+        return self
 
 
 class ChannelLikeConfig(ChannelMessageScopeConfig):
@@ -412,6 +443,14 @@ class TaskSettingsUpdate(TaskUpdate):
     require_review: bool | None = None
 
     target_views_per_message: int | None = Field(default=None, ge=1, le=10000)
+    initial_message_scope: Literal["latest_n", "today_new", "date_range", "specific", "new_only"] | None = None
+    latest_message_count: int | None = Field(default=None, ge=1, le=500)
+    listen_new_messages: bool | None = None
+    per_message_daily_view_target: int | None = Field(default=None, ge=1, le=10000)
+    per_message_total_view_target: int | None = Field(default=None, ge=1, le=100000)
+    message_active_days: int | None = Field(default=None, ge=1, le=365)
+    task_daily_view_safety_cap: int | None = Field(default=None, ge=1, le=100000)
+    max_views_per_account_per_day: int | None = Field(default=None, ge=1, le=10000)
     view_count_jitter: float | None = Field(default=None, ge=0, le=1)
     execution_mode: Literal["distribute", "burst"] | None = None
 
@@ -428,6 +467,33 @@ class TaskSettingsUpdate(TaskUpdate):
     comment_style: Literal["relevant", "question", "praise", "discussion", "mixed"] | None = None
     max_comment_length: int | None = Field(default=None, ge=1)
     max_comments_per_account_per_hour: int | None = Field(default=None, ge=1, le=500)
+
+
+class TaskSourceFilterOverrideRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sender_peer_id: str = ""
+    sender_username: str = ""
+    sender_name: str = ""
+    source_action_id: str | None = None
+    source_action: str = ""
+    reason: str = Field(..., min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def normalize_identity(self) -> "TaskSourceFilterOverrideRequest":
+        self.sender_peer_id = self.sender_peer_id.strip()
+        self.sender_username = self.sender_username.strip().lstrip("@")
+        self.sender_name = self.sender_name.strip()
+        self.source_action_id = (self.source_action_id or "").strip() or None
+        self.source_action = self.source_action.strip()
+        self.reason = self.reason.strip()
+        if not any([self.sender_peer_id, self.sender_username, self.sender_name]):
+            raise ValueError("sender_peer_id、sender_username 或 sender_name 至少提供一个")
+        if not any([self.source_action_id, self.source_action]):
+            raise ValueError("source_action_id 或 source_action 至少提供一个")
+        if not self.reason:
+            raise ValueError("reason 不能为空")
+        return self
 
 
 class TaskOut(ApiModel):
@@ -832,5 +898,6 @@ __all__ = [
     "TaskRetryRequest",
     "TaskActionReasonRequest",
     "TaskSettingsUpdate",
+    "TaskSourceFilterOverrideRequest",
     "TaskUpdate",
 ]

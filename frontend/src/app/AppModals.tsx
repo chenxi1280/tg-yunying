@@ -1,5 +1,5 @@
 import { useAppContext } from './context';
-import { Button, Checkbox, Input, InputNumber, Modal, QRCode, Select, Space } from 'antd';
+import { Button, Checkbox, Descriptions, Input, InputNumber, Modal, QRCode, Select, Space, Table, Typography } from 'antd';
 import { FormActions, StatusBadge } from './components/shared';
 import { AccountDetailModal, AccountPoolDetailModal } from './views/AccountModals';
 import { formatBeijingDateTime } from './time';
@@ -24,23 +24,23 @@ const adminPermissionGroups = [
     ['accounts.sensitive.read', '敏感账号状态'],
     ['accounts.delete', '删除账号'],
     ['accounts.pool_manage', '账号池管理'],
-    ['accounts.proxy_bind', '代理绑定'],
     ['accounts.clone', '账号克隆'],
     ['accounts.manual_send', '手动私信'],
   ] },
   { menu: ['targets.view', '运营目标'], buttons: [['targets.manage', '目标管理']] },
-  { menu: ['message_sending.view', '消息发送'], buttons: [['message_sending.create', '创建发送']] },
+  { menu: ['message_sending.view', '消息发送'], buttons: [['message_sending.manage', '发送管理']] },
   { menu: ['materials.view', '素材中心'], buttons: [['materials.upload', '素材上传'], ['materials.manage', '素材管理']] },
   { menu: ['tasks.view', '任务中心'], buttons: [['tasks.manage', '任务管理'], ['tasks.dispatch_control', '调度控制']] },
   { menu: ['listeners.view', '监听中心'], buttons: [['listeners.manage', '监听管理']] },
   { menu: ['rules.view', '规则中心'], buttons: [['rules.publish', '规则发布']] },
-  { menu: ['risk.view', '风控中心'], buttons: [['risk.manage', '风控管理']] },
+  { menu: ['risk.view', '风控中心'], buttons: [['risk.manage', '风控管理'], ['proxies.manage', '代理管理']] },
   { menu: ['archives.view', '归档中心'], buttons: [['archives.manage', '归档管理'], ['archives.export', '归档导出']] },
-  { menu: ['usage.view', '运营数据'], buttons: [] },
+  { menu: ['usage.view', '运营数据'], buttons: [['usage.export', '运营数据导出']] },
   { menu: ['manual.view', '操作手册'], buttons: [] },
   { menu: ['system.view', '系统设置'], buttons: [
     ['system.manage', '系统管理'],
-    ['system.secrets_manage', '密钥配置'],
+    ['ai.manage', 'AI配置'],
+    ['prompt_templates.manage', '提示词管理'],
     ['developer_apps.manage', '开发者应用'],
     ['permissions.view', '账号权限'],
     ['permissions.manage', '权限管理'],
@@ -156,7 +156,7 @@ export function AppModals() {
             <label>账号类型<Select value={adminUserForm.role} onChange={(value) => setAdminUserForm((current) => ({ ...current, role: value }))} options={['后台用户', '系统管理员'].map((value) => ({ value, label: value }))} /></label>
             <label>角色模板<Select value={adminUserForm.role_template} onChange={(value) => {
               const templatePermissions: Record<string, string[]> = {
-                '运营管理员': ['overview.view', 'operation_plans.manage', 'operation_issues.manage', 'accounts.view', 'accounts.sync', 'accounts.codes.read', 'accounts.security.read', 'accounts.security.batch', 'accounts.profile.batch_update', 'targets.view', 'targets.manage', 'message_sending.view', 'message_sending.create', 'materials.view', 'materials.upload', 'materials.manage', 'tasks.view', 'tasks.manage', 'listeners.view', 'listeners.manage', 'rules.view', 'rules.publish', 'risk.view', 'risk.manage', 'archives.view', 'archives.manage', 'usage.view', 'manual.view', 'audits.view', 'audit.export'],
+                '运营管理员': ['overview.view', 'operation_plans.manage', 'operation_issues.manage', 'accounts.view', 'accounts.sync', 'accounts.codes.read', 'accounts.security.read', 'accounts.security.batch', 'accounts.profile.batch_update', 'targets.view', 'targets.manage', 'message_sending.view', 'message_sending.manage', 'materials.view', 'materials.upload', 'materials.manage', 'tasks.view', 'tasks.manage', 'listeners.view', 'listeners.manage', 'rules.view', 'rules.publish', 'risk.view', 'risk.manage', 'proxies.manage', 'archives.view', 'archives.manage', 'usage.view', 'usage.export', 'manual.view', 'audits.view', 'audit.export'],
                 '账号添加专员': ['overview.view', 'accounts.view', 'accounts.create', 'accounts.login', 'accounts.sync'],
                 '只读观察员': ['overview.view', 'usage.view', 'manual.view', 'audits.view'],
               };
@@ -280,7 +280,7 @@ export function AppModals() {
       <div className="modal-body">
           <div className="policy-grid">
             <label>素材标题<Input value={materialForm.title} onChange={(event) => setMaterialForm({ ...materialForm, title: event.target.value })} /></label>
-            <label>素材类型<Select value={materialForm.material_type} onChange={(value) => setMaterialForm({ ...materialForm, material_type: value })} options={['文本', '图片', '表情包', '文件', '链接', '组合消息'].map((value) => ({ value, label: value }))} /></label>
+            <label>素材类型<Select value={materialForm.material_type} onChange={(value) => setMaterialForm({ ...materialForm, material_type: value })} options={['文本', '图片', '表情包', '头像包', '文件', '链接', '组合消息'].map((value) => ({ value, label: value }))} /></label>
             <label>入库方式<Select value={materialForm.source_kind} disabled={modal.type === 'materialEdit'} onChange={(value) => setMaterialForm({ ...materialForm, source_kind: value, content: value === 'upload' ? '' : materialForm.content })} options={[
               { value: 'url', label: 'URL 入库' },
               { value: 'upload', label: '上传文件' },
@@ -295,8 +295,8 @@ export function AppModals() {
             <label>标签<Input value={materialForm.tags} onChange={(event) => setMaterialForm({ ...materialForm, tags: event.target.value })} /></label>
             {materialForm.source_kind === 'upload' && modal.type === 'materialCreate' ? (
               <>
-                <label className="wide-field">素材文件<input type="file" multiple onChange={(event) => setMaterialFile(event.target.files ? Array.from(event.target.files) : null)} /></label>
-                {materialFile?.length ? <span className="wide-field">已选择 {materialFile.length} 个文件，批量上传后会逐个进入素材缓存队列。</span> : null}
+                <label className="wide-field">素材文件 / ZIP 包<input type="file" multiple accept=".jpg,.jpeg,.png,.webp,.gif,.tgs,.webm,.mp4,.pdf,.zip,image/*,application/zip" onChange={(event) => setMaterialFile(event.target.files ? Array.from(event.target.files) : null)} /></label>
+                {materialFile?.length ? <span className="wide-field">已选择 {materialFile.length} 个文件；单个 ZIP 会按包内图片导入并返回逐文件结果。</span> : null}
                 <label className="wide-field">Caption<Input.TextArea value={materialForm.content} onChange={(event) => setMaterialForm({ ...materialForm, content: event.target.value })} /></label>
               </>
             ) : (
@@ -304,6 +304,42 @@ export function AppModals() {
             )}
           </div>
           <FormActions submitLabel={modal.type === 'materialEdit' ? '保存素材' : '新增素材'} onCancel={closeModal} onSubmit={modal.type === 'materialEdit' ? saveMaterial : createMaterial} loading={isActionPending(modal.type === 'materialEdit' ? `material:${materialForm.id ?? 'create'}:save` : 'material:create')} disabled={!materialForm.title || (materialForm.source_kind === 'upload' && modal.type === 'materialCreate' ? !(materialFile?.length) : !materialForm.content)} />
+          </div>
+        </Modal>
+      )}
+
+      {modal?.type === 'materialImportResult' && (
+        <Modal className="tg-modal large" title="ZIP 导入结果" open width={820} onCancel={closeModal} footer={<Button type="primary" onClick={closeModal}>关闭</Button>} destroyOnHidden centered>
+          <div className="modal-body">
+            <Descriptions
+              size="small"
+              column={3}
+              bordered
+              items={[
+                { key: 'file', label: '压缩包', children: modal.payload.source_filename },
+                { key: 'group', label: '素材包', children: modal.payload.target_group_name || '-' },
+                { key: 'status', label: '状态', children: modal.payload.status },
+                { key: 'total', label: '总数', children: modal.payload.total_count },
+                { key: 'success', label: '成功', children: modal.payload.success_count },
+                { key: 'skipped', label: '跳过', children: modal.payload.skipped_count },
+                { key: 'failed', label: '失败', children: modal.payload.failed_count },
+                { key: 'duplicate', label: '重复', children: modal.payload.duplicate_count },
+                { key: 'oversize', label: '超限', children: modal.payload.oversize_count },
+              ]}
+            />
+            <Table
+              rowKey={(item) => `${item.file_name}:${item.material_id ?? item.reason}`}
+              size="small"
+              pagination={{ pageSize: 8, hideOnSinglePage: true }}
+              dataSource={modal.payload.items}
+              columns={[
+                { title: '文件', dataIndex: 'file_name' },
+                { title: '状态', dataIndex: 'status', width: 100, render: (value: string) => <StatusBadge status={value} label={value === 'created' ? '已导入' : value === 'skipped' ? '已跳过' : '失败'} /> },
+                { title: '素材ID', dataIndex: 'material_id', width: 100, render: (value: number | null) => value ?? '-' },
+                { title: '大小', dataIndex: 'file_size', width: 100, render: (value: number) => `${value} B` },
+                { title: '原因', dataIndex: 'reason', render: (value: string) => <Typography.Text type={value ? 'secondary' : undefined}>{value || '-'}</Typography.Text> },
+              ]}
+            />
           </div>
         </Modal>
       )}

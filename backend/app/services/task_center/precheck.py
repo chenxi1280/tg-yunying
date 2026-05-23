@@ -363,7 +363,12 @@ def _precheck_estimated_actions(session: Session, tenant_id: int, task_type: str
         return source_count * target_count, target_count
     message_count = _precheck_channel_message_count(session, tenant_id, config)
     if task_type == "channel_view":
-        per_message = int(config.get("target_views_per_message") or 1)
+        per_message = int(config.get("per_message_daily_view_target") or config.get("target_views_per_message") or 1)
+        task_cap = int(config.get("task_daily_view_safety_cap") or 0)
+        estimated = message_count * per_message
+        if task_cap > 0:
+            estimated = min(estimated, task_cap)
+        return estimated, per_message
     elif task_type == "channel_like":
         per_message = int(config.get("target_likes_per_message") or 1)
     else:
@@ -372,11 +377,13 @@ def _precheck_estimated_actions(session: Session, tenant_id: int, task_type: str
 
 
 def _precheck_channel_message_count(session: Session, tenant_id: int, config: dict[str, Any]) -> int:
-    scope = config.get("message_scope") or "latest_n"
+    scope = config.get("initial_message_scope") or config.get("message_scope") or "latest_n"
+    if scope == "new_only":
+        return 0
     if scope == "specific":
         return len(config.get("message_ids") or [])
     if scope == "latest_n":
-        return int(config.get("message_count") or 1)
+        return int(config.get("latest_message_count") or config.get("message_count") or 1)
     target_id = _as_int(config.get("target_channel_id"))
     stmt = select(func.count(ChannelMessage.id)).where(ChannelMessage.tenant_id == tenant_id)
     if target_id:

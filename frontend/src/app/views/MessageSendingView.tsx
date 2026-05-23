@@ -20,6 +20,7 @@ type Props = {
   onRetryTask: (task: MessageTask) => Promise<void>;
   onRefresh: () => Promise<void>;
   isActionPending: (key: string) => boolean;
+  canManageMessageSending: boolean;
 };
 
 type TargetOption = {
@@ -85,6 +86,7 @@ export default function MessageSendingView({
   onRetryTask,
   onRefresh,
   isActionPending,
+  canManageMessageSending,
 }: Props) {
   const { message } = AntdApp.useApp();
   const [taskOpen, setTaskOpen] = React.useState(false);
@@ -119,7 +121,7 @@ export default function MessageSendingView({
   React.useEffect(() => setLocalMaterials(materials), [materials]);
 
   React.useEffect(() => {
-    if (!prefill?.target) return;
+    if (!prefill?.target || !canManageMessageSending) return;
     const target = prefill.target;
     const key = `operation-target:${target.id}`;
     const option: TargetOption = {
@@ -132,7 +134,7 @@ export default function MessageSendingView({
     setTargetKeys([key]);
     setTaskOpen(true);
     setError('');
-  }, [prefill?.nonce, prefill?.target]);
+  }, [canManageMessageSending, prefill?.nonce, prefill?.target]);
 
   React.useEffect(() => {
     if (!accountId) {
@@ -408,6 +410,7 @@ export default function MessageSendingView({
         <Space direction="vertical" size={2}>
           <StatusBadge status={value} />
           {value === '失败' && <Typography.Text type="danger">{task.failure_detail || task.failure_type || '发送失败'}</Typography.Text>}
+          {task.operation_issue_rolled_up && <Tag color={task.operation_issue_status === 'open' ? 'red' : 'green'}>{task.operation_issue_status === 'open' ? '已上卷异常' : '异常已处理'}</Tag>}
         </Space>
       ),
     },
@@ -418,9 +421,13 @@ export default function MessageSendingView({
         const cancellable = !['已发送', '发送中', '已取消'].includes(task.status);
         return (
           <Space wrap>
-            <Button size="small" icon={<Send size={14} />} disabled={task.status === '已发送'} loading={isActionPending(`task:${task.id}:dispatch`)} onClick={() => onDispatchTask(task)}>立即执行</Button>
-            <Button size="small" icon={<RefreshCcw size={14} />} disabled={!['失败', '已取消'].includes(task.status)} loading={isActionPending(`task:${task.id}:retry`)} onClick={() => onRetryTask(task)}>重试</Button>
-            <Button size="small" danger icon={<ShieldAlert size={14} />} disabled={!cancellable} loading={isActionPending(`task:${task.id}:cancel`)} onClick={() => onCancelTask(task)}>取消</Button>
+            {canManageMessageSending && (
+              <>
+                <Button size="small" icon={<Send size={14} />} disabled={task.status === '已发送'} loading={isActionPending(`task:${task.id}:dispatch`)} onClick={() => onDispatchTask(task)}>立即执行</Button>
+                <Button size="small" icon={<RefreshCcw size={14} />} disabled={!['失败', '已取消'].includes(task.status)} loading={isActionPending(`task:${task.id}:retry`)} onClick={() => onRetryTask(task)}>重试</Button>
+                <Button size="small" danger icon={<ShieldAlert size={14} />} disabled={!cancellable} loading={isActionPending(`task:${task.id}:cancel`)} onClick={() => onCancelTask(task)}>取消</Button>
+              </>
+            )}
             <Button size="small" onClick={() => setDetailTask(task)}>详情</Button>
           </Space>
         );
@@ -435,7 +442,7 @@ export default function MessageSendingView({
         extra={(
           <Space wrap>
             <Button icon={<RefreshCcw size={16} />} onClick={onRefresh}>刷新</Button>
-            <Button type="primary" icon={<MessageSquareText size={16} />} onClick={() => setTaskOpen(true)}>新建发送</Button>
+            {canManageMessageSending && <Button type="primary" icon={<MessageSquareText size={16} />} onClick={() => setTaskOpen(true)}>新建发送</Button>}
           </Space>
         )}
       >

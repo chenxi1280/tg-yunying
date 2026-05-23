@@ -327,7 +327,7 @@ def _message_groups(session: Session, task: Task, actions: list[Action]) -> list
 def _channel_subtask_configured_target_count(task: Task, action_type: str) -> int:
     config = task.type_config or {}
     if action_type == "view_message":
-        return int(config.get("target_views_per_message") or 0)
+        return int(config.get("per_message_daily_view_target") or config.get("target_views_per_message") or 0)
     if action_type == "like_message":
         return int(config.get("target_likes_per_message") or 0)
     if action_type == "post_comment":

@@ -29,7 +29,7 @@ from app.services.task_center.executors.group_relay import apply_transform_rules
 from app.services.task_center.fingerprints import content_fingerprint
 
 
-from app.services.operations_center_listener import listener_summary, switch_listener_account
+from app.services.operations_center_listener import list_listener_errors, list_listener_events, listener_summary, reset_listener_watermark, switch_listener_account
 from app.services.operations_center_defaults import (
     ACTIVE_TASK_STATUSES,
     SYSTEM_RULES,
@@ -766,6 +766,8 @@ __all__ = [
     "copy_rule_set_version",
     "create_rule_set",
     "create_rule_set_version",
+    "list_listener_errors",
+    "list_listener_events",
     "listener_summary",
     "list_rule_set_bound_tasks",
     "list_rule_sets",
@@ -773,6 +775,7 @@ __all__ = [
     "publish_rule_set_version",
     "relay_attribution_csv",
     "relay_attribution_report",
+    "reset_listener_watermark",
     "rollback_rule_set_version",
     "rule_center_summary",
     "test_rules",

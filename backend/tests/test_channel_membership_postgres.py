@@ -91,6 +91,89 @@ def test_task_precheck_and_create_support_inline_channel_target_input():
         assert target and target.tg_peer_id == "inline_channel"
 
 
+def test_channel_view_create_accepts_prd_post_level_production_fields():
+    payload = {
+        "name": "post level channel view",
+        "target_channel_id": 501,
+        "initial_message_scope": "latest_n",
+        "latest_message_count": 10,
+        "listen_new_messages": True,
+        "per_message_daily_view_target": 50,
+        "per_message_total_view_target": 300,
+        "message_active_days": 3,
+        "task_daily_view_safety_cap": 500,
+        "account_config": {"selection_mode": "manual", "account_ids": [11]},
+    }
+
+    task = ChannelViewTaskCreate(**payload)
+
+    assert task.initial_message_scope == "latest_n"
+    assert task.listen_new_messages is True
+    assert task.per_message_daily_view_target == 50
+    assert task.per_message_total_view_target == 300
+    assert task.task_daily_view_safety_cap == 500
+
+
+def test_channel_view_planner_uses_post_daily_target_and_task_safety_cap():
+    engine = _engine()
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.flush()
+        session.add_all(
+            [
+                TgAccount(id=31, tenant_id=1, display_name="浏览账号1", phone_masked="+861***0031", status="在线", session_ciphertext="s1"),
+                TgAccount(id=32, tenant_id=1, display_name="浏览账号2", phone_masked="+861***0032", status="在线", session_ciphertext="s2"),
+                TgAccount(id=33, tenant_id=1, display_name="浏览账号3", phone_masked="+861***0033", status="在线", session_ciphertext="s3"),
+            ]
+        )
+        channel = OperationTarget(id=503, tenant_id=1, target_type="channel", tg_peer_id="-100503", title="帖子级浏览频道", username="post_view_channel", auth_status="已授权运营", can_send=True)
+        task = Task(
+            id="task-post-level-view",
+            tenant_id=1,
+            name="post level view",
+            type="channel_view",
+            status="running",
+            next_run_at=now_value,
+            account_config={"selection_mode": "manual", "account_ids": [31, 32, 33], "max_concurrent": 3, "cooldown_per_account_minutes": 0},
+            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+            failure_policy={"max_retries": 0},
+            type_config={
+                "target_channel_id": 503,
+                "message_scope": "specific",
+                "message_ids": [703, 704],
+                "per_message_daily_view_target": 2,
+                "per_message_total_view_target": 3,
+                "message_active_days": 3,
+                "task_daily_view_safety_cap": 3,
+                "view_count_jitter": 0,
+            },
+            stats={},
+        )
+        session.add_all([channel, task])
+        session.flush()
+        session.add_all(
+            [
+                ChannelMessage(id=703, tenant_id=1, channel_target_id=503, message_id=9103, content_preview="第一条帖子", published_at=now_value),
+                ChannelMessage(id=704, tenant_id=1, channel_target_id=503, message_id=9104, content_preview="第二条帖子", published_at=now_value),
+            ]
+        )
+        session.commit()
+
+        assert build_task_plan(session, task) == 3
+        view_actions = list(session.query(Action).filter(Action.task_id == task.id, Action.action_type == "view_message"))
+
+        assert len(view_actions) == 3
+        assert {action.payload["channel_message_id"] for action in view_actions} == {703, 704}
+        per_message_counts = {
+            message_id: len([action for action in view_actions if action.payload["channel_message_id"] == message_id])
+            for message_id in {703, 704}
+        }
+        assert max(per_message_counts.values()) <= 2
+        assert {action.payload["execution_date"] for action in view_actions} == {now_value.date().isoformat()}
+
+
 def test_channel_task_runs_membership_precondition_before_main_actions(monkeypatch):
     engine = _engine()
     now_value = _now()

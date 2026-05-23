@@ -1,11 +1,14 @@
 import React from 'react';
-import { Alert, Button, Card, Empty, Popconfirm, Space, Table, Tabs, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Descriptions, Empty, Image, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tabs, Tag, Typography, message } from 'antd';
 import { RefreshCcw, ShieldAlert } from 'lucide-react';
-import type { Material, MaterialCacheHealth } from '../types';
+import type { Material, MaterialCacheHealth, MaterialImportResult } from '../types';
 import { Badge, StatusBadge } from '../components/shared';
+import { formatBeijingDateTime } from '../time';
+import { api } from '../../shared/api/client';
 
 interface Props {
   materials: Material[];
+  materialImports: MaterialImportResult[];
   materialCacheHealth: MaterialCacheHealth | null;
   canUploadMaterials: boolean;
   canManageMaterials: boolean;
@@ -13,9 +16,46 @@ interface Props {
   onEditMaterial: (material: Material) => void;
   onDisableMaterial: (material: Material) => void;
   onRestoreMaterial: (material: Material) => void;
+  onOpenImportResult: (result: MaterialImportResult) => void;
   onRefresh: () => void;
   isActionPending: (key: string) => boolean;
 }
+
+type MaterialReferenceItem = {
+  source_type: string;
+  source_id: string;
+  title: string;
+  status: string;
+};
+
+type MaterialReferences = {
+  material_id: number;
+  summary: Material['reference_summary'];
+  items: MaterialReferenceItem[];
+};
+
+type MaterialVersionHistory = {
+  material_id: number;
+  asset_versions: Array<Record<string, any>>;
+  tg_ref_versions: Array<Record<string, any>>;
+};
+
+type MaterialGroup = {
+  id: number;
+  tenant_id: number;
+  name: string;
+  group_type: string;
+  description: string;
+  is_active: boolean;
+  material_count: number;
+};
+
+type MaterialGroupForm = {
+  name: string;
+  group_type: string;
+  description: string;
+  is_active: boolean;
+};
 
 function materialType(material: Material): 'sticker' | 'avatar' | 'media' {
   const text = `${material.material_type} ${material.tags} ${material.title}`.toLowerCase();
@@ -52,6 +92,7 @@ function referenceText(material: Material) {
 
 export default function MaterialsView({
   materials,
+  materialImports,
   materialCacheHealth,
   canUploadMaterials,
   canManageMaterials,
@@ -59,13 +100,150 @@ export default function MaterialsView({
   onEditMaterial,
   onDisableMaterial,
   onRestoreMaterial,
+  onOpenImportResult,
   onRefresh,
   isActionPending,
 }: Props) {
+  const [detailOpen, setDetailOpen] = React.useState(false);
+  const [detailLoading, setDetailLoading] = React.useState(false);
+  const [detailMaterial, setDetailMaterial] = React.useState<Material | null>(null);
+  const [materialReferences, setMaterialReferences] = React.useState<MaterialReferences | null>(null);
+  const [materialVersions, setMaterialVersions] = React.useState<MaterialVersionHistory | null>(null);
+  const [cacheBusyId, setCacheBusyId] = React.useState<number | null>(null);
+  const [groupOpen, setGroupOpen] = React.useState(false);
+  const [groupLoading, setGroupLoading] = React.useState(false);
+  const [groupSaving, setGroupSaving] = React.useState(false);
+  const [materialGroups, setMaterialGroups] = React.useState<MaterialGroup[]>([]);
+  const [editingGroup, setEditingGroup] = React.useState<MaterialGroup | null>(null);
+  const [groupForm, setGroupForm] = React.useState<MaterialGroupForm>(emptyMaterialGroupForm());
   const counts = cacheCounts(materialCacheHealth);
   const stickerMaterials = React.useMemo(() => materials.filter((item) => materialType(item) === 'sticker'), [materials]);
   const avatarMaterials = React.useMemo(() => materials.filter((item) => materialType(item) === 'avatar'), [materials]);
   const mediaMaterials = React.useMemo(() => materials.filter((item) => materialType(item) === 'media'), [materials]);
+
+  async function openMaterialDetail(material: Material) {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    setDetailMaterial(material);
+    setMaterialReferences(null);
+    setMaterialVersions(null);
+    try {
+      const [detail, references, versions] = await Promise.all([
+        api<Material>(`/materials/${material.id}`),
+        api<MaterialReferences>(`/materials/${material.id}/references`),
+        api<MaterialVersionHistory>(`/materials/${material.id}/versions`),
+      ]);
+      setDetailMaterial(detail);
+      setMaterialReferences(references);
+      setMaterialVersions(versions);
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : '读取素材详情失败');
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  async function refreshMaterialCache(material: Material) {
+    if (!canManageMaterials) {
+      void message.warning('当前账号没有素材管理权限');
+      return;
+    }
+    setCacheBusyId(material.id);
+    try {
+      const updated = await api<Material>(`/materials/${material.id}/refresh-cache`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: '素材中心手动刷新缓存' }),
+      });
+      setDetailMaterial((current) => current?.id === updated.id ? updated : current);
+      await openMaterialDetail(updated);
+      onRefresh();
+      void message.success('已提交素材缓存刷新');
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : '刷新素材缓存失败');
+    } finally {
+      setCacheBusyId(null);
+    }
+  }
+
+  function openMaterialGroups() {
+    setGroupOpen(true);
+    setEditingGroup(null);
+    setGroupForm(emptyMaterialGroupForm());
+    void loadMaterialGroups();
+  }
+
+  async function loadMaterialGroups() {
+    setGroupLoading(true);
+    try {
+      setMaterialGroups(await api<MaterialGroup[]>('/material-groups'));
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : '读取素材组失败');
+    } finally {
+      setGroupLoading(false);
+    }
+  }
+
+  function editMaterialGroup(group: MaterialGroup) {
+    setEditingGroup(group);
+    setGroupForm({
+      name: group.name,
+      group_type: group.group_type,
+      description: group.description,
+      is_active: group.is_active,
+    });
+  }
+
+  async function saveMaterialGroup() {
+    if (!canManageMaterials) {
+      void message.warning('当前账号没有素材管理权限');
+      return;
+    }
+    if (!groupForm.name.trim()) {
+      void message.warning('素材组名称不能为空');
+      return;
+    }
+    setGroupSaving(true);
+    try {
+      const payload = {
+        name: groupForm.name.trim(),
+        group_type: groupForm.group_type,
+        description: groupForm.description.trim(),
+        is_active: groupForm.is_active,
+      };
+      if (editingGroup) {
+        await api<MaterialGroup>(`/material-groups/${editingGroup.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      } else {
+        await api<MaterialGroup>('/material-groups', { method: 'POST', body: JSON.stringify(payload) });
+      }
+      setEditingGroup(null);
+      setGroupForm(emptyMaterialGroupForm());
+      await loadMaterialGroups();
+      void message.success('素材组已保存');
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : '保存素材组失败');
+    } finally {
+      setGroupSaving(false);
+    }
+  }
+
+  async function toggleMaterialGroup(group: MaterialGroup) {
+    if (!canManageMaterials) {
+      void message.warning('当前账号没有素材管理权限');
+      return;
+    }
+    setGroupSaving(true);
+    try {
+      await api<MaterialGroup>(`/material-groups/${group.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_active: !group.is_active }),
+      });
+      await loadMaterialGroups();
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : '更新素材组失败');
+    } finally {
+      setGroupSaving(false);
+    }
+  }
 
   const columns = [
     {
@@ -105,9 +283,19 @@ export default function MaterialsView({
     },
     {
       title: '操作',
-      width: 190,
+      width: 300,
       render: (_: unknown, material: Material) => (
-        <Space size={6}>
+        <Space size={6} wrap>
+          <Button size="small" onClick={() => void openMaterialDetail(material)}>详情</Button>
+          <Button
+            size="small"
+            icon={<RefreshCcw size={14} />}
+            disabled={!canManageMaterials}
+            loading={cacheBusyId === material.id}
+            onClick={() => void refreshMaterialCache(material)}
+          >
+            刷新缓存
+          </Button>
           <Button size="small" disabled={!canManageMaterials} onClick={() => onEditMaterial(material)}>编辑</Button>
           {isDisabled(material) ? (
             <Button
@@ -164,7 +352,8 @@ export default function MaterialsView({
         extra={(
           <Space>
             <Button icon={<RefreshCcw size={16} />} loading={isActionPending('app:refresh')} onClick={onRefresh}>刷新</Button>
-            <Button type="primary" disabled={!canUploadMaterials} onClick={onCreateMaterial}>上传素材</Button>
+            <Button onClick={openMaterialGroups}>素材组管理</Button>
+            <Button type="primary" disabled={!canUploadMaterials} onClick={onCreateMaterial}>上传素材 / ZIP</Button>
           </Space>
         )}
       >
@@ -198,6 +387,29 @@ export default function MaterialsView({
         ) : null}
       </Card>
 
+      <Card className="panel" title="最近导入结果">
+        <Table
+          rowKey="import_id"
+          size="small"
+          dataSource={materialImports}
+          pagination={{ pageSize: 5, hideOnSinglePage: true }}
+          locale={{ emptyText: <Empty description="暂无 ZIP 导入结果" /> }}
+          columns={[
+            { title: '压缩包', dataIndex: 'source_filename' },
+            { title: '素材包', dataIndex: 'target_group_name' },
+            { title: '状态', dataIndex: 'status', width: 110, render: (value: string) => <StatusBadge status={value} /> },
+            { title: '成功', dataIndex: 'success_count', width: 80 },
+            { title: '跳过', dataIndex: 'skipped_count', width: 80 },
+            { title: '失败', dataIndex: 'failed_count', width: 80 },
+            {
+              title: '失败原因',
+              render: (_, row) => row.items.filter((item) => item.status !== 'created').slice(0, 3).map((item) => `${item.file_name}: ${item.reason}`).join('；') || '-',
+            },
+            { title: '操作', width: 100, render: (_, row) => <Button size="small" onClick={() => onOpenImportResult(row)}>查看详情</Button> },
+          ]}
+        />
+      </Card>
+
       <Card className="panel" title="素材资产">
         <Tabs
           items={[
@@ -221,6 +433,210 @@ export default function MaterialsView({
           被任务、规则或发送记录引用的素材不做物理删除；禁用 / 恢复、资产版本、TG 引用版本和引用影响范围均保留在素材中心统一操作。
         </Typography.Paragraph>
       </Card>
+
+      <Modal
+        className="tg-modal large"
+        title="素材组管理"
+        open={groupOpen}
+        width={900}
+        footer={null}
+        onCancel={() => setGroupOpen(false)}
+        destroyOnHidden
+        centered
+      >
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Card size="small" title={editingGroup ? `编辑素材组：${editingGroup.name}` : '新增素材组'}>
+            <div className="policy-grid">
+              <label>名称<Input value={groupForm.name} onChange={(event) => setGroupForm((form) => ({ ...form, name: event.target.value }))} /></label>
+              <label>类型<Select value={groupForm.group_type} onChange={(value) => setGroupForm((form) => ({ ...form, group_type: value }))} options={materialGroupTypeOptions()} /></label>
+              <label>描述<Input value={groupForm.description} onChange={(event) => setGroupForm((form) => ({ ...form, description: event.target.value }))} /></label>
+              <label>启用<Switch checked={groupForm.is_active} onChange={(checked) => setGroupForm((form) => ({ ...form, is_active: checked }))} /></label>
+            </div>
+            <Space style={{ marginTop: 12 }}>
+              <Button type="primary" loading={groupSaving} disabled={!canManageMaterials} onClick={() => void saveMaterialGroup()}>{editingGroup ? '保存素材组' : '新增素材组'}</Button>
+              {editingGroup && <Button onClick={() => { setEditingGroup(null); setGroupForm(emptyMaterialGroupForm()); }}>取消编辑</Button>}
+            </Space>
+          </Card>
+          <Table<MaterialGroup>
+            rowKey="id"
+            size="small"
+            loading={groupLoading}
+            dataSource={materialGroups}
+            pagination={{ pageSize: 8, hideOnSinglePage: true }}
+            locale={{ emptyText: <Empty description="暂无素材组" /> }}
+            columns={[
+              { title: '名称', dataIndex: 'name' },
+              { title: '类型', dataIndex: 'group_type', width: 140, render: (value) => value || '-' },
+              { title: '素材数', dataIndex: 'material_count', width: 90 },
+              { title: '描述', dataIndex: 'description', render: (value) => value || '-' },
+              { title: '状态', dataIndex: 'is_active', width: 90, render: (value) => <StatusBadge status={value ? 'active' : 'disabled'} label={value ? '启用' : '停用'} /> },
+              {
+                title: '操作',
+                width: 150,
+                render: (_, group) => (
+                  <Space size={6}>
+                    <Button size="small" disabled={!canManageMaterials} onClick={() => editMaterialGroup(group)}>编辑</Button>
+                    <Button size="small" disabled={!canManageMaterials} loading={groupSaving} onClick={() => void toggleMaterialGroup(group)}>{group.is_active ? '停用' : '启用'}</Button>
+                  </Space>
+                ),
+              },
+            ]}
+          />
+        </Space>
+      </Modal>
+
+      <Modal
+        className="tg-modal large"
+        title={detailMaterial ? `素材详情：${detailMaterial.title}` : '素材详情'}
+        open={detailOpen}
+        width={980}
+        footer={null}
+        onCancel={() => setDetailOpen(false)}
+        destroyOnHidden
+        centered
+      >
+        {detailMaterial ? (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Card size="small" title="素材预览" loading={detailLoading}>
+              {isPreviewableImage(detailMaterial) ? (
+                <Image
+                  src={materialPreviewSrc(detailMaterial)}
+                  alt={detailMaterial.title}
+                  style={{ maxHeight: 260, objectFit: 'contain' }}
+                  fallback="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+                />
+              ) : (
+                <Typography.Paragraph copyable ellipsis={{ rows: 4, expandable: true }}>
+                  {detailMaterial.content || detailMaterial.file_name || '暂无可预览内容'}
+                </Typography.Paragraph>
+              )}
+            </Card>
+
+            <Descriptions
+              bordered
+              size="small"
+              column={2}
+              items={[
+                { key: 'type', label: '类型', children: detailMaterial.material_type || '-' },
+                { key: 'status', label: '状态', children: <StatusBadge status={detailMaterial.review_status} /> },
+                { key: 'file', label: '文件', children: detailMaterial.file_name || '-' },
+                { key: 'size', label: '尺寸/大小', children: `${detailMaterial.width || '-'}x${detailMaterial.height || '-'} / ${formatBytes(detailMaterial.file_size)}` },
+                { key: 'cache', label: '缓存状态', children: detailMaterial.cache_ready_status || 'not_cached' },
+                { key: 'tg', label: 'TG 引用', children: detailMaterial.tg_cache_message_id ? `${detailMaterial.tg_cache_peer_id || '-'} / ${detailMaterial.tg_cache_message_id}` : '-' },
+                { key: 'usage_count', label: '使用次数', children: detailMaterial.usage_count ?? 0 },
+                { key: 'last_used', label: '最近使用', children: formatBeijingDateTime(detailMaterial.last_used_at) },
+                { key: 'last_cache_error', label: '最近缓存失败', span: 2, children: detailMaterial.last_cache_error || '-' },
+                { key: 'caption', label: '说明', span: 2, children: detailMaterial.caption || '-' },
+              ]}
+            />
+
+            <Card
+              size="small"
+              title="引用记录"
+              extra={<Typography.Text type="secondary">{materialReferences?.summary.total_count ?? detailMaterial.referenced_by_count ?? 0} 条</Typography.Text>}
+            >
+              <Table<MaterialReferenceItem>
+                rowKey={(item) => `${item.source_type}:${item.source_id}`}
+                size="small"
+                pagination={{ pageSize: 6, hideOnSinglePage: true }}
+                dataSource={materialReferences?.items ?? []}
+                locale={{ emptyText: <Empty description="暂无引用记录" /> }}
+                columns={[
+                  { title: '来源', dataIndex: 'source_type', width: 150 },
+                  { title: '对象', dataIndex: 'title', render: (value, item) => value || item.source_id },
+                  { title: '状态', dataIndex: 'status', width: 120, render: (value) => value || '-' },
+                ]}
+              />
+            </Card>
+
+            <Card size="small" title="版本与缓存记录">
+              <Table<Record<string, any>>
+                rowKey={(item) => `asset:${item.id}`}
+                size="small"
+                pagination={false}
+                dataSource={materialVersions?.asset_versions ?? []}
+                locale={{ emptyText: <Empty description="暂无资产版本" /> }}
+                columns={[
+                  { title: '资产版本', dataIndex: 'asset_version_id', width: 110, render: (value) => `v${value}` },
+                  { title: '文件', dataIndex: 'file_name', render: (value) => value || '-' },
+                  { title: '创建人', dataIndex: 'created_by', width: 120 },
+                  { title: '时间', dataIndex: 'created_at', width: 180, render: (value) => formatBeijingDateTime(value) },
+                ]}
+              />
+              <Table<Record<string, any>>
+                className="sub-table"
+                rowKey={(item) => `tg:${item.id}`}
+                size="small"
+                pagination={false}
+                dataSource={materialVersions?.tg_ref_versions ?? []}
+                locale={{ emptyText: <Empty description="暂无 TG 缓存版本" /> }}
+                columns={[
+                  { title: 'TG 版本', dataIndex: 'tg_ref_version_id', width: 110, render: (value) => `v${value}` },
+                  { title: '缓存状态', dataIndex: 'cache_status', width: 130 },
+                  { title: '消息', key: 'message', render: (_, item) => item.tg_cache_message_id ? `${item.tg_cache_peer_id || '-'} / ${item.tg_cache_message_id}` : '-' },
+                  { title: '失败原因', dataIndex: 'failure_reason', render: (value) => value || '-' },
+                  { title: '时间', dataIndex: 'created_at', width: 180, render: (value) => formatBeijingDateTime(value) },
+                ]}
+              />
+            </Card>
+
+            <Space>
+              <Button
+                icon={<RefreshCcw size={14} />}
+                disabled={!canManageMaterials}
+                loading={cacheBusyId === detailMaterial.id}
+                onClick={() => void refreshMaterialCache(detailMaterial)}
+              >
+                刷新缓存
+              </Button>
+              <Button onClick={() => onEditMaterial(detailMaterial)} disabled={!canManageMaterials}>编辑素材</Button>
+            </Space>
+          </Space>
+        ) : <Empty description="请选择素材" />}
+      </Modal>
     </section>
   );
+}
+
+function isPreviewableImage(material: Material) {
+  return material.mime_type?.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(material.content || material.file_name || '');
+}
+
+function materialPreviewSrc(material: Material) {
+  const value = material.content || material.file_name || '';
+  if (!value || /^https?:\/\//i.test(value) || value.startsWith('/media/')) return value;
+  const normalized = value.replace(/\\/g, '/');
+  const mediaIndex = normalized.lastIndexOf('/media/');
+  if (mediaIndex >= 0) return normalized.slice(mediaIndex);
+  for (const marker of ['/material-tmp/', '/source-media-tmp/', '/previews/', '/tmp/']) {
+    const index = normalized.lastIndexOf(marker);
+    if (index >= 0) {
+      const relative = normalized.slice(index + 1);
+      return `/media/${relative}`;
+    }
+  }
+  return value;
+}
+
+function emptyMaterialGroupForm(): MaterialGroupForm {
+  return { name: '', group_type: '', description: '', is_active: true };
+}
+
+function materialGroupTypeOptions() {
+  return [
+    { value: '', label: '通用分组' },
+    { value: '图片', label: '图片' },
+    { value: '表情包', label: '表情包' },
+    { value: '文件', label: '文件' },
+    { value: '链接', label: '链接' },
+    { value: '组合消息', label: '组合消息' },
+  ];
+}
+
+function formatBytes(value?: number | null) {
+  const size = Number(value || 0);
+  if (!size) return '-';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 102.4) / 10} KB`;
+  return `${Math.round(size / 1024 / 102.4) / 10} MB`;
 }

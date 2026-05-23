@@ -6,6 +6,7 @@ import type {
   ContentKeywordRule,
   DeveloperApp,
   Material,
+  MaterialCacheConfig,
   MaterialCacheHealth,
   PromptTemplate,
   Tenant,
@@ -25,6 +26,7 @@ interface Props {
   tenantAiSetting: TenantAiSetting | null;
   materials: Material[];
   materialCacheHealth: MaterialCacheHealth | null;
+  materialCacheConfig: MaterialCacheConfig | null;
   contentKeywordRules: ContentKeywordRule[];
   adminUsers: AdminUser[];
   currentUser: CurrentUser | null;
@@ -51,6 +53,7 @@ interface Props {
   onEditMaterial: (material: Material) => void;
   onCreateKeywordRule: () => void;
   onEditKeywordRule: (rule: ContentKeywordRule) => void;
+  onSavedMaterialCacheConfig: () => Promise<void>;
   onOpenConfirm: (payload: ConfirmPayload) => void;
   isActionPending: (key: string) => boolean;
 }
@@ -63,6 +66,7 @@ export default function SystemConfigView({
   tenantAiSetting,
   materials,
   materialCacheHealth,
+  materialCacheConfig,
   contentKeywordRules,
   adminUsers,
   currentUser,
@@ -89,6 +93,7 @@ export default function SystemConfigView({
   onEditMaterial,
   onCreateKeywordRule,
   onEditKeywordRule,
+  onSavedMaterialCacheConfig,
   onOpenConfirm,
   isActionPending,
 }: Props) {
@@ -129,8 +134,12 @@ export default function SystemConfigView({
               tenantAiSetting={tenantAiSetting}
               materials={materials}
               materialCacheHealth={materialCacheHealth}
+              materialCacheConfig={materialCacheConfig}
               contentKeywordRules={contentKeywordRules}
               currentUserRole={currentUserRole}
+              canManageAi={hasPermission(currentUser, 'ai.manage')}
+              canManagePrompts={hasPermission(currentUser, 'prompt_templates.manage')}
+              canManageSystem={hasPermission(currentUser, 'system.manage')}
               onCreateProvider={onCreateAiProvider}
               onEditProvider={onEditAiProvider}
               onToggleProvider={onToggleAiProvider}
@@ -143,6 +152,7 @@ export default function SystemConfigView({
               onEditMaterial={onEditMaterial}
               onCreateKeywordRule={onCreateKeywordRule}
               onEditKeywordRule={onEditKeywordRule}
+              onSavedMaterialCacheConfig={onSavedMaterialCacheConfig}
               isActionPending={isActionPending}
             />
           ),
@@ -158,8 +168,12 @@ export default function SystemConfigView({
               tenantAiSetting={tenantAiSetting}
               materials={materials}
               materialCacheHealth={materialCacheHealth}
+              materialCacheConfig={materialCacheConfig}
               contentKeywordRules={contentKeywordRules}
               currentUserRole={currentUserRole}
+              canManageAi={hasPermission(currentUser, 'ai.manage')}
+              canManagePrompts={hasPermission(currentUser, 'prompt_templates.manage')}
+              canManageSystem={hasPermission(currentUser, 'system.manage')}
               onCreateProvider={onCreateAiProvider}
               onEditProvider={onEditAiProvider}
               onToggleProvider={onToggleAiProvider}
@@ -172,6 +186,7 @@ export default function SystemConfigView({
               onEditMaterial={onEditMaterial}
               onCreateKeywordRule={onCreateKeywordRule}
               onEditKeywordRule={onEditKeywordRule}
+              onSavedMaterialCacheConfig={onSavedMaterialCacheConfig}
               isActionPending={isActionPending}
             />
           ),
@@ -188,8 +203,12 @@ export default function SystemConfigView({
               tenantAiSetting={tenantAiSetting}
               materials={materials}
               materialCacheHealth={materialCacheHealth}
+              materialCacheConfig={materialCacheConfig}
               contentKeywordRules={contentKeywordRules}
               currentUserRole={currentUserRole}
+              canManageAi={hasPermission(currentUser, 'ai.manage')}
+              canManagePrompts={hasPermission(currentUser, 'prompt_templates.manage')}
+              canManageSystem={hasPermission(currentUser, 'system.manage')}
               onCreateProvider={onCreateAiProvider}
               onEditProvider={onEditAiProvider}
               onToggleProvider={onToggleAiProvider}
@@ -202,6 +221,7 @@ export default function SystemConfigView({
               onEditMaterial={onEditMaterial}
               onCreateKeywordRule={onCreateKeywordRule}
               onEditKeywordRule={onEditKeywordRule}
+              onSavedMaterialCacheConfig={onSavedMaterialCacheConfig}
               isActionPending={isActionPending}
             />
           ),

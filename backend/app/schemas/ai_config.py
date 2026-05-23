@@ -249,6 +249,83 @@ class MaterialOut(ApiModel):
     reference_summary: MaterialReferenceSummary = Field(default_factory=MaterialReferenceSummary)
 
 
+class MaterialAssetVersionOut(ApiModel):
+    id: int
+    material_id: int
+    asset_version_id: int
+    source_kind: str
+    content: str
+    asset_fingerprint: str
+    file_name: str
+    mime_type: str
+    file_size: int
+    width: int
+    height: int
+    caption: str
+    created_by: str
+    created_at: datetime | None = None
+
+
+class MaterialTgRefVersionOut(ApiModel):
+    id: int
+    material_id: int
+    asset_version_id: int
+    tg_ref_version_id: int
+    cache_status: str
+    tg_cache_account_id: int | None
+    tg_cache_peer_id: str
+    tg_cache_message_id: str
+    gateway_type: str
+    failure_reason: str
+    created_by: str
+    created_at: datetime | None = None
+
+
+class MaterialVersionHistoryOut(ApiModel):
+    material_id: int
+    asset_versions: list[MaterialAssetVersionOut]
+    tg_ref_versions: list[MaterialTgRefVersionOut]
+
+
+class MaterialReferenceItemOut(ApiModel):
+    source_type: str
+    source_id: str
+    title: str = ""
+    status: str = ""
+
+
+class MaterialReferencesOut(ApiModel):
+    material_id: int
+    summary: MaterialReferenceSummary
+    items: list[MaterialReferenceItemOut] = Field(default_factory=list)
+
+
+class MaterialGroupCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=160)
+    group_type: str = ""
+    description: str = ""
+    is_active: bool = True
+
+
+class MaterialGroupUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    group_type: str | None = None
+    description: str | None = None
+    is_active: bool | None = None
+
+
+class MaterialGroupOut(ApiModel):
+    id: int
+    tenant_id: int
+    name: str
+    group_type: str
+    description: str
+    is_active: bool
+    material_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class MaterialCacheStatusCount(ApiModel):
     status: str
     count: int
@@ -274,6 +351,49 @@ class MaterialCacheHealthOut(ApiModel):
     cache_failed_count: int
     waiting_action_count: int
     recent_errors: list[MaterialCacheErrorItem]
+
+
+class CacheChannelConfigOut(ApiModel):
+    raw_input: str = ""
+    normalized_peer: str = ""
+    source: Literal["saved", "env", "empty"] = "empty"
+    last_error: str = ""
+
+
+class MaterialCacheConfigUpdate(BaseModel):
+    material_cache_input: str | None = None
+    source_media_cache_input: str | None = None
+
+
+class MaterialCacheConfigOut(ApiModel):
+    material_cache: CacheChannelConfigOut
+    source_media_cache: CacheChannelConfigOut
+    health: MaterialCacheHealthOut
+
+
+class MaterialImportItemOut(ApiModel):
+    file_name: str
+    status: Literal["created", "skipped", "failed"]
+    reason: str = ""
+    material_id: int | None = None
+    file_size: int = 0
+
+
+class MaterialImportResultOut(ApiModel):
+    import_id: str
+    source_filename: str
+    import_type: str
+    target_group_name: str
+    status: str
+    total_count: int
+    success_count: int
+    failed_count: int
+    skipped_count: int
+    duplicate_count: int
+    oversize_count: int
+    items: list[MaterialImportItemOut]
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 # ── Content keyword rules ──
@@ -349,6 +469,8 @@ __all__ = [
     "TenantAiSettingUpdate", "TenantAiSettingOut",
     "SchedulingSettingUpdate", "SchedulingSettingOut",
     "MaterialActionRequest", "MaterialCreate", "MaterialReferenceSummary", "MaterialUpdate", "MaterialOut",
+    "CacheChannelConfigOut", "MaterialCacheConfigOut", "MaterialCacheConfigUpdate",
+    "MaterialImportItemOut", "MaterialImportResultOut",
     "MaterialCacheErrorItem", "MaterialCacheHealthOut", "MaterialCacheStatusCount",
     "ContentKeywordRuleCreate", "ContentKeywordRuleUpdate", "ContentKeywordRuleOut",
     "AiUsageLedgerOut", "AiUsageSummaryOut",

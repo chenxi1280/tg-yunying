@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -169,6 +169,40 @@ class Material(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class MaterialImportJob(Base):
+    __tablename__ = "material_import_jobs"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    source_filename: Mapped[str] = mapped_column(String(255), default="")
+    import_type: Mapped[str] = mapped_column(String(40), default="zip")
+    target_group_name: Mapped[str] = mapped_column(String(160), default="")
+    status: Mapped[str] = mapped_column(String(40), default="completed")
+    total_count: Mapped[int] = mapped_column(Integer, default=0)
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0)
+    oversize_count: Mapped[int] = mapped_column(Integer, default=0)
+    item_details: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class MaterialGroup(Base):
+    __tablename__ = "material_groups"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_material_groups_tenant_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    name: Mapped[str] = mapped_column(String(160))
+    group_type: Mapped[str] = mapped_column(String(40), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class MaterialAssetVersion(Base):
     __tablename__ = "material_asset_versions"
     __table_args__ = (UniqueConstraint("material_id", "asset_version_id", name="uq_material_asset_versions_version"),)
@@ -216,6 +250,8 @@ __all__ = [
     "MessageTaskAttempt",
     "CampaignProcessedMessage",
     "Material",
+    "MaterialGroup",
+    "MaterialImportJob",
     "MaterialAssetVersion",
     "MaterialTgRefVersion",
 ]

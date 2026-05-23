@@ -89,6 +89,9 @@ class ViewMessagePayload(BaseModel):
     message_id: int = Field(ge=1)
     target_display: str = ""
     message_content: str = ""
+    execution_date: str = ""
+    daily_view_target: int | None = None
+    total_view_target: int | None = None
 
 
 class LikeMessagePayload(ViewMessagePayload):
@@ -170,6 +173,9 @@ def _plan_batch_key(task: Task, scheduled_at: datetime) -> str:
 
 
 def _action_dedupe_key(task: Task, plan_batch_key: str, action_type: str, account_id: int | None, payload_data: dict[str, Any]) -> str:
+    if action_type == "view_message" and payload_data.get("execution_date"):
+        message_identity = payload_data.get("channel_message_id") or payload_data.get("message_id")
+        return f"{task.tenant_id}:{task.id}:{payload_data.get('execution_date')}:{account_id}:{message_identity}:{action_type}"
     business_parts = {
         "action_type": action_type,
         "account_id": account_id,

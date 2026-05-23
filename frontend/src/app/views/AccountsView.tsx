@@ -326,9 +326,9 @@ export default function AccountsView({
       </Space>
       <Space className="pool-filter-strip" wrap>
         <Typography.Text type="secondary">已选择 {selectedAccounts.length} 个账号</Typography.Text>
-        {canProfileBatchUpdate && <Button icon={<Activity size={16} />} disabled={!selectedAccountIds.length} onClick={() => setSecurityDrawerMode('profile')}>资料初始化</Button>}
-        {canSecurityBatch && <Button icon={<ShieldAlert size={16} />} disabled={!selectedAccountIds.length} onClick={() => setSecurityDrawerMode('set_two_fa')}>设置二步密码</Button>}
-        {canSecurityBatch && <Button icon={<Database size={16} />} disabled={!selectedAccountIds.length} onClick={() => setSecurityDrawerMode('cleanup_devices')}>清理登录设备</Button>}
+        {canProfileBatchUpdate && <Button icon={<Activity size={16} />} onClick={() => setSecurityDrawerMode('profile')}>资料初始化</Button>}
+        {canSecurityBatch && <Button icon={<ShieldAlert size={16} />} onClick={() => setSecurityDrawerMode('set_two_fa')}>设置二步密码</Button>}
+        {canSecurityBatch && <Button icon={<Database size={16} />} onClick={() => setSecurityDrawerMode('cleanup_devices')}>清理登录设备</Button>}
         {canSecurityRead && <Button disabled={!selectedAccountIds.length} loading={refreshingSecurity} onClick={refreshSelectedSecurity}>刷新安全状态</Button>}
         <Button disabled={!selectedAccountIds.length} onClick={() => setSelectedAccountIds([])}>清空选择</Button>
       </Space>

@@ -102,6 +102,18 @@ function selectedAccounts(accounts: Account[], ids: number[]) {
   return accounts.filter((account) => idSet.has(account.id));
 }
 
+function accountNeedsProfile(account: Account) {
+  return !account.avatar_object_key || !account.username || !account.tg_first_name || account.profile_sync_status === '待处理';
+}
+
+function accountMatchesBatchFilter(account: Account, filter: string) {
+  if (filter === 'active') return account.status === '在线';
+  if (filter === 'login_required') return ['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', '异常'].includes(account.status);
+  if (filter === 'profile_incomplete') return accountNeedsProfile(account);
+  if (filter === 'proxy_alert') return Boolean(account.proxy_alert_status || account.proxy_status === '异常');
+  return true;
+}
+
 export function AccountSecurityBatchDrawer({
   open,
   mode,
@@ -121,11 +133,34 @@ export function AccountSecurityBatchDrawer({
   const [reason, setReason] = React.useState('');
   const [confirmText, setConfirmText] = React.useState('');
   const [precheck, setPrecheck] = React.useState<AccountSecurityPrecheck | null>(null);
+  const [precheckPayloadSignature, setPrecheckPayloadSignature] = React.useState('');
   const [batch, setBatch] = React.useState<AccountSecurityBatch | null>(null);
   const [editedPreviewIds, setEditedPreviewIds] = React.useState<Set<number>>(new Set());
+  const [draftAccountIds, setDraftAccountIds] = React.useState<number[]>([]);
+  const [accountQuery, setAccountQuery] = React.useState('');
+  const [accountFilter, setAccountFilter] = React.useState('all');
   const [loading, setLoading] = React.useState(false);
   const [step, setStep] = React.useState(0);
-  const selected = React.useMemo(() => selectedAccounts(accounts, selectedAccountIds), [accounts, selectedAccountIds]);
+  const selected = React.useMemo(() => selectedAccounts(accounts, draftAccountIds), [accounts, draftAccountIds]);
+  const filteredAccounts = React.useMemo(() => {
+    const query = accountQuery.trim().toLowerCase();
+    return accounts.filter((account) => {
+      if (!accountMatchesBatchFilter(account, accountFilter)) return false;
+      if (!query) return true;
+      const haystack = [
+        account.display_name,
+        account.username,
+        account.phone_masked,
+        account.phone_number,
+        account.pool_name,
+        account.status,
+        account.profile_sync_status,
+        account.proxy_name,
+        account.proxy_status,
+      ].filter(Boolean).join(' ').toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [accountFilter, accountQuery, accounts]);
   const forbiddenText = profileStrategy.forbidden_words.join('，');
   const modeConfig = MODE_CONFIG[mode];
   const isProfileMode = mode === 'profile';
@@ -138,10 +173,14 @@ export function AccountSecurityBatchDrawer({
     setReason(modeConfig.reason);
     setConfirmText('');
     setPrecheck(null);
+    setPrecheckPayloadSignature('');
     setBatch(null);
     setEditedPreviewIds(new Set());
+    setDraftAccountIds(selectedAccountIds);
+    setAccountQuery('');
+    setAccountFilter('all');
     setStep(0);
-  }, [modeConfig, open]);
+  }, [modeConfig, open, selectedAccountIds]);
 
   const previewOverrides = React.useMemo(() => (precheck?.items ?? []).filter((item) => editedPreviewIds.has(item.account_id)).map((item) => ({
     account_id: item.account_id,
@@ -154,7 +193,7 @@ export function AccountSecurityBatchDrawer({
   })), [editedPreviewIds, precheck]);
 
   const payload = {
-    account_ids: selectedAccountIds,
+    account_ids: draftAccountIds,
     action_types: actions,
     password_strategy: 'system_unique_encrypted',
     profile_strategy: profileStrategy,
@@ -163,6 +202,22 @@ export function AccountSecurityBatchDrawer({
     recovery_email: '',
     reason,
   };
+  const payloadSignature = React.useMemo(() => JSON.stringify({
+    account_ids: draftAccountIds,
+    action_types: actions,
+    profile_strategy: profileStrategy,
+    avatar_strategy: avatarStrategy,
+    reason,
+  }), [actions, avatarStrategy, draftAccountIds, profileStrategy, reason]);
+
+  React.useEffect(() => {
+    if (!precheck || !precheckPayloadSignature || precheckPayloadSignature === payloadSignature) return;
+    setPrecheck(null);
+    setBatch(null);
+    setConfirmText('');
+    setEditedPreviewIds(new Set());
+    setStep(0);
+  }, [payloadSignature, precheck, precheckPayloadSignature]);
 
   function updatePreviewItem(accountId: number, patch: Partial<AccountSecurityPreviewItem>) {
     setPrecheck((current) => {
@@ -177,16 +232,17 @@ export function AccountSecurityBatchDrawer({
   }
 
   async function runPrecheck() {
-    if (!selectedAccountIds.length) {
-      void message.warning('请先选择账号');
+    if (!draftAccountIds.length) {
+      void message.warning('请在当前批量动作中选择账号');
       return;
     }
     setLoading(true);
     try {
       const endpoint = isProfileMode ? '/tg-accounts/security-batches/profile-preview' : '/tg-accounts/security-batches/precheck';
-      const timeoutMs = isProfileMode ? Math.min(210_000, Math.max(60_000, selectedAccountIds.length * 5_000)) : 60_000;
+      const timeoutMs = isProfileMode ? Math.min(210_000, Math.max(60_000, draftAccountIds.length * 5_000)) : 60_000;
       const result = await api<AccountSecurityPrecheck>(endpoint, { method: 'POST', body: JSON.stringify(payload), timeoutMs });
       setPrecheck(result);
+      setPrecheckPayloadSignature(payloadSignature);
       setEditedPreviewIds(new Set());
       setBatch(null);
       setStep(1);
@@ -199,6 +255,15 @@ export function AccountSecurityBatchDrawer({
   async function createBatch() {
     if (!precheck) {
       await runPrecheck();
+      return;
+    }
+    if (precheckPayloadSignature !== payloadSignature) {
+      setPrecheck(null);
+      setBatch(null);
+      setConfirmText('');
+      setEditedPreviewIds(new Set());
+      setStep(0);
+      void message.warning('账号或策略已变化，请重新预检');
       return;
     }
     if (confirmText !== '确认加固') {
@@ -311,6 +376,23 @@ export function AccountSecurityBatchDrawer({
     { title: 'username', dataIndex: 'username_status', width: 140, render: (_, item) => item.generated_username || statusText(item.username_status) },
     { title: '失败原因', dataIndex: 'failure_detail', width: 260, render: (value, item) => value || item.skipped_reason || '-' },
   ];
+  const accountColumns: ColumnsType<Account> = [
+    {
+      title: '账号',
+      dataIndex: 'display_name',
+      width: 220,
+      render: (_, account) => (
+        <Space orientation="vertical" size={0}>
+          <Typography.Text strong>{account.display_name}</Typography.Text>
+          <Typography.Text type="secondary">{account.username ? `@${account.username}` : account.phone_masked}</Typography.Text>
+        </Space>
+      ),
+    },
+    { title: '状态', dataIndex: 'status', width: 110, render: (value) => <Tag>{value}</Tag> },
+    { title: '分组', dataIndex: 'pool_name', width: 140, render: (value) => value || '未分组' },
+    { title: '资料', key: 'profile', width: 120, render: (_, account) => <Tag color={accountNeedsProfile(account) ? 'gold' : 'green'}>{accountNeedsProfile(account) ? '待初始化' : '完整'}</Tag> },
+    { title: '代理', key: 'proxy', width: 160, render: (_, account) => account.proxy_name ? `${account.proxy_name} / ${account.proxy_status || '-'}` : '-' },
+  ];
 
   return (
     <Drawer
@@ -325,7 +407,7 @@ export function AccountSecurityBatchDrawer({
         <Alert
           type={modeConfig.alertType}
           showIcon
-          title={`已选择 ${selected.length} 个账号`}
+          title={`本批次已选择 ${selected.length} 个账号`}
           description={modeConfig.description}
         />
         <Steps
@@ -341,6 +423,45 @@ export function AccountSecurityBatchDrawer({
           <Space wrap>
             {actions.map((value) => <Tag color="processing" key={value}>{ACTION_LABEL[value]}</Tag>)}
           </Space>
+        </Space>
+        <Space orientation="vertical" size={8} style={{ width: '100%' }}>
+          <Typography.Text strong>选择账号</Typography.Text>
+          <Space wrap>
+            <Input.Search
+              allowClear
+              value={accountQuery}
+              placeholder="搜索账号、手机号、分组、状态"
+              style={{ width: 260 }}
+              onChange={(event) => setAccountQuery(event.target.value)}
+            />
+            <Select
+              value={accountFilter}
+              style={{ width: 160 }}
+              options={[
+                { label: '全部账号', value: 'all' },
+                { label: '在线账号', value: 'active' },
+                { label: '需登录处理', value: 'login_required' },
+                { label: '资料待初始化', value: 'profile_incomplete' },
+                { label: '代理异常', value: 'proxy_alert' },
+              ]}
+              onChange={setAccountFilter}
+            />
+            <Button onClick={() => setDraftAccountIds(filteredAccounts.map((account) => account.id))}>选择当前筛选</Button>
+            <Button disabled={!draftAccountIds.length} onClick={() => setDraftAccountIds([])}>清空本批选择</Button>
+          </Space>
+          <Table<Account>
+            className="tg-table"
+            rowKey="id"
+            columns={accountColumns}
+            dataSource={filteredAccounts}
+            rowSelection={{
+              preserveSelectedRowKeys: true,
+              selectedRowKeys: draftAccountIds,
+              onChange: (keys) => setDraftAccountIds(keys.map(Number)),
+            }}
+            pagination={{ pageSize: 6, showSizeChanger: false }}
+            scroll={{ x: 820 }}
+          />
         </Space>
         {isProfileMode && (
           <>

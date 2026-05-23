@@ -32,6 +32,7 @@ from app.schemas import (
     ManualSendRequest,
     OperationTargetCreate,
     OperationTargetAccountUpdate,
+    OperationTargetAdmissionRetryRequest,
     OperationTargetUpdate,
     OperationTaskCreate,
 )
@@ -724,6 +725,13 @@ def _group_accounts_for_detail(session: Session, group: TgGroup, links: list[TgG
         account = accounts_by_id.get(link.account_id)
         if not account:
             continue
+        admission_status = "ready" if link.can_send and account.status == AccountStatus.ACTIVE.value else "failed"
+        admission_reason = ""
+        if admission_status == "failed":
+            if account.status != AccountStatus.ACTIVE.value:
+                admission_reason = f"账号状态为 {account.status}"
+            else:
+                admission_reason = link.permission_label or "未满足发送准入"
         accounts.append(
             {
                 "id": account.id,
@@ -734,6 +742,9 @@ def _group_accounts_for_detail(session: Session, group: TgGroup, links: list[TgG
                 "permission_label": link.permission_label,
                 "can_send": link.can_send,
                 "is_listener": link.is_listener,
+                "admission_status": admission_status,
+                "admission_failure_reason": admission_reason,
+                "admission_retryable": admission_status == "failed" and account.status == AccountStatus.ACTIVE.value,
                 "last_sent_at": link.last_sent_at,
             }
         )
@@ -865,9 +876,156 @@ def _risk_for_detail(target: OperationTarget, accounts: list[dict], linked_group
     return {"level": level, "messages": messages}
 
 
-def operation_target_detail(session: Session, tenant_id: int, target_id: int, *, sync_error: str = "") -> dict:
+def _refresh_target_capability_from_group(session: Session, target: OperationTarget, group: TgGroup) -> None:
+    links = list(
+        session.scalars(
+            select(TgGroupAccount).where(
+                TgGroupAccount.tenant_id == target.tenant_id,
+                TgGroupAccount.group_id == group.id,
+            )
+        )
+    )
+    group.can_send = any(link.can_send for link in links)
+    group.auth_status = GroupAuthStatus.AUTHORIZED.value if group.can_send else GroupAuthStatus.READONLY.value
+    target.can_send = group.can_send
+    target.auth_status = group.auth_status
+    target.member_count = group.member_count
+    target.last_sync_at = _now()
+    target.updated_at = _now()
+
+
+def _ensure_target_group_link(session: Session, target: OperationTarget) -> TgGroup:
+    group = _linked_group_for_target(session, target)
+    if group:
+        return group
+    group = TgGroup(
+        tenant_id=target.tenant_id,
+        tg_peer_id=target.tg_peer_id,
+        title=target.title,
+        group_type="channel" if target.target_type == "channel" else "supergroup",
+        member_count=target.member_count,
+        auth_status=target.auth_status,
+        can_send=target.can_send,
+    )
+    session.add(group)
+    session.flush()
+    return group
+
+
+def retry_operation_target_admission(
+    session: Session,
+    tenant_id: int,
+    target_id: int,
+    payload: OperationTargetAdmissionRetryRequest,
+    actor: str,
+) -> dict:
     target = _operation_target_for_tenant(session, tenant_id, target_id)
-    linked_group = _linked_group_for_target(session, target) if target.target_type == "group" else None
+    operator_reason = payload.reason.strip()
+    if not operator_reason:
+        raise ValueError("重试原因不能为空")
+    group = _ensure_target_group_link(session, target)
+    requested_ids = [int(item) for item in payload.account_ids if int(item) > 0]
+    if not requested_ids:
+        requested_ids = list(
+            session.scalars(
+                select(TgGroupAccount.account_id)
+                .join(TgAccount, TgAccount.id == TgGroupAccount.account_id)
+                .where(
+                    TgGroupAccount.tenant_id == tenant_id,
+                    TgGroupAccount.group_id == group.id,
+                    TgGroupAccount.can_send.is_(False),
+                    TgAccount.status == AccountStatus.ACTIVE.value,
+                    TgAccount.deleted_at.is_(None),
+                )
+                .order_by(TgGroupAccount.account_id.asc())
+            )
+        )
+    if not requested_ids:
+        raise ValueError("no failed admission accounts")
+
+    retried = 0
+    recovered = 0
+    failed = 0
+    failure_details: list[str] = []
+    for account_id in requested_ids:
+        account = session.get(TgAccount, account_id)
+        if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
+            failed += 1
+            failure_details.append(f"{account_id}:账号不存在")
+            continue
+        if account.status != AccountStatus.ACTIVE.value:
+            failed += 1
+            failure_details.append(f"{account.id}:账号状态为 {account.status}")
+            continue
+        retried += 1
+        link = session.scalar(
+            select(TgGroupAccount).where(
+                TgGroupAccount.tenant_id == tenant_id,
+                TgGroupAccount.group_id == group.id,
+                TgGroupAccount.account_id == account.id,
+            )
+        )
+        if not link:
+            link = TgGroupAccount(tenant_id=tenant_id, group_id=group.id, account_id=account.id)
+            session.add(link)
+            session.flush()
+        try:
+            credentials = credentials_for_account(session, account)
+            snapshots = gateway.list_groups(account.id, account.session_ciphertext, credentials)
+            snapshot = next((item for item in snapshots if item.tg_peer_id == target.tg_peer_id), None)
+        except Exception as exc:  # noqa: BLE001 - return per-account reason to the operator.
+            link.can_send = False
+            link.permission_label = str(exc)
+            failed += 1
+            failure_details.append(f"{account.id}:{link.permission_label}")
+            continue
+        if not snapshot:
+            link.can_send = False
+            link.permission_label = "未加入或不可见"
+            failed += 1
+            failure_details.append(f"{account.id}:{link.permission_label}")
+            continue
+        _upsert_group_target_from_snapshot(session, account, snapshot)
+        refreshed_link = session.scalar(
+            select(TgGroupAccount).where(
+                TgGroupAccount.tenant_id == tenant_id,
+                TgGroupAccount.group_id == group.id,
+                TgGroupAccount.account_id == account.id,
+            )
+        )
+        if refreshed_link and refreshed_link.can_send:
+            recovered += 1
+        else:
+            failed += 1
+            failure_reason = refreshed_link.permission_label if refreshed_link else "未满足发送准入"
+            failure_details.append(f"{account.id}:{failure_reason}")
+
+    _refresh_target_capability_from_group(session, target, group)
+    summary = {
+        "retried_account_count": retried,
+        "recovered_account_count": recovered,
+        "failed_account_count": failed,
+        "failure_details": failure_details,
+    }
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="重试目标准入",
+        target_type="operation_target",
+        target_id=str(target.id),
+        detail=(
+            f"reason={operator_reason}; retried={summary['retried_account_count']}; "
+            f"recovered={summary['recovered_account_count']}; failed={summary['failed_account_count']}"
+        ),
+    )
+    session.commit()
+    return operation_target_detail(session, tenant_id, target_id, admission_retry=summary)
+
+
+def operation_target_detail(session: Session, tenant_id: int, target_id: int, *, sync_error: str = "", admission_retry: dict | None = None) -> dict:
+    target = _operation_target_for_tenant(session, tenant_id, target_id)
+    linked_group = _linked_group_for_target(session, target)
     group_links = (
         list(
             session.scalars(
@@ -881,12 +1039,12 @@ def operation_target_detail(session: Session, tenant_id: int, target_id: int, *,
         else []
     )
     accounts = _group_accounts_for_detail(session, linked_group, group_links) if linked_group else []
-    group_messages = _group_messages_for_detail(session, linked_group) if linked_group else []
+    group_messages = _group_messages_for_detail(session, linked_group) if linked_group and target.target_type == "group" else []
     channel_messages = filter_channel_messages(session, tenant_id, target.id) if target.target_type == "channel" else []
     channel_comments = filter_channel_message_comments(session, tenant_id, target.id) if target.target_type == "channel" else []
     task_history = _task_history_for_detail(session, target, linked_group)
     send_records = _send_records_for_detail(session, target)
-    archive_records = _archive_records_for_detail(session, target, linked_group)
+    archive_records = _archive_records_for_detail(session, target, linked_group) if target.target_type == "group" else []
     risk = _risk_for_detail(target, accounts, linked_group)
     return {
         "target": _operation_target_list_payload(target, linked_group, {linked_group.id: group_links} if linked_group else {}),
@@ -923,6 +1081,7 @@ def operation_target_detail(session: Session, tenant_id: int, target_id: int, *,
         "sync_error": sync_error,
         "stats": {
             "available_accounts": sum(1 for item in accounts if item["can_send"] and item["status"] == AccountStatus.ACTIVE.value),
+            "admission_failed_accounts": sum(1 for item in accounts if item["admission_status"] == "failed"),
             "listener_accounts": sum(1 for item in accounts if item["is_listener"]),
             "group_messages": len(group_messages),
             "channel_messages": len(channel_messages),
@@ -931,6 +1090,7 @@ def operation_target_detail(session: Session, tenant_id: int, target_id: int, *,
             "send_records": len(send_records),
             "archive_records": len(archive_records),
         },
+        "admission_retry": admission_retry or {},
     }
 
 
@@ -1607,6 +1767,7 @@ __all__ = [
     "list_operation_attempts",
     "manual_send",
     "operation_target_detail",
+    "retry_operation_target_admission",
     "retry_operation_task",
     "sync_account_targets",
     "sync_all_operation_targets",

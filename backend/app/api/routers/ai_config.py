@@ -20,17 +20,39 @@ from app.schemas import (
     SchedulingSettingOut, SchedulingSettingUpdate,
     TenantAiSettingOut, TenantAiSettingUpdate,
 )
-from app.schemas.ai_config import MaterialCacheHealthOut
+from app.schemas.ai_config import (
+    MaterialCacheConfigOut,
+    MaterialCacheConfigUpdate,
+    MaterialCacheHealthOut,
+    MaterialGroupCreate,
+    MaterialGroupOut,
+    MaterialGroupUpdate,
+    MaterialImportResultOut,
+    MaterialReferencesOut,
+    MaterialVersionHistoryOut,
+)
 from app.services import (
-    check_ai_provider, create_ai_provider, create_content_keyword_rule, create_material, create_prompt_template,
+    check_ai_provider, create_ai_provider, create_content_keyword_rule, create_material, create_material_group, create_prompt_template,
     disable_material,
     get_scheduling_setting, get_tenant_ai_setting,
-    list_ai_providers, list_content_keyword_rules, list_materials, list_prompt_templates,
+    list_ai_providers, list_content_keyword_rules, list_material_groups, list_materials, list_material_version_history, list_prompt_templates,
+    material_references,
+    refresh_material_cache,
     restore_material,
-    update_ai_provider, update_content_keyword_rule, update_material, update_prompt_template,
+    update_ai_provider, update_content_keyword_rule, update_material, update_material_group, update_prompt_template,
     update_scheduling_setting, update_tenant_ai_setting,
 )
-from app.services.ai_config import create_uploaded_material, create_uploaded_materials, material_cache_health
+from app.services.ai_config import (
+    create_material_zip_import,
+    create_uploaded_material,
+    create_uploaded_materials,
+    get_material,
+    get_material_cache_config,
+    get_material_import_result,
+    list_material_import_results,
+    material_cache_health,
+    update_material_cache_config,
+)
 
 router = APIRouter()
 
@@ -186,6 +208,44 @@ def get_materials(
     return list_materials(session, resolve_tenant_id(current_user, tenant_id))
 
 
+@router.get("/api/material-groups", response_model=list[MaterialGroupOut])
+def get_material_groups(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return list_material_groups(session, resolve_tenant_id(current_user, tenant_id))
+
+
+@router.post("/api/material-groups", response_model=MaterialGroupOut)
+def post_material_group(
+    payload: MaterialGroupCreate,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        return create_material_group(session, resolve_tenant_id(current_user, tenant_id), payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/api/material-groups/{group_id}", response_model=MaterialGroupOut)
+def patch_material_group(
+    group_id: int,
+    payload: MaterialGroupUpdate,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        return update_material_group(session, resolve_tenant_id(current_user, tenant_id), group_id, payload, current_user.name)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
 @router.get("/api/materials/cache/health", response_model=MaterialCacheHealthOut)
 def get_material_cache_health(
     tenant_id: int | None = None,
@@ -193,6 +253,112 @@ def get_material_cache_health(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     return material_cache_health(session, resolve_tenant_id(current_user, tenant_id))
+
+
+@router.get("/api/materials/cache/config", response_model=MaterialCacheConfigOut)
+def get_materials_cache_config(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return get_material_cache_config(session, resolve_tenant_id(current_user, tenant_id))
+
+
+@router.patch("/api/materials/cache/config", response_model=MaterialCacheConfigOut)
+def patch_materials_cache_config(
+    payload: MaterialCacheConfigUpdate,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        return update_material_cache_config(
+            session,
+            tenant_id=resolve_tenant_id(current_user, tenant_id),
+            material_cache_input=payload.material_cache_input,
+            source_media_cache_input=payload.source_media_cache_input,
+            actor=current_user.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/materials/{material_id}", response_model=MaterialOut)
+def get_material_detail(
+    material_id: int,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return get_material(session, resolve_tenant_id(current_user, tenant_id), material_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.get("/api/materials/{material_id}/versions", response_model=MaterialVersionHistoryOut)
+def get_material_versions(
+    material_id: int,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return list_material_version_history(session, resolve_tenant_id(current_user, tenant_id), material_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/materials/{material_id}/versions", response_model=MaterialOut)
+def post_material_version(
+    material_id: int,
+    payload: MaterialUpdate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    try:
+        require_resource_tenant(session, current_user, Material, material_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+    try:
+        return update_material(session, material_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/materials/{material_id}/references", response_model=MaterialReferencesOut)
+def get_material_references(
+    material_id: int,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return material_references(session, resolve_tenant_id(current_user, tenant_id), material_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/materials/{material_id}/refresh-cache", response_model=MaterialOut)
+def post_material_refresh_cache(
+    material_id: int,
+    payload: MaterialActionRequest | None = None,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    target_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        require_resource_tenant(session, current_user, Material, material_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+    try:
+        return refresh_material_cache(session, target_tenant_id, material_id, current_user.name, reason=(payload.reason if payload else ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/materials", response_model=MaterialOut)
@@ -240,6 +406,59 @@ async def post_material_upload(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/materials/upload/zip", response_model=MaterialImportResultOut)
+async def post_material_upload_zip(
+    title: str = Form("素材包"),
+    material_type: str = Form("图片"),
+    tags: str = Form(""),
+    caption: str = Form(""),
+    tenant_id: int | None = Form(None),
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    target_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    data = await file.read()
+    try:
+        return create_material_zip_import(
+            session,
+            tenant_id=target_tenant_id,
+            title=title,
+            material_type=material_type,
+            tags=tags,
+            caption=caption,
+            filename=file.filename or "materials.zip",
+            data=data,
+            actor=current_user.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/material-imports", response_model=list[MaterialImportResultOut])
+def get_material_imports(
+    tenant_id: int | None = None,
+    limit: int = 20,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return list_material_import_results(session, tenant_id=resolve_tenant_id(current_user, tenant_id), limit=limit)
+
+
+@router.get("/api/material-imports/{import_id}", response_model=MaterialImportResultOut)
+def get_material_import(
+    import_id: str,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return get_material_import_result(session, tenant_id=resolve_tenant_id(current_user, tenant_id), import_id=import_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
 
 
 @router.post("/api/materials/upload/batch", response_model=list[MaterialOut])

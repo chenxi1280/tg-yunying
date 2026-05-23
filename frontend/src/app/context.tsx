@@ -22,6 +22,8 @@ import type {
   TenantAiSetting,
   Material,
   MaterialCacheHealth,
+  MaterialCacheConfig,
+  MaterialImportResult,
   ContentKeywordRule,
   Group,
   MessageTask,
@@ -97,6 +99,8 @@ export function AppProvider({ children }: AppProviderProps) {
   const [tenantAiSetting, setTenantAiSetting] = useState<TenantAiSetting | null>(null);
   const [materials, setMaterials] = useState<Material[]>([]);
   const [materialCacheHealth, setMaterialCacheHealth] = useState<MaterialCacheHealth | null>(null);
+  const [materialCacheConfig, setMaterialCacheConfig] = useState<MaterialCacheConfig | null>(null);
+  const [materialImports, setMaterialImports] = useState<MaterialImportResult[]>([]);
   const [contentKeywordRules, setContentKeywordRules] = useState<ContentKeywordRule[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [tasks, setTasks] = useState<MessageTask[]>([]);
@@ -205,6 +209,8 @@ export function AppProvider({ children }: AppProviderProps) {
       setTenantAiSetting(snapshot.tenantAiSetting);
       setMaterials(snapshot.materials);
       setMaterialCacheHealth(snapshot.materialCacheHealth);
+      setMaterialCacheConfig(snapshot.materialCacheConfig);
+      setMaterialImports(snapshot.materialImports);
       setContentKeywordRules(snapshot.contentKeywordRules);
       setGroups(snapshot.groups);
       setTasks(snapshot.tasks);
@@ -610,6 +616,10 @@ export function AppProvider({ children }: AppProviderProps) {
     setMaterials,
     materialCacheHealth,
     setMaterialCacheHealth,
+    materialCacheConfig,
+    setMaterialCacheConfig,
+    materialImports,
+    setMaterialImports,
     contentKeywordRules,
     setContentKeywordRules,
 

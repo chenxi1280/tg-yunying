@@ -1,4 +1,5 @@
 import type { VerificationTask } from './accounts';
+import type { MaterialImportResult } from './content';
 
 export type ConfirmPayload = {
   title: string;
@@ -27,6 +28,7 @@ export type ModalState =
   | { type: 'promptTemplateEdit' }
   | { type: 'materialCreate' }
   | { type: 'materialEdit' }
+  | { type: 'materialImportResult'; payload: MaterialImportResult }
   | { type: 'keywordRuleCreate' }
   | { type: 'keywordRuleEdit' }
   | { type: 'tenantAiEdit' }

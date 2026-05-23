@@ -82,7 +82,7 @@ function AppShell() {
     developerApps, tenants, adminUsers, groups, selectedGroup, selectedGroupId, setSelectedGroupId,
     tasks,
     archives, archiveDetail, audits, auditFilters, setAuditFilters, groupDetail,
-    aiProviders, promptTemplates, tenantAiSetting, setTenantAiSetting, materials, materialCacheHealth, contentKeywordRules,
+    aiProviders, promptTemplates, tenantAiSetting, setTenantAiSetting, materials, materialCacheHealth, materialCacheConfig, materialImports, contentKeywordRules,
     usageLedgers, usageSummary,
     accountDetail, accountDetailTab, setAccountDetailTab,
     accountPoolDetail, poolDirectAccountId, setPoolDirectAccountId,
@@ -150,6 +150,7 @@ function AppShell() {
     && !isActionPending('auth:login'),
   );
   function openSendFromTarget(target: OperationTarget) {
+    if (!hasPermission(currentUser, 'message_sending.manage')) return;
     setMessagePrefill({ target, nonce: Date.now() });
     goToView('messageSending');
   }
@@ -322,10 +323,12 @@ function AppShell() {
               overview={overview}
               onOpenTargets={openTargetDetailFromOperation}
               onOpenTaskDetail={openTaskDetailFromOperation}
+              onOpenMessageSending={() => goToView('messageSending')}
               onOpenAccounts={() => goToView('accounts')}
               onOpenAccountDetail={openAccountDetailFromOperation}
               onOpenRules={() => goToView('ruleCenter')}
               onOpenRisk={() => goToView('riskControl')}
+              canManageOperationIssues={hasPermission(currentUser, 'operation_issues.manage')}
             />
           )}
           {activeView === 'systemConfig' && hasPermission(currentUser, 'system.view') && (
@@ -337,6 +340,7 @@ function AppShell() {
               tenantAiSetting={tenantAiSetting}
               materials={materials}
               materialCacheHealth={materialCacheHealth}
+              materialCacheConfig={materialCacheConfig}
               contentKeywordRules={contentKeywordRules}
               adminUsers={adminUsers}
               currentUser={currentUser}
@@ -395,6 +399,7 @@ function AppShell() {
               onEditMaterial={openMaterialEdit}
               onCreateKeywordRule={() => setModal({ type: 'keywordRuleCreate' })}
               onEditKeywordRule={openContentKeywordRuleEdit}
+              onSavedMaterialCacheConfig={refresh}
               onOpenConfirm={openConfirm}
               isActionPending={isActionPending}
             />
@@ -409,6 +414,10 @@ function AppShell() {
               onCreateTaskFromTarget={openTaskFromTarget}
               focusTarget={targetFocus}
               onFocusTargetConsumed={() => setTargetFocus(null)}
+              canManageMessageSending={hasPermission(currentUser, 'message_sending.manage')}
+              canManageTargets={hasPermission(currentUser, 'targets.manage')}
+              canManageTasks={hasPermission(currentUser, 'tasks.manage')}
+              canManageArchives={hasPermission(currentUser, 'archives.manage')}
             />
           )}
           {activeView === 'messageSending' && (
@@ -423,11 +432,13 @@ function AppShell() {
               onRetryTask={retryTask}
               onRefresh={refresh}
               isActionPending={isActionPending}
+              canManageMessageSending={hasPermission(currentUser, 'message_sending.manage')}
             />
           )}
           {activeView === 'materials' && hasPermission(currentUser, 'materials.view') && (
             <MaterialsView
               materials={materials}
+              materialImports={materialImports}
               materialCacheHealth={materialCacheHealth}
               canUploadMaterials={hasPermission(currentUser, 'materials.upload')}
               canManageMaterials={hasPermission(currentUser, 'materials.manage')}
@@ -449,6 +460,7 @@ function AppShell() {
               onEditMaterial={openMaterialEdit}
               onDisableMaterial={disableMaterial}
               onRestoreMaterial={restoreMaterial}
+              onOpenImportResult={(result) => setModal({ type: 'materialImportResult', payload: result })}
               onRefresh={refresh}
               isActionPending={isActionPending}
             />
@@ -468,9 +480,15 @@ function AppShell() {
               canDispatchControl={hasPermission(currentUser, 'tasks.dispatch_control')}
             />
           )}
-          {activeView === 'listenerCenter' && <ListenerCenterView />}
+          {activeView === 'listenerCenter' && <ListenerCenterView canManageListeners={hasPermission(currentUser, 'listeners.manage')} />}
           {activeView === 'ruleCenter' && <RulesCenterView onOpenSystemConfig={() => openSystemConfig('resources')} />}
-          {activeView === 'riskControl' && <RiskControlView onOpenAccounts={() => goToView('accounts')} />}
+          {activeView === 'riskControl' && (
+            <RiskControlView
+              onOpenAccounts={() => goToView('accounts')}
+              canManageRisk={hasPermission(currentUser, 'risk.manage')}
+              canManageProxies={hasPermission(currentUser, 'proxies.manage')}
+            />
+          )}
           {activeView === 'archives' && <ArchivesView archives={archives} archiveDetail={archiveDetail} onOpenArchiveDetail={openArchiveDetail} onExportArchive={exportArchive} onRerunArchive={rerunArchive} onRefresh={refresh} isActionPending={isActionPending} />}
           {activeView === 'audits' && <AuditsView audits={audits} filters={auditFilters} setFilters={setAuditFilters} onRefresh={refresh} canExport={hasPermission(currentUser, 'audit.export')} />}
           {activeView === 'adminManual' && <AdminManualView />}

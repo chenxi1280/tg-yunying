@@ -51,6 +51,12 @@ type RuleVersionRow = RuleSet['versions'][number] & {
   ruleSet: RuleSet;
 };
 
+type VersionAction = {
+  action: 'copy' | 'publish' | 'rollback';
+  ruleSet: RuleSet;
+  version: RuleVersionRow;
+};
+
 type RelayMaterialAttribution = {
   key: string;
   material_fingerprint: string;
@@ -181,6 +187,28 @@ type RuleTestResult = {
   rate_limit_summary: string;
 };
 
+const VERSION_DIFF_FIELDS: Array<keyof RuleSet['versions'][number]> = ['filters', 'output_checks', 'transforms', 'routing', 'account_strategy', 'rate_limits', 'retry_policy'];
+const VERSION_DIFF_LABELS: Record<string, string> = {
+  filters: '过滤',
+  output_checks: '输出校验',
+  transforms: '转换',
+  routing: '路由',
+  account_strategy: '账号策略',
+  rate_limits: '限速',
+  retry_policy: '重试',
+};
+
+function sameJson(left: unknown, right: unknown) {
+  return JSON.stringify(left ?? {}) === JSON.stringify(right ?? {});
+}
+
+function versionDiffLabels(before: RuleSet['versions'][number] | undefined, after: RuleSet['versions'][number]) {
+  if (!before) return VERSION_DIFF_FIELDS.map((field) => VERSION_DIFF_LABELS[String(field)] ?? String(field));
+  return VERSION_DIFF_FIELDS
+    .filter((field) => !sameJson(before[field], after[field]))
+    .map((field) => VERSION_DIFF_LABELS[String(field)] ?? String(field));
+}
+
 export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemConfig: () => void }) {
   void onOpenSystemConfig;
   const [summary, setSummary] = React.useState<RuleSummary>({ system_rule_count: 0, keyword_rule_count: 0, relay_task_rule_count: 0, items: [], conflicts: [], execution_metrics: [], target_metrics: [], account_metrics: [], keyword_metrics: [], trend_metrics: [], conversion_metrics: [], cross_metrics: [] });
@@ -226,6 +254,8 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
   const [createOpen, setCreateOpen] = React.useState(false);
   const [configTarget, setConfigTarget] = React.useState<RuleSet | null>(null);
   const [versionListTarget, setVersionListTarget] = React.useState<RuleSet | null>(null);
+  const [versionAction, setVersionAction] = React.useState<VersionAction | null>(null);
+  const [versionActionReason, setVersionActionReason] = React.useState('');
   const [boundTaskTarget, setBoundTaskTarget] = React.useState<RuleSet | null>(null);
   const [boundTasks, setBoundTasks] = React.useState<RuleSetBoundTask[]>([]);
   const [detailRule, setDetailRule] = React.useState<RuleRow | null>(null);
@@ -317,6 +347,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     return {
       ...config,
       version_note: values.version_note || '配置编辑自动生成',
+      publish_reason: values.publish_reason || '',
     };
   }
 
@@ -367,6 +398,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     configForm.setFieldsValue({
       ...ruleFormValuesFromVersion(ruleSet, groupTargets, version),
       version_note: version ? `基于 v${version.version} 编辑` : '配置编辑自动生成',
+      publish_reason: '',
     });
   }
 
@@ -379,24 +411,26 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     setActiveTab('tester');
   }
 
-  async function publishRuleSetVersion(ruleSet: RuleSet, versionId: number) {
-    setSaving(true);
+  function openVersionAction(action: VersionAction['action'], ruleSet: RuleSet, version: RuleVersionRow) {
+    setVersionAction({ action, ruleSet, version });
+    setVersionActionReason('');
     setError('');
-    try {
-      await api<RuleSet>(`/rule-sets/${ruleSet.id}/versions/${versionId}/publish`, { method: 'POST' });
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
   }
 
-  async function rollbackRuleSetVersion(ruleSet: RuleSet, versionId: number) {
+  async function submitVersionAction() {
+    if (!versionAction) return;
+    const reason = versionActionReason.trim();
+    if (!reason) {
+      setError('请输入版本操作原因');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
-      await api<RuleSet>(`/rule-sets/${ruleSet.id}/versions/${versionId}/rollback`, { method: 'POST' });
+      const endpoint = `/rule-sets/${versionAction.ruleSet.id}/versions/${versionAction.version.id}/${versionAction.action}`;
+      await api<RuleSet>(endpoint, { method: 'POST', body: JSON.stringify({ reason }) });
+      setVersionAction(null);
+      setVersionActionReason('');
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -494,8 +528,9 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
       render: (_, version) => (
         <Space size={8}>
           <Button size="small" onClick={() => openConfigEditor(version.ruleSet, version)}>{version.status === 'published' ? '编辑配置' : '基于此版编辑'}</Button>
-          {version.status === 'published' ? <Typography.Text type="secondary">当前发布</Typography.Text> : <Button size="small" loading={saving} onClick={() => publishRuleSetVersion(version.ruleSet, version.id)}>发布</Button>}
-          {version.status === 'archived' && <Button size="small" danger loading={saving} onClick={() => rollbackRuleSetVersion(version.ruleSet, version.id)}>回滚到此版本</Button>}
+          <Button size="small" loading={saving} onClick={() => openVersionAction('copy', version.ruleSet, version)}>复制</Button>
+          {version.status === 'published' ? <Typography.Text type="secondary">当前发布</Typography.Text> : <Button size="small" loading={saving} onClick={() => openVersionAction('publish', version.ruleSet, version)}>发布</Button>}
+          {version.status === 'archived' && <Button size="small" danger loading={saving} onClick={() => openVersionAction('rollback', version.ruleSet, version)}>回滚到此版本</Button>}
         </Space>
       ),
     },
@@ -504,6 +539,9 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     value: version.id,
     label: `${ruleSet.name} / v${version.version} / ${version.status === 'published' ? '当前发布' : version.status}`,
   })));
+  const versionActionActive = versionAction?.ruleSet.versions.find((version) => version.id === versionAction.ruleSet.active_version_id);
+  const versionActionDiff = versionAction ? versionDiffLabels(versionAction.action === 'copy' ? versionAction.version : versionActionActive, versionAction.version) : [];
+  const versionActionLabels = { copy: '复制为草稿', publish: '发布版本', rollback: '回滚版本' };
   const routeColumns: ColumnsType<RuleTestResult['target_routes'][number]> = [
     { title: '目标群', dataIndex: 'title' },
     { title: '状态', dataIndex: 'status', width: 140, render: (value) => <StatusBadge status={value} /> },
@@ -842,6 +880,40 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
           pagination={false}
           scroll={{ x: 980 }}
         />
+      </Modal>
+      <Modal
+        className="tg-modal medium"
+        title={versionAction ? `${versionActionLabels[versionAction.action]}：${versionAction.ruleSet.name} v${versionAction.version.version}` : '版本操作'}
+        open={Boolean(versionAction)}
+        width={640}
+        confirmLoading={saving}
+        okText="确认执行"
+        cancelText="取消"
+        onOk={submitVersionAction}
+        onCancel={() => { setVersionAction(null); setVersionActionReason(''); }}
+        destroyOnHidden
+        centered
+      >
+        {versionAction && (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Descriptions
+              bordered
+              size="small"
+              column={2}
+              items={[
+                { key: 'from', label: versionAction.action === 'copy' ? '来源版本' : '当前发布', children: versionAction.action === 'copy' ? `v${versionAction.version.version}` : (versionActionActive ? `v${versionActionActive.version}` : '-') },
+                { key: 'to', label: '目标版本', children: `v${versionAction.version.version}` },
+                { key: 'diff', label: '差异字段', span: 2, children: versionActionDiff.length ? versionActionDiff.join(' / ') : '无配置差异' },
+              ]}
+            />
+            <Input.TextArea
+              rows={3}
+              value={versionActionReason}
+              onChange={(event) => setVersionActionReason(event.target.value)}
+              placeholder="请输入发布、回滚或复制原因；会写入审计记录"
+            />
+          </Space>
+        )}
       </Modal>
       <Modal className="tg-modal large" title={boundTaskTarget ? `绑定任务：${boundTaskTarget.name}` : '绑定任务'} open={Boolean(boundTaskTarget)} width={980} footer={null} onCancel={() => { setBoundTaskTarget(null); setBoundTasks([]); }} destroyOnHidden centered>
         <Table<RuleSetBoundTask>

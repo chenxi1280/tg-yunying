@@ -87,6 +87,21 @@ class SchedulingSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class MaterialCacheConfig(Base):
+    __tablename__ = "material_cache_configs"
+    __table_args__ = (UniqueConstraint("tenant_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    material_cache_input: Mapped[str] = mapped_column(String(300), default="")
+    material_cache_peer_id: Mapped[str] = mapped_column(String(160), default="")
+    source_media_cache_input: Mapped[str] = mapped_column(String(300), default="")
+    source_media_cache_peer_id: Mapped[str] = mapped_column(String(160), default="")
+    material_cache_last_error: Mapped[str] = mapped_column(Text, default="")
+    source_media_cache_last_error: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class AiUsageLedger(Base):
     __tablename__ = "ai_usage_ledgers"
 
@@ -127,4 +142,12 @@ class ContentKeywordRule(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
-__all__ = ["AiProvider", "PromptTemplate", "TenantAiSetting", "SchedulingSetting", "AiUsageLedger", "ContentKeywordRule"]
+__all__ = [
+    "AiProvider",
+    "PromptTemplate",
+    "TenantAiSetting",
+    "SchedulingSetting",
+    "MaterialCacheConfig",
+    "AiUsageLedger",
+    "ContentKeywordRule",
+]

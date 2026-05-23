@@ -32,6 +32,7 @@ from app.schemas.task_center import (
     TaskPrecheckRequest,
     TaskRetryRequest,
     TaskSettingsUpdate,
+    TaskSourceFilterOverrideRequest,
     TaskUpdate,
 )
 from app.services._common import _now, audit
@@ -281,6 +282,64 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
     session.commit()
     session.refresh(task)
     return task
+
+
+def add_task_source_filter_override(session: Session, tenant_id: int, task_id: str, payload: TaskSourceFilterOverrideRequest, actor: str) -> Task:
+    task = _get_task(session, tenant_id, task_id)
+    if task.type != "group_relay":
+        raise ValueError("来源过滤覆盖仅支持群转发任务")
+
+    next_config = dict(task.type_config or {})
+    if payload.sender_peer_id:
+        next_config["excluded_sender_peer_ids"] = _append_unique_string(next_config.get("excluded_sender_peer_ids"), payload.sender_peer_id)
+    if payload.sender_username:
+        next_config["excluded_sender_usernames"] = _append_unique_string(next_config.get("excluded_sender_usernames"), payload.sender_username)
+    if payload.sender_name:
+        next_config["excluded_sender_names"] = _append_unique_string(next_config.get("excluded_sender_names"), payload.sender_name)
+
+    next_config = normalize_operation_target_references(session, tenant_id, task.type, next_config)
+    validate_rule_binding(session, tenant_id, next_config)
+    task.type_config = validated_type_config(task.type, next_config)
+    _clear_unfinished_plan(session, task)
+    task.last_error = ""
+    task.updated_at = _now()
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="添加任务来源过滤覆盖",
+        target_type="task",
+        target_id=task.id,
+        detail=_source_filter_override_detail(payload),
+    )
+    refresh_task_stats(session, task)
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def _append_unique_string(current: Any, value: str) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in [*(current if isinstance(current, list) else []), value]:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _source_filter_override_detail(payload: TaskSourceFilterOverrideRequest) -> str:
+    parts = [
+        f"sender_peer_id={payload.sender_peer_id or '-'}",
+        f"sender_username={payload.sender_username or '-'}",
+        f"sender_name={payload.sender_name or '-'}",
+        f"source_action_id={payload.source_action_id or '-'}",
+        f"source_action={payload.source_action or '-'}",
+        f"reason={payload.reason}",
+    ]
+    return "; ".join(parts)
 
 
 def update_group_ai_chat_config(session: Session, tenant_id: int, task_id: str, payload: GroupAIChatTaskConfigUpdate, actor: str) -> Task:
@@ -1116,6 +1175,7 @@ __all__ = [
     "create_channel_view_task",
     "create_group_ai_chat_task",
     "create_group_relay_task",
+    "add_task_source_filter_override",
     "delete_task",
     "drain_task_center",
     "drain_task_dispatcher",

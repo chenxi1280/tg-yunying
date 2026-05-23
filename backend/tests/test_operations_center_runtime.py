@@ -11,8 +11,8 @@ from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage
 from app.config import Settings
 from app.database import Base
 from app.integrations.telegram import SendResult, _resolve_telethon_target, _telethon_send_target
-from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, WorkerHeartbeat
-from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate
+from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, WorkerHeartbeat
+from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
 from app.security import encrypt_secret
@@ -23,11 +23,11 @@ from app.services.archives import create_archive
 from app.services.ai_config import create_material, create_prompt_template, get_scheduling_setting, update_material, update_prompt_template, update_scheduling_setting
 from app.services.risk_control import update_global_policy
 from app.services.account_capacity import account_capacity_decision
-from app.services.messages import create_message_send_task, dispatch_task, validate_group_task_policy
-from app.services.operations import filter_operation_targets, operation_target_detail, sync_all_operation_targets, update_operation_target, update_operation_target_account_policy
+from app.services.messages import create_message_send_task, dispatch_task, filter_tasks, retry_task, validate_group_task_policy
+from app.services.operations import filter_operation_targets, operation_target_detail, retry_operation_target_admission, sync_all_operation_targets, update_operation_target, update_operation_target_account_policy
 from app.services.task_center.executors.group_ai_chat import _topic_relevant_context_rows, ai_cycle_mode, build_plan as build_group_ai_chat_plan
 from app.services.task_center.ai_generator import _humanize_group_chat_punctuation
-from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
+from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_listener_errors, list_listener_events, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, reset_listener_watermark, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
 from app.services.reports import build_overview
 from app.services.task_center.executors.group_relay import apply_transform_rules, build_plan as build_group_relay_plan, passes_relay_filters, relay_source_filter_reason, resolve_relay_target_ids
 from app.services.task_center.executors.channel_like import build_plan as build_channel_like_plan
@@ -36,7 +36,7 @@ from app.services.group_listeners import process_group_listener
 from app.services.task_center.listener_runtime import drain_listener_runtime, reset_listener_runtime_cache, should_collect_listener
 from app.services.task_center.fingerprints import content_fingerprint
 from app.services.task_center.policies import validate_group_send_policy
-from app.services.task_center.service import _channel_subtask_status, _recover_stale_executing_actions, _retry_failed_actions, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
+from app.services.task_center.service import _channel_subtask_status, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.timezone import BEIJING_TZ, beijing_day_bounds
 
@@ -986,6 +986,102 @@ def test_switch_channel_listener_account_updates_channel_task_accounts():
     rows = {item.key: item for item in summary.items}
     assert rows["channel:21"].listener_accounts[0].id == 14
     assert rows["channel:21"].event_backlog_count == 1
+
+
+def test_listener_center_events_errors_and_watermark_reset_are_audited():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgGroup(
+                    id=7,
+                    tenant_id=1,
+                    tg_peer_id="-1007",
+                    title="源群",
+                    auth_status="已授权运营",
+                    listener_enabled=True,
+                    listener_last_polled_at=datetime(2026, 5, 11, 10, 5, 0),
+                    listener_last_error="poll failed",
+                ),
+                TgAccount(id=12, tenant_id=1, display_name="监听账号A", username="listener_a", phone_masked="12", status="在线", health_score=80),
+                TgGroupAccount(id=71, tenant_id=1, group_id=7, account_id=12, can_send=True, is_listener=True),
+                GroupContextMessage(
+                    id=41,
+                    tenant_id=1,
+                    group_id=7,
+                    listener_account_id=12,
+                    sender_peer_id="sender-1",
+                    sender_name="普通成员",
+                    sender_username="normal_user",
+                    sender_role="member",
+                    is_bot=False,
+                    content="第一条事件",
+                    message_type="text",
+                    remote_message_id="m1",
+                    sent_at=datetime(2026, 5, 11, 10, 0, 0),
+                ),
+                GroupContextMessage(
+                    id=42,
+                    tenant_id=1,
+                    group_id=7,
+                    listener_account_id=12,
+                    sender_peer_id="bot-1",
+                    sender_name="公告机器人",
+                    sender_username="notice_bot",
+                    sender_role="admin",
+                    is_bot=True,
+                    content="第二条事件",
+                    message_type="photo",
+                    remote_message_id="m2",
+                    sent_at=datetime(2026, 5, 11, 10, 3, 0),
+                ),
+                ListenerSourceState(
+                    tenant_id=1,
+                    source_type="group",
+                    source_peer_id="-1007",
+                    account_id=12,
+                    shard_key="group:-1007",
+                    last_remote_message_id="m2",
+                    last_event_at=datetime(2026, 5, 11, 10, 3, 0),
+                    backfill_until=datetime(2026, 5, 11, 9, 0, 0),
+                    last_error="RPC flood wait",
+                ),
+                Task(id="task-relay", tenant_id=1, name="转发任务", type="group_relay", status="running", type_config={"source_groups": [{"group_id": 7, "is_active": True}], "monitor_account_ids": [12]}),
+            ]
+        )
+        session.commit()
+
+        events = list_listener_events(session, 1, "group", 7, limit=10)
+        errors = list_listener_errors(session, 1, "group", 7)
+
+        with pytest.raises(ValueError, match="请输入确认重置"):
+            reset_listener_watermark(session, 1, "group", 7, reason="测试重置", actor="pytest", confirm_text="")
+
+        summary = reset_listener_watermark(session, 1, "group", 7, reason="测试重置监听水位", actor="pytest", confirm_text="确认重置")
+        group = session.get(TgGroup, 7)
+        state = session.scalar(select(ListenerSourceState).where(ListenerSourceState.source_peer_id == "-1007"))
+        audit_log = session.scalar(select(AuditLog).where(AuditLog.action == "重置监听水位").order_by(AuditLog.id.desc()))
+
+    assert [event.remote_message_id for event in events] == ["m2", "m1"]
+    assert events[0].sender_peer_id == "bot-1"
+    assert events[0].sender_username == "notice_bot"
+    assert events[0].sender_role == "admin"
+    assert events[0].is_bot is True
+    assert errors[0].error_message == "poll failed"
+    assert errors[1].error_message == "RPC flood wait"
+    assert group.listener_last_polled_at is None
+    assert group.listener_last_error == ""
+    assert state.last_remote_message_id == ""
+    assert state.last_event_at is None
+    assert state.backfill_until is None
+    assert state.last_error == ""
+    assert audit_log.actor == "pytest"
+    assert "测试重置监听水位" in audit_log.detail
+    rows = {item.key: item for item in summary.items}
+    assert rows["group:7"].last_error == ""
 
 
 def test_group_listener_context_collection_does_not_trigger_legacy_campaign_by_default(monkeypatch):
@@ -2017,6 +2113,93 @@ def test_group_relay_source_filter_blocks_admin_and_excluded_senders():
     assert relay_source_filter_reason(peer_message, {"excluded_sender_peer_ids": ["user-1"]}) == "命中来源不转发名单：sender_peer_id"
     assert relay_source_filter_reason(username_message, {"excluded_sender_usernames": ["@target_user"]}) == "命中来源不转发名单：@username"
     assert relay_source_filter_reason(name_message, {"excluded_sender_names": ["同名用户"]}) == "昵称兜底命中来源不转发名单"
+
+
+def test_group_relay_source_filter_override_is_task_local_and_audited():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群", auth_status="已授权运营", listener_context_limit=20),
+                TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群", auth_status="已授权运营", listener_context_limit=20),
+                RuleSet(id=41, tenant_id=1, name="转发规则", task_types=["group_relay"], active_version_id=42),
+                RuleSetVersion(
+                    id=42,
+                    tenant_id=1,
+                    rule_set_id=41,
+                    version=1,
+                    status="published",
+                    filters={"keyword_whitelist": ["公告"]},
+                    version_note="已发布版本不应被任务覆盖改写",
+                ),
+                Task(
+                    id="relay-source-override",
+                    tenant_id=1,
+                    name="来源覆盖",
+                    type="group_relay",
+                    status="running",
+                    type_config={
+                        "source_groups": [{"group_id": 7, "is_active": True}],
+                        "target_group_id": 9,
+                        "target_group_ids": [9],
+                        "rule_set_id": 41,
+                        "rule_set_version_id": 42,
+                        "excluded_sender_peer_ids": ["old-peer"],
+                        "excluded_sender_usernames": ["old_user"],
+                    },
+                ),
+                Task(
+                    id="relay-other-task",
+                    tenant_id=1,
+                    name="另一个任务",
+                    type="group_relay",
+                    status="running",
+                    type_config={
+                        "source_groups": [{"group_id": 7, "is_active": True}],
+                        "target_group_id": 9,
+                        "target_group_ids": [9],
+                        "rule_set_id": 41,
+                        "rule_set_version_id": 42,
+                    },
+                ),
+            ]
+        )
+        session.commit()
+
+        updated = add_task_source_filter_override(
+            session,
+            1,
+            "relay-source-override",
+            TaskSourceFilterOverrideRequest(
+                sender_peer_id="new-peer",
+                sender_username="@new_user",
+                sender_name="新来源",
+                source_action_id="act-100",
+                source_action="源群消息 act-100",
+                reason="手动屏蔽测试来源",
+            ),
+            "admin-a",
+        )
+        rule_version = session.get(RuleSetVersion, 42)
+        other_task = session.get(Task, "relay-other-task")
+        audit_log = session.scalar(select(AuditLog).where(AuditLog.target_id == "relay-source-override").order_by(AuditLog.id.desc()))
+
+    assert updated.type_config["excluded_sender_peer_ids"] == ["old-peer", "new-peer"]
+    assert updated.type_config["excluded_sender_usernames"] == ["old_user", "new_user"]
+    assert updated.type_config["excluded_sender_names"] == ["新来源"]
+    assert other_task.type_config.get("excluded_sender_peer_ids", []) == []
+    assert rule_version.filters == {"keyword_whitelist": ["公告"]}
+    assert rule_version.version_note == "已发布版本不应被任务覆盖改写"
+    assert audit_log is not None
+    assert audit_log.actor == "admin-a"
+    assert audit_log.action == "添加任务来源过滤覆盖"
+    assert "new-peer" in audit_log.detail
+    assert "new_user" in audit_log.detail
+    assert "act-100" in audit_log.detail
+    assert "手动屏蔽测试来源" in audit_log.detail
 
 
 def test_group_relay_uses_source_group_accounts_when_monitor_accounts_empty(monkeypatch):
@@ -3764,6 +3947,74 @@ def test_operation_targets_expose_linked_group_capability_summary():
     assert account_row["permission_label"] == "风控观察"
 
 
+def test_operation_target_admission_retry_rechecks_failed_accounts_and_audits(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    snapshots_by_account = {
+        11: [SimpleNamespace(tg_peer_id="-1001", title="运营群", group_type="supergroup", member_count=120, permission_label="可发言", can_send=True, username="ops_group")],
+        12: [],
+        13: [SimpleNamespace(tg_peer_id="-1001", title="运营群", group_type="supergroup", member_count=120, permission_label="仍被禁言", can_send=False, username="ops_group")],
+    }
+    seen_accounts: list[int] = []
+
+    def fake_list_groups(account_id: int, *_args, **_kwargs):
+        seen_accounts.append(account_id)
+        return snapshots_by_account[account_id]
+
+    monkeypatch.setattr("app.services.operations.credentials_for_account", lambda *_args, **_kwargs: SimpleNamespace(api_id=1, api_hash="hash"))
+    monkeypatch.setattr("app.services.operations.gateway.list_groups", fake_list_groups)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1001", title="运营群", can_send=False, auth_status="只读"),
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="只读", can_send=False),
+                TgAccount(id=11, tenant_id=1, display_name="解除限制号", phone_masked="+861***0011", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"),
+                TgAccount(id=12, tenant_id=1, display_name="未入群号", phone_masked="+861***0012", status=AccountStatus.ACTIVE.value, session_ciphertext="session-12"),
+                TgAccount(id=13, tenant_id=1, display_name="仍禁言号", phone_masked="+861***0013", status=AccountStatus.ACTIVE.value, session_ciphertext="session-13"),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=False, permission_label="禁言"),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=False, permission_label="未加入或不可见"),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=13, can_send=False, permission_label="禁言"),
+            ]
+        )
+        session.commit()
+
+        before_detail = operation_target_detail(session, 1, 21)
+        result = retry_operation_target_admission(
+            session,
+            1,
+            21,
+            OperationTargetAdmissionRetryRequest(reason="管理员已解除限制", account_ids=[11, 12, 13]),
+            "pytest",
+        )
+        audit_row = session.scalar(select(AuditLog).where(AuditLog.action == "重试目标准入"))
+        refreshed_target = session.get(OperationTarget, 21)
+
+    before_failed = {item["id"]: item for item in before_detail["accounts"]}
+    assert before_failed[11]["admission_status"] == "failed"
+    assert before_failed[11]["admission_failure_reason"] == "禁言"
+    assert seen_accounts == [11, 12, 13]
+    assert result["admission_retry"]["retried_account_count"] == 3
+    assert result["admission_retry"]["recovered_account_count"] == 1
+    assert result["admission_retry"]["failed_account_count"] == 2
+    assert result["stats"]["admission_failed_accounts"] == 2
+    rows = {item["id"]: item for item in result["accounts"]}
+    assert rows[11]["can_send"] is True
+    assert rows[11]["admission_status"] == "ready"
+    assert rows[12]["can_send"] is False
+    assert rows[12]["admission_status"] == "failed"
+    assert "未加入" in rows[12]["admission_failure_reason"]
+    assert rows[13]["can_send"] is False
+    assert rows[13]["admission_status"] == "failed"
+    assert rows[13]["admission_failure_reason"] == "仍被禁言"
+    assert refreshed_target and refreshed_target.can_send is True
+    assert audit_row is not None
+    assert "reason=管理员已解除限制" in audit_row.detail
+    assert "recovered=1" in audit_row.detail
+    assert "failed=2" in audit_row.detail
+
+
 def test_message_send_group_operation_target_checks_account_permission():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -4077,3 +4328,121 @@ def test_audit_logs_support_operational_filters():
         assert "+8613800000042" in csv_text
         csv_text = audit_logs_csv(filter_audit_logs(session, 1, task_id="task-1"))
         assert "执行消息发送失败" in csv_text
+
+
+def test_message_send_failure_rolls_up_operation_issue(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    SessionLocalForTest = sessionmaker(engine, future=True)
+
+    monkeypatch.setattr("app.services.messages.credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        "app.services.messages.gateway.send_message",
+        lambda *_args, **_kwargs: SendResult(ok=False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="群当前不可发送"),
+    )
+
+    with SessionLocalForTest() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="+861***0011", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"),
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, account_cooldown_seconds=0, group_cooldown_seconds=0),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
+                OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="运营群", can_send=True, auth_status="已授权运营"),
+                MessageTask(
+                    id=99,
+                    tenant_id=1,
+                    group_id=7,
+                    account_id=11,
+                    preferred_account_id=11,
+                    content="hello",
+                    target_type="group",
+                    target_peer_id="-1007",
+                    target_display="运营群",
+                    status=TaskStatus.QUEUED.value,
+                    idempotency_key="pytest-message-rollup",
+                    scheduled_at=_now() - timedelta(seconds=1),
+                ),
+                MessageTask(
+                    id=100,
+                    tenant_id=1,
+                    group_id=7,
+                    account_id=11,
+                    preferred_account_id=11,
+                    content="hello again",
+                    target_type="group",
+                    target_peer_id="-1007",
+                    target_display="运营群",
+                    status=TaskStatus.QUEUED.value,
+                    idempotency_key="pytest-message-rollup-2",
+                    scheduled_at=_now() - timedelta(seconds=1),
+                ),
+            ]
+        )
+        session.commit()
+
+    dispatched = dispatch_task(SessionLocalForTest, 99)
+    second_dispatched = dispatch_task(SessionLocalForTest, 100)
+
+    with SessionLocalForTest() as session:
+        issue = session.scalar(select(OperationIssue).where(OperationIssue.target_id == 21, OperationIssue.status == "open"))
+        sources = list(session.scalars(select(OperationIssueSource).where(OperationIssueSource.source_type == "message_task").order_by(OperationIssueSource.source_id.asc())))
+        target_summary = session.scalar(select(TargetRuntimeSummary).where(TargetRuntimeSummary.target_id == 21))
+
+    assert dispatched.status == TaskStatus.FAILED.value
+    assert second_dispatched.status == TaskStatus.FAILED.value
+    assert getattr(dispatched, "operation_issue_rolled_up") is True
+    assert getattr(dispatched, "operation_issue_status") == "open"
+    assert issue is not None
+    assert issue.source_task_id == "message_task:100"
+    assert issue.failure_type == FailureType.GROUP_PERMISSION_DENIED.value
+    assert issue.failure_reason == "群当前不可发送"
+    assert issue.target_id == 21
+    assert issue.affected_account_ids == [11]
+    assert issue.return_to["page"] == "message-sending"
+    assert issue.return_to["message_task_id"] == 100
+    assert sorted(source.source_id for source in sources) == ["100", "99"]
+    assert all(source.summary["target_display"] == "运营群" for source in sources)
+    assert target_summary is not None
+    assert target_summary.open_issue_count == 1
+    with SessionLocalForTest() as session:
+        listed = filter_tasks(session, 1, 1, 10, None, None)
+    listed_by_id = {item.id: item for item in listed}
+    assert listed_by_id[99].operation_issue_id == issue.id
+    assert listed_by_id[99].operation_issue_status == "open"
+    assert listed_by_id[99].operation_issue_rolled_up is True
+    assert listed_by_id[100].operation_issue_id == issue.id
+    assert listed_by_id[100].operation_issue_status == "open"
+    assert listed_by_id[100].operation_issue_rolled_up is True
+
+    monkeypatch.setattr(
+        "app.services.messages.gateway.send_message",
+        lambda *_args, **_kwargs: SendResult(ok=True, remote_message_id="remote-99"),
+    )
+    retried = retry_task(SessionLocalForTest, 100, "pytest", True)
+    with SessionLocalForTest() as session:
+        still_open_issue = session.get(OperationIssue, issue.id)
+        still_open_summary = session.scalar(select(TargetRuntimeSummary).where(TargetRuntimeSummary.target_id == 21))
+
+    assert retried.status == TaskStatus.SENT.value
+    assert still_open_issue is not None
+    assert still_open_issue.status == "open"
+    assert still_open_summary is not None
+    assert still_open_summary.open_issue_count == 1
+    with SessionLocalForTest() as session:
+        listed_after_partial_recovery = {item.id: item for item in filter_tasks(session, 1, 1, 10, None, None)}
+    assert listed_after_partial_recovery[99].operation_issue_id == issue.id
+    assert listed_after_partial_recovery[99].operation_issue_status == "open"
+    assert listed_after_partial_recovery[99].operation_issue_rolled_up is True
+
+    retried_original = retry_task(SessionLocalForTest, 99, "pytest", True)
+    with SessionLocalForTest() as session:
+        resolved_issue = session.get(OperationIssue, issue.id)
+        resolved_summary = session.scalar(select(TargetRuntimeSummary).where(TargetRuntimeSummary.target_id == 21))
+
+    assert retried_original.status == TaskStatus.SENT.value
+    assert resolved_issue is not None
+    assert resolved_issue.status == "resolved"
+    assert resolved_issue.summary["auto_resolved"] is True
+    assert resolved_summary is not None
+    assert resolved_summary.open_issue_count == 0

@@ -229,6 +229,9 @@ export type OperationTargetDetail = {
     permission_label: string;
     can_send: boolean;
     is_listener: boolean;
+    admission_status: string;
+    admission_failure_reason: string;
+    admission_retryable: boolean;
     last_sent_at: string | null;
   }>;
   group_messages: Array<{
@@ -275,6 +278,7 @@ export type OperationTargetDetail = {
   };
   sync_error: string;
   stats: Record<string, number>;
+  admission_retry: Record<string, any>;
 };
 
 export type OperationTargetMessageSync = {

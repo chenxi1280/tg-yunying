@@ -51,7 +51,11 @@ def channel_scope(session: Session, task: Task, config: dict) -> tuple[Operation
     if not channel or channel.tenant_id != task.tenant_id or channel.target_type != "channel":
         task.last_error = "目标频道不存在"
         return None, []
-    if (config.get("message_scope") or "latest_n") != "specific":
+    if _channel_scope_name(config) != "specific":
+        if config.get("listen_new_messages") is False:
+            existing_messages = channel_messages(session, task.tenant_id, config)
+            if existing_messages:
+                return channel, existing_messages
         collect_channel_messages(session, task, channel, config)
     messages = channel_messages(session, task.tenant_id, config)
     if not messages:
@@ -116,9 +120,9 @@ def collect_channel_messages(session: Session, task: Task, channel: OperationTar
 
 
 def channel_fetch_limit(config: dict) -> int:
-    scope = config.get("message_scope") or "latest_n"
+    scope = _channel_scope_name(config)
     if scope in {"latest_n", "dynamic_new"}:
-        return max(1, min(100, int(config.get("message_count") or 10)))
+        return max(1, min(100, int(config.get("latest_message_count") or config.get("message_count") or 10)))
     return 50
 
 
@@ -164,17 +168,20 @@ def unplanned_channel_messages(session: Session, task: Task, action_type: str, m
     return [message for message in messages if message.id not in planned]
 
 
-def channel_message_account_ids(session: Session, task: Task, action_type: str, message: ChannelMessage) -> set[int]:
+def channel_message_account_ids(session: Session, task: Task, action_type: str, message: ChannelMessage, *, execution_date: str | None = None) -> set[int]:
     account_ids: set[int] = set()
+    statuses = ["pending", "executing", "success"] if execution_date else ["pending", "executing", "success", "failed"]
     for account_id, payload in session.execute(
         select(Action.account_id, Action.payload).where(
             Action.task_id == task.id,
             Action.action_type == action_type,
             Action.account_id.is_not(None),
-            Action.status.in_(["pending", "executing", "success", "failed"]),
+            Action.status.in_(statuses),
         )
     ):
         if not isinstance(payload, dict):
+            continue
+        if execution_date and str(payload.get("execution_date") or "") != execution_date:
             continue
         if payload.get("channel_message_id") == message.id or payload.get("message_id") == message.message_id:
             account_ids.add(int(account_id))
@@ -202,6 +209,11 @@ def available_channel_accounts_for_message(session: Session, task: Task, action_
     return [account for account in accounts if account.id not in used]
 
 
+def available_channel_accounts_for_message_date(session: Session, task: Task, action_type: str, message: ChannelMessage, accounts: list[TgAccount], execution_date: str) -> list[TgAccount]:
+    used = channel_message_account_ids(session, task, action_type, message, execution_date=execution_date)
+    return [account for account in accounts if account.id not in used]
+
+
 def record_channel_capacity_warning(task: Task, action_label: str, target_per_message: int, max_effective_per_message: int) -> None:
     stats = dict(task.stats or {})
     previous_warning = str(stats.get("capacity_warning") or "")
@@ -222,10 +234,13 @@ def record_channel_capacity_warning(task: Task, action_label: str, target_per_me
 
 def channel_messages(session: Session, tenant_id: int, config: dict) -> list[ChannelMessage]:
     stmt = select(ChannelMessage).where(ChannelMessage.tenant_id == tenant_id, ChannelMessage.channel_target_id == int(config.get("target_channel_id") or 0))
-    scope = config.get("message_scope") or "latest_n"
+    scope = _channel_scope_name(config)
     ids = [int(item) for item in config.get("message_ids") or []]
     if scope == "specific" and ids:
         stmt = stmt.where(or_(ChannelMessage.id.in_(ids), ChannelMessage.message_id.in_(ids)))
+    elif scope == "today_new":
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        stmt = stmt.where(ChannelMessage.published_at >= today_start)
     elif scope == "date_range":
         date_from = parse_datetime(config.get("date_from"))
         date_to = parse_datetime(config.get("date_to"))
@@ -235,8 +250,17 @@ def channel_messages(session: Session, tenant_id: int, config: dict) -> list[Cha
             stmt = stmt.where(ChannelMessage.published_at <= date_to)
     stmt = stmt.order_by(ChannelMessage.published_at.desc().nullslast(), ChannelMessage.id.desc())
     if scope in {"latest_n", "dynamic_new"}:
-        stmt = stmt.limit(int(config.get("message_count") or 10))
+        stmt = stmt.limit(int(config.get("latest_message_count") or config.get("message_count") or 10))
     return list(session.scalars(stmt))
+
+
+def _channel_scope_name(config: dict) -> str:
+    initial_scope = config.get("initial_message_scope")
+    if initial_scope == "new_only":
+        return "dynamic_new"
+    if initial_scope:
+        return str(initial_scope)
+    return str(config.get("message_scope") or "latest_n")
 
 
 def parse_datetime(value) -> datetime | None:
@@ -317,6 +341,7 @@ __all__ = [
     "channel_scope",
     "collect_channel_messages",
     "available_channel_accounts_for_message",
+    "available_channel_accounts_for_message_date",
     "channel_message_action_count",
     "pick_channel_account",
     "planned_channel_message_ids",

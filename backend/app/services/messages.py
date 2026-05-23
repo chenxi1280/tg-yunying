@@ -19,6 +19,8 @@ from app.models import (
     GroupAuthStatus,
     MessageTask,
     MessageTaskAttempt,
+    OperationIssue,
+    OperationIssueSource,
     OperationTarget,
     SchedulingSetting,
     TaskStatus,
@@ -41,6 +43,7 @@ from .tenants import ensure_task_quota_available
 from .verification import create_verification_task
 from .content_filters import tenant_keyword_rules
 from .risk_control import risk_preflight
+from .runtime_summary import resolve_message_task_issues_if_recovered, rollup_message_task_failure
 
 MEDIA_MESSAGE_TYPES = {"图片", "表情包", "文件", "组合消息"}
 SEGMENT_MEDIA_TYPES = {"图片", "表情包", "文件"}
@@ -314,6 +317,51 @@ def _scheduling_setting(session: Session, tenant_id: int) -> SchedulingSetting:
     if not setting:
         setting = session.scalar(select(SchedulingSetting).where(SchedulingSetting.tenant_id.is_(None)))
     return setting or SchedulingSetting(tenant_id=tenant_id)
+
+
+def _attach_operation_issue_status(session: Session, task: MessageTask) -> MessageTask:
+    issue = session.scalar(
+        select(OperationIssue)
+        .join(OperationIssueSource, OperationIssueSource.issue_id == OperationIssue.id)
+        .where(
+            OperationIssue.tenant_id == task.tenant_id,
+            OperationIssueSource.tenant_id == task.tenant_id,
+            OperationIssueSource.source_type == "message_task",
+            OperationIssueSource.source_id == str(task.id),
+        )
+        .order_by(OperationIssue.last_seen_at.desc(), OperationIssue.updated_at.desc())
+        .limit(1)
+    )
+    setattr(task, "operation_issue_id", issue.id if issue else "")
+    setattr(task, "operation_issue_status", issue.status if issue else "")
+    setattr(task, "operation_issue_rolled_up", bool(issue))
+    return task
+
+
+def _attach_operation_issue_statuses(session: Session, tasks: list[MessageTask]) -> list[MessageTask]:
+    if not tasks:
+        return tasks
+    task_ids = [str(task.id) for task in tasks]
+    rows = list(
+        session.execute(
+            select(OperationIssueSource.source_id, OperationIssue)
+            .join(OperationIssue, OperationIssue.id == OperationIssueSource.issue_id)
+            .where(
+                OperationIssueSource.source_type == "message_task",
+                OperationIssueSource.source_id.in_(task_ids),
+            )
+            .order_by(OperationIssue.last_seen_at.desc(), OperationIssue.updated_at.desc())
+        )
+    )
+    issue_by_source_id: dict[str, OperationIssue] = {}
+    for source_id, issue in rows:
+        issue_by_source_id.setdefault(str(source_id), issue)
+    for task in tasks:
+        issue = issue_by_source_id.get(str(task.id))
+        setattr(task, "operation_issue_id", issue.id if issue else "")
+        setattr(task, "operation_issue_status", issue.status if issue else "")
+        setattr(task, "operation_issue_rolled_up", bool(issue))
+    return tasks
 
 
 def _naive_utc(value: datetime) -> datetime:
@@ -694,10 +742,10 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
         if not task:
             raise ValueError("task not found")
         if task.status == TaskStatus.SENT.value:
-            return task
+            return _attach_operation_issue_status(session, task)
         scheduled_at = _as_utc(task.scheduled_at)
         if scheduled_at > _as_utc(_now()):
-            return task
+            return _attach_operation_issue_status(session, task)
 
         account, selection_failure_type, selection_failure_detail = choose_account(session, task)
         if not account:
@@ -708,6 +756,7 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
                 task.media_sent = False
                 task.media_failure_reason = task.failure_type or "account_unavailable"
             session.add(MessageTaskAttempt(tenant_id=task.tenant_id, task_id=task.id, status=task.status, failure_type=task.failure_type, detail=task.failure_detail))
+            rollup_message_task_failure(session, task)
             if task.group_id:
                 create_verification_task(
                     session,
@@ -721,7 +770,7 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
                 )
             session.commit()
             session.refresh(task)
-            return task
+            return _attach_operation_issue_status(session, task)
 
         capacity_decision = account_capacity_decision(
             session,
@@ -766,10 +815,11 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
             task.media_sent = False
             task.media_failure_reason = material_failure
             session.add(MessageTaskAttempt(tenant_id=task.tenant_id, task_id=task.id, account_id=account.id, status=task.status, failure_type=task.failure_type, detail=task.failure_detail))
+            rollup_message_task_failure(session, task)
             audit(session, tenant_id=task.tenant_id, actor="tg-worker", action="执行消息发送", target_type="message_task", target_id=str(task.id), detail=task.failure_detail)
             session.commit()
             session.refresh(task)
-            return task
+            return _attach_operation_issue_status(session, task)
 
         task.account_id = account.id
         task.status = TaskStatus.SENDING.value
@@ -783,9 +833,10 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
                 task.media_sent = False
                 task.media_failure_reason = task.failure_type
             session.add(MessageTaskAttempt(tenant_id=task.tenant_id, task_id=task.id, account_id=account.id, status=task.status, failure_type=task.failure_type, detail=task.failure_detail))
+            rollup_message_task_failure(session, task)
             session.commit()
             session.refresh(task)
-            return task
+            return _attach_operation_issue_status(session, task)
         session.commit()
         content = task.content
         outbound_segments = build_outbound_segments(session, task)
@@ -811,10 +862,11 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
                 task.media_sent = False
                 task.media_failure_reason = task.failure_type
             session.add(MessageTaskAttempt(tenant_id=task.tenant_id, task_id=task.id, account_id=account_id, status=task.status, failure_type=task.failure_type, detail=task.failure_detail))
+            rollup_message_task_failure(session, task)
             audit(session, tenant_id=task.tenant_id, actor="tg-worker", action="执行消息发送", target_type="message_task", target_id=str(task.id), detail=task.failure_detail)
             session.commit()
             session.refresh(task)
-            return task
+            return _attach_operation_issue_status(session, task)
 
     result = gateway.send_message(
         account_id,
@@ -900,10 +952,14 @@ def dispatch_task(session_factory, task_id: int) -> MessageTask:
                 detail=detail,
             )
         )
+        if task.status == TaskStatus.FAILED.value:
+            rollup_message_task_failure(session, task)
+        elif task.status == TaskStatus.SENT.value:
+            resolve_message_task_issues_if_recovered(session, task)
         audit(session, tenant_id=task.tenant_id, actor="tg-worker", action="执行消息发送", target_type="message_task", target_id=str(task.id), detail=detail)
         session.commit()
         session.refresh(task)
-        return task
+        return _attach_operation_issue_status(session, task)
 
 
 def _replacement_message_account(session: Session, task: MessageTask, current_account: TgAccount) -> TgAccount | None:
@@ -972,7 +1028,7 @@ def _defer_message_task_for_capacity(session: Session, task: MessageTask, decisi
     session.commit()
     get_task_queue().enqueue(task.id)
     session.refresh(task)
-    return task
+    return _attach_operation_issue_status(session, task)
 
 
 def _planned_delay_seconds(scheduled_at: datetime, now_value: datetime | None = None) -> int:
@@ -985,7 +1041,7 @@ def retry_task(session_factory, task_id: int, actor: str, dispatch_now: bool) ->
         if not task:
             raise ValueError("task not found")
         if task.status not in {TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}:
-            return task
+            return _attach_operation_issue_status(session, task)
         task.status = TaskStatus.QUEUED.value
         task.failure_type = None
         task.failure_detail = None
@@ -1003,7 +1059,7 @@ def retry_task(session_factory, task_id: int, actor: str, dispatch_now: bool) ->
         task = session.get(MessageTask, queued_id)
         if not task:
             raise ValueError("task not found")
-        return task
+        return _attach_operation_issue_status(session, task)
 
 
 def cancel_message_task(session: Session, task_id: int, actor: str) -> MessageTask:
@@ -1018,7 +1074,7 @@ def cancel_message_task(session: Session, task_id: int, actor: str) -> MessageTa
     audit(session, tenant_id=task.tenant_id, actor=actor, action="取消消息任务", target_type="message_task", target_id=str(task.id))
     session.commit()
     session.refresh(task)
-    return task
+    return _attach_operation_issue_status(session, task)
 
 
 def filter_tasks(session: Session, tenant_id: int, page: int, page_size: int, search: str | None, status: str | None) -> list[MessageTask]:
@@ -1028,7 +1084,49 @@ def filter_tasks(session: Session, tenant_id: int, page: int, page_size: int, se
         stmt = stmt.where(MessageTask.content.like(f"%{search}%"))
     if status:
         stmt = stmt.where(MessageTask.status == status)
-    return list(session.scalars(stmt.order_by(MessageTask.id.desc()).offset((page - 1) * page_size).limit(page_size)))
+    tasks = list(session.scalars(stmt.order_by(MessageTask.id.desc()).offset((page - 1) * page_size).limit(page_size)))
+    return _attach_operation_issue_statuses(session, tasks)
+
+
+def get_message_task(session: Session, tenant_id: int, task_id: int) -> MessageTask:
+    task = session.get(MessageTask, task_id)
+    if not task or task.tenant_id != tenant_id:
+        raise ValueError("task not found")
+    return _attach_operation_issue_status(session, task)
+
+
+def precheck_message_task(session: Session, tenant_id: int, task_id: int) -> dict:
+    task = get_message_task(session, tenant_id, task_id)
+    target_ids: list[int] = []
+    target_peer_id = task.target_peer_id
+    if not target_peer_id and task.group_id:
+        group = session.get(TgGroup, task.group_id)
+        target_peer_id = group.tg_peer_id if group else None
+    if target_peer_id:
+        target = session.scalar(
+            select(OperationTarget.id).where(
+                OperationTarget.tenant_id == tenant_id,
+                OperationTarget.target_type == task.target_type,
+                OperationTarget.tg_peer_id == target_peer_id,
+            )
+        )
+        if target:
+            target_ids.append(int(target))
+    account_ids = [int(task.account_id)] if task.account_id else []
+    account = session.get(TgAccount, task.account_id) if task.account_id else None
+    return risk_preflight(
+        session,
+        tenant_id,
+        RiskPreflightRequest(
+            scenario="message_send_task_precheck",
+            account_ids=account_ids,
+            proxy_ids=[account.proxy_id] if account and account.proxy_id else [],
+            target_ids=target_ids,
+            content_preview=task.content,
+            task_type="message_send",
+            scheduled_at=task.scheduled_at,
+        ),
+    )
 
 
 __all__ = [
@@ -1040,4 +1138,6 @@ __all__ = [
     "retry_task",
     "cancel_message_task",
     "filter_tasks",
+    "get_message_task",
+    "precheck_message_task",
 ]

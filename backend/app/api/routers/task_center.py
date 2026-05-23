@@ -37,6 +37,7 @@ from app.schemas import (
     TaskPrecheckRequest,
     TaskRetryRequest,
     TaskSettingsUpdate,
+    TaskSourceFilterOverrideRequest,
     TaskUpdate,
 )
 from app.services.task_center import (
@@ -70,6 +71,7 @@ from app.services.task_center import (
     retry_task,
     start_task,
     stop_task,
+    add_task_source_filter_override,
     update_task,
     update_channel_comment_config,
     update_channel_like_config,
@@ -206,6 +208,14 @@ def patch_task(task_id: str, payload: TaskUpdate, session: Session = Depends(get
 def patch_task_settings(task_id: str, payload: TaskSettingsUpdate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
         return update_task_settings(session, current_user.tenant_id or 1, task_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tasks/{task_id}/source-filter-overrides", response_model=TaskOut)
+def post_task_source_filter_override(task_id: str, payload: TaskSourceFilterOverrideRequest, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return add_task_source_filter_override(session, current_user.tenant_id or 1, task_id, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

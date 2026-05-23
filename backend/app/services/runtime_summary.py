@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.models import (
     AccountRuntimeSummary,
     Action,
+    MessageTask,
+    MessageTaskAttempt,
     OperationIssue,
     OperationIssueAccount,
     OperationIssueSource,
@@ -18,6 +20,7 @@ from app.models import (
     Task,
     TaskRuntimeSummary,
     TgAccount,
+    TgGroup,
     TgAccountSecurityBatchItem,
     TgAccountSecuritySnapshot,
 )
@@ -84,6 +87,148 @@ def refresh_task_summary(session: Session, task: Task) -> TaskRuntimeSummary:
         if session.get(TgAccount, account_id):
             refresh_account_summary(session, task.tenant_id, account_id)
     return summary
+
+
+def rollup_message_task_failure(session: Session, task: MessageTask) -> OperationIssue | None:
+    if task.status != "失败":
+        return None
+    failure_type = str(task.failure_type or FailureType.UNKNOWN.value)
+    target_id = _message_task_target_id(session, task)
+    latest_attempt = session.scalar(
+        select(MessageTaskAttempt)
+        .where(MessageTaskAttempt.tenant_id == task.tenant_id, MessageTaskAttempt.task_id == task.id)
+        .order_by(MessageTaskAttempt.created_at.desc(), MessageTaskAttempt.id.desc())
+        .limit(1)
+    )
+    representative_id = f"message_task_attempt:{latest_attempt.id}" if latest_attempt else f"message_task:{task.id}"
+    now_value = _now()
+    issue = session.scalar(
+        select(OperationIssue).where(
+            OperationIssue.tenant_id == task.tenant_id,
+            OperationIssue.target_id == target_id,
+            OperationIssue.issue_type == "message_send_failure",
+            OperationIssue.failure_type == failure_type,
+            OperationIssue.status == "open",
+        )
+    )
+    if not issue:
+        issue = OperationIssue(
+            tenant_id=task.tenant_id,
+            target_id=target_id,
+            issue_type="message_send_failure",
+            failure_type=failure_type,
+            first_seen_at=now_value,
+        )
+        session.add(issue)
+        session.flush()
+
+    known_accounts = set(int(item) for item in (issue.affected_account_ids or []) if item)
+    if task.account_id:
+        known_accounts.add(int(task.account_id))
+    issue.severity = "warning"
+    issue.source_task_id = f"message_task:{task.id}"
+    issue.representative_action_id = representative_id
+    issue.affected_account_ids = sorted(known_accounts)
+    issue.failure_reason = str(task.failure_detail or (latest_attempt.detail if latest_attempt else "") or failure_type)
+    issue.suggested_action = _message_task_suggested_action(failure_type)
+    issue.handling_mode = _handling_mode(failure_type)
+    issue.return_to = {
+        "page": "message-sending",
+        "source_issue_id": issue.id,
+        "target_id": target_id,
+        "message_task_id": task.id,
+        "default_tab": "records",
+        "filters": {
+            "target_id": target_id,
+            "message_task_id": task.id,
+            "failure_type": failure_type,
+            "status": issue.status,
+        },
+    }
+    issue.last_seen_at = now_value
+    issue.updated_at = now_value
+    issue.summary = {
+        **(issue.summary or {}),
+        "hit_count": int((issue.summary or {}).get("hit_count") or 0) + 1,
+        "target_display": task.target_display or "",
+        "message_task_status": task.status,
+    }
+    _upsert_issue_source(
+        session,
+        task.tenant_id,
+        issue.id,
+        "message_task",
+        str(task.id),
+        failure_type,
+        now_value,
+        {
+            "message_task_id": task.id,
+            "target_type": task.target_type,
+            "target_display": task.target_display or "",
+            "status": task.status,
+            "failure_reason": issue.failure_reason,
+        },
+    )
+    if latest_attempt:
+        _upsert_issue_source(
+            session,
+            task.tenant_id,
+            issue.id,
+            "message_task_attempt",
+            str(latest_attempt.id),
+            failure_type,
+            now_value,
+            {"message_task_id": task.id, "account_id": latest_attempt.account_id, "detail": latest_attempt.detail or ""},
+        )
+    for account_id in known_accounts:
+        _upsert_issue_account(
+            session,
+            task.tenant_id,
+            issue.id,
+            account_id,
+            "message_send_failure",
+            now_value,
+            {"message_task_id": task.id, "target_id": target_id},
+        )
+    issue.affected_task_count = _issue_source_count(session, task.tenant_id, issue.id, "message_task")
+    issue.affected_account_count = _issue_account_count(session, task.tenant_id, issue.id)
+    if target_id:
+        refresh_target_summary(session, task.tenant_id, target_id)
+    return issue
+
+
+def resolve_message_task_issues_if_recovered(session: Session, task: MessageTask) -> None:
+    if task.status != "已发送":
+        return
+    now_value = _now()
+    issues = list(
+        session.scalars(
+            select(OperationIssue)
+            .join(OperationIssueSource, OperationIssueSource.issue_id == OperationIssue.id)
+            .where(
+                OperationIssue.tenant_id == task.tenant_id,
+                OperationIssue.status == "open",
+                OperationIssueSource.tenant_id == task.tenant_id,
+                OperationIssueSource.source_type == "message_task",
+                OperationIssueSource.source_id == str(task.id),
+            )
+        )
+    )
+    for issue in issues:
+        if _issue_has_failed_message_task_source(session, task.tenant_id, issue.id):
+            continue
+        issue.status = "resolved"
+        issue.resolved_at = now_value
+        issue.updated_at = now_value
+        issue.summary = {
+            **(issue.summary or {}),
+            "resolve_reason": "消息发送任务恢复后已发送",
+            "resolved_by": "system",
+            "auto_resolved": True,
+        }
+        audit(session, tenant_id=task.tenant_id, actor="system", action="自动解决消息发送运营异常", target_type="operation_issue", target_id=issue.id, detail="消息发送任务恢复后已发送")
+        if issue.target_id:
+            refresh_target_summary(session, task.tenant_id, issue.target_id)
 
 
 def refresh_target_summary(session: Session, tenant_id: int, target_id: int) -> TargetRuntimeSummary:
@@ -531,6 +676,29 @@ def _issue_type(action: Action) -> str:
     return "runtime"
 
 
+def _message_task_target_id(session: Session, task: MessageTask) -> int | None:
+    peer_id = task.target_peer_id or ""
+    if not peer_id and task.group_id:
+        group = session.get(TgGroup, task.group_id)
+        peer_id = group.tg_peer_id if group else ""
+    if not peer_id:
+        return None
+    return session.scalar(
+        select(OperationTarget.id).where(
+            OperationTarget.tenant_id == task.tenant_id,
+            OperationTarget.tg_peer_id == peer_id,
+        )
+    )
+
+
+def _message_task_suggested_action(failure_type: str) -> str:
+    if failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
+        return "打开运营目标处理准入或发送权限，再回到消息发送重试"
+    if failure_type == FailureType.ACCOUNT_UNAVAILABLE.value:
+        return "检查账号在线、代理和风控状态，再回到消息发送重试"
+    return _suggested_action(failure_type)
+
+
 def _suggested_action(failure_type: str) -> str:
     mapping = {
         "COMMENT_UNAVAILABLE": "检查频道讨论组绑定和账号评论权限",
@@ -610,6 +778,33 @@ def _issue_account_count(session: Session, tenant_id: int, issue_id: str) -> int
             )
         )
         or 0
+    )
+
+
+def _issue_has_failed_message_task_source(session: Session, tenant_id: int, issue_id: str) -> bool:
+    source_ids = [
+        int(source_id)
+        for source_id in session.scalars(
+            select(OperationIssueSource.source_id).where(
+                OperationIssueSource.tenant_id == tenant_id,
+                OperationIssueSource.issue_id == issue_id,
+                OperationIssueSource.source_type == "message_task",
+            )
+        )
+        if str(source_id).isdigit()
+    ]
+    if not source_ids:
+        return False
+    return bool(
+        session.scalar(
+            select(MessageTask.id)
+            .where(
+                MessageTask.tenant_id == tenant_id,
+                MessageTask.id.in_(source_ids),
+                MessageTask.status == "失败",
+            )
+            .limit(1)
+        )
     )
 
 
@@ -971,5 +1166,7 @@ __all__ = [
     "refresh_target_summary",
     "refresh_task_summary",
     "resolve_operation_issue",
+    "resolve_message_task_issues_if_recovered",
+    "rollup_message_task_failure",
     "upsert_operation_issue",
 ]

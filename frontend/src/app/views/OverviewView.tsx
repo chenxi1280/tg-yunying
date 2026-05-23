@@ -1,6 +1,6 @@
 import React from 'react';
 import { Activity, RefreshCcw, Send, ShieldAlert, Smartphone, Users } from 'lucide-react';
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Input, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { OperationCenterSummary, OperationIssue, OperationIssueDetail, OperationPlan, OperationPlanApplyResult, OperationPlanGenerateResult, OperationPlanPreview, OperationTarget, Overview, TargetRuntimeSummary } from '../types';
 import { StatCard, Badge, StatusBadge } from '../components/shared';
@@ -32,10 +32,12 @@ interface Props {
   overview: Overview;
   onOpenTargets?: (targetId?: number) => void;
   onOpenTaskDetail?: (taskId?: string) => void;
+  onOpenMessageSending?: () => void;
   onOpenAccounts?: () => void;
   onOpenAccountDetail?: (accountId: number) => void;
   onOpenRules?: () => void;
   onOpenRisk?: () => void;
+  canManageOperationIssues?: boolean;
 }
 
 const VOLUME_SERIES: Array<{ key: MetricKey; label: string; color: string }> = [
@@ -61,7 +63,11 @@ const PLAN_TASK_OPTIONS: Record<string, Array<{ value: string; label: string }>>
   ],
 };
 
-export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail, onOpenAccounts, onOpenAccountDetail, onOpenRules, onOpenRisk }: Props) {
+function isMessageIssue(issue?: OperationIssue | null) {
+  return Boolean(issue?.source_task_id?.startsWith('message_task:') || issue?.return_to?.page === 'message-sending');
+}
+
+export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail, onOpenMessageSending, onOpenAccounts, onOpenAccountDetail, onOpenRules, onOpenRisk, canManageOperationIssues = false }: Props) {
   const [plans, setPlans] = React.useState<OperationPlan[]>([]);
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
   const [operationCenter, setOperationCenter] = React.useState<OperationCenterSummary | null>(overview.operation_center ?? null);
@@ -72,6 +78,8 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   const [issueDrawerOpen, setIssueDrawerOpen] = React.useState(false);
   const [issueLoading, setIssueLoading] = React.useState(false);
   const [issueBusy, setIssueBusy] = React.useState('');
+  const [issueAction, setIssueAction] = React.useState<IssueAction | null>(null);
+  const [issueActionReason, setIssueActionReason] = React.useState('');
   const [planBusy, setPlanBusy] = React.useState('');
   const [planPreview, setPlanPreview] = React.useState<OperationPlanPreview | null>(null);
   const [planPreviewTitle, setPlanPreviewTitle] = React.useState('');
@@ -303,12 +311,22 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
     }
   }
 
-  async function changeIssueStatus(action: IssueAction) {
+  function openIssueAction(action: IssueAction) {
+    if (!canManageOperationIssues) {
+      void message.warning('当前账号没有异常处理权限');
+      return;
+    }
+    setIssueAction(action);
+    setIssueActionReason('');
+  }
+
+  async function submitIssueAction() {
     const issue = issueDetail?.issue;
-    if (!issue) return;
+    const action = issueAction;
+    if (!issue || !action) return;
     const actionLabel = issueActionLabel(action);
-    const reason = window.prompt(`${actionLabel}原因`);
-    if (!reason?.trim()) {
+    const reason = issueActionReason.trim();
+    if (!reason) {
       void message.warning('需要填写处理原因');
       return;
     }
@@ -316,9 +334,11 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
     try {
       const updated = await api<OperationIssue>(`/operation-issues/${issue.id}/${action}`, {
         method: 'POST',
-        body: JSON.stringify({ reason: reason.trim() }),
+        body: JSON.stringify({ reason }),
       });
       setIssueDetail((current) => current ? { ...current, issue: updated } : current);
+      setIssueAction(null);
+      setIssueActionReason('');
       await loadOperationData();
       void message.success(`${actionLabel}已提交`);
     } catch {
@@ -389,7 +409,7 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
         return (
           <Space size={6} wrap>
             <Button size="small" icon={<Users size={14} />} onClick={() => onOpenTargets?.(row.targetId)}>目标详情</Button>
-            <Button size="small" icon={<Activity size={14} />} onClick={() => onOpenTaskDetail?.(issue?.source_task_id)}>任务详情</Button>
+            <Button size="small" icon={<Activity size={14} />} onClick={() => isMessageIssue(issue) ? onOpenMessageSending?.() : onOpenTaskDetail?.(issue?.source_task_id)}>{isMessageIssue(issue) ? '消息发送' : '任务详情'}</Button>
             <Button size="small" icon={<ShieldAlert size={14} />} disabled={!issue} onClick={() => issue && void openIssueDetail(issue.id)}>查看异常</Button>
             <Button size="small" loading={planBusy === 'create'} disabled={!row.target} onClick={() => row.target && void createDefaultPlan(row.target)}>创建方案</Button>
           </Space>
@@ -414,7 +434,7 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       render: (_, issue) => (
         <Space size={6}>
           <Button size="small" icon={<ShieldAlert size={14} />} onClick={() => void openIssueDetail(issue.id)}>展开</Button>
-          <Button size="small" icon={<Activity size={14} />} onClick={() => onOpenTaskDetail?.(issue.source_task_id)}>任务</Button>
+          <Button size="small" icon={<Activity size={14} />} onClick={() => isMessageIssue(issue) ? onOpenMessageSending?.() : onOpenTaskDetail?.(issue.source_task_id)}>{isMessageIssue(issue) ? '消息' : '任务'}</Button>
         </Space>
       ),
     },
@@ -752,12 +772,12 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
         size="large"
         onClose={() => setIssueDrawerOpen(false)}
         destroyOnHidden
-        extra={issueDetail?.issue && (
+        extra={canManageOperationIssues && issueDetail?.issue && (
           <Space>
-            <Button size="small" loading={issueBusy === 'claim'} onClick={() => void changeIssueStatus('claim')}>认领处理</Button>
-            <Button size="small" loading={issueBusy === 'acknowledge'} onClick={() => void changeIssueStatus('acknowledge')}>确认异常</Button>
-            <Button size="small" loading={issueBusy === 'resolve'} onClick={() => void changeIssueStatus('resolve')}>标记解决</Button>
-            <Button size="small" danger loading={issueBusy === 'ignore'} onClick={() => void changeIssueStatus('ignore')}>忽略</Button>
+            <Button size="small" loading={issueBusy === 'claim'} onClick={() => openIssueAction('claim')}>认领处理</Button>
+            <Button size="small" loading={issueBusy === 'acknowledge'} onClick={() => openIssueAction('acknowledge')}>确认异常</Button>
+            <Button size="small" loading={issueBusy === 'resolve'} onClick={() => openIssueAction('resolve')}>标记解决</Button>
+            <Button size="small" danger loading={issueBusy === 'ignore'} onClick={() => openIssueAction('ignore')}>忽略</Button>
           </Space>
         )}
       >
@@ -784,7 +804,7 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
               ]}
             />
             <Space className="operation-drawer-actions" wrap>
-              <Button icon={<Activity size={14} />} onClick={() => onOpenTaskDetail?.(issueDetail.issue.source_task_id)}>任务详情</Button>
+              <Button icon={<Activity size={14} />} onClick={() => isMessageIssue(issueDetail.issue) ? onOpenMessageSending?.() : onOpenTaskDetail?.(issueDetail.issue.source_task_id)}>{isMessageIssue(issueDetail.issue) ? '消息发送' : '任务详情'}</Button>
               <Button icon={<Users size={14} />} onClick={() => onOpenTargets?.(issueDetail.issue.target_id ?? undefined)}>目标详情</Button>
               <Button icon={<Smartphone size={14} />} onClick={onOpenAccounts}>账号管理</Button>
               <Button icon={<ShieldAlert size={14} />} onClick={onOpenRules}>规则中心</Button>
@@ -848,6 +868,29 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
           </div>
         )}
       </Drawer>
+      <Modal
+        title={issueAction ? `${issueActionLabel(issueAction)}原因` : '处理原因'}
+        open={Boolean(issueAction)}
+        okText="提交"
+        cancelText="取消"
+        confirmLoading={Boolean(issueBusy)}
+        onOk={() => void submitIssueAction()}
+        onCancel={() => {
+          setIssueAction(null);
+          setIssueActionReason('');
+        }}
+        destroyOnHidden
+        centered
+      >
+        <Input.TextArea
+          value={issueActionReason}
+          onChange={(event) => setIssueActionReason(event.target.value)}
+          rows={4}
+          maxLength={255}
+          showCount
+          placeholder="填写本次处理原因，便于审计和后续追踪。"
+        />
+      </Modal>
     </section>
   );
 }

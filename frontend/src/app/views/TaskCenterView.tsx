@@ -392,6 +392,22 @@ export default function TaskCenterView({
     };
   }
 
+  function channelViewProductionPayload(values: any) {
+    const dailyTarget = values.per_message_daily_view_target ?? values.target_views_per_message ?? 50;
+    return {
+      initial_message_scope: values.message_scope === 'dynamic_new' ? 'new_only' : values.message_scope ?? 'latest_n',
+      latest_message_count: ['latest_n', 'dynamic_new'].includes(values.message_scope) ? values.message_count ?? 10 : null,
+      listen_new_messages: values.listen_new_messages !== false,
+      per_message_daily_view_target: dailyTarget,
+      per_message_total_view_target: values.per_message_total_view_target ?? Math.max(300, dailyTarget),
+      message_active_days: values.message_active_days ?? 3,
+      task_daily_view_safety_cap: values.task_daily_view_safety_cap ?? 500,
+      max_views_per_account_per_day: values.max_views_per_account_per_day ?? 20,
+      target_views_per_message: dailyTarget,
+      execution_mode: values.execution_mode ?? 'distribute',
+    };
+  }
+
   function parseExcludedSenderInput(value?: string) {
     const result = { peerIds: [] as string[], usernames: [] as string[], names: [] as string[] };
     String(value ?? '')
@@ -497,7 +513,7 @@ export default function TaskCenterView({
       };
     }
     if (taskType === 'channel_view') {
-      return { ...base, ...channelScopePayload(values), target_views_per_message: values.target_views_per_message ?? 50, execution_mode: values.execution_mode ?? 'distribute' };
+      return { ...base, ...channelScopePayload(values), ...channelViewProductionPayload(values) };
     }
     if (taskType === 'channel_like') {
       return { ...base, ...channelScopePayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
@@ -530,7 +546,7 @@ export default function TaskCenterView({
       return { ...base, source_groups: sourceGroups, target_operation_target_id: values.target_operation_target_id ?? null, target_operation_target_ids: targetOperationIds, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, content_mode: values.content_mode ?? 'light_rewrite', ...relaySourceFilterPayload(values), require_review: false };
     }
     if (type === 'channel_view') {
-      return { ...base, target_views_per_message: values.target_views_per_message ?? 50, execution_mode: values.execution_mode ?? 'distribute' };
+      return { ...base, ...channelViewProductionPayload(values) };
     }
     if (type === 'channel_like') {
       return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
@@ -704,21 +720,20 @@ export default function TaskCenterView({
       .map((source) => ({ value: source.sender_peer_id, label: relaySourceOptionLabel(source) }));
   }
 
-  async function addSourceIdentityToBlocklist(source: { peerId?: string; username?: string; name?: string }) {
+  async function addSourceIdentityToBlocklist(source: { peerId?: string; username?: string; name?: string; sourceActionId?: string; sourceAction?: string; reason?: string }) {
     if (!detail) return;
-    const config = detail.task.type_config ?? {};
-    const payload: Record<string, any> = {};
-    if (source.peerId) {
-      payload.excluded_sender_peer_ids = Array.from(new Set([...(config.excluded_sender_peer_ids ?? []), source.peerId]));
-    } else if (source.username) {
-      payload.excluded_sender_usernames = Array.from(new Set([...(config.excluded_sender_usernames ?? []), source.username.replace(/^@+/, '')]));
-    } else if (source.name) {
-      payload.excluded_sender_names = Array.from(new Set([...(config.excluded_sender_names ?? []), source.name]));
-    }
-    if (!Object.keys(payload).length) return;
+    if (!source.peerId && !source.username && !source.name) return;
+    const payload = {
+      sender_peer_id: source.peerId ?? '',
+      sender_username: source.username ?? '',
+      sender_name: source.name ?? '',
+      source_action_id: source.sourceActionId ?? null,
+      source_action: source.sourceAction ?? '',
+      reason: source.reason ?? '从任务详情加入来源不转发名单',
+    };
     setActionError('');
     try {
-      const updated = await api<TaskCenterTask>(`/tasks/${detail.task.id}/settings`, { method: 'PATCH', body: JSON.stringify(payload) });
+      const updated = await api<TaskCenterTask>(`/tasks/${detail.task.id}/source-filter-overrides`, { method: 'POST', body: JSON.stringify(payload) });
       setActionWarning('已加入当前任务的来源不转发名单。');
       await load();
       await loadDetail(updated);
@@ -732,6 +747,9 @@ export default function TaskCenterView({
       peerId: item.source_sender_peer_id,
       username: item.source_sender_username,
       name: item.source_sender_name,
+      sourceActionId: item.action_id,
+      sourceAction: `${relaySourceDisplay(item)} / ${item.source_remote_message_id || item.action_id}`,
+      reason: '从转发批次明细加入来源不转发名单',
     });
   }
 
@@ -740,6 +758,9 @@ export default function TaskCenterView({
       peerId: item.sender_peer_id,
       username: item.sender_username,
       name: item.sender_name,
+      sourceActionId: item.remote_message_id,
+      sourceAction: `${item.source_group_title || '源群'} / ${item.sender_name || item.sender_peer_id || item.sender_username || '未知来源'} / ${item.remote_message_id || '-'}`,
+      reason: '从最近来源加入来源不转发名单',
     });
   }
 
@@ -975,7 +996,7 @@ export default function TaskCenterView({
     { title: '转换后', dataIndex: 'transformed_text', width: 260, ellipsis: true },
     { title: '重试', dataIndex: 'retry_count', width: 80 },
     { title: '结果', key: 'result', width: 220, render: (_, item) => item.result?.error_message || (item.result?.success === true ? '成功' : '-') },
-    { title: '来源过滤', key: 'source_filter', width: 150, fixed: 'right', render: (_, item) => <Button size="small" onClick={() => addRelaySourceToBlocklist(item)}>加入不转发名单</Button> },
+    { title: '来源过滤', key: 'source_filter', width: 150, fixed: 'right', render: (_, item) => canManageTasks ? <Button size="small" onClick={() => addRelaySourceToBlocklist(item)}>加入不转发名单</Button> : '-' },
   ];
 
   const formValues = Form.useWatch([], form) ?? {};

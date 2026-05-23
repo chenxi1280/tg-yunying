@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import re
+import zipfile
 from collections import defaultdict
+from io import BytesIO
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+from uuid import uuid4
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.ai_gateway import AiProviderCredentials, AiUsage, normalize_ai_model_name
 from app.auth import CurrentUser
+from app.config import get_settings
 from app.models import (
     AccountStatus,
     Action,
@@ -19,6 +25,11 @@ from app.models import (
     Campaign,
     ContentKeywordRule,
     Material,
+    MaterialCacheConfig,
+    MaterialGroup,
+    MaterialImportJob,
+    MaterialAssetVersion,
+    MaterialTgRefVersion,
     MessageTask,
     OperationPlanGenerationRun,
     OperationPlanTarget,
@@ -45,14 +56,30 @@ from app.schemas import (
     SchedulingSettingUpdate,
     TenantAiSettingUpdate,
 )
-from app.schemas.ai_config import MaterialCacheErrorItem, MaterialCacheHealthOut, MaterialCacheStatusCount, MaterialReferenceSummary
+from app.schemas.ai_config import (
+    CacheChannelConfigOut,
+    MaterialCacheConfigOut,
+    MaterialCacheErrorItem,
+    MaterialCacheHealthOut,
+    MaterialCacheStatusCount,
+    MaterialGroupCreate,
+    MaterialGroupOut,
+    MaterialGroupUpdate,
+    MaterialImportItemOut,
+    MaterialImportResultOut,
+    MaterialReferencesOut,
+    MaterialReferenceItemOut,
+    MaterialReferenceSummary,
+    MaterialVersionHistoryOut,
+)
 from app.security import decrypt_secret, encrypt_secret
 
-from ._common import _now, ai_gateway, audit, require_tenant
+from ._common import _now, ai_gateway, audit, gateway, require_tenant
 from .material_ingestion import URL_MATERIAL_TYPES, save_material_upload_temp, validate_material_url
 from .material_versions import record_material_asset_version, record_material_tg_ref_version, record_material_versions
 
 MEDIA_MATERIAL_TYPES = {"图片", "表情包", "文件", "组合消息"}
+CACHE_REFRESH_MATERIAL_TYPES = {"图片", "表情包", "文件"}
 PUBLIC_MATERIAL_SYSTEM_FIELDS = {
     "asset_fingerprint",
     "cache_ready_status",
@@ -64,6 +91,7 @@ EMOJI_ASSET_KINDS = {"", "image_meme", "static_sticker", "animated_sticker", "vi
 MATERIAL_CACHE_STATUSES = {"not_cached", "ready", "refreshing", "flood_wait", "unrecoverable", "cache_failed"}
 MATERIAL_DELIVERY_MODES = {"download_reupload"}
 CUSTOM_EMOJI_PATTERN = re.compile(r"^custom_emoji:(?P<document_id>\d+):(?P<alt>.+)$")
+ZIP_IMAGE_MAX_BYTES = 500 * 1024
 
 
 def _material_fingerprint(payload: MaterialCreate | MaterialUpdate, existing: Material | None = None) -> str:
@@ -689,6 +717,14 @@ def _attach_material_reference_summary(session: Session, material: Material) -> 
     return material
 
 
+def get_material(session: Session, tenant_id: int, material_id: int) -> Material:
+    require_tenant(session, tenant_id)
+    material = session.get(Material, material_id)
+    if not material or material.tenant_id != tenant_id:
+        raise ValueError("material not found")
+    return _attach_material_reference_summary(session, material)
+
+
 def list_materials(session: Session, tenant_id: int) -> list[Material]:
     materials = list(session.scalars(select(Material).where(Material.tenant_id == tenant_id).order_by(Material.id.desc())))
     summaries = material_reference_summaries(session, tenant_id, [material.id for material in materials])
@@ -697,6 +733,135 @@ def list_materials(session: Session, tenant_id: int) -> list[Material]:
         material.reference_summary = summary
         material.referenced_by_count = summary.total_count
     return materials
+
+
+def list_material_version_history(session: Session, tenant_id: int, material_id: int) -> MaterialVersionHistoryOut:
+    material = get_material(session, tenant_id, material_id)
+    asset_versions = list(
+        session.scalars(
+            select(MaterialAssetVersion)
+            .where(MaterialAssetVersion.tenant_id == tenant_id, MaterialAssetVersion.material_id == material.id)
+            .order_by(MaterialAssetVersion.asset_version_id.desc())
+        )
+    )
+    tg_ref_versions = list(
+        session.scalars(
+            select(MaterialTgRefVersion)
+            .where(MaterialTgRefVersion.tenant_id == tenant_id, MaterialTgRefVersion.material_id == material.id)
+            .order_by(MaterialTgRefVersion.tg_ref_version_id.desc())
+        )
+    )
+    return MaterialVersionHistoryOut(material_id=material.id, asset_versions=asset_versions, tg_ref_versions=tg_ref_versions)
+
+
+def material_references(session: Session, tenant_id: int, material_id: int) -> MaterialReferencesOut:
+    material = get_material(session, tenant_id, material_id)
+    items: list[MaterialReferenceItemOut] = []
+    for task in session.scalars(select(MessageTask).where(MessageTask.tenant_id == tenant_id, MessageTask.material_id == material.id).order_by(MessageTask.id.desc()).limit(50)):
+        items.append(MaterialReferenceItemOut(source_type="message_task", source_id=str(task.id), title=task.content[:80], status=task.status))
+    for action in session.scalars(select(Action).where(Action.tenant_id == tenant_id).order_by(Action.created_at.desc()).limit(200)):
+        if _json_mentions_material(action.payload, material.id) or _json_mentions_material(action.result, material.id):
+            items.append(MaterialReferenceItemOut(source_type="action", source_id=str(action.id), title=action.action_type, status=action.status))
+            if len(items) >= 100:
+                break
+    return MaterialReferencesOut(material_id=material.id, summary=material.reference_summary, items=items)
+
+
+def refresh_material_cache(session: Session, tenant_id: int, material_id: int, actor: str, *, reason: str = "") -> Material:
+    material = get_material(session, tenant_id, material_id)
+    if material.material_type not in CACHE_REFRESH_MATERIAL_TYPES:
+        raise ValueError("该素材类型不支持刷新缓存")
+    material.cache_ready_status = "not_cached"
+    material.tg_cache_account_id = None
+    material.tg_cache_peer_id = ""
+    material.tg_cache_message_id = ""
+    material.last_cache_error = ""
+    material.tg_ref_version_id += 1
+    material.updated_at = _now()
+    record_material_tg_ref_version(session, material, actor=actor)
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="刷新素材缓存",
+        target_type="material",
+        target_id=str(material.id),
+        detail=f"reason={(reason or '').strip() or '未填写'}; tg_ref_version={material.tg_ref_version_id}",
+    )
+    session.commit()
+    session.refresh(material)
+    return _attach_material_reference_summary(session, material)
+
+
+def _material_group_out(session: Session, group: MaterialGroup) -> MaterialGroupOut:
+    material_count = session.scalar(
+        select(func.count(Material.id)).where(
+            Material.tenant_id == group.tenant_id,
+            Material.material_type == group.group_type,
+        )
+    ) if group.group_type else 0
+    return MaterialGroupOut(
+        id=group.id,
+        tenant_id=group.tenant_id,
+        name=group.name,
+        group_type=group.group_type,
+        description=group.description,
+        is_active=group.is_active,
+        material_count=int(material_count or 0),
+        created_at=group.created_at,
+        updated_at=group.updated_at,
+    )
+
+
+def list_material_groups(session: Session, tenant_id: int) -> list[MaterialGroupOut]:
+    require_tenant(session, tenant_id)
+    rows = list(session.scalars(select(MaterialGroup).where(MaterialGroup.tenant_id == tenant_id).order_by(MaterialGroup.id.asc())))
+    return [_material_group_out(session, group) for group in rows]
+
+
+def create_material_group(session: Session, tenant_id: int, payload: MaterialGroupCreate, actor: str) -> MaterialGroupOut:
+    require_tenant(session, tenant_id)
+    name = payload.name.strip()
+    if session.scalar(select(MaterialGroup.id).where(MaterialGroup.tenant_id == tenant_id, MaterialGroup.name == name)):
+        raise ValueError("material group already exists")
+    group = MaterialGroup(
+        tenant_id=tenant_id,
+        name=name,
+        group_type=(payload.group_type or "").strip(),
+        description=(payload.description or "").strip(),
+        is_active=payload.is_active,
+    )
+    session.add(group)
+    session.flush()
+    audit(session, tenant_id=tenant_id, actor=actor, action="新增素材分组", target_type="material_group", target_id=str(group.id), detail=group.name)
+    session.commit()
+    session.refresh(group)
+    return _material_group_out(session, group)
+
+
+def update_material_group(session: Session, tenant_id: int, group_id: int, payload: MaterialGroupUpdate, actor: str) -> MaterialGroupOut:
+    require_tenant(session, tenant_id)
+    group = session.get(MaterialGroup, group_id)
+    if not group or group.tenant_id != tenant_id:
+        raise ValueError("material group not found")
+    data = payload.model_dump(exclude_unset=True)
+    if "name" in data and data["name"] is not None:
+        name = str(data["name"]).strip()
+        existing_id = session.scalar(select(MaterialGroup.id).where(MaterialGroup.tenant_id == tenant_id, MaterialGroup.name == name, MaterialGroup.id != group.id))
+        if existing_id:
+            raise ValueError("material group already exists")
+        group.name = name
+    if "group_type" in data and data["group_type"] is not None:
+        group.group_type = str(data["group_type"]).strip()
+    if "description" in data and data["description"] is not None:
+        group.description = str(data["description"]).strip()
+    if "is_active" in data and data["is_active"] is not None:
+        group.is_active = bool(data["is_active"])
+    group.updated_at = _now()
+    audit(session, tenant_id=tenant_id, actor=actor, action="更新素材分组", target_type="material_group", target_id=str(group.id), detail=group.name)
+    session.commit()
+    session.refresh(group)
+    return _material_group_out(session, group)
 
 
 def create_material(session: Session, payload: MaterialCreate, actor: str = "普通用户") -> Material:
@@ -789,6 +954,172 @@ def create_uploaded_materials(
         session.refresh(material)
         _attach_material_reference_summary(session, material)
     return materials
+
+
+def _zip_content_type(filename: str, data: bytes) -> str:
+    suffix = str(filename or "").rsplit(".", 1)[-1].lower()
+    if suffix in {"jpg", "jpeg"} and data.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if suffix == "png" and data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    return ""
+
+
+def _material_import_result(job: MaterialImportJob) -> MaterialImportResultOut:
+    return MaterialImportResultOut(
+        import_id=job.id,
+        source_filename=job.source_filename,
+        import_type=job.import_type,
+        target_group_name=job.target_group_name,
+        status=job.status,
+        total_count=job.total_count,
+        success_count=job.success_count,
+        failed_count=job.failed_count,
+        skipped_count=job.skipped_count,
+        duplicate_count=job.duplicate_count,
+        oversize_count=job.oversize_count,
+        items=[MaterialImportItemOut(**item) for item in (job.item_details or [])],
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+    )
+
+
+def get_material_import_result(session: Session, *, tenant_id: int, import_id: str) -> MaterialImportResultOut:
+    require_tenant(session, tenant_id)
+    job = session.get(MaterialImportJob, import_id)
+    if not job or job.tenant_id != tenant_id:
+        raise ValueError("material import not found")
+    return _material_import_result(job)
+
+
+def list_material_import_results(session: Session, *, tenant_id: int, limit: int = 20) -> list[MaterialImportResultOut]:
+    require_tenant(session, tenant_id)
+    rows = session.scalars(
+        select(MaterialImportJob)
+        .where(MaterialImportJob.tenant_id == tenant_id)
+        .order_by(MaterialImportJob.created_at.desc())
+        .limit(max(1, min(limit, 100)))
+    ).all()
+    return [_material_import_result(job) for job in rows]
+
+
+def create_material_zip_import(
+    session: Session,
+    *,
+    tenant_id: int,
+    title: str,
+    material_type: str,
+    tags: str,
+    caption: str,
+    filename: str,
+    data: bytes,
+    actor: str = "普通用户",
+) -> MaterialImportResultOut:
+    require_tenant(session, tenant_id)
+    if not data:
+        raise ValueError("ZIP 文件不能为空")
+    if material_type not in {"图片", "表情包", "头像包"}:
+        raise ValueError("ZIP 导入仅支持图片、表情包和头像包素材")
+    try:
+        archive = zipfile.ZipFile(BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise ValueError("ZIP 文件无法解析") from exc
+
+    zip_image_max_bytes = min(get_settings().material_max_bytes, ZIP_IMAGE_MAX_BYTES)
+    import_id = uuid4().hex
+    source_filename = filename or "materials.zip"
+    default_group = (title.strip() or Path(source_filename).stem or "素材包").strip()
+    base_title = title.strip() or default_group
+    stored_material_type = "图片" if material_type == "头像包" else material_type
+    import_type = "avatar_pack" if material_type == "头像包" else ("sticker_pack" if material_type == "表情包" else "image_group")
+    details: list[dict[str, Any]] = []
+    seen_hashes: set[str] = set()
+    success_count = skipped_count = duplicate_count = oversize_count = failed_count = 0
+    materials: list[Material] = []
+
+    with archive:
+        entries = [item for item in archive.infolist() if not item.is_dir()]
+        for item in entries:
+            entry_name = item.filename
+            normalized_name = entry_name.replace("\\", "/").lstrip("/")
+            parts = [part for part in normalized_name.split("/") if part]
+            reason = ""
+            payload = b""
+            material_id: int | None = None
+            if not parts or any(part == ".." for part in parts):
+                reason = "路径不安全已跳过"
+            elif parts[0] == "__MACOSX" or any(part.startswith("._") or part.startswith(".") for part in parts):
+                reason = "系统目录已跳过"
+            elif item.file_size > zip_image_max_bytes:
+                reason = f"素材文件过大，最大 {zip_image_max_bytes} 字节"
+                oversize_count += 1
+            else:
+                try:
+                    payload = archive.read(item)
+                except (KeyError, RuntimeError, zipfile.BadZipFile):
+                    reason = "文件读取失败"
+            if not reason and not payload:
+                reason = "素材文件不能为空"
+            if not reason and len(payload) > zip_image_max_bytes:
+                reason = f"素材文件过大，最大 {zip_image_max_bytes} 字节"
+                oversize_count += 1
+            content_type = _zip_content_type(normalized_name, payload)
+            if not reason and content_type not in {"image/png", "image/jpeg"}:
+                reason = "素材文件类型不支持"
+            digest = hashlib.sha256(payload).hexdigest() if payload else ""
+            if not reason and digest in seen_hashes:
+                reason = "重复文件已跳过"
+                duplicate_count += 1
+            if reason:
+                skipped_count += 1
+                details.append({"file_name": entry_name, "status": "skipped", "reason": reason, "material_id": None, "file_size": len(payload) if payload else int(item.file_size or 0)})
+                continue
+            seen_hashes.add(digest)
+            try:
+                material = _new_uploaded_material(
+                    tenant_id=tenant_id,
+                    title=_uploaded_material_title(base_title, Path(normalized_name).name, index=success_count + 1, multiple=True),
+                    material_type=stored_material_type,
+                    tags=tags,
+                    caption=caption,
+                    filename=Path(normalized_name).name,
+                    content_type=content_type,
+                    data=payload,
+                    emoji_asset_kind="image_meme" if stored_material_type == "表情包" else "",
+                )
+                session.add(material)
+                session.flush()
+                material_id = material.id
+                materials.append(material)
+                success_count += 1
+                details.append({"file_name": entry_name, "status": "created", "reason": "", "material_id": material_id, "file_size": len(payload)})
+            except ValueError as exc:
+                failed_count += 1
+                details.append({"file_name": entry_name, "status": "failed", "reason": str(exc), "material_id": None, "file_size": len(payload)})
+
+    job = MaterialImportJob(
+        id=import_id,
+        tenant_id=tenant_id,
+        source_filename=source_filename,
+        import_type=import_type,
+        target_group_name=default_group,
+        status="completed",
+        total_count=len(details),
+        success_count=success_count,
+        failed_count=failed_count,
+        skipped_count=skipped_count,
+        duplicate_count=duplicate_count,
+        oversize_count=oversize_count,
+        item_details=details,
+    )
+    session.add(job)
+    for material in materials:
+        record_material_versions(session, material, actor=actor)
+        audit(session, tenant_id=material.tenant_id, actor=actor, action="ZIP导入素材", target_type="material", target_id=str(material.id), detail=f"import_id={import_id}")
+    audit(session, tenant_id=tenant_id, actor=actor, action="ZIP导入素材包", target_type="material_import", target_id=import_id, detail=f"success={success_count}; skipped={skipped_count}; failed={failed_count}")
+    session.commit()
+    session.refresh(job)
+    return _material_import_result(job)
 
 
 def _new_uploaded_material(
@@ -1021,6 +1352,149 @@ def restore_material(session: Session, material_id: int, actor: str) -> Material
     return _attach_material_reference_summary(session, material)
 
 
+USERNAME_PATTERN = re.compile(r"^@[A-Za-z0-9_]{1,64}$")
+PEER_ID_PATTERN = re.compile(r"^-100\d{5,}$")
+
+
+def normalize_cache_channel_input(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if PEER_ID_PATTERN.match(raw):
+        return raw
+    if raw.startswith("@"):
+        if not USERNAME_PATTERN.match(raw):
+            raise ValueError("缓存频道 @username 格式无效")
+        return raw
+    candidate = raw if "://" in raw else f"https://{raw}"
+    parsed = urlparse(candidate)
+    host = (parsed.hostname or "").lower()
+    if host not in {"t.me", "telegram.me"}:
+        raise ValueError("缓存频道链接仅支持 t.me 或 telegram.me")
+    parts = [part for part in parsed.path.split("/") if part]
+    if not parts:
+        raise ValueError("缓存频道链接缺少频道标识")
+    if parts[0] == "c":
+        if len(parts) < 2 or not parts[1].isdigit():
+            raise ValueError("私有频道链接格式应为 t.me/c/<internal_id>/...")
+        return f"-100{parts[1]}"
+    username = f"@{parts[0]}"
+    if not USERNAME_PATTERN.match(username):
+        raise ValueError("缓存频道链接用户名格式无效")
+    return username
+
+
+def _get_material_cache_config(session: Session, tenant_id: int) -> MaterialCacheConfig | None:
+    return session.scalar(select(MaterialCacheConfig).where(MaterialCacheConfig.tenant_id == tenant_id))
+
+
+def _cache_channel_out(raw_input: str, normalized_peer: str, env_value: str, last_error: str = "") -> CacheChannelConfigOut:
+    if normalized_peer:
+        return CacheChannelConfigOut(raw_input=raw_input, normalized_peer=normalized_peer, source="saved", last_error=last_error)
+    if env_value:
+        return CacheChannelConfigOut(raw_input=env_value, normalized_peer=env_value, source="env", last_error=last_error)
+    return CacheChannelConfigOut(raw_input="", normalized_peer="", source="empty", last_error=last_error)
+
+
+def _validate_cache_channel_access(session: Session, tenant_id: int, normalized_peer: str) -> str:
+    if not normalized_peer:
+        return ""
+    account = session.scalar(
+        select(TgAccount)
+        .where(TgAccount.tenant_id == tenant_id, TgAccount.deleted_at.is_(None), TgAccount.status == AccountStatus.ACTIVE.value)
+        .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
+        .limit(1)
+    )
+    if not account:
+        return "缓存频道不可访问 / 账号无权限"
+    try:
+        from app.services.developer_apps import credentials_for_account
+
+        credentials = credentials_for_account(session, account)
+        result = gateway.probe_target_capabilities(
+            account.id,
+            normalized_peer,
+            "channel",
+            account.session_ciphertext,
+            credentials,
+        )
+    except Exception:  # noqa: BLE001 - health surfaces a friendly operator message.
+        return "缓存频道不可访问 / 账号无权限"
+    if not getattr(result, "ok", False):
+        return "缓存频道不可访问 / 账号无权限"
+    return ""
+
+
+def resolve_material_cache_peer_id(session: Session, tenant_id: int) -> str:
+    config = _get_material_cache_config(session, tenant_id)
+    if config and config.material_cache_peer_id:
+        return config.material_cache_peer_id
+    return get_settings().material_cache_peer_id
+
+
+def resolve_source_media_cache_peer_id(session: Session, tenant_id: int) -> str:
+    config = _get_material_cache_config(session, tenant_id)
+    if config and config.source_media_cache_peer_id:
+        return config.source_media_cache_peer_id
+    return get_settings().source_media_cache_peer_id
+
+
+def get_material_cache_config(session: Session, tenant_id: int) -> MaterialCacheConfigOut:
+    require_tenant(session, tenant_id)
+    config = _get_material_cache_config(session, tenant_id)
+    settings = get_settings()
+    return MaterialCacheConfigOut(
+        material_cache=_cache_channel_out(
+            config.material_cache_input if config else "",
+            config.material_cache_peer_id if config else "",
+            settings.material_cache_peer_id,
+            config.material_cache_last_error if config else "",
+        ),
+        source_media_cache=_cache_channel_out(
+            config.source_media_cache_input if config else "",
+            config.source_media_cache_peer_id if config else "",
+            settings.source_media_cache_peer_id,
+            config.source_media_cache_last_error if config else "",
+        ),
+        health=material_cache_health(session, tenant_id),
+    )
+
+
+def update_material_cache_config(
+    session: Session,
+    *,
+    tenant_id: int,
+    material_cache_input: str | None,
+    source_media_cache_input: str | None,
+    actor: str,
+) -> MaterialCacheConfigOut:
+    require_tenant(session, tenant_id)
+    config = _get_material_cache_config(session, tenant_id)
+    if not config:
+        config = MaterialCacheConfig(tenant_id=tenant_id)
+        session.add(config)
+    if material_cache_input is not None:
+        config.material_cache_input = material_cache_input.strip()
+        config.material_cache_peer_id = normalize_cache_channel_input(config.material_cache_input)
+        config.material_cache_last_error = _validate_cache_channel_access(session, tenant_id, config.material_cache_peer_id)
+    if source_media_cache_input is not None:
+        config.source_media_cache_input = source_media_cache_input.strip()
+        config.source_media_cache_peer_id = normalize_cache_channel_input(config.source_media_cache_input)
+        config.source_media_cache_last_error = _validate_cache_channel_access(session, tenant_id, config.source_media_cache_peer_id)
+    config.updated_at = _now()
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="更新素材缓存频道配置",
+        target_type="material_cache_config",
+        target_id=str(tenant_id),
+        detail=f"material={config.material_cache_peer_id or 'env'}; source_media={config.source_media_cache_peer_id or 'env'}",
+    )
+    session.commit()
+    return get_material_cache_config(session, tenant_id)
+
+
 def material_cache_health(session: Session, tenant_id: int) -> MaterialCacheHealthOut:
     require_tenant(session, tenant_id)
 
@@ -1091,12 +1565,9 @@ def material_cache_health(session: Session, tenant_id: int) -> MaterialCacheHeal
     )
     flood_wait_count = sum(row.count for row in material_counts if row.status == "flood_wait") + sum(row.count for row in source_counts if row.status == "cache_flood_wait")
     cache_failed_count = sum(row.count for row in material_counts if row.status in {"cache_failed", "unrecoverable"}) + sum(row.count for row in source_counts if row.status in {"cache_failed", "unrecoverable"})
-    from app.config import get_settings
-
-    settings = get_settings()
     return MaterialCacheHealthOut(
-        material_cache_peer_configured=bool(settings.material_cache_peer_id),
-        source_media_cache_peer_configured=bool(settings.source_media_cache_peer_id),
+        material_cache_peer_configured=bool(resolve_material_cache_peer_id(session, tenant_id)),
+        source_media_cache_peer_configured=bool(resolve_source_media_cache_peer_id(session, tenant_id)),
         active_cache_account_count=int(active_accounts),
         material_status_counts=material_counts,
         source_media_status_counts=source_counts,
@@ -1183,19 +1654,25 @@ __all__ = [
     "create_ai_provider",
     "create_content_keyword_rule",
     "create_material",
+    "create_material_group",
     "create_prompt_template",
     "create_uploaded_materials",
     "disable_material",
+    "get_material",
     "get_scheduling_setting",
     "get_tenant_ai_setting",
     "list_ai_providers",
     "list_content_keyword_rules",
+    "list_material_groups",
     "list_materials",
+    "list_material_version_history",
     "list_prompt_templates",
     "list_usage_ledgers",
     "list_usage_summary",
+    "material_references",
     "material_reference_summaries",
     "record_ai_usage",
+    "refresh_material_cache",
     "require_ai_token_balance",
     "restore_material",
     "seed_ai_configuration",
@@ -1203,6 +1680,7 @@ __all__ = [
     "update_ai_provider",
     "update_content_keyword_rule",
     "update_material",
+    "update_material_group",
     "update_prompt_template",
     "update_scheduling_setting",
     "update_tenant_ai_setting",

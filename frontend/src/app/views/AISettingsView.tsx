@@ -1,6 +1,7 @@
 import React from 'react';
-import { Button, Card, Descriptions, Empty, List, Space, Typography } from 'antd';
-import type { AiProvider, PromptTemplate, TenantAiSetting, Material, MaterialCacheHealth, ContentKeywordRule } from '../types';
+import { Alert, Button, Card, Descriptions, Empty, Form, Input, List, Space, Typography } from 'antd';
+import { api } from '../../shared/api/client';
+import type { AiProvider, PromptTemplate, TenantAiSetting, Material, MaterialCacheConfig, MaterialCacheHealth, ContentKeywordRule } from '../types';
 import { StatusBadge, Badge } from '../components/shared';
 import { statusAccent } from '../utils';
 
@@ -11,8 +12,12 @@ interface Props {
   tenantAiSetting: TenantAiSetting | null;
   materials: Material[];
   materialCacheHealth: MaterialCacheHealth | null;
+  materialCacheConfig: MaterialCacheConfig | null;
   contentKeywordRules: ContentKeywordRule[];
   currentUserRole: string | undefined;
+  canManageAi?: boolean;
+  canManagePrompts?: boolean;
+  canManageSystem?: boolean;
   onCreateProvider: () => void;
   onEditProvider: (provider: AiProvider) => void;
   onToggleProvider: (provider: AiProvider) => void;
@@ -25,6 +30,7 @@ interface Props {
   onEditMaterial: (material: Material) => void;
   onCreateKeywordRule: () => void;
   onEditKeywordRule: (rule: ContentKeywordRule) => void;
+  onSavedMaterialCacheConfig: () => Promise<void>;
   isActionPending: (key: string) => boolean;
   showMaterialAssets?: boolean;
 }
@@ -36,8 +42,12 @@ export default function AISettingsView({
   tenantAiSetting,
   materials,
   materialCacheHealth,
+  materialCacheConfig,
   contentKeywordRules,
   currentUserRole,
+  canManageAi = false,
+  canManagePrompts = false,
+  canManageSystem = false,
   onCreateProvider,
   onEditProvider,
   onToggleProvider,
@@ -50,28 +60,55 @@ export default function AISettingsView({
   onEditMaterial,
   onCreateKeywordRule,
   onEditKeywordRule,
+  onSavedMaterialCacheConfig,
   isActionPending,
   showMaterialAssets = true,
 }: Props) {
   const showProviders = section === 'all' || section === 'providers';
   const showResources = section === 'all' || section === 'resources';
   const showSlang = section === 'all' || section === 'slang';
+  const [cacheForm] = Form.useForm();
+  const [savingCacheConfig, setSavingCacheConfig] = React.useState(false);
+  const [cacheConfigError, setCacheConfigError] = React.useState('');
   const slangTemplates = promptTemplates.filter((template) => template.template_type.replace(/\s+/g, '') === 'AI黑话词表');
   const businessPromptTemplates = promptTemplates.filter((template) => template.template_type.replace(/\s+/g, '') !== 'AI黑话词表');
+
+  React.useEffect(() => {
+    cacheForm.setFieldsValue({
+      material_cache_input: materialCacheConfig?.material_cache.raw_input ?? '',
+      source_media_cache_input: materialCacheConfig?.source_media_cache.raw_input ?? '',
+    });
+  }, [cacheForm, materialCacheConfig]);
+
+  async function saveMaterialCacheConfig(values: { material_cache_input?: string; source_media_cache_input?: string }) {
+    setSavingCacheConfig(true);
+    setCacheConfigError('');
+    try {
+      await api<MaterialCacheConfig>('/materials/cache/config', {
+        method: 'PATCH',
+        body: JSON.stringify(values),
+      });
+      await onSavedMaterialCacheConfig();
+    } catch (error) {
+      setCacheConfigError(error instanceof Error ? error.message : '保存缓存频道配置失败');
+    } finally {
+      setSavingCacheConfig(false);
+    }
+  }
 
   return (
     <section className="view-grid">
       {showProviders && <Card
         className="panel"
         title="AI 供应商"
-        extra={currentUserRole === '系统管理员' ? <Button type="primary" onClick={onCreateProvider}>新增供应商</Button> : undefined}
+        extra={canManageAi ? <Button type="primary" onClick={onCreateProvider}>新增供应商</Button> : undefined}
       >
         <Typography.Text type="secondary">MiMo / DeepSeek 使用 OpenAI-Compatible 接口，Key 加密保存</Typography.Text>
         <div className="cards-grid developer-grid">
           {!aiProviders.length && (
             <Empty description="还没有 AI 供应商">
               <Typography.Paragraph type="secondary">请配置真实 OpenAI-Compatible Base URL、模型名和 API Key 后再启用 AI 内容生成。</Typography.Paragraph>
-              {currentUserRole === '系统管理员' && <Button type="primary" onClick={onCreateProvider}>新增供应商</Button>}
+              {canManageAi && <Button type="primary" onClick={onCreateProvider}>新增供应商</Button>}
             </Empty>
           )}
           {aiProviders.map((provider) => (
@@ -84,9 +121,9 @@ export default function AISettingsView({
               <Typography.Paragraph type="secondary" ellipsis>{provider.base_url}</Typography.Paragraph>
               {provider.last_error && <Typography.Paragraph type={provider.health_status === '健康' ? 'warning' : 'danger'}>{provider.last_error}</Typography.Paragraph>}
               <Space wrap>
-                {currentUserRole === '系统管理员' && <Button size="small" onClick={() => onEditProvider(provider)}>编辑</Button>}
-                <Button size="small" loading={isActionPending(`ai-provider:${provider.id}:check`)} onClick={() => onCheckProvider(provider)}>检查</Button>
-                {currentUserRole === '系统管理员' && <Button size="small" danger={provider.is_active} loading={isActionPending(`ai-provider:${provider.id}:toggle`)} onClick={() => onToggleProvider(provider)}>{provider.is_active ? '禁用' : '启用'}</Button>}
+                {canManageAi && <Button size="small" onClick={() => onEditProvider(provider)}>编辑</Button>}
+                {canManageAi && <Button size="small" loading={isActionPending(`ai-provider:${provider.id}:check`)} onClick={() => onCheckProvider(provider)}>检查</Button>}
+                {canManageAi && <Button size="small" danger={provider.is_active} loading={isActionPending(`ai-provider:${provider.id}:toggle`)} onClick={() => onToggleProvider(provider)}>{provider.is_active ? '禁用' : '启用'}</Button>}
               </Space>
             </Card>
           ))}
@@ -96,7 +133,7 @@ export default function AISettingsView({
       {showProviders && <Card
         className="panel"
         title="AI 默认模型"
-        extra={<Button size="small" disabled={!aiProviders.length} onClick={onEditTenantAi}>编辑 AI 配置</Button>}
+        extra={canManageAi ? <Button size="small" disabled={!aiProviders.length} onClick={onEditTenantAi}>编辑 AI 配置</Button> : undefined}
       >
         <Typography.Text type="secondary">任务创建时可覆盖默认模型；AI 不可用时按这里的失败策略处理</Typography.Text>
         <div className="summary-grid">
@@ -116,13 +153,44 @@ export default function AISettingsView({
       {showResources && <Card
         className="panel"
         title={showMaterialAssets ? '提示词与素材' : '提示词与素材运行配置'}
-        extra={<Space><Button size="small" onClick={onCreatePromptTemplate}>新增提示词</Button>{showMaterialAssets && <Button size="small" onClick={onCreateMaterial}>新增素材</Button>}</Space>}
+        extra={<Space>{canManagePrompts && <Button size="small" onClick={onCreatePromptTemplate}>新增提示词</Button>}{showMaterialAssets && <Button size="small" onClick={onCreateMaterial}>新增素材</Button>}</Space>}
       >
         <Typography.Text type="secondary">
           {showMaterialAssets
             ? '系统决策提示词自动选择业务模板；素材先支持图片和表情包'
             : '系统设置维护提示词和素材缓存运行状态；表情包、头像包、图片和文件素材请到素材中心上传维护'}
         </Typography.Text>
+        {!showMaterialAssets && (
+          <Card size="small" title="缓存频道" style={{ marginTop: 12, marginBottom: 12 }}>
+            {cacheConfigError && <Alert type="error" showIcon message={cacheConfigError} style={{ marginBottom: 12 }} />}
+            <Form
+              form={cacheForm}
+              layout="vertical"
+              onFinish={saveMaterialCacheConfig}
+            >
+              <Form.Item
+                label="素材缓存频道"
+                name="material_cache_input"
+                extra={`运行层：${materialCacheConfig?.material_cache.normalized_peer || '-'} / 来源：${materialCacheConfig?.material_cache.source || 'empty'}`}
+              >
+                <Input placeholder="缓存频道链接 / @username / t.me/c/..." />
+              </Form.Item>
+              {materialCacheConfig?.material_cache.last_error && <Alert type="warning" showIcon message={materialCacheConfig.material_cache.last_error} style={{ marginBottom: 12 }} />}
+              <Form.Item
+                label="源媒体缓存频道"
+                name="source_media_cache_input"
+                extra={`运行层：${materialCacheConfig?.source_media_cache.normalized_peer || '-'} / 来源：${materialCacheConfig?.source_media_cache.source || 'empty'}`}
+              >
+                <Input placeholder="缓存频道链接 / @username / t.me/c/..." />
+              </Form.Item>
+              {materialCacheConfig?.source_media_cache.last_error && <Alert type="warning" showIcon message={materialCacheConfig.source_media_cache.last_error} style={{ marginBottom: 12 }} />}
+              <Space wrap>
+                <Button type="primary" htmlType="submit" loading={savingCacheConfig} disabled={!canManageSystem}>保存缓存配置</Button>
+                <Typography.Text type="secondary">留空时沿用 .env；保存后无需重启。</Typography.Text>
+              </Space>
+            </Form>
+          </Card>
+        )}
         {materialCacheHealth && (
           <>
             <div className="summary-grid">
@@ -174,7 +242,7 @@ export default function AISettingsView({
             if (entry.kind === 'template') {
               const template = entry.item;
               return (
-                <List.Item actions={[<Button size="small" onClick={() => onEditPromptTemplate(template)}>编辑</Button>]}>
+                <List.Item actions={canManagePrompts ? [<Button size="small" onClick={() => onEditPromptTemplate(template)}>编辑</Button>] : []}>
                   <List.Item.Meta
                     title={<Space><Badge tone={template.tenant_id ? 'positive' : 'neutral'}>{template.tenant_id ? '运营空间' : '平台'}</Badge><StatusBadge status={template.is_active ? '已启用' : '禁用'} />{template.name}</Space>}
                     description={`${template.template_type} / v${template.version}`}
@@ -198,7 +266,7 @@ export default function AISettingsView({
       {showSlang && <Card
         className="panel"
         title="AI 黑话配置"
-        extra={<Button size="small" type="primary" onClick={onCreateSlangTemplate}>新增黑话配置</Button>}
+        extra={canManagePrompts ? <Button size="small" type="primary" onClick={onCreateSlangTemplate}>新增黑话配置</Button> : undefined}
       >
         <Typography.Text type="secondary">这里维护 AI 活群可选的行业黑话和俗语口径；创建 AI 活群任务时选择一套后，会作为系统默认提示词注入大模型。</Typography.Text>
         <List
@@ -206,7 +274,7 @@ export default function AISettingsView({
           dataSource={slangTemplates}
           locale={{ emptyText: '暂无 AI 黑话配置。可以先新增一套，再到 AI 活跃群任务里选择。' }}
           renderItem={(template) => (
-            <List.Item actions={[<Button size="small" onClick={() => onEditPromptTemplate(template)}>编辑</Button>]}>
+            <List.Item actions={canManagePrompts ? [<Button size="small" onClick={() => onEditPromptTemplate(template)}>编辑</Button>] : []}>
               <List.Item.Meta
                 title={<Space><Badge tone={template.tenant_id ? 'positive' : 'neutral'}>{template.tenant_id ? '运营空间' : '平台'}</Badge><StatusBadge status={template.is_active ? '已启用' : '禁用'} />{template.name}</Space>}
                 description={`v${template.version} / ${template.content.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 3).join('；') || '空配置'}`}

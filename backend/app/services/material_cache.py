@@ -4,8 +4,8 @@ from datetime import timedelta
 
 from sqlalchemy import select
 
-from app.config import get_settings
 from app.models import AccountStatus, Material, TgAccount
+from app.services.ai_config import resolve_material_cache_peer_id
 from app.services._common import _now, gateway
 from app.services.material_ingestion import is_platform_temp_path, remove_platform_temp_file
 from app.services.material_versions import record_material_tg_ref_version
@@ -14,9 +14,6 @@ MEDIA_MATERIAL_TYPES = {"图片", "表情包", "文件"}
 
 
 def drain_material_cache(session_factory, limit: int = 20) -> int:
-    cache_peer_id = get_settings().material_cache_peer_id
-    if not cache_peer_id:
-        return 0
     processed = 0
     with session_factory() as session:
         materials = list(
@@ -32,6 +29,11 @@ def drain_material_cache(session_factory, limit: int = 20) -> int:
             )
         )
         for material in materials:
+            cache_peer_id = resolve_material_cache_peer_id(session, material.tenant_id)
+            if not cache_peer_id:
+                _mark_material_cache_failed(material, "cache_peer_unavailable")
+                processed += 1
+                continue
             if material.cache_ready_status == "flood_wait" and material.last_cache_flood_wait_until and material.last_cache_flood_wait_until > _now():
                 continue
             account = _cache_account(session, material)

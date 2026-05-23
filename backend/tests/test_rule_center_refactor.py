@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
+from io import BytesIO
 from os import utime
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -10,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.config import get_settings
 from app.integrations.telegram import DeveloperAppCredentials, SendResult, TelethonTelegramGateway
-from app.models import AccountStatus, Action, ContentKeywordRule, FailureType, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, OperationPlanTemplate, RuleSetVersion, SourceMediaAsset, Task, Tenant, TgAccount, TgAccountSecurityBatchItem, TgGroup, TgGroupAccount
+from app.models import AccountStatus, Action, AuditLog, ChannelMessage, ContentKeywordRule, FailureType, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, OperationPlanTemplate, OperationTarget, RuleSetVersion, SourceMediaAsset, Task, Tenant, TgAccount, TgAccountSecurityBatchItem, TgGroup, TgGroupAccount
 from app.schemas.operations_center import RuleSetCreate, RuleSetVersionCreate
 from app.schemas.ai_config import MaterialCreate, MaterialUpdate
 from app.services import ai_config as ai_config_service
@@ -26,10 +29,12 @@ from app.services.operations_center import (
     rollback_rule_set_version,
     rule_center_summary,
     test_rules as preview_rules,
+    update_rule_set_config,
 )
 from app.services.rule_engine import apply_output_policy, bound_rule_version, transform_content
 from app.services.task_center.executors.group_relay import effective_relay_config
 from app.services.task_center.executors.group_ai_chat import build_plan as build_ai_chat_plan
+from app.services.task_center.executors.common import channel_scope
 from app.services._common import _now
 from app.services.source_media import (
     WAITING_MATERIAL_CACHE,
@@ -368,6 +373,286 @@ def test_batch_uploaded_materials_create_one_row_per_file():
     assert [item.cache_ready_status for item in materials] == ["not_cached", "not_cached"]
     assert all(item.source_kind == "upload" for item in materials)
     assert all(item.file_size > 0 for item in materials)
+
+
+def test_material_cache_config_normalizes_admin_links_and_overrides_env(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setenv("MATERIAL_CACHE_PEER_ID", "env-material-cache")
+    monkeypatch.setenv("SOURCE_MEDIA_CACHE_PEER_ID", "env-source-cache")
+    get_settings.cache_clear()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+
+        saved = ai_config_service.update_material_cache_config(
+            session,
+            tenant_id=1,
+            material_cache_input="https://t.me/c/1234567890/55397",
+            source_media_cache_input="@example_cache",
+            actor="pytest",
+        )
+        health = material_cache_health(session, 1)
+        material_peer = ai_config_service.resolve_material_cache_peer_id(session, 1)
+        source_peer = ai_config_service.resolve_source_media_cache_peer_id(session, 1)
+        audit_actions = [row.action for row in session.scalars(select(AuditLog)).all()]
+
+    assert saved.material_cache.raw_input == "https://t.me/c/1234567890/55397"
+    assert saved.material_cache.normalized_peer == "-1001234567890"
+    assert saved.material_cache.source == "saved"
+    assert saved.source_media_cache.raw_input == "@example_cache"
+    assert saved.source_media_cache.normalized_peer == "@example_cache"
+    assert material_peer == "-1001234567890"
+    assert source_peer == "@example_cache"
+    assert health.material_cache_peer_configured is True
+    assert health.source_media_cache_peer_configured is True
+    assert "更新素材缓存频道配置" in audit_actions
+
+    get_settings.cache_clear()
+
+
+def test_zip_material_import_persists_result_and_skips_invalid_entries():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    archive = BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("valid/one.png", b"\x89PNG\r\n\x1a\nimage-one")
+        zip_file.writestr("__MACOSX/._one.png", b"ignored")
+        zip_file.writestr("notes/readme.txt", b"not image")
+        zip_file.writestr("fake/not-real.png", b"not actually a png")
+        zip_file.writestr("duplicates/one-copy.png", b"\x89PNG\r\n\x1a\nimage-one")
+        zip_file.writestr("oversize/big.jpg", b"\xff\xd8" + b"x" * (500 * 1024))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+
+        result = ai_config_service.create_material_zip_import(
+            session,
+            tenant_id=1,
+            title="活动图包",
+            material_type="图片",
+            tags="活动,图包",
+            caption="",
+            filename="materials.zip",
+            data=archive.getvalue(),
+            actor="pytest",
+        )
+        persisted = ai_config_service.get_material_import_result(session, tenant_id=1, import_id=result.import_id)
+        materials = list_materials(session, 1)
+
+    assert result.import_id == persisted.import_id
+    assert result.status == "completed"
+    assert result.success_count == 1
+    assert result.skipped_count == 5
+    assert result.oversize_count == 1
+    assert [item.file_name for item in result.items if item.status == "created"] == ["valid/one.png"]
+    skipped_reasons = {item.reason for item in result.items if item.status == "skipped"}
+    assert skipped_reasons >= {"系统目录已跳过", "素材文件类型不支持", "重复文件已跳过"}
+    assert any("素材文件过大" in reason for reason in skipped_reasons)
+    assert [material.title for material in materials] == ["活动图包-one"]
+    assert materials[0].tags == "活动,图包"
+    assert materials[0].source_kind == "upload"
+
+
+def test_zip_material_import_rejects_oversize_entry_before_reading(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    archive = BytesIO()
+    with ZipFile(archive, "w", compression=ZIP_DEFLATED) as zip_file:
+        zip_file.writestr("oversize/big.jpg", b"\xff\xd8" + b"x" * (600 * 1024))
+
+    def fail_if_reading_oversize_entry(self, name, *args, **kwargs):
+        raise AssertionError("oversize zip entry should be rejected before read")
+
+    monkeypatch.setattr(ZipFile, "read", fail_if_reading_oversize_entry)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+
+        result = ai_config_service.create_material_zip_import(
+            session,
+            tenant_id=1,
+            title="超大图包",
+            material_type="图片",
+            tags="",
+            caption="",
+            filename="oversize.zip",
+            data=archive.getvalue(),
+            actor="pytest",
+        )
+
+    assert result.success_count == 0
+    assert result.skipped_count == 1
+    assert result.oversize_count == 1
+    assert result.items[0].file_size == 614402
+    assert "素材文件过大" in result.items[0].reason
+
+
+def test_channel_view_scope_does_not_fetch_new_messages_when_listener_disabled(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    def fail_collect(*args, **kwargs):
+        raise AssertionError("disabled channel listener should not collect new messages")
+
+    monkeypatch.setattr("app.services.task_center.executors.common.collect_channel_messages", fail_collect)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=10, tenant_id=1, display_name="采集账号", phone_masked="+861***0010", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        session.add(OperationTarget(id=100, tenant_id=1, target_type="channel", tg_peer_id="pytest_channel", title="pytest频道"))
+        task = Task(
+            id="task-no-new-listener",
+            tenant_id=1,
+            name="关闭新帖监听浏览",
+            type="channel_view",
+            status="running",
+            type_config={"target_channel_id": 100, "message_scope": "dynamic_new", "message_count": 1, "listen_new_messages": False},
+        )
+        session.add(task)
+        session.add(ChannelMessage(id=200, tenant_id=1, channel_target_id=100, message_id=9001, content_preview="已有消息", published_at=_now()))
+        session.commit()
+
+        channel, messages = channel_scope(session, task, task.type_config)
+
+    assert channel is not None
+    assert [message.message_id for message in messages] == [9001]
+
+
+def test_cache_workers_prefer_saved_cache_config_over_env(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setenv("MATERIAL_CACHE_PEER_ID", "env-material-cache")
+    monkeypatch.setenv("SOURCE_MEDIA_CACHE_PEER_ID", "env-source-cache")
+    get_settings.cache_clear()
+    material_cache_peers: list[str] = []
+    source_cache_peers: list[str] = []
+    monkeypatch.setattr(
+        "app.services.developer_apps.credentials_for_account",
+        lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+    )
+    monkeypatch.setattr(
+        "app.services.material_cache.gateway.cache_material_source",
+        lambda *args, **kwargs: material_cache_peers.append(args[2]) or SendResult(True, remote_message_id="material-701"),
+    )
+    monkeypatch.setattr(
+        "app.services.source_media.gateway.cache_source_media",
+        lambda *args, **kwargs: source_cache_peers.append(args[3]) or SendResult(True, remote_message_id="source-701"),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="缓存号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        session.add(Material(id=9701, tenant_id=1, title="待缓存", material_type="图片", content="https://trusted.example.com/a.png", cache_ready_status="not_cached"))
+        session.add(SourceMediaAsset(id="saved-config-source", tenant_id=1, listener_account_id=101, source_peer_id="-1001", source_message_id="55", cache_status="pending_cache"))
+        session.commit()
+        ai_config_service.update_material_cache_config(
+            session,
+            tenant_id=1,
+            material_cache_input="https://t.me/c/222333444/1",
+            source_media_cache_input="https://t.me/source_cache",
+            actor="pytest",
+        )
+
+    def factory():
+        return Session(engine)
+
+    assert drain_material_cache(factory, limit=10) == 1
+    assert drain_source_media_cache(factory, limit=10) == 1
+    assert material_cache_peers == ["-100222333444"]
+    assert source_cache_peers == ["@source_cache"]
+
+    get_settings.cache_clear()
+
+
+def test_cache_config_records_friendly_error_when_probe_fails(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(
+        "app.services.developer_apps.credentials_for_account",
+        lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+    )
+    monkeypatch.setattr(ai_config_service.gateway, "probe_target_capabilities", lambda *args, **kwargs: type("_Probe", (), {"ok": False})())
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="缓存号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        session.commit()
+        result = ai_config_service.update_material_cache_config(
+            session,
+            tenant_id=1,
+            material_cache_input="@broken_cache",
+            source_media_cache_input="@source_cache",
+            actor="pytest",
+        )
+
+    assert result.material_cache.last_error == "缓存频道不可访问 / 账号无权限"
+    assert result.source_media_cache.last_error == "缓存频道不可访问 / 账号无权限"
+
+
+def test_telethon_cache_probe_fails_when_permissions_cannot_be_confirmed(monkeypatch):
+    gateway = TelethonTelegramGateway()
+
+    class FakeClient:
+        async def is_user_authorized(self) -> bool:
+            return True
+
+        async def get_permissions(self, target, user):  # noqa: ANN001 - mirrors Telethon shape.
+            raise RuntimeError("participant permissions unavailable")
+
+    async def fake_get_or_create_client(credentials, raw_session):  # noqa: ANN001 - mirrors gateway hook.
+        return FakeClient()
+
+    async def fake_resolve_target(client, peer_id, *, group_id=0):  # noqa: ANN001 - mirrors Telethon helper.
+        return type("_Target", (), {"default_banned_rights": None})()
+
+    monkeypatch.setattr(gateway, "_get_or_create_client", fake_get_or_create_client)
+    monkeypatch.setattr("app.integrations.telegram.gateway.resolve_telethon_target", fake_resolve_target)
+
+    result = asyncio.run(
+        gateway._probe_target_capabilities_async(
+            "raw-session",
+            "@cache",
+            "channel",
+            DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+        )
+    )
+
+    assert result.ok is False
+    assert result.detail == "缓存频道不可访问 / 账号无权限"
+
+
+def test_zip_avatar_pack_import_maps_to_image_materials():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    archive = BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("avatar.jpg", b"\xff\xd8avatar-image")
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        result = ai_config_service.create_material_zip_import(
+            session,
+            tenant_id=1,
+            title="头像包A",
+            material_type="头像包",
+            tags="头像",
+            caption="",
+            filename="avatars.zip",
+            data=archive.getvalue(),
+            actor="pytest",
+        )
+        materials = list_materials(session, 1)
+
+    assert result.import_type == "avatar_pack"
+    assert result.target_group_name == "头像包A"
+    assert result.success_count == 1
+    assert materials[0].material_type == "图片"
+    assert materials[0].title == "头像包A-avatar"
 
 
 def test_material_cache_worker_respects_flood_wait_retry_time(monkeypatch):
@@ -923,7 +1208,7 @@ def test_rule_version_copy_and_rollback_create_traceable_versions():
             RuleSetCreate(name="版本治理", filters={"keyword_whitelist": ["公告"]}, output_checks={"forbid_links": False}),
             "tester",
         )
-        copied = copy_rule_set_version(session, 1, rule_set.id, rule_set.active_version_id, "tester")
+        copied = copy_rule_set_version(session, 1, rule_set.id, rule_set.active_version_id, "tester", reason="基于当前发布版本调整")
         copied_version = next(version for version in copied.versions if version.version == 2)
         assert copied_version.status == "draft"
         assert copied_version.version_note == "复制自 v1"
@@ -937,16 +1222,54 @@ def test_rule_version_copy_and_rollback_create_traceable_versions():
             "tester",
         )
         draft = next(version for version in tightened.versions if version.version == 3)
-        published = publish_rule_set_version(session, 1, rule_set.id, draft.id, "tester")
+        published = publish_rule_set_version(session, 1, rule_set.id, draft.id, "tester", reason="活动白名单收紧")
         assert next(version for version in published.versions if version.version == 3).status == "published"
 
-        rolled_back = rollback_rule_set_version(session, 1, rule_set.id, rule_set.active_version_id, "tester")
+        rolled_back = rollback_rule_set_version(session, 1, rule_set.id, rule_set.active_version_id, "tester", reason="活动规则异常回退")
         active = next(version for version in rolled_back.versions if version.id == rolled_back.active_version_id)
+        audit_details = [row.detail for row in session.query(AuditLog).filter(AuditLog.target_id == str(rule_set.id)).order_by(AuditLog.id.asc())]
 
     assert active.version == 4
     assert active.status == "published"
     assert active.version_note == "回滚自 v1"
     assert active.filters == {"keyword_whitelist": ["公告"]}
+    assert any("reason=基于当前发布版本调整" in detail and "diff=none" in detail for detail in audit_details)
+    assert any("reason=活动白名单收紧" in detail and "diff=filters,output_checks" in detail for detail in audit_details)
+    assert any("reason=活动规则异常回退" in detail and "diff=filters,output_checks" in detail for detail in audit_details)
+
+
+def test_rule_set_config_publish_audit_records_reason_and_diff():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+        rule_set = create_rule_set(
+            session,
+            1,
+            RuleSetCreate(name="配置发布治理", filters={"keyword_whitelist": ["公告"]}, output_checks={"forbid_links": False}),
+            "tester",
+        )
+        updated = update_rule_set_config(
+            session,
+            1,
+            rule_set.id,
+            RuleSetVersionCreate(
+                version_note="收紧链接",
+                publish_reason="链接风险上升",
+                filters={"keyword_whitelist": ["公告"]},
+                output_checks={"forbid_links": True},
+            ),
+            "tester",
+        )
+        active = next(version for version in updated.versions if version.id == updated.active_version_id)
+        audit_detail = session.query(AuditLog.detail).filter(AuditLog.target_id == str(rule_set.id), AuditLog.action == "更新规则集配置并发布").order_by(AuditLog.id.desc()).scalar()
+
+    assert active.status == "published"
+    assert active.version == 2
+    assert "reason=链接风险上升" in audit_detail
+    assert "diff=output_checks" in audit_detail
 
 
 def test_bound_tasks_show_fixed_and_follow_current_resolution():

@@ -58,6 +58,9 @@ export type MessageTask = {
   status: string;
   failure_type: string | null;
   failure_detail: string | null;
+  operation_issue_id: string;
+  operation_issue_status: string;
+  operation_issue_rolled_up: boolean;
   media_sent: boolean | null;
   media_failure_reason: string;
   sent_at: string | null;

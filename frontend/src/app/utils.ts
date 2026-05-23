@@ -21,7 +21,10 @@ export const VIEW_PERMISSION: Record<string, string> = {
 const PERMISSION_ALIASES: Record<string, string> = {
   'accounts.view_codes': 'accounts.codes.read',
   'accounts.update_profile': 'accounts.profile.batch_update',
+  'accounts.proxy_bind': 'proxies.manage',
   'audits.export': 'audit.export',
+  'message_sending.create': 'message_sending.manage',
+  'system.secrets_manage': 'ai.manage',
 };
 
 export function userPermissions(user: CurrentUser | null | undefined): string[] {

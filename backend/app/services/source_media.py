@@ -7,9 +7,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
 from app.models import AccountStatus, Action, SourceMediaAsset, TgAccount
 from app.services._common import _now, gateway
+from app.services.ai_config import resolve_source_media_cache_peer_id
 
 SOURCE_MEDIA_READY = "ready"
 SOURCE_MEDIA_PENDING = "pending_cache"
@@ -191,24 +191,8 @@ def source_media_cached_event(
 
 
 def drain_source_media_cache(session_factory, limit: int = 20) -> int:
-    cache_peer_id = get_settings().source_media_cache_peer_id
-    if not cache_peer_id:
-        with session_factory() as session:
-            pending = list(
-                session.scalars(
-                    select(SourceMediaAsset)
-                    .where(SourceMediaAsset.cache_status.in_([SOURCE_MEDIA_PENDING, SOURCE_MEDIA_FLOOD_WAIT]))
-                    .order_by(SourceMediaAsset.created_at.asc())
-                    .limit(max(1, limit))
-                )
-            )
-            for asset in pending:
-                asset.failure_reason = "cache_peer_unavailable"
-                asset.updated_at = _now()
-            if pending:
-                session.commit()
-        return 0
     processed = 0
+    dirty = False
     with session_factory() as session:
         assets = list(
             session.scalars(
@@ -222,6 +206,12 @@ def drain_source_media_cache(session_factory, limit: int = 20) -> int:
             )
         )
         for asset in assets:
+            cache_peer_id = resolve_source_media_cache_peer_id(session, asset.tenant_id)
+            if not cache_peer_id:
+                asset.failure_reason = "cache_peer_unavailable"
+                asset.updated_at = _now()
+                dirty = True
+                continue
             account = session.get(TgAccount, asset.listener_account_id) if asset.listener_account_id else None
             if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
                 _mark_asset_failed(asset, "cache_account_unavailable")
@@ -263,7 +253,7 @@ def drain_source_media_cache(session_factory, limit: int = 20) -> int:
                     _mark_asset_failed(asset, failure_type)
             asset.updated_at = _now()
             processed += 1
-        if processed:
+        if processed or dirty:
             session.commit()
     return processed
 

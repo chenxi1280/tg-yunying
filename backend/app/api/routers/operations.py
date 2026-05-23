@@ -19,6 +19,7 @@ from app.schemas import (
     ManualOperationRecordOut,
     OperationTargetCreate,
     OperationTargetAccountUpdate,
+    OperationTargetAdmissionRetryRequest,
     OperationTargetDetailOut,
     OperationTargetMessageSyncOut,
     OperationTargetOut,
@@ -41,6 +42,7 @@ from app.services import (
     list_manual_operations,
     list_operation_attempts,
     operation_target_detail,
+    retry_operation_target_admission,
     retry_operation_task,
     sync_channel_message_comments,
     sync_operation_target_messages,
@@ -135,6 +137,19 @@ def patch_operation_target_account_policy(
         return update_operation_target_account_policy(session, current_user.tenant_id or 1, target_id, account_id, payload, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
+
+
+@router.post("/api/operation-targets/{target_id}/admission/retry", response_model=OperationTargetDetailOut)
+def post_operation_target_admission_retry(
+    target_id: int,
+    payload: OperationTargetAdmissionRetryRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return retry_operation_target_admission(session, current_user.tenant_id or 1, target_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/channel-messages", response_model=list[ChannelMessageOut])

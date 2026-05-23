@@ -5,7 +5,7 @@ import type {
   TokenLedger,
   UsageLedger, UsageSummary, LoginFlow, Account, AccountPool, AccountLoginForm,
   DeveloperApp, AiProvider, PromptTemplate, TenantAiSetting,
-  Material, MaterialCacheHealth, ContentKeywordRule, Contact, Group, MessageTask, ArchiveItem, ArchiveDetail,
+  Material, MaterialCacheConfig, MaterialCacheHealth, MaterialImportResult, ContentKeywordRule, Contact, Group, MessageTask, ArchiveItem, ArchiveDetail,
   ArchiveExport, AuditFilters, AuditLog, VerificationCode, AccountSyncRecord, VerificationTask,
   AccountCloneItem, AccountClonePlan, AccountGroup, ProfileSyncRecord,
   AccountDetail, AccountPoolDetail, GroupDetail, Tenant,
@@ -90,6 +90,10 @@ export interface AppState {
   setMaterials: (materials: Material[]) => void;
   materialCacheHealth: MaterialCacheHealth | null;
   setMaterialCacheHealth: (health: MaterialCacheHealth | null) => void;
+  materialCacheConfig: MaterialCacheConfig | null;
+  setMaterialCacheConfig: (config: MaterialCacheConfig | null) => void;
+  materialImports: MaterialImportResult[];
+  setMaterialImports: (imports: MaterialImportResult[]) => void;
   contentKeywordRules: ContentKeywordRule[];
   setContentKeywordRules: (rules: ContentKeywordRule[]) => void;
 

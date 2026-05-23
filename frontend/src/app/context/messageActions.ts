@@ -80,7 +80,7 @@ export function createMessageActions(params: MessageActionParams) {
 
   async function cancelTask(task: MessageTask) {
     params.setBusy('取消任务');
-    const updated = await api<MessageTask>(`/message-tasks/${task.id}/cancel`, {
+    const updated = await api<MessageTask>(`/message-send-tasks/${task.id}/cancel`, {
       method: 'POST',
       body: JSON.stringify({ actor: '普通用户' }),
     });
@@ -91,7 +91,7 @@ export function createMessageActions(params: MessageActionParams) {
 
   async function dispatchTask(task: MessageTask) {
     params.setBusy('派发消息');
-    const result = await api<MessageTask>(`/message-tasks/${task.id}/dispatch`, { method: 'POST' });
+    const result = await api<MessageTask>(`/message-send-tasks/${task.id}/dispatch`, { method: 'POST' });
     params.showResult('调度完成', result.status === '已发送' ? '消息已发送并记录回执。' : `发送失败：${result.failure_type}`);
     await params.refresh();
   }
@@ -105,7 +105,7 @@ export function createMessageActions(params: MessageActionParams) {
 
   async function retryTask(task: MessageTask) {
     params.setBusy('重试任务');
-    const result = await api<MessageTask>(`/message-tasks/${task.id}/retry`, {
+    const result = await api<MessageTask>(`/message-send-tasks/${task.id}/retry`, {
       method: 'POST',
       body: JSON.stringify({ actor: '普通用户', dispatch_now: true }),
     });

@@ -12,6 +12,10 @@ type Props = {
   onCreateTaskFromTarget: (taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment'>, target: OperationTarget, message?: ChannelMessage) => void;
   focusTarget?: { targetId: number; nonce: number } | null;
   onFocusTargetConsumed?: () => void;
+  canManageMessageSending: boolean;
+  canManageTargets: boolean;
+  canManageTasks: boolean;
+  canManageArchives: boolean;
 };
 
 function formatDateTime(value?: string | null) {
@@ -35,7 +39,7 @@ function capabilityTags(target: OperationTarget) {
   );
 }
 
-export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromTarget, focusTarget, onFocusTargetConsumed }: Props) {
+export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromTarget, focusTarget, onFocusTargetConsumed, canManageMessageSending, canManageTargets, canManageTasks, canManageArchives }: Props) {
   const { message } = AntdApp.useApp();
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -46,6 +50,10 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
   const [syncing, setSyncing] = React.useState(false);
   const [syncingAllTargets, setSyncingAllTargets] = React.useState(false);
   const [syncingCommentMessageId, setSyncingCommentMessageId] = React.useState<number | null>(null);
+  const [admissionRetrySaving, setAdmissionRetrySaving] = React.useState(false);
+  const [admissionRetryOpen, setAdmissionRetryOpen] = React.useState(false);
+  const [admissionRetryAccountIds, setAdmissionRetryAccountIds] = React.useState<number[]>([]);
+  const [admissionRetryReason, setAdmissionRetryReason] = React.useState('');
   const [creatingArchiveId, setCreatingArchiveId] = React.useState<number | null>(null);
   const [formError, setFormError] = React.useState('');
   const [editingTarget, setEditingTarget] = React.useState<OperationTarget | null>(null);
@@ -271,6 +279,39 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     }
   }
 
+  function openAdmissionRetry(accountIds: number[]) {
+    setAdmissionRetryAccountIds(accountIds);
+    setAdmissionRetryReason('');
+    setFormError('');
+    setAdmissionRetryOpen(true);
+  }
+
+  async function retryAdmission() {
+    if (!targetDetail) return;
+    const reason = admissionRetryReason.trim();
+    if (!reason) {
+      setFormError('请填写重试原因');
+      return;
+    }
+    setAdmissionRetrySaving(true);
+    setFormError('');
+    try {
+      const detail = await api<OperationTargetDetail>(`/operation-targets/${targetDetail.target.id}/admission/retry`, {
+        method: 'POST',
+        body: JSON.stringify({ reason, account_ids: admissionRetryAccountIds }),
+      });
+      setTargetDetail(detail);
+      setAdmissionRetryOpen(false);
+      const retry = detail.admission_retry || {};
+      void message.success(`已重查 ${retry.retried_account_count ?? admissionRetryAccountIds.length} 个账号，恢复 ${retry.recovered_account_count ?? 0} 个`);
+      await load();
+    } catch (error) {
+      setFormError(errorMessage(error));
+    } finally {
+      setAdmissionRetrySaving(false);
+    }
+  }
+
   function startEdit(target: OperationTarget) {
     setEditingTarget(target);
     setTargetModalOpen(true);
@@ -291,7 +332,9 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     setTargetDetail(null);
     setDetailOpen(true);
     setFormError('');
-    void loadTargetDetail(target).then(() => syncTargetMessages(target));
+    void loadTargetDetail(target).then(() => {
+      if (canManageTargets) void syncTargetMessages(target);
+    });
   }
 
   function openCreate() {
@@ -312,6 +355,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     setDetailOpen(false);
     setDetailTarget(null);
     setTargetDetail(null);
+    setAdmissionRetryOpen(false);
   }
 
   const table = useAntdTableControls<OperationTarget>({
@@ -344,11 +388,12 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
       render: (_, target) => (
         <Space wrap>
           <Button size="small" onClick={() => openDetail(target)}>查看详情</Button>
-          <Button size="small" onClick={() => startEdit(target)}>编辑</Button>
+          {canManageTargets && <Button size="small" onClick={() => startEdit(target)}>编辑</Button>}
         </Space>
       ),
     },
   ];
+  const failedAdmissionAccounts = targetDetail?.accounts.filter((account) => account.admission_status === 'failed' && account.admission_retryable) ?? [];
 
   return (
     <>
@@ -357,8 +402,8 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
         title="群/频道目标"
         extra={(
           <Space wrap>
-            <Button icon={<RefreshCcw size={16} />} loading={syncingAllTargets} onClick={syncAllTargets}>同步全部账号目标</Button>
-            <Button type="primary" onClick={openCreate}>新增目标</Button>
+            {canManageTargets && <Button icon={<RefreshCcw size={16} />} loading={syncingAllTargets} onClick={syncAllTargets}>同步全部账号目标</Button>}
+            {canManageTargets && <Button type="primary" onClick={openCreate}>新增目标</Button>}
           </Space>
         )}
       >
@@ -422,7 +467,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
         title={detailTarget?.title ?? '目标详情'}
         open={detailOpen}
         size="large"
-        extra={detailTarget && <Button icon={<RefreshCcw size={16} />} loading={syncing || detailLoading} onClick={() => syncTargetMessages(detailTarget)}>同步最新消息</Button>}
+        extra={detailTarget && canManageTargets ? <Button icon={<RefreshCcw size={16} />} loading={syncing || detailLoading} onClick={() => syncTargetMessages(detailTarget)}>同步最新消息</Button> : null}
         onClose={closeDetail}
       >
         {formError && <Alert className="form-alert" type="error" showIcon message={formError} />}
@@ -445,10 +490,10 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
               ]}
             />
             <Space wrap>
-              <Button type="primary" icon={<MessageSquareText size={16} />} onClick={() => onSendToTarget(targetDetail.target)}>去发送消息</Button>
-              {targetDetail.target.target_type === 'group' && <Button onClick={() => onCreateTaskFromTarget('group_ai_chat', targetDetail.target)}>创建 AI 活跃群任务</Button>}
-              {targetDetail.target.target_type === 'group' && <Button onClick={() => onCreateTaskFromTarget('group_relay', targetDetail.target)}>创建转发监听任务</Button>}
-              {targetDetail.target.target_type === 'group' && targetDetail.target.can_archive && (
+              {canManageMessageSending && <Button type="primary" icon={<MessageSquareText size={16} />} onClick={() => onSendToTarget(targetDetail.target)}>去发送消息</Button>}
+              {canManageTasks && targetDetail.target.target_type === 'group' && <Button onClick={() => onCreateTaskFromTarget('group_ai_chat', targetDetail.target)}>创建 AI 活跃群任务</Button>}
+              {canManageTasks && targetDetail.target.target_type === 'group' && <Button onClick={() => onCreateTaskFromTarget('group_relay', targetDetail.target)}>创建转发监听任务</Button>}
+              {canManageArchives && targetDetail.target.target_type === 'group' && targetDetail.target.can_archive && (
                 <Button loading={creatingArchiveId === targetDetail.target.id} onClick={() => createArchiveFromTarget(targetDetail.target)}>创建归档</Button>
               )}
             </Space>
@@ -463,7 +508,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
               </Space>
             </Card>
             {targetDetail.linked_group && (
-              <Card className="sub-panel compact-panel" title="目标风控策略" extra={<Button type="primary" size="small" loading={riskSaving} onClick={saveRiskPolicy}>保存</Button>}>
+              <Card className="sub-panel compact-panel" title="目标风控策略" extra={canManageTargets ? <Button type="primary" size="small" loading={riskSaving} onClick={saveRiskPolicy}>保存</Button> : null}>
                 <Form form={riskForm} layout="vertical">
                   <div className="form-grid">
                     <Form.Item name="active_window" label="可发送时间窗"><Input placeholder="09:00-23:00" /></Form.Item>
@@ -502,11 +547,11 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
                   renderItem={(message) => (
                     <List.Item
                       actions={[
-                        <Button size="small" onClick={() => onSendToTarget(targetDetail.target)}>发消息</Button>,
-                        <Button size="small" loading={syncingCommentMessageId === message.id} onClick={() => syncMessageComments(message)}>同步评论</Button>,
-                        <Button size="small" onClick={() => onCreateTaskFromTarget('channel_view', targetDetail.target, message)}>做{taskLabel('channel_view')}任务</Button>,
-                        <Button size="small" onClick={() => onCreateTaskFromTarget('channel_like', targetDetail.target, message)}>做{taskLabel('channel_like')}任务</Button>,
-                        <Button size="small" onClick={() => onCreateTaskFromTarget('channel_comment', targetDetail.target, message)}>做{taskLabel('channel_comment')}任务</Button>,
+                        canManageMessageSending ? <Button size="small" onClick={() => onSendToTarget(targetDetail.target)}>发消息</Button> : null,
+                        canManageTargets ? <Button size="small" loading={syncingCommentMessageId === message.id} onClick={() => syncMessageComments(message)}>同步评论</Button> : null,
+                        canManageTasks ? <Button size="small" onClick={() => onCreateTaskFromTarget('channel_view', targetDetail.target, message)}>做{taskLabel('channel_view')}任务</Button> : null,
+                        canManageTasks ? <Button size="small" onClick={() => onCreateTaskFromTarget('channel_like', targetDetail.target, message)}>做{taskLabel('channel_like')}任务</Button> : null,
+                        canManageTasks ? <Button size="small" onClick={() => onCreateTaskFromTarget('channel_comment', targetDetail.target, message)}>做{taskLabel('channel_comment')}任务</Button> : null,
                       ]}
                     >
                       <List.Item.Meta
@@ -523,24 +568,40 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
                 />
               </Card>
             )}
-            {targetDetail.target.target_type === 'group' && (
-              <Card className="sub-panel compact-panel" title="账号覆盖">
+            {targetDetail.accounts.length > 0 && (
+              <Card
+                className="sub-panel compact-panel"
+                title="账号覆盖"
+                extra={canManageTargets && failedAdmissionAccounts.length ? <Button size="small" icon={<RefreshCcw size={14} />} loading={admissionRetrySaving} onClick={() => openAdmissionRetry(failedAdmissionAccounts.map((account) => account.id))}>重试失败准入</Button> : null}
+              >
+                {failedAdmissionAccounts.length > 0 && (
+                  <Alert
+                    className="form-alert"
+                    type="warning"
+                    showIcon
+                    message={`有 ${failedAdmissionAccounts.length} 个账号未满足准入，需要解除限制或确认已加入后重试。`}
+                  />
+                )}
                 <List
                   dataSource={targetDetail.accounts}
                   locale={{ emptyText: <Empty description="暂无账号覆盖" /> }}
-                  renderItem={(account) => (
-                    <List.Item
-                      actions={[
-                        <Space key="send" size={6}><Typography.Text type="secondary">发言</Typography.Text><Switch size="small" checked={account.can_send} loading={accountPolicySaving === `${account.id}:can_send`} onChange={(checked) => saveAccountPolicy(account.id, { can_send: checked })} /></Space>,
-                        <Space key="listener" size={6}><Typography.Text type="secondary">监听</Typography.Text><Switch size="small" checked={account.is_listener} loading={accountPolicySaving === `${account.id}:is_listener`} onChange={(checked) => saveAccountPolicy(account.id, { is_listener: checked })} /></Space>,
-                      ]}
-                    >
-                      <List.Item.Meta
-                        title={<Space><Typography.Text strong>{account.display_name}</Typography.Text><StatusBadge status={account.status} />{account.is_listener && <Tag>监听号</Tag>}</Space>}
-                        description={`@${account.username ?? '未设置'} / ${account.permission_label || '-'} / ${account.can_send ? '可发言' : '不可发言'} / 最近发送 ${formatDateTime(account.last_sent_at)}`}
-                      />
-                    </List.Item>
-                  )}
+                  renderItem={(account) => {
+                    const actions = [
+                      canManageTargets ? <Space key="send" size={6}><Typography.Text type="secondary">发言</Typography.Text><Switch size="small" checked={account.can_send} loading={accountPolicySaving === `${account.id}:can_send`} onChange={(checked) => saveAccountPolicy(account.id, { can_send: checked })} /></Space> : null,
+                      canManageTargets ? <Space key="listener" size={6}><Typography.Text type="secondary">监听</Typography.Text><Switch size="small" checked={account.is_listener} loading={accountPolicySaving === `${account.id}:is_listener`} onChange={(checked) => saveAccountPolicy(account.id, { is_listener: checked })} /></Space> : null,
+                    ];
+                    if (canManageTargets && account.admission_retryable) {
+                      actions.push(<Button key="admission" size="small" icon={<RefreshCcw size={14} />} loading={admissionRetrySaving} onClick={() => openAdmissionRetry([account.id])}>重试准入</Button>);
+                    }
+                    return (
+                      <List.Item actions={actions}>
+                        <List.Item.Meta
+                          title={<Space><Typography.Text strong>{account.display_name}</Typography.Text><StatusBadge status={account.status} />{account.is_listener && <Tag>监听号</Tag>}<StatusBadge status={account.admission_status === 'ready' ? '准入通过' : '准入失败'} /></Space>}
+                          description={`@${account.username ?? '未设置'} / ${account.permission_label || '-'} / ${account.can_send ? '可发言' : '不可发言'}${account.admission_failure_reason ? ` / 失败原因：${account.admission_failure_reason}` : ''} / 最近发送 ${formatDateTime(account.last_sent_at)}`}
+                        />
+                      </List.Item>
+                    );
+                  }}
                 />
               </Card>
             )}
@@ -593,6 +654,22 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
           <Card loading={detailLoading}>正在读取目标详情</Card>
         )}
       </DetailModal>
+      <Modal
+        title="重试目标准入"
+        open={admissionRetryOpen}
+        confirmLoading={admissionRetrySaving}
+        okText="开始重试"
+        cancelText="取消"
+        onOk={retryAdmission}
+        onCancel={() => setAdmissionRetryOpen(false)}
+        destroyOnHidden
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Text type="secondary">将重新读取所选账号在该目标里的加入/发言能力，并写入审计记录。</Typography.Text>
+          <Input.TextArea rows={3} value={admissionRetryReason} onChange={(event) => setAdmissionRetryReason(event.target.value)} placeholder="例如：管理员已解除限制，重查账号准入能力" />
+          <Typography.Text type="secondary">账号数：{admissionRetryAccountIds.length}</Typography.Text>
+        </Space>
+      </Modal>
     </>
   );
 }
