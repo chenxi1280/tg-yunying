@@ -468,6 +468,91 @@ def test_modal_confirmation_text_starts_batch_without_legacy_phrase():
         assert batch.confirm_text == "确认"
 
 
+def test_confirmed_profile_batch_uses_preview_overrides_without_regenerating(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+
+        def fail_if_regenerated(*args, **kwargs):
+            raise AssertionError("confirmed batch should reuse preview overrides")
+
+        monkeypatch.setattr(account_security_service, "_generate_profiles", fail_if_regenerated)
+        payload = AccountSecurityBatchCreate(
+            account_ids=[account.id],
+            action_types=["update_profile", "update_username"],
+            confirm_text="确认",
+            profile_strategy=ProfileGenerationStrategy(generation_mode="ai_random"),
+            preview_overrides=[
+                AccountSecurityProfileOverride(
+                    account_id=account.id,
+                    generated_display_name="锅巴洋芋",
+                    generated_first_name="锅巴洋芋",
+                    generated_bio="爱美食，尤其喜欢路边摊",
+                    username_candidates=["guoba_yangyu"],
+                )
+            ],
+            reason="测试复用预览创建批次",
+        )
+
+        batch = create_account_security_batch(session, 1, payload, "tester")
+
+        assert batch.status == "running"
+        assert batch.items[0].generated_display_name == "锅巴洋芋"
+        assert batch.items[0].username_candidates == ["guoba_yangyu"]
+
+
+def test_manual_required_or_missing_session_accounts_are_auto_skipped():
+    with _session() as session:
+        active = _seed_account(session)
+        offline = TgAccount(
+            id=12,
+            tenant_id=1,
+            display_name="等待验证码账号",
+            phone_masked="139****0000",
+            developer_app_id=1,
+            developer_app_version=1,
+            status=AccountStatus.WAITING_CODE.value,
+            session_ciphertext="",
+            health_score=20,
+        )
+        session.add(offline)
+        session.commit()
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[active.id, offline.id],
+                action_types=["update_profile"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+            ),
+        )
+
+        offline_preview = next(item for item in preview.items if item.account_id == offline.id)
+        assert preview.summary["executable"] == 1
+        assert preview.summary["skipped"] == 1
+        assert preview.summary["manual_required"] == 0
+        assert offline_preview.precheck_status == "skipped"
+        assert "账号未在线或缺少可用 session" in offline_preview.blockers
+
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(
+                account_ids=[active.id, offline.id],
+                action_types=["update_profile"],
+                confirm_text="确认",
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+                reason="测试自动跳过离线账号",
+            ),
+            "tester",
+        )
+        skipped_item = next(item for item in batch.items if item.account_id == offline.id)
+        assert skipped_item.status == "skipped"
+        assert skipped_item.precheck_status == "skipped"
+        assert "账号未在线或缺少可用 session" in skipped_item.skipped_reason
+        assert batch.skipped_count == 1
+
+
 def test_waiting_account_security_item_is_retried_when_due(monkeypatch):
     with _session() as session:
         account = _seed_account(session)

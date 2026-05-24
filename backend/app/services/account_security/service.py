@@ -423,8 +423,22 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
     trace_id = uuid4().hex
     items: list[AccountSecurityPreviewItem] = []
     needs_profile_preview = bool(set(action_types) & PROFILE_ACTIONS)
-    generated = _generate_profiles(session, tenant_id, accounts, payload.profile_strategy) if needs_profile_preview else [_account_profile_preview(account) for account in accounts]
     overrides = {override.account_id: override for override in payload.preview_overrides}
+    if needs_profile_preview:
+        accounts_needing_generation = [account for account in accounts if account.id not in overrides]
+        generated_by_id = {
+            account.id: generated_item
+            for account, generated_item in zip(
+                accounts_needing_generation,
+                _generate_profiles(session, tenant_id, accounts_needing_generation, payload.profile_strategy) if accounts_needing_generation else [],
+            )
+        }
+        generated = [
+            _account_profile_preview(account) if account.id in overrides else generated_by_id[account.id]
+            for account in accounts
+        ]
+    else:
+        generated = [_account_profile_preview(account) for account in accounts]
     for index, account in enumerate(accounts):
         if set(action_types) & SECURITY_ACTIONS:
             try:
@@ -439,8 +453,8 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
         status = "executable"
         if account.status != AccountStatus.ACTIVE.value or not account.session_ciphertext:
             blockers.append("账号未在线或缺少可用 session")
-            suggested.append("先重新登录账号")
-            status = "manual_required"
+            suggested.append("已自动跳过；处理登录或 session 后可重新发起")
+            status = "skipped"
         wait_until = _fresh_session_wait_until(session, account) if "cleanup_devices" in action_types else None
         if wait_until:
             blockers.append(f"新登录 Session 未满 24 小时，需等待到 {wait_until.isoformat()}")
@@ -456,15 +470,16 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
                 warnings.append(f"{message}；已使用本次手工编辑预览")
             else:
                 blockers.append(message)
-                suggested.append("切换到模板兜底、导入名单，或手工编辑预览后再确认")
-                status = "manual_required"
+                suggested.append("已自动跳过；切换模板兜底、导入名单，或手工编辑后重新预检")
+                status = "skipped"
         if generated_item.get("generation_warning"):
             warnings.append(str(generated_item["generation_warning"]))
         username_candidates = generated_item["username_candidates"] if "update_username" in action_types else []
         invalid_usernames = [candidate for candidate in username_candidates if not USERNAME_RE.match(candidate)]
         if invalid_usernames:
             blockers.append(f"username 候选格式错误：{','.join(invalid_usernames)}")
-            status = "manual_required"
+            suggested.append("已自动跳过；修正 username 候选后可重新发起")
+            status = "skipped"
         avatar_source = str(generated_item.get("avatar_source") or _avatar_source(session, account, index, payload.avatar_strategy))
         if "update_avatar" in action_types:
             avatar_error = _validate_avatar_source(session, account, avatar_source)
@@ -569,6 +584,7 @@ def create_account_security_batch(session: Session, tenant_id: int, payload: Acc
         )
         session.add(item)
     audit(session, tenant_id=tenant_id, actor=actor, action="创建账号安全加固批次", target_type="account_security_batch", target_id=str(batch.id), detail=payload.reason)
+    _refresh_batch_counts(session, batch)
     session.commit()
     return account_security_batch_detail(session, tenant_id, batch.id)
 

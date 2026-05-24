@@ -164,6 +164,13 @@ export function AccountSecurityBatchDrawer({
   const forbiddenText = profileStrategy.forbidden_words.join('，');
   const modeConfig = MODE_CONFIG[mode];
   const isProfileMode = mode === 'profile';
+  const autoSkippedCount = (precheck?.summary.skipped ?? 0) + (precheck?.summary.manual_required ?? 0);
+  const avatarSourceHint = avatarStrategy.mode === 'material_random'
+    ? '系统会从素材中心已审核的头像包 / 上传图片中随机分配头像，不需要填写 material ID 或路径。'
+    : avatarStrategy.mode === 'sequential'
+      ? '留空则按素材中心头像包顺序分配；填写来源时按你填写的顺序覆盖。'
+      : '';
+  const shouldShowAvatarSourceInput = avatarStrategy.mode === 'sequential';
 
   React.useEffect(() => {
     if (!open) return;
@@ -182,7 +189,7 @@ export function AccountSecurityBatchDrawer({
     setStep(0);
   }, [modeConfig, open, selectedAccountIds]);
 
-  const previewOverrides = React.useMemo(() => (precheck?.items ?? []).filter((item) => editedPreviewIds.has(item.account_id)).map((item) => ({
+  const previewOverrides = React.useMemo(() => (precheck?.items ?? []).map((item) => ({
     account_id: item.account_id,
     generated_display_name: item.generated_display_name,
     generated_first_name: item.generated_first_name,
@@ -190,7 +197,7 @@ export function AccountSecurityBatchDrawer({
     generated_bio: item.generated_bio,
     username_candidates: item.username_candidates,
     avatar_source: item.avatar_source,
-  })), [editedPreviewIds, precheck]);
+  })), [precheck]);
 
   const payload = {
     account_ids: draftAccountIds,
@@ -225,6 +232,14 @@ export function AccountSecurityBatchDrawer({
 
   function mergeDraftAccountIds(ids: number[]) {
     setDraftAccountIds((current) => Array.from(new Set([...current, ...ids])));
+  }
+
+  function changeAvatarMode(modeValue: string) {
+    setAvatarStrategy((current) => ({
+      ...current,
+      mode: modeValue,
+      avatar_sources: modeValue === 'sequential' ? current.avatar_sources : [],
+    }));
   }
 
   function updatePreviewItem(accountId: number, patch: Partial<AccountSecurityPreviewItem>) {
@@ -519,10 +534,10 @@ export function AccountSecurityBatchDrawer({
                   style={{ width: 160 }}
                   options={[
                     { label: '不改头像', value: 'none' },
-                    { label: '随机素材池', value: 'material_random' },
-                    { label: '顺序分配', value: 'sequential' },
+                    { label: '随机头像包', value: 'material_random' },
+                    { label: '头像包顺序分配', value: 'sequential' },
                   ]}
-                  onChange={(modeValue) => setAvatarStrategy((current) => ({ ...current, mode: modeValue }))}
+                  onChange={changeAvatarMode}
                 />
                 <Input
                   style={{ width: 260 }}
@@ -537,12 +552,15 @@ export function AccountSecurityBatchDrawer({
                 placeholder="命名风格提示：例如 像锅巴洋芋、蕉太狼、早睡失败这种真实 TG 昵称，不要正式姓名"
                 onChange={(event) => setProfileStrategy((current) => ({ ...current, custom_prompt: event.target.value }))}
               />
-              <Input.TextArea
-                rows={2}
-                value={avatarStrategy.avatar_sources.join('\n')}
-                placeholder="头像来源：每行一个 avatar:对象key / material:素材ID / 平台媒体文件路径"
-                onChange={(event) => setAvatarStrategy((current) => ({ ...current, avatar_sources: event.target.value.split(/\n+/).map((item) => item.trim()).filter(Boolean) }))}
-              />
+              {avatarSourceHint && <Alert type="info" showIcon message={avatarSourceHint} />}
+              {shouldShowAvatarSourceInput && (
+                <Input.TextArea
+                  rows={2}
+                  value={avatarStrategy.avatar_sources.join('\n')}
+                  placeholder="可选覆盖头像来源：每行一个 avatar:对象key / material:素材ID / 平台媒体文件路径"
+                  onChange={(event) => setAvatarStrategy((current) => ({ ...current, avatar_sources: event.target.value.split(/\n+/).map((item) => item.trim()).filter(Boolean) }))}
+                />
+              )}
             </Space>
           </>
         )}
@@ -562,7 +580,7 @@ export function AccountSecurityBatchDrawer({
         </Space>
         {precheck && (
           <Space orientation="vertical" size={8} style={{ width: '100%' }}>
-            <Typography.Text strong>预检汇总：共 {precheck.summary.total ?? 0} 个，可执行 {precheck.summary.executable ?? 0} 个，需等待 {precheck.summary.waiting ?? 0} 个，需人工处理 {precheck.summary.manual_required ?? 0} 个</Typography.Text>
+            <Typography.Text strong>预检汇总：共 {precheck.summary.total ?? 0} 个，可执行 {precheck.summary.executable ?? 0} 个，需等待 {precheck.summary.waiting ?? 0} 个，自动跳过 {autoSkippedCount} 个</Typography.Text>
             <Table<AccountSecurityPreviewItem>
               className="tg-table"
               rowKey="account_id"
@@ -599,7 +617,7 @@ export function AccountSecurityBatchDrawer({
       >
         <Space orientation="vertical" size={8}>
           <Typography.Text>动作：{modeConfig.title}</Typography.Text>
-          <Typography.Text>账号：共 {precheck?.summary.total ?? 0} 个，可执行 {precheck?.summary.executable ?? 0} 个，需等待 {precheck?.summary.waiting ?? 0} 个，需人工处理 {precheck?.summary.manual_required ?? 0} 个。</Typography.Text>
+          <Typography.Text>账号：共 {precheck?.summary.total ?? 0} 个，可执行 {precheck?.summary.executable ?? 0} 个，需等待 {precheck?.summary.waiting ?? 0} 个，自动跳过 {autoSkippedCount} 个。</Typography.Text>
           <Typography.Text>原因：{reason || modeConfig.reason}</Typography.Text>
         </Space>
       </Modal>

@@ -103,3 +103,25 @@ def test_materials_view_exposes_prd_material_group_management():
     assert "api<MaterialGroup>(`/material-groups/${editingGroup.id}`" in source
     assert "素材组管理" in source
     assert "material_count" in source
+
+
+def test_profile_batch_random_avatar_pool_does_not_require_manual_sources():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountSecurityBatchDrawer.tsx").read_text()
+
+    assert "不需要填写 material ID 或路径" in source
+    assert "留空则按素材中心头像包顺序分配" in source
+
+
+def test_profile_batch_confirm_submits_all_preview_rows_to_avoid_regeneration():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountSecurityBatchDrawer.tsx").read_text()
+
+    assert "const previewOverrides = React.useMemo(() => (precheck?.items ?? []).map" in source
+    assert "preview_overrides: previewOverrides" in source
+
+
+def test_profile_batch_summary_labels_manual_items_as_auto_skipped():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountSecurityBatchDrawer.tsx").read_text()
+
+    assert "const autoSkippedCount = (precheck?.summary.skipped ?? 0) + (precheck?.summary.manual_required ?? 0)" in source
+    assert "自动跳过 {autoSkippedCount} 个" in source
+    assert "需人工处理 {precheck" not in source
