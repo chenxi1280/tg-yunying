@@ -136,6 +136,7 @@ class GroupMessageSnapshot:
     content: str
     sender_peer_id: str = ""
     sender_username: str = ""
+    sender_peer_type: str = ""
     message_type: str = "text"
     sent_at: datetime | None = None
     is_bot: bool = False

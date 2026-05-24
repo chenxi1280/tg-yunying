@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.config import get_settings
-from app.integrations.telegram import DeveloperAppCredentials, SendResult, TelethonTelegramGateway
-from app.models import AccountStatus, Action, AuditLog, ChannelMessage, ContentKeywordRule, FailureType, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, OperationPlanTemplate, OperationTarget, RuleSetVersion, SourceMediaAsset, Task, Tenant, TgAccount, TgAccountSecurityBatchItem, TgGroup, TgGroupAccount
+from app.integrations.telegram import DeveloperAppCredentials, GroupMessageSnapshot, SendResult, TelethonTelegramGateway
+from app.models import AccountStatus, Action, AuditLog, ChannelMessage, ContentKeywordRule, FailureType, GroupContextMessage, Material, MaterialAssetVersion, MaterialTgRefVersion, MessageTask, OperationPlanTemplate, OperationTarget, RuleSetVersion, SourceMediaAsset, Task, Tenant, TgAccount, TgAccountSecurityBatchItem, TgGroup, TgGroupAccount
 from app.schemas.operations_center import RuleSetCreate, RuleSetVersionCreate
 from app.schemas.ai_config import MaterialCreate, MaterialUpdate
 from app.services import ai_config as ai_config_service
@@ -32,10 +32,11 @@ from app.services.operations_center import (
     update_rule_set_config,
 )
 from app.services.rule_engine import apply_output_policy, bound_rule_version, transform_content
-from app.services.task_center.executors.group_relay import effective_relay_config
+from app.services.task_center.executors.group_relay import build_plan as build_relay_plan, effective_relay_config
 from app.services.task_center.executors.group_ai_chat import build_plan as build_ai_chat_plan
 from app.services.task_center.executors.common import channel_scope
 from app.services._common import _now
+from app.services.group_listeners import is_listener_ignored_sender
 from app.services.source_media import (
     WAITING_MATERIAL_CACHE,
     drain_source_media_cache,
@@ -238,6 +239,134 @@ def test_source_media_waiting_rejects_stale_event_and_queue_overflow():
         assert overflow_action.status == "skipped"
         assert overflow_action.result["error_code"] == "material_cache_wait_queue_full"
         assert overflow_asset.cache_status == "cache_failed"
+
+
+def test_group_relay_skips_existing_source_channel_self_messages(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr("app.services.task_center.executors.group_relay.should_collect_listener", lambda *args, **kwargs: False)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="发送号", phone_masked="101", status=AccountStatus.ACTIVE.value))
+        source = TgGroup(id=201, tenant_id=1, tg_peer_id="-100201", title="来源频道", auth_status="已授权运营")
+        target = TgGroup(id=202, tenant_id=1, tg_peer_id="-100202", title="目标群", auth_status="已授权运营")
+        session.add_all([source, target])
+        session.add_all(
+            [
+                TgGroupAccount(tenant_id=1, group_id=source.id, account_id=101, can_send=True, is_listener=True),
+                TgGroupAccount(tenant_id=1, group_id=target.id, account_id=101, can_send=True),
+                GroupContextMessage(
+                    tenant_id=1,
+                    group_id=source.id,
+                    listener_account_id=101,
+                    sender_peer_id="201",
+                    sender_name=source.title,
+                    content="频道机器发送的内容不应进入转发计划",
+                    remote_message_id="source-channel-self-1",
+                ),
+            ]
+        )
+        task = Task(
+            id="relay-source-self",
+            tenant_id=1,
+            name="屏蔽来源频道自身消息",
+            type="group_relay",
+            status="running",
+            account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0},
+            type_config={
+                "source_groups": [{"group_id": source.id, "is_active": True}],
+                "target_group_id": target.id,
+                "content_mode": "raw",
+            },
+        )
+        session.add(task)
+        session.commit()
+
+        assert build_relay_plan(session, task) == 0
+        assert session.query(Action).filter_by(task_id=task.id, action_type="send_message").count() == 0
+
+
+def test_group_relay_keeps_real_users_when_id_or_name_matches_source_channel(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr("app.services.task_center.executors.group_relay.should_collect_listener", lambda *args, **kwargs: False)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="发送号", phone_masked="101", status=AccountStatus.ACTIVE.value))
+        source = TgGroup(id=201, tenant_id=1, tg_peer_id="-100201", title="来源频道", auth_status="已授权运营")
+        target = TgGroup(id=202, tenant_id=1, tg_peer_id="-100202", title="目标群", auth_status="已授权运营")
+        session.add_all([source, target])
+        session.add_all(
+            [
+                TgGroupAccount(tenant_id=1, group_id=source.id, account_id=101, can_send=True, is_listener=True),
+                TgGroupAccount(tenant_id=1, group_id=target.id, account_id=101, can_send=True),
+                GroupContextMessage(
+                    tenant_id=1,
+                    group_id=source.id,
+                    listener_account_id=101,
+                    sender_peer_id="201",
+                    sender_name="真实用户",
+                    content="真实用户 id 和频道 suffix 碰撞也要转发",
+                    remote_message_id="real-user-id-collision",
+                ),
+                GroupContextMessage(
+                    tenant_id=1,
+                    group_id=source.id,
+                    listener_account_id=101,
+                    sender_peer_id="real-user-peer",
+                    sender_name=source.title,
+                    content="真实用户昵称等于来源频道标题也要转发",
+                    remote_message_id="real-user-name-collision",
+                ),
+            ]
+        )
+        task = Task(
+            id="relay-real-collisions",
+            tenant_id=1,
+            name="保留真实来源用户",
+            type="group_relay",
+            status="running",
+            account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1},
+            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0},
+            type_config={
+                "source_groups": [{"group_id": source.id, "is_active": True}],
+                "target_group_id": target.id,
+                "content_mode": "raw",
+            },
+        )
+        session.add(task)
+        session.commit()
+
+        assert build_relay_plan(session, task) == 2
+        payloads = [item.payload for item in session.query(Action).filter_by(task_id=task.id, action_type="send_message").all()]
+        assert {payload["original_text"] for payload in payloads} == {
+            "真实用户 id 和频道 suffix 碰撞也要转发",
+            "真实用户昵称等于来源频道标题也要转发",
+        }
+
+
+def test_listener_does_not_ignore_distinct_channel_with_same_title():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        source = TgGroup(id=201, tenant_id=1, tg_peer_id="-100201", title="来源频道", auth_status="已授权运营")
+        session.add(source)
+        session.commit()
+
+        snapshot = GroupMessageSnapshot(
+            remote_message_id="same-title-other-channel",
+            sender_peer_id="999",
+            sender_peer_type="channel",
+            sender_name=source.title,
+            content="同名其它频道的内容不能被来源自身过滤误伤",
+        )
+
+        assert is_listener_ignored_sender(session, source, snapshot) is False
 
 
 def test_source_media_cache_worker_uploads_and_wakes_waiting_action(monkeypatch):

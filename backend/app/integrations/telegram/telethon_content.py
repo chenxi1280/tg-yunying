@@ -33,6 +33,21 @@ async def _sender_role(client, target, sender) -> str:
     return "member"
 
 
+def _sender_peer_type(sender) -> str:
+    if sender is None:
+        return ""
+    type_name = type(sender).__name__.lower()
+    if "channel" in type_name:
+        return "channel"
+    if "chat" in type_name:
+        return "chat"
+    if getattr(sender, "bot", False):
+        return "bot"
+    if "user" in type_name:
+        return "user"
+    return type_name
+
+
 async def fetch_group_archive(client, peer_id: str) -> ArchiveSnapshot:
     target = await resolve_telethon_target(client, peer_id, group_id=1)
     messages_resp = await client.get_messages(target, limit=50)
@@ -99,6 +114,7 @@ async def fetch_group_messages(client, peer_id: str, limit: int) -> list[GroupMe
         sender = await message.get_sender() if hasattr(message, "get_sender") else None
         sender_peer_id = str(getattr(sender, "id", "") or "")
         sender_username = str(getattr(sender, "username", "") or "")
+        sender_peer_type = _sender_peer_type(sender)
         sender_name = (
             getattr(sender, "first_name", "")
             or getattr(sender, "title", "")
@@ -122,6 +138,7 @@ async def fetch_group_messages(client, peer_id: str, limit: int) -> list[GroupMe
                 sender_peer_id=sender_peer_id,
                 sender_name=sender_name,
                 sender_username=sender_username,
+                sender_peer_type=sender_peer_type,
                 content=text or "[media]",
                 message_type="media" if media else "text",
                 sent_at=getattr(message, "date", None),

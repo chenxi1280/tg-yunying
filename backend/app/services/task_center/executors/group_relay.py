@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.models import AccountStatus, GroupAuthStatus, OperationTarget, RuleSet, RuleSetVersion, SourceMediaAsset, Task, TgAccount, TgGroup, TgGroupAccount
 from app.services.account_capacity import available_accounts_by_capacity, next_capacity_window
 from app.services.content_filters import filter_outbound_content
-from app.services.group_listeners import collect_group_context, recent_context_messages
+from app.services.group_listeners import collect_group_context, is_listener_ignored_sender, recent_context_messages
 from app.services.rule_engine import apply_output_policy
 from app.services.material_rules import select_material_for_policy
 
@@ -52,6 +52,8 @@ def build_plan(session: Session, task: Task) -> int:
         if should_collect_listener("group", source.id, window_seconds=source.listener_interval_seconds):
             collect_group_context(session, source, _source_monitor_account_ids(session, task, source, monitor_account_ids))
         for message in reversed(recent_context_messages(session, source, source.listener_context_limit)):
+            if is_listener_ignored_sender(session, source, message):
+                continue
             source_filter_reason = relay_source_filter_reason(message, config)
             if source_filter_reason:
                 continue

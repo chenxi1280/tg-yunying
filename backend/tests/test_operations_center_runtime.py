@@ -2481,6 +2481,127 @@ def test_channel_comment_reply_targets_must_belong_to_selected_messages(monkeypa
         assert session.scalars(select(Action).where(Action.task_id == task.id)).all() == []
 
 
+def test_channel_comment_drops_ai_template_duplicates_and_missing_fillers(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    generated = [
+        "这个内容挺有参考价值，先收藏一下。",
+        "这个角度不错，值得再讨论一下。",
+        "说得比较实在，后面可以继续展开看看。",
+        "收纳盒这个尺寸有人实测过吗",
+    ]
+    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", lambda *_args, **_kwargs: (generated, 0))
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="评论账号", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=100))
+        session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营"))
+        session.add(ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=9001, content_preview="今天试了 18cm 收纳盒，塞进小柜子刚好"))
+        task = Task(
+            id="channel-comment-quality",
+            tenant_id=1,
+            name="频道评论质量",
+            type="channel_comment",
+            status="running",
+            account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 4, "cooldown_per_account_minutes": 0},
+            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+            type_config={
+                "target_channel_id": 31,
+                "message_scope": "specific",
+                "message_ids": [41],
+                "target_comments_per_message": 4,
+                "comment_count_jitter": 0,
+                "max_comments_per_account_per_hour": 500,
+            },
+            stats={},
+        )
+        session.add(task)
+        session.add(
+            Action(
+                id="old-comment",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="channel_comment",
+                action_type="post_comment",
+                status="success",
+                account_id=101,
+                payload={"comment_text": "这个内容挺有参考价值，先收藏一下。"},
+            )
+        )
+        session.commit()
+
+        created = build_channel_comment_plan(session, task)
+        comments = [action.payload["comment_text"] for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending"))]
+
+    assert created == 1
+    assert comments == ["收纳盒这个尺寸有人实测过吗"]
+
+
+def test_channel_comment_dedupes_same_message_beyond_recent_task_window(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", lambda *_args, **_kwargs: (["收纳盒这个尺寸有人实测过吗"], 0))
+    base_time = datetime(2026, 5, 24, 12, 0, 0)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="评论账号", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=100))
+        session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营"))
+        session.add(ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=9001, content_preview="今天试了 18cm 收纳盒，塞进小柜子刚好"))
+        for index in range(25):
+            session.add(ChannelMessage(id=100 + index, tenant_id=1, channel_target_id=31, message_id=9100 + index, content_preview=f"其它消息 {index}"))
+        task = Task(
+            id="channel-comment-history-window",
+            tenant_id=1,
+            name="频道评论历史窗口",
+            type="channel_comment",
+            status="running",
+            account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 2, "cooldown_per_account_minutes": 0},
+            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+            type_config={
+                "target_channel_id": 31,
+                "message_scope": "specific",
+                "message_ids": [41],
+                "target_comments_per_message": 2,
+                "comment_count_jitter": 0,
+                "max_comments_per_account_per_hour": 500,
+            },
+            stats={},
+        )
+        session.add(task)
+        session.add(
+            Action(
+                id="old-current-message-comment",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="channel_comment",
+                action_type="post_comment",
+                status="success",
+                account_id=101,
+                created_at=base_time,
+                payload={"channel_message_id": 41, "comment_text": "收纳盒这个尺寸有人实测过吗"},
+            )
+        )
+        for index in range(25):
+            session.add(
+                Action(
+                    id=f"recent-other-message-comment-{index}",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="channel_comment",
+                    action_type="post_comment",
+                    status="success",
+                    account_id=101,
+                    created_at=base_time + timedelta(minutes=index + 1),
+                    payload={"channel_message_id": 100 + index, "comment_text": f"其它消息评论 {index}"},
+                )
+            )
+        session.commit()
+
+        assert build_channel_comment_plan(session, task) == 0
+        pending = session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending")).all()
+
+    assert pending == []
+
+
 def test_ai_cycle_mode_applies_silent_window_and_daily_ramp():
     config = {
         "silent_mode_enabled": True,

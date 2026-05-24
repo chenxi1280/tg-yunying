@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.models import ChannelMessage, ChannelMessageComment, OperationTarget, RuleSet, Task
+from app.models import Action, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSet, Task
 
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 from ..account_pool import select_task_accounts
-from ..ai_generator import generate_channel_comments
+from ..ai_generator import AiGenerationUnavailable, clean_channel_comment_contents, generate_channel_comments
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import PostCommentPayload, create_comment_action
@@ -35,6 +35,7 @@ def build_plan(session: Session, task: Task) -> int:
     if comment_mode in {"reply", "mixed"} and requested_reply_targets and not reply_targets:
         task.last_error = "回复对象不属于当前频道消息，请先采集评论后重新选择"
         return 0
+    quality_skipped = False
     for message in messages:
         if rule_version:
             context_text = "\n".join(
@@ -55,18 +56,27 @@ def build_plan(session: Session, task: Task) -> int:
         quantity = max(0, desired - used_count)
         if not quantity:
             continue
-        contents, tokens = generate_channel_comments(
-            session,
-            task.tenant_id,
-            config,
-            count=quantity,
-            message_content=message.content_preview or message.message_url,
-            target_label=channel.title,
-        )
+        try:
+            raw_contents, tokens = generate_channel_comments(
+                session,
+                task.tenant_id,
+                config,
+                count=quantity,
+                message_content=message.content_preview or message.message_url,
+                target_label=channel.title,
+            )
+        except AiGenerationUnavailable as exc:
+            task.last_error = str(exc)
+            return 0
+        contents = clean_channel_comment_contents(raw_contents, _recent_comment_texts(session, task, message), limit=quantity)
+        if raw_contents and not contents:
+            quality_skipped = True
+            stats_inc(task, "skipped_count")
+            continue
         add_tokens(task, tokens)
-        actions.extend((message, contents[index] if index < len(contents) else "支持一下", _reply_target_for_index(comment_mode, reply_targets, index)) for index in range(quantity))
+        actions.extend((message, content, _reply_target_for_index(comment_mode, reply_targets, index)) for index, content in enumerate(contents))
     if not actions:
-        task.last_error = ""
+        task.last_error = "AI 评论候选语义重复或模板化，已跳过本轮" if quality_skipped else ""
         return 0
     target_per_message = int(config.get("target_comments_per_message") or 1)
     _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("comment_count_jitter") or 0))
@@ -113,6 +123,33 @@ def build_plan(session: Session, task: Task) -> int:
         )
         created += 1
     return created
+
+
+def _recent_comment_texts(session: Session, task: Task, message: ChannelMessage, *, limit: int = 20) -> list[str]:
+    rows = session.scalars(
+        select(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.task_type == "channel_comment",
+            Action.action_type == "post_comment",
+            Action.status.in_(["pending", "executing", "success"]),
+            or_(
+                Action.payload["channel_message_id"].as_integer() == message.id,
+                Action.payload["message_id"].as_integer() == message.message_id,
+            ),
+        )
+        .order_by(Action.created_at.desc())
+        .limit(max(1, int(limit)))
+    )
+    comments: list[str] = []
+    for action in rows:
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        if int(payload.get("channel_message_id") or 0) not in {0, message.id}:
+            continue
+        text = str(payload.get("comment_text") or "").strip()
+        if text:
+            comments.append(text)
+    return comments
 
 
 def _reply_target_for_index(comment_mode: str, reply_targets: list[int], index: int) -> int | None:

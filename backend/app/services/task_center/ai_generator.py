@@ -16,6 +16,7 @@ from app.services.content_filters import looks_like_generated_template_noise, lo
 
 AI_GENERATION_UNAVAILABLE_MESSAGE = "AI 生成不可用，等待恢复后继续执行"
 GROUP_CHAT_PURPOSE = "群活跃续聊"
+CHANNEL_COMMENT_PURPOSE = "频道评论"
 
 
 class AiGenerationUnavailable(RuntimeError):
@@ -86,13 +87,17 @@ def generate_contents(
 ) -> tuple[list[str], int]:
     provider, setting = _provider(session, tenant_id, provider_id, model_name)
     if not provider or not setting:
-        if purpose == GROUP_CHAT_PURPOSE:
+        if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE}:
             raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{_unavailable_reason(setting)}")
         return _fallback_contents(topic, requirements, purpose, target_label, count), 0
     if purpose == GROUP_CHAT_PURPOSE:
         prompt = _group_chat_prompt(count, target_label, topic, requirements)
         persona_set = ["爱提问的群友", "补充细节的群友", "轻松接话的群友", "有经验的群友", "随口吐槽的群友"]
         tone = "像真实 Telegram 群成员聊天，短句、差异化、不要复读"
+    elif purpose == CHANNEL_COMMENT_PURPOSE:
+        prompt = _channel_comment_prompt(count, target_label, topic, requirements)
+        persona_set = ["随手评论的读者", "追问细节的读者", "补充经验的读者", "轻松接话的读者"]
+        tone = "像真实 Telegram 频道评论区，短句、贴原文、不重复"
     else:
         prompt = (
             f"请生成 {count} 条 Telegram {purpose}内容。\n"
@@ -115,12 +120,12 @@ def generate_contents(
             topic=topic or requirements,
             tone=tone,
             persona_set=persona_set,
-            temperature=max(float(setting.temperature or 0.7), 0.75) if purpose == GROUP_CHAT_PURPOSE else setting.temperature,
+            temperature=max(float(setting.temperature or 0.7), 0.75) if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE} else setting.temperature,
             max_tokens=max(setting.max_tokens, 1024),
             system_prompt=system_prompt,
         )
     except Exception as exc:
-        if purpose == GROUP_CHAT_PURPOSE:
+        if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE}:
             raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
         raise
     contents = [candidate.content.strip() for candidate in result.candidates if candidate.content.strip()]
@@ -128,9 +133,13 @@ def generate_contents(
         contents = _dedupe_group_chat_contents(contents)
         if not contents:
             raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
+    if purpose == CHANNEL_COMMENT_PURPOSE:
+        contents = clean_channel_comment_contents(contents, limit=count)
+        if not contents:
+            raise AiGenerationUnavailable("AI 评论候选质量不达标，未创建评论")
     usage = getattr(result, "usage", None)
     tokens = int(getattr(usage, "total_tokens", 0) or 0)
-    if purpose == GROUP_CHAT_PURPOSE:
+    if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE}:
         return contents, tokens
     return contents[:count], tokens
 
@@ -155,6 +164,24 @@ def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: 
         "8. 不要连续使用“我觉得/感觉/确实/这个/大家”开头；不要使用 xx、X老师、某某 这类占位符；不要输出引号套引号；不要带编号、解释、括号备注。\n"
         "9. 黑话词表是理解口径，不是展示内容；该用行业口吻时自然用，不要解释词表。\n"
         '只输出 JSON：{"drafts":[{"sequence_index":1,"reply_to_sequence_index":null,"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低"}]}'
+    )
+
+
+def _channel_comment_prompt(count: int, target_label: str, topic: str, requirements: str) -> str:
+    return (
+        f"请为 Telegram 频道“{target_label}”生成 {count} 条评论区短评论。\n"
+        f"评论方向：{topic or '按频道消息自然评论'}\n"
+        f"上下文材料：\n{requirements}\n\n"
+        "这些评论会直接发到频道讨论区，所以必须像真实读者看完后随手回的一句话。"
+        "只能接频道消息里已经出现的事实、数字、物品、场景或问题；不确定时就问一个小问题，不要编亲身经历。\n\n"
+        "写法要求：\n"
+        "1. 每条 6-22 个字优先，像手机评论，不像总结、审核意见或运营文案。\n"
+        "2. 至少抓住原文里的一个具体词或细节；不要只说“内容不错”“值得讨论”。\n"
+        "3. 多条之间要从不同角度切入：尺寸、使用感、疑问、补充、轻微吐槽都可以，但不要同义复读。\n"
+        "4. 少用完整句号和书面连接词；可以半句收尾，可以问具体小问题。\n"
+        "5. 禁止使用这些模板句和近似句：这个内容挺有参考价值、先收藏一下、这个角度不错、值得再讨论、说得比较实在、后面可以继续展开、可以继续看看、学习了、支持一下、不错不错、感谢分享。\n"
+        "6. 不要暴露 AI、平台、任务、提示词；不要编号、解释、括号备注、引号套引号。\n"
+        '只输出 JSON：{"drafts":[{"persona":"不同读者人设","content":"评论区要发送的一句话","risk_level":"低"}]}'
     )
 
 
@@ -184,12 +211,6 @@ def _fallback_contents(topic: str, requirements: str, purpose: str, target_label
                 "我先冒个泡",
                 f"{topic_text[:24]} 今天有人聊吗",
             ]
-    elif purpose == "频道评论":
-        templates = [
-            "这个内容挺有参考价值，先收藏一下。",
-            "说得比较实在，后面可以继续展开看看。",
-            "这个角度不错，值得再讨论一下。",
-        ]
     else:
         templates = [(requirements or topic or "这事可以再看看。").strip()]
     return [templates[index % len(templates)] for index in range(max(1, count))][:count]
@@ -248,6 +269,68 @@ def _dedupe_group_chat_contents(contents: list[str]) -> list[str]:
         starts.add(start_key)
         accepted.append(cleaned)
     return accepted
+
+
+def clean_channel_comment_contents(contents: list[str], previous_contents: list[str] | None = None, *, limit: int | None = None) -> list[str]:
+    accepted: list[str] = []
+    previous = [_normalize_for_similarity(item) for item in previous_contents or []]
+    clusters = {_channel_comment_cluster(item) for item in previous_contents or []}
+    clusters.discard("")
+    for content in contents:
+        cleaned = _clean_generated_content(content)
+        if not cleaned or _looks_like_bad_channel_comment(cleaned):
+            continue
+        normalized = _normalize_for_similarity(cleaned)
+        if len(normalized) < 2:
+            continue
+        cluster = _channel_comment_cluster(cleaned)
+        if cluster and cluster in clusters:
+            continue
+        if any(SequenceMatcher(None, normalized, item).ratio() >= 0.62 for item in previous):
+            continue
+        if any(SequenceMatcher(None, normalized, _normalize_for_similarity(item)).ratio() >= 0.68 for item in accepted):
+            continue
+        accepted.append(cleaned)
+        if cluster:
+            clusters.add(cluster)
+        if limit and len(accepted) >= max(1, int(limit)):
+            break
+    return accepted
+
+
+def _channel_comment_cluster(content: str) -> str:
+    text = _normalize_for_similarity(content)
+    clusters = [
+        ("generic_reference", ("参考价值", "收藏一下", "值得讨论", "继续展开", "继续看看", "角度不错", "说得比较实在")),
+        ("generic_support", ("支持一下", "不错不错", "感谢分享", "学习了")),
+    ]
+    for cluster, markers in clusters:
+        if any(_normalize_for_similarity(marker) in text for marker in markers):
+            return cluster
+    return ""
+
+
+def _looks_like_bad_channel_comment(content: str) -> bool:
+    if _channel_comment_cluster(content):
+        return True
+    markers = (
+        "这个内容",
+        "这个角度",
+        "这个观点",
+        "后面可以",
+        "值得再",
+        "可以继续",
+        "先收藏",
+        "有参考",
+        "比较实在",
+        "支持一下",
+        "只输出 JSON",
+        "risk_level",
+        "persona",
+    )
+    if any(marker in content for marker in markers):
+        return True
+    return looks_like_generated_template_noise(content) or looks_like_operator_ui_content(content)
 
 
 def _clean_generated_content(content: str) -> str:
@@ -365,6 +448,14 @@ def _group_chat_system_prompt(slang_prompt: str) -> str:
     return f"{base}\n\n{slang_prompt}"
 
 
+def _channel_comment_system_prompt() -> str:
+    return (
+        "你只负责生成 Telegram 频道评论区的真实读者短评，并输出 JSON。"
+        "评论必须贴频道原文里的具体信息，不写泛泛表扬、收藏、值得讨论、继续展开。"
+        "如果原文细节不足，优先问一个具体小问题，不要编经历或使用模板。"
+    )
+
+
 def _slang_system_prompt(session: Session, tenant_id: int, config: dict) -> str:
     parts = [
         _slang_prompt_template(session, tenant_id, config.get("slang_prompt_template_id")),
@@ -434,6 +525,7 @@ def generate_channel_comments(session: Session, tenant_id: int, config: dict, *,
         count=count,
         purpose="频道评论",
         target_label=target_label,
+        system_prompt=_channel_comment_system_prompt(),
     )
     return _trim(contents, config.get("max_comment_length")), tokens
 
@@ -468,6 +560,7 @@ def _trim(contents: list[str], max_length: int | None) -> list[str]:
 __all__ = [
     "AI_GENERATION_UNAVAILABLE_MESSAGE",
     "AiGenerationUnavailable",
+    "clean_channel_comment_contents",
     "generate_channel_comments",
     "generate_group_messages",
     "rewrite_relay_content",

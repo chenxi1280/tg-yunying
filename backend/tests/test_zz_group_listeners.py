@@ -100,6 +100,19 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
                 content="托管账号自己发的消息不应触发。",
             ),
             GroupMessageSnapshot(
+                remote_message_id="remote-source-channel-1",
+                sender_peer_id=group["tg_peer_id"],
+                sender_name=group["title"],
+                content="来源频道机器发送的消息不应触发转发。",
+            ),
+            GroupMessageSnapshot(
+                remote_message_id="remote-source-channel-typed-1",
+                sender_peer_id=group["tg_peer_id"].removeprefix("-100"),
+                sender_name=group["title"],
+                sender_peer_type="channel",
+                content="来源频道裸数字 sender id 也不应触发转发。",
+            ),
+            GroupMessageSnapshot(
                 remote_message_id="remote-media-1",
                 sender_peer_id="real-user-media",
                 sender_name="真人用户",
@@ -156,6 +169,8 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
             bot_context = session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-bot-1").one()
             assert bot_context.is_bot is True
             assert bot_context.sender_name == "群机器人"
+            assert session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-source-channel-1").count() == 0
+            assert session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-source-channel-typed-1").count() == 0
             tasks = session.query(MessageTask).filter_by(group_id=group["id"]).order_by(MessageTask.id.desc()).limit(5).all()
             assert not any(task.preferred_account_id == sender["id"] and task.content == "这个功能怎么开始参与？" for task in tasks)
 
