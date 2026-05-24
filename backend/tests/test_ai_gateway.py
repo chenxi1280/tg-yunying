@@ -5,7 +5,8 @@ from typing import Any
 
 import pytest
 
-from app.ai_gateway import AiGateway, AiProviderCredentials, normalize_ai_model_name
+from app.ai_gateway import AiGateway, AiProviderCredentials, mock_candidates, normalize_ai_model_name
+from app.services.task_center.ai_generator import clean_channel_comment_contents
 
 
 def credentials() -> AiProviderCredentials:
@@ -16,6 +17,19 @@ def credentials() -> AiProviderCredentials:
         model_name="mimo-v2.5",
         api_key="test-key",
     )
+
+
+def test_mock_channel_comment_candidates_survive_quality_filter():
+    candidates = mock_candidates(
+        3,
+        "评论可以多条",
+        "像真实 Telegram 频道评论区，短句、贴原文、不重复",
+        ["随手评论的读者", "追问细节的读者", "补充经验的读者"],
+    )
+
+    contents = clean_channel_comment_contents([candidate.content for candidate in candidates], limit=3)
+
+    assert len(contents) == 3
 
 
 class FakeResponse:

@@ -75,22 +75,14 @@ def mock_candidates(
     material_ids: list[int] | None = None,
     selected_account_ids: list[int] | None = None,
 ) -> list[AiDraftCandidate]:
-    templates = [
-        "我看这个点其实挺像群里前两天聊的那个情况。",
-        "先别拉太大，具体到今天这个场景会好聊一点。",
-        "要是新来的朋友问，我可能会先让他看最容易卡住的那一步。",
-        "这事我更关心实际反馈，纸面说法有时候不太准。",
-        "可以慢慢聊，别一下子把话题弄得太硬。",
-    ]
+    templates, include_suffix = _mock_templates_for_tone(tone)
     ids = material_ids or []
     account_ids = selected_account_ids or []
     candidates: list[AiDraftCandidate] = []
     for index in range(count):
         material_id = ids[index % len(ids)] if ids else None
         suggested_account_id = account_ids[index % len(account_ids)] if account_ids else None
-        suffix = f"（话题：{topic}，语气：{tone}）"
-        if material_id:
-            suffix += f" [建议素材 #{material_id}]"
+        suffix = _mock_candidate_suffix(topic, tone, material_id) if include_suffix else ""
         candidates.append(
             AiDraftCandidate(
                 persona=persona_set[index % len(persona_set)],
@@ -103,6 +95,31 @@ def mock_candidates(
             )
         )
     return candidates
+
+
+def _mock_templates_for_tone(tone: str) -> tuple[list[str], bool]:
+    if "频道评论" in tone:
+        return [
+            "这个细节挺具体",
+            "评论区有人试过吗",
+            "这点确实容易忽略",
+            "原文这个例子挺直观",
+            "后面会补更多吗",
+        ], False
+    return [
+        "我看这个点其实挺像群里前两天聊的那个情况。",
+        "先别拉太大，具体到今天这个场景会好聊一点。",
+        "要是新来的朋友问，我可能会先让他看最容易卡住的那一步。",
+        "这事我更关心实际反馈，纸面说法有时候不太准。",
+        "可以慢慢聊，别一下子把话题弄得太硬。",
+    ], True
+
+
+def _mock_candidate_suffix(topic: str, tone: str, material_id: int | None) -> str:
+    suffix = f"（话题：{topic}，语气：{tone}）"
+    if material_id:
+        suffix += f" [建议素材 #{material_id}]"
+    return suffix
 
 
 class AiGateway:
