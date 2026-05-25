@@ -401,6 +401,8 @@ class TaskSettingsUpdate(TaskUpdate):
     chat_history_depth: int | None = Field(default=None, ge=1, le=200)
     ai_model: str | None = None
     system_prompt_override: str | None = None
+    slang_prompt_template_id: int | None = None
+    slang_terms: dict[str, str] | None = None
     tone: Literal["casual", "professional", "mixed", "auto"] | None = None
     language: str | None = None
     max_message_length: int | None = Field(default=None, ge=1)
@@ -415,6 +417,7 @@ class TaskSettingsUpdate(TaskUpdate):
     history_fetch_account_id: int | None = None
     idle_continuation_enabled: bool | None = None
     idle_continuation_seconds: int | None = Field(default=None, ge=30, le=86400)
+    context_expire_after_messages: int | None = Field(default=None, ge=0, le=500)
     fact_anchor_required: bool | None = None
     semantic_repeat_window: int | None = Field(default=None, ge=1, le=100)
     low_confidence_silence_enabled: bool | None = None

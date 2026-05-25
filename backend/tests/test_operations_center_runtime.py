@@ -1807,6 +1807,39 @@ def test_task_settings_update_normalizes_operation_target_references():
     assert relay_config["target_group_ids"] == [9, 7]
 
 
+def test_task_settings_update_accepts_group_ai_chat_quality_fields():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="目标群", auth_status="已授权运营", can_send=True),
+                OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群", can_send=True, auth_status="已授权运营"),
+                Task(id="ai-quality-settings", tenant_id=1, name="郑州锦鲤", type="group_ai_chat", status="running", type_config={"target_group_id": 7}),
+            ]
+        )
+        session.commit()
+
+        task = update_task_settings(
+            session,
+            1,
+            "ai-quality-settings",
+            TaskSettingsUpdate(
+                slang_prompt_template_id=31,
+                slang_terms={"老师": "特殊称呼"},
+                context_expire_after_messages=25,
+            ),
+            "pytest",
+        )
+        config = dict(task.type_config)
+
+    assert config["slang_prompt_template_id"] == 31
+    assert config["slang_terms"] == {"老师": "特殊称呼"}
+    assert config["context_expire_after_messages"] == 25
+
+
 def test_group_executors_resolve_operation_targets_without_normalized_group_ids(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
