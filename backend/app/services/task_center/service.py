@@ -39,7 +39,11 @@ from app.services._common import _now, audit
 
 from .account_pool import select_task_accounts
 from .ai_generator import generate_channel_comments, generate_group_messages
-from .channel_membership import channel_membership_summary
+from .channel_membership import (
+    ACTION_TYPE as TARGET_MEMBERSHIP_ACTION_TYPE,
+    LEGACY_ACTION_TYPE as LEGACY_MEMBERSHIP_ACTION_TYPE,
+    channel_membership_summary,
+)
 from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims
 from .executors import build_task_plan, reached_daily_action_limit
 from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _membership_accounts, _membership_phase, _message_groups, _relay_batches, _relay_recent_sources, _task_payload
@@ -1143,6 +1147,7 @@ def _has_open_actions(session: Session, task: Task) -> bool:
     earliest = session.scalar(
         select(func.min(Action.scheduled_at)).where(
             Action.task_id == task.id,
+            Action.action_type.notin_([TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]),
             Action.status.in_(["pending", "executing"]),
         )
     )
