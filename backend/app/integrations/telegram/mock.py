@@ -13,6 +13,7 @@ from .contracts import (
     ArchiveSnapshot,
     ArchivedMemberSnapshot,
     ArchivedMessageSnapshot,
+    CachedMediaResult,
     ChannelMembershipResult,
     ChannelCommentSnapshot,
     ChannelMessageSnapshot,
@@ -476,6 +477,20 @@ class TelegramGateway:
         if not source:
             return SendResult(False, failure_type="cache_not_ready", detail="素材缺少来源")
         return SendResult(True, remote_message_id=f"material-cache:{uuid4().hex[:8]}")
+
+    def download_cached_material(
+        self,
+        account_id: int,
+        cache_peer_id: str,
+        cache_message_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> CachedMediaResult:
+        if not session_ciphertext:
+            return CachedMediaResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session")
+        if not cache_peer_id or not cache_message_id:
+            return CachedMediaResult(False, failure_type="cache_media_missing", detail="缺少缓存消息引用")
+        return CachedMediaResult(True, data=b"\x89PNG\r\n\x1a\nmock-cached-avatar")
 
     def fetch_channel_messages(
         self,

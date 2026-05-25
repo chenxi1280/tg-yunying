@@ -7,6 +7,7 @@ from typing import Callable
 from .contracts import (
     ArchiveSnapshot,
     ArchivedMemberSnapshot,
+    CachedMediaResult,
     ArchivedMessageSnapshot,
     ChannelCommentSnapshot,
     ChannelMessageSnapshot,
@@ -179,6 +180,21 @@ async def cache_material_source(client, source: str, cache_peer_id: str, caption
         return SendResult(True, remote_message_id=str(getattr(cached, "id", "")))
     except Exception as exc:
         return map_send_error(exc)
+
+
+async def download_cached_material(client, cache_peer_id: str, cache_message_id: str, map_error: Callable[[Exception], SendResult]) -> CachedMediaResult:
+    try:
+        cache_target = await resolve_telethon_target(client, cache_peer_id, group_id=0)
+        message = await client.get_messages(cache_target, ids=int(cache_message_id))
+        if not message or not getattr(message, "media", None):
+            return CachedMediaResult(False, failure_type="cache_media_missing", detail="缓存消息不存在或没有媒体")
+        data = await client.download_media(message, bytes)
+        if not data:
+            return CachedMediaResult(False, failure_type="cache_media_download_failed", detail="缓存媒体下载失败")
+        return CachedMediaResult(True, data=bytes(data))
+    except Exception as exc:
+        mapped = map_error(exc)
+        return CachedMediaResult(False, failure_type=mapped.failure_type or "cache_media_download_failed", detail=mapped.detail or str(exc))
 
 
 async def fetch_channel_messages(client, channel_peer_id: str, limit: int) -> list[ChannelMessageSnapshot]:

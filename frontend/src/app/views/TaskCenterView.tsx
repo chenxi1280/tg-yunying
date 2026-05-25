@@ -1,14 +1,15 @@
 import React from 'react';
-import { Alert, Button, Card, Collapse, Form, Input, Modal, Space, Steps, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Collapse, Form, Input, Modal, Select, Space, Steps, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, RefreshCcw } from 'lucide-react';
 import { api } from '../../shared/api/client';
-import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskPrecheck } from '../types';
+import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskPrecheck } from '../types';
 import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
 import { fromBeijingDateTimeLocalValue } from '../time';
 import {
   CREATE_AND_START_ENDPOINT,
   CREATE_ENDPOINT,
+  TASK_TYPES,
   TYPE_LABEL,
   WIZARD_STEPS,
   accountDisplay,
@@ -45,6 +46,13 @@ function TaskStatusBadge({ status }: { status?: string | null }) {
 }
 
 type DangerousTaskAction = 'stop' | 'reset' | 'delete';
+type TaskTypeFilter = TaskCenterAnyTaskType | 'all';
+
+const TASK_TYPE_FILTER_OPTIONS: Array<{ value: TaskTypeFilter; label: string }> = [
+  { value: 'all', label: '全部类型' },
+  ...TASK_TYPES,
+  { value: 'account_profile_init', label: TYPE_LABEL.account_profile_init },
+];
 
 interface DangerousTaskState {
   task: TaskCenterTask;
@@ -95,6 +103,7 @@ export default function TaskCenterView({
   const [precheckLoading, setPrecheckLoading] = React.useState(false);
   const [wizardStep, setWizardStep] = React.useState(0);
   const [taskType, setTaskType] = React.useState<TaskCenterTaskType>('group_ai_chat');
+  const [taskTypeFilter, setTaskTypeFilter] = React.useState<TaskTypeFilter>('all');
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
   const appliedPrefillNonce = React.useRef<number | null>(null);
@@ -113,11 +122,14 @@ export default function TaskCenterView({
   const slangTemplates = promptTemplates.filter((template) => normalizePromptTemplateType(template.template_type) === 'AI黑话词表' && template.is_active);
   const defaultSlangTemplateId = slangTemplates[0]?.id ?? null;
 
-  async function load() {
+  async function load(nextTaskTypeFilter: TaskTypeFilter = taskTypeFilter) {
+    const params = new URLSearchParams();
+    if (nextTaskTypeFilter !== 'all') params.set('type', nextTaskTypeFilter);
+    const query = params.toString();
     setLoading(true);
     try {
       const [taskData, schedulingData] = await Promise.all([
-        api<TaskCenterTask[]>('/tasks'),
+        api<TaskCenterTask[]>(`/tasks${query ? `?${query}` : ''}`),
         api<SchedulingSetting>('/scheduling-settings'),
       ]);
       setTasks(taskData);
@@ -176,10 +188,10 @@ export default function TaskCenterView({
   }
 
   React.useEffect(() => {
-    void load();
-    const timer = window.setInterval(() => void load(), 60000);
+    void load(taskTypeFilter);
+    const timer = window.setInterval(() => void load(taskTypeFilter), 60000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [taskTypeFilter]);
 
   React.useEffect(() => {
     if (!modalOpen && !editOpen) return;
@@ -241,6 +253,14 @@ export default function TaskCenterView({
     setDetail(await api<TaskCenterDetail>(`/tasks/${task.id}`));
   }
 
+  function isSystemTask(task: TaskCenterTask | null | undefined) {
+    return task?.type === 'account_profile_init';
+  }
+
+  function canDeleteTask(task: TaskCenterTask) {
+    return canManageTasks && Boolean(task.id);
+  }
+
   async function openActionAttempts(action: TaskCenterAction) {
     setAttemptDetail({ action, attempts: [], loading: true });
     try {
@@ -275,7 +295,7 @@ export default function TaskCenterView({
     const operationTemplateId = operationProfile.template_id ?? 'natural_full_day';
     const operationCurve = curveNumbers(operationProfile.hourly_activity_curve ?? operationTemplate(operationTemplateId).curve);
     return {
-      ...initialValuesForType(task.type, schedulingSetting),
+      ...initialValuesForType(task.type as TaskCenterTaskType, schedulingSetting),
       name: task.name,
       priority: task.priority,
       timezone: task.timezone,
@@ -319,10 +339,12 @@ export default function TaskCenterView({
   }
 
   async function openEditTask(task: TaskCenterTask) {
+    if (isSystemTask(task)) return;
     setActionError('');
     setActionWarning('');
-    setTaskType(task.type);
-    await ensureTaskFormData(task.type);
+    const editableType = task.type as TaskCenterTaskType;
+    setTaskType(editableType);
+    await ensureTaskFormData(editableType);
     editForm.resetFields();
     editForm.setFieldsValue(editValuesFromTask(task));
     setEditOpen(true);
@@ -599,13 +621,15 @@ export default function TaskCenterView({
 
   async function saveTaskSettings() {
     if (!detail) return;
+    if (isSystemTask(detail.task)) return;
     setEditSaving(true);
     setActionError('');
     setActionWarning('');
     try {
-      await editForm.validateFields(editFieldsForSubmit(detail.task.type, editAccountMode, 'template'));
+      const editableType = detail.task.type as TaskCenterTaskType;
+      await editForm.validateFields(editFieldsForSubmit(editableType, editAccountMode, 'template'));
       const values = editForm.getFieldsValue(true);
-      const updated = await api<TaskCenterTask>(`/tasks/${detail.task.id}/settings`, { method: 'PATCH', body: JSON.stringify(settingsPayload(detail.task.type, values)) });
+      const updated = await api<TaskCenterTask>(`/tasks/${detail.task.id}/settings`, { method: 'PATCH', body: JSON.stringify(settingsPayload(editableType, values)) });
       setEditOpen(false);
       setActionWarning(updated.status === 'running' ? '已保存，下一轮会按新配置重新规划未执行计划。' : '已保存任务配置。');
       await load();
@@ -796,7 +820,7 @@ export default function TaskCenterView({
   const table = useAntdTableControls<TaskCenterTask>({
     rows: tasks,
     placeholder: '搜索任务 / 频道 / 消息 / 状态',
-    search: [(task) => [task.id, task.name, TYPE_LABEL[task.type], statusLabel(task.status), task.status, task.target_summary, task.search_text, task.last_error]],
+    search: [(task) => [task.id, task.name, TYPE_LABEL[task.type] ?? task.type, statusLabel(task.status), task.status, task.target_summary, task.search_text, task.last_error]],
   });
 
   const columns: ColumnsType<TaskCenterTask> = [
@@ -807,7 +831,7 @@ export default function TaskCenterView({
       render: (_, task) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{task.name}</Typography.Text>
-          <Typography.Text type="secondary">{TYPE_LABEL[task.type]}</Typography.Text>
+          <Typography.Text type="secondary">{TYPE_LABEL[task.type] ?? task.type}</Typography.Text>
         </Space>
       ),
     },
@@ -822,12 +846,12 @@ export default function TaskCenterView({
       fixed: 'right',
       render: (_, task) => (
         <Space className="task-action-bar" size={6}>
-          {canManageTasks && <Button size="small" loading={busyId === `${task.id}:${task.status === 'paused' ? 'resume' : 'start'}`} onClick={() => taskAction(task, task.status === 'paused' ? 'resume' : 'start')}>{task.status === 'paused' ? '恢复' : '启动'}</Button>}
-          {canManageTasks && <Button size="small" disabled={task.status !== 'running'} loading={busyId === `${task.id}:pause`} onClick={() => taskAction(task, 'pause')}>暂停</Button>}
-          {canManageTasks && <Button size="small" loading={busyId === `${task.id}:retry`} onClick={() => taskAction(task, 'retry')}>重试</Button>}
-          {canDispatchControl && <Button size="small" danger loading={busyId === `${task.id}:reset`} onClick={() => openDangerTaskAction(task, 'reset')}>重置</Button>}
-          {canManageTasks && <Button size="small" danger loading={busyId === `${task.id}:stop`} onClick={() => openDangerTaskAction(task, 'stop')}>停止</Button>}
-          {canManageTasks && <Button size="small" danger loading={busyId === `${task.id}:delete`} onClick={() => openDangerTaskAction(task, 'delete')}>删除</Button>}
+          {canManageTasks && !isSystemTask(task) && <Button size="small" loading={busyId === `${task.id}:${task.status === 'paused' ? 'resume' : 'start'}`} onClick={() => taskAction(task, task.status === 'paused' ? 'resume' : 'start')}>{task.status === 'paused' ? '恢复' : '启动'}</Button>}
+          {canManageTasks && !isSystemTask(task) && <Button size="small" disabled={task.status !== 'running'} loading={busyId === `${task.id}:pause`} onClick={() => taskAction(task, 'pause')}>暂停</Button>}
+          {canManageTasks && !isSystemTask(task) && <Button size="small" loading={busyId === `${task.id}:retry`} onClick={() => taskAction(task, 'retry')}>重试</Button>}
+          {canDispatchControl && !isSystemTask(task) && <Button size="small" danger loading={busyId === `${task.id}:reset`} onClick={() => openDangerTaskAction(task, 'reset')}>重置</Button>}
+          {canManageTasks && !isSystemTask(task) && <Button size="small" danger loading={busyId === `${task.id}:stop`} onClick={() => openDangerTaskAction(task, 'stop')}>停止</Button>}
+          {canDeleteTask(task) && <Button size="small" danger loading={busyId === `${task.id}:delete`} onClick={() => openDangerTaskAction(task, 'delete')}>删除</Button>}
           <Button size="small" onClick={() => loadDetail(task)}>详情</Button>
         </Space>
       ),
@@ -1003,7 +1027,7 @@ export default function TaskCenterView({
   const editFormValues = Form.useWatch([], editForm) ?? {};
   const plannedActions = detail?.actions.filter(isPlannedAction) ?? [];
   const executedActions = detail?.actions.filter((action) => !isPlannedAction(action)) ?? [];
-  const detailProfile = detail ? currentOperationProfile({ pacing_config: detail.task.pacing_config }) : null;
+  const detailProfile = detail && !isSystemTask(detail.task) ? currentOperationProfile({ pacing_config: detail.task.pacing_config }) : null;
   const detailPlannedTotal = (detail?.stats.total_actions ?? 0) + plannedActions.length;
 
   return (
@@ -1016,7 +1040,11 @@ export default function TaskCenterView({
       <Card className="panel" title="任务中心" extra={canManageTasks ? <Button type="primary" loading={supportLoading} onClick={() => void openCreateTask()}>创建任务</Button> : null}>
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         {actionWarning && <Alert className="form-alert" type="warning" showIcon message={actionWarning} />}
-        <Space className="toolbar-row" wrap>{table.searchInput}<Button loading={loading} onClick={load}>刷新</Button></Space>
+        <Space className="toolbar-row" wrap>
+          <Select<TaskTypeFilter> style={{ width: 180 }} value={taskTypeFilter} options={TASK_TYPE_FILTER_OPTIONS} onChange={setTaskTypeFilter} />
+          {table.searchInput}
+          <Button loading={loading} onClick={() => void load(taskTypeFilter)}>刷新</Button>
+        </Space>
         <Table<TaskCenterTask> className="tg-table" rowKey="id" columns={columns} dataSource={table.filteredRows} pagination={table.pagination} scroll={{ x: 1380 }} loading={loading} />
       </Card>
 
@@ -1070,14 +1098,14 @@ export default function TaskCenterView({
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         <Form form={editForm} layout="vertical">
           <EditBasics />
-          {detail && ['group_ai_chat', 'group_relay'].includes(detail.task.type) && (
+          {detail && !isSystemTask(detail.task) && ['group_ai_chat', 'group_relay'].includes(detail.task.type) && (
             <>
               <Typography.Title level={5}>目标来源</Typography.Title>
-              <WizardTarget taskType={detail.task.type} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} allowInlineTarget={false} />
+              <WizardTarget taskType={detail.task.type as TaskCenterTaskType} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} allowInlineTarget={false} />
             </>
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>
-          <WizardTypeConfig taskType={detail?.task.type ?? taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} />
+          <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} />
           <Typography.Title level={5}>账号选择</Typography.Title>
           <WizardAccounts accountMode={editAccountMode} accounts={accounts} accountPools={accountPools} />
           <Typography.Title level={5}>节奏策略</Typography.Title>
@@ -1088,7 +1116,7 @@ export default function TaskCenterView({
 
       <TaskCenterDetailModal
         detail={detail}
-        canManageTasks={canManageTasks}
+        canManageTasks={canManageTasks && !isSystemTask(detail?.task)}
         supportLoading={supportLoading}
         plannedActions={plannedActions}
         executedActions={executedActions}

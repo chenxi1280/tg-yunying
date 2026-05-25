@@ -47,6 +47,7 @@ interface AccountActionParams {
   goToView: (viewId: string) => void;
   handleActionError: (error: unknown) => void;
   refresh: () => Promise<void>;
+  runWithLoading: <T>(key: string, busyLabel: string, task: () => Promise<T>) => Promise<T>;
   setAccountCreateForm: (form: AccountActionParams['accountCreateForm']) => void;
   setAccountDetail: Dispatch<SetStateAction<AccountDetail | null>>;
   setAccountDetailTab: (tab: string) => void;
@@ -146,15 +147,16 @@ export function createAccountActions(params: AccountActionParams) {
 
   async function startOrResumeAccountLogin(account: Account, method: 'code' | 'qr' = 'code', resend = false) {
     const isQr = method === 'qr';
-    params.setBusy(isQr ? '启动扫码登录' : resend ? '重新发送验证码' : '启动登录');
-    params.setModal({ type: 'accountLogin' });
-    params.setAccountLoginForm({
-      ...EMPTY_ACCOUNT_LOGIN_FORM,
-      account,
-      method,
-      step: account.status === '等待2FA' ? 'password' : isQr || account.status === '等待扫码' ? 'qr' : 'code',
-    });
-    try {
+    const actionKey = resend ? `account-login:${account.id}:resend` : `account-login:${account.id}:${method}`;
+    const busyLabel = isQr ? '启动扫码登录' : resend ? '重新发送验证码' : '启动登录';
+    return params.runWithLoading(actionKey, busyLabel, async () => {
+      params.setModal({ type: 'accountLogin' });
+      params.setAccountLoginForm({
+        ...EMPTY_ACCOUNT_LOGIN_FORM,
+        account,
+        method,
+        step: account.status === '等待2FA' ? 'password' : isQr || account.status === '等待扫码' ? 'qr' : 'code',
+      });
       let flow: LoginFlow | null = null;
       if (!resend && account.status === '等待验证码' && method === 'code') {
         const detail = await api<AccountDetail>(`/tg-accounts/${account.id}/detail`);
@@ -181,11 +183,9 @@ export function createAccountActions(params: AccountActionParams) {
       params.setNotice(isQr ? '请使用 Telegram 扫码确认登录。' : resend ? '已重新发送登录验证码。' : '请完成验证码登录。');
       await params.refresh();
       if (params.accountDetail?.account.id === account.id) await refreshAccountDetail();
-    } catch (error) {
+    }).catch((error) => {
       params.setAccountLoginForm((current) => ({ ...current, error: params.errorMessage(error) }));
-    } finally {
-      params.setBusy('');
-    }
+    });
   }
 
   async function completeAccountLogin(updated: Account) {
@@ -200,11 +200,8 @@ export function createAccountActions(params: AccountActionParams) {
       params.setAccountLoginForm((current) => ({ ...current, account: updated, error: `登录未完成，当前状态：${updated.status}` }));
       return;
     }
-    const detail = await api<AccountDetail>(`/tg-accounts/${updated.id}/detail`);
-    params.setAccountDetail(detail);
-    params.setAccountDetailTab('TG 官方验证码');
     params.setAccountLoginForm(EMPTY_ACCOUNT_LOGIN_FORM);
-    params.setModal({ type: 'accountDetail' });
+    params.closeModal();
     params.setNotice(`${updated.display_name} 已完成登录，并已同步资料、健康、群聊、联系人和验证码。`);
   }
 
@@ -497,34 +494,34 @@ export function createAccountActions(params: AccountActionParams) {
 
   async function submitAccountLoginCode() {
     if (!params.accountLoginForm.account || !params.accountLoginForm.code.trim()) return;
-    params.setBusy('验证登录');
-    try {
-      const updated = await api<Account>(`/tg-accounts/${params.accountLoginForm.account.id}/login/verify`, {
+    const account = params.accountLoginForm.account;
+    const accountId = account.id;
+    const code = params.accountLoginForm.code.trim();
+    await params.runWithLoading(`account-login:${accountId}:code`, '验证登录', async () => {
+      const updated = await api<Account>(`/tg-accounts/${account.id}/login/verify`, {
         method: 'POST',
-        body: JSON.stringify({ code: params.accountLoginForm.code.trim() }),
+        body: JSON.stringify({ code }),
       });
       await completeAccountLogin(updated);
-    } catch (error) {
+    }).catch((error) => {
       params.setAccountLoginForm((current) => ({ ...current, error: params.errorMessage(error) }));
-    } finally {
-      params.setBusy('');
-    }
+    });
   }
 
   async function submitAccountLoginPassword() {
     if (!params.accountLoginForm.account || !params.accountLoginForm.password_2fa) return;
-    params.setBusy('验证二步密码');
-    try {
-      const updated = await api<Account>(`/tg-accounts/${params.accountLoginForm.account.id}/login/verify`, {
+    const account = params.accountLoginForm.account;
+    const accountId = account.id;
+    const password_2fa = params.accountLoginForm.password_2fa;
+    await params.runWithLoading(`account-login:${accountId}:password`, '验证二步密码', async () => {
+      const updated = await api<Account>(`/tg-accounts/${account.id}/login/verify`, {
         method: 'POST',
-        body: JSON.stringify({ password_2fa: params.accountLoginForm.password_2fa }),
+        body: JSON.stringify({ password_2fa }),
       });
       await completeAccountLogin(updated);
-    } catch (error) {
+    }).catch((error) => {
       params.setAccountLoginForm((current) => ({ ...current, error: params.errorMessage(error) }));
-    } finally {
-      params.setBusy('');
-    }
+    });
   }
 
   async function resendAccountLoginCode() {

@@ -686,6 +686,8 @@ def list_login_flows(session: Session, account_id: int) -> list[TgLoginFlow]:
 
 def verify_login(session: Session, account_id: int, code: str | None, password_2fa: str | None, actor: str = "普通用户") -> TgAccount:
     account = _ensure_account_available(session.get(TgAccount, account_id))
+    if account.status == AccountStatus.ACTIVE.value and account.session_ciphertext:
+        return account
 
     latest_flow = session.scalar(
         select(TgLoginFlow)

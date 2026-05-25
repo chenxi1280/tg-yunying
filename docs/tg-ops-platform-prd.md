@@ -1576,7 +1576,7 @@ AI 活跃群还需要额外经过质量规则：
 | 导航升级 | 菜单文案使用“运营中心”；素材中心作为一级菜单；AI 供应商、提示词、素材运行配置和后台账号权限位于系统设置 Tab |
 | 素材中心 | 展示表情包库、头像包、图片 / 文件 / 组合消息素材、分组标签、批量上传、缓存状态和引用关系；消息发送、规则、AI 活跃群和账号资料初始化只引用素材中心资产 |
 | 账号安全加固 | 展示账号详情的账号安全入口，可同步设备和 2FA 状态、清理外部设备、设置 2FA，并查看最近安全批次结果 |
-| 批量资料初始化 | 展示先点击资料初始化、再选择账号的流程；支持按账号组、筛选、搜索、100 条 / 页、选择当前筛选前 100 个、跨页勾选和区间选择；命名风格提示和 AI / 本地兜底预览必须做整批差异控制，可生成或手工编辑昵称、username、简介、头像等资料，展示生成来源和 warning，弹窗确认后创建批次执行，失败必须明确提示 |
+| 批量资料初始化 | 展示先点击资料初始化、再选择账号的流程；支持按账号组、筛选、搜索、100 条 / 页、选择当前筛选前 100 个、跨页勾选和区间选择；命名风格提示和 AI / 本地兜底预览必须做整批差异控制，可生成或手工编辑昵称、username、简介、头像等资料，展示生成来源和 warning，弹窗确认后创建批次执行，并在任务中心展示后台执行状态、头像缓存进度和失败原因 |
 | 任务内目标输入 | 展示创建任务时可选择已有目标，也可粘贴群聊 / 频道 `@username`、公开链接、邀请链接或 peer id；编辑任务不展示新目标输入 |
 | 账号-目标准入前置 | 展示频道任务会检查是否已关注；转发源群检查是否已加入 / 可读取；AI 活跃群和转发目标群检查是否可发言；未满足账号先按抖动节奏关注、加入或重新取得可发言能力，任务详情只展示状态和失败原因，失败账号不进入主互动 |
 | 手机号展示 | 所有涉及账号或联系人的列表、联系人、消息发送、归档、风控、账号安全、审计和导出日志优先展示完整手机号；当前 `phone_masked` 仍是历史兼容兜底字段 |
@@ -1728,6 +1728,8 @@ AI 活跃群还需要额外经过质量规则：
 
 任务中心是执行详情和调度控制台，不是日常发现异常的唯一入口。
 
+任务中心可创建的主任务仍只有 5 类：AI 活跃群、转发监听群、频道浏览、频道点赞、频道评论/回复。资料初始化批次是账号中心发起后的只读系统任务投影，不进入创建向导，也不增加普通运营任务类型。
+
 任务列表：
 
 - 摘要卡：运行中、失败、暂停、积压、最老等待、最近失败类型。
@@ -1745,6 +1747,8 @@ AI 活跃群还需要额外经过质量规则：
 向导必须按任务类型动态切换字段。AI 活跃群展示话题、语气、AI 黑话、账号角色和无人续聊；转发监听展示源群、目标群、转发处理方式和来源过滤；频道浏览 / 点赞 / 评论默认面向新消息流，指定消息只是快捷入口；评论 / 回复必须展示讨论区不可用的预检提示。
 
 任务详情顶部必须先展示准入前置，再展示主执行明细。Action 明细和执行尝试按需展开加载，不能在详情打开时一次性加载全部明细。
+
+任务中心还必须展示账号资料初始化批次的后台执行状态。该类任务由账号中心发起，不在任务中心创建向导中创建；列表中按“资料初始化批次”展示，详情展示批次 ID、账号总数、成功、跳过、失败、等待缓存、正在执行、最近失败原因、头像素材缓存进度和账号级结果。任务中心对这类系统任务只提供查看、刷新和跳转账号批次详情，不提供启动、暂停、删除等普通运营任务控制。
 
 ### 监听中心页面
 
@@ -1929,8 +1933,8 @@ AI 与提示词 Tab 维护 AI 底座，不承载素材日常管理。
 | `rule_sets` | `name`、`status`、`task_types`、`active_version_id` | 规则集 |
 | `rule_set_versions` | `version`、`status`、`filters`、`transforms`、`routing`、`account_strategy`、`rate_limits` | 规则版本 |
 | `account_proxies` | `protocol`、`host`、`port`、`status`、`alert_status`、`max_bound_accounts` | 本地代理资源 |
-| `tg_account_security_batches` | `action_types`、`status`、`profile_strategy`、`avatar_strategy`、`trace_id` | 安全/资料批次 |
-| `tg_account_security_batch_items` | `batch_id`、`account_id`、`status`、`profile_status`、`username_status`、`failure_detail` | 单账号批次项 |
+| `tg_account_security_batches` | `action_types`、`status`、`profile_strategy`、`avatar_strategy`、`trace_id`、`started_at`、`finished_at` | 安全/资料批次；资料初始化批次需派生任务中心系统任务投影 |
+| `tg_account_security_batch_items` | `batch_id`、`account_id`、`status`、`profile_status`、`username_status`、`avatar_status`、`avatar_source`、`failure_type`、`failure_detail`、`next_retry_at` | 单账号批次项；头像缓存状态可由 `avatar_source` 关联素材缓存状态派生，必要时在响应中输出 `avatar_cache_status` |
 | `archived_members` | `archive_id`、`member_peer_id`、`display_name`、`username`、`phone_number`、`phone_masked`、`snapshot_at` | 归档成员快照；导出优先完整手机号 |
 | `audit_logs` | `actor_id`、`action`、`object_type`、`object_id`、`result`、`trace_id`、`reason`、`snapshot` | 审计记录；涉及账号 / 联系人时 snapshot 保留完整手机号字段 |
 | `source_media_assets` | `source_peer_id`、`source_message_id`、`cache_status`、`cache_version`、`cache_message_id` | 转发源媒体临时缓存 |
@@ -2301,9 +2305,12 @@ Listener 采集源群消息
   -> 二次确认弹窗展示数量、跳过原因、风险提示和操作原因
   -> 创建 tg_account_security_batches
   -> 创建 batch items
+  -> 资料初始化批次投影到任务中心，作为系统执行任务展示状态
   -> drain_account_security_batches
+  -> update_avatar 项先检查素材 TG 缓存 ready，只使用已缓存完成的头像素材
+  -> 头像素材未缓存完成时，批次项进入 waiting_cache / waiting，任务中心展示缓存中、FloodWait、失败或不可恢复原因
   -> Telegram Gateway 执行
-  -> 回写 snapshots、items、accounts、audit
+  -> 回写 snapshots、items、accounts、avatar_object_key、avatar_preview_url、audit
 ```
 
 ### 6.7 运营中心展示流
@@ -2485,6 +2492,56 @@ action / attempt 写入完成
 - `GET /api/tasks/{task_id}/actions`
 - `GET /api/tasks/{task_id}/actions/{action_id}/attempts`
 
+任务中心必须支持系统任务投影，当前首个系统任务类型为资料初始化批次：
+
+| 字段 | 要求 |
+| --- | --- |
+| `id` | 使用稳定 ID：`account_security_batch:{batch_id}` |
+| `type` | `account_profile_init` |
+| `name` | `资料初始化批次 #{batch_id}`，可追加操作原因摘要 |
+| `status` | 映射为任务主状态：批次 `running/ready` -> `running`，批次 `succeeded` -> `completed`，批次 `failed` -> `failed`，批次 `partial_success/cancelled` -> `stopped`；原始批次状态放在 `stats.batch_status` |
+| `stats` | 必须包含 `total_actions`、`success_count`、`failure_count`、`skipped_count`、`pending_count`、`waiting_cache_count`、`running_count`、`batch_status`、`latest_failure_type` |
+| `target_summary` | `账号资料初始化 / {total_count} 个账号` |
+| `search_text` | 必须包含批次 ID、账号名、手机号、username、失败原因、头像素材标题和缓存状态 |
+| 操作按钮 | 只允许查看、刷新、跳转账号批次详情；不显示启动、暂停、重置、停止、删除等普通运营任务控制 |
+
+`GET /api/tasks/{task_id}` 当 `task_id` 形如 `account_security_batch:{batch_id}` 时，返回系统任务详情。响应在兼容 `TaskDetailOut` 基础上扩展 `profile_batch`：
+
+```json
+{
+  "profile_batch": {
+    "batch_id": 12,
+    "action_types": ["update_profile", "update_username", "update_avatar"],
+    "batch_status": "running",
+    "avatar_cache": {
+      "total": 22,
+      "ready": 18,
+      "waiting": 3,
+      "failed": 1,
+      "flood_wait": 0
+    },
+    "items": [
+      {
+        "account_id": 11,
+        "display_name": "锅巴洋芋",
+        "phone_number": "+8613800010000",
+        "status": "waiting",
+        "profile_status": "succeeded",
+        "username_status": "succeeded",
+        "avatar_status": "waiting_cache",
+        "avatar_source": "material:701",
+        "avatar_cache_status": "refreshing",
+        "avatar_preview_url": "",
+        "failure_type": "waiting_material_cache",
+        "failure_detail": "头像素材仍在缓存中"
+      }
+    ]
+  }
+}
+```
+
+普通 Task 的 `actions` / `execution_attempts` 接口保持原语义；系统任务投影不伪造 `execution_attempts`。如果需要按账号项展示执行记录，放在 `profile_batch.items` 或等价分页接口，不把账号维护批次项混成普通运营 action。
+
 `POST /api/tasks/precheck`、各具体任务创建接口和各具体任务创建并启动接口必须同时支持：
 
 - 已有目标字段：`target_channel_id`、`target_operation_target_id`、`target_operation_target_ids`。
@@ -2658,6 +2715,9 @@ action / attempt 写入完成
 - 频道评论/回复必须把讨论区解析失败、消息 ID 非频道帖子、频道未绑定讨论组或账号无法评论归因为评论区不可用，并给出可操作提示。
 - AI 活跃群必须优先接真人上下文，只有在空闲场景才低频暖场；重复风险高、事实无锚点或上下文不足时应沉默并留痕。
 - 账号资料初始化必须支持整批 AI 预览、手工编辑和本地兜底。
+- 账号资料初始化批次必须进入任务中心可见状态；后台 worker 运行时不能只在账号中心显示“已提交”而无法追踪执行进度。
+- 头像更新必须等待素材中心头像包完成 TG 缓存；未缓存完成的头像不能用于更新资料，缓存进度和失败原因必须在任务中心详情可见。
+- 账号头像更新成功后必须在账号列表、账号详情、资料初始化批次详情和后续资料同步中回显新头像。
 - 设置二步密码和清理登录设备必须是独立入口，不能和资料初始化混在同一个默认动作里。
 - 操作手册必须同步展示最近更新功能，并和前端真实菜单、按钮和异常处理口径一致。
 - 规则绑定必须使用已发布版本。
@@ -2682,7 +2742,7 @@ action / attempt 写入完成
 | 范围 | 用例 |
 | --- | --- |
 | 账号登录 | 验证码、二维码、2FA、session 失效、重新登录 |
-| 资料初始化 | AI 成功、AI 超时、无健康供应商、本地兜底、手工编辑、头像跳过、`custom_prompt` 命名风格、50 账号一次 AI 请求、100 账号快速选择、整批差异控制、弹窗确认和失败提示 |
+| 资料初始化 | AI 成功、AI 超时、无健康供应商、本地兜底、手工编辑、头像跳过、`custom_prompt` 命名风格、50 账号一次 AI 请求、100 账号快速选择、整批差异控制、弹窗确认、任务中心状态投影、头像缓存等待、头像回显和失败提示 |
 | 设置二步密码 | 未设置账号成功托管、已设置账号跳过、离线账号阻断、失败审计 |
 | 清理登录设备 | 平台 Session 保留、外部设备清理、新登录 24 小时等待、失败重试 |
 | 频道任务 | 任务内粘贴新频道、已关注直接互动、未关注前置关注、全部失败阻断主互动、部分成功继续、运行时再次守卫关注状态 |

@@ -4,6 +4,7 @@ import type { ColumnsType } from 'antd/es/table';
 import type { TaskCenterAction, TaskCenterDetail, TaskCenterTask } from '../types';
 import { DetailModal, StatusBadge } from '../components/shared';
 import { parseBeijingDate } from '../time';
+import { API_ORIGIN } from '../../shared/api/client';
 import { TYPE_LABEL, formatDateTime, statusLabel } from './taskCenterViewModel';
 
 type DetailProfile = {
@@ -37,6 +38,11 @@ interface TaskCenterDetailModalProps {
 
 function DetailStatusBadge({ status }: { status?: string | null }) {
   return <StatusBadge status={status} label={statusLabel(status)} />;
+}
+
+function mediaUrl(value?: string | null) {
+  if (!value) return '';
+  return value.startsWith('http') ? value : `${API_ORIGIN}${value}`;
 }
 
 export function TaskCenterDetailModal({
@@ -91,6 +97,31 @@ export function TaskCenterDetailModal({
     { title: '计划时间', dataIndex: 'scheduled_at', width: 170, render: (value) => formatDateTime(value) },
     { title: '完成时间', dataIndex: 'completed_at', width: 170, render: (value) => formatDateTime(value) },
   ];
+  const profileBatchItems = detail?.profile_batch?.items ?? [];
+  const profileBatchColumns: ColumnsType<typeof profileBatchItems[number]> = [
+    {
+      title: '账号',
+      key: 'account',
+      width: 210,
+      render: (_, item) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{item.display_name || `账号 #${item.account_id}`}</Typography.Text>
+          <Typography.Text type="secondary">{item.phone_number || `#${item.account_id}`}</Typography.Text>
+        </Space>
+      ),
+    },
+    { title: '资料', dataIndex: 'profile_status', width: 100, render: (value) => <DetailStatusBadge status={value} /> },
+    { title: 'Username', dataIndex: 'username_status', width: 110, render: (value) => <DetailStatusBadge status={value} /> },
+    { title: '头像', dataIndex: 'avatar_status', width: 120, render: (value) => <DetailStatusBadge status={value} /> },
+    { title: '缓存', dataIndex: 'avatar_cache_status', width: 120, render: (value) => value ? <Tag>{value}</Tag> : '-' },
+    {
+      title: '头像回显',
+      dataIndex: 'avatar_preview_url',
+      width: 110,
+      render: (value) => value ? <img alt="账号头像" src={mediaUrl(value)} style={{ width: 36, height: 36, borderRadius: 4, objectFit: 'cover' }} /> : '-',
+    },
+    { title: '失败原因', key: 'failure', ellipsis: true, render: (_, item) => item.failure_detail || item.failure_type || '-' },
+  ];
   return (
     <DetailModal
       title={detail?.task.name ?? '任务详情'}
@@ -111,7 +142,7 @@ export function TaskCenterDetailModal({
             column={3}
             size="small"
             items={[
-              { key: 'type', label: '类型', children: TYPE_LABEL[detail.task.type] },
+              { key: 'type', label: '类型', children: TYPE_LABEL[detail.task.type] ?? detail.task.type },
               { key: 'status', label: '状态', children: <DetailStatusBadge status={detail.task.status} /> },
               { key: 'target', label: '目标', children: detail.task.target_summary || '-' },
               { key: 'planned', label: '计划中', children: plannedActions.filter((action) => action.status === 'pending').length },
@@ -136,6 +167,31 @@ export function TaskCenterDetailModal({
               { key: 'error', label: '错误', span: 3, children: detail.task.last_error || '无' },
             ]}
           />
+          {detail.profile_batch && (
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Typography.Title level={5} style={{ margin: 0 }}>资料初始化进度</Typography.Title>
+              <Descriptions
+                bordered
+                size="small"
+                column={5}
+                items={[
+                  { key: 'batch', label: '批次', children: `#${detail.profile_batch.batch_id}` },
+                  { key: 'batch_status', label: '批次状态', children: <DetailStatusBadge status={detail.profile_batch.batch_status} /> },
+                  { key: 'ready', label: '头像已缓存', children: detail.profile_batch.avatar_cache?.ready ?? 0 },
+                  { key: 'waiting', label: '等待缓存', children: detail.profile_batch.avatar_cache?.waiting ?? 0 },
+                  { key: 'failed', label: '缓存失败', children: detail.profile_batch.avatar_cache?.failed ?? 0 },
+                ]}
+              />
+              <Table
+                rowKey={(item) => `${item.account_id}:${item.avatar_source || 'profile'}`}
+                columns={profileBatchColumns}
+                dataSource={profileBatchItems}
+                pagination={{ pageSize: 8 }}
+                size="small"
+                scroll={{ x: 1050 }}
+              />
+            </Space>
+          )}
           {(detail.membership_phase?.stage || detail.membership_accounts.length > 0) && (
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Typography.Title level={5} style={{ margin: 0 }}>准入前置</Typography.Title>

@@ -320,6 +320,7 @@ export function AppProvider({ children }: AppProviderProps) {
     goToView,
     handleActionError,
     refresh,
+    runWithLoading,
     setAccountCreateForm,
     setAccountDetail,
     setAccountDetailTab,

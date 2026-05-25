@@ -352,3 +352,20 @@ def test_profile_batch_account_picker_supports_top_100_cross_page_and_range_sele
     assert "function selectFilteredRange()" in source
     assert "filteredAccounts.slice(start - 1, end)" in source
     assert "区间选择" in source
+
+
+def test_task_center_exposes_task_type_filter_request_parameter():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    assert "taskTypeFilter" in source
+    assert "account_profile_init" in source
+    assert "params.set('type', nextTaskTypeFilter)" in source
+    assert "api<TaskCenterTask[]>(`/tasks${query ? `?${query}` : ''}`)" in source
+
+
+def test_task_center_allows_profile_batch_delete_without_lifecycle_controls():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    assert "canDeleteTask(task)" in source
+    assert "openDangerTaskAction(task, 'delete')" in source
+    assert "canManageTasks && !isSystemTask(task) && <Button size=\"small\" danger loading={busyId === `${task.id}:delete`}" not in source

@@ -584,6 +584,7 @@ def create_account_security_batch(session: Session, tenant_id: int, payload: Acc
         )
         session.add(item)
     audit(session, tenant_id=tenant_id, actor=actor, action="创建账号安全加固批次", target_type="account_security_batch", target_id=str(batch.id), detail=payload.reason)
+    session.flush()
     _refresh_batch_counts(session, batch)
     session.commit()
     return account_security_batch_detail(session, tenant_id, batch.id)
@@ -730,7 +731,7 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
                 snapshot.two_fa_password_ciphertext = encrypt_secret(generated_password)
                 snapshot.two_fa_password_hint = "TG运营平台托管"
                 snapshot.two_fa_password_stored_at = _now()
-        if "update_profile" in action_types:
+        if "update_profile" in action_types and item.profile_status not in {"succeeded", "skipped"}:
             display_name = item.generated_display_name if batch.overwrite_existing_profile or _can_replace_display_name(account.display_name) else account.display_name
             first_name = item.generated_first_name if batch.overwrite_existing_profile or not account.tg_first_name else account.tg_first_name
             last_name = item.generated_last_name if batch.overwrite_existing_profile or not account.tg_last_name else account.tg_last_name
@@ -753,7 +754,7 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
                 account.profile_synced_at = _now()
             else:
                 failures.append(profile_result.detail)
-        if "update_username" in action_types:
+        if "update_username" in action_types and item.username_status not in {"succeeded", "skipped"}:
             if account.username and not batch.overwrite_existing_profile:
                 username = account.username
                 item.username_status = "skipped"
@@ -766,17 +767,17 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
                     item.generated_username = username
                 else:
                     failures.append("username 候选均不可用")
-        if "update_avatar" in action_types:
+        if "update_avatar" in action_types and item.avatar_status not in {"succeeded", "skipped"}:
             avatar_result = _execute_avatar_update(session, account, item, credentials, overwrite_existing=batch.overwrite_existing_profile)
-            item.avatar_status = avatar_result.status if avatar_result.ok else "failed"
+            item.avatar_status = avatar_result.status or ("skipped" if avatar_result.ok else "failed")
             if not avatar_result.ok and avatar_result.status != "skipped":
                 failures.append(avatar_result.detail or avatar_result.failure_type)
         snapshot = _snapshot(session, account)
         snapshot.profile_status = _profile_status(account)
         snapshot.last_hardened_at = _now()
         snapshot.last_error = ";".join(failures)
-        item.status = "waiting" if failures and item.next_retry_at and not _item_has_success(item) else "partial_success" if failures and _item_has_success(item) else "failed" if failures else "succeeded"
-        item.failure_type = "需等待" if item.status == "waiting" else "部分失败" if item.status == "partial_success" else "执行失败" if failures else ""
+        item.status = "waiting" if _item_should_wait(item, failures) else "partial_success" if failures and _item_has_success(item) else "failed" if failures else "succeeded"
+        item.failure_type = _item_failure_type(item, failures)
         item.failure_detail = ";".join(failures)
     except Exception as exc:  # noqa: BLE001 - operator-facing batch failure.
         item.status = "failed"
@@ -851,6 +852,13 @@ def _execute_avatar_update(session: Session, account: TgAccount, item: TgAccount
         return SimpleNamespace(ok=True, status="skipped", detail="账号已有头像，未开启覆盖", failure_type="")
     if not item.avatar_source:
         return SimpleNamespace(ok=True, status="skipped", detail="未配置头像来源", failure_type="")
+    cache_failure = _avatar_cache_failure_reason(session, item.avatar_source)
+    if cache_failure:
+        return SimpleNamespace(ok=False, status="failed", detail=cache_failure, failure_type="material_cache_failed")
+    cache_error = _avatar_cache_wait_reason(session, item.avatar_source)
+    if cache_error:
+        item.next_retry_at = _now() + timedelta(minutes=1)
+        return SimpleNamespace(ok=False, status="waiting_cache", detail=cache_error, failure_type="waiting_material_cache")
     try:
         avatar_path, object_key = _resolve_avatar_source(session, account, item.avatar_source)
     except ValueError as exc:
@@ -872,6 +880,57 @@ def _execute_avatar_update(session: Session, account: TgAccount, item: TgAccount
     return SimpleNamespace(ok=True, status="succeeded", detail="头像已更新", failure_type="")
 
 
+def _item_failure_type(item: TgAccountSecurityBatchItem, failures: list[str]) -> str:
+    if not failures:
+        return ""
+    if item.avatar_status == "waiting_cache":
+        return "waiting_material_cache"
+    if item.status == "waiting":
+        return "需等待"
+    if item.status == "partial_success":
+        return "部分失败"
+    return "执行失败"
+
+
+def _item_should_wait(item: TgAccountSecurityBatchItem, failures: list[str]) -> bool:
+    if not failures or not item.next_retry_at:
+        return False
+    if item.avatar_status == "waiting_cache":
+        return True
+    return not _item_has_success(item)
+
+
+def _avatar_cache_failure_reason(session: Session, source: str) -> str:
+    material = _material_for_avatar_source(session, source)
+    if not material:
+        return ""
+    if material.cache_ready_status == "cache_failed":
+        return "头像素材 TG 缓存失败"
+    if material.cache_ready_status == "ready" and not (material.tg_cache_peer_id and material.tg_cache_message_id):
+        return "头像素材 TG 缓存引用不完整"
+    return ""
+
+
+def _avatar_cache_wait_reason(session: Session, source: str) -> str:
+    material = _material_for_avatar_source(session, source)
+    if not material or material.cache_ready_status == "ready":
+        return ""
+    return f"头像素材 TG 缓存未完成：{material.cache_ready_status or 'not_cached'}"
+
+
+def _material_for_avatar_source(session: Session, source: str) -> Material | None:
+    value = (source or "").strip()
+    if value.startswith("avatar:"):
+        value = value.removeprefix("avatar:")
+    if not (value.startswith("material:") or value.isdigit()):
+        return None
+    try:
+        material_id = int(value.removeprefix("material:"))
+    except ValueError:
+        return None
+    return session.get(Material, material_id)
+
+
 def _resolve_avatar_source(session: Session, account: TgAccount, source: str) -> tuple[Path, str]:
     value = (source or "").strip()
     if not value:
@@ -879,24 +938,7 @@ def _resolve_avatar_source(session: Session, account: TgAccount, source: str) ->
     if value.startswith("avatar:"):
         value = value.removeprefix("avatar:")
     if value.startswith("material:") or value.isdigit():
-        material_id = int(value.removeprefix("material:"))
-        material = session.get(Material, material_id)
-        if not material or material.tenant_id != account.tenant_id:
-            raise ValueError("头像素材不存在或不属于当前租户")
-        if material.material_type != "图片":
-            raise ValueError("头像素材必须是图片类型")
-        if material.source_kind != "upload":
-            raise ValueError("头像素材必须是平台上传文件")
-        source_path = Path(material.content)
-        if not source_path.exists():
-            raise ValueError("头像素材文件不存在")
-        object_key, avatar_path = save_avatar_bytes(
-            tenant_id=account.tenant_id,
-            account_id=account.id,
-            content_type=material.mime_type or "image/jpeg",
-            data=source_path.read_bytes(),
-        )
-        return avatar_path, object_key
+        return _resolve_material_avatar_source(session, account, value, source)
     if value.startswith("avatars/"):
         if not value.startswith(f"avatars/{account.tenant_id}/{account.id}/"):
             raise ValueError("头像对象不属于当前账号")
@@ -921,6 +963,51 @@ def _resolve_avatar_source(session: Session, account: TgAccount, source: str) ->
     raise ValueError("头像来源格式不支持")
 
 
+def _resolve_material_avatar_source(session: Session, account: TgAccount, value: str, source: str) -> tuple[Path, str]:
+    try:
+        material_id = int(value.removeprefix("material:"))
+    except ValueError as exc:
+        raise ValueError("头像素材 ID 格式不正确") from exc
+    material = session.get(Material, material_id)
+    if not material or material.tenant_id != account.tenant_id:
+        raise ValueError("头像素材不存在或不属于当前租户")
+    if _avatar_cache_wait_reason(session, source):
+        raise ValueError("头像素材 TG 缓存未完成")
+    if material.material_type != "图片":
+        raise ValueError("头像素材必须是图片类型")
+    data = _material_avatar_bytes(session, material)
+    object_key, avatar_path = save_avatar_bytes(
+        tenant_id=account.tenant_id,
+        account_id=account.id,
+        content_type=material.mime_type or "image/jpeg",
+        data=data,
+    )
+    return avatar_path, object_key
+
+
+def _material_avatar_bytes(session: Session, material: Material) -> bytes:
+    if material.content:
+        source_path = Path(material.content)
+        if source_path.exists() and source_path.is_file():
+            return source_path.read_bytes()
+    if not material.tg_cache_account_id:
+        raise ValueError("头像素材缺少 TG 缓存账号")
+    cache_account = session.get(TgAccount, material.tg_cache_account_id)
+    if not cache_account:
+        raise ValueError("头像素材 TG 缓存账号不存在")
+    credentials = credentials_for_account(session, cache_account)
+    result = gateway.download_cached_material(
+        cache_account.id,
+        material.tg_cache_peer_id,
+        material.tg_cache_message_id,
+        cache_account.session_ciphertext,
+        credentials,
+    )
+    if not result.ok or not result.data:
+        raise ValueError(result.detail or result.failure_type or "头像素材 TG 缓存下载失败")
+    return result.data
+
+
 def _validate_avatar_source(session: Session, account: TgAccount, source: str) -> str:
     value = (source or "").strip()
     if not value:
@@ -937,11 +1024,17 @@ def _validate_avatar_source(session: Session, account: TgAccount, source: str) -
             return "头像素材不存在或不属于当前租户"
         if material.material_type != "图片":
             return "头像素材必须是图片类型"
-        if material.source_kind != "upload":
-            return "头像素材必须是平台上传文件"
-        if not Path(material.content).exists():
-            return "头像素材文件不存在"
-        return ""
+        if material.cache_ready_status == "cache_failed":
+            return "头像素材 TG 缓存失败"
+        if material.cache_ready_status == "ready":
+            if material.tg_cache_peer_id and material.tg_cache_message_id:
+                return ""
+            return "头像素材 TG 缓存引用不完整"
+        if material.content and Path(material.content).exists():
+            return ""
+        if material.cache_ready_status in {"not_cached", "refreshing", "flood_wait"}:
+            return "头像素材等待 TG 缓存，但缺少可缓存的本地来源"
+        return "头像素材文件不存在"
     if value.startswith("avatars/"):
         if not value.startswith(f"avatars/{account.tenant_id}/{account.id}/"):
             return "头像对象不属于当前账号"
@@ -1227,7 +1320,7 @@ def _material_avatar_sources(session: Session, tenant_id: int, strategy) -> list
             Material.review_status == "已审核",
             Material.source_kind == "upload",
             Material.mime_type.in_(["image/jpeg", "image/png", "image/webp"]),
-            Material.content != "",
+            or_(Material.content != "", Material.cache_ready_status == "ready"),
         )
         .order_by(Material.id.asc())
     )
@@ -1239,7 +1332,15 @@ def _material_avatar_sources(session: Session, tenant_id: int, strategy) -> list
             materials = [material for material in materials if group_name in material.title or group_name in material.tags]
     preferred = [material for material in materials if "头像" in f"{material.title} {material.tags}".lower() or "avatar" in f"{material.title} {material.tags}".lower()]
     candidates = preferred or materials
-    return [f"material:{material.id}" for material in candidates if Path(material.content).exists()]
+    return [f"material:{material.id}" for material in candidates if _material_has_usable_avatar_source(material)]
+
+
+def _material_has_usable_avatar_source(material: Material) -> bool:
+    if material.content and Path(material.content).exists():
+        return True
+    return material.cache_ready_status == "ready" and bool(
+        material.tg_cache_account_id and material.tg_cache_peer_id and material.tg_cache_message_id
+    )
 
 
 __all__ = [

@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
-from app.models import AiProvider, AccountStatus, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
+from app.models import AiProvider, AccountStatus, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
 from app.schemas import TgAccountCreate
 from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ProfileGenerationStrategy
 from app.security import encrypt_secret, encrypt_session
@@ -25,6 +25,7 @@ from app.services.account_security import (
     refresh_account_security,
 )
 from app.services.accounts import create_account
+from app.services.task_center.service import delete_task, get_task_detail, list_tasks
 
 
 def _session():
@@ -32,6 +33,13 @@ def _session():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     return Session(engine)
+
+
+def _session_factory_no_autoflush():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
 def _seed_account(session: Session, *, status: str = AccountStatus.ACTIVE.value, session_value: str = "session") -> TgAccount:
@@ -401,6 +409,300 @@ def test_prd_random_from_material_pool_avatar_strategy_picks_reviewed_uploaded_i
         assert item.precheck_status == "executable"
         assert item.avatar_source == "material:702"
         assert not item.warnings
+
+
+def test_random_avatar_strategy_uses_ready_cached_uploaded_image_without_local_file():
+    with _session() as session:
+        account = _seed_account(session)
+        session.add(
+            Material(
+                id=706,
+                tenant_id=1,
+                title="资料初始化头像包-已缓存",
+                material_type="图片",
+                content="",
+                tags="头像",
+                review_status="已审核",
+                source_kind="upload",
+                mime_type="image/png",
+                file_size=123,
+                cache_ready_status="ready",
+                tg_cache_account_id=account.id,
+                tg_cache_peer_id="@avatar_cache",
+                tg_cache_message_id="88",
+            )
+        )
+        session.commit()
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id],
+                action_types=["update_avatar"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+                avatar_strategy=AvatarStrategy(mode="random_from_material_pool"),
+            ),
+        )
+
+        item = preview.items[0]
+        assert item.precheck_status == "executable"
+        assert item.avatar_source == "material:706"
+        assert not item.warnings
+
+
+def test_created_batch_stays_running_with_no_autoflush_session():
+    session_factory = _session_factory_no_autoflush()
+    with session_factory() as session:
+        account = _seed_account(session)
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(
+                account_ids=[account.id],
+                action_types=["update_profile"],
+                confirm_text="确认",
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+                reason="测试无自动刷新 session 创建批次",
+            ),
+            "tester",
+        )
+
+        assert batch.status == "running"
+        assert batch.items[0].status == "pending"
+
+    assert drain_account_security_batches(session_factory, limit=10) == 1
+
+
+def test_profile_batch_is_visible_as_readonly_task_center_projection():
+    with _session() as session:
+        account = _seed_account(session)
+        payload = AccountSecurityBatchCreate(
+            account_ids=[account.id],
+            action_types=["update_profile"],
+            confirm_text="确认",
+            profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+            reason="测试任务中心投影",
+        )
+        batch = create_account_security_batch(session, 1, payload, "tester")
+
+        rows = list_tasks(session, 1, task_type="account_profile_init")
+        assert [row["id"] for row in rows] == [f"account_security_batch:{batch.id}"]
+        assert rows[0]["type"] == "account_profile_init"
+        assert rows[0]["name"] == f"资料初始化批次 #{batch.id}"
+        assert rows[0]["stats"]["batch_status"] == "running"
+        assert rows[0]["stats"]["pending_count"] == 1
+        assert rows[0]["target_summary"] == "账号资料初始化 / 1 个账号"
+
+        detail = get_task_detail(session, 1, f"account_security_batch:{batch.id}")
+
+        assert detail["actions"] == []
+        assert detail["profile_batch"]["batch_id"] == batch.id
+        assert detail["profile_batch"]["items"][0]["account_id"] == account.id
+        assert detail["profile_batch"]["items"][0]["profile_status"] == "pending"
+
+
+def test_delete_profile_batch_projection_hides_task_and_skips_pending_items():
+    with _session() as session:
+        account = _seed_account(session)
+        payload = AccountSecurityBatchCreate(
+            account_ids=[account.id],
+            action_types=["update_profile"],
+            confirm_text="确认",
+            profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+            reason="测试删除投影任务",
+        )
+        batch = create_account_security_batch(session, 1, payload, "tester")
+
+        delete_task(session, 1, f"account_security_batch:{batch.id}", "tester", "用户删除")
+
+        assert list_tasks(session, 1, task_type="account_profile_init") == []
+        with pytest.raises(ValueError, match="task not found"):
+            get_task_detail(session, 1, f"account_security_batch:{batch.id}")
+
+        db_batch = session.get(TgAccountSecurityBatch, batch.id)
+        db_item = session.scalar(select(TgAccountSecurityBatchItem).where(TgAccountSecurityBatchItem.batch_id == batch.id))
+        assert db_batch.status == "deleted"
+        assert db_batch.finished_at is not None
+        assert db_item.status == "skipped"
+        assert db_item.skipped_reason == "用户删除"
+
+
+def test_profile_batch_avatar_waits_until_material_cache_ready(tmp_path, monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        avatar_path = tmp_path / "waiting-avatar.png"
+        avatar_path.write_bytes(b"\x89PNG\r\n\x1a\navatar")
+        session.add(
+            Material(
+                id=703,
+                tenant_id=1,
+                title="未缓存头像",
+                material_type="图片",
+                content=str(avatar_path),
+                tags="头像",
+                review_status="已审核",
+                source_kind="upload",
+                mime_type="image/png",
+                file_size=avatar_path.stat().st_size,
+                cache_ready_status="not_cached",
+            )
+        )
+        session.commit()
+        payload = AccountSecurityBatchCreate(
+            account_ids=[account.id],
+            action_types=["update_avatar"],
+            confirm_text="确认",
+            profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+            avatar_strategy=AvatarStrategy(mode="sequential", avatar_sources=["material:703"]),
+            reason="测试等待头像缓存",
+        )
+        batch = create_account_security_batch(session, 1, payload, "tester")
+
+        def fail_avatar_upload(*args, **kwargs):
+            raise AssertionError("avatar update must wait for TG material cache")
+
+        monkeypatch.setattr(account_security_service.gateway, "update_profile", fail_avatar_upload)
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        refreshed = account_security_batch_detail(session, 1, batch.id)
+        item = refreshed.items[0]
+        assert refreshed.status == "running"
+        assert item.status == "waiting"
+        assert item.avatar_status == "waiting_cache"
+        assert item.failure_type == "waiting_material_cache"
+
+        detail = get_task_detail(session, 1, f"account_security_batch:{batch.id}")
+        projected_item = detail["profile_batch"]["items"][0]
+        assert detail["profile_batch"]["avatar_cache"]["waiting"] == 1
+        assert projected_item["avatar_cache_status"] == "not_cached"
+        assert projected_item["avatar_preview_url"] == ""
+
+
+def test_profile_batch_keeps_running_when_profile_succeeds_but_avatar_waits(tmp_path, monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        avatar_path = tmp_path / "profile-plus-waiting-avatar.png"
+        avatar_path.write_bytes(b"\x89PNG\r\n\x1a\navatar")
+        session.add(
+            Material(
+                id=705,
+                tenant_id=1,
+                title="未缓存头像",
+                material_type="图片",
+                content=str(avatar_path),
+                tags="头像",
+                review_status="已审核",
+                source_kind="upload",
+                mime_type="image/png",
+                file_size=avatar_path.stat().st_size,
+                cache_ready_status="not_cached",
+            )
+        )
+        session.commit()
+        payload = AccountSecurityBatchCreate(
+            account_ids=[account.id],
+            action_types=["update_profile", "update_avatar"],
+            confirm_text="确认",
+            profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+            avatar_strategy=AvatarStrategy(mode="sequential", avatar_sources=["material:705"]),
+            reason="资料成功但头像等待缓存",
+        )
+        batch = create_account_security_batch(session, 1, payload, "tester")
+
+        def fake_update_profile(*args, **kwargs):
+            if kwargs.get("avatar_path"):
+                raise AssertionError("avatar update must wait for TG material cache")
+            return SimpleNamespace(ok=True, detail="profile ok", failure_type="")
+
+        monkeypatch.setattr(account_security_service.gateway, "update_profile", fake_update_profile)
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        refreshed = account_security_batch_detail(session, 1, batch.id)
+        item = refreshed.items[0]
+
+        assert refreshed.status == "running"
+        assert item.status == "waiting"
+        assert item.profile_status == "succeeded"
+        assert item.avatar_status == "waiting_cache"
+        assert item.failure_type == "waiting_material_cache"
+
+        db_material = session.get(Material, 705)
+        db_item = session.get(TgAccountSecurityBatchItem, item.id)
+        db_material.cache_ready_status = "ready"
+        db_material.tg_cache_peer_id = "@avatar_cache"
+        db_material.tg_cache_message_id = "89"
+        db_material.tg_cache_account_id = account.id
+        db_item.next_retry_at = _now() - timedelta(seconds=1)
+        session.commit()
+
+        def fail_profile_repeat(*args, **kwargs):
+            if not kwargs.get("avatar_path"):
+                raise AssertionError("profile step already succeeded and must not be repeated")
+            return SimpleNamespace(ok=True, detail="avatar ok", failure_type="")
+
+        monkeypatch.setattr(account_security_service.gateway, "update_profile", fail_profile_repeat)
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        retried = account_security_batch_detail(session, 1, batch.id)
+        retried_item = retried.items[0]
+        assert retried.status == "succeeded"
+        assert retried_item.profile_status == "succeeded"
+        assert retried_item.avatar_status == "succeeded"
+
+
+def test_profile_batch_avatar_uses_ready_material_cache_when_source_file_was_temp(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        session.add(
+            Material(
+                id=704,
+                tenant_id=1,
+                title="已暂存头像",
+                material_type="图片",
+                content="",
+                tags="头像",
+                review_status="已审核",
+                source_kind="upload",
+                mime_type="image/png",
+                cache_ready_status="ready",
+                tg_cache_peer_id="@avatar_cache",
+                tg_cache_message_id="88",
+                tg_cache_account_id=account.id,
+            )
+        )
+        session.commit()
+        payload = AccountSecurityBatchCreate(
+            account_ids=[account.id],
+            action_types=["update_avatar"],
+            confirm_text="确认",
+            profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+            avatar_strategy=AvatarStrategy(mode="sequential", avatar_sources=["material:704"]),
+            reason="测试已暂存头像回显",
+        )
+        batch = create_account_security_batch(session, 1, payload, "tester")
+
+        def fake_download(*args, **kwargs):
+            return SimpleNamespace(ok=True, data=b"\x89PNG\r\n\x1a\ncached-avatar", failure_type="", detail="")
+
+        def fake_update_profile(*args, **kwargs):
+            assert kwargs["avatar_path"]
+            assert os.path.exists(kwargs["avatar_path"])
+            return SimpleNamespace(ok=True, detail="ok", failure_type="")
+
+        monkeypatch.setattr(account_security_service.gateway, "download_cached_material", fake_download)
+        monkeypatch.setattr(account_security_service.gateway, "update_profile", fake_update_profile)
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        refreshed = account_security_batch_detail(session, 1, batch.id)
+        item = refreshed.items[0]
+        projected_item = get_task_detail(session, 1, f"account_security_batch:{batch.id}")["profile_batch"]["items"][0]
+
+        assert refreshed.status == "succeeded"
+        assert item.avatar_status == "succeeded"
+        assert session.get(TgAccount, account.id).avatar_object_key.startswith(f"avatars/1/{account.id}/")
+        assert projected_item["avatar_cache_status"] == "ready"
+        assert projected_item["avatar_preview_url"].startswith("/media/avatars/1/")
 
 
 def test_profile_preview_does_not_refresh_security_state(monkeypatch):
