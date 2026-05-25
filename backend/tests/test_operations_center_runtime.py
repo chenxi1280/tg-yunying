@@ -2077,7 +2077,15 @@ def test_group_relay_source_filter_defaults_and_allows_bot_when_disabled(monkeyp
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add_all(
             [
-                TgAccount(id=101, tenant_id=1, display_name="发送号", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=100),
+                TgAccount(
+                    id=101,
+                    tenant_id=1,
+                    display_name="发送号",
+                    phone_masked="101",
+                    status=AccountStatus.ACTIVE.value,
+                    health_score=100,
+                    session_ciphertext="session-101",
+                ),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群", auth_status="已授权运营", listener_context_limit=20),
                 TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群", auth_status="已授权运营", can_send=True, listener_context_limit=20),
                 TgGroupAccount(id=901, tenant_id=1, group_id=9, account_id=101, can_send=True),
@@ -2310,7 +2318,15 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         accounts = [
-            TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, health_score=100 - account_id)
+            TgAccount(
+                id=account_id,
+                tenant_id=1,
+                display_name=f"账号{account_id}",
+                phone_masked=str(account_id),
+                status=AccountStatus.ACTIVE.value,
+                health_score=100 - (account_id - 100),
+                session_ciphertext=f"session-{account_id}",
+            )
             for account_id in range(101, 106)
         ]
         channel = OperationTarget(id=21, tenant_id=1, target_type="channel", tg_peer_id="-10021", title="容量频道", username="capacity_channel", can_send=True, auth_status="已授权运营")
