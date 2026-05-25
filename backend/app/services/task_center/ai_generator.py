@@ -17,6 +17,22 @@ from app.services.content_filters import looks_like_generated_template_noise, lo
 AI_GENERATION_UNAVAILABLE_MESSAGE = "AI 生成不可用，等待恢复后继续执行"
 GROUP_CHAT_PURPOSE = "群活跃续聊"
 CHANNEL_COMMENT_PURPOSE = "频道评论"
+AI_PROVIDER_REFUSAL_MARKERS = (
+    "the request was rejected",
+    "considered high risk",
+    "content policy",
+    "policy violation",
+    "safety policy",
+    "cannot comply",
+    "can't comply",
+    "i can't assist",
+    "i cannot assist",
+    "unable to comply",
+    "请求被拒绝",
+    "内容政策",
+    "安全策略",
+    "无法协助",
+)
 
 
 class AiGenerationUnavailable(RuntimeError):
@@ -130,7 +146,7 @@ def generate_contents(
         raise
     contents = [candidate.content.strip() for candidate in result.candidates if candidate.content.strip()]
     if purpose == GROUP_CHAT_PURPOSE:
-        contents = _dedupe_group_chat_contents(contents)
+        contents = clean_group_chat_contents(contents)
         if not contents:
             raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
     if purpose == CHANNEL_COMMENT_PURPOSE:
@@ -251,7 +267,7 @@ def _fallback_recent_context(requirements: str) -> str:
     return ""
 
 
-def _dedupe_group_chat_contents(contents: list[str]) -> list[str]:
+def clean_group_chat_contents(contents: list[str]) -> list[str]:
     accepted: list[str] = []
     starts: set[str] = set()
     for content in contents:
@@ -311,6 +327,8 @@ def _channel_comment_cluster(content: str) -> str:
 
 
 def _looks_like_bad_channel_comment(content: str) -> bool:
+    if _looks_like_ai_provider_refusal(content):
+        return True
     if _channel_comment_cluster(content):
         return True
     markers = (
@@ -355,6 +373,8 @@ def _normalize_for_similarity(content: str) -> str:
 
 
 def _looks_like_bad_group_chat_content(content: str) -> bool:
+    if _looks_like_ai_provider_refusal(content):
+        return True
     markers = (
         "当前群暂无可用历史消息",
         "不要提到系统",
@@ -387,6 +407,11 @@ def _looks_like_bad_group_chat_content(content: str) -> bool:
     if looks_like_generated_template_noise(content) or looks_like_operator_ui_content(content):
         return True
     return content.count("“") + content.count("”") >= 4
+
+
+def _looks_like_ai_provider_refusal(content: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(content or "").strip().lower())
+    return any(marker in normalized for marker in AI_PROVIDER_REFUSAL_MARKERS)
 
 
 def generate_group_messages(session: Session, tenant_id: int, config: dict, *, count: int, target_label: str, history: str = "") -> tuple[list[str], int]:
@@ -561,6 +586,7 @@ __all__ = [
     "AI_GENERATION_UNAVAILABLE_MESSAGE",
     "AiGenerationUnavailable",
     "clean_channel_comment_contents",
+    "clean_group_chat_contents",
     "generate_channel_comments",
     "generate_group_messages",
     "rewrite_relay_content",

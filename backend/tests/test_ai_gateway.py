@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from app.ai_gateway import AiGateway, AiProviderCredentials, mock_candidates, normalize_ai_model_name
-from app.services.task_center.ai_generator import clean_channel_comment_contents
+from app.services.task_center.ai_generator import clean_channel_comment_contents, clean_group_chat_contents
 
 
 def credentials() -> AiProviderCredentials:
@@ -30,6 +30,18 @@ def test_mock_channel_comment_candidates_survive_quality_filter():
     contents = clean_channel_comment_contents([candidate.content for candidate in candidates], limit=3)
 
     assert len(contents) == 3
+
+
+def test_group_chat_rejects_provider_refusal_text():
+    contents = clean_group_chat_contents(["The request was rejected because it was considered high risk"])
+
+    assert contents == []
+
+
+def test_channel_comment_rejects_provider_refusal_text():
+    contents = clean_channel_comment_contents(["The request was rejected because it was considered high risk"], limit=1)
+
+    assert contents == []
 
 
 class FakeResponse:

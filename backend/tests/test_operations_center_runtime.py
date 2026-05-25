@@ -1332,6 +1332,7 @@ def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(mon
                     type="group_relay",
                     status="running",
                     next_run_at=future_run,
+                    stats={"listener_runtime_last_error": "没有可用监听账号"},
                     type_config={"source_groups": [{"operation_target_id": 21, "is_active": True}], "target_operation_target_id": 22, "monitor_account_ids": []},
                 ),
                 Task(
@@ -1343,6 +1344,7 @@ def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(mon
                     next_run_at=future_run,
                     account_config={"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
                     type_config={"target_operation_target_id": 21, "chat_history_depth": 20},
+                    stats={"listener_runtime_last_error": "没有可用监听账号"},
                 ),
             ]
         )
@@ -1369,7 +1371,9 @@ def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(mon
     assert context_count == 1
     assert audit_count == 1
     assert relay_task.stats["listener_runtime_last_collect_count"] == 1
+    assert "listener_runtime_last_error" not in relay_task.stats
     assert ai_task.stats["listener_runtime_last_source_group_id"] == 7
+    assert "listener_runtime_last_error" not in ai_task.stats
     assert relay_task.next_run_at < future_run
     assert ai_task.next_run_at < future_run
 
