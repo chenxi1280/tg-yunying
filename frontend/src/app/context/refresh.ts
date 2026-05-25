@@ -39,6 +39,20 @@ function settledValue<T>(result: PromiseSettledResult<T>, fallback: T): T {
   return result.status === 'fulfilled' ? result.value : fallback;
 }
 
+const CONTENT_RESOURCE_VIEWS = new Set(['materials', 'messageSending', 'systemConfig']);
+
+export function viewNeedsContentResources(activeView: string): boolean {
+  return CONTENT_RESOURCE_VIEWS.has(activeView);
+}
+
+type ContentResourceSnapshot = {
+  materials: Material[];
+  materialCacheConfig: MaterialCacheConfig | null;
+  materialCacheHealth: MaterialCacheHealth | null;
+  materialImports: MaterialImportResult[];
+  contentKeywordRules: ContentKeywordRule[];
+};
+
 export type AppSnapshot = {
   me: CurrentUser;
   runtime: RuntimeConfig;
@@ -53,29 +67,32 @@ export type AppSnapshot = {
   aiProviders: AiProvider[];
   promptTemplates: PromptTemplate[];
   tenantAiSetting: TenantAiSetting;
-  materials: Material[];
-  materialCacheConfig: MaterialCacheConfig | null;
-  materialCacheHealth: MaterialCacheHealth | null;
-  materialImports: MaterialImportResult[];
-  contentKeywordRules: ContentKeywordRule[];
+  contentResources: ContentResourceSnapshot | null;
   groups: Group[];
   tasks: MessageTask[];
   archives: ArchiveItem[];
   audits: AuditLog[];
 };
 
-export async function loadAppSnapshot({
-  selectedPoolId,
-  taskStatusFilter,
-  auditFilters,
-}: {
-  selectedPoolId: number | '';
-  taskStatusFilter: string;
-  auditFilters: AuditFilters;
-}): Promise<AppSnapshot> {
-  const me = await api<CurrentUser>('/auth/me');
-  const accountQuery = selectedPoolId ? `/tg-accounts?pool_id=${selectedPoolId}` : '/tg-accounts';
+async function loadContentResources(): Promise<ContentResourceSnapshot> {
   const results = await Promise.allSettled([
+    api<Material[]>('/materials'),
+    api<MaterialCacheHealth>('/materials/cache/health'),
+    api<MaterialCacheConfig>('/materials/cache/config'),
+    api<MaterialImportResult[]>('/material-imports'),
+    api<ContentKeywordRule[]>('/content-keyword-rules'),
+  ]);
+  return {
+    materials: settledValue(results[0], [] as Material[]),
+    materialCacheHealth: settledValue(results[1], null as MaterialCacheHealth | null),
+    materialCacheConfig: settledValue(results[2], null as MaterialCacheConfig | null),
+    materialImports: settledValue(results[3], [] as MaterialImportResult[]),
+    contentKeywordRules: settledValue(results[4], [] as ContentKeywordRule[]),
+  };
+}
+
+async function loadBaseSnapshotResults(accountQuery: string, taskStatusFilter: string, auditFilters: AuditFilters) {
+  return Promise.allSettled([
     api<RuntimeConfig>('/config/runtime'),
     api<Overview>('/overview'),
     api<AccountPool[]>('/account-pools'),
@@ -87,22 +104,40 @@ export async function loadAppSnapshot({
     api<AiProvider[]>('/ai-providers'),
     api<PromptTemplate[]>('/prompt-templates'),
     api<TenantAiSetting>('/tenant-ai-settings'),
-    api<Material[]>('/materials'),
-    api<MaterialCacheHealth>('/materials/cache/health'),
-    api<MaterialCacheConfig>('/materials/cache/config'),
-    api<MaterialImportResult[]>('/material-imports'),
-    api<ContentKeywordRule[]>('/content-keyword-rules'),
   ]);
+}
+
+type BaseSnapshotResults = Awaited<ReturnType<typeof loadBaseSnapshotResults>>;
+
+function requireAccountsResult(result: BaseSnapshotResults[3]): Account[] {
+  if (result.status === 'rejected') throw result.reason;
+  return result.value;
+}
+
+export async function loadAppSnapshot({
+  activeView,
+  selectedPoolId,
+  taskStatusFilter,
+  auditFilters,
+}: {
+  activeView: string;
+  selectedPoolId: number | '';
+  taskStatusFilter: string;
+  auditFilters: AuditFilters;
+}): Promise<AppSnapshot> {
+  const me = await api<CurrentUser>('/auth/me');
+  const accountQuery = selectedPoolId ? `/tg-accounts?pool_id=${selectedPoolId}` : '/tg-accounts';
+  const results = await loadBaseSnapshotResults(accountQuery, taskStatusFilter, auditFilters);
+  const contentResources = viewNeedsContentResources(activeView) ? await loadContentResources() : null;
   const developerApps = hasPermission(me, 'system.view') ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
   const tenants = hasPermission(me, 'system.view') ? await api<Tenant[]>('/tenants').catch(() => [] as Tenant[]) : [];
   const adminUsers = hasPermission(me, 'permissions.view') ? await api<AdminUser[]>('/admin/users').catch(() => [] as AdminUser[]) : [];
-  if (results[3].status === 'rejected') throw results[3].reason;
   return {
     me,
     runtime: settledValue(results[0], {} as RuntimeConfig),
     overview: settledValue(results[1], {} as Overview),
     accountPools: settledValue(results[2], [] as AccountPool[]),
-    accounts: results[3].value,
+    accounts: requireAccountsResult(results[3]),
     groups: settledValue(results[4], [] as Group[]),
     tasks: settledValue(results[5], [] as MessageTask[]),
     archives: settledValue(results[6], [] as ArchiveItem[]),
@@ -110,11 +145,7 @@ export async function loadAppSnapshot({
     aiProviders: settledValue(results[8], [] as AiProvider[]),
     promptTemplates: settledValue(results[9], [] as PromptTemplate[]),
     tenantAiSetting: settledValue(results[10], {} as TenantAiSetting),
-    materials: settledValue(results[11], [] as Material[]),
-    materialCacheHealth: settledValue(results[12], null as MaterialCacheHealth | null),
-    materialCacheConfig: settledValue(results[13], null as MaterialCacheConfig | null),
-    materialImports: settledValue(results[14], [] as MaterialImportResult[]),
-    contentKeywordRules: settledValue(results[15], [] as ContentKeywordRule[]),
+    contentResources,
     developerApps,
     tenants,
     adminUsers,

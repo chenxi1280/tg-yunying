@@ -192,7 +192,7 @@ export function AppProvider({ children }: AppProviderProps) {
   async function refresh() {
     setBusy('刷新数据');
     try {
-      const snapshot = await loadAppSnapshot({ selectedPoolId, taskStatusFilter, auditFilters });
+      const snapshot = await loadAppSnapshot({ activeView, selectedPoolId, taskStatusFilter, auditFilters });
       setCurrentUser(snapshot.me);
       setRuntime(snapshot.runtime);
       setOverview(snapshot.overview);
@@ -207,11 +207,13 @@ export function AppProvider({ children }: AppProviderProps) {
       setAiProviders(snapshot.aiProviders);
       setPromptTemplates(snapshot.promptTemplates);
       setTenantAiSetting(snapshot.tenantAiSetting);
-      setMaterials(snapshot.materials);
-      setMaterialCacheHealth(snapshot.materialCacheHealth);
-      setMaterialCacheConfig(snapshot.materialCacheConfig);
-      setMaterialImports(snapshot.materialImports);
-      setContentKeywordRules(snapshot.contentKeywordRules);
+      if (snapshot.contentResources) {
+        setMaterials(snapshot.contentResources.materials);
+        setMaterialCacheHealth(snapshot.contentResources.materialCacheHealth);
+        setMaterialCacheConfig(snapshot.contentResources.materialCacheConfig);
+        setMaterialImports(snapshot.contentResources.materialImports);
+        setContentKeywordRules(snapshot.contentResources.contentKeywordRules);
+      }
       setGroups(snapshot.groups);
       setTasks(snapshot.tasks);
       setArchives(snapshot.archives);
@@ -235,7 +237,7 @@ export function AppProvider({ children }: AppProviderProps) {
       }
       setNotice(`后端未连接或接口异常：${error.message}`);
     });
-  }, [token, taskStatusFilter, selectedPoolId]);
+  }, [token, taskStatusFilter, selectedPoolId, activeView]);
 
   const { showResult, errorMessage, handleActionError, closeModal, openConfirm } = createModalStateActions({
     message,
