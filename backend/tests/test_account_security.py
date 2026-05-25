@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
-from app.models import AiProvider, AccountStatus, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
+from app.models import AiProvider, AccountStatus, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
 from app.schemas import TgAccountCreate
 from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ProfileGenerationStrategy
 from app.security import encrypt_secret, encrypt_session
@@ -25,7 +25,7 @@ from app.services.account_security import (
     refresh_account_security,
 )
 from app.services.accounts import create_account
-from app.services.task_center.service import get_task_detail, list_tasks
+from app.services.task_center.service import delete_task, get_task_detail, list_tasks
 
 
 def _session():
@@ -33,6 +33,13 @@ def _session():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     return Session(engine)
+
+
+def _session_factory_no_autoflush():
+    engine = create_engine(os.environ["TEST_DATABASE_URL"], future=True)
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
 def _seed_account(session: Session, *, status: str = AccountStatus.ACTIVE.value, session_value: str = "session") -> TgAccount:
@@ -404,6 +411,69 @@ def test_prd_random_from_material_pool_avatar_strategy_picks_reviewed_uploaded_i
         assert not item.warnings
 
 
+def test_random_avatar_strategy_uses_ready_cached_uploaded_image_without_local_file():
+    with _session() as session:
+        account = _seed_account(session)
+        session.add(
+            Material(
+                id=706,
+                tenant_id=1,
+                title="资料初始化头像包-已缓存",
+                material_type="图片",
+                content="",
+                tags="头像",
+                review_status="已审核",
+                source_kind="upload",
+                mime_type="image/png",
+                file_size=123,
+                cache_ready_status="ready",
+                tg_cache_account_id=account.id,
+                tg_cache_peer_id="@avatar_cache",
+                tg_cache_message_id="88",
+            )
+        )
+        session.commit()
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id],
+                action_types=["update_avatar"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+                avatar_strategy=AvatarStrategy(mode="random_from_material_pool"),
+            ),
+        )
+
+        item = preview.items[0]
+        assert item.precheck_status == "executable"
+        assert item.avatar_source == "material:706"
+        assert not item.warnings
+
+
+def test_created_batch_stays_running_with_no_autoflush_session():
+    session_factory = _session_factory_no_autoflush()
+    with session_factory() as session:
+        account = _seed_account(session)
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(
+                account_ids=[account.id],
+                action_types=["update_profile"],
+                confirm_text="确认",
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+                reason="测试无自动刷新 session 创建批次",
+            ),
+            "tester",
+        )
+
+        assert batch.status == "running"
+        assert batch.items[0].status == "pending"
+
+    assert drain_account_security_batches(session_factory, limit=10) == 1
+
+
 def test_profile_batch_is_visible_as_readonly_task_center_projection():
     with _session() as session:
         account = _seed_account(session)
@@ -430,6 +500,32 @@ def test_profile_batch_is_visible_as_readonly_task_center_projection():
         assert detail["profile_batch"]["batch_id"] == batch.id
         assert detail["profile_batch"]["items"][0]["account_id"] == account.id
         assert detail["profile_batch"]["items"][0]["profile_status"] == "pending"
+
+
+def test_delete_profile_batch_projection_hides_task_and_skips_pending_items():
+    with _session() as session:
+        account = _seed_account(session)
+        payload = AccountSecurityBatchCreate(
+            account_ids=[account.id],
+            action_types=["update_profile"],
+            confirm_text="确认",
+            profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+            reason="测试删除投影任务",
+        )
+        batch = create_account_security_batch(session, 1, payload, "tester")
+
+        delete_task(session, 1, f"account_security_batch:{batch.id}", "tester", "用户删除")
+
+        assert list_tasks(session, 1, task_type="account_profile_init") == []
+        with pytest.raises(ValueError, match="task not found"):
+            get_task_detail(session, 1, f"account_security_batch:{batch.id}")
+
+        db_batch = session.get(TgAccountSecurityBatch, batch.id)
+        db_item = session.scalar(select(TgAccountSecurityBatchItem).where(TgAccountSecurityBatchItem.batch_id == batch.id))
+        assert db_batch.status == "deleted"
+        assert db_batch.finished_at is not None
+        assert db_item.status == "skipped"
+        assert db_item.skipped_reason == "用户删除"
 
 
 def test_profile_batch_avatar_waits_until_material_cache_ready(tmp_path, monkeypatch):

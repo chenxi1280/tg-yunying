@@ -587,6 +587,32 @@ def test_login_flow_masks_verification_state():
         assert detail["stats"]["pending_verification_tasks"] >= 0
 
 
+def test_repeated_login_verify_after_success_returns_online_account(monkeypatch):
+    calls = 0
+
+    def finish_once_then_expired(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise RuntimeError("login flow not started or has expired in this process")
+        return AccountStatus.ACTIVE.value, f"encrypted-session:{uuid4().hex}"
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, _ = ensure_test_workspace(client, headers)
+        monkeypatch.setattr("app.services.accounts.gateway.finish_login", finish_once_then_expired)
+        flow = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code", "force": True}).json()
+
+        verified = client.post(f"/api/tg-accounts/{account['id']}/login/verify", headers=headers, json={"code": flow["code_preview"]})
+        assert verified.status_code == 200, verified.text
+        assert verified.json()["status"] == AccountStatus.ACTIVE.value
+
+        repeated = client.post(f"/api/tg-accounts/{account['id']}/login/verify", headers=headers, json={"code": flow["code_preview"]})
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["status"] == AccountStatus.ACTIVE.value
+        assert calls == 1
+
+
 def test_unfinished_account_soft_delete_allows_phone_reuse():
     with TestClient(app) as client:
         headers = auth_headers(client)

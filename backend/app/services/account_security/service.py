@@ -584,6 +584,7 @@ def create_account_security_batch(session: Session, tenant_id: int, payload: Acc
         )
         session.add(item)
     audit(session, tenant_id=tenant_id, actor=actor, action="创建账号安全加固批次", target_type="account_security_batch", target_id=str(batch.id), detail=payload.reason)
+    session.flush()
     _refresh_batch_counts(session, batch)
     session.commit()
     return account_security_batch_detail(session, tenant_id, batch.id)
@@ -1319,7 +1320,7 @@ def _material_avatar_sources(session: Session, tenant_id: int, strategy) -> list
             Material.review_status == "已审核",
             Material.source_kind == "upload",
             Material.mime_type.in_(["image/jpeg", "image/png", "image/webp"]),
-            Material.content != "",
+            or_(Material.content != "", Material.cache_ready_status == "ready"),
         )
         .order_by(Material.id.asc())
     )
@@ -1331,7 +1332,15 @@ def _material_avatar_sources(session: Session, tenant_id: int, strategy) -> list
             materials = [material for material in materials if group_name in material.title or group_name in material.tags]
     preferred = [material for material in materials if "头像" in f"{material.title} {material.tags}".lower() or "avatar" in f"{material.title} {material.tags}".lower()]
     candidates = preferred or materials
-    return [f"material:{material.id}" for material in candidates if Path(material.content).exists()]
+    return [f"material:{material.id}" for material in candidates if _material_has_usable_avatar_source(material)]
+
+
+def _material_has_usable_avatar_source(material: Material) -> bool:
+    if material.content and Path(material.content).exists():
+        return True
+    return material.cache_ready_status == "ready" and bool(
+        material.tg_cache_account_id and material.tg_cache_peer_id and material.tg_cache_message_id
+    )
 
 
 __all__ = [

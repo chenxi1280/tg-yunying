@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Material, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem
+from app.services._common import _now, audit
 
 PROFILE_BATCH_TASK_PREFIX = "account_security_batch:"
 PROFILE_BATCH_TASK_TYPE = "account_profile_init"
+DELETED_PROFILE_BATCH_STATUS = "deleted"
+OPEN_ITEM_STATUSES = {"pending", "running", "waiting"}
+OPEN_STEP_STATUSES = {"pending", "running", "waiting", "waiting_cache"}
 
 
 def is_profile_batch_task_id(task_id: str) -> bool:
@@ -23,6 +28,7 @@ def list_profile_batch_tasks(session: Session, tenant_id: int, task_type: str | 
         session.scalars(
             select(TgAccountSecurityBatch)
             .where(TgAccountSecurityBatch.tenant_id == tenant_id)
+            .where(TgAccountSecurityBatch.status != DELETED_PROFILE_BATCH_STATUS)
             .order_by(TgAccountSecurityBatch.id.desc())
             .limit(50)
         )
@@ -34,7 +40,7 @@ def list_profile_batch_tasks(session: Session, tenant_id: int, task_type: str | 
 def get_profile_batch_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str, Any]:
     batch_id = int(task_id.removeprefix(PROFILE_BATCH_TASK_PREFIX))
     batch = session.get(TgAccountSecurityBatch, batch_id)
-    if not batch or batch.tenant_id != tenant_id or not _is_profile_batch(batch):
+    if not batch or batch.tenant_id != tenant_id or not _is_profile_batch(batch) or batch.status == DELETED_PROFILE_BATCH_STATUS:
         raise ValueError("task not found")
     payload = _projection_payload(session, batch)
     profile_batch = _profile_batch_detail(session, batch)
@@ -55,6 +61,41 @@ def get_profile_batch_task_detail(session: Session, tenant_id: int, task_id: str
         "recent_relay_sources": [],
         "profile_batch": profile_batch,
     }
+
+
+def delete_profile_batch_task(session: Session, tenant_id: int, task_id: str, *, actor: str, reason: str = "") -> None:
+    batch_id = int(task_id.removeprefix(PROFILE_BATCH_TASK_PREFIX))
+    batch = session.get(TgAccountSecurityBatch, batch_id)
+    if not batch or batch.tenant_id != tenant_id or not _is_profile_batch(batch) or batch.status == DELETED_PROFILE_BATCH_STATUS:
+        raise ValueError("task not found")
+    now = _now()
+    reason_text = reason.strip() or "任务已删除"
+    items = _batch_items(session, batch.id)
+    for item in items:
+        _skip_open_profile_batch_item(item, reason_text, now)
+    batch.status = DELETED_PROFILE_BATCH_STATUS
+    batch.skipped_count = sum(1 for item in items if item.status in {"skipped", "manual_required"})
+    batch.finished_at = now
+    audit(
+        session,
+        tenant_id=tenant_id,
+        actor=actor,
+        action="删除资料初始化批次",
+        target_type="account_security_batch",
+        target_id=str(batch.id),
+        detail=reason_text,
+    )
+    session.commit()
+
+
+def _skip_open_profile_batch_item(item: TgAccountSecurityBatchItem, reason: str, finished_at: datetime) -> None:
+    if item.status in OPEN_ITEM_STATUSES:
+        item.status = "skipped"
+        item.skipped_reason = reason
+        item.finished_at = finished_at
+    for field in ["precheck_status", "cleanup_status", "two_fa_status", "profile_status", "username_status", "avatar_status"]:
+        if getattr(item, field) in OPEN_STEP_STATUSES:
+            setattr(item, field, "skipped")
 
 
 def _projection_payload(session: Session, batch: TgAccountSecurityBatch) -> dict[str, Any]:

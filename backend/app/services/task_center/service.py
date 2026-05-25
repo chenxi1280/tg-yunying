@@ -53,7 +53,7 @@ from .listener_runtime import drain_listener_runtime, invalidate_listener_collec
 from .review import expire_reviews
 from .reviews import ReviewStateError, approve_review, list_reviews, reject_review
 from .precheck import run_precheck_task_creation
-from .profile_batch_projection import get_profile_batch_task_detail, is_profile_batch_task_id, list_profile_batch_tasks
+from .profile_batch_projection import delete_profile_batch_task, get_profile_batch_task_detail, is_profile_batch_task_id, list_profile_batch_tasks
 from .stats import empty_stats, next_run_after_task, refresh_task_stats, retry_failed_actions
 from .utils import as_int as _as_int, as_int_list as _as_int_list
 from .runtime_retention import cleanup_runtime_details
@@ -410,6 +410,9 @@ def stop_task(session: Session, tenant_id: int, task_id: str, actor: str, reason
 
 
 def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> None:
+    if is_profile_batch_task_id(task_id):
+        delete_profile_batch_task(session, tenant_id, task_id, actor=actor, reason=reason)
+        return
     task = _get_task(session, tenant_id, task_id)
     now = _now()
     for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status.in_(["pending", "executing"]))):
