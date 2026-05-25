@@ -170,10 +170,12 @@ class ChannelCommentSnapshot:
     comment_message_id: int
     parent_comment_message_id: int | None = None
     author_peer_id: str = ""
+    author_username: str = ""
     author_name: str = ""
     content_preview: str = ""
     reply_count: int = 0
     published_at: datetime | None = None
+    is_bot: bool = False
 
 
 @dataclass(frozen=True)

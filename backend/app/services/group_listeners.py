@@ -25,6 +25,7 @@ from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, gateway, require
 from .campaigns import approve_all_drafts, create_campaign, generate_drafts
 from .developer_apps import credentials_for_account
 from .source_media import ensure_source_media_asset
+from .target_learning import GROUP_CHAT_SCENE, record_group_learning_sample
 
 
 def validate_listener_accounts(session: Session, group: TgGroup, account_ids: list[int]) -> list[TgGroupAccount]:
@@ -261,7 +262,14 @@ def _send_account_ids(session: Session, group: TgGroup) -> list[int]:
     ]
 
 
-def collect_group_context(session: Session, group: TgGroup, account_ids: list[int] | None = None) -> int:
+def collect_group_context(
+    session: Session,
+    group: TgGroup,
+    account_ids: list[int] | None = None,
+    *,
+    create_source_media: bool = False,
+    learning_scene: str | None = GROUP_CHAT_SCENE,
+) -> int:
     stmt = select(TgGroupAccount).where(
         TgGroupAccount.tenant_id == group.tenant_id,
         TgGroupAccount.group_id == group.id,
@@ -289,6 +297,8 @@ def collect_group_context(session: Session, group: TgGroup, account_ids: list[in
         )
         for snapshot in snapshots:
             content = str(snapshot.content or "").strip()
+            if learning_scene:
+                record_group_learning_sample(session, group, snapshot, profile_scene=learning_scene)
             if not content or _is_ignored_sender(snapshot, ignored_sender_identity):
                 continue
             exists = session.scalar(
@@ -315,7 +325,7 @@ def collect_group_context(session: Session, group: TgGroup, account_ids: list[in
             )
             session.add(message)
             session.flush()
-            if snapshot.message_type != "text":
+            if create_source_media and snapshot.message_type != "text":
                 ensure_source_media_asset(
                     session,
                     tenant_id=group.tenant_id,

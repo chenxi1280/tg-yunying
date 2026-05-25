@@ -691,4 +691,10 @@ def _group_recent_events(session: Session, tenant_id: int, group_id: int, *, lim
     ]
 
 
-__all__ = ["list_listener_errors", "list_listener_events", "listener_summary", "reset_listener_watermark", "switch_listener_account"]
+__all__ = [
+    "list_listener_errors",
+    "list_listener_events",
+    "listener_summary",
+    "reset_listener_watermark",
+    "switch_listener_account",
+]

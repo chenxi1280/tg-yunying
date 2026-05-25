@@ -217,6 +217,19 @@ export function TaskCenterDetailModal({
               <Table<Record<string, any>> rowKey={(item) => `${item.account_id}:${item.scheduled_at || ''}`} columns={membershipColumns} dataSource={detail.membership_accounts} pagination={{ pageSize: 6 }} size="small" scroll={{ x: 1050 }} />
             </Space>
           )}
+          {detail.learning_profile_preview?.profile_scene && (
+            <Descriptions
+              bordered
+              size="small"
+              column={4}
+              items={[
+                { key: 'scene', label: '目标画像', children: detail.learning_profile_preview.profile_scene },
+                { key: 'version', label: '版本', children: detail.learning_profile_preview.profile_version || 0 },
+                { key: 'samples', label: '样本', children: detail.learning_profile_preview.source_sample_count || 0 },
+                { key: 'status', label: '状态', children: detail.learning_profile_preview.profile_unavailable_reason || detail.learning_profile_preview.profile_hit_summary || '-' },
+              ]}
+            />
+          )}
           {detail.ai_cycles.length > 0 && (
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Typography.Title level={5} style={{ margin: 0 }}>AI 活跃循环 Cycle / Turn</Typography.Title>

@@ -322,6 +322,25 @@ def test_app_refresh_does_not_replace_accounts_with_empty_fallback_on_account_ap
     assert "accounts: settledValue(results[3], [] as Account[])" not in source
 
 
+def test_task_center_create_uses_long_timeout_and_capacity_summary():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+
+    assert "TASK_CREATE_TIMEOUT_MS" in source
+    assert "timeoutMs: TASK_CREATE_TIMEOUT_MS" in source
+    assert "capacity_summary" in wizard
+    assert "目标每条" in wizard
+    assert "最大并发" in wizard
+
+
+def test_api_error_message_supports_structured_detail_objects():
+    source = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+
+    assert "typeof parsed.detail === 'object'" in source
+    assert "parsed.detail.message" in source
+    assert "parsed.detail.trace_id" in source
+
+
 def test_profile_batch_submit_message_says_background_execution_not_completed():
     source = (PROJECT_ROOT / "frontend/src/app/views/AccountSecurityBatchDrawer.tsx").read_text()
 

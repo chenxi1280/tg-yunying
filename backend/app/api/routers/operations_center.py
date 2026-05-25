@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser, get_current_user, resolve_tenant_id
+from app.auth import CurrentUser, ensure_permission, get_current_user, resolve_tenant_id
 from app.database import get_session
 from app.schemas.archives import ReportOut
 from app.schemas.operations_center import (
@@ -40,6 +40,8 @@ from app.services.operations_center import (
     copy_rule_set_version,
     create_rule_set,
     create_rule_set_version,
+    listener_learning_profile,
+    listener_learning_samples,
     list_listener_errors,
     list_listener_events,
     listener_summary,
@@ -47,6 +49,7 @@ from app.services.operations_center import (
     list_rule_sets,
     operation_metrics_summary,
     publish_rule_set_version,
+    refresh_listener_learning,
     relay_attribution_csv,
     relay_attribution_report,
     reset_listener_watermark,
@@ -123,6 +126,56 @@ def get_listener_events(object_type: str, object_id: int, limit: int = 50, sessi
 def get_listener_errors(object_type: str, object_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
         return list_listener_errors(session, current_user.tenant_id or 1, object_type, object_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/listeners/{object_type}/{object_id}/refresh")
+def post_listener_refresh(object_type: str, object_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    ensure_permission(current_user, "target_learning.manage")
+    try:
+        return refresh_listener_learning(session, current_user.tenant_id or 1, object_type, object_id, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/listeners/{object_type}/{object_id}/learning-profile")
+def get_listener_learning_profile(object_type: str, object_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    ensure_permission(current_user, "target_learning.view")
+    try:
+        return listener_learning_profile(session, current_user.tenant_id or 1, object_type, object_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.get("/api/listeners/{object_type}/{object_id}/learning-samples")
+def get_listener_learning_samples(
+    object_type: str,
+    object_id: int,
+    profile_scene: str = "",
+    learning_status: str = "",
+    reject_reason: str = "",
+    downweight_reason: str = "",
+    sent_from: str = "",
+    sent_to: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    ensure_permission(current_user, "target_learning.view")
+    try:
+        filters = {
+            "profile_scene": profile_scene,
+            "learning_status": learning_status,
+            "reject_reason": reject_reason,
+            "downweight_reason": downweight_reason,
+            "sent_from": sent_from,
+            "sent_to": sent_to,
+            "page": page,
+            "page_size": page_size,
+        }
+        return listener_learning_samples(session, current_user.tenant_id or 1, object_type, object_id, filters)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 

@@ -635,6 +635,13 @@ class TaskAIGenerationRecordOut(BaseModel):
     token_count: int = 0
     context_message_count: int = 0
     account_memory_count: int = 0
+    profile_scene: str = ""
+    profile_version: int = 0
+    profile_hit_summary: str = ""
+    profile_unavailable_reason: str = ""
+    anchor_message_ids: list[int] = Field(default_factory=list)
+    quality_risks: list[str] = Field(default_factory=list)
+    skip_reason: str = ""
     scheduled_at: datetime | None = None
     created_at: datetime | None = None
 
@@ -728,6 +735,7 @@ class TaskDetailOut(BaseModel):
     relay_batches: list[TaskRelayBatchOut] = Field(default_factory=list)
     recent_relay_sources: list[TaskRelaySourceOut] = Field(default_factory=list)
     profile_batch: dict[str, Any] = Field(default_factory=dict)
+    learning_profile_preview: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskRetryRequest(BaseModel):
@@ -812,6 +820,7 @@ class TaskPrecheckOut(ApiModel):
     estimated_membership_actions: int = 0
     membership_warnings: list[str] = Field(default_factory=list)
     membership_subtask_preview: dict[str, Any] = Field(default_factory=dict)
+    learning_profile_preview: dict[str, Any] = Field(default_factory=dict)
     estimated_actions: int
     capacity_shortfall: int
     capacity_summary: dict[str, Any] = Field(default_factory=dict)

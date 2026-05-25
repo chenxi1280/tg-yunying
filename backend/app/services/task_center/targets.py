@@ -14,22 +14,24 @@ def group_from_reference(
     operation_target_id: int | None = None,
     require_authorized: bool = False,
 ) -> TgGroup | None:
+    target = session.get(OperationTarget, int(operation_target_id)) if operation_target_id else None
+    if target:
+        if target.tenant_id != tenant_id or target.target_type != "group":
+            return None
+        group = session.scalar(
+            select(TgGroup)
+            .where(
+                TgGroup.tenant_id == tenant_id,
+                TgGroup.tg_peer_id == target.tg_peer_id,
+            )
+            .order_by(TgGroup.id.asc())
+            .limit(1)
+        )
+        if group and (not require_authorized or group.auth_status == GroupAuthStatus.AUTHORIZED.value):
+            return group
+        return None
     group = session.get(TgGroup, int(group_id)) if group_id else None
     if group and group.tenant_id == tenant_id and (not require_authorized or group.auth_status == GroupAuthStatus.AUTHORIZED.value):
-        return group
-    target = session.get(OperationTarget, int(operation_target_id)) if operation_target_id else None
-    if not target or target.tenant_id != tenant_id or target.target_type != "group":
-        return None
-    group = session.scalar(
-        select(TgGroup)
-        .where(
-            TgGroup.tenant_id == tenant_id,
-            TgGroup.tg_peer_id == target.tg_peer_id,
-        )
-        .order_by(TgGroup.id.asc())
-        .limit(1)
-    )
-    if group and (not require_authorized or group.auth_status == GroupAuthStatus.AUTHORIZED.value):
         return group
     return None
 

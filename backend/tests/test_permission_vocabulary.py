@@ -48,3 +48,15 @@ def test_operation_metrics_prd_reports_and_export_routes_use_usage_permission():
     assert required_permission("GET", "/api/operation-metrics/summary") == ("usage.view",)
     assert required_permission("GET", "/api/operation-metrics/reports") == ("usage.view",)
     assert required_permission("POST", "/api/operation-metrics/export") == ("usage.export",)
+
+
+def test_target_learning_routes_use_learning_permissions_before_generic_target_rules():
+    assert required_permission("GET", "/api/operation-targets/12/learning-profile") == ("target_learning.view",)
+    assert required_permission("GET", "/api/operation-targets/12/learning-samples") == ("target_learning.view",)
+    assert required_permission("GET", "/api/operation-targets/12/learning-versions") == ("target_learning.view",)
+    assert required_permission("POST", "/api/operation-targets/12/learning/rebuild") == ("target_learning.rebuild",)
+    assert required_permission("POST", "/api/operation-targets/12/learning-versions/v1/restore") == ("target_learning.rebuild",)
+    assert required_permission("POST", "/api/operation-targets/12/learning/disable") == ("target_learning.manage",)
+    assert required_permission("PATCH", "/api/operation-targets/12/learning-samples/sample-1") == ("target_learning.manage",)
+    assert required_permission("GET", "/api/listeners/group/7/learning-profile") == ("target_learning.view",)
+    assert required_permission("POST", "/api/listeners/group/7/refresh") == ("target_learning.manage",)

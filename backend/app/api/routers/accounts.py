@@ -37,6 +37,7 @@ from app.services import (
     update_account_profile, upload_account_avatar, verify_login,
     manual_send, sync_account_targets,
 )
+from app.services.accounts import LoginStartFailure
 from app.services.runtime_summary import get_account_runtime_summary, list_account_runtime_summaries, rebuild_runtime_summaries
 
 router = APIRouter()

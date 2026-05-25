@@ -11,6 +11,8 @@ from ..ai_generator import AiGenerationUnavailable, clean_channel_comment_conten
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import PostCommentPayload, create_comment_action
+from app.services.target_learning import CHANNEL_COMMENT_SCENE, learning_profile_preview
+from app.services.target_learning_audit import audit_learning_profile_use
 from .common import add_tokens, adjust_for_account_hour_limit, channel_message_action_count, channel_message_payload, channel_scope, pick_channel_account, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning, stats_inc
 
 
@@ -28,6 +30,9 @@ def build_plan(session: Session, task: Task) -> int:
     channel, messages = channel_scope(session, task, config)
     if not channel or not messages:
         return 0
+    profile_preview = learning_profile_preview(session, task.tenant_id, channel.id, CHANNEL_COMMENT_SCENE)
+    audit_learning_profile_use(session, task, profile_preview, "AI评论任务")
+    config = _config_with_comment_profile(config, profile_preview)
     actions: list[tuple[ChannelMessage, str, int | None]] = []
     requested_reply_targets = [int(item) for item in config.get("reply_to_message_ids") or [] if int(item or 0) > 0]
     comment_mode = config.get("comment_mode") or "comment"
@@ -130,10 +135,21 @@ def build_plan(session: Session, task: Task) -> int:
                 resolved_rule_set_version_id=rule_version.id if rule_version else None,
                 rule_set_version=rule_version.version if rule_version else None,
                 rule_binding_mode="fixed_version" if rule_version and config.get("rule_set_version_id") else "follow_current" if rule_version else "",
+                profile_scene=str(profile_preview.get("profile_scene") or CHANNEL_COMMENT_SCENE),
+                profile_version=int(profile_preview.get("profile_version") or 0),
+                profile_hit_summary=str(profile_preview.get("profile_hit_summary") or ""),
+                profile_unavailable_reason=str(profile_preview.get("profile_unavailable_reason") or ""),
             ),
         )
         created += 1
     return created
+
+
+def _config_with_comment_profile(config: dict, profile_preview: dict) -> dict:
+    summary = str(profile_preview.get("profile_hit_summary") or "").strip()
+    if not summary:
+        return dict(config)
+    return {**config, "target_comment_profile": summary, "comment_style": "；".join(part for part in (str(config.get("comment_style") or ""), f"目标评论画像：{summary}") if part)}
 
 
 def _recent_comment_texts(session: Session, task: Task, message: ChannelMessage, *, limit: int = 20) -> list[str]:

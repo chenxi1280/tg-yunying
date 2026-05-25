@@ -571,6 +571,13 @@ def _ai_generation_records(actions: list[Action]) -> list[dict[str, Any]]:
                 "token_count": int(payload.get("ai_generation_tokens") or 0),
                 "context_message_count": int(payload.get("ai_generation_context_count") or 0),
                 "account_memory_count": int(payload.get("ai_generation_memory_count") or 0),
+                "profile_scene": str(payload.get("profile_scene") or ""),
+                "profile_version": int(payload.get("profile_version") or 0),
+                "profile_hit_summary": str(payload.get("profile_hit_summary") or ""),
+                "profile_unavailable_reason": str(payload.get("profile_unavailable_reason") or ""),
+                "anchor_message_ids": payload.get("anchor_message_ids") if isinstance(payload.get("anchor_message_ids"), list) else [],
+                "quality_risks": _quality_risks(payload),
+                "skip_reason": str(payload.get("quality_skip_reason") or ""),
                 "scheduled_at": action.scheduled_at,
                 "created_at": action.created_at,
             },
@@ -584,6 +591,17 @@ def _ai_generation_records(actions: list[Action]) -> list[dict[str, Any]]:
         if action.scheduled_at < record["scheduled_at"]:
             record["scheduled_at"] = action.scheduled_at
     return sorted(records.values(), key=lambda item: item["created_at"], reverse=True)
+
+
+def _quality_risks(payload: dict[str, Any]) -> list[str]:
+    return [
+        value
+        for value in (
+            str(payload.get("duplicate_risk") or "").strip(),
+            str(payload.get("hallucination_risk") or "").strip(),
+        )
+        if value
+    ]
 
 
 def _ai_account_profiles(session: Session, task: Task, actions: list[Action]) -> list[dict[str, Any]]:

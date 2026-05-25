@@ -473,6 +473,9 @@ function AppShell() {
               canManageTargets={hasPermission(currentUser, 'targets.manage')}
               canManageTasks={hasPermission(currentUser, 'tasks.manage')}
               canManageArchives={hasPermission(currentUser, 'archives.manage')}
+              canViewLearning={hasPermission(currentUser, 'target_learning.view')}
+              canManageLearning={hasPermission(currentUser, 'target_learning.manage')}
+              canRebuildLearning={hasPermission(currentUser, 'target_learning.rebuild')}
             />
           )}
           {activeView === 'messageSending' && (
@@ -535,7 +538,12 @@ function AppShell() {
               canDispatchControl={hasPermission(currentUser, 'tasks.dispatch_control')}
             />
           )}
-          {activeView === 'listenerCenter' && <ListenerCenterView canManageListeners={hasPermission(currentUser, 'listeners.manage')} />}
+          {activeView === 'listenerCenter' && (
+            <ListenerCenterView
+              canManageListeners={hasPermission(currentUser, 'listeners.manage')}
+              canManageLearning={hasPermission(currentUser, 'target_learning.manage')}
+            />
+          )}
           {activeView === 'ruleCenter' && <RulesCenterView onOpenSystemConfig={() => openSystemConfig('resources')} />}
           {activeView === 'riskControl' && (
             <RiskControlView
