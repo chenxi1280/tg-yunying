@@ -5,11 +5,14 @@ import logging
 import threading
 import time
 import traceback
+from datetime import timedelta
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from .config import get_settings
 from .database import SessionLocal
-from .models import MessageTask, TaskStatus
+from .models import MessageTask, TaskStatus, WorkerHeartbeat
 from .services._common import _as_utc, _now
+from .services.task_center.heartbeat import record_worker_heartbeat
 from .task_queue import get_task_queue
 from .services import (
     drain_account_sync_records,
@@ -33,6 +36,7 @@ from .services.temp_files import cleanup_temp_files
 
 logger = logging.getLogger(__name__)
 VALID_WORKER_ROLES = {"all", "legacy", "planner", "dispatcher", "listener", "recovery", "account-security", "material-cache", "metrics"}
+WORKER_HEALTH_STALE_AFTER = timedelta(minutes=2)
 
 
 def _task_due(task_id: int) -> bool:
@@ -72,6 +76,29 @@ def drain_once(limit: int = 100, *, role: str | None = None) -> int:
     return _drain_legacy_once(limit) + drain_task_center(SessionLocal, max(1, limit))
 
 
+def check_worker_health(*, role: str | None = None) -> bool:
+    selected_role = _normalize_role(role)
+    cutoff = _now() - WORKER_HEALTH_STALE_AFTER
+    with SessionLocal() as session:
+        heartbeat = session.scalar(
+            select(WorkerHeartbeat)
+            .where(
+                WorkerHeartbeat.process_type == selected_role,
+                WorkerHeartbeat.status == "active",
+                WorkerHeartbeat.last_seen_at >= cutoff,
+            )
+            .order_by(WorkerHeartbeat.last_seen_at.desc())
+            .limit(1)
+        )
+    return heartbeat is not None
+
+
+def _record_loop_heartbeat(role: str, limit: int) -> None:
+    with SessionLocal() as session:
+        record_worker_heartbeat(session, process_type=role, metadata={"limit": limit, "source": "worker_loop"})
+        session.commit()
+
+
 def _drain_legacy_once(limit: int = 100) -> int:
     settings = get_settings()
     queue = get_task_queue()
@@ -99,7 +126,9 @@ def _drain_legacy_once(limit: int = 100) -> int:
     remaining = max(0, remaining - profile_count)
     account_count = drain_account_sync_records(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - account_count)
-    listener_count = drain_group_listeners(SessionLocal, max(1, remaining))
+    listener_count = 0
+    if settings.enable_legacy_campaign_worker:
+        listener_count = drain_group_listeners(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - listener_count)
     source_media_count = _safe_optional_drain("source_media", drain_source_media_cache, SessionLocal, max(1, remaining))
     remaining = max(0, remaining - source_media_count)
@@ -147,6 +176,7 @@ def run_worker(
     iterations = 0
     while (max_iterations is None or iterations < max_iterations) and not (stop_event and stop_event.is_set()):
         try:
+            _record_loop_heartbeat(selected_role, limit)
             processed = drain_once(limit, role=selected_role)
             if processed:
                 logger.info("worker drained role=%s processed=%d", selected_role, processed)
@@ -170,7 +200,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=2.0, help="seconds between drain iterations")
     parser.add_argument("--iterations", type=int, default=None, help="test/dev helper: stop after N iterations")
     parser.add_argument("--role", choices=sorted(VALID_WORKER_ROLES), default=None, help="worker role to drain; defaults to WORKER_ROLE")
+    parser.add_argument("--healthcheck", action="store_true", help="check recent heartbeat for the selected worker role")
     args = parser.parse_args(argv)
+    if args.healthcheck:
+        return 0 if check_worker_health(role=args.role) else 1
     if args.once:
         role = _normalize_role(args.role)
         processed = drain_once(args.limit, role=role)

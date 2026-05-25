@@ -13,6 +13,8 @@ from app.services._common import _now
 from app.services.account_capacity import available_accounts_by_capacity, next_capacity_window
 from app.services.content_filters import filter_outbound_content, looks_like_generated_template_noise, looks_like_operator_ui_content
 from app.services.group_listeners import collect_group_context, recent_context_messages
+from app.services.target_learning import GROUP_CHAT_SCENE, learning_profile_preview
+from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 from app.services.material_rules import select_material_for_policy
 
@@ -57,6 +59,7 @@ def build_plan(session: Session, task: Task) -> int:
     if not group:
         task.last_error = "目标群不存在或未授权"
         return 0
+    target_label = target.title if target and target.tenant_id == task.tenant_id else group.title
     accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, target_group_id=group.id)
     if not accounts:
         no_cooldown_config = dict(task.account_config or {})
@@ -74,7 +77,7 @@ def build_plan(session: Session, task: Task) -> int:
     available_account_ids = {account.id for account in accounts}
     collect_account_id = history_fetch_account_id if history_fetch_account_id in available_account_ids else accounts[0].id
     if should_collect_listener("group", group.id, window_seconds=group.listener_interval_seconds):
-        collect_group_context(session, group, [collect_account_id])
+        collect_group_context(session, group, [collect_account_id], create_source_media=False, learning_scene=GROUP_CHAT_SCENE)
     fingerprint_source = f"{task.id}:group_ai_chat:{group.id}"
     history_depth = int(config.get("chat_history_depth") or 50)
     history_rows = recent_context_messages(session, group, history_depth)
@@ -123,11 +126,13 @@ def build_plan(session: Session, task: Task) -> int:
     topic_plan = _topic_plan_summary(config, group, topic_thread, turn_count)
     account_memories = _recent_account_memories(session, task, [account.id for account in selected], depth=int(config.get("account_memory_depth") or 3))
     account_profiles = account_profile_summaries(session, task, [account.id for account in selected])
-    generation_config = {**config, "account_memories": account_memories, "account_profiles": account_profiles, "topic_thread": topic_thread, "topic_plan": topic_plan}
+    profile_preview = learning_profile_preview(session, task.tenant_id, int(config.get("target_operation_target_id") or 0) or None, GROUP_CHAT_SCENE)
+    audit_learning_profile_use(session, task, profile_preview, "AI活群任务")
+    generation_config = _generation_config_with_profile(config, account_memories, account_profiles, topic_thread, topic_plan, profile_preview)
     cycle_index = _next_cycle_index(session, task)
     cycle_id = f"{task.id}:cycle:{cycle_index}"
     try:
-        contents, tokens = generate_group_messages(session, task.tenant_id, generation_config, count=turn_count, target_label=group.title, history=history)
+        contents, tokens = generate_group_messages(session, task.tenant_id, generation_config, count=turn_count, target_label=target_label, history=history)
     except AiGenerationUnavailable as exc:
         task.last_error = str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE
         stats = dict(task.stats or {})
@@ -201,7 +206,7 @@ def build_plan(session: Session, task: Task) -> int:
                 chat_id=group.tg_peer_id,
                 group_id=group.id,
                 operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
-                target_display=group.title,
+                target_display=target_label,
                 message_text=filtered.content,
                 media_segments=media_segments,
                 review_approved=True,
@@ -228,6 +233,10 @@ def build_plan(session: Session, task: Task) -> int:
                 ai_generation_count=len(contents),
                 ai_generation_context_count=len(context_message_ids),
                 ai_generation_memory_count=len(account_memories),
+                profile_scene=str(profile_preview.get("profile_scene") or GROUP_CHAT_SCENE),
+                profile_version=int(profile_preview.get("profile_version") or 0),
+                profile_hit_summary=str(profile_preview.get("profile_hit_summary") or ""),
+                profile_unavailable_reason=str(profile_preview.get("profile_unavailable_reason") or ""),
                 rule_set_id=rule_version.rule_set_id if rule_version else None,
                 rule_set_name=rule_set.name if rule_set else "",
                 rule_set_version_id=rule_version.id if rule_version else None,
@@ -455,6 +464,26 @@ def _topic_plan_summary(config: dict, group: TgGroup, topic_thread: str, turn_co
         "5. 换个小细节：如果前面已经有人接话，就从反应、吐槽或经历切入。",
     ]
     return "\n".join(steps[: max(1, min(int(turn_count or 1), len(steps)))])
+
+
+def _generation_config_with_profile(
+    config: dict,
+    account_memories: dict,
+    account_profiles: dict,
+    topic_thread: str,
+    topic_plan: str,
+    profile_preview: dict,
+) -> dict:
+    target_profile = str(profile_preview.get("profile_hit_summary") or "").strip()
+    profile_note = f"目标群画像：{target_profile}" if target_profile else ""
+    return {
+        **config,
+        "account_memories": account_memories,
+        "account_profiles": account_profiles,
+        "topic_thread": "；".join(part for part in (topic_thread, profile_note) if part),
+        "topic_plan": topic_plan,
+        "target_learning_profile": profile_preview,
+    }
 
 
 def _clean_topic_text(value: str) -> str:

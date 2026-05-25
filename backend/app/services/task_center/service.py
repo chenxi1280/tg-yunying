@@ -57,11 +57,13 @@ from .profile_batch_projection import delete_profile_batch_task, get_profile_bat
 from .stats import empty_stats, next_run_after_task, refresh_task_stats, retry_failed_actions
 from .utils import as_int as _as_int, as_int_list as _as_int_list
 from .runtime_retention import cleanup_runtime_details
+from app.services.target_learning import CHANNEL_COMMENT_SCENE, GROUP_CHAT_SCENE, learning_profile_preview
 from app.services.source_media import WAITING_MATERIAL_CACHE, expire_waiting_source_media_actions, wake_waiting_actions_for_source_media
 
 _empty_stats = empty_stats
 _next_run_after_task = next_run_after_task
 _retry_failed_actions = retry_failed_actions
+OPEN_PLAN_ACTION_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
 
 
 from .config_fields import (
@@ -226,7 +228,19 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
         "ai_account_profiles": _ai_account_profiles(session, task, business_actions),
         "relay_batches": _relay_batches(business_actions),
         "recent_relay_sources": _relay_recent_sources(session, task),
+        "learning_profile_preview": _task_learning_profile_preview(session, task),
     }
+
+
+def _task_learning_profile_preview(session: Session, task: Task) -> dict[str, Any]:
+    config = task.type_config or {}
+    if task.type == "group_ai_chat":
+        target_id = _as_int(config.get("target_operation_target_id"))
+        return learning_profile_preview(session, task.tenant_id, target_id, GROUP_CHAT_SCENE)
+    if task.type == "channel_comment":
+        target_id = _as_int(config.get("target_channel_id"))
+        return learning_profile_preview(session, task.tenant_id, target_id, CHANNEL_COMMENT_SCENE)
+    return {}
 
 
 def update_task(session: Session, tenant_id: int, task_id: str, payload: TaskUpdate, actor: str) -> Task:
@@ -1037,7 +1051,22 @@ def _clear_unfinished_plan(session: Session, task: Task) -> None:
         _clear_pending_relay_fingerprints(session, task, pending_actions)
         session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.action_id.in_(pending_action_ids)))
         session.execute(delete(Action).where(Action.task_id == task.id, Action.status == "pending"))
+    _supersede_active_plan_actions(session, task)
     session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.status == "pending"))
+
+
+def _supersede_active_plan_actions(session: Session, task: Task) -> None:
+    now = _now()
+    active_statuses = sorted(OPEN_PLAN_ACTION_STATUSES - {"pending"})
+    for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status.in_(active_statuses))):
+        action.status = "skipped"
+        action.executed_at = now
+        action.lease_owner = ""
+        action.lease_expires_at = None
+        action.claim_owner = ""
+        action.claim_token = ""
+        action.claim_expires_at = None
+        action.result = {"success": False, "error_code": "plan_superseded", "error_message": "任务配置已更新，旧执行计划已废弃"}
 
 
 def _clear_pending_relay_fingerprints(session: Session, task: Task, pending_actions: list[Action]) -> None:
@@ -1155,7 +1184,7 @@ def _has_open_actions(session: Session, task: Task) -> bool:
         select(func.min(Action.scheduled_at)).where(
             Action.task_id == task.id,
             Action.action_type.notin_([TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]),
-            Action.status.in_(["pending", "executing"]),
+            Action.status.in_(OPEN_PLAN_ACTION_STATUSES),
         )
     )
     if not earliest:

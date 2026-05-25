@@ -86,7 +86,9 @@ class ChannelMessageCommentOut(ApiModel):
     comment_message_id: int
     parent_comment_message_id: int | None
     author_peer_id: str
+    author_username: str = ""
     author_name: str
+    is_bot: bool = False
     content_preview: str
     reply_count: int
     published_at: datetime | None
@@ -206,6 +208,7 @@ class OperationTargetDetailOut(BaseModel):
     task_history: list[OperationTargetTaskHistoryOut] = Field(default_factory=list)
     send_records: list[OperationTargetSendRecordOut] = Field(default_factory=list)
     archive_records: list[OperationTargetArchiveRecordOut] = Field(default_factory=list)
+    learning_profile_preview: dict[str, Any] = Field(default_factory=dict)
     risk: OperationTargetRiskOut = Field(default_factory=OperationTargetRiskOut)
     sync_error: str = ""
     stats: dict[str, Any] = {}

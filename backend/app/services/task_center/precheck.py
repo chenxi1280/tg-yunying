@@ -9,6 +9,7 @@ from app.models import ChannelMessage, GroupAuthStatus, OperationTarget, RuleSet
 from app.schemas.risk_control import RiskPreflightRequest
 from app.schemas.task_center import TaskPrecheckRequest
 from app.services.risk_control import risk_preflight
+from app.services.target_learning import CHANNEL_COMMENT_SCENE, GROUP_CHAT_SCENE, learning_profile_preview
 
 from .account_pool import select_task_accounts
 from .channel_membership import channel_membership_summary
@@ -67,7 +68,14 @@ def run_precheck_task_creation(
     if task_type in {"channel_view", "channel_like", "channel_comment", "group_ai_chat", "group_relay"} and target_ability:
         membership_summary = _precheck_membership_summary(session, tenant_id, target_ability, account_config, candidates)
     membership_subtask_preview = _membership_subtask_preview(membership_summary)
-    available_accounts = select_task_accounts(session, tenant_id, account_config, limit=max(len(candidates), 1)) if candidates else []
+    learning_preview = _precheck_learning_profile_preview(session, tenant_id, task_type, target_ability)
+    available_accounts = select_task_accounts(
+        session,
+        tenant_id,
+        account_config,
+        limit=max(len(candidates), 1),
+        enforce_max_concurrent=False,
+    ) if candidates else []
     if candidates:
         risk_payload = RiskPreflightRequest(
             scenario="task_create",
@@ -89,6 +97,7 @@ def run_precheck_task_creation(
     if estimated_actions and target_per_unit:
         required_parallel = min(max(estimated_actions, 1), max(int(target_per_unit), 1))
         capacity_shortfall = max(0, required_parallel - available_count)
+    capacity_summary = _precheck_capacity_summary(account_config, target_per_unit, len(candidates), available_count, capacity_shortfall)
     if capacity_shortfall:
         warnings.append(f"预计单轮需要 {max(int(target_per_unit), 1)} 个账号，当前可用 {available_count} 个")
     if membership_summary:
@@ -125,14 +134,38 @@ def run_precheck_task_creation(
         "estimated_membership_actions": int(membership_summary.get("estimated_membership_actions") or 0),
         "membership_warnings": _membership_warnings(membership_summary),
         "membership_subtask_preview": membership_subtask_preview,
+        "learning_profile_preview": learning_preview,
         "estimated_actions": estimated_actions,
         "capacity_shortfall": capacity_shortfall,
+        "capacity_summary": capacity_summary,
         "rule_version": rule_version,
         "risk_hits": sorted(set(filter(None, risk_hits))),
         "blockers": sorted(set(filter(None, blockers))),
         "warnings": sorted(set(filter(None, warnings))),
         "suggested_actions": sorted(set(filter(None, suggested_actions))),
         "trace_id": trace_id,
+    }
+
+
+def _precheck_capacity_summary(
+    account_config: dict[str, Any],
+    target_per_unit: int,
+    candidate_count: int,
+    effective_count: int,
+    shortfall: int,
+) -> dict[str, Any]:
+    max_concurrent = int(account_config.get("max_concurrent") or 20)
+    target_per_message = max(int(target_per_unit or 1), 1)
+    note = "最大并发只限制同时执行，不截断本轮可参与账号"
+    if shortfall:
+        note = "当前有效参与账号不足目标互动量"
+    return {
+        "target_per_message": target_per_message,
+        "candidate_account_count": candidate_count,
+        "effective_account_count": effective_count,
+        "max_concurrent": max_concurrent,
+        "capacity_shortfall": shortfall,
+        "limit_note": note,
     }
 
 
@@ -150,6 +183,23 @@ def _precheck_candidate_accounts(session: Session, tenant_id: int, account_confi
             return []
         stmt = stmt.where(TgAccount.pool_id == pool_id)
     return list(session.scalars(stmt))
+
+
+def _precheck_learning_profile_preview(session: Session, tenant_id: int, task_type: str, target_ability: list[dict[str, Any]]) -> dict[str, Any]:
+    if task_type == "group_ai_chat":
+        target_id = _first_target_id(target_ability, "send_target")
+        return learning_profile_preview(session, tenant_id, target_id, GROUP_CHAT_SCENE)
+    if task_type == "channel_comment":
+        target_id = _first_target_id(target_ability, "send_target")
+        return learning_profile_preview(session, tenant_id, target_id, CHANNEL_COMMENT_SCENE)
+    return {}
+
+
+def _first_target_id(target_ability: list[dict[str, Any]], role: str) -> int | None:
+    for item in target_ability:
+        if item.get("role") == role or not role:
+            return _as_int(item.get("target_id")) or None
+    return None
 
 
 def _precheck_rule_version(session: Session, tenant_id: int, config: dict[str, Any]) -> dict[str, Any] | None:

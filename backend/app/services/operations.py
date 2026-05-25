@@ -41,6 +41,7 @@ from ._common import _now, ai_gateway, audit, gateway
 from .ai_config import ai_provider_credentials, get_tenant_ai_setting
 from .developer_apps import credentials_for_account
 from .group_listeners import collect_group_context, recent_context_messages
+from .target_learning import CHANNEL_COMMENT_SCENE, GROUP_CHAT_SCENE, learning_profile_preview, record_channel_comment_learning_sample
 from .notifications import notify_ai_failure
 
 
@@ -1023,7 +1024,15 @@ def retry_operation_target_admission(
     return operation_target_detail(session, tenant_id, target_id, admission_retry=summary)
 
 
-def operation_target_detail(session: Session, tenant_id: int, target_id: int, *, sync_error: str = "", admission_retry: dict | None = None) -> dict:
+def operation_target_detail(
+    session: Session,
+    tenant_id: int,
+    target_id: int,
+    *,
+    sync_error: str = "",
+    admission_retry: dict | None = None,
+    include_learning_profile: bool = False,
+) -> dict:
     target = _operation_target_for_tenant(session, tenant_id, target_id)
     linked_group = _linked_group_for_target(session, target)
     group_links = (
@@ -1046,6 +1055,8 @@ def operation_target_detail(session: Session, tenant_id: int, target_id: int, *,
     send_records = _send_records_for_detail(session, target)
     archive_records = _archive_records_for_detail(session, target, linked_group) if target.target_type == "group" else []
     risk = _risk_for_detail(target, accounts, linked_group)
+    profile_scene = CHANNEL_COMMENT_SCENE if target.target_type == "channel" else GROUP_CHAT_SCENE
+    learning_preview = learning_profile_preview(session, tenant_id, target.id, profile_scene) if include_learning_profile else {}
     return {
         "target": _operation_target_list_payload(target, linked_group, {linked_group.id: group_links} if linked_group else {}),
         "linked_group": (
@@ -1077,6 +1088,7 @@ def operation_target_detail(session: Session, tenant_id: int, target_id: int, *,
         "task_history": task_history,
         "send_records": send_records,
         "archive_records": archive_records,
+        "learning_profile_preview": learning_preview,
         "risk": risk,
         "sync_error": sync_error,
         "stats": {
@@ -1217,25 +1229,31 @@ def _sync_channel_message_comments(session: Session, message: ChannelMessage, *,
         if existing:
             existing.parent_comment_message_id = parent_comment_message_id
             existing.author_peer_id = snapshot.author_peer_id or existing.author_peer_id
+            existing.author_username = str(getattr(snapshot, "author_username", "") or existing.author_username).lstrip("@")
             existing.author_name = snapshot.author_name or existing.author_name
+            existing.is_bot = bool(getattr(snapshot, "is_bot", False) or existing.is_bot)
             existing.content_preview = snapshot.content_preview or existing.content_preview
             existing.reply_count = int(snapshot.reply_count or existing.reply_count or 0)
             existing.published_at = published_at or existing.published_at
+            record_channel_comment_learning_sample(session, existing)
             continue
-        session.add(
-            ChannelMessageComment(
-                tenant_id=message.tenant_id,
-                channel_target_id=message.channel_target_id,
-                channel_message_id=message.id,
-                comment_message_id=comment_message_id,
-                parent_comment_message_id=parent_comment_message_id,
-                author_peer_id=snapshot.author_peer_id,
-                author_name=snapshot.author_name,
-                content_preview=snapshot.content_preview,
-                reply_count=int(snapshot.reply_count or 0),
-                published_at=published_at,
-            )
+        comment = ChannelMessageComment(
+            tenant_id=message.tenant_id,
+            channel_target_id=message.channel_target_id,
+            channel_message_id=message.id,
+            comment_message_id=comment_message_id,
+            parent_comment_message_id=parent_comment_message_id,
+            author_peer_id=snapshot.author_peer_id,
+            author_username=str(getattr(snapshot, "author_username", "") or "").lstrip("@"),
+            author_name=snapshot.author_name,
+            is_bot=bool(getattr(snapshot, "is_bot", False)),
+            content_preview=snapshot.content_preview,
+            reply_count=int(snapshot.reply_count or 0),
+            published_at=published_at,
         )
+        session.add(comment)
+        session.flush()
+        record_channel_comment_learning_sample(session, comment)
         inserted += 1
     target.last_sync_at = _now()
     target.updated_at = _now()
@@ -1271,7 +1289,7 @@ def sync_channel_message_comments(session: Session, tenant_id: int, channel_mess
     }
 
 
-def sync_operation_target_messages(session: Session, tenant_id: int, target_id: int, actor: str) -> dict:
+def sync_operation_target_messages(session: Session, tenant_id: int, target_id: int, actor: str, *, include_learning_profile: bool = False) -> dict:
     target = _operation_target_for_tenant(session, tenant_id, target_id)
     inserted = 0
     sync_error = ""
@@ -1282,7 +1300,7 @@ def sync_operation_target_messages(session: Session, tenant_id: int, target_id: 
             group = _linked_group_for_target(session, target)
             if not group:
                 raise ValueError("未找到关联群聊资产")
-            inserted = collect_group_context(session, group)
+            inserted = collect_group_context(session, group, create_source_media=False, learning_scene=GROUP_CHAT_SCENE)
             target.last_sync_at = _now()
             target.updated_at = _now()
             session.flush()
@@ -1291,7 +1309,16 @@ def sync_operation_target_messages(session: Session, tenant_id: int, target_id: 
     except Exception as exc:  # noqa: BLE001 - sync should report and preserve cached detail.
         session.rollback()
         sync_error = str(exc)
-    return {"inserted": inserted, "detail": operation_target_detail(session, tenant_id, target_id, sync_error=sync_error)}
+    return {
+        "inserted": inserted,
+        "detail": operation_target_detail(
+            session,
+            tenant_id,
+            target_id,
+            sync_error=sync_error,
+            include_learning_profile=include_learning_profile,
+        ),
+    }
 
 
 def create_operation_task(session: Session, payload: OperationTaskCreate, actor: str) -> OperationTask:

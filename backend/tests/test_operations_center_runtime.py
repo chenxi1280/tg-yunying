@@ -1295,7 +1295,7 @@ def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(mon
     reset_listener_runtime_cache()
     seen: list[tuple[int, list[int]]] = []
 
-    def fake_collect(session: Session, group: TgGroup, account_ids: list[int] | None = None) -> int:
+    def fake_collect(session: Session, group: TgGroup, account_ids: list[int] | None = None, **_kwargs) -> int:
         seen.append((group.id, list(account_ids or [])))
         session.add(
             GroupContextMessage(
@@ -2252,7 +2252,7 @@ def test_group_relay_uses_source_group_accounts_when_monitor_accounts_empty(monk
     Base.metadata.create_all(engine)
     seen_account_ids: list[list[int]] = []
 
-    def fake_collect(session: Session, group: TgGroup, account_ids: list[int] | None = None) -> int:
+    def fake_collect(session: Session, group: TgGroup, account_ids: list[int] | None = None, **_kwargs) -> int:
         seen_account_ids.append(list(account_ids or []))
         session.add(
             GroupContextMessage(
@@ -4295,7 +4295,8 @@ def test_worker_keeps_legacy_campaign_and_operation_drains_opt_in(monkeypatch):
     monkeypatch.setattr(worker, "get_settings", lambda: SimpleNamespace(enable_legacy_campaign_worker=False, enable_legacy_operation_task_worker=False))
     monkeypatch.setattr(worker, "drain_profile_sync_records", lambda *args, **kwargs: 0)
     monkeypatch.setattr(worker, "drain_account_sync_records", lambda *args, **kwargs: 0)
-    monkeypatch.setattr(worker, "drain_group_listeners", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(worker, "drain_account_security_batches", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(worker, "drain_group_listeners", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy group listener must be opt-in")))
     monkeypatch.setattr(worker, "drain_task_center", lambda *args, **kwargs: 0)
     monkeypatch.setattr(worker, "drain_archives", lambda *args, **kwargs: 0)
     monkeypatch.setattr(worker, "drain_continuous_campaigns", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy campaign worker must be opt-in")))
@@ -4456,6 +4457,9 @@ def test_task_reset_preserves_finished_evidence_and_dedup_fingerprints():
                     status="pending",
                     payload={"source_group_id": 7, "group_id": 9, "original_text": "pending source"},
                 ),
+                Action(id="action-executing", tenant_id=1, task_id="task-reset", task_type="group_relay", action_type="send_message", status="executing", result={}),
+                Action(id="action-claiming", tenant_id=1, task_id="task-reset", task_type="group_relay", action_type="send_message", status="claiming", result={}),
+                Action(id="action-retryable", tenant_id=1, task_id="task-reset", task_type="group_relay", action_type="send_message", status="retryable_failed", result={}),
                 MessageFingerprint(tenant_id=1, source_group_id="task-reset:relay:7", fingerprint="abc", original_text="done"),
                 MessageFingerprint(tenant_id=1, source_group_id="task-reset:relay:7:target:9", fingerprint=content_fingerprint("done source"), original_text="done source"),
                 MessageFingerprint(tenant_id=1, source_group_id="task-reset:relay:7:target:9", fingerprint=content_fingerprint("pending source"), original_text="pending source"),
@@ -4470,7 +4474,13 @@ def test_task_reset_preserves_finished_evidence_and_dedup_fingerprints():
         relay_fingerprints = session.scalars(select(MessageFingerprint).where(MessageFingerprint.source_group_id == "task-reset:relay:7:target:9")).all()
 
     assert reset_status == "running"
-    assert actions == {"action-success": "success", "action-failed": "failed"}
+    assert actions == {
+        "action-success": "success",
+        "action-failed": "failed",
+        "action-executing": "skipped",
+        "action-claiming": "skipped",
+        "action-retryable": "skipped",
+    }
     assert len(fingerprints) == 1
     assert [item.original_text for item in relay_fingerprints] == ["done source"]
 

@@ -191,6 +191,9 @@ class TgLoginFlow(Base):
     code_preview: Mapped[str | None] = mapped_column(String(16), nullable=True)
     code_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     qr_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_type: Mapped[str] = mapped_column(String(80), default="")
+    failure_detail: Mapped[str] = mapped_column(Text, default="")
+    trace_id: Mapped[str] = mapped_column(String(80), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 

@@ -31,6 +31,36 @@ def test_select_task_accounts_reduces_low_health_participation_weight():
     assert len(selected) == 3
 
 
+def test_select_task_accounts_can_scan_beyond_concurrency_for_channel_capacity():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        for index in range(30):
+            session.add(
+                TgAccount(
+                    id=index + 1,
+                    tenant_id=1,
+                    display_name=f"健康账号{index + 1}",
+                    phone_masked=str(index + 1),
+                    status=AccountStatus.ACTIVE.value,
+                    health_score=95,
+                )
+            )
+        session.commit()
+
+        selected = select_task_accounts(
+            session,
+            1,
+            {"max_concurrent": 20},
+            limit=30,
+            enforce_max_concurrent=False,
+        )
+
+    assert len(selected) == 30
+
+
 def test_select_task_accounts_prefers_healthy_accounts_before_low_health_accounts():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

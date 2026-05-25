@@ -44,6 +44,10 @@ class SendMessagePayload(BaseModel):
     ai_generation_count: int = 0
     ai_generation_context_count: int = 0
     ai_generation_memory_count: int = 0
+    profile_scene: str = ""
+    profile_version: int = 0
+    profile_hit_summary: str = ""
+    profile_unavailable_reason: str = ""
     relay_batch_id: str = ""
     relay_event_id: str = ""
     source_group_id: int | None = None
@@ -111,6 +115,10 @@ class PostCommentPayload(ViewMessagePayload):
     resolved_rule_set_version_id: int | None = None
     rule_set_version: int | None = None
     rule_binding_mode: str = ""
+    profile_scene: str = ""
+    profile_version: int = 0
+    profile_hit_summary: str = ""
+    profile_unavailable_reason: str = ""
 
 
 class EnsureChannelMembershipPayload(BaseModel):

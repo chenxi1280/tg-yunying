@@ -16,6 +16,9 @@ type Props = {
   canManageTargets: boolean;
   canManageTasks: boolean;
   canManageArchives: boolean;
+  canViewLearning: boolean;
+  canManageLearning: boolean;
+  canRebuildLearning: boolean;
 };
 
 function formatDateTime(value?: string | null) {
@@ -39,7 +42,15 @@ function capabilityTags(target: OperationTarget) {
   );
 }
 
-export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromTarget, focusTarget, onFocusTargetConsumed, canManageMessageSending, canManageTargets, canManageTasks, canManageArchives }: Props) {
+function learningProfileSummary(profile?: Record<string, any>) {
+  if (!profile || !profile.profile_scene) return '未生成';
+  if (profile.profile_unavailable_reason) return `${profile.profile_unavailable_reason} / v${profile.profile_version || 0}`;
+  return profile.profile_hit_summary || `v${profile.profile_version || 0}，样本 ${profile.source_sample_count || 0}`;
+}
+
+type LearningAction = 'rebuild' | 'disable' | 'enable' | 'clear-profile';
+
+export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromTarget, focusTarget, onFocusTargetConsumed, canManageMessageSending, canManageTargets, canManageTasks, canManageArchives, canViewLearning, canManageLearning, canRebuildLearning }: Props) {
   const { message } = AntdApp.useApp();
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -51,9 +62,14 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
   const [syncingAllTargets, setSyncingAllTargets] = React.useState(false);
   const [syncingCommentMessageId, setSyncingCommentMessageId] = React.useState<number | null>(null);
   const [admissionRetrySaving, setAdmissionRetrySaving] = React.useState(false);
+  const [learningSaving, setLearningSaving] = React.useState(false);
+  const [learningVersionsOpen, setLearningVersionsOpen] = React.useState(false);
   const [admissionRetryOpen, setAdmissionRetryOpen] = React.useState(false);
+  const [learningAction, setLearningAction] = React.useState<{ action: LearningAction; scene: string } | null>(null);
+  const [learningVersions, setLearningVersions] = React.useState<Array<Record<string, any>>>([]);
   const [admissionRetryAccountIds, setAdmissionRetryAccountIds] = React.useState<number[]>([]);
   const [admissionRetryReason, setAdmissionRetryReason] = React.useState('');
+  const [learningReason, setLearningReason] = React.useState('');
   const [creatingArchiveId, setCreatingArchiveId] = React.useState<number | null>(null);
   const [formError, setFormError] = React.useState('');
   const [editingTarget, setEditingTarget] = React.useState<OperationTarget | null>(null);
@@ -312,6 +328,73 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     }
   }
 
+  function openLearningAction(action: LearningAction) {
+    if (!targetDetail) return;
+    const scene = String(targetDetail.learning_profile_preview?.profile_scene || (targetDetail.target.target_type === 'channel' ? 'channel_comment' : 'group_chat'));
+    setLearningAction({ action, scene });
+    setLearningReason('');
+    setFormError('');
+  }
+
+  async function openLearningVersions() {
+    if (!targetDetail) return;
+    const scene = String(targetDetail.learning_profile_preview?.profile_scene || (targetDetail.target.target_type === 'channel' ? 'channel_comment' : 'group_chat'));
+    setLearningSaving(true);
+    setFormError('');
+    try {
+      const result = await api<{ items: Array<Record<string, any>> }>(`/operation-targets/${targetDetail.target.id}/learning-versions?profile_scene=${encodeURIComponent(scene)}`);
+      setLearningVersions(result.items || []);
+      setLearningVersionsOpen(true);
+    } catch (error) {
+      setFormError(errorMessage(error));
+    } finally {
+      setLearningSaving(false);
+    }
+  }
+
+  async function restoreLearningVersion(versionId: string) {
+    if (!targetDetail) return;
+    const reason = window.prompt('填写恢复画像版本的原因');
+    if (!reason?.trim()) return;
+    setLearningSaving(true);
+    setFormError('');
+    try {
+      await api(`/operation-targets/${targetDetail.target.id}/learning-versions/${versionId}/restore`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      setLearningVersionsOpen(false);
+      await loadTargetDetail(targetDetail.target);
+    } catch (error) {
+      setFormError(errorMessage(error));
+    } finally {
+      setLearningSaving(false);
+    }
+  }
+
+  async function confirmLearningAction() {
+    if (!targetDetail || !learningAction) return;
+    const reason = learningReason.trim();
+    if (!reason) {
+      setFormError('请填写画像操作原因');
+      return;
+    }
+    setLearningSaving(true);
+    setFormError('');
+    try {
+      await api(`/operation-targets/${targetDetail.target.id}/learning/${learningAction.action}`, {
+        method: 'POST',
+        body: JSON.stringify({ profile_scene: learningAction.scene, reason }),
+      });
+      setLearningAction(null);
+      await loadTargetDetail(targetDetail.target);
+    } catch (error) {
+      setFormError(errorMessage(error));
+    } finally {
+      setLearningSaving(false);
+    }
+  }
+
   function startEdit(target: OperationTarget) {
     setEditingTarget(target);
     setTargetModalOpen(true);
@@ -356,6 +439,8 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     setDetailTarget(null);
     setTargetDetail(null);
     setAdmissionRetryOpen(false);
+    setLearningAction(null);
+    setLearningVersionsOpen(false);
   }
 
   const table = useAntdTableControls<OperationTarget>({
@@ -506,6 +591,32 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
                   <Typography.Text type="secondary">当前未发现目标能力风险。</Typography.Text>
                 )}
               </Space>
+            </Card>
+            <Card
+              className="sub-panel compact-panel"
+              title="目标画像"
+              extra={(canViewLearning || canManageLearning || canRebuildLearning) ? (
+                <Space wrap>
+                  {canRebuildLearning && <Button size="small" onClick={() => openLearningAction('rebuild')}>重建</Button>}
+                  {canViewLearning && <Button size="small" loading={learningSaving} onClick={openLearningVersions}>版本</Button>}
+                  {canManageLearning && <Button size="small" onClick={() => openLearningAction(targetDetail.learning_profile_preview?.learning_enabled ? 'disable' : 'enable')}>
+                    {targetDetail.learning_profile_preview?.learning_enabled ? '禁用学习' : '恢复学习'}
+                  </Button>}
+                  {canManageLearning && <Button size="small" danger onClick={() => openLearningAction('clear-profile')}>清空</Button>}
+                </Space>
+              ) : null}
+            >
+              <Descriptions
+                size="small"
+                column={3}
+                items={[
+                  { key: 'scene', label: '场景', children: targetDetail.learning_profile_preview?.profile_scene || '-' },
+                  { key: 'version', label: '版本', children: targetDetail.learning_profile_preview?.profile_version || 0 },
+                  { key: 'samples', label: '样本', children: targetDetail.learning_profile_preview?.source_sample_count || 0 },
+                  { key: 'enabled', label: '学习', children: targetDetail.learning_profile_preview?.learning_enabled ? '开启' : '关闭' },
+                  { key: 'status', label: '状态', span: 2, children: learningProfileSummary(targetDetail.learning_profile_preview) },
+                ]}
+              />
             </Card>
             {targetDetail.linked_group && (
               <Card className="sub-panel compact-panel" title="目标风控策略" extra={canManageTargets ? <Button type="primary" size="small" loading={riskSaving} onClick={saveRiskPolicy}>保存</Button> : null}>
@@ -669,6 +780,51 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
           <Input.TextArea rows={3} value={admissionRetryReason} onChange={(event) => setAdmissionRetryReason(event.target.value)} placeholder="例如：管理员已解除限制，重查账号准入能力" />
           <Typography.Text type="secondary">账号数：{admissionRetryAccountIds.length}</Typography.Text>
         </Space>
+      </Modal>
+      <Modal
+        title="目标画像治理"
+        open={Boolean(learningAction)}
+        confirmLoading={learningSaving}
+        okText="确认"
+        cancelText="取消"
+        onOk={confirmLearningAction}
+        onCancel={() => setLearningAction(null)}
+        destroyOnHidden
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Text type="secondary">场景：{learningAction?.scene || '-'}</Typography.Text>
+          <Typography.Text type="secondary">动作：{learningAction?.action || '-'}</Typography.Text>
+          <Input.TextArea rows={3} value={learningReason} onChange={(event) => setLearningReason(event.target.value)} placeholder="填写操作原因，会写入审计记录" />
+        </Space>
+      </Modal>
+      <Modal
+        title="目标画像版本"
+        open={learningVersionsOpen}
+        width={760}
+        footer={null}
+        onCancel={() => setLearningVersionsOpen(false)}
+        destroyOnHidden
+      >
+        <Table<Record<string, any>>
+          size="small"
+          rowKey="id"
+          loading={learningSaving}
+          dataSource={learningVersions}
+          pagination={{ pageSize: 8 }}
+          columns={[
+            { title: '版本', dataIndex: 'profile_version', width: 90 },
+            { title: '样本', dataIndex: 'source_sample_count', width: 90 },
+            { title: '摘要', key: 'summary', ellipsis: true, render: (_, item) => item.summary_snapshot?.style_summary || '-' },
+            { title: '创建人', dataIndex: 'created_by', width: 120 },
+            { title: '时间', dataIndex: 'created_at', width: 180, render: (value) => formatDateTime(value) },
+            {
+              title: '操作',
+              key: 'actions',
+              width: 100,
+              render: (_, item) => canRebuildLearning ? <Button size="small" onClick={() => restoreLearningVersion(String(item.id))}>恢复</Button> : '-',
+            },
+          ]}
+        />
       </Modal>
     </>
   );

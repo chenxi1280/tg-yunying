@@ -168,7 +168,13 @@ def _drain_listener_source(session: Session, source: ListenerRuntimeSource, resu
         return
     recovered = _recover_group_listener_account(session, group, account_ids[0])
     try:
-        inserted = collect_group_context(session, group, account_ids)
+        inserted = collect_group_context(
+            session,
+            group,
+            account_ids,
+            create_source_media=_source_has_relay_task(session, source.task_ids),
+            learning_scene="group_chat" if _source_has_ai_learning_task(session, source.task_ids) else None,
+        )
     except Exception as exc:  # noqa: BLE001 - keep other listener sources draining.
         session.rollback()
         group = session.get(TgGroup, source.group_id)
@@ -226,6 +232,14 @@ def _recover_group_listener_account(session: Session, group: TgGroup, account_id
         detail=f"account={account_id}",
     )
     return True
+
+
+def _source_has_relay_task(session: Session, task_ids: list[str]) -> bool:
+    return bool(task_ids and session.scalar(select(Task.id).where(Task.id.in_(task_ids), Task.type == "group_relay").limit(1)))
+
+
+def _source_has_ai_learning_task(session: Session, task_ids: list[str]) -> bool:
+    return bool(task_ids and session.scalar(select(Task.id).where(Task.id.in_(task_ids), Task.type == "group_ai_chat").limit(1)))
 
 
 def _claim_listener_source(session: Session, source: ListenerRuntimeSource, group: TgGroup) -> bool:

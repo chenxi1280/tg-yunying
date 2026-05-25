@@ -189,6 +189,13 @@ export type TaskCenterDetail = {
     token_count: number;
     context_message_count: number;
     account_memory_count: number;
+    profile_scene: string;
+    profile_version: number;
+    profile_hit_summary: string;
+    profile_unavailable_reason: string;
+    anchor_message_ids: number[];
+    quality_risks: string[];
+    skip_reason: string;
     scheduled_at: string | null;
     created_at: string | null;
   }>;
@@ -280,6 +287,7 @@ export type TaskCenterDetail = {
       failure_detail: string;
     }>;
   };
+  learning_profile_preview: Record<string, any>;
 	};
 
 export type TaskPrecheck = {
@@ -297,8 +305,10 @@ export type TaskPrecheck = {
   estimated_membership_actions: number;
   membership_warnings: string[];
   membership_subtask_preview: Record<string, any>;
+  learning_profile_preview: Record<string, any>;
   estimated_actions: number;
   capacity_shortfall: number;
+  capacity_summary: Record<string, any>;
   rule_version: Record<string, any> | null;
   risk_hits: string[];
   blockers: string[];

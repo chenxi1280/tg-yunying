@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser, get_current_user
+from app.auth import CurrentUser, ensure_permission, get_current_user
 from app.config import get_settings
 from app.database import get_session
 from app.common.http import not_found
@@ -50,6 +50,15 @@ from app.services import (
     update_operation_target_account_policy,
     update_operation_target,
 )
+from app.services.target_learning import (
+    clear_learning_profile,
+    get_learning_profile_payload,
+    list_learning_samples_payload,
+    rebuild_learning_profile,
+    set_learning_enabled,
+    update_learning_sample_status,
+)
+from app.services.target_learning_versions import list_learning_profile_versions, restore_learning_profile_version
 
 router = APIRouter()
 legacy_operation_task_router = APIRouter()
@@ -75,7 +84,7 @@ def get_operation_target_detail(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     try:
-        return operation_target_detail(session, current_user.tenant_id or 1, target_id)
+        return operation_target_detail(session, current_user.tenant_id or 1, target_id, include_learning_profile=current_user.has_permission("target_learning.view"))
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -87,7 +96,13 @@ def post_operation_target_sync_messages(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     try:
-        return sync_operation_target_messages(session, current_user.tenant_id or 1, target_id, current_user.name)
+        return sync_operation_target_messages(
+            session,
+            current_user.tenant_id or 1,
+            target_id,
+            current_user.name,
+            include_learning_profile=current_user.has_permission("target_learning.view"),
+        )
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -148,6 +163,123 @@ def post_operation_target_admission_retry(
 ):
     try:
         return retry_operation_target_admission(session, current_user.tenant_id or 1, target_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/operation-targets/{target_id}/learning-profile")
+def get_operation_target_learning_profile(target_id: int, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    ensure_permission(current_user, "target_learning.view")
+    try:
+        return get_learning_profile_payload(session, current_user.tenant_id or 1, target_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.get("/api/operation-targets/{target_id}/learning-samples")
+def get_operation_target_learning_samples(
+    target_id: int,
+    profile_scene: str = "",
+    learning_status: str = "",
+    reject_reason: str = "",
+    downweight_reason: str = "",
+    sent_from: str = "",
+    sent_to: str = "",
+    page: int = 1,
+    page_size: int = 50,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    ensure_permission(current_user, "target_learning.view")
+    try:
+        filters = {
+            "profile_scene": profile_scene,
+            "learning_status": learning_status,
+            "reject_reason": reject_reason,
+            "downweight_reason": downweight_reason,
+            "sent_from": sent_from,
+            "sent_to": sent_to,
+            "page": page,
+            "page_size": page_size,
+        }
+        return list_learning_samples_payload(session, current_user.tenant_id or 1, target_id, filters)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.get("/api/operation-targets/{target_id}/learning-versions")
+def get_operation_target_learning_versions(target_id: int, profile_scene: str = "group_chat", session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    ensure_permission(current_user, "target_learning.view")
+    try:
+        return list_learning_profile_versions(session, current_user.tenant_id or 1, target_id, profile_scene)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/operation-targets/{target_id}/learning-versions/{version_id}/restore")
+def post_operation_target_learning_version_restore(target_id: int, version_id: str, payload: dict, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    ensure_permission(current_user, "target_learning.rebuild")
+    try:
+        restore_learning_profile_version(session, current_user.tenant_id or 1, target_id, version_id, actor=current_user.name, reason=str(payload.get("reason") or ""))
+        session.commit()
+        return get_learning_profile_payload(session, current_user.tenant_id or 1, target_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/operation-targets/{target_id}/learning/rebuild")
+def post_operation_target_learning_rebuild(target_id: int, payload: dict, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    ensure_permission(current_user, "target_learning.rebuild")
+    try:
+        get_learning_profile_payload(session, current_user.tenant_id or 1, target_id)
+        rebuild_learning_profile(session, target_id, str(payload.get("profile_scene") or "group_chat"), actor=current_user.name, reason=str(payload.get("reason") or ""))
+        session.commit()
+        return get_learning_profile_payload(session, current_user.tenant_id or 1, target_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/operation-targets/{target_id}/learning/disable")
+def post_operation_target_learning_disable(target_id: int, payload: dict, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    ensure_permission(current_user, "target_learning.manage")
+    return _set_target_learning_enabled(session, current_user, target_id, payload, False)
+
+
+@router.post("/api/operation-targets/{target_id}/learning/enable")
+def post_operation_target_learning_enable(target_id: int, payload: dict, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    ensure_permission(current_user, "target_learning.manage")
+    return _set_target_learning_enabled(session, current_user, target_id, payload, True)
+
+
+@router.post("/api/operation-targets/{target_id}/learning/clear-profile")
+def post_operation_target_learning_clear(target_id: int, payload: dict, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    ensure_permission(current_user, "target_learning.manage")
+    try:
+        clear_learning_profile(session, current_user.tenant_id or 1, target_id, str(payload.get("profile_scene") or "group_chat"), actor=current_user.name, reason=str(payload.get("reason") or ""))
+        session.commit()
+        return get_learning_profile_payload(session, current_user.tenant_id or 1, target_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/api/operation-targets/{target_id}/learning-samples/{sample_id}")
+def patch_operation_target_learning_sample(target_id: int, sample_id: str, payload: dict, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    ensure_permission(current_user, "target_learning.manage")
+    try:
+        sample = update_learning_sample_status(session, current_user.tenant_id or 1, sample_id, str(payload.get("learning_status") or ""), actor=current_user.name, reason=str(payload.get("reason") or ""))
+        if sample.target_id != target_id:
+            raise ValueError("学习样本不属于当前目标")
+        session.commit()
+        return {"id": sample.id, "learning_status": sample.learning_status}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _set_target_learning_enabled(session: Session, current_user: CurrentUser, target_id: int, payload: dict, enabled: bool):
+    try:
+        set_learning_enabled(session, current_user.tenant_id or 1, target_id, str(payload.get("profile_scene") or "group_chat"), enabled, actor=current_user.name, reason=str(payload.get("reason") or ""))
+        session.commit()
+        return get_learning_profile_payload(session, current_user.tenant_id or 1, target_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

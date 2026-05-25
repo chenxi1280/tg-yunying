@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.database import SessionLocal
 from app.integrations.telegram import GroupMessageSnapshot
 from app.main import app
-from app.models import AccountStatus, Campaign, GroupContextMessage, MessageTask, SourceMediaAsset, TgGroup, TgGroupAccount
+from app.models import AccountStatus, Campaign, GroupContextMessage, MessageTask, OperationTarget, SourceMediaAsset, TargetLearningProfile, TargetLearningSample, TgGroup, TgGroupAccount
 from app.services.group_listeners import process_group_listener
 from tests.test_workflow import _next_test_phone, auth_headers, ensure_developer_app, ensure_test_workspace
 
@@ -152,7 +152,8 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
 
         with SessionLocal() as session:
             processed = process_group_listener(session, group["id"])
-        assert processed >= 1
+            listener_error = session.get(TgGroup, group["id"]).listener_last_error
+        assert processed >= 1, listener_error
 
         with SessionLocal() as session:
             contexts = session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-real-1").all()
@@ -161,11 +162,7 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
             assert contexts[0].used_for_ai is False
             media_context = session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-media-1").one()
             assert media_context.message_type == "media"
-            media_asset = session.query(SourceMediaAsset).filter_by(source_group_id=group["id"], source_message_id="remote-media-1").one()
-            assert media_asset.source_media_group_id == "album-1"
-            assert media_asset.media_group_index == 1
-            assert media_asset.media_group_total == 2
-            assert media_asset.cache_status == "pending_cache"
+            assert session.query(SourceMediaAsset).filter_by(source_group_id=group["id"], source_message_id="remote-media-1").count() == 0
             bot_context = session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-bot-1").one()
             assert bot_context.is_bot is True
             assert bot_context.sender_name == "群机器人"
@@ -179,7 +176,86 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
             process_group_listener(session, group["id"])
         with SessionLocal() as session:
             assert session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="remote-real-1").count() == 1
-            assert session.query(SourceMediaAsset).filter_by(source_group_id=group["id"], source_message_id="remote-media-1").count() == 1
+            assert session.query(SourceMediaAsset).filter_by(source_group_id=group["id"], source_message_id="remote-media-1").count() == 0
+
+
+def test_group_listener_learning_records_human_samples_and_rejects_bot_or_managed(monkeypatch):
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        listener, group = ensure_test_workspace(client, headers)
+        managed = _active_account(client, headers, "画像托管号")
+
+        snapshots = [
+            GroupMessageSnapshot(
+                remote_message_id="learning-human-1",
+                sender_peer_id="real-learning-user",
+                sender_name="真人用户",
+                content="这群里一般几点开始热闹？",
+            ),
+            GroupMessageSnapshot(
+                remote_message_id="learning-bot-1",
+                sender_peer_id="bot-learning-user",
+                sender_name="群机器人",
+                content="自动公告：点击按钮参与活动",
+                is_bot=True,
+            ),
+            GroupMessageSnapshot(
+                remote_message_id="learning-managed-1",
+                sender_peer_id=f"account:{managed['id']}",
+                sender_name=managed["display_name"],
+                content="平台托管账号自己的话不能学。",
+            ),
+            GroupMessageSnapshot(
+                remote_message_id="learning-media-1",
+                sender_peer_id="real-learning-media",
+                sender_name="真人用户",
+                content="[media]",
+                message_type="media",
+                caption="郑州精品必吃榜，踩坑包赔！！！",
+                media_type="photo",
+                media_fingerprint="repeat-ad-image",
+            ),
+        ]
+        monkeypatch.setattr("app.services.group_listeners.gateway.fetch_group_messages", lambda *args, **kwargs: snapshots)
+
+        with SessionLocal() as session:
+            db_group = session.get(TgGroup, group["id"])
+            db_group.listener_enabled = True
+            db_group.listener_last_polled_at = None
+            for link in session.query(TgGroupAccount).filter_by(group_id=group["id"]):
+                link.is_listener = link.account_id == listener["id"]
+            target = session.query(OperationTarget).filter_by(tenant_id=1, tg_peer_id=group["tg_peer_id"]).first()
+            if not target:
+                target = OperationTarget(
+                    tenant_id=1,
+                    target_type="group",
+                    tg_peer_id=group["tg_peer_id"],
+                    title=group["title"],
+                    auth_status="已授权运营",
+                    can_send=True,
+                )
+                session.add(target)
+                session.flush()
+            target_id = target.id
+            session.commit()
+
+        with SessionLocal() as session:
+            processed = process_group_listener(session, group["id"])
+            listener_error = session.get(TgGroup, group["id"]).listener_last_error
+            assert processed >= 1, listener_error
+
+        with SessionLocal() as session:
+            samples = session.query(TargetLearningSample).filter_by(target_id=target_id, profile_scene="group_chat").all()
+            statuses = {sample.source_message_id: sample.learning_status for sample in samples}
+            assert statuses["learning-human-1"] == "accepted"
+            assert statuses["learning-bot-1"] == "rejected"
+            assert statuses["learning-managed-1"] == "rejected"
+            assert statuses["learning-media-1"] == "downweighted"
+            assert session.query(SourceMediaAsset).filter_by(source_group_id=group["id"], source_message_id="learning-media-1").count() == 0
+            profile = session.query(TargetLearningProfile).filter_by(target_id=target_id, profile_scene="group_chat").one()
+            assert profile.learning_enabled is True
+            assert profile.profile_version >= 1
+            assert profile.source_sample_count >= 1
 
 
 def test_group_listener_context_collection_is_not_subscription_gated(monkeypatch):
@@ -221,7 +297,9 @@ def test_group_listener_context_collection_is_not_subscription_gated(monkeypatch
             session.commit()
 
         with SessionLocal() as session:
-            assert process_group_listener(session, group["id"]) >= 1
+            processed = process_group_listener(session, group["id"])
+            listener_error = session.get(TgGroup, group["id"]).listener_last_error
+            assert processed >= 1, listener_error
 
         with SessionLocal() as session:
             db_group = session.get(TgGroup, group["id"])

@@ -2,7 +2,7 @@ import React from 'react';
 import { Alert, Button, Card, Collapse, Form, Input, Modal, Select, Space, Steps, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, RefreshCcw } from 'lucide-react';
-import { api } from '../../shared/api/client';
+import { api, ApiError } from '../../shared/api/client';
 import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskPrecheck } from '../types';
 import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
 import { fromBeijingDateTimeLocalValue } from '../time';
@@ -16,6 +16,7 @@ import {
   actionContent,
   actionLabel,
   actionResult,
+  actionStatusLabel,
   actionTarget,
   csvNumbers,
   currentOperationProfile,
@@ -45,8 +46,13 @@ function TaskStatusBadge({ status }: { status?: string | null }) {
   return <StatusBadge status={status} label={statusLabel(status)} />;
 }
 
+function ActionStatusBadge({ status }: { status?: string | null }) {
+  return <StatusBadge status={status} label={actionStatusLabel(status)} />;
+}
+
 type DangerousTaskAction = 'stop' | 'reset' | 'delete';
 type TaskTypeFilter = TaskCenterAnyTaskType | 'all';
+const TASK_CREATE_TIMEOUT_MS = 120_000;
 
 const TASK_TYPE_FILTER_OPTIONS: Array<{ value: TaskTypeFilter; label: string }> = [
   { value: 'all', label: '全部类型' },
@@ -579,7 +585,11 @@ export default function TaskCenterView({
   async function runTaskPrecheck(values: any) {
     setPrecheckLoading(true);
     try {
-      const result = await api<TaskPrecheck>('/tasks/precheck', { method: 'POST', body: JSON.stringify({ task_type: taskType, payload: createPayload(values) }) });
+      const result = await api<TaskPrecheck>('/tasks/precheck', {
+        method: 'POST',
+        body: JSON.stringify({ task_type: taskType, payload: createPayload(values) }),
+        timeoutMs: TASK_CREATE_TIMEOUT_MS,
+      });
       setPrecheck(result);
       if (result.decision === 'block') {
         setActionWarning(`预检发现阻塞项：${result.blockers.join('；') || '请检查账号、目标和风控配置'}`);
@@ -606,7 +616,11 @@ export default function TaskCenterView({
         setActionError(`预检未通过：${result.blockers.join('；') || '存在阻塞项'}`);
         return;
       }
-      await api<TaskCenterTask>((start ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType], { method: 'POST', body: JSON.stringify(createPayload(values)) });
+      await api<TaskCenterTask>((start ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType], {
+        method: 'POST',
+        body: JSON.stringify(createPayload(values)),
+        timeoutMs: TASK_CREATE_TIMEOUT_MS,
+      });
       form.resetFields();
       setPrecheck(null);
       setTaskType('group_ai_chat');
@@ -615,6 +629,9 @@ export default function TaskCenterView({
       setModalOpen(false);
       await load();
     } catch (error) {
+      if (error instanceof ApiError && error.status === 408) {
+        await load();
+      }
       setActionError(errorMessage(error));
     }
   }
@@ -862,7 +879,7 @@ export default function TaskCenterView({
     { title: '计划执行时间', dataIndex: 'scheduled_at', width: 190, render: (value) => formatDateTime(value) },
     { title: '动作', dataIndex: 'action_type', width: 120, render: (value) => actionLabel(value) },
     { title: '账号', dataIndex: 'account_id', width: 170, render: (value) => accountDisplay(detail, value) },
-    { title: '状态', dataIndex: 'status', width: 110, render: (value) => <TaskStatusBadge status={value} /> },
+    { title: '状态', dataIndex: 'status', width: 110, render: (value) => <ActionStatusBadge status={value} /> },
     { title: '目标', key: 'target', width: 180, render: (_, action) => actionTarget(action) },
     { title: '内容', key: 'content', ellipsis: true, render: (_, action) => actionContent(action) },
   ];
@@ -872,7 +889,7 @@ export default function TaskCenterView({
     { title: '计划执行时间', dataIndex: 'scheduled_at', width: 190, render: (value) => formatDateTime(value) },
     { title: '实际执行时间', dataIndex: 'executed_at', width: 190, render: (value) => formatDateTime(value) },
     { title: '账号', dataIndex: 'account_id', width: 170, render: (value) => accountDisplay(detail, value) },
-    { title: '状态', dataIndex: 'status', width: 110, render: (value) => <TaskStatusBadge status={value} /> },
+    { title: '状态', dataIndex: 'status', width: 110, render: (value) => <ActionStatusBadge status={value} /> },
     { title: '目标', key: 'target', width: 180, render: (_, action) => actionTarget(action) },
     { title: '内容', key: 'content', ellipsis: true, render: (_, action) => actionContent(action) },
     { title: '失败类型', key: 'failure_type', width: 140, render: (_, action) => action.failure_type || action.result?.error_code || '-' },
@@ -959,6 +976,8 @@ export default function TaskCenterView({
     { title: 'Token', dataIndex: 'token_count', width: 100 },
     { title: '上下文', dataIndex: 'context_message_count', width: 90 },
     { title: '账号记忆', dataIndex: 'account_memory_count', width: 100 },
+    { title: '目标画像', key: 'profile', width: 220, render: (_, item) => item.profile_scene ? `v${item.profile_version || 0} / ${item.profile_unavailable_reason || item.profile_hit_summary || '-'}` : '-' },
+    { title: '质量风险', key: 'quality_risks', width: 180, render: (_, item) => item.quality_risks?.length ? item.quality_risks.join('；') : item.skip_reason || '-' },
     { title: '生成时间', dataIndex: 'created_at', width: 190, render: (value) => formatDateTime(value) },
   ];
 

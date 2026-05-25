@@ -78,3 +78,21 @@ def test_worker_main_once_accepts_role(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "role=metrics" in out
     assert "processed=8" in out
+
+
+def test_worker_main_healthcheck_uses_role_heartbeat(monkeypatch):
+    from app import worker
+
+    calls: list[str] = []
+    monkeypatch.setattr(worker, "check_worker_health", lambda *, role=None: calls.append(role or "") or True)
+
+    assert worker.main(["--healthcheck", "--role", "dispatcher"]) == 0
+    assert calls == ["dispatcher"]
+
+
+def test_worker_main_healthcheck_fails_for_stale_role(monkeypatch):
+    from app import worker
+
+    monkeypatch.setattr(worker, "check_worker_health", lambda *, role=None: False)
+
+    assert worker.main(["--healthcheck", "--role", "listener"]) == 1

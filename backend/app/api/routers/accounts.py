@@ -36,6 +36,7 @@ from app.services import (
     update_account_profile, upload_account_avatar, verify_login,
     manual_send, sync_account_targets,
 )
+from app.services.accounts import LoginStartFailure
 from app.services.runtime_summary import get_account_runtime_summary, list_account_runtime_summaries, rebuild_runtime_summaries
 
 router = APIRouter()
@@ -157,6 +158,8 @@ def post_login_start(
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
         return start_login(session, account_id, payload.method, current_user.name, payload.force)
+    except LoginStartFailure as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
     except ValueError as exc:
         if "already online" in str(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc

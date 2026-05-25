@@ -91,6 +91,52 @@ def test_task_precheck_and_create_support_inline_channel_target_input():
         assert target and target.tg_peer_id == "inline_channel"
 
 
+def test_channel_like_precheck_capacity_uses_effective_accounts_not_concurrency_cap():
+    engine = _engine()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.flush()
+        target = OperationTarget(
+            id=901,
+            tenant_id=1,
+            target_type="channel",
+            tg_peer_id="capacity_channel",
+            title="容量频道",
+            can_send=False,
+            auth_status="未确认",
+        )
+        session.add(target)
+        session.add_all(
+            TgAccount(
+                id=index + 1,
+                tenant_id=1,
+                display_name=f"点赞账号{index + 1}",
+                phone_masked=str(index + 1),
+                status="在线",
+                health_score=95,
+            )
+            for index in range(30)
+        )
+        session.commit()
+
+        payload = {
+            "name": "capacity like",
+            "target_channel_id": target.id,
+            "message_scope": "dynamic_new",
+            "target_likes_per_message": 30,
+            "account_config": {"selection_mode": "manual", "account_ids": list(range(1, 31)), "max_concurrent": 20},
+        }
+
+        precheck = precheck_task_creation(session, 1, TaskPrecheckRequest(task_type="channel_like", payload=payload))
+
+    assert precheck["capacity_shortfall"] == 0
+    assert precheck["capacity_summary"]["target_per_message"] == 30
+    assert precheck["capacity_summary"]["effective_account_count"] == 30
+    assert precheck["capacity_summary"]["max_concurrent"] == 20
+    assert "不截断" in precheck["capacity_summary"]["limit_note"]
+
+
 def test_channel_view_create_accepts_prd_post_level_production_fields():
     payload = {
         "name": "post level channel view",

@@ -72,6 +72,16 @@ type ListenerError = {
   occurred_at: string | null;
 };
 
+type ListenerLearningProfile = {
+  target_id: number;
+  profiles: Array<Record<string, any>>;
+};
+
+type ListenerLearningSamples = {
+  target_id: number;
+  items: Array<Record<string, any>>;
+};
+
 type ListenerSummary = {
   channel_count: number;
   group_count: number;
@@ -83,13 +93,15 @@ function objectTypeLabel(value: ListenerRow['object_type']): string {
   return value === 'channel' ? '频道' : '源群/群聊';
 }
 
-export default function ListenerCenterView({ canManageListeners = false }: { canManageListeners?: boolean }) {
+export default function ListenerCenterView({ canManageListeners = false, canManageLearning = false }: { canManageListeners?: boolean; canManageLearning?: boolean }) {
   const [summary, setSummary] = React.useState<ListenerSummary>({ channel_count: 0, group_count: 0, subscriber_task_count: 0, items: [] });
   const [loading, setLoading] = React.useState(false);
   const [switchingKey, setSwitchingKey] = React.useState('');
   const [detailLoadingKey, setDetailLoadingKey] = React.useState('');
   const [eventRows, setEventRows] = React.useState<Record<string, ListenerEvent[]>>({});
   const [errorRows, setErrorRows] = React.useState<Record<string, ListenerError[]>>({});
+  const [learningProfiles, setLearningProfiles] = React.useState<Record<string, ListenerLearningProfile>>({});
+  const [learningSamples, setLearningSamples] = React.useState<Record<string, ListenerLearningSamples>>({});
   const [resetTarget, setResetTarget] = React.useState<ListenerRow | null>(null);
   const [resetReason, setResetReason] = React.useState('');
   const [resetConfirmText, setResetConfirmText] = React.useState('');
@@ -148,6 +160,62 @@ export default function ListenerCenterView({ canManageListeners = false }: { can
       const [, rawId] = row.key.split(':');
       const rows = await api<ListenerError[]>(`/listeners/${row.object_type}/${rawId}/errors`);
       setErrorRows((current) => ({ ...current, [row.key]: rows }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDetailLoadingKey('');
+    }
+  }
+
+  async function loadLearning(row: ListenerRow) {
+    setDetailLoadingKey(`${row.key}:learning`);
+    setError('');
+    try {
+      const [, rawId] = row.key.split(':');
+      const [profile, samples] = await Promise.all([
+        api<ListenerLearningProfile>(`/listeners/${row.object_type}/${rawId}/learning-profile`),
+        api<ListenerLearningSamples>(`/listeners/${row.object_type}/${rawId}/learning-samples?page_size=20`),
+      ]);
+      setLearningProfiles((current) => ({ ...current, [row.key]: profile }));
+      setLearningSamples((current) => ({ ...current, [row.key]: samples }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDetailLoadingKey('');
+    }
+  }
+
+  async function refreshLearning(row: ListenerRow) {
+    setDetailLoadingKey(`${row.key}:learning-refresh`);
+    setError('');
+    try {
+      const [, rawId] = row.key.split(':');
+      await api(`/listeners/${row.object_type}/${rawId}/refresh`, { method: 'POST' });
+      await loadLearning(row);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDetailLoadingKey('');
+    }
+  }
+
+  async function updateLearningSample(row: ListenerRow, item: Record<string, any>, learningStatus: string) {
+    const targetId = learningSamples[row.key]?.target_id;
+    if (!targetId) {
+      setError('请先查看画像，确认样本所属目标');
+      return;
+    }
+    const reason = window.prompt('填写样本状态调整原因');
+    if (!reason?.trim()) return;
+    setDetailLoadingKey(`${row.key}:sample:${item.id}`);
+    setError('');
+    try {
+      await api(`/operation-targets/${targetId}/learning-samples/${item.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ learning_status: learningStatus, reason: reason.trim() }),
+      });
+      await loadLearning(row);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -280,6 +348,7 @@ export default function ListenerCenterView({ canManageListeners = false }: { can
             expandedRowRender: (row) => renderListenerDetail({
               row,
               canManageListeners,
+              canManageLearning,
               switchingKey,
               detailLoadingKey,
               events: eventRows[row.key] ?? row.recent_events,
@@ -287,7 +356,12 @@ export default function ListenerCenterView({ canManageListeners = false }: { can
               onSwitch: switchListener,
               onLoadEvents: loadListenerEvents,
               onLoadErrors: loadListenerErrors,
+              onLoadLearning: loadLearning,
+              onRefreshLearning: refreshLearning,
+              onUpdateLearningSample: updateLearningSample,
               onResetWatermark: openResetWatermark,
+              learningProfile: learningProfiles[row.key],
+              learningSamples: learningSamples[row.key],
             }),
             rowExpandable: (row) => Boolean(row.listener_accounts.length || row.subscriber_tasks.length || row.recent_events.length || row.backup_account || row.last_error),
           }}
@@ -318,6 +392,7 @@ export default function ListenerCenterView({ canManageListeners = false }: { can
 function renderListenerDetail({
   row,
   canManageListeners,
+  canManageLearning,
   switchingKey,
   detailLoadingKey,
   events,
@@ -325,10 +400,16 @@ function renderListenerDetail({
   onSwitch,
   onLoadEvents,
   onLoadErrors,
+  onLoadLearning,
+  onRefreshLearning,
+  onUpdateLearningSample,
   onResetWatermark,
+  learningProfile,
+  learningSamples,
 }: {
   row: ListenerRow;
   canManageListeners: boolean;
+  canManageLearning: boolean;
   switchingKey: string;
   detailLoadingKey: string;
   events: ListenerEvent[];
@@ -336,8 +417,14 @@ function renderListenerDetail({
   onSwitch: (row: ListenerRow) => void;
   onLoadEvents: (row: ListenerRow) => void;
   onLoadErrors: (row: ListenerRow) => void;
+  onLoadLearning: (row: ListenerRow) => void;
+  onRefreshLearning: (row: ListenerRow) => void;
+  onUpdateLearningSample: (row: ListenerRow, item: Record<string, any>, learningStatus: string) => void;
   onResetWatermark: (row: ListenerRow) => void;
+  learningProfile?: ListenerLearningProfile;
+  learningSamples?: ListenerLearningSamples;
 }) {
+  const profile = learningProfile?.profiles?.[0];
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       <Space direction="vertical" size={6} style={{ width: '100%' }}>
@@ -348,8 +435,50 @@ function renderListenerDetail({
           <Typography.Text type="secondary">去重键 {row.dedup_event_count || 0}</Typography.Text>
           <Button size="small" loading={detailLoadingKey === `${row.key}:events`} onClick={() => onLoadEvents(row)}>查看事件</Button>
           <Button size="small" loading={detailLoadingKey === `${row.key}:errors`} onClick={() => onLoadErrors(row)}>查看错误</Button>
+          <Button size="small" loading={detailLoadingKey === `${row.key}:learning`} onClick={() => onLoadLearning(row)}>查看画像</Button>
+          {canManageLearning && <Button size="small" loading={detailLoadingKey === `${row.key}:learning-refresh`} onClick={() => onRefreshLearning(row)}>刷新学习</Button>}
           {canManageListeners && <Button size="small" danger onClick={() => onResetWatermark(row)}>重置水位</Button>}
         </Space>
+      </Space>
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Typography.Text strong>目标画像</Typography.Text>
+        {profile ? (
+          <Space wrap>
+            <Tag>{profile.profile_scene}</Tag>
+            <Typography.Text>v{profile.profile_version || 0}</Typography.Text>
+            <Typography.Text type="secondary">样本 {profile.source_sample_count || 0}</Typography.Text>
+            <Typography.Text type="secondary">{profile.style_summary || profile.disabled_reason || '-'}</Typography.Text>
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">暂无画像摘要</Typography.Text>
+        )}
+        {learningSamples?.items?.length ? (
+          <Table<Record<string, any>>
+            size="small"
+            rowKey="id"
+            pagination={false}
+            dataSource={learningSamples.items}
+            columns={[
+              { title: '消息ID', dataIndex: 'source_message_id', width: 130 },
+              { title: '发送人', dataIndex: 'sender_name', width: 150, render: (value) => value || '-' },
+              { title: '状态', dataIndex: 'learning_status', width: 120 },
+              { title: '原因', key: 'reason', width: 180, render: (_, item) => item.reject_reason || item.downweight_reason || '-' },
+              { title: '内容', key: 'text', ellipsis: true, render: (_, item) => item.text || item.caption || '-' },
+              {
+                title: '治理',
+                key: 'actions',
+                width: 210,
+                render: (_, item) => canManageLearning ? (
+                  <Space wrap>
+                    <Button size="small" onClick={() => onUpdateLearningSample(row, item, 'accepted')}>采纳</Button>
+                    <Button size="small" onClick={() => onUpdateLearningSample(row, item, 'downweighted')}>降权</Button>
+                    <Button size="small" danger onClick={() => onUpdateLearningSample(row, item, 'rejected')}>剔除</Button>
+                  </Space>
+                ) : '-',
+              },
+            ]}
+          />
+        ) : null}
       </Space>
       <Space direction="vertical" size={6} style={{ width: '100%' }}>
         <Typography.Text strong>监听账号</Typography.Text>

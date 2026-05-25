@@ -32,9 +32,11 @@ def select_task_accounts(
     target_group_id: int | None = None,
     limit: int | None = None,
     scheduled_at=None,
+    enforce_max_concurrent: bool = True,
 ) -> list[TgAccount]:
     max_concurrent = int(account_config.get("max_concurrent") or 20)
-    wanted = min(limit or max_concurrent, max_concurrent)
+    requested = int(limit or max_concurrent)
+    wanted = min(requested, max_concurrent) if enforce_max_concurrent else requested
     stmt = _account_query(session, tenant_id, account_config)
     if stmt is None:
         return []

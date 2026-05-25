@@ -187,7 +187,9 @@ export type ChannelMessageComment = {
   comment_message_id: number;
   parent_comment_message_id: number | null;
   author_peer_id: string;
+  author_username: string;
   author_name: string;
+  is_bot: boolean;
   content_preview: string;
   reply_count: number;
   published_at: string | null;
@@ -272,6 +274,7 @@ export type OperationTargetDetail = {
     failure_detail: string;
     created_at: string;
   }>;
+  learning_profile_preview: Record<string, any>;
   risk: {
     level: string;
     messages: string[];

@@ -238,10 +238,12 @@ async def fetch_channel_comments(client, channel_peer_id: str, message_id: int, 
                 comment_message_id=comment_id,
                 parent_comment_message_id=getattr(getattr(comment, "reply_to", None), "reply_to_msg_id", None),
                 author_peer_id=str(getattr(sender, "id", "") or ""),
+                author_username=str(getattr(sender, "username", "") or "").lstrip("@"),
                 author_name=author_name,
                 content_preview=(getattr(comment, "message", "") or "").strip()[:500],
                 reply_count=int(getattr(replies, "replies", 0) or 0),
                 published_at=getattr(comment, "date", None),
+                is_bot=bool(getattr(sender, "bot", False)),
             )
         )
     return snapshots

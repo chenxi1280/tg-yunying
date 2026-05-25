@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from uuid import uuid4
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -239,6 +239,83 @@ class SourceMediaAsset(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class TargetLearningSample(Base):
+    __tablename__ = "target_learning_samples"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "target_id", "profile_scene", "source_message_id", name="uq_target_learning_samples_message"),
+        Index("ix_target_learning_samples_target_status", "target_id", "profile_scene", "learning_status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    target_id: Mapped[int] = mapped_column(ForeignKey("operation_targets.id"))
+    source_message_id: Mapped[str] = mapped_column(String(160), default="")
+    source_scene: Mapped[str] = mapped_column(String(60), default="listener")
+    profile_scene: Mapped[str] = mapped_column(String(60), default="group_chat")
+    sender_peer_id: Mapped[str] = mapped_column(String(160), default="")
+    sender_username: Mapped[str] = mapped_column(String(160), default="")
+    sender_name: Mapped[str] = mapped_column(String(180), default="")
+    is_bot: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_managed_account: Mapped[bool] = mapped_column(Boolean, default=False)
+    message_type: Mapped[str] = mapped_column(String(40), default="text")
+    text: Mapped[str] = mapped_column(Text, default="")
+    caption: Mapped[str] = mapped_column(Text, default="")
+    learning_status: Mapped[str] = mapped_column(String(40), default="candidate")
+    reject_reason: Mapped[str] = mapped_column(String(160), default="")
+    downweight_reason: Mapped[str] = mapped_column(String(160), default="")
+    quality_score: Mapped[int] = mapped_column(Integer, default=100)
+    observed_reply_count: Mapped[int] = mapped_column(Integer, default=0)
+    applied_profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class TargetLearningProfile(Base):
+    __tablename__ = "target_learning_profiles"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "target_id", "profile_scene", name="uq_target_learning_profiles_scene"),
+        Index("ix_target_learning_profiles_target", "target_id", "profile_scene"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    target_id: Mapped[int] = mapped_column(ForeignKey("operation_targets.id"))
+    profile_scene: Mapped[str] = mapped_column(String(60), default="group_chat")
+    learning_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    style_summary: Mapped[str] = mapped_column(Text, default="")
+    topic_weights: Mapped[dict] = mapped_column(JSON, default=dict)
+    phrase_patterns: Mapped[list] = mapped_column(JSON, default=list)
+    reply_patterns: Mapped[list] = mapped_column(JSON, default=list)
+    comment_patterns: Mapped[list] = mapped_column(JSON, default=list)
+    slang_terms: Mapped[list] = mapped_column(JSON, default=list)
+    forbidden_learning: Mapped[list] = mapped_column(JSON, default=list)
+    active_windows: Mapped[list] = mapped_column(JSON, default=list)
+    profile_version: Mapped[int] = mapped_column(Integer, default=0)
+    source_sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    disabled_reason: Mapped[str] = mapped_column(Text, default="")
+    last_rebuilt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class TargetLearningProfileVersion(Base):
+    __tablename__ = "target_learning_profile_versions"
+    __table_args__ = (Index("ix_target_learning_profile_versions_profile", "profile_id", "profile_version"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    profile_id: Mapped[str] = mapped_column(ForeignKey("target_learning_profiles.id"))
+    profile_version: Mapped[int] = mapped_column(Integer, default=1)
+    source_sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    sample_window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sample_window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    summary_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    quality_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    created_by: Mapped[str] = mapped_column(String(120), default="system")
+
+
 class WorkerHeartbeat(Base):
     __tablename__ = "worker_heartbeats"
 
@@ -264,6 +341,9 @@ __all__ = [
     "RuntimeCleanupAudit",
     "SourceMediaAsset",
     "Task",
+    "TargetLearningProfile",
+    "TargetLearningProfileVersion",
+    "TargetLearningSample",
     "WorkerHeartbeat",
     "new_uuid",
 ]

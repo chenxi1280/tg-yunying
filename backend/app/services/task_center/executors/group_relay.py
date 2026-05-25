@@ -50,7 +50,7 @@ def build_plan(session: Session, task: Task) -> int:
             continue
         source_operation_target_id = int(item.get("operation_target_id") or 0) or _source_operation_target_id(config, source.id)
         if should_collect_listener("group", source.id, window_seconds=source.listener_interval_seconds):
-            collect_group_context(session, source, _source_monitor_account_ids(session, task, source, monitor_account_ids))
+            collect_group_context(session, source, _source_monitor_account_ids(session, task, source, monitor_account_ids), create_source_media=True, learning_scene=None)
         for message in reversed(recent_context_messages(session, source, source.listener_context_limit)):
             if is_listener_ignored_sender(session, source, message):
                 continue

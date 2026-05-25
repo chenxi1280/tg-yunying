@@ -141,6 +141,9 @@ class LoginFlowOut(ApiModel):
     code_preview: str | None
     code_expires_at: datetime | None
     qr_payload: str | None
+    failure_type: str = ""
+    failure_detail: str = ""
+    trace_id: str = ""
     created_at: datetime
 
 
