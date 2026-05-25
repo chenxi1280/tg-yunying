@@ -1,10 +1,12 @@
 export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment';
+export type TaskCenterSystemTaskType = 'account_profile_init';
+export type TaskCenterAnyTaskType = TaskCenterTaskType | TaskCenterSystemTaskType;
 
 export type TaskCenterTask = {
   id: string;
   tenant_id: number;
   name: string;
-  type: TaskCenterTaskType;
+  type: TaskCenterAnyTaskType;
   status: string;
   priority: number;
   timezone: string;
@@ -243,7 +245,7 @@ export type TaskCenterDetail = {
       result: Record<string, any>;
 	    }>;
 	  }>;
-	  recent_relay_sources: Array<{
+  recent_relay_sources: Array<{
 	    source_group_id: number | null;
 	    source_group_title: string;
 	    listener_account_id: number | null;
@@ -256,8 +258,28 @@ export type TaskCenterDetail = {
 	    content: string;
 	    message_type: string;
 	    remote_message_id: string;
-	    sent_at: string | null;
-	  }>;
+    sent_at: string | null;
+  }>;
+  profile_batch?: {
+    batch_id: number;
+    action_types: string[];
+    batch_status: string;
+    avatar_cache: Record<string, number>;
+    items: Array<{
+      account_id: number;
+      display_name: string;
+      phone_number: string;
+      status: string;
+      profile_status: string;
+      username_status: string;
+      avatar_status: string;
+      avatar_source: string;
+      avatar_cache_status: string;
+      avatar_preview_url: string;
+      failure_type: string;
+      failure_detail: string;
+    }>;
+  };
 	};
 
 export type TaskPrecheck = {

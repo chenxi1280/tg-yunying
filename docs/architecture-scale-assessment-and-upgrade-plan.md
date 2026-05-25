@@ -234,7 +234,7 @@ Metrics Worker
 
 动作：
 
-- `app.worker` 增加 `--role`，默认读取 `WORKER_ROLE`，支持 `all`、`legacy`、`planner`、`dispatcher`、`listener`、`recovery`、`metrics`。
+- `app.worker` 增加 `--role`，默认读取 `WORKER_ROLE`，支持 `all`、`legacy`、`planner`、`dispatcher`、`listener`、`recovery`、`account-security`、`material-cache`、`metrics`。
 - `run_worker()` 和 `drain_once()` 增加 role 参数；保留 `all` 兼容开发环境，但生产 compose 不使用 `all`。
 - 从 `drain_task_center()` 中拆出可单独调用的 role drain：
   - `drain_task_planner(...)`：只做任务激活、停止条件、失败重试、积压保护、build plan、next_run_at。
@@ -457,6 +457,8 @@ Metrics Worker
 | `dispatcher` | due pending actions | action result、execution attempts、账号运行状态、任务 stats | 禁止生成新业务 Action |
 | `listener` | listener source、源群/频道、监听账号 | 上下文消息、listener source state、唤醒任务 next_run_at | 禁止发送业务消息 |
 | `recovery` | claiming/executing/heartbeat 超时数据 | action 恢复状态、attempt 结果未知、任务错误摘要 | 禁止调用 TG |
+| `account-security` | 账号安全批次、资料初始化批次、头像素材缓存队列 | 账号资料、安全快照、批次项、素材缓存状态 | 必须先推进素材缓存，再执行头像资料更新 |
+| `material-cache` | 素材中心待缓存图片/文件/表情包 | material cache TG 引用、缓存状态、缓存版本 | 禁止修改账号资料或任务 action |
 | `metrics` | action、task、worker、账号、代理、Redis 指标 | runtime snapshots、聚合指标 | 禁止改变业务状态 |
 | `legacy` | 旧 message task / campaign / operation task | 旧兼容表 | 禁止进入新版 Task Center 主流程 |
 

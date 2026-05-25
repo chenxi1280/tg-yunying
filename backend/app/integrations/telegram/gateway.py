@@ -15,6 +15,7 @@ from .contracts import (
     ArchiveSnapshot,
     ArchivedMemberSnapshot,
     ArchivedMessageSnapshot,
+    CachedMediaResult,
     ChannelMembershipResult,
     ChannelCommentSnapshot,
     ChannelMessageSnapshot,
@@ -1225,6 +1226,40 @@ class TelethonTelegramGateway(TelegramGateway):
                 source,
                 cache_peer_id,
                 caption,
+                self._usable_credentials(credentials),
+            )
+        )
+
+    async def _download_cached_material_async(
+        self,
+        session_ciphertext: str | None,
+        cache_peer_id: str,
+        cache_message_id: str,
+        credentials: DeveloperAppCredentials,
+    ) -> CachedMediaResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return CachedMediaResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session")
+        if not cache_peer_id or not cache_message_id:
+            return CachedMediaResult(False, failure_type="cache_media_missing", detail="缺少缓存消息引用")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return CachedMediaResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
+        return await telethon_content.download_cached_material(client, cache_peer_id, cache_message_id, self._map_send_error)
+
+    def download_cached_material(
+        self,
+        account_id: int,
+        cache_peer_id: str,
+        cache_message_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> CachedMediaResult:
+        return self._run(
+            self._download_cached_material_async(
+                session_ciphertext,
+                cache_peer_id,
+                cache_message_id,
                 self._usable_credentials(credentials),
             )
         )

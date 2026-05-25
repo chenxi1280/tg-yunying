@@ -727,6 +727,7 @@ class TaskDetailOut(BaseModel):
     ai_account_profiles: list[TaskAIAccountProfileOut] = Field(default_factory=list)
     relay_batches: list[TaskRelayBatchOut] = Field(default_factory=list)
     recent_relay_sources: list[TaskRelaySourceOut] = Field(default_factory=list)
+    profile_batch: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskRetryRequest(BaseModel):

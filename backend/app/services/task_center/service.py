@@ -39,7 +39,11 @@ from app.services._common import _now, audit
 
 from .account_pool import select_task_accounts
 from .ai_generator import generate_channel_comments, generate_group_messages
-from .channel_membership import channel_membership_summary
+from .channel_membership import (
+    ACTION_TYPE as TARGET_MEMBERSHIP_ACTION_TYPE,
+    LEGACY_ACTION_TYPE as LEGACY_MEMBERSHIP_ACTION_TYPE,
+    channel_membership_summary,
+)
 from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims
 from .executors import build_task_plan, reached_daily_action_limit
 from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _membership_accounts, _membership_phase, _message_groups, _relay_batches, _relay_recent_sources, _task_payload
@@ -49,6 +53,7 @@ from .listener_runtime import drain_listener_runtime, invalidate_listener_collec
 from .review import expire_reviews
 from .reviews import ReviewStateError, approve_review, list_reviews, reject_review
 from .precheck import run_precheck_task_creation
+from .profile_batch_projection import get_profile_batch_task_detail, is_profile_batch_task_id, list_profile_batch_tasks
 from .stats import empty_stats, next_run_after_task, refresh_task_stats, retry_failed_actions
 from .utils import as_int as _as_int, as_int_list as _as_int_list
 from .runtime_retention import cleanup_runtime_details
@@ -193,10 +198,13 @@ def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, s
         summary.task_id: summary
         for summary in session.scalars(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id))
     }
-    return [_task_payload_with_runtime_summary(session, task, summaries.get(task.id)) for task in tasks]
+    task_rows = [_task_payload_with_runtime_summary(session, task, summaries.get(task.id)) for task in tasks]
+    return [*task_rows, *list_profile_batch_tasks(session, tenant_id, task_type, status)]
 
 
 def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str, Any]:
+    if is_profile_batch_task_id(task_id):
+        return get_profile_batch_task_detail(session, tenant_id, task_id)
     task = _get_task(session, tenant_id, task_id)
     actions = list_actions(session, tenant_id, task_id)
     business_actions = [action for action in actions if action.action_type not in {"ensure_channel_membership", "ensure_target_membership"}]
@@ -1143,6 +1151,7 @@ def _has_open_actions(session: Session, task: Task) -> bool:
     earliest = session.scalar(
         select(func.min(Action.scheduled_at)).where(
             Action.task_id == task.id,
+            Action.action_type.notin_([TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]),
             Action.status.in_(["pending", "executing"]),
         )
     )

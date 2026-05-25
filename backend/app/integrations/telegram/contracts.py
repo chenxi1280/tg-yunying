@@ -21,6 +21,14 @@ class SendResult:
 
 
 @dataclass(frozen=True)
+class CachedMediaResult:
+    ok: bool
+    data: bytes = b""
+    failure_type: str = ""
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class OutboundSegment:
     segment_type: str
     content: str = ""

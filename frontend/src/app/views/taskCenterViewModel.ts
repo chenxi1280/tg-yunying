@@ -11,6 +11,7 @@ export const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
 ];
 
 export const TYPE_LABEL: Record<string, string> = Object.fromEntries(TASK_TYPES.map((item) => [item.value, item.label]));
+TYPE_LABEL.account_profile_init = '资料初始化批次';
 
 export const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
   group_ai_chat: '/tasks/group-ai-chat',
