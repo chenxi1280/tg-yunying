@@ -46,6 +46,13 @@ x-backend-env: &backend-env
   MEDIA_RATE_PER_MINUTE: ${MEDIA_RATE_PER_MINUTE:-30}
   MEDIA_ROOT: /app/media
 
+x-worker-healthcheck: &worker-healthcheck
+  test: ["CMD-SHELL", "python -m app.worker_health --role \"$${WORKER_ROLE:-all}\""]
+  interval: 20s
+  timeout: 10s
+  start_period: 45s
+  retries: 6
+
 services:
   backend:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
@@ -79,6 +86,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck: *worker-healthcheck
     networks:
       - infra_default
 
@@ -96,6 +104,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck: *worker-healthcheck
     networks:
       - infra_default
 
@@ -113,6 +122,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck: *worker-healthcheck
     networks:
       - infra_default
 
@@ -129,6 +139,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck: *worker-healthcheck
     networks:
       - infra_default
 
@@ -145,6 +156,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck: *worker-healthcheck
     networks:
       - infra_default
 
@@ -161,6 +173,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck: *worker-healthcheck
     networks:
       - infra_default
 
@@ -177,6 +190,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck: *worker-healthcheck
     networks:
       - infra_default
 

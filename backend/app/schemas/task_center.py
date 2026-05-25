@@ -814,6 +814,7 @@ class TaskPrecheckOut(ApiModel):
     membership_subtask_preview: dict[str, Any] = Field(default_factory=dict)
     estimated_actions: int
     capacity_shortfall: int
+    capacity_summary: dict[str, Any] = Field(default_factory=dict)
     rule_version: dict[str, Any] | None = None
     risk_hits: list[str] = Field(default_factory=list)
     blockers: list[str] = Field(default_factory=list)

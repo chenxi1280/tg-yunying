@@ -2,7 +2,7 @@ import React from 'react';
 import { Alert, Button, Card, Collapse, Form, Input, Modal, Select, Space, Steps, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, RefreshCcw } from 'lucide-react';
-import { api } from '../../shared/api/client';
+import { api, ApiError } from '../../shared/api/client';
 import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskPrecheck } from '../types';
 import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
 import { fromBeijingDateTimeLocalValue } from '../time';
@@ -53,6 +53,7 @@ const TASK_TYPE_FILTER_OPTIONS: Array<{ value: TaskTypeFilter; label: string }> 
   ...TASK_TYPES,
   { value: 'account_profile_init', label: TYPE_LABEL.account_profile_init },
 ];
+const TASK_CREATE_TIMEOUT_MS = 120_000;
 
 interface DangerousTaskState {
   task: TaskCenterTask;
@@ -579,7 +580,11 @@ export default function TaskCenterView({
   async function runTaskPrecheck(values: any) {
     setPrecheckLoading(true);
     try {
-      const result = await api<TaskPrecheck>('/tasks/precheck', { method: 'POST', body: JSON.stringify({ task_type: taskType, payload: createPayload(values) }) });
+      const result = await api<TaskPrecheck>('/tasks/precheck', {
+        method: 'POST',
+        body: JSON.stringify({ task_type: taskType, payload: createPayload(values) }),
+        timeoutMs: TASK_CREATE_TIMEOUT_MS,
+      });
       setPrecheck(result);
       if (result.decision === 'block') {
         setActionWarning(`预检发现阻塞项：${result.blockers.join('；') || '请检查账号、目标和风控配置'}`);
@@ -606,7 +611,11 @@ export default function TaskCenterView({
         setActionError(`预检未通过：${result.blockers.join('；') || '存在阻塞项'}`);
         return;
       }
-      await api<TaskCenterTask>((start ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType], { method: 'POST', body: JSON.stringify(createPayload(values)) });
+      await api<TaskCenterTask>((start ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType], {
+        method: 'POST',
+        body: JSON.stringify(createPayload(values)),
+        timeoutMs: TASK_CREATE_TIMEOUT_MS,
+      });
       form.resetFields();
       setPrecheck(null);
       setTaskType('group_ai_chat');
@@ -615,6 +624,9 @@ export default function TaskCenterView({
       setModalOpen(false);
       await load();
     } catch (error) {
+      if (error instanceof ApiError && error.status === 408) {
+        await load();
+      }
       setActionError(errorMessage(error));
     }
   }

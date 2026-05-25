@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from app.database import Base
+from app.models import WorkerHeartbeat
 
 
 def test_drain_once_dispatches_task_center_roles(monkeypatch):
@@ -78,3 +84,72 @@ def test_worker_main_once_accepts_role(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "role=metrics" in out
     assert "processed=8" in out
+
+
+def test_worker_main_healthcheck_uses_role_heartbeat(monkeypatch):
+    from app import worker
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(
+            WorkerHeartbeat(
+                worker_id="pytest-planner",
+                process_type="planner",
+                status="active",
+                last_seen_at=worker._now(),
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(worker, "SessionLocal", lambda: Session(engine))
+
+    assert worker.main(["--healthcheck", "--role", "planner"]) == 0
+    assert worker.main(["--healthcheck", "--role", "dispatcher"]) == 1
+
+
+def test_worker_main_healthcheck_fails_for_stale_role(monkeypatch):
+    from app import worker
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(
+            WorkerHeartbeat(
+                worker_id="pytest-stale",
+                process_type="listener",
+                status="active",
+                last_seen_at=worker._now() - worker.WORKER_HEALTH_STALE_AFTER - timedelta(seconds=1),
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(worker, "SessionLocal", lambda: Session(engine))
+
+    assert worker.main(["--healthcheck", "--role", "listener"]) == 1
+
+
+def test_worker_health_module_checks_role_heartbeat_without_worker_imports(monkeypatch):
+    from app import worker_health
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE worker_heartbeats (
+                worker_id VARCHAR(160),
+                process_type VARCHAR(60),
+                status VARCHAR(30),
+                last_seen_at DATETIME
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO worker_heartbeats VALUES (?, ?, ?, ?)",
+            ("pytest-dispatcher", "dispatcher", "active", worker_health.beijing_now()),
+        )
+
+    monkeypatch.setattr(worker_health, "SessionLocal", lambda: Session(engine))
+
+    assert worker_health.main(["--role", "dispatcher"]) == 0
+    assert worker_health.main(["--role", "planner"]) == 1

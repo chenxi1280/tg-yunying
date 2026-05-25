@@ -587,6 +587,45 @@ def test_login_flow_masks_verification_state():
         assert detail["stats"]["pending_verification_tasks"] >= 0
 
 
+def test_login_start_failure_records_flow_audit_and_structured_error(monkeypatch):
+    def fail_login(*_args, **_kwargs):
+        raise RuntimeError("telegram connect failed")
+
+    monkeypatch.setattr("app.services.accounts.gateway.start_login", fail_login)
+
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        ensure_developer_app(client, headers)
+        account = client.post(
+            "/api/tg-accounts",
+            headers=headers,
+            json={"tenant_id": 1, "display_name": "失败登录账号", "phone_number": _next_test_phone()},
+        ).json()
+
+        response = client.post(
+            f"/api/tg-accounts/{account['id']}/login/start",
+            headers=headers,
+            json={"method": "code", "force": True},
+        )
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert detail["message"] == "登录初始化失败，请查看登录流水或联系管理员处理"
+    assert detail["failure_type"] == "RuntimeError"
+    assert detail["failure_detail"] == "telegram connect failed"
+    assert detail["trace_id"]
+    with SessionLocal() as session:
+        flow = session.query(TgLoginFlow).filter_by(account_id=account["id"]).order_by(TgLoginFlow.id.desc()).first()
+        db_account = session.get(TgAccount, account["id"])
+        assert flow.status == AccountStatus.ERROR.value
+        assert flow.failure_type == "RuntimeError"
+        assert flow.failure_detail == "telegram connect failed"
+        assert flow.trace_id == detail["trace_id"]
+        assert db_account.status == AccountStatus.ERROR.value
+        audit = session.query(AuditLog).filter(AuditLog.detail.contains(detail["trace_id"])).first()
+        assert audit is not None
+
+
 def test_repeated_login_verify_after_success_returns_online_account(monkeypatch):
     calls = 0
 

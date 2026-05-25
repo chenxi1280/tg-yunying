@@ -2,7 +2,7 @@
 
 > 基于 `docs/tg-ops-platform.md` 拆出的详细产品需求文档。
 > 本文用于描述整体功能、页面按钮、业务流程、状态机、数据表、数据流转、执行器、规划器和验收口径。
-> 当前日期口径：2026-05-23（Asia/Shanghai）。数据库字段与接口以当前代码为准，本文负责统一产品和研发理解。
+> 当前日期口径：2026-05-26（Asia/Shanghai）。数据库字段与接口以当前代码为准，本文负责统一产品和研发理解。
 
 ---
 
@@ -694,6 +694,8 @@ TG账号管理是账号资产与账号维护中心，不是运营中心、消息
   -> 同步群、频道、联系人、资料
 ```
 
+登录初始化失败不得只返回 500。后端必须写入失败登录流水，包含 `failure_type`、`failure_detail`、`trace_id`，账号状态进入“异常”，并写审计；接口返回结构化 400，前端展示可追踪错误，不吞掉真实异常。
+
 ### 资料初始化流程
 
 ```text
@@ -1183,6 +1185,7 @@ task_id + execution_date + account_id + channel_message_id + action_type
 - 准入前置：已满足、待准备、预计准入 action、预计耗时。
 - 目标能力：可发送、可监听、可评论、讨论区状态。
 - 预计动作量和容量缺口。
+- 容量口径：目标每条、候选账号、有效账号、最大并发和是否存在缺口。
 - 规则版本、AI 摘要、风控命中、阻塞项。
 
 `decision=block` 时“创建并启动”禁用，只允许保存草稿或返回修改。`decision=warn` 时允许创建并启动，但必须展示 warning 并写审计。
@@ -1249,6 +1252,7 @@ task_id + execution_date + account_id + channel_message_id + action_type
 - 预计关注 / 加入前置动作数。
 - `membership_subtask_preview`: 准入子任务预览，包含预计进度、预计耗时、预计完成时间、容量统计和 warning。
 - 容量缺口。
+- 容量口径：`max_concurrent` 只控制同时执行数量，不截断本轮可参与账号池。
 - 规则版本。
 - 风控命中。
 - 阻塞项和警告。
@@ -1258,6 +1262,7 @@ task_id + execution_date + account_id + channel_message_id + action_type
 频道浏览、点赞、评论、回复、AI 活跃群、转发监听群和转发目标群启动前必须先检查账号对目标的准入状态：
 
 - 频道任务中已关注频道的账号标记 `ready`；转发监听源群只要求账号已加入 / 可读取；AI 活跃群和转发目标群必须要求账号已加入且可发言，只有 `can_send=True` 才能进入主互动 action。
+- 频道浏览、点赞和评论不能把 `max_concurrent` 当成本轮总参与账号上限。Planner 必须按单条消息目标量扫描有效账号，再由调度层按最大并发执行，避免目标每条 30 但只生成 20 个动作。
 - 未关注 / 未加入但有加入入口的账号生成统一准入前置 action。
 - 统一准入 action 命名为 `ensure_target_membership`，覆盖频道关注和群聊加入；历史 `ensure_channel_membership` 必须继续兼容展示和执行。
 - 准入 action 按抖动、限速、FloodWait 和风控节奏执行。

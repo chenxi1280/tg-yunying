@@ -61,6 +61,8 @@ Repository variables:
 
 生产环境不要开启 `ENABLE_EMBEDDED_WORKER`。compose 会单独启动 backend 以及 planner / dispatcher / listener / recovery / account-security / metrics worker。`account-security` worker 会先推进素材 TG 缓存再执行资料初始化，避免头像素材尚未暂存完成就更新资料；排障或扩容时也可以单独运行 `python -m app.worker --role material-cache`。
 
+worker 容器不暴露 backend API 端口，健康检查不能使用 `curl 127.0.0.1:8000/api/health`。生产 compose 使用 `python -m app.worker_health --role "$WORKER_ROLE"` 检查对应角色最近 2 分钟心跳；如果某个 worker unhealthy，先看 `worker_heartbeats`、容器日志和数据库连接，而不是先排查 backend API。
+
 ## Nginx
 
 参考配置在 `deploy/nginx/tgyunying.conf.example`。
@@ -76,7 +78,7 @@ Repository variables:
 
 发布后脚本会区分三层状态：
 
-1. 容器层：`tgyunying-backend` healthy，`tgyunying-worker-planner`、`tgyunying-worker-dispatcher-*`、`tgyunying-worker-listener`、`tgyunying-worker-recovery`、`tgyunying-worker-account-security`、`tgyunying-worker-metrics` running
+1. 容器层：`tgyunying-backend` healthy，`tgyunying-worker-planner`、`tgyunying-worker-dispatcher-*`、`tgyunying-worker-listener`、`tgyunying-worker-recovery`、`tgyunying-worker-account-security`、`tgyunying-worker-metrics` healthy
 2. 本机应用层：`http://127.0.0.1:18090/api/health`
 3. 宿主 Nginx / 公网入口：`https://<域名>/` 与 `https://<域名>/api/health`
 
@@ -86,6 +88,7 @@ Repository variables:
 docker ps --filter name=tgyunying
 curl -fsS http://127.0.0.1:18090/api/health
 curl -fsS --resolve tgyunying.example.com:443:127.0.0.1 https://tgyunying.example.com/api/health
+docker compose exec -T worker-planner python -m app.worker_health --role planner
 ```
 
 如果本机 API 正常但公网失败，优先检查宿主 Nginx 配置和域名证书，不要先改应用代码。

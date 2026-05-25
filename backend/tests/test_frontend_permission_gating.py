@@ -369,3 +369,25 @@ def test_task_center_allows_profile_batch_delete_without_lifecycle_controls():
     assert "canDeleteTask(task)" in source
     assert "openDangerTaskAction(task, 'delete')" in source
     assert "canManageTasks && !isSystemTask(task) && <Button size=\"small\" danger loading={busyId === `${task.id}:delete`}" not in source
+
+
+def test_task_center_create_uses_long_timeout_and_capacity_summary():
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+
+    assert "const TASK_CREATE_TIMEOUT_MS = 120_000" in view
+    assert "timeoutMs: TASK_CREATE_TIMEOUT_MS" in view
+    assert "await load();" in view
+    assert "capacity_summary" in types
+    assert "容量口径" in wizard
+    assert "最大并发" in wizard
+
+
+def test_api_error_message_supports_structured_detail_objects():
+    source = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+
+    assert "error.status === 408" in source
+    assert "请求超时，服务可能仍在处理" in source
+    assert "parsed.detail && typeof parsed.detail === 'object'" in source
+    assert "detail.trace_id" in source
