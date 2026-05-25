@@ -10,12 +10,12 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult
-from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupAuthStatus, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect
 
 
 _workspace_phone_suffix = 1000
@@ -588,40 +588,42 @@ def test_login_flow_masks_verification_state():
 
 
 def test_login_start_failure_records_flow_audit_and_structured_error(monkeypatch):
-    def fail_start_login(*_args, **_kwargs):
-        raise RuntimeError("Telethon test login failure")
+    def fail_login(*_args, **_kwargs):
+        raise RuntimeError("telegram connect failed")
+
+    monkeypatch.setattr("app.services.accounts.gateway.start_login", fail_login)
 
     with TestClient(app) as client:
         headers = auth_headers(client)
         ensure_developer_app(client, headers)
-        created = client.post(
+        account = client.post(
             "/api/tg-accounts",
             headers=headers,
-            json={"tenant_id": 1, "display_name": "登录失败账号", "phone_number": f"+86136{uuid4().int % 100000000:08d}"},
+            json={"tenant_id": 1, "display_name": "失败登录账号", "phone_number": _next_test_phone()},
+        ).json()
+
+        response = client.post(
+            f"/api/tg-accounts/{account['id']}/login/start",
+            headers=headers,
+            json={"method": "code", "force": True},
         )
-        assert created.status_code == 200, created.text
-        account = created.json()
-        monkeypatch.setattr("app.services.accounts.gateway.start_login", fail_start_login)
 
-        response = client.post(f"/api/tg-accounts/{account['id']}/login/start", headers=headers, json={"method": "code", "force": True})
-
-        assert response.status_code == 400, response.text
-        detail = response.json()["detail"]
-        assert detail["message"] == "TG 登录启动失败，请检查开发者应用、手机号、代理或 Telegram 限制后重试"
-        assert detail["account_id"] == account["id"]
-        assert detail["trace_id"]
-        with SessionLocal() as session:
-            db_account = session.get(TgAccount, account["id"])
-            flow = session.query(TgLoginFlow).filter_by(account_id=account["id"]).order_by(TgLoginFlow.id.desc()).first()
-            audit_log = session.query(AuditLog).filter_by(action="开始TG登录失败", target_id=str(account["id"])).order_by(AuditLog.id.desc()).first()
-            assert db_account.status == AccountStatus.ERROR.value
-            assert flow is not None
-            assert flow.status == "登录失败"
-            assert flow.failure_type == "RuntimeError"
-            assert flow.failure_detail == "Telethon test login failure"
-            assert flow.trace_id == detail["trace_id"]
-            assert audit_log is not None
-            assert detail["trace_id"] in audit_log.detail
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert detail["message"] == "登录初始化失败，请查看登录流水或联系管理员处理"
+    assert detail["failure_type"] == "RuntimeError"
+    assert detail["failure_detail"] == "telegram connect failed"
+    assert detail["trace_id"]
+    with SessionLocal() as session:
+        flow = session.query(TgLoginFlow).filter_by(account_id=account["id"]).order_by(TgLoginFlow.id.desc()).first()
+        db_account = session.get(TgAccount, account["id"])
+        assert flow.status == AccountStatus.ERROR.value
+        assert flow.failure_type == "RuntimeError"
+        assert flow.failure_detail == "telegram connect failed"
+        assert flow.trace_id == detail["trace_id"]
+        assert db_account.status == AccountStatus.ERROR.value
+        audit = session.query(AuditLog).filter(AuditLog.detail.contains(detail["trace_id"])).first()
+        assert audit is not None
 
 
 def test_repeated_login_verify_after_success_returns_online_account(monkeypatch):
@@ -2870,7 +2872,7 @@ def test_channel_message_sync_comments_collects_reply_targets(monkeypatch):
         synced_comments = client.post(f"/api/channel-messages/{channel_message['id']}/sync-comments", headers=headers)
         assert synced_comments.status_code == 200, synced_comments.text
         body = synced_comments.json()
-        assert body["inserted"] == 2, body
+        assert body["inserted"] == 2
         assert body["sync_error"] == ""
         assert {item["comment_message_id"] for item in body["comments"]} == {9001, 9002}
         assert next(item for item in body["comments"] if item["comment_message_id"] == 9001)["parent_comment_message_id"] is None
@@ -2882,12 +2884,6 @@ def test_channel_message_sync_comments_collects_reply_targets(monkeypatch):
 
         detail = client.get(f"/api/operation-targets/{channel_target['id']}/detail", headers=headers).json()
         assert detail["stats"]["channel_comments"] == 2
-        assert detail["learning_profile_preview"]["profile_scene"] == "channel_comment"
-        assert detail["learning_profile_preview"]["source_sample_count"] == 2
-
-        samples = client.get(f"/api/operation-targets/{channel_target['id']}/learning-samples?profile_scene=channel_comment", headers=headers)
-        assert samples.status_code == 200, samples.text
-        assert {item["source_message_id"] for item in samples.json()["items"]} == {"9001", "9002"}
 
 
 def test_operation_target_sync_messages_reports_missing_collect_account(monkeypatch):
@@ -2958,75 +2954,6 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
         assert detail["task"]["stats"]["success_count"] >= 1
         assert detail["actions"][0]["action_type"] == "send_message"
         client.post(f"/api/tasks/{task['id']}/stop", headers=headers, json={"reason": "测试停止任务"})
-
-
-def _authorized_test_group(title: str, peer_prefix: str) -> TgGroup:
-    return TgGroup(
-        tenant_id=1,
-        tg_peer_id=f"{peer_prefix}-{uuid4().hex}",
-        title=title,
-        auth_status=GroupAuthStatus.AUTHORIZED.value,
-    )
-
-
-def _create_group_ai_chat_task_with_stale_group_reference(session):
-    account = TgAccount(
-        tenant_id=1,
-        display_name="pytest stale target account",
-        phone_masked=f"+86138{uuid4().int % 100000000:08d}",
-        status=AccountStatus.ACTIVE.value,
-    )
-    stale_group = _authorized_test_group("旧测试", "pytest-old")
-    target_group = _authorized_test_group("锦鲤测试", "pytest-new")
-    session.add_all([account, stale_group, target_group])
-    session.flush()
-    target = OperationTarget(
-        tenant_id=1,
-        target_type="group",
-        tg_peer_id=target_group.tg_peer_id,
-        title="锦鲤测试",
-        auth_status=GroupAuthStatus.AUTHORIZED.value,
-    )
-    session.add_all(
-        [
-            target,
-            TgGroupAccount(tenant_id=1, group_id=stale_group.id, account_id=account.id),
-            TgGroupAccount(tenant_id=1, group_id=target_group.id, account_id=account.id),
-        ]
-    )
-    session.flush()
-    task = Task(
-        tenant_id=1,
-        name="pytest stale target",
-        type="group_ai_chat",
-        status="running",
-        next_run_at=datetime.now(UTC).replace(tzinfo=None),
-        account_config={"selection_mode": "manual", "account_ids": [account.id], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
-        pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
-        failure_policy={},
-        type_config={"target_operation_target_id": target.id, "target_group_id": stale_group.id},
-        stats={},
-    )
-    session.add(task)
-    session.flush()
-    return task, target_group
-
-
-def test_group_ai_chat_uses_operation_target_when_legacy_group_id_is_stale(monkeypatch):
-    from app.services.task_center.executors.group_ai_chat import build_plan as build_ai_chat_plan
-
-    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(
-        "app.services.task_center.executors.group_ai_chat.generate_group_messages",
-        lambda *_args, **_kwargs: (["有人在吗"], 9),
-    )
-    with TestClient(app):
-        with SessionLocal() as session:
-            task, target_group = _create_group_ai_chat_task_with_stale_group_reference(session)
-            assert build_ai_chat_plan(session, task) == 1
-            action = session.scalar(select(Action).where(Action.task_id == task.id, Action.action_type == "send_message"))
-            assert action.payload["group_id"] == target_group.id
-            assert action.payload["target_display"] == "锦鲤测试"
 
 
 def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):

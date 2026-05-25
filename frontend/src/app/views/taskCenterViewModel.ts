@@ -54,10 +54,13 @@ export function errorMessage(error: unknown) {
       return '请求超时，服务可能仍在处理，已刷新任务列表，请确认是否已创建后再重试。';
     }
     try {
-      const parsed = JSON.parse(error.body) as { detail?: any };
+      const parsed = JSON.parse(error.body) as { detail?: unknown };
       if (typeof parsed.detail === 'string') return parsed.detail;
-      if (parsed.detail && typeof parsed.detail === 'object' && typeof parsed.detail.message === 'string') {
-        return parsed.detail.trace_id ? `${parsed.detail.message}（trace_id: ${parsed.detail.trace_id}）` : parsed.detail.message;
+      if (parsed.detail && typeof parsed.detail === 'object' && !Array.isArray(parsed.detail)) {
+        const detail = parsed.detail as Record<string, unknown>;
+        const message = String(detail.message ?? detail.failure_detail ?? error.body);
+        const traceId = String(detail.trace_id ?? '');
+        return traceId ? `${message}（trace_id: ${traceId}）` : message;
       }
       if (Array.isArray(parsed.detail)) {
         return parsed.detail.map((item: any) => {
@@ -222,16 +225,6 @@ export function statusLabel(value?: string | null): string {
   if (['completed', 'success', 'skipped', 'approved'].includes(value ?? '')) return '已完成';
   if (['failed', 'rejected', 'expired'].includes(value ?? '')) return '失败';
   return value || '未运行';
-}
-
-export function actionStatusLabel(value?: string | null): string {
-  if (value === 'pending') return '计划中';
-  if (value === 'claiming') return '认领中';
-  if (value === 'executing') return '执行中';
-  if (value === 'retryable_failed') return '待重试';
-  if (value === 'unknown_after_send') return '结果未知';
-  if (value === 'skipped') return '已跳过';
-  return statusLabel(value);
 }
 
 export function accountDisplay(detail: TaskCenterDetail | null, accountId?: number | null): string {

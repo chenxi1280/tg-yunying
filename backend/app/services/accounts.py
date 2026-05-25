@@ -54,18 +54,17 @@ ACCOUNT_AUTO_SYNC_SKIP_STATUSES = {
     AccountStatus.SESSION_EXPIRED.value,
     AccountStatus.DISABLED.value,
 }
-LOGIN_START_FAILURE_MESSAGE = "TG 登录启动失败，请检查开发者应用、手机号、代理或 Telegram 限制后重试"
+LOGIN_START_FAILURE_MESSAGE = "登录初始化失败，请查看登录流水或联系管理员处理"
 
 logger = logging.getLogger(__name__)
 
 
-class LoginStartFailure(Exception):
-    def __init__(self, *, detail: dict[str, object]) -> None:
-        super().__init__(str(detail.get("message") or LOGIN_START_FAILURE_MESSAGE))
+class LoginStartFailure(ValueError):
+    def __init__(self, detail: dict[str, object]) -> None:
+        super().__init__(LOGIN_START_FAILURE_MESSAGE)
         self.detail = detail
 
 __all__ = [
-    "LoginStartFailure",
     "account_contacts",
     "account_detail",
     "account_groups",
@@ -82,6 +81,7 @@ __all__ = [
     "list_login_flows",
     "list_profile_sync_records",
     "list_verification_codes",
+    "LoginStartFailure",
     "poll_account_verification_codes",
     "process_account_sync_record",
     "process_profile_sync_record",
@@ -644,20 +644,15 @@ def start_login(session: Session, account_id: int, method: str, actor: str = "�
     account = _ensure_account_available(session.get(TgAccount, account_id))
     if account.status == AccountStatus.ACTIVE.value and not force:
         raise ValueError("account already online; use force to restart login")
-    trace_id = uuid4().hex
     try:
         credentials = credentials_for_account(session, account, assign_if_missing=True)
         phone = get_account_phone(account)
         challenge = gateway.start_login(method, account_id=account.id, phone=phone, credentials=credentials)
     except Exception as exc:
-        _record_login_start_failure(session, account, method, actor, exc, trace_id)
-        logger.exception(
-            "tg login start failed account_id=%s developer_app_id=%s trace_id=%s",
-            account.id,
-            account.developer_app_id,
-            trace_id,
-        )
-        raise LoginStartFailure(detail=_login_start_failure_detail(account, exc, trace_id)) from exc
+        detail = _login_start_failure_detail(account, method, exc)
+        _record_login_start_failure(session, account, method=method, actor=actor, detail=detail)
+        logger.exception("tg login start failed account_id=%s trace_id=%s", account.id, detail["trace_id"])
+        raise LoginStartFailure(detail) from exc
     account.status = challenge.status
     flow = TgLoginFlow(
         tenant_id=account.tenant_id,
@@ -686,40 +681,46 @@ def start_login(session: Session, account_id: int, method: str, actor: str = "�
     return flow
 
 
-def _record_login_start_failure(session: Session, account: TgAccount, method: str, actor: str, exc: Exception, trace_id: str) -> None:
-    failure_type = type(exc).__name__
-    failure_detail = str(exc) or failure_type
+def _login_start_failure_detail(account: TgAccount, method: str, exc: Exception) -> dict[str, object]:
+    return {
+        "message": LOGIN_START_FAILURE_MESSAGE,
+        "account_id": account.id,
+        "method": method,
+        "failure_type": exc.__class__.__name__,
+        "failure_detail": str(exc),
+        "trace_id": uuid4().hex,
+    }
+
+
+def _record_login_start_failure(
+    session: Session,
+    account: TgAccount,
+    *,
+    method: str,
+    actor: str,
+    detail: dict[str, object],
+) -> None:
     account.status = AccountStatus.ERROR.value
     flow = TgLoginFlow(
         tenant_id=account.tenant_id,
         account_id=account.id,
         method=method,
-        status="登录失败",
-        failure_type=failure_type,
-        failure_detail=failure_detail,
-        trace_id=trace_id,
+        status=AccountStatus.ERROR.value,
+        failure_type=str(detail["failure_type"]),
+        failure_detail=str(detail["failure_detail"]),
+        trace_id=str(detail["trace_id"]),
     )
     session.add(flow)
     audit(
         session,
         tenant_id=account.tenant_id,
         actor=actor,
-        action="开始TG登录失败",
+        action="TG登录初始化失败",
         target_type="tg_account",
         target_id=str(account.id),
-        detail=f"method={method}; developer_app_id={account.developer_app_id}; trace_id={trace_id}; failure_type={failure_type}; failure_detail={failure_detail}",
+        detail=f"method={method}; trace_id={detail['trace_id']}; failure_type={detail['failure_type']}",
     )
     session.commit()
-
-
-def _login_start_failure_detail(account: TgAccount, exc: Exception, trace_id: str) -> dict[str, object]:
-    return {
-        "message": LOGIN_START_FAILURE_MESSAGE,
-        "account_id": account.id,
-        "trace_id": trace_id,
-        "failure_type": type(exc).__name__,
-        "failure_detail": str(exc) or type(exc).__name__,
-    }
 
 
 def list_login_flows(session: Session, account_id: int) -> list[TgLoginFlow]:
