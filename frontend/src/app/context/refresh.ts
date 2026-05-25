@@ -107,13 +107,6 @@ async function loadBaseSnapshotResults(accountQuery: string, taskStatusFilter: s
   ]);
 }
 
-type BaseSnapshotResults = Awaited<ReturnType<typeof loadBaseSnapshotResults>>;
-
-function requireAccountsResult(result: BaseSnapshotResults[3]): Account[] {
-  if (result.status === 'rejected') throw result.reason;
-  return result.value;
-}
-
 export async function loadAppSnapshot({
   activeView,
   selectedPoolId,
@@ -132,12 +125,13 @@ export async function loadAppSnapshot({
   const developerApps = hasPermission(me, 'system.view') ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
   const tenants = hasPermission(me, 'system.view') ? await api<Tenant[]>('/tenants').catch(() => [] as Tenant[]) : [];
   const adminUsers = hasPermission(me, 'permissions.view') ? await api<AdminUser[]>('/admin/users').catch(() => [] as AdminUser[]) : [];
+  if (results[3].status === 'rejected') throw results[3].reason;
   return {
     me,
     runtime: settledValue(results[0], {} as RuntimeConfig),
     overview: settledValue(results[1], {} as Overview),
     accountPools: settledValue(results[2], [] as AccountPool[]),
-    accounts: requireAccountsResult(results[3]),
+    accounts: results[3].value,
     groups: settledValue(results[4], [] as Group[]),
     tasks: settledValue(results[5], [] as MessageTask[]),
     archives: settledValue(results[6], [] as ArchiveItem[]),
