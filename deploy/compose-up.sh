@@ -133,6 +133,7 @@ BACKEND_SERVICES=(
   worker-dispatcher-2
   worker-listener
   worker-recovery
+  worker-account-security
   worker-metrics
 )
 

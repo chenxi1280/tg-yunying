@@ -12,6 +12,9 @@ import { formatBeijingDateTime } from '../time';
 const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', '异常']);
 const ACCOUNT_RESTRICTED_STATUSES = new Set(['受限', '疑似封禁', '已封禁', 'Session失效']);
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
+function accountHealthScore(account: Account, availabilityByAccountId: Map<number, AccountAvailabilitySummary>) {
+  return availabilityByAccountId.get(account.id)?.health_score ?? account.health_score;
+}
 
 interface Props {
   accounts: Account[];
@@ -109,14 +112,14 @@ export default function AccountsView({
         !account.tg_first_name ? '昵称为空 资料待初始化 资料不完整' : '',
         ACCOUNT_RESTRICTED_STATUSES.has(account.status) ? '账号级受限 受限 系统探测恢复' : '',
         LOGIN_REQUIRED_STATUSES.has(account.status) ? '待完成登录 等待 登录' : '',
-        canSecurityRead && account.health_score < 60 ? '健康分偏低 健康' : '',
+        canSecurityRead && accountHealthScore(account, availabilityByAccountId) < 60 ? '健康分偏低 健康' : '',
         canSecurityRead && account.proxy_status && account.proxy_status !== 'healthy' && account.proxy_status !== '健康' ? '代理异常 代理' : '',
       ],
     ],
   });
   const restrictedAccounts = accounts.filter((account) => ACCOUNT_RESTRICTED_STATUSES.has(account.status));
   const loginRequiredAccounts = accounts.filter((account) => LOGIN_REQUIRED_STATUSES.has(account.status));
-  const lowHealthAccounts = canSecurityRead ? accounts.filter((account) => account.health_score < 60 && !ACCOUNT_RESTRICTED_STATUSES.has(account.status)) : [];
+  const lowHealthAccounts = canSecurityRead ? accounts.filter((account) => accountHealthScore(account, availabilityByAccountId) < 60 && !ACCOUNT_RESTRICTED_STATUSES.has(account.status)) : [];
   const proxyBlockedAccounts = canSecurityRead ? accounts.filter((account) => account.proxy_status && account.proxy_status !== 'healthy' && account.proxy_status !== '健康') : [];
   const selectedAccounts = accounts.filter((account) => selectedAccountIds.includes(account.id));
   const incompleteProfiles = accounts.filter((account) => !account.avatar_object_key || !account.username || !account.tg_first_name);
@@ -216,10 +219,12 @@ export default function AccountsView({
     },
     {
       title: '健康分',
-      dataIndex: 'health_score',
       key: 'health_score',
       width: 150,
-      render: (score: number) => canSecurityRead ? <Progress percent={score} size="small" status={score < 60 ? 'exception' : score < 80 ? 'normal' : 'success'} /> : <Typography.Text type="secondary">需账号安全权限</Typography.Text>,
+      render: (_, account) => {
+        const score = accountHealthScore(account, availabilityByAccountId);
+        return canSecurityRead ? <Progress percent={score} size="small" status={score < 60 ? 'exception' : score < 80 ? 'normal' : 'success'} /> : <Typography.Text type="secondary">需账号安全权限</Typography.Text>;
+      },
     },
     {
       title: '安全 / 资料',

@@ -71,6 +71,10 @@ export type AccountAvailabilitySummary = {
   unavailable_reason: string;
   next_retry_at: string | null;
   failure_trend: Record<string, number>;
+  health_score: number;
+  risk_level: string;
+  score_reasons: string[];
+  non_score_reasons: string[];
   updated_at: string;
 };
 

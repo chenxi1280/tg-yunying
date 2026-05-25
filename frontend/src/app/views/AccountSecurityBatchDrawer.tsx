@@ -81,6 +81,7 @@ const defaultAvatarStrategy: AvatarStrategy = {
   material_group_id: null,
   avatar_sources: [],
 };
+const BATCH_SELECTION_LIMIT = 100;
 
 function statusText(value: string) {
   const map: Record<string, string> = {
@@ -139,6 +140,8 @@ export function AccountSecurityBatchDrawer({
   const [draftAccountIds, setDraftAccountIds] = React.useState<number[]>([]);
   const [accountQuery, setAccountQuery] = React.useState('');
   const [accountFilter, setAccountFilter] = React.useState('all');
+  const [rangeStart, setRangeStart] = React.useState(1);
+  const [rangeEnd, setRangeEnd] = React.useState(BATCH_SELECTION_LIMIT);
   const [loading, setLoading] = React.useState(false);
   const [step, setStep] = React.useState(0);
   const selected = React.useMemo(() => selectedAccounts(accounts, draftAccountIds), [accounts, draftAccountIds]);
@@ -165,7 +168,7 @@ export function AccountSecurityBatchDrawer({
   const modeConfig = MODE_CONFIG[mode];
   const isProfileMode = mode === 'profile';
   const autoSkippedCount = (precheck?.summary.skipped ?? 0) + (precheck?.summary.manual_required ?? 0);
-  const avatarSourceHint = avatarStrategy.mode === 'material_random'
+  const avatarSourceHint = avatarStrategy.mode === 'random_from_material_pool'
     ? '系统会从素材中心已审核的头像包 / 上传图片中随机分配头像，不需要填写 material ID 或路径。'
     : avatarStrategy.mode === 'sequential'
       ? '留空则按素材中心头像包顺序分配；填写来源时按你填写的顺序覆盖。'
@@ -186,6 +189,8 @@ export function AccountSecurityBatchDrawer({
     setDraftAccountIds(selectedAccountIds);
     setAccountQuery('');
     setAccountFilter('all');
+    setRangeStart(1);
+    setRangeEnd(BATCH_SELECTION_LIMIT);
     setStep(0);
   }, [modeConfig, open, selectedAccountIds]);
 
@@ -232,6 +237,18 @@ export function AccountSecurityBatchDrawer({
 
   function mergeDraftAccountIds(ids: number[]) {
     setDraftAccountIds((current) => Array.from(new Set([...current, ...ids])));
+  }
+
+  function selectFilteredRange() {
+    if (!filteredAccounts.length) {
+      void message.warning('当前筛选下没有可选账号');
+      return;
+    }
+    const start = Math.max(1, Math.min(rangeStart, filteredAccounts.length));
+    const end = Math.max(start, Math.min(rangeEnd, filteredAccounts.length));
+    setRangeStart(start);
+    setRangeEnd(end);
+    mergeDraftAccountIds(filteredAccounts.slice(start - 1, end).map((account) => account.id));
   }
 
   function changeAvatarMode(modeValue: string) {
@@ -309,7 +326,7 @@ export function AccountSecurityBatchDrawer({
       setBatch(result);
       setStep(2);
       setConfirmOpen(false);
-      void message.success(`批次 #${result.id} 已创建：共 ${result.total_count} 个，成功 ${result.success_count}，失败 ${result.failed_count}，跳过 ${result.skipped_count}`);
+      void message.success(`批次 #${result.id} 已提交后台执行：共 ${result.total_count} 个，自动跳过 ${result.skipped_count} 个；后台 worker 完成后再刷新账号列表查看资料变化。`);
     } catch (error) {
       void message.error(errorMessage(error, '创建批次失败'));
     } finally {
@@ -480,9 +497,28 @@ export function AccountSecurityBatchDrawer({
               onChange={setAccountFilter}
             />
             <Button onClick={() => setDraftAccountIds(filteredAccounts.map((account) => account.id))}>选择当前筛选</Button>
-            <Button onClick={() => mergeDraftAccountIds(filteredAccounts.slice(0, 100).map((account) => account.id))}>选当前筛选前 100 个</Button>
+            <Button onClick={() => mergeDraftAccountIds(filteredAccounts.slice(0, BATCH_SELECTION_LIMIT).map((account) => account.id))}>选择当前筛选前 100 个</Button>
             <Button onClick={() => mergeDraftAccountIds(filteredAccounts.map((account) => account.id))}>追加当前筛选全部</Button>
             <Button disabled={!draftAccountIds.length} onClick={() => setDraftAccountIds([])}>清空本批选择</Button>
+          </Space>
+          <Space wrap>
+            <Typography.Text type="secondary">区间选择</Typography.Text>
+            <InputNumber
+              min={1}
+              max={Math.max(1, filteredAccounts.length)}
+              value={rangeStart}
+              addonBefore="从"
+              onChange={(value) => setRangeStart(Number(value ?? 1))}
+            />
+            <InputNumber
+              min={1}
+              max={Math.max(1, filteredAccounts.length)}
+              value={rangeEnd}
+              addonBefore="到"
+              onChange={(value) => setRangeEnd(Number(value ?? BATCH_SELECTION_LIMIT))}
+            />
+            <Button onClick={selectFilteredRange}>追加区间账号</Button>
+            <Typography.Text type="secondary">按当前筛选结果顺序，包含起止序号。</Typography.Text>
           </Space>
           <Table<Account>
             className="tg-table"
@@ -534,7 +570,7 @@ export function AccountSecurityBatchDrawer({
                   style={{ width: 160 }}
                   options={[
                     { label: '不改头像', value: 'none' },
-                    { label: '随机头像包', value: 'material_random' },
+                    { label: '随机头像包', value: 'random_from_material_pool' },
                     { label: '头像包顺序分配', value: 'sequential' },
                   ]}
                   onChange={changeAvatarMode}

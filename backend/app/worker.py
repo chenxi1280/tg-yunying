@@ -32,7 +32,7 @@ from .services.material_cache import drain_material_cache
 from .services.temp_files import cleanup_temp_files
 
 logger = logging.getLogger(__name__)
-VALID_WORKER_ROLES = {"all", "legacy", "planner", "dispatcher", "listener", "recovery", "metrics"}
+VALID_WORKER_ROLES = {"all", "legacy", "planner", "dispatcher", "listener", "recovery", "account-security", "metrics"}
 
 
 def _task_due(task_id: int) -> bool:
@@ -61,6 +61,8 @@ def drain_once(limit: int = 100, *, role: str | None = None) -> int:
         return drain_task_listener(SessionLocal, limit)
     if selected_role == "recovery":
         return drain_task_recovery(SessionLocal, limit)
+    if selected_role == "account-security":
+        return drain_account_security_batches(SessionLocal, limit)
     if selected_role == "metrics":
         return drain_task_metrics(SessionLocal, limit)
     if selected_role == "legacy":

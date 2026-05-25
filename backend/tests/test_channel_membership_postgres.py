@@ -230,7 +230,18 @@ def test_channel_task_runs_membership_precondition_before_main_actions(monkeypat
         assert channel.can_send is False
         detail = get_task_detail(session, 1, task.id)
         assert detail["membership_phase"]["stage"] == "membership_ready"
+        assert detail["membership_phase"]["status"] == "completed"
+        assert detail["membership_phase"]["progress_percent"] == 100
+        assert detail["membership_phase"]["ready_account_count"] == 1
+        assert detail["membership_phase"]["pending_account_count"] == 0
+        assert detail["membership_phase"]["running_account_count"] == 0
+        assert detail["membership_phase"]["success_account_count"] == 2
+        assert detail["membership_phase"]["failed_account_count"] == 0
+        assert detail["membership_phase"]["blocked_account_count"] == 0
+        assert detail["membership_phase"]["current_phase"] == "已完成"
+        assert detail["membership_phase"]["warnings"] == []
         assert {item["membership_status"] for item in detail["membership_accounts"]} >= {"already_joined", "joined"}
+        assert all(item["completed_at"] for item in detail["membership_accounts"])
 
 
 def test_channel_task_blocks_main_actions_when_all_membership_fails(monkeypatch):

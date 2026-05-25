@@ -148,6 +148,22 @@ services:
     networks:
       - infra_default
 
+  worker-account-security:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-account-security
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "account-security", "--limit", "${ACCOUNT_SECURITY_WORKER_DRAIN_LIMIT:-20}", "--interval", "${ACCOUNT_SECURITY_WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: account-security
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - infra_default
+
   worker-metrics:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-metrics

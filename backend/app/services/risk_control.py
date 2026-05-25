@@ -13,8 +13,10 @@ from sqlalchemy.orm import Session, selectinload
 from app.models import (
     AccountProxy,
     AccountProxyBinding,
+    AccountRuntimeSummary,
     AccountStatus,
     Action,
+    AuditLog,
     FailureType,
     ManualOperationRecord,
     MessageTask,
@@ -58,6 +60,29 @@ LOGIN_DISPOSITION_STATUSES = {
     AccountStatus.WAITING_CODE.value,
     AccountStatus.WAITING_QR.value,
     AccountStatus.WAITING_2FA.value,
+}
+ACCOUNT_HEALTH_FAILURES = {
+    FailureType.ACCOUNT_UNAVAILABLE.value,
+    FailureType.ACCOUNT_LIMITED.value,
+    FailureType.FLOOD_WAIT.value,
+}
+TARGET_FAILURES = {
+    FailureType.COMMENT_UNAVAILABLE.value,
+    FailureType.GROUP_PERMISSION_DENIED.value,
+    FailureType.CHANNEL_POST_DENIED.value,
+    FailureType.PEER_INVALID.value,
+    FailureType.SLOWMODE.value,
+    FailureType.REACTION_UNAVAILABLE.value,
+}
+CONTENT_FAILURES = {FailureType.CONTENT_REJECTED.value}
+GENERIC_UNKNOWN_FAILURE_REASONS = {"", "unknown", "未知错误"}
+RISK_AUDIT_TARGET_TYPES = {"risk_global_policy", "account_proxy", "proxy_alert"}
+RISK_AUDIT_ACTIONS = {"绑定账号本地代理", "批量绑定账号本地代理"}
+RISK_AUDIT_TARGET_LABELS = {
+    "risk_global_policy": "全局风控策略",
+    "account_proxy": "代理资源",
+    "proxy_alert": "代理告警",
+    "tg_account": "账号代理绑定",
 }
 
 
@@ -289,12 +314,18 @@ def update_proxy_alert_status(session: Session, tenant_id: int, alert_id: int, s
     if not alert or alert.tenant_id != tenant_id:
         raise ValueError("proxy alert not found")
     now = _now()
+    normalized_reason = reason.strip()
     if status == "recovered":
         proxy = session.get(AccountProxy, alert.proxy_id)
         if not proxy or proxy.tenant_id != tenant_id:
             raise ValueError("proxy alert not found")
         if proxy.status != "healthy" or proxy.alert_status != "normal":
             raise ValueError("请先完成代理健康检查，确认恢复后再关闭告警")
+    if status == "ignored":
+        if not normalized_reason:
+            raise ValueError("忽略代理告警必须填写原因")
+        if ignored_until is None:
+            raise ValueError("忽略代理告警必须设置过期时间")
 
     alert.status = status
     if status == "acknowledged":
@@ -304,7 +335,7 @@ def update_proxy_alert_status(session: Session, tenant_id: int, alert_id: int, s
         alert.ignored_until = ignored_until
     if status == "recovered":
         alert.recovered_at = now
-    audit(session, tenant_id=tenant_id, actor=actor, action="处理代理告警", target_type="proxy_alert", target_id=str(alert.id), detail=f"status={status}; reason={reason}")
+    audit(session, tenant_id=tenant_id, actor=actor, action="处理代理告警", target_type="proxy_alert", target_id=str(alert.id), detail=f"status={status}; reason={normalized_reason}")
     session.commit()
     session.refresh(alert)
     return _proxy_alert_payload(alert)
@@ -327,6 +358,7 @@ def risk_preflight(session: Session, tenant_id: int, payload: RiskPreflightReque
     day_usage = _usage_counts(session, tenant_id, account_ids, day_start, day_start + timedelta(days=1))
     recent_risks = _recent_risks_by_account(session, tenant_id)
     security_snapshots = _security_snapshots_by_account(session, tenant_id, account_ids)
+    runtime_summaries = _runtime_summaries_by_account(session, tenant_id, account_ids)
 
     available_accounts: list[dict[str, Any]] = []
     limited_accounts: list[dict[str, Any]] = []
@@ -334,7 +366,17 @@ def risk_preflight(session: Session, tenant_id: int, payload: RiskPreflightReque
     decision_reasons: list[str] = []
     for account in accounts:
         capacity = account_capacity_decision(session, tenant_id=tenant_id, account_id=account.id, scheduled_at=scheduled_at)
-        score = _account_score_row(account, setting, capacity, hour_usage, day_usage, recent_risks.get(account.id, ""), security_snapshots.get(account.id))
+        score = _account_score_row(
+            account,
+            setting,
+            capacity,
+            hour_usage,
+            day_usage,
+            recent_risks.get(account.id, ""),
+            [],
+            security_snapshots.get(account.id),
+            runtime_summaries.get(account.id),
+        )
         item = {
             "account_id": score["account_id"],
             "display_name": score["display_name"],
@@ -415,7 +457,9 @@ def risk_control_summary(session: Session, tenant_id: int) -> dict[str, Any]:
     hour_usage = _usage_counts(session, tenant_id, account_ids, _hour_start(now), _hour_start(now) + timedelta(hours=1))
     day_usage = _usage_counts(session, tenant_id, account_ids, now.replace(hour=0, minute=0, second=0, microsecond=0), now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
     recent_risks = _recent_risks_by_account(session, tenant_id)
+    non_score_reasons = _recent_non_score_reasons_by_account(session, tenant_id)
     security_snapshots = _security_snapshots_by_account(session, tenant_id, account_ids)
+    runtime_summaries = _runtime_summaries_by_account(session, tenant_id, account_ids)
 
     account_scores = []
     disposition_queue = []
@@ -423,7 +467,17 @@ def risk_control_summary(session: Session, tenant_id: int) -> dict[str, Any]:
         capacity = account_capacity_decision(session, tenant_id=tenant_id, account_id=account.id, scheduled_at=now)
         recent_risk = recent_risks.get(account.id, "")
         security_snapshot = security_snapshots.get(account.id)
-        score = _account_score_row(account, setting, capacity, hour_usage, day_usage, recent_risk, security_snapshot)
+        score = _account_score_row(
+            account,
+            setting,
+            capacity,
+            hour_usage,
+            day_usage,
+            recent_risk,
+            non_score_reasons.get(account.id, []),
+            security_snapshot,
+            runtime_summaries.get(account.id),
+        )
         account_scores.append(score)
         disposition_queue.extend(_account_dispositions(account, score, capacity, recent_risk, security_snapshot))
 
@@ -443,7 +497,34 @@ def risk_control_summary(session: Session, tenant_id: int) -> dict[str, Any]:
         "account_scores": account_scores,
         "disposition_queue": disposition_queue[:80],
         "hit_records": hit_records[:80],
+        "policy_audits": _policy_audit_records(session, tenant_id),
         "proxy_alerts": proxy_alerts,
+    }
+
+
+def _policy_audit_records(session: Session, tenant_id: int) -> list[dict[str, Any]]:
+    rows = session.scalars(
+        select(AuditLog)
+        .where(
+            AuditLog.tenant_id == tenant_id,
+            (AuditLog.target_type.in_(RISK_AUDIT_TARGET_TYPES)) | (AuditLog.action.in_(RISK_AUDIT_ACTIONS)),
+        )
+        .order_by(AuditLog.id.desc())
+        .limit(80)
+    )
+    return [_policy_audit_payload(row) for row in rows]
+
+
+def _policy_audit_payload(row: AuditLog) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "actor": row.actor,
+        "action": row.action,
+        "target_type": row.target_type,
+        "target_id": row.target_id,
+        "target_label": RISK_AUDIT_TARGET_LABELS.get(row.target_type, row.target_type),
+        "detail": row.detail,
+        "occurred_at": row.created_at,
     }
 
 
@@ -454,16 +535,23 @@ def _account_score_row(
     hour_usage: dict[int, int],
     day_usage: dict[int, int],
     recent_risk: str,
+    non_score_reasons: list[str],
     security_snapshot: TgAccountSecuritySnapshot | None = None,
+    runtime_summary: AccountRuntimeSummary | None = None,
 ) -> dict[str, Any]:
-    score_reasons = _score_reasons(account, capacity, recent_risk, security_snapshot)
+    runtime_reasons = _runtime_score_reasons(runtime_summary)
+    score_reasons = runtime_reasons or _score_reasons(account, capacity, recent_risk, security_snapshot)
     proxy_blocked = _proxy_blocks_account(account)
     security_blocked = _security_blocks_account(security_snapshot)
     status_blocked = account.status in BLOCKED_ACCOUNT_STATUSES
     capacity_blocked = not bool(capacity.available)
-    adjusted_score = max(0, min(100, float(account.health_score or 0) + _proxy_score_delta(account) + _security_score_delta(security_snapshot)))
-    risk_level = _risk_level(adjusted_score, status_blocked=status_blocked or proxy_blocked or security_blocked, capacity_blocked=capacity_blocked)
+    adjusted_score = _runtime_health_score(runtime_summary)
+    if adjusted_score is None:
+        adjusted_score = max(0, min(100, float(account.health_score or 0) + _proxy_score_delta(account) + _security_score_delta(security_snapshot)))
+    risk_level = _runtime_risk_level(runtime_summary) or _risk_level(adjusted_score, status_blocked=status_blocked or proxy_blocked or security_blocked, capacity_blocked=capacity_blocked)
     blocked_reason = _blocked_reason(account, capacity, recent_risk, security_snapshot)
+    if runtime_summary and runtime_summary.unavailable_reason and not blocked_reason:
+        blocked_reason = runtime_summary.unavailable_reason
     if proxy_blocked and not blocked_reason:
         blocked_reason = _proxy_risk_reason(account)
     if security_blocked and not blocked_reason:
@@ -487,6 +575,7 @@ def _account_score_row(
         "recent_risk": recent_risk,
         "blocked_reason": blocked_reason,
         "score_reasons": score_reasons,
+        "non_score_reasons": (non_score_reasons or _runtime_non_score_reasons(runtime_summary))[:5],
         "proxy_id": account.proxy_id,
         "proxy_name": account.proxy_name,
         "proxy_local_address": account.proxy_local_address,
@@ -526,7 +615,7 @@ def _account_dispositions(account: TgAccount, score: dict[str, Any], capacity: A
 def _hit_dispositions(hit_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for hit in hit_records:
-        if hit["policy"] not in {FailureType.FLOOD_WAIT.value, FailureType.ACCOUNT_LIMITED.value, FailureType.ACCOUNT_UNAVAILABLE.value, FailureType.GROUP_PERMISSION_DENIED.value, FailureType.CHANNEL_POST_DENIED.value}:
+        if not _hit_requires_disposition(hit):
             continue
         item_type = "FloodWait 频繁" if hit["policy"] == FailureType.FLOOD_WAIT.value else "策略命中待处置"
         items.append({
@@ -542,6 +631,12 @@ def _hit_dispositions(hit_records: list[dict[str, Any]]) -> list[dict[str, Any]]
             "status": "待处理",
         })
     return items
+
+
+def _hit_requires_disposition(hit: dict[str, Any]) -> bool:
+    if hit.get("affects_health_score"):
+        return True
+    return hit.get("impact_scope") in {"target", "task", "content_rule"}
 
 
 def _proxy_dispositions(proxy_alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -680,7 +775,7 @@ def _recent_risks_by_account(session: Session, tenant_id: int) -> dict[int, str]
         .limit(100)
     )
     for account_id, failure_type, detail, _created_at in rows:
-        if account_id and account_id not in risks:
+        if account_id and account_id not in risks and _failure_affects_health_score(str(failure_type or "")):
             risks[int(account_id)] = str(failure_type or detail or "最近执行失败")
 
     rows = session.execute(
@@ -690,9 +785,85 @@ def _recent_risks_by_account(session: Session, tenant_id: int) -> dict[int, str]
         .limit(100)
     )
     for account_id, result, _executed_at, _scheduled_at in rows:
-        if account_id and account_id not in risks:
+        policy = _result_policy(result)
+        if account_id and account_id not in risks and _failure_affects_health_score(policy):
             risks[int(account_id)] = _result_reason(result)
     return risks
+
+
+def _recent_non_score_reasons_by_account(session: Session, tenant_id: int) -> dict[int, list[str]]:
+    reasons: dict[int, list[str]] = defaultdict(list)
+    since = _now() - timedelta(days=7)
+    rows = session.execute(
+        select(Action.account_id, Action.result, Action.executed_at, Action.scheduled_at)
+        .where(Action.tenant_id == tenant_id, Action.account_id.is_not(None), Action.status.in_(FAILED_STATUSES), Action.scheduled_at >= since)
+        .order_by(func.coalesce(Action.executed_at, Action.scheduled_at).desc())
+        .limit(120)
+    )
+    for account_id, result, _executed_at, _scheduled_at in rows:
+        if not account_id:
+            continue
+        policy = _result_policy(result)
+        if _failure_affects_health_score(policy):
+            continue
+        reason = _result_reason(result)
+        bucket = reasons[int(account_id)]
+        if reason and reason not in bucket:
+            bucket.append(reason)
+
+    rows = session.execute(
+        select(MessageTaskAttempt.account_id, MessageTaskAttempt.failure_type, MessageTaskAttempt.detail, MessageTaskAttempt.created_at)
+        .where(MessageTaskAttempt.tenant_id == tenant_id, MessageTaskAttempt.account_id.is_not(None), MessageTaskAttempt.status.in_(FAILED_STATUSES), MessageTaskAttempt.created_at >= since)
+        .order_by(MessageTaskAttempt.created_at.desc())
+        .limit(120)
+    )
+    for account_id, failure_type, detail, _created_at in rows:
+        if not account_id:
+            continue
+        policy = str(failure_type or "")
+        if _failure_affects_health_score(policy):
+            continue
+        reason = str(detail or failure_type or "任务失败").strip()
+        bucket = reasons[int(account_id)]
+        if reason and reason not in bucket:
+            bucket.append(reason)
+    return reasons
+
+
+def _runtime_summaries_by_account(session: Session, tenant_id: int, account_ids: list[int]) -> dict[int, AccountRuntimeSummary]:
+    if not account_ids:
+        return {}
+    rows = session.scalars(
+        select(AccountRuntimeSummary).where(
+            AccountRuntimeSummary.tenant_id == tenant_id,
+            AccountRuntimeSummary.account_id.in_(account_ids),
+        )
+    )
+    return {summary.account_id: summary for summary in rows}
+
+
+def _runtime_health_score(summary: AccountRuntimeSummary | None) -> float | None:
+    if not summary:
+        return None
+    return max(0.0, min(100.0, float(summary.health_score or 0)))
+
+
+def _runtime_risk_level(summary: AccountRuntimeSummary | None) -> str:
+    if not summary:
+        return ""
+    return summary.risk_level if summary.risk_level in {"A", "B", "C", "D", "E"} else ""
+
+
+def _runtime_score_reasons(summary: AccountRuntimeSummary | None) -> list[str]:
+    if not summary or not isinstance(summary.score_reasons, list):
+        return []
+    return [str(reason) for reason in summary.score_reasons if str(reason or "").strip()]
+
+
+def _runtime_non_score_reasons(summary: AccountRuntimeSummary | None) -> list[str]:
+    if not summary or not isinstance(summary.non_score_reasons, list):
+        return []
+    return [str(reason) for reason in summary.non_score_reasons if str(reason or "").strip()]
 
 
 def _security_snapshots_by_account(session: Session, tenant_id: int, account_ids: list[int]) -> dict[int, TgAccountSecuritySnapshot]:
@@ -729,6 +900,7 @@ def _risk_hit_records(session: Session, tenant_id: int) -> list[dict[str, Any]]:
             policy=policy,
             action=_action_for_policy(policy),
             detail=_result_reason(action.result),
+            trace_id=_result_trace_id(action.result),
             occurred_at=action.executed_at or action.scheduled_at,
         ))
 
@@ -751,6 +923,8 @@ def _risk_hit_records(session: Session, tenant_id: int) -> list[dict[str, Any]]:
             detail=task.failure_detail or task.failure_type or "消息发送失败",
             occurred_at=task.sent_at or task.scheduled_at,
         ))
+
+    records.extend(_message_attempt_hit_records(session, tenant_id, accounts, since))
 
     for attempt in session.scalars(
         select(OperationTaskAttempt)
@@ -794,6 +968,43 @@ def _risk_hit_records(session: Session, tenant_id: int) -> list[dict[str, Any]]:
     return records
 
 
+def _message_attempt_hit_records(session: Session, tenant_id: int, accounts: dict[int, str], since: datetime) -> list[dict[str, Any]]:
+    attempts = list(
+        session.scalars(
+            select(MessageTaskAttempt)
+            .where(MessageTaskAttempt.tenant_id == tenant_id, MessageTaskAttempt.status.in_(FAILED_STATUSES), MessageTaskAttempt.created_at >= since)
+            .order_by(MessageTaskAttempt.created_at.desc())
+            .limit(50)
+        )
+    )
+    task_ids = [attempt.task_id for attempt in attempts]
+    tasks = {
+        task.id: task
+        for task in session.scalars(select(MessageTask).where(MessageTask.tenant_id == tenant_id, MessageTask.id.in_(task_ids)))
+    } if task_ids else {}
+    return [
+        _hit_record(
+            key=f"message-attempt:{attempt.id}",
+            source="消息发送",
+            account_id=attempt.account_id,
+            accounts=accounts,
+            task_id=str(attempt.task_id),
+            target=_message_task_target(tasks.get(attempt.task_id)),
+            policy=attempt.failure_type or FailureType.UNKNOWN.value,
+            action=_action_for_policy(attempt.failure_type or ""),
+            detail=attempt.detail or attempt.failure_type or "消息发送尝试失败",
+            occurred_at=attempt.created_at,
+        )
+        for attempt in attempts
+    ]
+
+
+def _message_task_target(task: MessageTask | None) -> str:
+    if not task:
+        return ""
+    return task.target_display or task.target_peer_id or ""
+
+
 def _hit_record(
     *,
     key: str,
@@ -806,8 +1017,10 @@ def _hit_record(
     action: str,
     detail: str,
     occurred_at: datetime | None,
+    trace_id: str = "",
 ) -> dict[str, Any]:
-    severity = "critical" if policy in {FailureType.ACCOUNT_LIMITED.value, FailureType.ACCOUNT_UNAVAILABLE.value, FailureType.FLOOD_WAIT.value} else "warning"
+    impact = _failure_impact(policy)
+    severity = "critical" if impact["affects_health_score"] else "warning"
     return {
         "key": key,
         "source": source,
@@ -818,9 +1031,27 @@ def _hit_record(
         "target": target,
         "policy": policy or FailureType.UNKNOWN.value,
         "action": action,
-        "detail": detail,
+        "detail": _hit_detail(policy, detail, trace_id),
+        "impact_scope": impact["scope"],
+        "affects_health_score": impact["affects_health_score"],
+        "suggested_entry": impact["suggested_entry"],
         "occurred_at": occurred_at,
     }
+
+
+def _hit_detail(policy: str, detail: str, trace_id: str = "") -> str:
+    normalized = str(detail or "").strip()
+    policy_text = str(policy or "").strip()
+    if _is_generic_unknown(normalized) and _is_generic_unknown(policy_text):
+        suffix = f"trace_id={trace_id}" if trace_id else "缺少具体失败原因"
+        return f"待分类：未知错误（{suffix}）"
+    if trace_id and normalized and "trace_id=" not in normalized:
+        return f"{normalized}（trace_id={trace_id}）"
+    return normalized or "执行失败"
+
+
+def _is_generic_unknown(value: str) -> bool:
+    return value.strip().lower() in GENERIC_UNKNOWN_FAILURE_REASONS
 
 
 def _risk_level(score: float, *, status_blocked: bool, capacity_blocked: bool) -> str:
@@ -870,6 +1101,8 @@ def _score_reasons(account: TgAccount, capacity: Any, recent_risk: str, security
         reasons.append(f"登录状态：{account.status}")
     if not capacity.available:
         reasons.append(capacity.reason)
+    if account.health_score < 55:
+        reasons.append(f"健康分 {float(account.health_score or 0):.1f} 低于任务准入线 55")
     proxy_reason = _proxy_risk_reason(account)
     if proxy_reason:
         reasons.append(proxy_reason)
@@ -1043,7 +1276,13 @@ def _result_policy(result: dict[str, Any] | None) -> str:
 def _result_reason(result: dict[str, Any] | None) -> str:
     if not isinstance(result, dict):
         return "执行失败"
-    return str(result.get("detail") or result.get("failure_detail") or result.get("reason") or result.get("error") or _result_policy(result))
+    return str(result.get("error_message") or result.get("detail") or result.get("failure_detail") or result.get("reason") or result.get("error") or _result_policy(result))
+
+
+def _result_trace_id(result: dict[str, Any] | None) -> str:
+    if not isinstance(result, dict):
+        return ""
+    return str(result.get("trace_id") or result.get("trace") or "").strip()
 
 
 def _action_for_policy(policy: str) -> str:
@@ -1056,6 +1295,20 @@ def _action_for_policy(policy: str) -> str:
     if policy == FailureType.CONTENT_REJECTED.value:
         return "跳过或改写重试"
     return "记录并按失败策略处理"
+
+
+def _failure_affects_health_score(policy: str) -> bool:
+    return policy in ACCOUNT_HEALTH_FAILURES or str(policy).startswith("proxy_")
+
+
+def _failure_impact(policy: str) -> dict[str, Any]:
+    if _failure_affects_health_score(policy):
+        return {"scope": "account", "affects_health_score": True, "suggested_entry": "账号中心 / 风控处置"}
+    if policy in TARGET_FAILURES:
+        return {"scope": "target", "affects_health_score": False, "suggested_entry": "运营目标 / 账号目标能力"}
+    if policy in CONTENT_FAILURES:
+        return {"scope": "content_rule", "affects_health_score": False, "suggested_entry": "规则中心 / 任务内容"}
+    return {"scope": "task", "affects_health_score": False, "suggested_entry": "任务详情 / 系统日志"}
 
 
 def _hour_start(value: datetime) -> datetime:

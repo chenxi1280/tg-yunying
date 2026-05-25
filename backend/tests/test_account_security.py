@@ -365,6 +365,44 @@ def test_material_random_avatar_strategy_picks_reviewed_uploaded_image(tmp_path)
         assert not item.warnings
 
 
+def test_prd_random_from_material_pool_avatar_strategy_picks_reviewed_uploaded_image(tmp_path):
+    with _session() as session:
+        account = _seed_account(session)
+        avatar_path = tmp_path / "prd-avatar.png"
+        avatar_path.write_bytes(b"\x89PNG\r\n\x1a\navatar")
+        session.add(
+            Material(
+                id=702,
+                tenant_id=1,
+                title="资料初始化头像包",
+                material_type="图片",
+                content=str(avatar_path),
+                tags="头像",
+                review_status="已审核",
+                source_kind="upload",
+                mime_type="image/png",
+                file_size=avatar_path.stat().st_size,
+            )
+        )
+        session.commit()
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id],
+                action_types=["update_avatar"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+                avatar_strategy=AvatarStrategy(mode="random_from_material_pool"),
+            ),
+        )
+
+        item = preview.items[0]
+        assert item.precheck_status == "executable"
+        assert item.avatar_source == "material:702"
+        assert not item.warnings
+
+
 def test_profile_preview_does_not_refresh_security_state(monkeypatch):
     with _session() as session:
         account = _seed_account(session)

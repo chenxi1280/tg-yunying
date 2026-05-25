@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Action, AccountStatus, OperationTarget, Task, Tenant, TgAccount, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
+from app.models.enums import FailureType
 from app.services._common import _now
 from app.services.runtime_summary import refresh_account_summary, refresh_target_summary, refresh_task_summary
 
@@ -65,6 +66,9 @@ def test_account_runtime_summary_uses_security_snapshot_and_security_retry() -> 
     assert summary.failure_trend["trusted_session_status"] == "missing"
     assert summary.failure_trend["two_fa_status"] == "pending_email_confirmation"
     assert "外部登录设备" in summary.failure_trend["security_risk_reason"]
+    assert summary.health_score < 90
+    assert summary.risk_level == "E"
+    assert any("外部登录设备" in reason for reason in summary.score_reasons)
 
 
 def test_account_runtime_summary_surfaces_recent_risk_preflight_result() -> None:
@@ -110,6 +114,216 @@ def test_account_runtime_summary_surfaces_recent_risk_preflight_result() -> None
     assert summary.failure_trend["recent_risk_decision"] == "warn"
     assert summary.failure_trend["recent_risk_level"] == "D"
     assert summary.failure_trend["recent_risk_reason"] == "account_limited"
+
+
+def test_account_runtime_summary_ignores_target_permission_failures_as_recent_risk() -> None:
+    now = _now()
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TgAccount(
+                id=13,
+                tenant_id=1,
+                display_name="目标权限失败账号",
+                phone_masked="13",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="session",
+                health_score=90,
+            )
+        )
+        session.add(Task(id="task-comment", tenant_id=1, name="评论任务", type="channel_comment", status="running"))
+        session.add(
+            Action(
+                id="action-comment-denied",
+                tenant_id=1,
+                task_id="task-comment",
+                task_type="channel_comment",
+                action_type="post_comment",
+                account_id=13,
+                status="failed",
+                scheduled_at=now,
+                created_at=now,
+                result={
+                    "failure_type": FailureType.COMMENT_UNAVAILABLE.value,
+                    "error_message": "无评论权限，未通过群限制发言",
+                },
+            )
+        )
+        session.commit()
+
+        summary = refresh_account_summary(session, 1, 13)
+
+    assert "recent_risk_reason" not in summary.failure_trend
+    assert summary.health_score == 90
+    assert summary.score_reasons == []
+    assert "无评论权限，未通过群限制发言" in summary.non_score_reasons
+
+
+def test_account_runtime_summary_does_not_score_target_permission_blocker_text() -> None:
+    now = _now()
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TgAccount(
+                id=16,
+                tenant_id=1,
+                display_name="群权限账号",
+                phone_masked="16",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="session",
+                health_score=90,
+            )
+        )
+        session.add(Task(id="task-group-permission", tenant_id=1, name="群活跃", type="group_ai_chat", status="running"))
+        session.add(
+            Action(
+                id="action-group-permission-denied",
+                tenant_id=1,
+                task_id="task-group-permission",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=16,
+                status="failed",
+                scheduled_at=now,
+                created_at=now,
+                result={
+                    "failure_type": FailureType.GROUP_PERMISSION_DENIED.value,
+                    "blockers": ["账号未通过群限制发言"],
+                    "error_message": "账号没有该目标发言权限",
+                },
+            )
+        )
+        session.commit()
+
+        summary = refresh_account_summary(session, 1, 16)
+
+    assert "recent_risk_reason" not in summary.failure_trend
+    assert summary.health_score == 90
+    assert summary.score_reasons == []
+    assert "账号没有该目标发言权限" in summary.non_score_reasons
+
+
+def test_account_runtime_summary_ignores_task_failures_as_recent_risk() -> None:
+    now = _now()
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TgAccount(
+                id=15,
+                tenant_id=1,
+                display_name="任务失败账号",
+                phone_masked="15",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="session",
+                health_score=90,
+            )
+        )
+        session.add(Task(id="task-unknown", tenant_id=1, name="发送任务", type="group_ai_chat", status="running"))
+        session.add(
+            Action(
+                id="action-task-unknown",
+                tenant_id=1,
+                task_id="task-unknown",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=15,
+                status="failed",
+                scheduled_at=now,
+                created_at=now,
+                result={"failure_type": "unknown", "error_message": "任务执行失败"},
+            )
+        )
+        session.commit()
+
+        summary = refresh_account_summary(session, 1, 15)
+
+    assert "recent_risk_reason" not in summary.failure_trend
+    assert summary.health_score == 90
+    assert summary.score_reasons == []
+    assert "任务执行失败" in summary.non_score_reasons
+
+
+def test_account_runtime_summary_does_not_score_target_slowmode() -> None:
+    now = _now()
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TgAccount(
+                id=17,
+                tenant_id=1,
+                display_name="目标慢速账号",
+                phone_masked="17",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="session",
+                health_score=90,
+            )
+        )
+        session.add(Task(id="task-slowmode", tenant_id=1, name="群活跃", type="group_ai_chat", status="running"))
+        session.add(
+            Action(
+                id="action-target-slowmode",
+                tenant_id=1,
+                task_id="task-slowmode",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=17,
+                status="failed",
+                scheduled_at=now,
+                created_at=now,
+                result={
+                    "failure_type": FailureType.SLOWMODE.value,
+                    "error_message": "群慢速模式，需要等待 60 秒",
+                },
+            )
+        )
+        session.commit()
+
+        summary = refresh_account_summary(session, 1, 17)
+
+    assert "rate_limit_count" not in summary.failure_trend
+    assert "recent_risk_reason" not in summary.failure_trend
+    assert summary.health_score == 90
+    assert summary.score_reasons == []
+    assert "群慢速模式，需要等待 60 秒" in summary.non_score_reasons
+
+
+def test_account_runtime_summary_keeps_account_level_failures_as_recent_risk() -> None:
+    now = _now()
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TgAccount(
+                id=14,
+                tenant_id=1,
+                display_name="账号限流账号",
+                phone_masked="14",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="session",
+                health_score=90,
+            )
+        )
+        session.add(Task(id="task-send", tenant_id=1, name="发送任务", type="group_ai_chat", status="running"))
+        session.add(
+            Action(
+                id="action-flood-wait",
+                tenant_id=1,
+                task_id="task-send",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=14,
+                status="failed",
+                scheduled_at=now,
+                created_at=now,
+                result={"failure_type": FailureType.FLOOD_WAIT.value, "error_message": "FloodWait 120 秒"},
+            )
+        )
+        session.commit()
+
+        summary = refresh_account_summary(session, 1, 14)
+
+    assert summary.failure_trend["recent_risk_reason"] == FailureType.FLOOD_WAIT.value
+    assert summary.health_score < 90
+    assert any(FailureType.FLOOD_WAIT.value in reason for reason in summary.score_reasons)
 
 
 def test_target_summary_does_not_match_target_id_by_json_substring() -> None:

@@ -89,7 +89,7 @@ export function TaskCenterDetailModal({
     { title: '目标', dataIndex: 'target_display', width: 180, ellipsis: true },
     { title: '失败原因', dataIndex: 'failure_reason', ellipsis: true, render: (value) => value || '-' },
     { title: '计划时间', dataIndex: 'scheduled_at', width: 170, render: (value) => formatDateTime(value) },
-    { title: '完成时间', dataIndex: 'executed_at', width: 170, render: (value) => formatDateTime(value) },
+    { title: '完成时间', dataIndex: 'completed_at', width: 170, render: (value) => formatDateTime(value) },
   ];
   return (
     <DetailModal
@@ -145,11 +145,15 @@ export function TaskCenterDetailModal({
                 column={4}
                 items={[
                   { key: 'stage', label: '状态', children: detail.membership_phase?.stage || 'not_required' },
-                  { key: 'ready', label: '已满足', children: detail.membership_phase?.joined_count ?? 0 },
-                  { key: 'pending', label: '待准备', children: detail.membership_phase?.need_join_count ?? 0 },
-                  { key: 'failed', label: '失败', children: detail.membership_phase?.failed_count ?? 0 },
-                  { key: 'running', label: '执行中', children: detail.membership_phase?.running_count ?? detail.membership_phase?.summary?.running_account_count ?? 0 },
-                  { key: 'success', label: '成功/跳过', children: detail.membership_phase?.success_count ?? detail.membership_phase?.summary?.success_account_count ?? 0 },
+                  { key: 'status', label: '子任务状态', children: detail.membership_phase?.status || detail.membership_phase?.stage || 'not_required' },
+                  { key: 'progress', label: '预计进度', children: `${detail.membership_phase?.progress_percent ?? 0}%` },
+                  { key: 'phase', label: '当前阶段', children: detail.membership_phase?.current_phase || '-' },
+                  { key: 'ready', label: '已满足', children: detail.membership_phase?.ready_account_count ?? detail.membership_phase?.joined_count ?? 0 },
+                  { key: 'pending', label: '待准备', children: detail.membership_phase?.pending_account_count ?? detail.membership_phase?.need_join_count ?? 0 },
+                  { key: 'failed', label: '失败', children: detail.membership_phase?.failed_account_count ?? detail.membership_phase?.failed_count ?? 0 },
+                  { key: 'running', label: '执行中', children: detail.membership_phase?.running_account_count ?? detail.membership_phase?.running_count ?? detail.membership_phase?.summary?.running_account_count ?? 0 },
+                  { key: 'success', label: '成功/跳过', children: detail.membership_phase?.success_account_count ?? detail.membership_phase?.success_count ?? detail.membership_phase?.summary?.success_account_count ?? 0 },
+                  { key: 'blocked', label: '不可准备', children: detail.membership_phase?.blocked_account_count ?? 0 },
                   { key: 'targets', label: '目标数', children: detail.membership_phase?.summary?.target_count ?? '-' },
                   { key: 'eta', label: '预计完成', children: formatDateTime(detail.membership_phase?.estimated_finish_at || detail.membership_phase?.summary?.estimated_finish_at) || '-' },
                 ]}

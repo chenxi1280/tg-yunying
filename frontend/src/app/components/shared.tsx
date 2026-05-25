@@ -83,6 +83,7 @@ export function useAntdTableControls<T>({
   const [query, setQuery] = React.useState('');
   const [current, setCurrent] = React.useState(1);
   const [currentPageSize, setCurrentPageSize] = React.useState(pageSize);
+  const pendingPageRestoreRef = React.useRef<number | null>(null);
   const normalizedQuery = query.trim().toLowerCase();
 
   const filteredRows = React.useMemo(() => {
@@ -96,6 +97,11 @@ export function useAntdTableControls<T>({
   }, [normalizedQuery, rows, search]);
 
   React.useEffect(() => {
+    if (pendingPageRestoreRef.current !== null) {
+      setCurrent(pendingPageRestoreRef.current);
+      pendingPageRestoreRef.current = null;
+      return;
+    }
     setCurrent(1);
   }, [normalizedQuery, rows]);
 
@@ -117,6 +123,12 @@ export function useAntdTableControls<T>({
     },
   };
 
+  const setPage = React.useCallback((page: number, nextPageSize: number = currentPageSize) => {
+    pendingPageRestoreRef.current = page;
+    setCurrent(page);
+    setCurrentPageSize(nextPageSize);
+  }, [currentPageSize]);
+
   const searchInput = (
     <Input.Search
       allowClear
@@ -129,7 +141,7 @@ export function useAntdTableControls<T>({
     />
   );
 
-  return { query, setQuery, filteredRows, pagination, searchInput };
+  return { query, setQuery, filteredRows, pagination, searchInput, setPage };
 }
 
 export function operationLabel(status: string | null | undefined) {

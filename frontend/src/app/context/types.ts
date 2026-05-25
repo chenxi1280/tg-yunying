@@ -40,7 +40,7 @@ export interface AppState {
   // View state
   activeView: string;
   setActiveView: (view: string) => void;
-  goToView: (viewId: string) => void;
+  goToView: (viewId: string, search?: string) => void;
 
   // Runtime & Overview
   runtime: RuntimeConfig | null;

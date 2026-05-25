@@ -82,6 +82,7 @@ class RiskControlAccountScoreOut(ApiModel):
     recent_risk: str = ""
     blocked_reason: str = ""
     score_reasons: list[str] = Field(default_factory=list)
+    non_score_reasons: list[str] = Field(default_factory=list)
     proxy_id: int | None = None
     proxy_name: str | None = None
     proxy_local_address: str | None = None
@@ -120,7 +121,21 @@ class RiskHitRecordOut(ApiModel):
     policy: str
     action: str
     detail: str
+    impact_scope: str = "task"
+    affects_health_score: bool = False
+    suggested_entry: str = "任务详情 / 系统日志"
     occurred_at: datetime | None = None
+
+
+class RiskPolicyAuditOut(ApiModel):
+    id: int
+    actor: str
+    action: str
+    target_type: str
+    target_id: str
+    target_label: str
+    detail: str = ""
+    occurred_at: datetime
 
 
 class RiskProxyAlertOut(ApiModel):
@@ -292,6 +307,7 @@ class RiskControlSummaryOut(ApiModel):
     account_scores: list[RiskControlAccountScoreOut]
     disposition_queue: list[RiskDispositionItemOut]
     hit_records: list[RiskHitRecordOut]
+    policy_audits: list[RiskPolicyAuditOut]
     proxy_alerts: list[RiskProxyAlertOut]
 
 
@@ -304,6 +320,7 @@ __all__ = [
     "RiskControlSummaryOut",
     "RiskDispositionItemOut",
     "RiskHitRecordOut",
+    "RiskPolicyAuditOut",
     "RiskProxyAlertOut",
     "AccountProxyCreate",
     "AccountProxyOut",

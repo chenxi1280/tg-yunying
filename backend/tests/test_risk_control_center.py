@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountProxy, AccountStatus, Action, FailureType, MessageTask, ProxyAlert, SchedulingSetting, Task, TaskStatus, Tenant, TgAccount, TgAccountSecuritySnapshot
+from app.models import AccountProxy, AccountRuntimeSummary, AccountStatus, Action, AuditLog, FailureType, MessageTask, MessageTaskAttempt, ProxyAlert, SchedulingSetting, Task, TaskStatus, Tenant, TgAccount, TgAccountSecuritySnapshot
 from app.schemas import MessageSendTaskCreate
 from app.schemas.risk_control import ProxyBindingRequest, RiskPreflightRequest
 from app.services._common import _now
@@ -102,6 +102,282 @@ def test_risk_control_summary_reuses_existing_scheduling_setting():
     assert summary["global_policy"]["default_retry_backoff"] == "exponential"
     assert summary["account_scores"][0]["current_policy"] == "标准节奏"
     assert setting_count == 1
+
+
+def test_risk_control_summary_includes_policy_audit_records():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="可用账号", phone_masked="11", status=AccountStatus.ACTIVE.value, health_score=86))
+        session.add_all(
+            [
+                AuditLog(
+                    tenant_id=1,
+                    actor="admin",
+                    action="更新风控全局策略",
+                    target_type="risk_global_policy",
+                    target_id="1",
+                    detail="trace_id=risk-audit-1; reason=收紧策略",
+                ),
+                AuditLog(
+                    tenant_id=1,
+                    actor="admin",
+                    action="绑定账号本地代理",
+                    target_type="tg_account",
+                    target_id="11",
+                    detail="trace_id=risk-audit-2; reason=切换代理",
+                ),
+                AuditLog(
+                    tenant_id=1,
+                    actor="admin",
+                    action="普通审计",
+                    target_type="task",
+                    target_id="task-1",
+                    detail="不属于风控策略审计",
+                ),
+            ]
+        )
+        session.commit()
+
+        summary = risk_control_summary(session, 1)
+
+    audits = summary["policy_audits"]
+    assert [item["action"] for item in audits] == ["绑定账号本地代理", "更新风控全局策略"]
+    assert audits[0]["target_type"] == "tg_account"
+    assert audits[0]["target_label"] == "账号代理绑定"
+    assert "risk-audit-2" in audits[0]["detail"]
+    assert "普通审计" not in {item["action"] for item in audits}
+
+
+def test_low_health_score_is_visible_in_score_reasons():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="低分账号", phone_masked="11", status=AccountStatus.ACTIVE.value, health_score=42))
+        session.commit()
+
+        summary = risk_control_summary(session, 1)
+
+    score = summary["account_scores"][0]
+    assert score["risk_level"] == "D"
+    assert score["blocked_reason"] == "健康分低于任务准入线"
+    assert "健康分 42.0 低于任务准入线 55" in score["score_reasons"]
+
+
+def test_risk_control_summary_uses_account_runtime_summary_as_health_source():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="运行汇总账号", phone_masked="11", status=AccountStatus.ACTIVE.value, health_score=96))
+        session.add(
+            AccountRuntimeSummary(
+                tenant_id=1,
+                account_id=11,
+                send_available=True,
+                listen_available=True,
+                join_available=True,
+                comment_available=True,
+                profile_available=True,
+                code_read_available=True,
+                remaining_capacity=88,
+                health_score=42,
+                risk_level="D",
+                score_reasons=["运行读模型健康分低于准入线"],
+            )
+        )
+        session.commit()
+
+        summary = risk_control_summary(session, 1)
+
+    score = summary["account_scores"][0]
+    assert score["health_score"] == 42
+    assert score["risk_level"] == "D"
+    assert "运行读模型健康分低于准入线" in score["score_reasons"]
+
+
+def test_target_permission_failure_is_non_score_reason():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="评论账号", phone_masked="11", status=AccountStatus.ACTIVE.value, health_score=92))
+        session.add(Task(id="task-comment", tenant_id=1, name="频道评论", type="channel_comment", status="running"))
+        session.add(
+            Action(
+                id="action-comment-denied",
+                tenant_id=1,
+                task_id="task-comment",
+                task_type="channel_comment",
+                action_type="post_comment",
+                account_id=11,
+                status="failed",
+                scheduled_at=now,
+                executed_at=now,
+                result={
+                    "failure_type": FailureType.COMMENT_UNAVAILABLE.value,
+                    "error_message": "无评论权限，未通过群限制发言",
+                },
+            )
+        )
+        session.commit()
+
+        summary = risk_control_summary(session, 1)
+
+    account = summary["account_scores"][0]
+    assert account["risk_level"] == "A"
+    assert account["recent_risk"] == ""
+    assert not any("无评论权限" in reason for reason in account["score_reasons"])
+    assert any("无评论权限" in reason for reason in account["non_score_reasons"])
+
+    hit = summary["hit_records"][0]
+    assert hit["policy"] == FailureType.COMMENT_UNAVAILABLE.value
+    assert hit["impact_scope"] == "target"
+    assert hit["affects_health_score"] is False
+    assert hit["suggested_entry"] == "运营目标 / 账号目标能力"
+    assert any(item["key"] == f"hit:{hit['key']}" for item in summary["disposition_queue"])
+
+
+def test_message_attempt_task_failure_is_hit_but_not_account_score():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=12, tenant_id=1, display_name="消息账号", phone_masked="12", status=AccountStatus.ACTIVE.value, health_score=94))
+        session.add(
+            MessageTask(
+                id=900,
+                tenant_id=1,
+                target_type="group",
+                target_peer_id="-100900",
+                target_display="测试群",
+                content="hello",
+                idempotency_key="message-task-900",
+                status=TaskStatus.SENDING.value,
+                scheduled_at=now,
+            )
+        )
+        session.add(
+            MessageTaskAttempt(
+                id=901,
+                tenant_id=1,
+                task_id=900,
+                account_id=12,
+                status="failed",
+                failure_type=FailureType.UNKNOWN.value,
+                detail="任务配置错误，缺少素材",
+                created_at=now,
+            )
+        )
+        session.commit()
+
+        summary = risk_control_summary(session, 1)
+
+    account = summary["account_scores"][0]
+    assert account["health_score"] == 94
+    assert account["risk_level"] == "A"
+    assert account["recent_risk"] == ""
+    assert not any("任务配置错误" in reason for reason in account["score_reasons"])
+    assert "任务配置错误，缺少素材" in "；".join(account["non_score_reasons"])
+
+    hit = next(item for item in summary["hit_records"] if item["key"] == "message-attempt:901")
+    assert hit["impact_scope"] == "task"
+    assert hit["affects_health_score"] is False
+    assert hit["severity"] == "warning"
+    assert any(item["key"] == f"hit:{hit['key']}" for item in summary["disposition_queue"])
+
+
+def test_group_permission_failure_is_disposition_only_not_account_score():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=13, tenant_id=1, display_name="群权限账号", phone_masked="13", status=AccountStatus.ACTIVE.value, health_score=91))
+        session.add(Task(id="task-group", tenant_id=1, name="群活跃", type="group_ai_chat", status="running"))
+        session.add(
+            Action(
+                id="action-group-denied",
+                tenant_id=1,
+                task_id="task-group",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=13,
+                status="failed",
+                scheduled_at=now,
+                executed_at=now,
+                result={
+                    "failure_type": FailureType.GROUP_PERMISSION_DENIED.value,
+                    "blockers": ["账号未通过群限制发言"],
+                    "error_message": "账号没有该目标发言权限",
+                },
+            )
+        )
+        session.commit()
+
+        summary = risk_control_summary(session, 1)
+
+    account = summary["account_scores"][0]
+    assert account["health_score"] == 91
+    assert account["risk_level"] == "A"
+    assert account["recent_risk"] == ""
+    assert not account["score_reasons"] or "账号未通过群限制发言" not in "；".join(account["score_reasons"])
+    assert "账号没有该目标发言权限" in "；".join(account["non_score_reasons"])
+
+    hit = summary["hit_records"][0]
+    assert hit["impact_scope"] == "target"
+    assert hit["affects_health_score"] is False
+    assert hit["severity"] == "warning"
+    assert any(item["key"] == f"hit:{hit['key']}" for item in summary["disposition_queue"])
+
+
+def test_unknown_hit_record_keeps_trace_id_and_is_marked_unclassified():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=12, tenant_id=1, display_name="未知错误账号", phone_masked="12", status=AccountStatus.ACTIVE.value, health_score=92))
+        session.add(Task(id="task-unknown", tenant_id=1, name="未知错误任务", type="group_ai_chat", status="running"))
+        session.add(
+            Action(
+                id="action-unknown",
+                tenant_id=1,
+                task_id="task-unknown",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=12,
+                status="failed",
+                scheduled_at=now,
+                executed_at=now,
+                result={
+                    "failure_type": FailureType.UNKNOWN.value,
+                    "error_message": FailureType.UNKNOWN.value,
+                    "trace_id": "trace-risk-unknown",
+                },
+            )
+        )
+        session.commit()
+
+        summary = risk_control_summary(session, 1)
+
+    hit = summary["hit_records"][0]
+    assert hit["policy"] == FailureType.UNKNOWN.value
+    assert hit["detail"] != FailureType.UNKNOWN.value
+    assert "待分类" in hit["detail"]
+    assert "trace-risk-unknown" in hit["detail"]
+    assert hit["affects_health_score"] is False
 
 
 def test_proxy_binding_is_visible_in_account_score_and_preflight():
@@ -263,6 +539,27 @@ def test_manual_proxy_alert_resolve_requires_healthy_proxy_state():
         recovered = update_proxy_alert_status(session, 1, 41, "recovered", "tester", reason="检查后恢复")
 
     assert recovered["alert_status"] == "recovered"
+
+
+def test_proxy_alert_ignore_requires_reason_and_expiry():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    ignored_until = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(AccountProxy(id=31, tenant_id=1, name="local-1080", host="127.0.0.1", port=1080, status="unhealthy", alert_status="alerting"))
+        session.add(ProxyAlert(id=41, tenant_id=1, proxy_id=31, severity="critical", status="alerting", reason_code="proxy_timeout"))
+        session.commit()
+
+        with pytest.raises(ValueError, match="忽略代理告警必须填写原因"):
+            update_proxy_alert_status(session, 1, 41, "ignored", "tester", reason="", ignored_until=ignored_until)
+        with pytest.raises(ValueError, match="忽略代理告警必须设置过期时间"):
+            update_proxy_alert_status(session, 1, 41, "ignored", "tester", reason="短时波动", ignored_until=None)
+
+        ignored = update_proxy_alert_status(session, 1, 41, "ignored", "tester", reason="短时波动", ignored_until=ignored_until)
+
+    assert ignored["alert_status"] == "ignored"
 
 
 def test_successful_proxy_check_recovers_existing_alert():

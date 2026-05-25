@@ -107,6 +107,16 @@
   gap: 14px;
 }
 
+.stat-card-button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: inherit;
+  cursor: pointer;
+}
+
 .panel.ant-card,
 .sub-panel.ant-card,
 .stat-card.ant-card,

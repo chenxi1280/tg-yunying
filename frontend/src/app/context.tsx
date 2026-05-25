@@ -531,9 +531,9 @@ export function AppProvider({ children }: AppProviderProps) {
     return groups.find((item) => item.id === groupId)?.title ?? `群 ${groupId}`;
   }
 
-  function goToView(viewId: string) {
+  function goToView(viewId: string, search: string = '') {
     setActiveView(viewId);
-    navigate(VIEW_ROUTES[viewId] ?? '/dashboard');
+    navigate(`${VIEW_ROUTES[viewId] ?? '/dashboard'}${search}`);
   }
 
   // 使用 useMemo 稳定 context value 引用，避免消费者不必要的重渲染

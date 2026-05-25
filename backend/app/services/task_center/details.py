@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, GroupContextMessage, OperationTarget, Task, TgAccount, TgGroup
+from app.models import Action, ChannelMessage, ExecutionAttempt, GroupContextMessage, OperationTarget, Task, TgAccount, TgGroup
 
 from .executors.common import quantity_jitter_bounds
 from .executors.group_ai_chat import account_profile_summaries
@@ -173,48 +173,152 @@ def _membership_phase(task: Task, actions: list[Action] | None = None) -> dict[s
     if actions:
         rows = [action for action in actions if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}]
         if rows:
-            success_statuses = {"success", "skipped"}
-            pending_statuses = {"pending", "claiming", "executing", "retryable_failed"}
-            joined = sum(1 for action in rows if action.status in success_statuses or bool((action.result or {}).get("success")))
-            running = sum(1 for action in rows if action.status in {"claiming", "executing"})
-            pending = sum(1 for action in rows if action.status in pending_statuses)
-            failed = sum(1 for action in rows if action.status == "failed")
-            target_count = len({(action.payload or {}).get("channel_target_id") for action in rows if (action.payload or {}).get("channel_target_id")})
-            estimated_finish_at = max([action.scheduled_at for action in rows if action.status in pending_statuses and action.scheduled_at], default=None)
-            if pending:
-                stage = "membership_running"
-            elif joined <= 0 and failed:
-                stage = "membership_blocked"
-            elif failed:
-                stage = "membership_partial"
-            else:
-                stage = "membership_ready"
-            return {
-                "stage": stage,
-                "summary": {
-                    "target_count": target_count,
-                    "action_count": len(rows),
-                    "running_account_count": running,
-                    "success_account_count": joined,
-                    "estimated_finish_at": estimated_finish_at,
-                },
-                "joined_count": joined,
-                "need_join_count": pending,
-                "failed_count": failed,
-                "running_count": running,
-                "success_count": joined,
-                "estimated_finish_at": estimated_finish_at,
-            }
+            return _membership_phase_from_actions(rows)
     stats = task.stats or {}
     if not isinstance(stats, dict):
         return {}
-    return {
+    legacy = {
         "stage": stats.get("membership_stage") or "",
         "summary": stats.get("membership_summary") or {},
         "joined_count": int(stats.get("membership_joined_count") or 0),
         "need_join_count": int(stats.get("membership_need_join_count") or 0),
         "failed_count": int(stats.get("membership_failed_count") or 0),
     }
+    return {**_membership_phase_from_stats(stats), **legacy}
+
+
+def _membership_phase_from_actions(rows: list[Action]) -> dict[str, Any]:
+    success_statuses = {"success", "skipped"}
+    pending_statuses = {"pending", "retryable_failed"}
+    success = sum(1 for action in rows if action.status in success_statuses or bool((action.result or {}).get("success")))
+    ready = sum(1 for action in rows if _membership_action_ready_before_task(action))
+    running = sum(1 for action in rows if action.status in {"claiming", "executing"})
+    pending = sum(1 for action in rows if action.status in pending_statuses)
+    failed = sum(1 for action in rows if action.status == "failed")
+    blocked = sum(1 for action in rows if _membership_action_blocked(action))
+    target_count = len({_membership_target_key(action) for action in rows if _membership_target_key(action)})
+    estimated_finish_at = max([action.scheduled_at for action in rows if action.status in pending_statuses and action.scheduled_at], default=None)
+    status = _membership_status(success, pending, running, failed, len(rows))
+    return {
+        "stage": _membership_stage(status),
+        "status": status,
+        "progress_percent": _membership_progress(success, failed, len(rows)),
+        "current_phase": _membership_current_phase(status, running=running, pending=pending, failed=failed),
+        "warnings": _membership_warnings(rows),
+        "summary": {
+            "target_count": target_count,
+            "action_count": len(rows),
+            "running_account_count": running,
+            "success_account_count": success,
+            "estimated_finish_at": estimated_finish_at,
+        },
+        "joined_count": success,
+        "need_join_count": pending,
+        "ready_account_count": ready,
+        "pending_account_count": pending,
+        "running_account_count": running,
+        "success_account_count": success,
+        "failed_account_count": failed,
+        "blocked_account_count": blocked,
+        "failed_count": failed,
+        "running_count": running,
+        "success_count": success,
+        "estimated_finish_at": estimated_finish_at,
+    }
+
+
+def _membership_phase_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
+    summary = stats.get("membership_summary") if isinstance(stats.get("membership_summary"), dict) else {}
+    success = int(stats.get("membership_joined_count") or summary.get("success_account_count") or 0)
+    pending = int(stats.get("membership_need_join_count") or summary.get("pending_account_count") or 0)
+    failed = int(stats.get("membership_failed_count") or summary.get("failed_account_count") or 0)
+    running = int(summary.get("running_account_count") or 0)
+    total = success + pending + failed + running
+    status = _membership_status(success, pending, running, failed, total)
+    return {
+        "status": status,
+        "progress_percent": _membership_progress(success, failed, total),
+        "current_phase": _membership_current_phase(status, running=running, pending=pending, failed=failed),
+        "warnings": list(stats.get("membership_warnings") or []),
+        "ready_account_count": int(summary.get("ready_account_count") or success),
+        "pending_account_count": pending,
+        "running_account_count": running,
+        "success_account_count": success,
+        "failed_account_count": failed,
+        "blocked_account_count": int(summary.get("blocked_account_count") or 0),
+        "estimated_finish_at": summary.get("estimated_finish_at"),
+    }
+
+
+def _membership_action_ready_before_task(action: Action) -> bool:
+    result = action.result or {}
+    return action.status == "skipped" or result.get("membership_status") == "already_joined"
+
+
+def _membership_action_blocked(action: Action) -> bool:
+    result = action.result or {}
+    return action.status == "failed" and str(result.get("error_code") or "").lower() in {"account_unavailable", "manual_required", "permission_denied"}
+
+
+def _membership_target_key(action: Action) -> str:
+    payload = action.payload or {}
+    return str(payload.get("channel_target_id") or payload.get("target_operation_target_id") or payload.get("target_peer_id") or "")
+
+
+def _membership_status(success: int, pending: int, running: int, failed: int, total: int) -> str:
+    if total <= 0:
+        return "not_required"
+    if running:
+        return "running"
+    if pending and success:
+        return "partial_success"
+    if pending:
+        return "pending"
+    if failed and success:
+        return "partial_success"
+    if failed:
+        return "failed"
+    return "completed"
+
+
+def _membership_stage(status: str) -> str:
+    mapping = {
+        "running": "membership_running",
+        "pending": "membership_running",
+        "partial_success": "membership_partial",
+        "failed": "membership_blocked",
+        "blocked": "membership_blocked",
+        "completed": "membership_ready",
+    }
+    return mapping.get(status, "membership_ready" if status == "not_required" else status)
+
+
+def _membership_progress(success: int, failed: int, total: int) -> int:
+    return round((success + failed) * 100 / total) if total > 0 else 100
+
+
+def _membership_current_phase(status: str, *, running: int, pending: int, failed: int) -> str:
+    if running:
+        return "加入 / 关注中"
+    if pending:
+        return "排队中"
+    if failed and status in {"failed", "blocked"}:
+        return "等待人工处理"
+    if status == "partial_success":
+        return "部分完成"
+    if status == "completed":
+        return "已完成"
+    return "无需准入"
+
+
+def _membership_warnings(rows: list[Action]) -> list[str]:
+    warnings: list[str] = []
+    for action in rows:
+        result = action.result or {}
+        text = str(result.get("warning") or result.get("error_message") or "")
+        if action.status == "failed" and text and text not in warnings:
+            warnings.append(text)
+    return warnings
 
 
 def _membership_accounts(session: Session, actions: list[Action]) -> list[dict[str, Any]]:
@@ -222,11 +326,13 @@ def _membership_accounts(session: Session, actions: list[Action]) -> list[dict[s
     account_ids = sorted({int(action.account_id) for action in rows if action.account_id})
     accounts = list(session.scalars(select(TgAccount).where(TgAccount.id.in_(account_ids)))) if account_ids else []
     by_id = {account.id: account for account in accounts}
+    latest_attempts = _latest_attempts_by_action(session, rows)
     result: list[dict[str, Any]] = []
     for action in sorted(rows, key=lambda item: (int(item.account_id or 0), item.created_at)):
         payload = action.payload or {}
         action_result = action.result or {}
         account_id = int(action.account_id or 0)
+        latest_attempt = latest_attempts.get(action.id)
         result.append(
             {
                 "account_id": account_id,
@@ -238,12 +344,31 @@ def _membership_accounts(session: Session, actions: list[Action]) -> list[dict[s
                 "retry_count": action.retry_count,
                 "scheduled_at": action.scheduled_at,
                 "executed_at": action.executed_at,
+                "completed_at": latest_attempt.after_call_at if latest_attempt and latest_attempt.after_call_at else action.executed_at,
                 "channel_target_id": payload.get("channel_target_id"),
                 "target_type": payload.get("target_type") or "channel",
                 "target_display": payload.get("target_display") or "",
             }
         )
     return result
+
+
+def _latest_attempts_by_action(session: Session, actions: list[Action]) -> dict[str, ExecutionAttempt]:
+    action_ids = [action.id for action in actions if action.id]
+    if not action_ids:
+        return {}
+    attempts = list(
+        session.scalars(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.action_id.in_(action_ids))
+            .order_by(ExecutionAttempt.action_id.asc(), ExecutionAttempt.attempt_no.desc())
+        )
+    )
+    latest: dict[str, ExecutionAttempt] = {}
+    for attempt in attempts:
+        if attempt.action_id not in latest:
+            latest[attempt.action_id] = attempt
+    return latest
 
 
 def _message_groups(session: Session, task: Task, actions: list[Action]) -> list[dict[str, Any]]:

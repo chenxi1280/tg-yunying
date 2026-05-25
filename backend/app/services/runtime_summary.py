@@ -35,6 +35,34 @@ UNRESOLVED_FAILURE_STATUSES = {"failed", "retryable_failed", "unknown_after_send
 RISK_SIGNAL_STATUSES = {"failed", "skipped", "retryable_failed", "unknown_after_send"}
 SECURITY_RETRY_STATUSES = {"pending", "waiting", "failed", "partial_success"}
 FAILURE_TYPE_CODES = {item.value: item.name for item in FailureType}
+ACCOUNT_HEALTH_FAILURE_TYPES = {"ACCOUNT_UNAVAILABLE", "ACCOUNT_LIMITED", "FLOOD_WAIT"}
+NON_ACCOUNT_HEALTH_FAILURE_TYPES = {
+    "CHANNEL_POST_DENIED",
+    "COMMENT_UNAVAILABLE",
+    "CONTENT_REJECTED",
+    "GROUP_PERMISSION_DENIED",
+    "PEER_INVALID",
+    "REACTION_UNAVAILABLE",
+    "SLOWMODE",
+}
+NON_ACCOUNT_RISK_KEYS = ("target_warnings", "content_warnings")
+ACCOUNT_RISK_KEYS = ("decision_reasons", "blockers", "risk_hits", "proxy_warnings")
+GENERIC_UNKNOWN_FAILURE_REASONS = {"", "unknown", "未知错误"}
+ACCOUNT_RISK_MARKERS = (
+    "ACCOUNT_",
+    "account_",
+    "FLOOD_WAIT",
+    "flood_wait",
+    "SESSION",
+    "session",
+    "proxy_",
+    "代理",
+    "账号不可用",
+    "账号受限",
+    "账号级限流",
+    "会话失效",
+)
+RISK_LEVEL_THRESHOLDS = (85, 70, 55, 30)
 
 
 def refresh_task_summary(session: Session, task: Task) -> TaskRuntimeSummary:
@@ -281,6 +309,7 @@ def refresh_account_summary(session: Session, tenant_id: int, account_id: int) -
     security_blocked, security_reason, security_trend = _account_security_signal(session, tenant_id, account_id)
     security_retry_at = _account_security_next_retry_at(session, tenant_id, account_id)
     recent_risk_trend = _account_recent_risk_signal(session, tenant_id, account_id, recent_cutoff)
+    non_score_reasons = _account_non_score_reasons(session, tenant_id, account_id, recent_cutoff)
     if is_active:
         capacity_decision = account_capacity_decision(session, tenant_id=tenant_id, account_id=account_id)
         capacity_available = capacity_decision.available
@@ -319,6 +348,11 @@ def refresh_account_summary(session: Session, tenant_id: int, account_id: int) -
     summary.unavailable_reason = unavailable_reason
     summary.next_retry_at = next_retry_at
     summary.failure_trend = trend
+    health = _account_runtime_health(account, capacity_available, unavailable_reason, security_blocked, trend, non_score_reasons)
+    summary.health_score = health["score"]
+    summary.risk_level = health["risk_level"]
+    summary.score_reasons = health["score_reasons"]
+    summary.non_score_reasons = health["non_score_reasons"]
     summary.updated_at = _now()
     return summary
 
@@ -951,6 +985,8 @@ def _account_recent_risk_signal(session: Session, tenant_id: int, account_id: in
     )
     for action in actions:
         result = action.result or {}
+        if not _risk_signal_affects_account(action, result):
+            continue
         reason = _risk_result_reason(result)
         decision = str(result.get("decision") or "")
         risk_level = str(result.get("risk_level") or "")
@@ -972,9 +1008,140 @@ def _account_recent_risk_signal(session: Session, tenant_id: int, account_id: in
     return {}
 
 
+def _account_non_score_reasons(session: Session, tenant_id: int, account_id: int, recent_cutoff: datetime) -> list[str]:
+    actions = list(
+        session.scalars(
+            select(Action)
+            .where(
+                Action.tenant_id == tenant_id,
+                Action.account_id == account_id,
+                Action.created_at >= recent_cutoff,
+                Action.status.in_(RISK_SIGNAL_STATUSES),
+            )
+            .order_by(Action.created_at.desc())
+            .limit(50)
+        )
+    )
+    reasons: list[str] = []
+    for action in actions:
+        result = action.result or {}
+        if _risk_signal_affects_account(action, result):
+            continue
+        reason = _non_score_failure_reason(action, result)
+        if reason:
+            reasons.append(reason)
+    return _result_unique(reasons)[:8]
+
+
+def _risk_signal_affects_account(action: Action, result: dict[str, Any]) -> bool:
+    failure_type = _failure_type(action)
+    if failure_type in ACCOUNT_HEALTH_FAILURE_TYPES:
+        return True
+    if failure_type in NON_ACCOUNT_HEALTH_FAILURE_TYPES:
+        return False
+    if any(_result_list(result, key) for key in NON_ACCOUNT_RISK_KEYS):
+        return False
+    return _has_account_risk_marker(result)
+
+
+def _has_account_risk_marker(result: dict[str, Any]) -> bool:
+    values = [value for key in ACCOUNT_RISK_KEYS for value in _result_list(result, key)]
+    return any(marker in str(value) for value in values for marker in ACCOUNT_RISK_MARKERS)
+
+
+def _non_score_failure_reason(action: Action, result: dict[str, Any]) -> str:
+    detail = str(
+        result.get("error_message")
+        or result.get("detail")
+        or result.get("failure_detail")
+        or result.get("reason")
+        or ""
+    ).strip()
+    if detail:
+        return detail
+    reason = _risk_result_reason(result).strip()
+    return "" if reason.lower() in GENERIC_UNKNOWN_FAILURE_REASONS else reason or _failure_reason(action)
+
+
+def _account_runtime_health(
+    account: TgAccount | None,
+    capacity_available: bool,
+    unavailable_reason: str,
+    security_blocked: bool,
+    trend: dict[str, Any],
+    non_score_reasons: list[str],
+) -> dict[str, Any]:
+    base_score = float(account.health_score or 0) if account else 0.0
+    score = base_score
+    reasons: list[str] = []
+    if not account or account.deleted_at is not None:
+        return {"score": 0.0, "risk_level": "E", "score_reasons": ["账号不存在或已删除"], "non_score_reasons": []}
+    if account.status != AccountStatus.ACTIVE.value or not account.session_ciphertext:
+        score = min(score, 20.0)
+        reasons.append(f"登录状态：{account.status}")
+    if unavailable_reason:
+        score = min(score, 45.0)
+        reasons.append(unavailable_reason)
+    if not capacity_available:
+        score = min(score, 55.0)
+        reasons.append("容量不足或正在冷却")
+    if security_blocked:
+        score = min(score, 35.0)
+        reasons.extend(_result_unique([trend.get("security_risk_reason"), "平台可信设备无法确认"]))
+    if trend.get("rate_limit_count"):
+        score = min(score, 55.0)
+        reasons.append(str(trend.get("rate_limit_reason") or "账号级限流"))
+    if trend.get("recent_risk_reason"):
+        score = min(score, 55.0)
+        reasons.append(str(trend["recent_risk_reason"]))
+    if base_score < 55:
+        reasons.append(f"健康分 {base_score:.1f} 低于任务准入线 55")
+    score = max(0.0, min(100.0, score))
+    return {
+        "score": round(score, 1),
+        "risk_level": _runtime_risk_level(score, blocked=bool(unavailable_reason or security_blocked)),
+        "score_reasons": _result_unique(reasons)[:8],
+        "non_score_reasons": non_score_reasons,
+    }
+
+
+def _runtime_risk_level(score: float, *, blocked: bool) -> str:
+    if blocked:
+        return "E"
+    if score >= RISK_LEVEL_THRESHOLDS[0]:
+        return "A"
+    if score >= RISK_LEVEL_THRESHOLDS[1]:
+        return "B"
+    if score >= RISK_LEVEL_THRESHOLDS[2]:
+        return "C"
+    if score >= RISK_LEVEL_THRESHOLDS[3]:
+        return "D"
+    return "E"
+
+
+def _result_unique(values: Iterable[Any]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
 def _is_rate_limit_failure(code: str, detail: str) -> bool:
+    normalized_code = _failure_type_code(code)
+    if normalized_code in {"ACCOUNT_LIMITED", "FLOOD_WAIT"}:
+        return True
     text = f"{code} {detail}".lower()
-    return any(marker in text for marker in ["flood", "slowmode", "慢速", "限流"])
+    account_level_markers = (
+        "account limited",
+        "account rate limit",
+        "flood",
+        "账号级限流",
+        "账号限流",
+        "账号受限",
+    )
+    return any(marker in text for marker in account_level_markers)
 
 
 def _security_blocked_reason(snapshot: TgAccountSecuritySnapshot | None) -> str:

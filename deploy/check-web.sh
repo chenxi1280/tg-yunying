@@ -51,6 +51,7 @@ worker_containers=(
   tgyunying-worker-dispatcher-2
   tgyunying-worker-listener
   tgyunying-worker-recovery
+  tgyunying-worker-account-security
   tgyunying-worker-metrics
 )
 

@@ -1208,7 +1208,7 @@ def _can_replace_display_name(display_name: str | None) -> bool:
 def _avatar_source(session: Session, account: TgAccount, index: int, strategy) -> str:
     if strategy.avatar_sources:
         return strategy.avatar_sources[index % len(strategy.avatar_sources)]
-    if strategy.mode in {"material_random", "sequential"}:
+    if strategy.mode in {"material_random", "random_from_material_pool", "sequential"}:
         material_sources = _material_avatar_sources(session, account.tenant_id, strategy)
         if material_sources:
             source_index = index if strategy.mode == "sequential" else account.id * 7 + index * 3

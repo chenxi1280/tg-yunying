@@ -14,12 +14,14 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
     monkeypatch.setattr(worker, "drain_task_dispatcher", lambda _factory, limit: calls.append(("dispatcher", limit)) or 2)
     monkeypatch.setattr(worker, "drain_task_listener", lambda _factory, limit: calls.append(("listener", limit)) or 3)
     monkeypatch.setattr(worker, "drain_task_recovery", lambda _factory, limit: calls.append(("recovery", limit)) or 4)
+    monkeypatch.setattr(worker, "drain_account_security_batches", lambda _factory, limit: calls.append(("account_security", limit)) or 6)
     monkeypatch.setattr(worker, "drain_task_metrics", lambda _factory, limit: calls.append(("metrics", limit)) or 5)
 
     assert worker.drain_once(7, role="planner") == 1
     assert worker.drain_once(7, role="dispatcher") == 2
     assert worker.drain_once(7, role="listener") == 3
     assert worker.drain_once(7, role="recovery") == 4
+    assert worker.drain_once(7, role="account-security") == 6
     assert worker.drain_once(7, role="metrics") == 5
 
     assert calls == [
@@ -27,6 +29,7 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
         ("dispatcher", 7),
         ("listener", 7),
         ("recovery", 7),
+        ("account_security", 7),
         ("metrics", 7),
     ]
 

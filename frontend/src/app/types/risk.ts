@@ -25,6 +25,7 @@ export type RiskControlAccountScore = {
   recent_risk: string;
   blocked_reason: string;
   score_reasons: string[];
+  non_score_reasons: string[];
   proxy_id: number | null;
   proxy_name: string | null;
   proxy_local_address: string | null;
@@ -63,7 +64,21 @@ export type RiskHitRecord = {
   policy: string;
   action: string;
   detail: string;
+  impact_scope: string;
+  affects_health_score: boolean;
+  suggested_entry: string;
   occurred_at: string | null;
+};
+
+export type RiskPolicyAudit = {
+  id: number;
+  actor: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  target_label: string;
+  detail: string;
+  occurred_at: string;
 };
 
 export type RiskProxyAlert = {
@@ -152,5 +167,6 @@ export type RiskControlSummary = {
   account_scores: RiskControlAccountScore[];
   disposition_queue: RiskDispositionItem[];
   hit_records: RiskHitRecord[];
+  policy_audits: RiskPolicyAudit[];
   proxy_alerts: RiskProxyAlert[];
 };

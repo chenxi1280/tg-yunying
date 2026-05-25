@@ -51,6 +51,10 @@ class AccountRuntimeSummaryOut(ApiModel):
     unavailable_reason: str
     next_retry_at: datetime | None
     failure_trend: dict[str, Any] = {}
+    health_score: float = 100
+    risk_level: str = "A"
+    score_reasons: list[str] = []
+    non_score_reasons: list[str] = []
     updated_at: datetime
 
 

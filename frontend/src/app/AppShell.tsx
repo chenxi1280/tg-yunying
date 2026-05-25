@@ -11,6 +11,7 @@ import {
   Users,
 } from 'lucide-react';
 import { Alert, App as AntdApp, Button, Card, Form, Input, Layout, Menu, Space, Tooltip, Typography } from 'antd';
+import { useLocation } from 'react-router-dom';
 import { AppProvider, useAppContext } from './context';
 import { VIEW_ROUTES } from './routes';
 import type { ChannelMessage, MessageSendingPrefill, OperationTarget, TaskCenterPrefill, TaskCenterTaskType } from './types';
@@ -37,6 +38,14 @@ const ArchivesView = React.lazy(() => import('./views/ArchivesView'));
 const AdminManualView = React.lazy(() => import('./views/AdminManualView'));
 
 type ShellNavItem = [string, string, React.ReactNode];
+type AccountDeepLinkContext = {
+  issue?: string;
+  riskTab?: string;
+  riskQuery?: string;
+  riskPage?: number;
+  riskPageSize?: number;
+  riskQuickFilter?: string;
+};
 
 const SHELL_NAV_ITEMS: ShellNavItem[] = [
   ['overview', '运营中心', <LayoutDashboard size={18} />],
@@ -62,8 +71,37 @@ function noticeMessageType(notice: string): 'success' | 'error' | 'warning' | 'i
   return 'info';
 }
 
+function accountDetailTabSlug(tab: string) {
+  if (/登录|验证|验证码|扫码/.test(tab)) return 'login';
+  if (/安全|二步|可信|设备|资料/.test(tab)) return 'security';
+  if (/代理/.test(tab)) return 'proxy';
+  return 'availability';
+}
+
+function accountDetailTabLabel(tab: string) {
+  if (tab === 'login') return 'TG 官方验证码';
+  if (tab === 'security') return '账号安全';
+  return '可用性';
+}
+
+function accountDetailSearch(accountId: number, tab: string, context: AccountDeepLinkContext) {
+  const params = new URLSearchParams();
+  params.set('account_id', String(accountId));
+  params.set('return_to', 'risk-control');
+  params.set('tab', accountDetailTabSlug(tab));
+  if (context.issue) params.set('issue', context.issue);
+  if (context.riskTab) params.set('risk_tab', context.riskTab);
+  if (context.riskQuery) params.set('risk_query', context.riskQuery);
+  if (context.riskPage) params.set('risk_page', String(context.riskPage));
+  if (context.riskPageSize) params.set('risk_page_size', String(context.riskPageSize));
+  if (context.riskQuickFilter) params.set('risk_quick_filter', context.riskQuickFilter);
+  return `?${params.toString()}`;
+}
+
 function AppShell() {
   const { message } = AntdApp.useApp();
+  const location = useLocation();
+  const accountDeepLinkRef = React.useRef('');
   const [messagePrefill, setMessagePrefill] = React.useState<MessageSendingPrefill | null>(null);
   const [taskCenterPrefill, setTaskCenterPrefill] = React.useState<TaskCenterPrefill | null>(null);
   const [taskCenterFocus, setTaskCenterFocus] = React.useState<{ taskId: string; nonce: number } | null>(null);
@@ -141,6 +179,21 @@ function AppShell() {
     }
   }, [activeView, currentUser, goToView, nav, token]);
 
+  React.useEffect(() => {
+    if (activeView !== 'accounts') return;
+    const params = new URLSearchParams(location.search);
+    const accountId = Number(params.get('account_id') || 0);
+    if (!Number.isInteger(accountId) || accountId <= 0) return;
+    const tab = accountDetailTabLabel(params.get('tab') || 'availability');
+    const key = `${accountId}:${tab}:${params.get('issue') || ''}`;
+    if (accountDeepLinkRef.current === key) return;
+    accountDeepLinkRef.current = key;
+    const account = accounts.find((item) => item.id === accountId);
+    void openAccountDetail((account ?? { id: accountId }) as Parameters<typeof openAccountDetail>[0]).then(() => {
+      setAccountDetailTab(tab);
+    });
+  }, [accounts, activeView, location.search, openAccountDetail, setAccountDetailTab]);
+
   const loginReady = Boolean(
     loginEmail.trim()
     && loginPassword
@@ -183,10 +236,11 @@ function AppShell() {
     goToView('systemConfig');
   }
 
-  async function openAccountDetailFromOperation(accountId: number) {
+  async function openAccountDetailFromOperation(accountId: number, tab: string = '可用性', context: AccountDeepLinkContext = {}) {
+    goToView('accounts', accountDetailSearch(accountId, tab, context));
     const account = accounts.find((item) => item.id === accountId);
     await openAccountDetail((account ?? { id: accountId }) as Parameters<typeof openAccountDetail>[0]);
-    setAccountDetailTab('可用性');
+    setAccountDetailTab(tab);
   }
 
   async function openTaskFromGroup(groupId?: number) {
@@ -486,6 +540,7 @@ function AppShell() {
           {activeView === 'riskControl' && (
             <RiskControlView
               onOpenAccounts={() => goToView('accounts')}
+              onOpenAccountDetail={openAccountDetailFromOperation}
               canManageRisk={hasPermission(currentUser, 'risk.manage')}
               canManageProxies={hasPermission(currentUser, 'proxies.manage')}
             />

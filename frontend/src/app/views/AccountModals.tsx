@@ -194,6 +194,7 @@ interface AccountDetailModalProps {
   onSetReturnAfterVerification: (mode: 'accountDetail' | 'accountPoolDetail') => void;
   onSetModal: (modal: any) => void;
   onSetCloneForm: (form: { target_account_ids: number[]; clone_contacts: boolean; clone_groups: boolean }) => void;
+  onReturnToRiskControl?: () => void;
   accountName: (accountId: number | null | undefined) => string;
   isActionPending: (key: string) => boolean;
   canSyncAccount?: boolean;
@@ -216,7 +217,7 @@ export function AccountDetailModal({
   onRetryAccountProfileSync,
   onDismissVerificationTask, onConfirmVerificationTask, onResolveGroupRestrictionTask,
   onOpenConfirm, onSetReturnAfterVerification, onSetModal,
-  onSetCloneForm, accountName, isActionPending,
+  onSetCloneForm, onReturnToRiskControl, accountName, isActionPending,
   canSyncAccount = true, canViewCodes = true, canSecurityRead = true, canSecurityBatch = true, canProfileBatchUpdate = true,
   canMovePool = true, canClone = true,
 }: AccountDetailModalProps) {
@@ -463,7 +464,21 @@ export function AccountDetailModal({
 
   return (
     <>
-    <Modal className="tg-modal large" title={`${accountDetail.account.display_name} 账号详情`} open width={920} onCancel={onClose} footer={null} destroyOnHidden centered>
+    <Modal
+      className="tg-modal large"
+      title={(
+        <Space className="modal-title-actions">
+          <span>{accountDetail.account.display_name} 账号详情</span>
+          {onReturnToRiskControl && <Button onClick={onReturnToRiskControl}>返回风控中心</Button>}
+        </Space>
+      )}
+      open
+      width={920}
+      onCancel={onClose}
+      footer={null}
+      destroyOnHidden
+      centered
+    >
       <div className="modal-body">
       <div className="account-detail-summary">
         <div><span>账号状态</span><strong><StatusBadge status={accountDetail.account.status} /></strong></div>

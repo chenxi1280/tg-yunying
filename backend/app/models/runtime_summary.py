@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -72,6 +72,10 @@ class AccountRuntimeSummary(Base):
     unavailable_reason: Mapped[str] = mapped_column(Text, default="")
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failure_trend: Mapped[dict] = mapped_column(JSON, default=dict)
+    health_score: Mapped[float] = mapped_column(Float, default=100)
+    risk_level: Mapped[str] = mapped_column(String(20), default="A")
+    score_reasons: Mapped[list] = mapped_column(JSON, default=list)
+    non_score_reasons: Mapped[list] = mapped_column(JSON, default=list)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 

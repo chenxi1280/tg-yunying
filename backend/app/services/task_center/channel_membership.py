@@ -7,9 +7,10 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import AccountPool, AccountStatus, Action, GroupAuthStatus, OperationTarget, Task, TgAccount, TgGroup, TgGroupAccount
+from app.models import AccountStatus, Action, GroupAuthStatus, OperationTarget, Task, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now
 
+from .account_pool import select_task_accounts
 from .pacing import schedule_times
 from .payloads import EnsureChannelMembershipPayload, create_membership_action
 
@@ -172,24 +173,12 @@ def channel_membership_summary(
 
 
 def candidate_accounts_for_config(session: Session, tenant_id: int, account_config: dict[str, Any]) -> list[TgAccount]:
-    stmt = (
-        select(TgAccount)
-        .where(TgAccount.tenant_id == tenant_id, TgAccount.deleted_at.is_(None), TgAccount.status == AccountStatus.ACTIVE.value)
-        .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
+    return select_task_accounts(
+        session,
+        tenant_id,
+        account_config,
+        limit=int(account_config.get("max_concurrent") or 20),
     )
-    mode = account_config.get("selection_mode") or "all"
-    if mode == "manual":
-        account_ids = [int(item) for item in account_config.get("account_ids") or []]
-        if not account_ids:
-            return []
-        stmt = stmt.where(TgAccount.id.in_(account_ids))
-    elif mode == "group":
-        pool_id = int(account_config.get("account_group_id") or 0)
-        pool = session.get(AccountPool, pool_id) if pool_id else None
-        if not pool or pool.tenant_id != tenant_id:
-            return []
-        stmt = stmt.where(TgAccount.pool_id == pool.id)
-    return list(session.scalars(stmt))
 
 
 def linked_channel_group(session: Session, channel: OperationTarget, *, create: bool) -> TgGroup | None:

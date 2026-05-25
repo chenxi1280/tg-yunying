@@ -2,13 +2,27 @@ import React from 'react';
 import { Activity, CheckCircle2, Database, RefreshCcw, ShieldAlert } from 'lucide-react';
 import { App as AntdApp, Button, Card, Descriptions, Empty, Form, Input, InputNumber, Modal, Progress, Select, Space, Switch, Table, Tabs, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { useLocation } from 'react-router-dom';
 import { api } from '../../shared/api/client';
-import type { AccountProxy, RiskControlAccountScore, RiskControlSummary, RiskDispositionItem, RiskHitRecord, RiskProxyAlert } from '../types';
+import type { AccountProxy, RiskControlAccountScore, RiskControlMetric, RiskControlSummary, RiskDispositionItem, RiskHitRecord, RiskProxyAlert } from '../types';
 import { formatBeijingDateTime } from '../time';
 import { Badge, StatCard, StatusBadge, useAntdTableControls } from '../components/shared';
 
 type RiskGlobalPolicy = RiskControlSummary['global_policy'];
+type RiskPolicyAudit = RiskControlSummary['policy_audits'][number];
+type ProxyAlertAction = 'acknowledge' | 'ignore' | 'resolve';
+type AccountDetailContext = {
+  issue?: string;
+  riskTab?: string;
+  riskQuery?: string;
+  riskPage?: number;
+  riskPageSize?: number;
+  riskQuickFilter?: string;
+};
 const riskAccountPhone = (account: RiskControlAccountScore) => account.phone_number || account.phone_masked;
+const PROXY_ALERT_IGNORE_DEFAULT_MS = 60 * 60 * 1000;
+const DATETIME_LOCAL_LENGTH = 16;
+const RISK_TAB_KEYS = new Set(['overview', 'policy', 'accounts', 'queue', 'hits', 'policy-audit', 'proxy', 'proxy-alerts']);
 
 type ProxyFormValues = {
   id?: number;
@@ -102,14 +116,21 @@ function formatLimit(used: number, limit: number) {
   return limit > 0 ? `${used}/${limit}` : `${used}/不限`;
 }
 
+function defaultProxyAlertIgnoreUntil() {
+  return new Date(Date.now() + PROXY_ALERT_IGNORE_DEFAULT_MS).toISOString().slice(0, DATETIME_LOCAL_LENGTH);
+}
+
 interface Props {
   onOpenAccounts: () => void;
+  onOpenAccountDetail?: (accountId: number, tab?: string, context?: AccountDetailContext) => void;
   canManageRisk?: boolean;
   canManageProxies?: boolean;
 }
 
-export default function RiskControlView({ onOpenAccounts, canManageRisk = false, canManageProxies = false }: Props) {
+export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, canManageRisk = false, canManageProxies = false }: Props) {
   const { message, modal } = AntdApp.useApp();
+  const location = useLocation();
+  const restoredSearchRef = React.useRef('');
   const [summary, setSummary] = React.useState<RiskControlSummary | null>(null);
   const [proxies, setProxies] = React.useState<AccountProxy[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -120,7 +141,12 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
   const [policySaving, setPolicySaving] = React.useState(false);
   const [proxyOpen, setProxyOpen] = React.useState(false);
   const [proxySaving, setProxySaving] = React.useState(false);
+  const [proxyAlertIgnoreOpen, setProxyAlertIgnoreOpen] = React.useState(false);
+  const [proxyAlertIgnoreId, setProxyAlertIgnoreId] = React.useState<number | null>(null);
+  const [proxyAlertIgnoreReason, setProxyAlertIgnoreReason] = React.useState('');
+  const [proxyAlertIgnoreUntil, setProxyAlertIgnoreUntil] = React.useState('');
   const [error, setError] = React.useState('');
+  const [accountQuickFilter, setAccountQuickFilter] = React.useState('');
   const [policyForm] = Form.useForm<RiskGlobalPolicy>();
   const [proxyForm] = Form.useForm<ProxyFormValues>();
 
@@ -145,10 +171,17 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
     void loadSummary();
   }, [loadSummary]);
 
+  const quickFilteredAccountRows = React.useMemo(() => {
+    const rows = summary?.account_scores ?? [];
+    if (accountQuickFilter === 'available') return rows.filter((row) => row.can_join_task);
+    if (accountQuickFilter === 'degraded') return rows.filter((row) => ['B', 'C', 'D'].includes(row.risk_level));
+    if (accountQuickFilter === 'blocked') return rows.filter((row) => row.risk_level === 'E');
+    return rows;
+  }, [accountQuickFilter, summary?.account_scores]);
   const accountTable = useAntdTableControls<RiskControlAccountScore>({
-    rows: summary?.account_scores ?? [],
+    rows: quickFilteredAccountRows,
     placeholder: '搜索账号 / 分组 / 状态 / 风险 / 代理',
-    search: [(row) => [row.account_id, row.display_name, row.username, row.pool_name, row.login_status, row.risk_level, row.recent_risk, row.blocked_reason, row.proxy_name, row.proxy_local_address, row.proxy_status, row.proxy_alert_status]],
+    search: [(row) => [row.account_id, row.display_name, row.username, row.pool_name, row.login_status, row.risk_level, riskLevelLabel(row.risk_level), row.can_join_task ? '可用' : '不可用', row.recent_risk, row.blocked_reason, row.proxy_name, row.proxy_local_address, row.proxy_status, row.proxy_alert_status, ...(row.score_reasons ?? []), ...(row.non_score_reasons ?? [])]],
   });
   const queueTable = useAntdTableControls<RiskDispositionItem>({
     rows: summary?.disposition_queue ?? [],
@@ -158,8 +191,86 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
   const hitTable = useAntdTableControls<RiskHitRecord>({
     rows: summary?.hit_records ?? [],
     placeholder: '搜索命中来源 / 账号 / 策略 / 任务',
-    search: [(row) => [row.source, row.account_name, row.task_id, row.target, row.policy, row.action, row.detail]],
+    search: [(row) => [row.source, row.account_name, row.task_id, row.target, row.policy, row.action, row.detail, row.impact_scope, row.suggested_entry, row.affects_health_score ? '扣健康分' : '不扣健康分']],
   });
+  const policyAuditTable = useAntdTableControls<RiskPolicyAudit>({
+    rows: summary?.policy_audits ?? [],
+    placeholder: '搜索策略动作 / 操作人 / 对象 / 原因',
+    search: [(row) => [row.actor, row.action, row.target_type, row.target_id, row.target_label, row.detail]],
+  });
+
+  function positiveSearchNumber(value: string | null, fallback: number) {
+    const parsed = Number(value || fallback);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  function restoreRiskTableContext(params: URLSearchParams) {
+    const tab = params.get('tab') || 'overview';
+    if (!RISK_TAB_KEYS.has(tab)) return;
+    const query = params.get('query') || '';
+    const page = positiveSearchNumber(params.get('page'), 1);
+    const pageSize = positiveSearchNumber(params.get('page_size'), 10);
+    setActiveTab(tab);
+    if (tab === 'accounts') {
+      setAccountQuickFilter(params.get('quick_filter') || '');
+      accountTable.setQuery(query);
+      accountTable.setPage(page, pageSize);
+    }
+    if (tab === 'queue') {
+      queueTable.setQuery(query);
+      queueTable.setPage(page, pageSize);
+    }
+    if (tab === 'hits') {
+      hitTable.setQuery(query);
+      hitTable.setPage(page, pageSize);
+    }
+    if (tab === 'policy-audit') {
+      policyAuditTable.setQuery(query);
+      policyAuditTable.setPage(page, pageSize);
+    }
+  }
+
+  React.useEffect(() => {
+    if (!summary) return;
+    const params = new URLSearchParams(location.search);
+    if (!params.get('tab') && !params.get('query') && !params.get('quick_filter')) return;
+    if (restoredSearchRef.current === location.search) return;
+    restoredSearchRef.current = location.search;
+    restoreRiskTableContext(params);
+  }, [location.search, summary]);
+
+  function handleMetricClick(metric: RiskControlMetric) {
+    if (metric.key === 'available_accounts') {
+      setAccountQuickFilter('available');
+      accountTable.setQuery('');
+      setActiveTab('accounts');
+      return;
+    }
+    if (metric.key === 'degraded_accounts') {
+      setAccountQuickFilter('degraded');
+      accountTable.setQuery('');
+      setActiveTab('accounts');
+      return;
+    }
+    if (metric.key === 'blocked_accounts') {
+      setAccountQuickFilter('blocked');
+      accountTable.setQuery('');
+      setActiveTab('accounts');
+      return;
+    }
+    if (metric.key === 'pending_dispositions') {
+      setActiveTab('queue');
+      return;
+    }
+    if (metric.key === 'recent_flood_wait') {
+      hitTable.setQuery('FloodWait');
+      setActiveTab('hits');
+      return;
+    }
+    if (metric.key === 'proxy_alerts') {
+      setActiveTab('proxy-alerts');
+    }
+  }
 
   async function checkProxy(proxyId: number) {
     if (!canManageProxies) return;
@@ -312,7 +423,7 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
     });
   }
 
-  async function handleProxyAlert(alertId: number, action: 'acknowledge' | 'resolve') {
+  async function handleProxyAlert(alertId: number, action: ProxyAlertAction) {
     if (!canManageProxies) return;
     const key = `proxy-alert:${alertId}:${action}`;
     setHandlingAction(key);
@@ -326,6 +437,43 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
       await loadSummary();
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '处理代理告警失败');
+    } finally {
+      setHandlingAction('');
+    }
+  }
+
+  function openProxyAlertIgnore(alertId: number) {
+    if (!canManageProxies) return;
+    setProxyAlertIgnoreId(alertId);
+    setProxyAlertIgnoreReason('');
+    setProxyAlertIgnoreUntil(defaultProxyAlertIgnoreUntil());
+    setProxyAlertIgnoreOpen(true);
+  }
+
+  async function submitProxyAlertIgnore() {
+    if (!canManageProxies || !proxyAlertIgnoreId) return;
+    const reason = proxyAlertIgnoreReason.trim();
+    if (!reason) {
+      void message.error('请填写忽略原因');
+      return;
+    }
+    if (!proxyAlertIgnoreUntil) {
+      void message.error('请选择忽略到期时间');
+      return;
+    }
+    const key = `proxy-alert:${proxyAlertIgnoreId}:ignore`;
+    setHandlingAction(key);
+    setError('');
+    try {
+      await api(`/proxy-alerts/${proxyAlertIgnoreId}/ignore`, {
+        method: 'POST',
+        body: JSON.stringify({ reason, ignored_until: proxyAlertIgnoreUntil }),
+      });
+      setProxyAlertIgnoreOpen(false);
+      void message.success('代理告警已忽略');
+      await loadSummary();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '忽略代理告警失败');
     } finally {
       setHandlingAction('');
     }
@@ -351,6 +499,7 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
       return (
         <Space size={6} wrap>
           <Button size="small" loading={handlingAction === `proxy-alert:${alertId}:acknowledge`} onClick={() => void handleProxyAlert(alertId, 'acknowledge')}>处理中</Button>
+          <Button size="small" loading={handlingAction === `proxy-alert:${alertId}:ignore`} onClick={() => openProxyAlertIgnore(alertId)}>忽略</Button>
           <Button size="small" type="primary" loading={handlingAction === `proxy-alert:${alertId}:resolve`} onClick={() => void handleProxyAlert(alertId, 'resolve')}>已恢复</Button>
         </Space>
       );
@@ -366,12 +515,49 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
     if (row.account_id) {
       return (
         <Space size={6} wrap>
-          <Button size="small" onClick={onOpenAccounts}>去账号中心</Button>
+          <Button size="small" onClick={() => openAccountCenter({ account_id: row.account_id!, blocked_reason: row.reason } as RiskControlAccountScore)}>去账号中心</Button>
           <Button size="small" onClick={() => setActiveTab('hits')}>看命中</Button>
         </Space>
       );
     }
     return <Button size="small" onClick={() => setActiveTab('hits')}>查看详情</Button>;
+  }
+
+  function accountDetailTabFor(row: RiskControlAccountScore) {
+    const reason = `${row.blocked_reason} ${row.proxy_risk_reason} ${row.security_risk_reason} ${row.score_reasons?.join(' ')}`;
+    if (/代理/.test(reason)) return '可用性';
+    if (/二步|可信|外部|资料/.test(reason)) return '账号安全';
+    return '可用性';
+  }
+
+  function accountDetailContextFor(row: RiskControlAccountScore) {
+    const issue = row.blocked_reason || row.proxy_risk_reason || row.security_risk_reason || row.recent_risk || row.score_reasons?.[0] || row.non_score_reasons?.[0];
+    return { issue, ...riskTableReturnContext() };
+  }
+
+  function riskTableReturnContext() {
+    const table = activeTab === 'queue'
+      ? queueTable
+      : activeTab === 'hits'
+        ? hitTable
+        : activeTab === 'policy-audit'
+          ? policyAuditTable
+          : accountTable;
+    return {
+      riskTab: activeTab,
+      riskQuery: table.query,
+      riskPage: Number(table.pagination.current ?? 1),
+      riskPageSize: Number(table.pagination.pageSize ?? 10),
+      riskQuickFilter: activeTab === 'accounts' ? accountQuickFilter : undefined,
+    };
+  }
+
+  function openAccountCenter(row: RiskControlAccountScore) {
+    if (onOpenAccountDetail) {
+      onOpenAccountDetail(row.account_id, accountDetailTabFor(row), accountDetailContextFor(row));
+      return;
+    }
+    onOpenAccounts();
   }
 
   const accountColumns: ColumnsType<RiskControlAccountScore> = [
@@ -417,11 +603,44 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
       ),
     },
     { title: '当前策略', dataIndex: 'current_policy', width: 130, render: (value: string) => labelOf(value) },
+    {
+      title: '扣分原因',
+      key: 'score_reasons',
+      width: 260,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          {(row.score_reasons ?? []).map((reason) => <Typography.Text key={reason} type="secondary">{reason}</Typography.Text>)}
+        </Space>
+      ),
+    },
+    {
+      title: '非扣分失败',
+      key: 'non_score_reasons',
+      width: 240,
+      render: (_, row) => (
+        <Space direction="vertical" size={0}>
+          {(row.non_score_reasons ?? []).map((reason) => <Typography.Text key={reason} type="secondary">{reason}</Typography.Text>)}
+          {!(row.non_score_reasons ?? []).length && <Typography.Text type="secondary">-</Typography.Text>}
+        </Space>
+      ),
+    },
     { title: '小时用量', key: 'hour', width: 110, render: (_, row) => formatLimit(row.hour_usage, row.hour_limit) },
     { title: '日用量', key: 'day', width: 110, render: (_, row) => formatLimit(row.day_usage, row.day_limit) },
     { title: '冷却到', dataIndex: 'cooldown_until', width: 170, render: (value: string | null) => value ? formatBeijingDateTime(value) : '-' },
     { title: '最近风险', dataIndex: 'recent_risk', width: 180, render: (value: string) => value || '-' },
     { title: '准入', dataIndex: 'can_join_task', width: 100, render: (value: boolean, row) => value ? <StatusBadge status="可用" /> : <StatusBadge status={labelOf(row.blocked_reason || '容量不足')} /> },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 190,
+      fixed: 'right',
+      render: (_, row) => (
+        <Space size={6} wrap>
+          <Button size="small" onClick={() => openAccountCenter(row)}>账号中心处理</Button>
+          <Button size="small" onClick={() => { hitTable.setQuery(String(row.account_id)); setActiveTab('hits'); }}>看命中</Button>
+        </Space>
+      ),
+    },
   ];
 
   const queueColumns: ColumnsType<RiskDispositionItem> = [
@@ -441,8 +660,20 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
     { title: '任务/记录', dataIndex: 'task_id', width: 130 },
     { title: '命中策略', dataIndex: 'policy', width: 160, render: (value: string) => <StatusBadge status={labelOf(value)} /> },
     { title: '系统动作', dataIndex: 'action', width: 170, render: (value: string) => labelOf(value) },
-    { title: '详情', dataIndex: 'detail', width: 280 },
+    { title: '影响对象', dataIndex: 'impact_scope', width: 130, render: (value: string) => labelOf(value) },
+    { title: '健康分', dataIndex: 'affects_health_score', width: 120, render: (value: boolean) => value ? <Badge tone="danger">扣分</Badge> : <Badge tone="neutral">不扣分</Badge> },
+    { title: '处理入口', dataIndex: 'suggested_entry', width: 180 },
+    { title: '失败原因', dataIndex: 'detail', width: 280 },
     { title: '时间', dataIndex: 'occurred_at', width: 170, render: (value: string | null) => value ? formatBeijingDateTime(value) : '-' },
+  ];
+
+  const policyAuditColumns: ColumnsType<RiskPolicyAudit> = [
+    { title: '动作', dataIndex: 'action', width: 170, fixed: 'left' },
+    { title: '操作人', dataIndex: 'actor', width: 130 },
+    { title: '对象', dataIndex: 'target_label', width: 140 },
+    { title: '对象ID', dataIndex: 'target_id', width: 130 },
+    { title: '原因 / 变更详情', dataIndex: 'detail', width: 360, render: (value: string) => value || '-' },
+    { title: '时间', dataIndex: 'occurred_at', width: 170, render: (value: string) => formatBeijingDateTime(value) },
   ];
 
   const proxyColumns: ColumnsType<RiskProxyAlert> = [
@@ -460,6 +691,7 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
       render: (_, row) => canManageProxies && row.id ? (
         <Space size={6} wrap>
           <Button size="small" loading={handlingAction === `proxy-alert:${row.id}:acknowledge`} onClick={() => void handleProxyAlert(row.id!, 'acknowledge')}>处理中</Button>
+          <Button size="small" loading={handlingAction === `proxy-alert:${row.id}:ignore`} onClick={() => openProxyAlertIgnore(row.id!)}>忽略</Button>
           <Button size="small" type="primary" loading={handlingAction === `proxy-alert:${row.id}:resolve`} onClick={() => void handleProxyAlert(row.id!, 'resolve')}>恢复</Button>
         </Space>
       ) : null,
@@ -520,7 +752,9 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
       <div className="stats-grid">
         <StatCard label="当前风控等级" value={summary?.overview.current_level ?? '-'} detail={summary?.overview.quiet_active ? '静默中' : '按策略运行'} icon={<CheckCircle2 size={22} />} />
         {(summary?.overview.metrics ?? []).map((metric) => (
-          <StatCard key={metric.key} label={metric.label} value={metric.value} detail={metric.detail} icon={metric.key.includes('proxy') ? <Database size={22} /> : metric.key.includes('blocked') ? <ShieldAlert size={22} /> : <Activity size={22} />} />
+          <button key={metric.key} type="button" className="stat-card-button" onClick={() => handleMetricClick(metric)}>
+            <StatCard label={metric.label} value={metric.value} detail={metric.detail} icon={metric.key.includes('proxy') ? <Database size={22} /> : metric.key.includes('blocked') ? <ShieldAlert size={22} /> : <Activity size={22} />} />
+          </button>
         ))}
       </div>
 
@@ -590,6 +824,7 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
                 <>
                   <Space className="table-toolbar" wrap>
                     {accountTable.searchInput}
+                    {accountQuickFilter && <Button onClick={() => setAccountQuickFilter('')}>清除指标筛选</Button>}
                     <Button onClick={onOpenAccounts}>去账号中心</Button>
                   </Space>
                   <Table<RiskControlAccountScore>
@@ -599,7 +834,7 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
                     dataSource={accountTable.filteredRows}
                     pagination={accountTable.pagination}
                     loading={loading}
-                    scroll={{ x: 1530 }}
+                    scroll={{ x: 2220 }}
                     locale={{ emptyText: '暂无账号评分数据。' }}
                   />
                 </>
@@ -637,8 +872,27 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
                     dataSource={hitTable.filteredRows}
                     pagination={hitTable.pagination}
                     loading={loading}
-                    scroll={{ x: 1230 }}
+                    scroll={{ x: 1660 }}
                     locale={{ emptyText: '暂无策略命中记录。' }}
+                  />
+                </>
+              ),
+            },
+            {
+              key: 'policy-audit',
+              label: '策略审计',
+              children: (
+                <>
+                  <Space className="table-toolbar" wrap>{policyAuditTable.searchInput}</Space>
+                  <Table<RiskPolicyAudit>
+                    className="tg-table"
+                    rowKey="id"
+                    columns={policyAuditColumns}
+                    dataSource={policyAuditTable.filteredRows}
+                    pagination={policyAuditTable.pagination}
+                    loading={loading}
+                    scroll={{ x: 1100 }}
+                    locale={{ emptyText: '暂无风控策略审计记录。' }}
                   />
                 </>
               ),
@@ -661,6 +915,15 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
                     scroll={{ x: 1500 }}
                     locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无本地代理资源。" /> }}
                   />
+                </Space>
+              ),
+            },
+            {
+              key: 'proxy-alerts',
+              label: '代理告警',
+              children: (
+                <Space direction="vertical" size={16} className="full-width">
+                  <Typography.Text type="secondary">代理不可达、认证失败、超时和恢复状态在这里集中处置。</Typography.Text>
                   <Table<RiskProxyAlert>
                     className="tg-table"
                     rowKey={(row) => row.id ?? row.proxy_id ?? row.local_address}
@@ -747,6 +1010,29 @@ export default function RiskControlView({ onOpenAccounts, canManageRisk = false,
           <Form.Item name="max_concurrent_sessions" label="最大并发会话"><InputNumber min={0} addonAfter="0 为不限" /></Form.Item>
           <Form.Item name="notes" label="备注" className="wide-field"><Input.TextArea rows={3} placeholder="只记录本地代理用途，不写机场订阅或节点名称" /></Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="忽略代理告警"
+        open={proxyAlertIgnoreOpen}
+        onCancel={() => setProxyAlertIgnoreOpen(false)}
+        onOk={() => void submitProxyAlertIgnore()}
+        confirmLoading={handlingAction === `proxy-alert:${proxyAlertIgnoreId}:ignore`}
+        okText="确认忽略"
+        cancelText="取消"
+        destroyOnHidden
+        centered
+      >
+        <Space direction="vertical" size={12} className="full-width">
+          <label>
+            <Typography.Text>忽略原因</Typography.Text>
+            <Input.TextArea rows={3} value={proxyAlertIgnoreReason} onChange={(event) => setProxyAlertIgnoreReason(event.target.value)} placeholder="说明为什么暂时忽略该代理告警" />
+          </label>
+          <label>
+            <Typography.Text>忽略到期时间</Typography.Text>
+            <Input type="datetime-local" value={proxyAlertIgnoreUntil} onChange={(event) => setProxyAlertIgnoreUntil(event.target.value)} />
+          </label>
+        </Space>
       </Modal>
     </section>
   );

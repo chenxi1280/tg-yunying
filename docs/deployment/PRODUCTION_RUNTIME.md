@@ -59,7 +59,7 @@ Repository variables:
 - `TGYUNYING_WEB_HOST`
 - `TGYUNYING_FRONTEND_STATIC_BASE_DIR`
 
-生产环境不要开启 `ENABLE_EMBEDDED_WORKER`。compose 会单独启动 `tgyunying-worker`。
+生产环境不要开启 `ENABLE_EMBEDDED_WORKER`。compose 会单独启动 backend 以及 planner / dispatcher / listener / recovery / account-security / metrics worker。
 
 ## Nginx
 
@@ -76,7 +76,7 @@ Repository variables:
 
 发布后脚本会区分三层状态：
 
-1. 容器层：`tgyunying-backend` healthy，`tgyunying-worker` running
+1. 容器层：`tgyunying-backend` healthy，`tgyunying-worker-planner`、`tgyunying-worker-dispatcher-*`、`tgyunying-worker-listener`、`tgyunying-worker-recovery`、`tgyunying-worker-account-security`、`tgyunying-worker-metrics` running
 2. 本机应用层：`http://127.0.0.1:18090/api/health`
 3. 宿主 Nginx / 公网入口：`https://<域名>/` 与 `https://<域名>/api/health`
 
