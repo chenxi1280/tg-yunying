@@ -104,7 +104,9 @@ def _drain_legacy_once(limit: int = 100) -> int:
     remaining = max(0, remaining - profile_count)
     account_count = drain_account_sync_records(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - account_count)
-    listener_count = drain_group_listeners(SessionLocal, max(1, remaining))
+    listener_count = 0
+    if settings.enable_legacy_campaign_worker:
+        listener_count = drain_group_listeners(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - listener_count)
     source_media_count = _safe_optional_drain("source_media", drain_source_media_cache, SessionLocal, max(1, remaining))
     remaining = max(0, remaining - source_media_count)
