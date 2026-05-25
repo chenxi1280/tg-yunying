@@ -215,6 +215,14 @@ export function actionLabel(value: string): string {
   return ACTION_LABEL[value] ?? value;
 }
 
+export function actionStatusLabel(value?: string | null): string {
+  if (value === 'pending') return '待执行';
+  if (['running', 'executing'].includes(value ?? '')) return '执行中';
+  if (['completed', 'success', 'skipped'].includes(value ?? '')) return '已完成';
+  if (['failed', 'rejected', 'expired'].includes(value ?? '')) return '失败';
+  return value || '待执行';
+}
+
 export function statusLabel(value?: string | null): string {
   if (['running', 'executing', 'pending'].includes(value ?? '')) return '运行中';
   if (['draft', 'paused'].includes(value ?? '')) return '未运行';

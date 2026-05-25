@@ -59,7 +59,6 @@ const TASK_TYPE_FILTER_OPTIONS: Array<{ value: TaskTypeFilter; label: string }> 
   ...TASK_TYPES,
   { value: 'account_profile_init', label: TYPE_LABEL.account_profile_init },
 ];
-const TASK_CREATE_TIMEOUT_MS = 120_000;
 
 interface DangerousTaskState {
   task: TaskCenterTask;

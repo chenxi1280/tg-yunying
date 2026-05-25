@@ -91,7 +91,7 @@ def test_task_precheck_and_create_support_inline_channel_target_input():
         assert target and target.tg_peer_id == "inline_channel"
 
 
-def test_channel_like_precheck_capacity_uses_effective_accounts_not_concurrency_cap():
+def test_channel_like_manual_precheck_capacity_uses_effective_accounts_not_concurrency_cap():
     engine = _engine()
 
     with Session(engine) as session:
@@ -160,7 +160,7 @@ def test_channel_view_create_accepts_prd_post_level_production_fields():
     assert task.task_daily_view_safety_cap == 500
 
 
-def test_channel_like_precheck_capacity_uses_effective_accounts_not_concurrency_cap():
+def test_channel_like_all_accounts_precheck_capacity_uses_effective_accounts_not_concurrency_cap():
     engine = _engine()
 
     with Session(engine) as session:

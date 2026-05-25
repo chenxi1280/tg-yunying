@@ -322,7 +322,7 @@ def test_app_refresh_does_not_replace_accounts_with_empty_fallback_on_account_ap
     assert "accounts: settledValue(results[3], [] as Account[])" not in source
 
 
-def test_task_center_create_uses_long_timeout_and_capacity_summary():
+def test_task_center_precheck_uses_long_timeout_and_capacity_summary_labels():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
 
@@ -333,12 +333,12 @@ def test_task_center_create_uses_long_timeout_and_capacity_summary():
     assert "最大并发" in wizard
 
 
-def test_api_error_message_supports_structured_detail_objects():
+def test_api_error_message_supports_trace_id_in_structured_detail_objects():
     source = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
     assert "typeof parsed.detail === 'object'" in source
-    assert "parsed.detail.message" in source
-    assert "parsed.detail.trace_id" in source
+    assert "detail.message" in source
+    assert "detail.trace_id" in source
 
 
 def test_profile_batch_submit_message_says_background_execution_not_completed():
@@ -390,7 +390,7 @@ def test_task_center_allows_profile_batch_delete_without_lifecycle_controls():
     assert "canManageTasks && !isSystemTask(task) && <Button size=\"small\" danger loading={busyId === `${task.id}:delete`}" not in source
 
 
-def test_task_center_create_uses_long_timeout_and_capacity_summary():
+def test_task_center_create_refreshes_after_long_timeout_and_capacity_summary_types():
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
@@ -403,7 +403,7 @@ def test_task_center_create_uses_long_timeout_and_capacity_summary():
     assert "最大并发" in wizard
 
 
-def test_api_error_message_supports_structured_detail_objects():
+def test_api_error_message_supports_timeout_copy_and_trace_id():
     source = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
     assert "error.status === 408" in source

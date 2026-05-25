@@ -140,6 +140,7 @@ export type TaskCenterDetail = {
   accounts: Array<{ id: number; display_name: string; username: string | null; status: string }>;
   membership_phase: Record<string, any>;
   membership_accounts: Array<Record<string, any>>;
+  learning_profile_preview?: Record<string, any>;
   message_groups: Array<{
     channel_target_id: number | null;
     channel_title: string;
@@ -189,6 +190,12 @@ export type TaskCenterDetail = {
     token_count: number;
     context_message_count: number;
     account_memory_count: number;
+    profile_scene?: string;
+    profile_version?: number;
+    profile_hit_summary?: string;
+    profile_unavailable_reason?: string;
+    quality_risks?: string[];
+    skip_reason?: string;
     scheduled_at: string | null;
     created_at: string | null;
   }>;

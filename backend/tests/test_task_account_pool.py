@@ -31,7 +31,7 @@ def test_select_task_accounts_reduces_low_health_participation_weight():
     assert len(selected) == 3
 
 
-def test_select_task_accounts_can_scan_beyond_concurrency_for_channel_capacity():
+def test_select_task_accounts_ignores_concurrency_when_capacity_scan_requested():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -202,7 +202,7 @@ def test_membership_candidates_use_task_account_health_weighting():
     assert candidate_ids == [1, 3]
 
 
-def test_select_task_accounts_can_scan_beyond_concurrency_for_channel_capacity():
+def test_select_task_accounts_compares_capped_and_full_capacity_scan():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 

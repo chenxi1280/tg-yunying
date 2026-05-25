@@ -1,7 +1,7 @@
 """target learning profiles
 
 Revision ID: 0051_target_learning_profiles
-Revises: 0050_runtime_health_score
+Revises: 0051_login_flow_failure_trace
 Create Date: 2026-05-25
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision = "0051_target_learning_profiles"
-down_revision = "0050_runtime_health_score"
+down_revision = "0051_login_flow_failure_trace"
 branch_labels = None
 depends_on = None
 
@@ -114,4 +114,3 @@ def _create_profile_versions_table() -> None:
         sa.Column("created_by", sa.String(length=120), nullable=False, server_default="system"),
     )
     op.create_index("ix_target_learning_profile_versions_profile", "target_learning_profile_versions", ["profile_id", "profile_version"])
-
