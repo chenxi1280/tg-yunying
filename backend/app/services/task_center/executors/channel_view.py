@@ -33,7 +33,18 @@ def build_plan(session: Session, task: Task) -> int:
     effective_daily_cap = task_daily_cap if task_daily_cap > 0 else None
     _lower, max_target_per_message = quantity_jitter_bounds(daily_target, float(config.get("view_count_jitter") or 0))
     account_scan_limit = max(max_target_per_message, effective_daily_cap or 0, int((task.account_config or {}).get("max_concurrent") or max_target_per_message))
-    accounts = channel_member_accounts(session, task, channel, select_task_accounts(session, task.tenant_id, task.account_config or {}, limit=account_scan_limit))
+    accounts = channel_member_accounts(
+        session,
+        task,
+        channel,
+        select_task_accounts(
+            session,
+            task.tenant_id,
+            task.account_config or {},
+            limit=account_scan_limit,
+            enforce_max_concurrent=False,
+        ),
+    )
     if not accounts:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
         return 0

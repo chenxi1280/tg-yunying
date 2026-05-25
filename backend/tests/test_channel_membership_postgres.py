@@ -114,6 +114,56 @@ def test_channel_view_create_accepts_prd_post_level_production_fields():
     assert task.task_daily_view_safety_cap == 500
 
 
+def test_channel_like_precheck_capacity_uses_effective_accounts_not_concurrency_cap():
+    engine = _engine()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.flush()
+        session.add(
+            OperationTarget(
+                id=301,
+                tenant_id=1,
+                target_type="channel",
+                tg_peer_id="pytest_channel",
+                title="pytest channel",
+            )
+        )
+        for account_id in range(1, 31):
+            session.add(
+                TgAccount(
+                    id=account_id,
+                    tenant_id=1,
+                    display_name=f"账号{account_id}",
+                    phone_masked=str(account_id),
+                    status="在线",
+                    health_score=95,
+                )
+            )
+        session.commit()
+
+        precheck = precheck_task_creation(
+            session,
+            1,
+            TaskPrecheckRequest(
+                task_type="channel_like",
+                payload={
+                    "name": "like capacity",
+                    "target_channel_id": 301,
+                    "message_scope": "latest_n",
+                    "message_count": 1,
+                    "target_likes_per_message": 30,
+                    "account_config": {"selection_mode": "all", "max_concurrent": 20},
+                },
+            ),
+        )
+
+    assert precheck["available_account_count"] == 30
+    assert precheck["capacity_shortfall"] == 0
+    assert precheck["capacity_summary"]["max_concurrent"] == 20
+    assert precheck["capacity_summary"]["effective_account_count"] == 30
+
+
 def test_channel_view_planner_uses_post_daily_target_and_task_safety_cap():
     engine = _engine()
     now_value = _now()

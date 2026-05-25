@@ -29,6 +29,7 @@ from app.services import (
     create_account_clone_plan, create_direct_message_task,
     filter_accounts, health_check_account, list_account_sync_records,
     list_login_flows, list_profile_sync_records, list_verification_codes,
+    LoginStartFailure,
     list_verification_tasks, move_account_pool,
     poll_account_verification_codes, queue_account_sync_now,
     retry_account_clone_item, retry_account_profile_sync,
@@ -157,6 +158,8 @@ def post_login_start(
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
         return start_login(session, account_id, payload.method, current_user.name, payload.force)
+    except LoginStartFailure as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
     except ValueError as exc:
         if "already online" in str(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc

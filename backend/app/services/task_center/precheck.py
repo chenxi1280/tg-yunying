@@ -43,6 +43,7 @@ def run_precheck_task_creation(
     target_ability: list[dict[str, Any]] = []
     target_resolution: dict[str, Any] = {}
     membership_summary: dict[str, Any] = {}
+    capacity_summary: dict[str, Any] = {}
     estimated_actions = 0
     capacity_shortfall = 0
     try:
@@ -67,7 +68,17 @@ def run_precheck_task_creation(
     if task_type in {"channel_view", "channel_like", "channel_comment", "group_ai_chat", "group_relay"} and target_ability:
         membership_summary = _precheck_membership_summary(session, tenant_id, target_ability, account_config, candidates)
     membership_subtask_preview = _membership_subtask_preview(membership_summary)
-    available_accounts = select_task_accounts(session, tenant_id, account_config, limit=max(len(candidates), 1)) if candidates else []
+    available_accounts = (
+        select_task_accounts(
+            session,
+            tenant_id,
+            account_config,
+            limit=max(len(candidates), 1),
+            enforce_max_concurrent=False,
+        )
+        if candidates
+        else []
+    )
     if candidates:
         risk_payload = RiskPreflightRequest(
             scenario="task_create",
@@ -89,6 +100,13 @@ def run_precheck_task_creation(
     if estimated_actions and target_per_unit:
         required_parallel = min(max(estimated_actions, 1), max(int(target_per_unit), 1))
         capacity_shortfall = max(0, required_parallel - available_count)
+    capacity_summary = _precheck_capacity_summary(
+        target_per_unit=target_per_unit,
+        candidate_count=len(candidates),
+        effective_count=available_count,
+        max_concurrent=int(account_config.get("max_concurrent") or 20),
+        shortfall=capacity_shortfall,
+    )
     if capacity_shortfall:
         warnings.append(f"预计单轮需要 {max(int(target_per_unit), 1)} 个账号，当前可用 {available_count} 个")
     if membership_summary:
@@ -127,12 +145,31 @@ def run_precheck_task_creation(
         "membership_subtask_preview": membership_subtask_preview,
         "estimated_actions": estimated_actions,
         "capacity_shortfall": capacity_shortfall,
+        "capacity_summary": capacity_summary,
         "rule_version": rule_version,
         "risk_hits": sorted(set(filter(None, risk_hits))),
         "blockers": sorted(set(filter(None, blockers))),
         "warnings": sorted(set(filter(None, warnings))),
         "suggested_actions": sorted(set(filter(None, suggested_actions))),
         "trace_id": trace_id,
+    }
+
+
+def _precheck_capacity_summary(
+    *,
+    target_per_unit: int,
+    candidate_count: int,
+    effective_count: int,
+    max_concurrent: int,
+    shortfall: int,
+) -> dict[str, Any]:
+    return {
+        "target_per_message": max(int(target_per_unit or 0), 0),
+        "candidate_account_count": max(int(candidate_count or 0), 0),
+        "effective_account_count": max(int(effective_count or 0), 0),
+        "max_concurrent": max(int(max_concurrent or 0), 0),
+        "capacity_shortfall": max(int(shortfall or 0), 0),
+        "limit_note": "max_concurrent 仅控制同时执行数量，不截断本轮可参与账号池",
     }
 
 

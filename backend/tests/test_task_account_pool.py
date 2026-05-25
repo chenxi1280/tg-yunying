@@ -170,3 +170,35 @@ def test_membership_candidates_use_task_account_health_weighting():
         ]
 
     assert candidate_ids == [1, 3]
+
+
+def test_select_task_accounts_can_scan_beyond_concurrency_for_channel_capacity():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        for account_id in range(1, 31):
+            session.add(
+                TgAccount(
+                    id=account_id,
+                    tenant_id=1,
+                    display_name=f"频道账号{account_id}",
+                    phone_masked=str(account_id),
+                    status=AccountStatus.ACTIVE.value,
+                    health_score=90,
+                )
+            )
+        session.commit()
+
+        capped = select_task_accounts(session, 1, {"max_concurrent": 20}, limit=30)
+        full_capacity = select_task_accounts(
+            session,
+            1,
+            {"max_concurrent": 20},
+            limit=30,
+            enforce_max_concurrent=False,
+        )
+
+    assert len(capped) == 20
+    assert len(full_capacity) == 30

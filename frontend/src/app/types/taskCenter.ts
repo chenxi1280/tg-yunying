@@ -299,6 +299,14 @@ export type TaskPrecheck = {
   membership_subtask_preview: Record<string, any>;
   estimated_actions: number;
   capacity_shortfall: number;
+  capacity_summary: {
+    target_per_message?: number;
+    candidate_account_count?: number;
+    effective_account_count?: number;
+    max_concurrent?: number;
+    capacity_shortfall?: number;
+    limit_note?: string;
+  };
   rule_version: Record<string, any> | null;
   risk_hits: string[];
   blockers: string[];
