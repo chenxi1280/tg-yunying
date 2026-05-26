@@ -64,6 +64,24 @@ def _has_group_admin_rights(permissions: Any) -> bool:
     )
 
 
+def _text_sending_banned(rights: Any) -> bool:
+    return bool(rights and (getattr(rights, "send_messages", False) or getattr(rights, "send_plain", False)))
+
+
+def _can_send_text_in_group(target: Any, permissions: Any) -> bool:
+    if _has_group_admin_rights(permissions):
+        return True
+    participant = getattr(permissions, "participant", None)
+    participant_rights = getattr(participant, "banned_rights", None)
+    if _text_sending_banned(participant_rights):
+        return False
+    if getattr(permissions, "send_messages", None) is not None:
+        return bool(getattr(permissions, "send_messages", False))
+    if getattr(permissions, "post_messages", False):
+        return True
+    return not _text_sending_banned(getattr(target, "default_banned_rights", None))
+
+
 async def _is_group_verification_message(message: Any, bot_name: str) -> bool:
     if not getattr(message, "buttons", None):
         return False
@@ -931,12 +949,7 @@ class TelethonTelegramGateway(TelegramGateway):
             if hasattr(client, "get_permissions"):
                 try:
                     permissions = await client.get_permissions(target, "me")
-                    can_send = bool(
-                        getattr(permissions, "send_messages", False)
-                        or getattr(permissions, "post_messages", False)
-                        or getattr(permissions, "is_admin", False)
-                    )
-                    if not can_send:
+                    if not _can_send_text_in_group(target, permissions):
                         return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "缓存频道不可访问 / 账号无权限")
                 except Exception:
                     return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "缓存频道不可访问 / 账号无权限")
