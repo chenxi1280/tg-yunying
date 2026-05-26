@@ -1,5 +1,6 @@
 export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000/api';
 export const API_ORIGIN = API_BASE.replace(/\/api$/, '');
+export const AUTH_EXPIRED_EVENT = 'tg-ops-auth-expired';
 
 /** 结构化 API 错误，包含 HTTP 状态码和响应正文。 */
 export class ApiError extends Error {
@@ -12,8 +13,28 @@ export class ApiError extends Error {
   }
 }
 
+export class AuthExpiredError extends ApiError {
+  constructor(status: number, body: string) {
+    super(status, body);
+    this.name = 'AuthExpiredError';
+  }
+}
+
 export interface ApiRequestOptions extends RequestInit {
   timeoutMs?: number;
+}
+
+export function isAuthExpiredError(error: unknown): boolean {
+  return error instanceof AuthExpiredError || (error instanceof ApiError && isAuthExpiredResponse(error.status, error.body));
+}
+
+function isAuthExpiredResponse(status: number, body: string): boolean {
+  if (status !== 401) return false;
+  return /token expired|permission version expired|invalid token|missing bearer token/i.test(body);
+}
+
+function notifyAuthExpired(status: number, body: string): void {
+  window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT, { detail: { status, body } }));
 }
 
 export async function api<T>(path: string, options?: ApiRequestOptions): Promise<T> {
@@ -34,6 +55,10 @@ export async function api<T>(path: string, options?: ApiRequestOptions): Promise
     });
     if (!response.ok) {
       const text = await response.text().catch(() => '');
+      if (isAuthExpiredResponse(response.status, text)) {
+        notifyAuthExpired(response.status, text);
+        throw new AuthExpiredError(response.status, text);
+      }
       throw new ApiError(response.status, text);
     }
     if (response.status === 204) {

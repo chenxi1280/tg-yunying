@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useMemo, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { App as AntdApp } from 'antd';
-import { api, ApiError } from '../shared/api/client';
+import { api, AUTH_EXPIRED_EVENT, isAuthExpiredError } from '../shared/api/client';
 import { operationLabel } from './components/shared';
 import type {
   Overview,
@@ -225,14 +225,28 @@ export function AppProvider({ children }: AppProviderProps) {
     }
   }
 
+  function expireAdminSession() {
+    localStorage.removeItem('tg_ops_token');
+    setToken('');
+    setCurrentUser(null);
+    setModal(null);
+    setBusy('');
+    setNotice('登录已过期，请重新登录。');
+  }
+
+  useEffect(() => {
+    function handleAuthExpired() {
+      expireAdminSession();
+    }
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+  }, []);
+
   useEffect(() => {
     if (!token) return;
     refresh().catch((error) => {
-      if (error instanceof ApiError && (error.status === 401 || error.body.includes('token expired'))) {
-        localStorage.removeItem('tg_ops_token');
-        setToken('');
-        setCurrentUser(null);
-        setNotice('登录已过期，请重新登录。');
+      if (isAuthExpiredError(error)) {
+        expireAdminSession();
         return;
       }
       setNotice(`后端未连接或接口异常：${error.message}`);

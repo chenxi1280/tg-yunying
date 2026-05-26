@@ -322,6 +322,19 @@ def test_app_refresh_does_not_replace_accounts_with_empty_fallback_on_account_ap
     assert "accounts: settledValue(results[3], [] as Account[])" not in source
 
 
+def test_auth_expired_api_errors_force_relogin_without_failure_modal():
+    api_client = (PROJECT_ROOT / "frontend/src/shared/api/client.ts").read_text()
+    context = (PROJECT_ROOT / "frontend/src/app/context.tsx").read_text()
+    modal_state = (PROJECT_ROOT / "frontend/src/app/context/modalState.ts").read_text()
+
+    assert "AUTH_EXPIRED_EVENT" in api_client
+    assert "window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT" in api_client
+    assert "window.addEventListener(AUTH_EXPIRED_EVENT" in context
+    assert "setModal(null)" in context
+    assert "isAuthExpiredError(error)" in modal_state
+    assert "return;" in modal_state
+
+
 def test_task_center_precheck_uses_long_timeout_and_capacity_summary_labels():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()

@@ -1,4 +1,4 @@
-import { ApiError } from '../../shared/api/client';
+import { ApiError, isAuthExpiredError } from '../../shared/api/client';
 import type { ConfirmPayload, ModalState } from '../types';
 
 interface ModalStateParams {
@@ -48,6 +48,9 @@ export function createModalStateActions({ message, modalApi, setModal }: ModalSt
   }
 
   function handleActionError(error: unknown) {
+    if (isAuthExpiredError(error)) {
+      return;
+    }
     showResult('操作失败', errorMessage(error));
   }
 
