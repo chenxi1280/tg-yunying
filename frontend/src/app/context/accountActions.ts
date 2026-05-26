@@ -17,6 +17,7 @@ import type {
   Contact,
   CurrentUser,
   Group,
+  GroupRestrictionBatchResult,
   GroupDetail,
   LoginFlow,
   ModalState,
@@ -368,6 +369,23 @@ export function createAccountActions(params: AccountActionParams) {
     }
   }
 
+  async function resolveGroupRestrictionBatch(task: VerificationTask) {
+    params.setBusy('批量重查群限制');
+    try {
+      const result = await api<GroupRestrictionBatchResult>(`/verification-tasks/${task.id}/resolve-group-restriction-batch`, {
+        method: 'POST',
+        body: JSON.stringify({ actor: '普通用户' }),
+        timeoutMs: 180_000,
+      });
+      params.showResult('目标账号重查完成', result.message);
+      await refreshRelatedDetails();
+    } catch (error) {
+      params.handleActionError(error);
+    } finally {
+      params.setBusy('');
+    }
+  }
+
   async function dismissVerificationTask(task: VerificationTask) {
     params.setBusy('忽略验证辅助');
     try {
@@ -592,6 +610,7 @@ export function createAccountActions(params: AccountActionParams) {
     retryCloneItem,
     confirmVerificationTask,
     resolveGroupRestrictionTask,
+    resolveGroupRestrictionBatch,
     dismissVerificationTask,
     refreshAccountDetail,
     syncAccountContacts,

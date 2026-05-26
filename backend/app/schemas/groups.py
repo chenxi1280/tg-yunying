@@ -83,6 +83,18 @@ class VerificationTaskOut(ApiModel):
     resolution_entry_label: str = "处理验证辅助"
 
 
+class VerificationTaskBatchResolveOut(ApiModel):
+    group_id: int
+    target_peer_id: str
+    target_display: str
+    checked_count: int
+    restored_count: int
+    blocked_count: int
+    failed_count: int
+    message: str
+    tasks: list[VerificationTaskOut]
+
+
 # ── Composite outputs (imports from other domain files handled lazily) ──
 
 class GroupDetailOut(BaseModel):
@@ -98,5 +110,5 @@ class GroupDetailOut(BaseModel):
 
 __all__ = [
     "GroupPolicyUpdate", "AuthorizeGroupRequest", "VerificationTaskConfirmRequest",
-    "GroupOut", "VerificationTaskOut", "GroupDetailOut",
+    "GroupOut", "VerificationTaskOut", "VerificationTaskBatchResolveOut", "GroupDetailOut",
 ]

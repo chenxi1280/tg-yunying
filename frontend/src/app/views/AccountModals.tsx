@@ -184,6 +184,7 @@ interface AccountDetailModalProps {
   onDismissVerificationTask: (task: VerificationTask) => Promise<void>;
   onConfirmVerificationTask: (task: VerificationTask) => Promise<void>;
   onResolveGroupRestrictionTask: (task: VerificationTask) => Promise<void>;
+  onResolveGroupRestrictionBatch: (task: VerificationTask) => Promise<void>;
   onOpenConfirm: (payload: {
     title: string;
     message: string;
@@ -216,6 +217,7 @@ export function AccountDetailModal({
   onConfirmClonePlan, onRetryCloneItem,
   onRetryAccountProfileSync,
   onDismissVerificationTask, onConfirmVerificationTask, onResolveGroupRestrictionTask,
+  onResolveGroupRestrictionBatch,
   onOpenConfirm, onSetReturnAfterVerification, onSetModal,
   onSetCloneForm, onReturnToRiskControl, accountName, isActionPending,
   canSyncAccount = true, canViewCodes = true, canSecurityRead = true, canSecurityBatch = true, canProfileBatchUpdate = true,
@@ -535,6 +537,9 @@ export function AccountDetailModal({
               <Button size="small" disabled={!groupRestrictionTasks.length} onClick={() => setAccountDetailTab('验证待处理')}>查看群限制</Button>
               {groupRestrictionTasks.slice(0, 1).map((task) => (
                 <Button key={task.id} size="small" type="primary" loading={isActionPending(`verification:${task.id}:resolve-group`)} disabled={!verificationActionable(task)} onClick={() => onResolveGroupRestrictionTask(task)}>重查最近目标</Button>
+              ))}
+              {groupRestrictionTasks.slice(0, 1).map((task) => (
+                <Button key={`${task.id}-batch`} size="small" loading={isActionPending(`verification:${task.id}:resolve-group-batch`)} disabled={!verificationActionable(task)} onClick={() => onResolveGroupRestrictionBatch(task)}>重查全部账号</Button>
               ))}
             </Space>
           </div>
@@ -859,7 +864,10 @@ export function AccountDetailModal({
                 <span>处理入口：{verificationActionLabel(task)} / {task.issue_category === 'group_restriction' ? '群内管理员解除后重查' : task.suggested_action}</span>
                 <div className="row-actions">
                   {task.issue_category === 'group_restriction' ? (
-                    <Button size="small" loading={isActionPending(`verification:${task.id}:resolve-group`)} disabled={!verificationActionable(task)} onClick={() => onResolveGroupRestrictionTask(task)}>解除群限制</Button>
+                    <>
+                      <Button size="small" loading={isActionPending(`verification:${task.id}:resolve-group`)} disabled={!verificationActionable(task)} onClick={() => onResolveGroupRestrictionTask(task)}>解除群限制</Button>
+                      <Button size="small" loading={isActionPending(`verification:${task.id}:resolve-group-batch`)} disabled={!verificationActionable(task)} onClick={() => onResolveGroupRestrictionBatch(task)}>重查该目标全部账号</Button>
+                    </>
                   ) : (
                     <Button size="small" disabled={!verificationActionable(task)} onClick={() => { onSetReturnAfterVerification('accountDetail'); onSetModal({ type: 'verificationTaskDetail', payload: task }); }}>{verificationActionLabel(task)}</Button>
                   )}

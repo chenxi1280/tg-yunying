@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,10 +17,26 @@ __all__ = [
     "create_verification_task",
     "dismiss_verification_task",
     "list_verification_tasks",
+    "resolve_group_restriction_batch",
     "resolve_group_restriction_task",
 ]
 
 MANUAL_VERIFICATION_ACTIONS = {"人工处理", "手动处理", "线下处理"}
+GROUP_RESTRICTION_VERIFICATION_TYPES = ("群发言权限", "群发言不可用")
+OPEN_VERIFICATION_STATUSES = ("待处理", "失败", "需人工处理")
+
+
+@dataclass(frozen=True)
+class GroupRestrictionBatchResult:
+    group_id: int
+    target_peer_id: str
+    target_display: str
+    checked_count: int
+    restored_count: int
+    blocked_count: int
+    failed_count: int
+    message: str
+    tasks: list[VerificationTask]
 
 
 def list_verification_tasks(session: Session, tenant_id: int, account_id: int | None = None, group_id: int | None = None, limit: int = 100) -> list[VerificationTask]:
@@ -216,11 +234,7 @@ def confirm_verification_task(session: Session, task_id: int, actor: str) -> Ver
 
 
 def resolve_group_restriction_task(session: Session, task_id: int, actor: str) -> VerificationTask:
-    task = session.get(VerificationTask, task_id)
-    if not task:
-        raise ValueError("verification task not found")
-    if not task.group_id or not task.account_id:
-        raise ValueError("verification task is not linked to a group target")
+    task = _group_restriction_task(session, task_id)
     _fill_verification_target(session, task)
     account = session.get(TgAccount, task.account_id)
     group = session.get(TgGroup, task.group_id)
@@ -257,6 +271,122 @@ def resolve_group_restriction_task(session: Session, task_id: int, actor: str) -
     session.commit()
     session.refresh(task)
     return task
+
+
+def resolve_group_restriction_batch(session: Session, task_id: int, actor: str) -> GroupRestrictionBatchResult:
+    base_task = _group_restriction_task(session, task_id)
+    group = session.get(TgGroup, base_task.group_id)
+    if not group:
+        raise ValueError("group not found")
+    task_ids = _ensure_group_restriction_batch_tasks(session, base_task, group)
+    resolved_tasks = []
+    for item_id in task_ids:
+        resolved_tasks.append(resolve_group_restriction_task(session, item_id, actor))
+    return _group_restriction_batch_result(base_task, group, resolved_tasks)
+
+
+def _group_restriction_task(session: Session, task_id: int) -> VerificationTask:
+    task = session.get(VerificationTask, task_id)
+    if not task:
+        raise ValueError("verification task not found")
+    if not task.group_id or not task.account_id:
+        raise ValueError("verification task is not linked to a group target")
+    return task
+
+
+def _ensure_group_restriction_batch_tasks(
+    session: Session,
+    base_task: VerificationTask,
+    group: TgGroup,
+) -> list[int]:
+    task_ids = set()
+    for account in _group_restricted_accounts(session, base_task, group):
+        task = _open_group_restriction_task(session, base_task, account.id)
+        if not task:
+            task = _create_group_restriction_recheck_task(session, base_task, account.id)
+        _fill_verification_target(session, task)
+        task_ids.add(task.id)
+    if not task_ids:
+        task_ids.add(base_task.id)
+    session.commit()
+    return sorted(task_ids)
+
+
+def _group_restricted_accounts(session: Session, task: VerificationTask, group: TgGroup) -> list[TgAccount]:
+    stmt = (
+        select(TgAccount)
+        .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
+        .where(
+            TgAccount.tenant_id == task.tenant_id,
+            TgAccount.status == AccountStatus.ACTIVE.value,
+            TgGroupAccount.group_id == group.id,
+            TgGroupAccount.can_send.is_(False),
+        )
+        .order_by(TgAccount.id.asc())
+    )
+    return list(session.scalars(stmt))
+
+
+def _open_group_restriction_task(
+    session: Session,
+    base_task: VerificationTask,
+    account_id: int,
+) -> VerificationTask | None:
+    return session.scalar(
+        select(VerificationTask)
+        .where(
+            VerificationTask.tenant_id == base_task.tenant_id,
+            VerificationTask.account_id == account_id,
+            VerificationTask.group_id == base_task.group_id,
+            VerificationTask.status.in_(OPEN_VERIFICATION_STATUSES),
+            VerificationTask.verification_type.in_(GROUP_RESTRICTION_VERIFICATION_TYPES),
+        )
+        .order_by(VerificationTask.id.desc())
+    )
+
+
+def _create_group_restriction_recheck_task(
+    session: Session,
+    base_task: VerificationTask,
+    account_id: int,
+) -> VerificationTask:
+    task = VerificationTask(
+        tenant_id=base_task.tenant_id,
+        account_id=account_id,
+        group_id=base_task.group_id,
+        verification_type="群发言权限",
+        detected_reason="批量重查发现账号仍未获群发言权限",
+        suggested_action="人工处理",
+        target_peer_id=base_task.target_peer_id,
+        target_display=base_task.target_display,
+        requires_user_confirm=True,
+        status="需人工处理",
+    )
+    session.add(task)
+    session.flush()
+    return task
+
+
+def _group_restriction_batch_result(
+    base_task: VerificationTask,
+    group: TgGroup,
+    tasks: list[VerificationTask],
+) -> GroupRestrictionBatchResult:
+    restored = sum(1 for task in tasks if task.status == "已处理")
+    failed = sum(1 for task in tasks if task.status == "失败")
+    blocked = len(tasks) - restored - failed
+    target_display = base_task.target_display or group.title
+    return GroupRestrictionBatchResult(
+        group_id=group.id,
+        target_peer_id=base_task.target_peer_id or group.tg_peer_id or "",
+        target_display=target_display,
+        checked_count=len(tasks),
+        restored_count=restored,
+        blocked_count=blocked,
+        failed_count=failed,
+        message=f"{target_display} 已重查 {len(tasks)} 个账号：恢复 {restored}，仍需处理 {blocked}，失败 {failed}。",
+        tasks=tasks,
+    )
 
 
 def _apply_group_probe_result(

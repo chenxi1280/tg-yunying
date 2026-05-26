@@ -288,6 +288,18 @@ export type VerificationTask = {
   resolution_entry_label: string;
 };
 
+export type GroupRestrictionBatchResult = {
+  group_id: number;
+  target_peer_id: string;
+  target_display: string;
+  checked_count: number;
+  restored_count: number;
+  blocked_count: number;
+  failed_count: number;
+  message: string;
+  tasks: VerificationTask[];
+};
+
 export type AccountCloneItem = {
   id: number;
   plan_id: number;

@@ -264,6 +264,7 @@ export interface AppState {
   retryCloneItem: (item: AccountCloneItem) => Promise<void>;
   confirmVerificationTask: (task: VerificationTask) => Promise<void>;
   resolveGroupRestrictionTask: (task: VerificationTask) => Promise<void>;
+  resolveGroupRestrictionBatch: (task: VerificationTask) => Promise<void>;
   dismissVerificationTask: (task: VerificationTask) => Promise<void>;
   refreshAccountDetail: () => Promise<void>;
   syncAccountContacts: () => Promise<void>;
