@@ -35,6 +35,8 @@ import {
   operationProfileFromValues,
   operationTemplate,
   parseKeyValueMap,
+  runtimeStage,
+  runtimeStageLabel,
   statusLabel,
   toDateTimeLocal,
   words,
@@ -42,8 +44,9 @@ import {
 import { EditBasics, TaskRuntimeAdvancedFields, WizardAccounts, WizardBasics, WizardOperationProfile, WizardReview, WizardTarget, WizardTypeConfig } from './TaskCenterWizardSections';
 import { TaskCenterDetailModal } from './TaskCenterDetailModal';
 
-function TaskStatusBadge({ status }: { status?: string | null }) {
-  return <StatusBadge status={status} label={statusLabel(status)} />;
+function TaskStatusBadge({ task, status }: { task?: TaskCenterTask; status?: string | null }) {
+  const stage = task ? runtimeStage(task) : null;
+  return <StatusBadge status={stage?.stage_label || status} label={stage?.stage_label || statusLabel(status)} />;
 }
 
 function ActionStatusBadge({ status }: { status?: string | null }) {
@@ -837,7 +840,7 @@ export default function TaskCenterView({
   const table = useAntdTableControls<TaskCenterTask>({
     rows: tasks,
     placeholder: '搜索任务 / 频道 / 消息 / 状态',
-    search: [(task) => [task.id, task.name, TYPE_LABEL[task.type] ?? task.type, statusLabel(task.status), task.status, task.target_summary, task.search_text, task.last_error]],
+    search: [(task) => [task.id, task.name, TYPE_LABEL[task.type] ?? task.type, runtimeStageLabel(task), statusLabel(task.status), task.status, task.target_summary, task.search_text, task.last_error]],
   });
 
   const columns: ColumnsType<TaskCenterTask> = [
@@ -852,7 +855,20 @@ export default function TaskCenterView({
         </Space>
       ),
     },
-    { title: '状态', dataIndex: 'status', width: 120, render: (value) => <TaskStatusBadge status={value} /> },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 160,
+      render: (_value, task) => {
+        const stage = runtimeStage(task);
+        return (
+          <Space direction="vertical" size={0}>
+            <TaskStatusBadge task={task} status={task.status} />
+            <Typography.Text type="secondary">{stage.reason || '-'}</Typography.Text>
+          </Space>
+        );
+      },
+    },
     { title: '执行统计', key: 'stats', width: 180, render: (_, task) => `${task.stats?.success_count ?? 0}/${task.stats?.total_actions ?? 0} 成功，${task.stats?.failure_count ?? 0} 失败` },
     { title: '下次运行', dataIndex: 'next_run_at', width: 180, render: (value) => formatDateTime(value) },
     { title: '错误', dataIndex: 'last_error', width: 220, render: (value) => value || '无' },
@@ -1153,6 +1169,7 @@ export default function TaskCenterView({
         recordColumns={recordColumns}
         onEditTask={(task) => void openEditTask(task)}
         onRefreshTask={(task) => void loadDetail(task)}
+        onResumeTask={(task) => void taskAction(task, 'resume')}
         onClose={() => setDetail(null)}
       />
       <Modal

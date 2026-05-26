@@ -1,11 +1,11 @@
 import React from 'react';
-import { Button, Descriptions, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Descriptions, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { TaskCenterAction, TaskCenterDetail, TaskCenterTask } from '../types';
 import { DetailModal, StatusBadge } from '../components/shared';
 import { parseBeijingDate } from '../time';
 import { API_ORIGIN } from '../../shared/api/client';
-import { TYPE_LABEL, formatDateTime, statusLabel } from './taskCenterViewModel';
+import { TYPE_LABEL, formatDateTime, runtimeStage, statusLabel } from './taskCenterViewModel';
 
 type DetailProfile = {
   hour: number;
@@ -33,6 +33,7 @@ interface TaskCenterDetailModalProps {
   recordColumns: ColumnsType<TaskCenterAction>;
   onEditTask: (task: TaskCenterTask) => void;
   onRefreshTask: (task: TaskCenterTask) => void;
+  onResumeTask: (task: TaskCenterTask) => void;
   onClose: () => void;
 }
 
@@ -65,9 +66,11 @@ export function TaskCenterDetailModal({
   recordColumns,
   onEditTask,
   onRefreshTask,
+  onResumeTask,
   onClose,
 }: TaskCenterDetailModalProps) {
   const summaryUpdatedAt = detail?.task_runtime_summary?.updated_at ?? null;
+  const currentStage = detail ? runtimeStage(detail.task, detail.task_runtime_summary, detail.membership_phase) : null;
   const summaryUpdatedAtDate = parseBeijingDate(summaryUpdatedAt);
   const summaryStale = Boolean(summaryUpdatedAtDate && Date.now() - summaryUpdatedAtDate.getTime() > 15 * 60 * 1000);
   const relaySourceColumns: ColumnsType<TaskCenterDetail['recent_relay_sources'][number]> = [
@@ -137,13 +140,23 @@ export function TaskCenterDetailModal({
     >
       {detail && (
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          {currentStage?.stage_code === 'paused' && (
+            <Alert
+              type="error"
+              showIcon
+              message="任务已暂停，不会继续规划或执行新动作"
+              description={currentStage.reason}
+              action={canManageTasks ? <Button size="small" danger onClick={() => onResumeTask(detail.task)}>继续任务</Button> : undefined}
+            />
+          )}
           <Descriptions
             bordered
             column={3}
             size="small"
             items={[
               { key: 'type', label: '类型', children: TYPE_LABEL[detail.task.type] ?? detail.task.type },
-              { key: 'status', label: '状态', children: <DetailStatusBadge status={detail.task.status} /> },
+              { key: 'status', label: '状态', children: <StatusBadge status={currentStage?.stage_label || detail.task.status} label={currentStage?.stage_label || statusLabel(detail.task.status)} /> },
+              { key: 'runtime-stage', label: '运行阶段', children: currentStage?.reason || '-' },
               { key: 'target', label: '目标', children: detail.task.target_summary || '-' },
               { key: 'planned', label: '计划中', children: plannedActions.filter((action) => action.status === 'pending').length },
               { key: 'executing', label: '执行中', children: detail.actions.filter((action) => action.status === 'executing').length },

@@ -12,6 +12,7 @@ from .executors.common import quantity_jitter_bounds
 from .executors.group_ai_chat import account_profile_summaries
 from .executors.group_relay import relay_source_filter_reason
 from .fingerprints import content_fingerprint
+from app.services.task_runtime_stage import derive_task_runtime_stage
 
 
 def _task_payload(session: Session, task: Task, actions: list[Action] | None = None, *, include_detail_search: bool = True) -> dict[str, Any]:
@@ -57,6 +58,7 @@ def _task_payload(session: Session, task: Task, actions: list[Action] | None = N
         "failure_policy": task.failure_policy or {},
         "type_config": task.type_config or {},
         "stats": task.stats or {},
+        "runtime_stage": derive_task_runtime_stage(task, actions=actions),
         "target_summary": target_summary,
         "search_text": " ".join(str(item) for item in search_parts if item),
         "created_at": task.created_at,

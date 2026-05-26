@@ -106,6 +106,7 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   );
   const successRate = totals.total ? Math.round((totals.success * 1000) / totals.total) / 10 : 0;
   const failureRate = totals.total ? Math.round((totals.failed * 1000) / totals.total) / 10 : 0;
+  const issueTaskStage = issueDetail?.task_runtime_stage || issueDetail?.related_task_summary?.summary?.runtime_stage;
 
   React.useEffect(() => {
     void loadOperationData();
@@ -793,6 +794,13 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
                 { key: 'severity', label: '等级', children: <Badge tone={severityTone(issueDetail.issue.severity)}>{severityLabel(issueDetail.issue.severity)}</Badge> },
                 { key: 'target', label: '目标', children: issueDetail.target?.title ?? (issueDetail.issue.target_id ? `#${issueDetail.issue.target_id}` : '-') },
                 { key: 'task', label: '关联任务', children: issueDetail.source_task?.name ?? issueDetail.issue.source_task_id ?? '-' },
+                {
+                  key: 'task-stage',
+                  label: '任务阶段',
+                  children: issueTaskStage?.stage_label
+                    ? <Space direction="vertical" size={0}><StatusBadge status={issueTaskStage.stage_label} label={issueTaskStage.stage_label} /><Typography.Text type="secondary">{issueTaskStage.reason || '-'}</Typography.Text></Space>
+                    : '-',
+                },
                 { key: 'counts', label: '影响范围', children: `任务 ${issueDetail.issue.affected_task_count || 0} / 账号 ${issueDetail.issue.affected_account_count || issueDetail.affected_accounts.length}` },
                 { key: 'mode', label: '处理方式', children: handlingModeLabel(issueDetail.issue.handling_mode) },
                 { key: 'failure_type', label: '失败类型', children: issueDetail.issue.failure_type || '-' },

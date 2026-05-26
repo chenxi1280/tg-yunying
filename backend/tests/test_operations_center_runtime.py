@@ -38,7 +38,7 @@ from app.services.task_center.fingerprints import content_fingerprint
 from app.services.task_center.policies import validate_group_send_policy
 from app.services.task_center.service import _channel_subtask_status, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
-from app.services.runtime_summary import upsert_operation_issue
+from app.services.runtime_summary import get_operation_issue_detail, refresh_task_summary, upsert_operation_issue
 from app.timezone import BEIJING_TZ, beijing_day_bounds
 
 
@@ -139,6 +139,124 @@ def test_task_center_list_does_not_load_channel_message_detail():
     assert rows[0]["target_summary"] == "频道 @chan"
     assert "不应进入列表搜索" not in rows[0]["search_text"]
     assert not any("channel_messages" in statement.lower() for statement in statements)
+
+
+def test_task_list_and_detail_expose_derived_runtime_stage():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            Task(
+                id="task-paused-visible",
+                tenant_id=1,
+                name="暂停要明显",
+                type="group_ai_chat",
+                status="paused",
+                next_run_at=None,
+                last_error="账号受限后暂停",
+                stats={"last_failure_policy": "pause_task"},
+            )
+        )
+        session.add(
+            Task(
+                id="task-waiting-ai",
+                tenant_id=1,
+                name="等待 AI",
+                type="group_ai_chat",
+                status="running",
+                next_run_at=now_value,
+                last_error="AI 生成不可用，等待恢复后继续执行：The read operation timed out",
+                stats={"ai_unavailable_reason": "The read operation timed out"},
+            )
+        )
+        session.add(
+            Task(
+                id="task-startup-visible",
+                tenant_id=1,
+                name="启动中要明显",
+                type="group_ai_chat",
+                status="pending",
+            )
+        )
+        session.add(
+            Task(
+                id="task-membership-and-ai",
+                tenant_id=1,
+                name="准入和 AI 同时可见",
+                type="group_ai_chat",
+                status="running",
+                last_error="AI 生成不可用，等待恢复后继续执行：The read operation timed out",
+                stats={
+                    "membership_stage": "membership_partial",
+                    "membership_need_join_count": 48,
+                    "ai_unavailable_reason": "The read operation timed out",
+                },
+            )
+        )
+        session.commit()
+
+        refresh_task_summary(session, session.get(Task, "task-waiting-ai"))
+        rows = {row["id"]: row for row in list_tasks(session, 1)}
+        paused_detail = get_task_detail(session, 1, "task-paused-visible")
+        ai_summary = refresh_task_summary(session, session.get(Task, "task-waiting-ai"))
+
+    assert rows["task-paused-visible"]["runtime_stage"]["stage_code"] == "paused"
+    assert rows["task-paused-visible"]["runtime_stage"]["stage_label"] == "已暂停"
+    assert rows["task-paused-visible"]["runtime_stage"]["severity"] == "danger"
+    assert "不会继续规划或执行新动作" in rows["task-paused-visible"]["runtime_stage"]["reason"]
+    assert paused_detail["task"]["runtime_stage"]["stage_code"] == "paused"
+    assert rows["task-waiting-ai"]["runtime_stage"]["stage_code"] == "waiting_ai"
+    assert rows["task-waiting-ai"]["runtime_stage"]["stage_label"] == "等待 AI"
+    assert "The read operation timed out" in rows["task-waiting-ai"]["runtime_stage"]["reason"]
+    assert ai_summary.summary["runtime_stage"]["stage_code"] == "waiting_ai"
+    assert rows["task-startup-visible"]["runtime_stage"]["stage_code"] == "startup_checking"
+    assert rows["task-startup-visible"]["runtime_stage"]["stage_label"] == "启动校验中"
+    membership_stage = rows["task-membership-and-ai"]["runtime_stage"]
+    assert membership_stage["stage_code"] == "membership_preparing"
+    assert membership_stage["stage_label"] == "准入补齐中"
+    assert "待准备 48" in membership_stage["reason"]
+    assert "The read operation timed out" in membership_stage["reason"]
+
+
+def test_operation_issue_detail_derives_current_task_runtime_stage_without_summary():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            Task(
+                id="task-issue-current-stage",
+                tenant_id=1,
+                name="运营抽屉实时阶段",
+                type="group_ai_chat",
+                status="paused",
+                last_error="人工暂停排查账号准入",
+            )
+        )
+        issue = upsert_operation_issue(
+            session,
+            tenant_id=1,
+            target_id=None,
+            issue_type="task_execution_failure",
+            failure_type="GROUP_PERMISSION_DENIED",
+            source_task_id="task-issue-current-stage",
+            representative_action_id="action-stage-visible",
+            affected_account_ids=[],
+            failure_reason="旧目标权限诊断",
+            suggested_action="查看任务阶段",
+        )
+        session.commit()
+
+        detail = get_operation_issue_detail(session, 1, issue.id)
+
+    assert detail["related_task_summary"] is None
+    assert detail["task_runtime_stage"]["stage_code"] == "paused"
+    assert detail["task_runtime_stage"]["stage_label"] == "已暂停"
+    assert "不会继续规划或执行新动作" in detail["task_runtime_stage"]["reason"]
 
 
 def test_upsert_operation_issue_flushes_new_issue_before_children():

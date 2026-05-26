@@ -54,6 +54,7 @@ from .review import expire_reviews
 from .reviews import ReviewStateError, approve_review, list_reviews, reject_review
 from .precheck import run_precheck_task_creation
 from .profile_batch_projection import delete_profile_batch_task, get_profile_batch_task_detail, is_profile_batch_task_id, list_profile_batch_tasks
+from app.services.task_runtime_stage import derive_task_runtime_stage
 from .stats import empty_stats, next_run_after_task, refresh_task_stats, retry_failed_actions
 from .utils import as_int as _as_int, as_int_list as _as_int_list
 from .runtime_retention import cleanup_runtime_details
@@ -186,6 +187,7 @@ def _task_payload_with_runtime_summary(session: Session, task: Task, summary: Ta
         }
     )
     payload["stats"] = stats
+    payload["runtime_stage"] = derive_task_runtime_stage(task, summary=summary)
     return payload
 
 
@@ -213,14 +215,17 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
     stats = refresh_task_stats(session, task)
     task_summary = session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id, TaskRuntimeSummary.task_id == task.id))
     operation_plan_links = list(session.scalars(select(OperationPlanTaskLink).where(OperationPlanTaskLink.tenant_id == tenant_id, OperationPlanTaskLink.task_id == task.id)))
+    membership_phase = _membership_phase(task, actions)
+    task_payload = _task_payload(session, task, actions=business_actions)
+    task_payload["runtime_stage"] = derive_task_runtime_stage(task, actions=actions, membership_phase=membership_phase, summary=task_summary)
     return {
-        "task": _task_payload(session, task, actions=business_actions),
+        "task": task_payload,
         "actions": _action_payloads_with_issue_rollup(session, tenant_id, business_actions),
         "stats": stats,
         "task_runtime_summary": task_summary,
         "operation_plan_links": operation_plan_links,
         "accounts": _detail_accounts(session, business_actions),
-        "membership_phase": _membership_phase(task, actions),
+        "membership_phase": membership_phase,
         "membership_accounts": _membership_accounts(session, actions),
         "message_groups": _message_groups(session, task, business_actions),
         "ai_cycles": _ai_cycles(business_actions),

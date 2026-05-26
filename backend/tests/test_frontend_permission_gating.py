@@ -197,6 +197,32 @@ def test_task_detail_membership_completion_uses_completed_at():
     assert "pending_account_count" in source
 
 
+def test_task_center_uses_runtime_stage_for_paused_and_waiting_states():
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+    runtime_stage = (PROJECT_ROOT / "frontend/src/app/views/taskRuntimeStage.ts").read_text()
+    task_view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    detail_modal = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+    overview = (PROJECT_ROOT / "frontend/src/app/views/OverviewView.tsx").read_text()
+    operations_types = (PROJECT_ROOT / "frontend/src/app/types/operations.ts").read_text()
+    shared = (PROJECT_ROOT / "frontend/src/app/components/shared.tsx").read_text()
+
+    assert "runtimeStage, runtimeStageLabel, statusLabel" in view_model
+    assert "export function runtimeStage" in runtime_stage
+    assert "task.status === 'paused'" in runtime_stage
+    assert "'membership_preparing'" in runtime_stage
+    assert "'启动校验中'" in runtime_stage
+    assert "currentStage?.stage_code === 'paused'" in detail_modal
+    assert "等待 AI" in runtime_stage
+    assert "不会继续规划或执行新动作" in runtime_stage
+    assert "task_runtime_stage?: Record<string, any> | null;" in operations_types
+    assert "issueDetail?.task_runtime_stage || issueDetail?.related_task_summary?.summary?.runtime_stage" in overview
+    assert "issueTaskStage.reason" in overview
+    assert "runtimeStage(task)" in task_view
+    assert "runtimeStage(detail.task" in detail_modal
+    assert "任务已暂停，不会继续规划或执行新动作" in detail_modal
+    assert "'paused'" not in shared[shared.index("if (['草稿'"):shared.index("].includes(value)) return 'muted';")]
+
+
 def test_account_center_uses_availability_summary_health_fields():
     source = (PROJECT_ROOT / "frontend/src/app/views/AccountsView.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/accounts.ts").read_text()
