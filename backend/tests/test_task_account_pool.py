@@ -202,6 +202,37 @@ def test_membership_candidates_use_task_account_health_weighting():
     assert candidate_ids == [1, 3]
 
 
+def test_membership_candidates_are_not_limited_by_send_concurrency():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        for account_id in range(1, 31):
+            session.add(
+                TgAccount(
+                    id=account_id,
+                    tenant_id=1,
+                    display_name=f"准入账号{account_id}",
+                    phone_masked=str(account_id),
+                    status=AccountStatus.ACTIVE.value,
+                    health_score=90,
+                )
+            )
+        session.commit()
+
+        candidate_ids = [
+            account.id
+            for account in candidate_accounts_for_config(
+                session,
+                1,
+                {"selection_mode": "all", "max_concurrent": 20},
+            )
+        ]
+
+    assert candidate_ids == list(range(1, 31))
+
+
 def test_select_task_accounts_compares_capped_and_full_capacity_scan():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
