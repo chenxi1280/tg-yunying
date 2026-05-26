@@ -8,8 +8,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.integrations.telegram import SendResult
-from app.models import Action, DailyRuntimeStat, ExecutionAttempt, GroupContextMessage, ReviewQueue, RuntimeCleanupAudit, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
+from app.integrations.telegram import OperationResult, SendResult
+from app.models import Action, DailyRuntimeStat, ExecutionAttempt, GroupContextMessage, OperationTarget, ReviewQueue, RuntimeCleanupAudit, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center import account_pool
@@ -296,6 +296,56 @@ def test_group_permission_denied_marks_group_account_not_sendable(monkeypatch):
         assert link is not None
         assert link.can_send is False
         assert link.permission_label == "群无权限或账号不可发言"
+
+
+def test_target_membership_requires_send_rechecks_existing_group_link(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-membership", tenant_id=1, name="membership", type="group_ai_chat", status="running"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-10021", title="目标群", auth_status="已授权运营", can_send=True))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-10021", title="目标群", auth_status="已授权运营", can_send=True, require_review=False))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="已加入"))
+        session.add(
+            Action(
+                id="action-membership",
+                tenant_id=1,
+                task_id="task-membership",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"channel_id": "-10021", "channel_target_id": 21, "target_type": "group", "target_display": "目标群", "require_send": True},
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("existing group link must be probed before join")))
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "probe_target_capabilities",
+            lambda *args, **kwargs: OperationResult(False, "失败", "群无权限", "缓存频道不可访问 / 账号无权限"),
+        )
+
+        action = session.get(Action, "action-membership")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.group_id == 7, TgGroupAccount.account_id == 11))
+        assert link is not None
+        assert link.can_send is False
+        assert link.permission_label == "缓存频道不可访问 / 账号无权限"
+        assert action.status == "failed"
+        assert action.result["error_code"] == "群无权限"
+        verification = session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7, VerificationTask.account_id == 11))
+        assert verification is not None
+        assert verification.status == "待处理"
+        assert verification.suggested_action == "人工处理"
 
 
 def test_claim_actions_db_unique_index_blocks_cross_worker_same_account_execution():

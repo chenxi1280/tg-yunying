@@ -12,15 +12,16 @@ from pydantic import ValidationError
 
 from app.integrations.telegram import OutboundSegment
 from app.config import get_settings
-from app.models import AccountStatus, Action, ExecutionAttempt, FailureType, GroupContextMessage, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, TgGroupAccount
+from app.models import AccountStatus, Action, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now, gateway
 from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
 from app.services.developer_apps import credentials_for_account
 from app.services.ai_config import get_scheduling_setting
+from app.services.verification import create_verification_task
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
-from .channel_membership import account_satisfies_authorized_target, mark_channel_membership_joined
+from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
 from .payloads import EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
@@ -350,9 +351,7 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
                 TgGroupAccount.account_id == account.id,
             )
         )
-        if existing_link and not (payload.target_type == "group" and payload.require_send and not existing_link.can_send):
-            _skip(action, "already_joined", "账号已满足目标准入")
-            action.result = {**(action.result or {}), "success": True, "membership_status": "already_joined"}
+        if existing_link and _dispatch_existing_membership(session, action, account, credentials, payload, existing_link):
             return True
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
@@ -366,17 +365,141 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
         invite_link=payload.invite_link,
     )
     if result.ok:
-        mark_channel_membership_joined(
-            session,
-            action.tenant_id,
-            payload.channel_target_id,
-            account.id,
-            permission_label="已关注" if payload.target_type == "channel" else "已加入",
-        )
+        probe_result = _probe_joined_group_send_permission(session, action, account, credentials, payload)
+        if probe_result is not None and not probe_result.ok:
+            _record_group_send_permission_denied(session, action, account, payload, probe_result.detail or probe_result.failure_type)
+            _apply_operation_result(action, account, False, probe_result.failure_type, probe_result.detail or probe_result.failure_type, attempt=attempt)
+            return True
+        _mark_membership_joined(session, action, account, payload)
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail or result.membership_status, attempt=attempt)
     if result.ok:
         action.result = {**(action.result or {}), "membership_status": result.membership_status or "joined"}
     return True
+
+
+def _dispatch_existing_membership(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    credentials,
+    payload: EnsureChannelMembershipPayload,
+    link: TgGroupAccount,
+) -> bool:
+    if not _requires_group_send_probe(payload):
+        _skip_membership_already_joined(action)
+        return True
+    if not link.can_send:
+        return False
+    attempt = _begin_execution_attempt(session, action, account)
+    _mark_executing(action)
+    session.commit()
+    _mark_gateway_call_started(session, attempt)
+    result = gateway.probe_target_capabilities(account.id, payload.channel_id, payload.target_type, account.session_ciphertext, credentials)
+    if result.ok:
+        _record_group_send_permission_allowed(session, action, account, payload)
+        _apply_operation_result(action, account, True, "", "already_joined", attempt=attempt)
+        action.result = {**(action.result or {}), "membership_status": "already_joined"}
+        return True
+    _record_group_send_permission_denied(session, action, account, payload, result.detail or result.failure_type)
+    _apply_operation_result(action, account, False, result.failure_type, result.detail or result.failure_type, attempt=attempt)
+    return True
+
+
+def _requires_group_send_probe(payload: EnsureChannelMembershipPayload) -> bool:
+    return payload.target_type == "group" and bool(payload.require_send)
+
+
+def _probe_joined_group_send_permission(session: Session, action: Action, account: TgAccount, credentials, payload: EnsureChannelMembershipPayload):
+    if not _requires_group_send_probe(payload):
+        return None
+    return gateway.probe_target_capabilities(account.id, payload.channel_id, payload.target_type, account.session_ciphertext, credentials)
+
+
+def _skip_membership_already_joined(action: Action) -> None:
+    _skip(action, "already_joined", "账号已满足目标准入")
+    action.result = {**(action.result or {}), "success": True, "membership_status": "already_joined"}
+
+
+def _mark_membership_joined(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload) -> None:
+    mark_channel_membership_joined(
+        session,
+        action.tenant_id,
+        payload.channel_target_id,
+        account.id,
+        permission_label="已关注" if payload.target_type == "channel" else "可发言",
+    )
+
+
+def _record_group_send_permission_allowed(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload) -> None:
+    target = session.get(OperationTarget, payload.channel_target_id)
+    if not target:
+        return
+    group = linked_channel_group(session, target, create=True)
+    link = _group_account_link(session, action.tenant_id, group.id, account.id, create=True)
+    link.can_send = True
+    link.permission_label = "可发言"
+    _sync_group_target_send_state(session, group, target)
+
+
+def _record_group_send_permission_denied(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload, detail: str) -> None:
+    target = session.get(OperationTarget, payload.channel_target_id)
+    if not target:
+        return
+    group = linked_channel_group(session, target, create=True)
+    link = _group_account_link(session, action.tenant_id, group.id, account.id, create=True)
+    link.can_send = False
+    link.permission_label = (detail or FailureType.GROUP_PERMISSION_DENIED.value)[:80]
+    _sync_group_target_send_state(session, group, target)
+    create_verification_task(
+        session,
+        tenant_id=action.tenant_id,
+        account_id=account.id,
+        group_id=group.id,
+        message_task_id=None,
+        verification_type="群发言权限",
+        detected_reason=detail or "账号已加入但没有群发言权限",
+        suggested_action="人工处理",
+        target_peer_id=group.tg_peer_id,
+        target_display=group.title,
+    )
+
+
+def _group_account_link(session: Session, tenant_id: int, group_id: int, account_id: int, *, create: bool) -> TgGroupAccount:
+    link = session.scalar(
+        select(TgGroupAccount).where(
+            TgGroupAccount.tenant_id == tenant_id,
+            TgGroupAccount.group_id == group_id,
+            TgGroupAccount.account_id == account_id,
+        )
+    )
+    if link or not create:
+        return link
+    link = TgGroupAccount(tenant_id=tenant_id, group_id=group_id, account_id=account_id)
+    session.add(link)
+    session.flush()
+    return link
+
+
+def _sync_group_target_send_state(session: Session, group: TgGroup, target: OperationTarget) -> None:
+    can_send = bool(
+        session.scalar(
+            select(func.count(TgGroupAccount.id)).where(
+                TgGroupAccount.tenant_id == group.tenant_id,
+                TgGroupAccount.group_id == group.id,
+                TgGroupAccount.can_send.is_(True),
+            )
+        )
+    )
+    group.can_send = can_send
+    target.can_send = can_send
+    if can_send:
+        group.auth_status = GroupAuthStatus.AUTHORIZED.value
+        target.auth_status = GroupAuthStatus.AUTHORIZED.value
+    elif group.auth_status == GroupAuthStatus.AUTHORIZED.value:
+        group.auth_status = GroupAuthStatus.READONLY.value
+    if not can_send and target.auth_status == GroupAuthStatus.AUTHORIZED.value:
+        target.auth_status = GroupAuthStatus.READONLY.value
+    target.updated_at = _now()
 
 
 def _outbound_segments(payload: SendMessagePayload) -> list[OutboundSegment]:
