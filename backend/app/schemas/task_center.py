@@ -517,6 +517,7 @@ class TaskOut(ApiModel):
     failure_policy: dict[str, Any]
     type_config: dict[str, Any]
     stats: dict[str, Any]
+    runtime_stage: dict[str, Any] = Field(default_factory=dict)
     target_summary: str = ""
     search_text: str = ""
     created_at: datetime

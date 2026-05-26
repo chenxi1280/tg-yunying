@@ -1,6 +1,7 @@
 import { ApiError } from '../../shared/api/client';
 import type { Account, AccountPool, OperationTarget, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterTaskType } from '../types';
 import { formatBeijingDateTime, toBeijingDateTimeLocalValue } from '../time';
+export { runtimeStage, runtimeStageLabel, statusLabel } from './taskRuntimeStage';
 
 export const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
   { value: 'group_ai_chat', label: 'AI 活跃群' },
@@ -225,18 +226,6 @@ export function actionStatusLabel(value?: string | null): string {
   if (['completed', 'success'].includes(value ?? '')) return '已完成';
   if (['failed', 'rejected', 'expired'].includes(value ?? '')) return '失败';
   return value || '待执行';
-}
-
-export function statusLabel(value?: string | null): string {
-  if (['running', 'executing', 'pending'].includes(value ?? '')) return '运行中';
-  if (['draft', 'paused'].includes(value ?? '')) return '未运行';
-  if (value === 'target_reached') return '已达标';
-  if (value === 'wrapping_up') return '收尾中';
-  if (value === 'stopped') return '人工停止';
-  if (value === 'deleted') return '已删除';
-  if (['completed', 'success', 'skipped', 'approved'].includes(value ?? '')) return '已完成';
-  if (['failed', 'rejected', 'expired'].includes(value ?? '')) return '失败';
-  return value || '未运行';
 }
 
 export function accountDisplay(detail: TaskCenterDetail | null, accountId?: number | null): string {

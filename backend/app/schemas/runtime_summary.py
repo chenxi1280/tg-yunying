@@ -125,6 +125,7 @@ class OperationIssueDetailOut(BaseModel):
     issue: OperationIssueOut
     target: dict[str, Any] | None = None
     source_task: dict[str, Any] | None = None
+    task_runtime_stage: dict[str, Any] | None = None
     related_task_summary: TaskRuntimeSummaryOut | None = None
     sources: list[OperationIssueSourceOut] = []
     issue_accounts: list[OperationIssueAccountOut] = []

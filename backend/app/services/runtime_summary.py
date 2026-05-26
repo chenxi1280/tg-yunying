@@ -28,6 +28,7 @@ from app.models.enums import AccountStatus
 from app.models.enums import FailureType
 from app.services._common import _now, audit
 from app.services.account_capacity import account_capacity_decision
+from app.services.task_runtime_stage import derive_task_runtime_stage
 
 
 PENDING_STATUSES = {"pending", "claiming", "executing", "retryable_failed", "unknown_after_send"}
@@ -90,6 +91,7 @@ def refresh_task_summary(session: Session, task: Task) -> TaskRuntimeSummary:
         "counts": counts,
         "task_type": task.type,
         "target_summary": (task.stats or {}).get("target_summary") or "",
+        "runtime_stage": derive_task_runtime_stage(task, summary=summary),
     }
     summary.updated_at = _now()
     if latest_failure:
@@ -582,6 +584,7 @@ def get_operation_issue_detail(session: Session, tenant_id: int, issue_id: str) 
         "issue": issue,
         "target": _target_payload(target),
         "source_task": _task_light_payload(task),
+        "task_runtime_stage": derive_task_runtime_stage(task, summary=task_summary) if task else None,
         "related_task_summary": task_summary,
         "sources": sources,
         "issue_accounts": issue_accounts,

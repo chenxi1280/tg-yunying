@@ -20,6 +20,7 @@ export type TaskCenterTask = {
   failure_policy: Record<string, any>;
   type_config: Record<string, any>;
   stats: Record<string, any>;
+  runtime_stage?: Record<string, any>;
   target_summary?: string;
   search_text?: string;
   created_at: string;

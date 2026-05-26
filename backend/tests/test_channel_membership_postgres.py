@@ -15,6 +15,7 @@ from app.services._common import _now
 from app.services.operations import create_operation_target
 from app.services.operations import _execute_operation_attempt
 from app.services.task_center import dispatcher
+from app.services.task_center.channel_membership import gate_channel_membership
 from app.services.task_center.dispatcher import dispatch_action
 from app.services.task_center.executors import build_task_plan
 from app.services.task_center.service import create_and_start_channel_view_task, get_task_detail, precheck_task_creation
@@ -35,6 +36,37 @@ def _engine():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     return engine
+
+
+def test_group_membership_prepares_all_selected_online_accounts_despite_send_limits():
+    engine = _engine()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.flush()
+        session.add(OperationTarget(id=901, tenant_id=1, target_type="group", tg_peer_id="-100901", title="全量准入群", auth_status="已授权运营", can_send=True))
+        for account_id in range(1, 6):
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", health_score=10 * account_id, session_ciphertext="session"))
+        task = Task(
+            id="task-all-membership",
+            tenant_id=1,
+            name="全量准入",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 2, "cooldown_per_account_minutes": 999},
+            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+            type_config={"target_operation_target_id": 901},
+        )
+        session.add(task)
+        session.commit()
+
+        result = gate_channel_membership(session, task, session.get(OperationTarget, 901), require_send=True)
+        actions = list(session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").order_by(Action.account_id.asc()))
+        membership_candidate_count = task.stats["membership_candidate_count"]
+
+    assert result.created == 5
+    assert [action.account_id for action in actions] == [1, 2, 3, 4, 5]
+    assert membership_candidate_count == 5
 
 
 def test_channel_target_create_recognizes_invite_link_and_public_username():

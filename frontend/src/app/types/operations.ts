@@ -161,6 +161,7 @@ export type OperationIssueDetail = {
   issue: OperationIssue;
   target: Record<string, any> | null;
   source_task: Record<string, any> | null;
+  task_runtime_stage?: Record<string, any> | null;
   related_task_summary: Record<string, any> | null;
   sources: Array<Record<string, any>>;
   issue_accounts: Array<Record<string, any>>;
