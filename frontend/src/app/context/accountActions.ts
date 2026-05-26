@@ -27,6 +27,8 @@ import type {
   VerificationTask,
 } from '../types';
 
+const GROUP_RESTRICTION_BATCH_TIMEOUT_MS = 300_000;
+
 interface AccountActionParams {
   accountCreateForm: ReturnType<typeof defaultAccountCreateForm>;
   accountDetail: AccountDetail | null;
@@ -375,7 +377,7 @@ export function createAccountActions(params: AccountActionParams) {
       const result = await api<GroupRestrictionBatchResult>(`/verification-tasks/${task.id}/resolve-group-restriction-batch`, {
         method: 'POST',
         body: JSON.stringify({ actor: '普通用户' }),
-        timeoutMs: 180_000,
+        timeoutMs: GROUP_RESTRICTION_BATCH_TIMEOUT_MS,
       });
       params.showResult('目标账号重查完成', result.message);
       await refreshRelatedDetails();
