@@ -173,31 +173,26 @@ def channel_membership_summary(
 
 
 def candidate_accounts_for_config(session: Session, tenant_id: int, account_config: dict[str, Any]) -> list[TgAccount]:
-    scan_limit = _membership_candidate_scan_limit(session, tenant_id, account_config)
-    return select_task_accounts(
-        session,
-        tenant_id,
-        account_config,
-        limit=scan_limit,
-        enforce_max_concurrent=False,
+    stmt = (
+        select(TgAccount)
+        .where(
+            TgAccount.tenant_id == tenant_id,
+            TgAccount.deleted_at.is_(None),
+            TgAccount.status == AccountStatus.ACTIVE.value,
+        )
+        .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
     )
-
-
-def _membership_candidate_scan_limit(session: Session, tenant_id: int, account_config: dict[str, Any]) -> int:
     mode = account_config.get("selection_mode") or "all"
     if mode == "manual":
-        return len(account_config.get("account_ids") or [])
-    stmt = select(func.count(TgAccount.id)).where(
-        TgAccount.tenant_id == tenant_id,
-        TgAccount.deleted_at.is_(None),
-        TgAccount.status == AccountStatus.ACTIVE.value,
-    )
-    if mode == "group":
+        account_ids = [int(item) for item in account_config.get("account_ids") or []]
+        stmt = stmt.where(TgAccount.id.in_(account_ids)) if account_ids else None
+    elif mode == "group":
         pool_id = int(account_config.get("account_group_id") or 0)
         if not pool_id:
-            return 0
-        stmt = stmt.where(TgAccount.pool_id == pool_id)
-    return int(session.scalar(stmt) or 0)
+            stmt = None
+        else:
+            stmt = stmt.where(TgAccount.pool_id == pool_id)
+    return list(session.scalars(stmt)) if stmt is not None else []
 
 
 def linked_channel_group(session: Session, channel: OperationTarget, *, create: bool) -> TgGroup | None:

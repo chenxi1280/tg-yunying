@@ -174,7 +174,7 @@ def test_select_task_accounts_does_not_double_penalize_runtime_health_score():
     assert selected_ids == [1]
 
 
-def test_membership_candidates_use_task_account_health_weighting():
+def test_membership_candidates_include_all_active_config_accounts():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -199,7 +199,7 @@ def test_membership_candidates_use_task_account_health_weighting():
             )
         ]
 
-    assert candidate_ids == [1, 3]
+    assert candidate_ids == [1, 2, 3, 4]
 
 
 def test_membership_candidates_are_not_limited_by_send_concurrency():
