@@ -287,6 +287,8 @@ def resolve_group_restriction_batch(session: Session, task_id: int, actor: str) 
     resolved_tasks = []
     for item_id in task_ids:
         resolved_tasks.append(resolve_group_restriction_task(session, item_id, actor))
+    _apply_batch_approval_detail(resolved_tasks, approval)
+    session.commit()
     return _group_restriction_batch_result(base_task, group, resolved_tasks, approval)
 
 
@@ -445,6 +447,26 @@ def _group_restriction_batch_result(
         ),
         tasks=tasks,
     )
+
+
+def _apply_batch_approval_detail(
+    tasks: list[VerificationTask],
+    approval: tuple[str, str, int | None],
+) -> None:
+    status, detail, _account_id = approval
+    prefix = f"管理员放行：{status}（{detail}）；"
+    for task in tasks:
+        if task.status not in {"需人工处理", "失败"}:
+            continue
+        task.failure_detail = f"{prefix}{_strip_batch_approval_detail(task.failure_detail)}"
+
+
+def _strip_batch_approval_detail(detail: str | None) -> str:
+    if not detail:
+        return ""
+    if detail.startswith("管理员放行：") and "；" in detail:
+        return detail.split("；", 1)[1]
+    return detail
 
 
 def _apply_group_probe_result(
