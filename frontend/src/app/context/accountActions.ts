@@ -325,45 +325,61 @@ export function createAccountActions(params: AccountActionParams) {
 
   async function confirmVerificationTask(task: VerificationTask) {
     params.setBusy('处理验证辅助');
-    const updated = await api<VerificationTask>(`/verification-tasks/${task.id}/confirm-action`, {
-      method: 'POST',
-      body: JSON.stringify({ actor: '普通用户' }),
-    });
-    if (updated.status === '失败') {
-      params.showResult('验证辅助处理失败', updated.failure_detail || `${updated.verification_type}：失败`);
-    } else if (updated.status === '需人工处理') {
-      params.showResult('仍需人工处理', updated.failure_detail || updated.detected_reason || updated.verification_type);
-    } else {
-      params.showResult('验证辅助已处理', `${updated.verification_type}：${updated.status}`);
+    try {
+      const updated = await api<VerificationTask>(`/verification-tasks/${task.id}/confirm-action`, {
+        method: 'POST',
+        body: JSON.stringify({ actor: '普通用户' }),
+      });
+      if (updated.status === '失败') {
+        params.showResult('验证辅助处理失败', updated.failure_detail || `${updated.verification_type}：失败`);
+      } else if (updated.status === '需人工处理') {
+        params.showResult('仍需人工处理', updated.failure_detail || updated.detected_reason || updated.verification_type);
+      } else {
+        params.showResult('验证辅助已处理', `${updated.verification_type}：${updated.status}`);
+      }
+      await refreshRelatedDetails();
+    } catch (error) {
+      params.handleActionError(error);
+    } finally {
+      params.setBusy('');
     }
-    await refreshRelatedDetails();
-    params.setBusy('');
   }
 
   async function resolveGroupRestrictionTask(task: VerificationTask) {
     params.setBusy('解除群限制重查');
-    const updated = await api<VerificationTask>(`/verification-tasks/${task.id}/resolve-group-restriction`, {
-      method: 'POST',
-      body: JSON.stringify({ actor: '普通用户' }),
-    });
-    if (updated.status === '已处理') {
-      params.showResult('群限制已解除', updated.failure_detail || `${updated.verification_type}：目标已可发言`);
-    } else if (updated.status === '需人工处理') {
-      params.showResult('仍需管理员处理', updated.failure_detail || '当前账号在该群仍不可发言。');
-    } else {
-      params.showResult('解除群限制重查失败', updated.failure_detail || `${updated.verification_type}：${updated.status}`);
+    try {
+      const updated = await api<VerificationTask>(`/verification-tasks/${task.id}/resolve-group-restriction`, {
+        method: 'POST',
+        body: JSON.stringify({ actor: '普通用户' }),
+        timeoutMs: 8_000,
+      });
+      if (updated.status === '已处理') {
+        params.showResult('群限制已解除', updated.failure_detail || `${updated.verification_type}：目标已可发言`);
+      } else if (updated.status === '需人工处理') {
+        params.showResult('仍需管理员处理', updated.failure_detail || '当前账号在该群仍不可发言。');
+      } else {
+        params.showResult('解除群限制重查失败', updated.failure_detail || `${updated.verification_type}：${updated.status}`);
+      }
+      await refreshRelatedDetails();
+    } catch (error) {
+      params.handleActionError(error);
+    } finally {
+      params.setBusy('');
     }
-    await refreshRelatedDetails();
-    params.setBusy('');
   }
 
   async function dismissVerificationTask(task: VerificationTask) {
     params.setBusy('忽略验证辅助');
-    await api<VerificationTask>(`/verification-tasks/${task.id}/dismiss`, { method: 'POST' });
-    params.showResult('验证辅助已忽略', '该验证事项已从待处理列表移除。');
-    if (params.accountDetail) await refreshAccountDetail();
-    if (params.accountPoolDetail) await refreshAccountPoolDetail();
-    params.setBusy('');
+    try {
+      await api<VerificationTask>(`/verification-tasks/${task.id}/dismiss`, { method: 'POST' });
+      params.showResult('验证辅助已忽略', '该验证事项已从待处理列表移除。');
+      if (params.accountDetail) await refreshAccountDetail();
+      if (params.accountPoolDetail) await refreshAccountPoolDetail();
+    } catch (error) {
+      params.handleActionError(error);
+    } finally {
+      params.setBusy('');
+    }
   }
 
   async function refreshAccountDetail() {

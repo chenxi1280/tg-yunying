@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.integrations.telegram import OperationResult
 from app.models import AccountStatus, GroupAuthStatus, OperationTarget, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 
 from ._common import _now, audit, gateway
@@ -38,16 +39,22 @@ def _group_target_values(session: Session, tenant_id: int, group_id: int | None)
     group = session.get(TgGroup, group_id)
     if not group or group.tenant_id != tenant_id:
         return "", ""
-    return group.tg_peer_id or "", group.title or f"群聊 #{group.id}"
+    target = session.scalar(
+        select(OperationTarget).where(
+            OperationTarget.tenant_id == tenant_id,
+            OperationTarget.target_type == "group",
+            OperationTarget.tg_peer_id == group.tg_peer_id,
+        )
+    )
+    display = target.title if target and target.title else group.title
+    return group.tg_peer_id or "", display or f"群聊 #{group.id}"
 
 
 def _fill_verification_target(session: Session, task: VerificationTask) -> None:
-    if task.target_peer_id and task.target_display:
-        return
     group_peer_id, group_display = _group_target_values(session, task.tenant_id, task.group_id)
     if group_peer_id and not task.target_peer_id:
         task.target_peer_id = group_peer_id
-    if group_display and not task.target_display:
+    if group_display:
         task.target_display = group_display
 
 
@@ -94,7 +101,6 @@ def _sync_group_target(
         )
     )
     if target:
-        target.title = group.title
         target.member_count = group.member_count
         target.can_send = group.can_send
         target.auth_status = group.auth_status
@@ -227,30 +233,64 @@ def resolve_group_restriction_task(session: Session, task_id: int, actor: str) -
     else:
         try:
             credentials = credentials_for_account(session, account)
-            snapshots = gateway.list_groups(account.id, account.session_ciphertext, credentials)
-            snapshot = next((item for item in snapshots if item.tg_peer_id == group.tg_peer_id), None)
-            if not snapshot:
-                task.status = "需人工处理"
-                task.failure_detail = "目标能力重查未找到该群，请确认账号仍在群内，或重新同步账号群聊。"
-                task.handled_at = None
-            else:
-                link = _apply_snapshot_to_group_link(session, account, group, snapshot)
-                if link.can_send:
-                    task.status = "已处理"
-                    task.failure_detail = f"目标能力重查通过：{link.permission_label or '可发言'}。"
-                    task.handled_at = _now()
-                else:
-                    task.status = "需人工处理"
-                    task.failure_detail = f"目标能力重查未通过：{link.permission_label or '不可发言'}。请继续在群内解除限制后重查。"
-                    task.handled_at = None
+            result = gateway.probe_target_capabilities(
+                account.id,
+                group.tg_peer_id,
+                "group",
+                account.session_ciphertext,
+                credentials,
+            )
+            _apply_group_probe_result(session, task, account, group, result)
         except Exception as exc:  # noqa: BLE001
             task.status = "失败"
             task.failure_detail = str(exc)
             task.handled_at = _now()
-    audit(session, tenant_id=task.tenant_id, actor=actor, action="解除群限制重查", target_type="verification_task", target_id=str(task.id), detail=f"{task.status}:{task.failure_detail}")
+    audit(
+        session,
+        tenant_id=task.tenant_id,
+        actor=actor,
+        action="解除群限制重查",
+        target_type="verification_task",
+        target_id=str(task.id),
+        detail=f"{task.status}:{task.failure_detail}",
+    )
     session.commit()
     session.refresh(task)
     return task
+
+
+def _apply_group_probe_result(
+    session: Session,
+    task: VerificationTask,
+    account: TgAccount,
+    group: TgGroup,
+    result: OperationResult,
+) -> None:
+    link = session.scalar(
+        select(TgGroupAccount).where(
+            TgGroupAccount.group_id == group.id,
+            TgGroupAccount.account_id == account.id,
+        )
+    )
+    if result.ok:
+        _mark_group_sendable(session, task, account)
+        _sync_group_target(session, tenant_id=task.tenant_id, group=group)
+        task.status = "已处理"
+        task.failure_detail = "目标能力重查通过：可发言。"
+        task.handled_at = _now()
+        return
+    if link:
+        link.can_send = False
+        link.permission_label = (result.detail or result.failure_type or "不可发言")[:80]
+    _sync_group_target(session, tenant_id=task.tenant_id, group=group)
+    task.status = "需人工处理"
+    task.failure_detail = _group_probe_failure_detail(result)
+    task.handled_at = None
+
+
+def _group_probe_failure_detail(result: OperationResult) -> str:
+    reason = result.detail or result.failure_type or "不可发言"
+    return f"目标能力重查未通过：{reason}。请在群内完成图形验证码或由管理员通过后重查。"
 
 
 def dismiss_verification_task(session: Session, task_id: int, actor: str) -> VerificationTask:

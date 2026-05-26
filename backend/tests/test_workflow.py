@@ -476,11 +476,12 @@ def test_resolve_group_restriction_rechecks_target_before_restoring_sendability(
                     tenant_id=1,
                     target_type="group",
                     tg_peer_id=group["tg_peer_id"],
-                    title=group["title"],
+                    title="运营目标名",
                     member_count=group["member_count"],
                 )
                 session.add(target)
                 session.flush()
+            target.title = "运营目标名"
             target.can_send = False
             target.auth_status = "只读"
             manual_task = VerificationTask(
@@ -498,24 +499,18 @@ def test_resolve_group_restriction_rechecks_target_before_restoring_sendability(
             task_id = manual_task.id
             target_id = target.id
 
-        def fake_list_groups(account_id, *_args, **_kwargs):
+        def fake_probe_target_capabilities(account_id, target_peer_id, target_type, *_args, **_kwargs):
             assert account_id == account["id"]
-            return [
-                GroupSnapshot(
-                    tg_peer_id=group["tg_peer_id"],
-                    title=group["title"],
-                    group_type="supergroup",
-                    member_count=group["member_count"],
-                    permission_label="可发言",
-                    can_send=True,
-                )
-            ]
+            assert target_peer_id == group["tg_peer_id"]
+            assert target_type == "group"
+            return OperationResult(True, detail="group:target:可访问")
 
-        monkeypatch.setattr("app.services.verification.gateway.list_groups", fake_list_groups)
+        monkeypatch.setattr("app.services.verification.gateway.probe_target_capabilities", fake_probe_target_capabilities)
 
         resolved = client.post(f"/api/verification-tasks/{task_id}/resolve-group-restriction", headers=headers, json={"actor": "pytest"}).json()
         assert resolved["status"] == "已处理"
         assert "重查通过" in resolved["failure_detail"]
+        assert resolved["target_display"] == "运营目标名"
 
         with SessionLocal() as session:
             db_group = session.get(TgGroup, group["id"])
@@ -524,6 +519,7 @@ def test_resolve_group_restriction_rechecks_target_before_restoring_sendability(
             assert db_group.can_send is True
             assert link.can_send is True
             assert link.permission_label == "可发言"
+            assert target.title == "运营目标名"
             assert target.can_send is True
             assert target.auth_status == "已授权运营"
 
