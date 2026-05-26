@@ -296,6 +296,9 @@ export type GroupRestrictionBatchResult = {
   restored_count: number;
   blocked_count: number;
   failed_count: number;
+  approval_status: string;
+  approval_detail: string;
+  approval_account_id: number | null;
   message: string;
   tasks: VerificationTask[];
 };

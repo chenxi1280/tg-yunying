@@ -91,6 +91,9 @@ class VerificationTaskBatchResolveOut(ApiModel):
     restored_count: int
     blocked_count: int
     failed_count: int
+    approval_status: str
+    approval_detail: str
+    approval_account_id: int | None
     message: str
     tasks: list[VerificationTaskOut]
 

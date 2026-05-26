@@ -41,6 +41,8 @@ from app.timezone import BEIJING_TZ
 _resolve_telethon_target = resolve_telethon_target
 _telethon_send_target = telethon_send_target
 
+GROUP_ADMIN_APPROVE_LABEL = "通过（管理员）"
+
 
 def _telegram_invite_hash(value: str) -> str:
     text = value.strip()
@@ -50,6 +52,45 @@ def _telegram_invite_hash(value: str) -> str:
     if text.startswith("+"):
         return text[1:].split("?", 1)[0].strip("/")
     return ""
+
+
+def _has_group_admin_rights(permissions: Any) -> bool:
+    participant = getattr(permissions, "participant", None)
+    names = {type(permissions).__name__.lower(), type(participant).__name__.lower() if participant else ""}
+    return bool(
+        getattr(permissions, "is_admin", False)
+        or getattr(permissions, "is_creator", False)
+        or any("admin" in name for name in names)
+    )
+
+
+async def _is_group_verification_message(message: Any, bot_name: str) -> bool:
+    if not getattr(message, "buttons", None):
+        return False
+    text = getattr(message, "message", "") or ""
+    if GROUP_ADMIN_APPROVE_LABEL not in _message_button_labels(message):
+        return False
+    sender = await message.get_sender() if hasattr(message, "get_sender") else None
+    sender_name = " ".join(filter(None, [getattr(sender, "first_name", "") or "", getattr(sender, "last_name", "") or ""]))
+    sender_name = sender_name or getattr(sender, "username", "") or ""
+    return bool(getattr(sender, "bot", False) and bot_name in sender_name and "验证码" in text)
+
+
+def _message_button_labels(message: Any) -> list[str]:
+    labels: list[str] = []
+    for row in getattr(message, "buttons", None) or []:
+        for button in row:
+            labels.append(getattr(button, "text", "") or "")
+    return labels
+
+
+async def _click_admin_approve_button(message: Any) -> bool:
+    for row_index, row in enumerate(getattr(message, "buttons", None) or []):
+        for col_index, button in enumerate(row):
+            if getattr(button, "text", "") == GROUP_ADMIN_APPROVE_LABEL:
+                await message.click(row_index, col_index)
+                return True
+    return False
 
 
 class TelethonTelegramGateway(TelegramGateway):
@@ -1114,6 +1155,59 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> OperationResult:
         return self._run(
             self._resolve_verification_async(action, target_peer_id, session_ciphertext, self._usable_credentials(credentials))
+        )
+
+    async def _approve_group_verification_messages_async(
+        self,
+        target_peer_id: str,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        *,
+        bot_name: str,
+        limit: int,
+    ) -> OperationResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
+        try:
+            target = await resolve_telethon_target(client, target_peer_id, group_id=0)
+            permissions = await client.get_permissions(target, "me")
+            if not _has_group_admin_rights(permissions):
+                return OperationResult(False, "需人工处理", "缺少管理员权限", "未找到可执行群验证放行的管理员账号")
+            approved = 0
+            async for message in client.iter_messages(target, limit=limit):
+                if not await _is_group_verification_message(message, bot_name):
+                    continue
+                if await _click_admin_approve_button(message):
+                    approved += 1
+            if approved <= 0:
+                return OperationResult(False, "需人工处理", "未找到验证按钮", "未找到可点击的通过（管理员）按钮")
+            return OperationResult(True, "已处理", detail=f"已点击 {approved} 条通过（管理员）验证")
+        except Exception as exc:  # Keep bot-specific behavior behind the adapter boundary.
+            mapped = self._map_send_error(exc)
+            return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+
+    def approve_group_verification_messages(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        *,
+        bot_name: str = "方丈机器人",
+        limit: int = 80,
+    ) -> OperationResult:
+        return self._run(
+            self._approve_group_verification_messages_async(
+                target_peer_id,
+                session_ciphertext,
+                self._usable_credentials(credentials),
+                bot_name=bot_name,
+                limit=limit,
+            )
         )
 
     async def _fetch_group_archive_async(

@@ -24,6 +24,7 @@ __all__ = [
 MANUAL_VERIFICATION_ACTIONS = {"人工处理", "手动处理", "线下处理"}
 GROUP_RESTRICTION_VERIFICATION_TYPES = ("群发言权限", "群发言不可用")
 OPEN_VERIFICATION_STATUSES = ("待处理", "失败", "需人工处理")
+ADMIN_APPROVAL_CANDIDATE_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,9 @@ class GroupRestrictionBatchResult:
     restored_count: int
     blocked_count: int
     failed_count: int
+    approval_status: str
+    approval_detail: str
+    approval_account_id: int | None
     message: str
     tasks: list[VerificationTask]
 
@@ -278,11 +282,12 @@ def resolve_group_restriction_batch(session: Session, task_id: int, actor: str) 
     group = session.get(TgGroup, base_task.group_id)
     if not group:
         raise ValueError("group not found")
+    approval = _attempt_group_verification_admin_approval(session, base_task, group)
     task_ids = _ensure_group_restriction_batch_tasks(session, base_task, group)
     resolved_tasks = []
     for item_id in task_ids:
         resolved_tasks.append(resolve_group_restriction_task(session, item_id, actor))
-    return _group_restriction_batch_result(base_task, group, resolved_tasks)
+    return _group_restriction_batch_result(base_task, group, resolved_tasks, approval)
 
 
 def _group_restriction_task(session: Session, task_id: int) -> VerificationTask:
@@ -310,6 +315,51 @@ def _ensure_group_restriction_batch_tasks(
         task_ids.add(base_task.id)
     session.commit()
     return sorted(task_ids)
+
+
+def _attempt_group_verification_admin_approval(
+    session: Session,
+    task: VerificationTask,
+    group: TgGroup,
+) -> tuple[str, str, int | None]:
+    candidates = _admin_approval_candidates(session, task, group)
+    if not candidates:
+        return "未执行", "未找到可用于群验证放行的候选账号", None
+    last_detail = ""
+    for account in candidates:
+        try:
+            credentials = credentials_for_account(session, account)
+            result = gateway.approve_group_verification_messages(
+                account.id,
+                group.tg_peer_id,
+                account.session_ciphertext,
+                credentials,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_detail = str(exc)
+            continue
+        if result.ok:
+            return "已执行", result.detail or "已执行管理员通过按钮", account.id
+        last_detail = result.detail or result.failure_type or result.status
+        if result.failure_type != "缺少管理员权限":
+            return result.status or "需人工处理", last_detail, account.id
+    return "需人工处理", last_detail or "未找到可执行群验证放行的管理员账号", None
+
+
+def _admin_approval_candidates(session: Session, task: VerificationTask, group: TgGroup) -> list[TgAccount]:
+    stmt = (
+        select(TgAccount)
+        .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
+        .where(
+            TgAccount.tenant_id == task.tenant_id,
+            TgAccount.status == AccountStatus.ACTIVE.value,
+            TgGroupAccount.group_id == group.id,
+            (TgGroupAccount.can_send.is_(True)) | (TgGroupAccount.is_listener.is_(True)),
+        )
+        .order_by(TgGroupAccount.is_listener.desc(), TgGroupAccount.can_send.desc(), TgAccount.id.asc())
+        .limit(ADMIN_APPROVAL_CANDIDATE_LIMIT)
+    )
+    return list(session.scalars(stmt))
 
 
 def _group_restricted_accounts(session: Session, task: VerificationTask, group: TgGroup) -> list[TgAccount]:
@@ -371,11 +421,13 @@ def _group_restriction_batch_result(
     base_task: VerificationTask,
     group: TgGroup,
     tasks: list[VerificationTask],
+    approval: tuple[str, str, int | None],
 ) -> GroupRestrictionBatchResult:
     restored = sum(1 for task in tasks if task.status == "已处理")
     failed = sum(1 for task in tasks if task.status == "失败")
     blocked = len(tasks) - restored - failed
     target_display = base_task.target_display or group.title
+    approval_status, approval_detail, approval_account_id = approval
     return GroupRestrictionBatchResult(
         group_id=group.id,
         target_peer_id=base_task.target_peer_id or group.tg_peer_id or "",
@@ -384,7 +436,13 @@ def _group_restriction_batch_result(
         restored_count=restored,
         blocked_count=blocked,
         failed_count=failed,
-        message=f"{target_display} 已重查 {len(tasks)} 个账号：恢复 {restored}，仍需处理 {blocked}，失败 {failed}。",
+        approval_status=approval_status,
+        approval_detail=approval_detail,
+        approval_account_id=approval_account_id,
+        message=(
+            f"{target_display} 管理员放行：{approval_status}（{approval_detail}）；"
+            f"已重查 {len(tasks)} 个账号：恢复 {restored}，仍需处理 {blocked}，失败 {failed}。"
+        ),
         tasks=tasks,
     )
 

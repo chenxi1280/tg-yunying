@@ -253,6 +253,18 @@ class TelegramGateway:
             return OperationResult(True, "已处理", detail=f"mock 已执行：{action}")
         return OperationResult(False, "需人工处理", "复杂验证", "当前验证需要人工在 Telegram 内处理")
 
+    def approve_group_verification_messages(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        *,
+        bot_name: str = "方丈机器人",
+        limit: int = 80,
+    ) -> OperationResult:
+        return OperationResult(True, "已处理", detail=f"mock 已通过 {bot_name} 验证消息")
+
     def update_profile(
         self,
         session_ciphertext: str | None,
