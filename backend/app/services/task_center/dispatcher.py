@@ -504,10 +504,35 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
         if failure_type == FailureType.ACCOUNT_LIMITED.value:
             account.status = AccountStatus.LIMITED.value
             account.health_score = min(account.health_score, 55)
+        if failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
+            _mark_group_account_cannot_send(action, account, detail or failure_type)
         _apply_default_failure_policy(action, failure_type or FailureType.UNKNOWN.value)
     action.executed_at = None if action.status == "pending" else _now()
     _finish_execution_attempt(attempt, action, remote_id=remote_id, failure_type=failure_type or "", detail=detail or "")
     _release_runtime_resources(action)
+
+
+def _mark_group_account_cannot_send(action: Action, account: TgAccount, detail: str) -> None:
+    from sqlalchemy.orm import object_session
+
+    session = object_session(action)
+    if not session:
+        return
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    group_id = int(payload.get("group_id") or 0)
+    if not group_id:
+        return
+    link = session.scalar(
+        select(TgGroupAccount).where(
+            TgGroupAccount.tenant_id == action.tenant_id,
+            TgGroupAccount.group_id == group_id,
+            TgGroupAccount.account_id == account.id,
+        )
+    )
+    if not link:
+        return
+    link.can_send = False
+    link.permission_label = detail[:80] or "群无权限或账号不可发言"
 
 
 def _fail(action: Action, failure_type: str, detail: str, *, auto_check: str = "失败", validation_stage: str = "") -> None:

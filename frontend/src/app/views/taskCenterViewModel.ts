@@ -217,8 +217,12 @@ export function actionLabel(value: string): string {
 
 export function actionStatusLabel(value?: string | null): string {
   if (value === 'pending') return '待执行';
+  if (value === 'claiming') return '认领中';
   if (['running', 'executing'].includes(value ?? '')) return '执行中';
-  if (['completed', 'success', 'skipped'].includes(value ?? '')) return '已完成';
+  if (value === 'retryable_failed') return '待重试';
+  if (value === 'unknown_after_send') return '结果未知';
+  if (value === 'skipped') return '已跳过';
+  if (['completed', 'success'].includes(value ?? '')) return '已完成';
   if (['failed', 'rejected', 'expired'].includes(value ?? '')) return '失败';
   return value || '待执行';
 }
