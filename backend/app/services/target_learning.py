@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import AuditLog, ChannelMessageComment, OperationTarget, TargetLearningProfile, TargetLearningProfileVersion, TargetLearningSample, TgAccount, TgGroup, TgGroupAccount
@@ -42,8 +43,12 @@ def record_group_learning_sample(session: Session, group: TgGroup, snapshot: Any
     if not profile.learning_enabled:
         status, reject_reason, downweight_reason, quality_score = "rejected", "learning_disabled", "", 0
     sample = _new_sample(group, target.id, snapshot, profile_scene, status, reject_reason, downweight_reason, quality_score)
-    session.add(sample)
-    session.flush()
+    try:
+        with session.begin_nested():
+            session.add(sample)
+            session.flush()
+    except IntegrityError:
+        return None
     if status == "accepted":
         rebuild_learning_profile(session, target.id, profile_scene, actor="监听学习服务")
     return sample

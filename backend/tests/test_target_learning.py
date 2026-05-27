@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountStatus, ChannelMessage, ChannelMessageComment, OperationTarget, TargetLearningProfile, TargetLearningSample, Tenant, TgAccount
+from app.models import AccountStatus, ChannelMessage, ChannelMessageComment, OperationTarget, TargetLearningProfile, TargetLearningSample, Tenant, TgAccount, TgGroup
 from app.services.operations import operation_target_detail
 from app.services.operations_center_learning import refresh_listener_learning
 from app.services.task_center.details import _quality_risks
-from app.services.target_learning import CHANNEL_COMMENT_SCENE, clear_learning_profile, record_channel_comment_learning_sample, update_learning_sample_status
+from app.services.target_learning import CHANNEL_COMMENT_SCENE, clear_learning_profile, record_channel_comment_learning_sample, record_group_learning_sample, update_learning_sample_status
 from app.services.target_learning_versions import list_learning_profile_versions, restore_learning_profile_version
 
 
@@ -108,6 +110,39 @@ def test_channel_comment_learning_reclassifies_existing_bot_sample():
     assert sample.reject_reason == "bot"
     assert profile is not None
     assert profile.source_sample_count == 0
+
+
+def test_group_learning_duplicate_sample_is_idempotent(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    snapshot = SimpleNamespace(
+        remote_message_id="dup-1001",
+        sender_peer_id="real-user",
+        sender_username="real_user",
+        sender_name="真人用户",
+        is_bot=False,
+        message_type="text",
+        content="这个活动几点开始？",
+        caption="",
+        sent_at=None,
+    )
+
+    monkeypatch.setattr("app.services.target_learning._existing_sample", lambda *_args, **_kwargs: None)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="活群", auth_status="已授权运营"))
+        session.add(OperationTarget(id=31, tenant_id=1, target_type="group", tg_peer_id="-1007", title="活群"))
+        session.flush()
+
+        first = record_group_learning_sample(session, session.get(TgGroup, 7), snapshot)
+        second = record_group_learning_sample(session, session.get(TgGroup, 7), snapshot)
+        session.commit()
+        samples = list(session.scalars(select(TargetLearningSample).where(TargetLearningSample.source_message_id == "dup-1001")))
+
+    assert first is not None
+    assert second is None
+    assert len(samples) == 1
 
 
 def test_learning_profile_version_restore_creates_new_current_version():
