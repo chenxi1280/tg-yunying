@@ -429,6 +429,20 @@ def test_task_center_allows_profile_batch_delete_without_lifecycle_controls():
     assert "canManageTasks && !isSystemTask(task) && <Button size=\"small\" danger loading={busyId === `${task.id}:delete`}" not in source
 
 
+def test_task_center_lifecycle_buttons_match_task_status():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    assert "function canStartTask(task: TaskCenterTask)" in source
+    assert "return !isSystemTask(task) && task.status !== 'running';" in source
+    assert "function canPauseTask(task: TaskCenterTask)" in source
+    assert "return !isSystemTask(task) && task.status === 'running';" in source
+    assert "canManageTasks && canStartTask(task) &&" in source
+    assert "canManageTasks && canPauseTask(task) &&" in source
+    assert "task.status === 'paused' ? 'resume' : 'start'" in source
+    assert ">{task.status === 'paused' ? '恢复' : '启动'}</Button>" not in source
+    assert "disabled={task.status !== 'running'}" not in source
+
+
 def test_task_center_create_refreshes_after_long_timeout_and_capacity_summary_types():
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()

@@ -270,6 +270,14 @@ export default function TaskCenterView({
     return canManageTasks && Boolean(task.id);
   }
 
+  function canStartTask(task: TaskCenterTask) {
+    return !isSystemTask(task) && task.status !== 'running';
+  }
+
+  function canPauseTask(task: TaskCenterTask) {
+    return !isSystemTask(task) && task.status === 'running';
+  }
+
   async function openActionAttempts(action: TaskCenterAction) {
     setAttemptDetail({ action, attempts: [], loading: true });
     try {
@@ -879,8 +887,8 @@ export default function TaskCenterView({
       fixed: 'right',
       render: (_, task) => (
         <Space className="task-action-bar" size={6}>
-          {canManageTasks && !isSystemTask(task) && <Button size="small" loading={busyId === `${task.id}:${task.status === 'paused' ? 'resume' : 'start'}`} onClick={() => taskAction(task, task.status === 'paused' ? 'resume' : 'start')}>{task.status === 'paused' ? '恢复' : '启动'}</Button>}
-          {canManageTasks && !isSystemTask(task) && <Button size="small" disabled={task.status !== 'running'} loading={busyId === `${task.id}:pause`} onClick={() => taskAction(task, 'pause')}>暂停</Button>}
+          {canManageTasks && canStartTask(task) && <Button size="small" loading={busyId === `${task.id}:${task.status === 'paused' ? 'resume' : 'start'}`} onClick={() => taskAction(task, task.status === 'paused' ? 'resume' : 'start')}>启动</Button>}
+          {canManageTasks && canPauseTask(task) && <Button size="small" loading={busyId === `${task.id}:pause`} onClick={() => taskAction(task, 'pause')}>暂停</Button>}
           {canManageTasks && !isSystemTask(task) && <Button size="small" loading={busyId === `${task.id}:retry`} onClick={() => taskAction(task, 'retry')}>重试</Button>}
           {canDispatchControl && !isSystemTask(task) && <Button size="small" danger loading={busyId === `${task.id}:reset`} onClick={() => openDangerTaskAction(task, 'reset')}>重置</Button>}
           {canManageTasks && !isSystemTask(task) && <Button size="small" danger loading={busyId === `${task.id}:stop`} onClick={() => openDangerTaskAction(task, 'stop')}>停止</Button>}
