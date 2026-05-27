@@ -70,6 +70,7 @@ worker 容器不暴露 backend API 端口，健康检查不能使用 `curl 127.0
 核心代理口径：
 
 - 静态前端：`root /data/infra/www/<域名>/current`
+- 静态资源：`/assets/` 必须开启 7 天 immutable 缓存，并开启 gzip；首屏 JS 裸传会显著拖慢跨境和代理链路加载。
 - 后端 API：`/api/ -> http://127.0.0.1:18090/api/`
 - 媒体文件：`/media/ -> http://127.0.0.1:18090/media/`
 - 健康检查：`/healthz -> http://127.0.0.1:18090/api/health`
