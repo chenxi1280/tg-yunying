@@ -109,7 +109,8 @@ def build_plan(session: Session, task: Task) -> int:
                 next_run_at=idle_decision["next_run_at"],
             )
             return 0
-    selected, turn_count = _select_cycle_accounts(accounts, config, mode, ramp_ratio, has_context=bool(usable_context_rows))
+    cycle_index = _next_cycle_index(session, task)
+    selected, turn_count = _select_cycle_accounts(accounts, config, mode, ramp_ratio, has_context=bool(usable_context_rows), cycle_index=cycle_index)
     history_parts = [f"{row.sender_name}: {row.content}" for row in usable_context_rows[-50:]]
     if idle_continuation:
         history_parts.append(_idle_continuation_history(config, group, previous_ai_messages))
@@ -129,7 +130,6 @@ def build_plan(session: Session, task: Task) -> int:
     profile_preview = learning_profile_preview(session, task.tenant_id, int(config.get("target_operation_target_id") or 0) or None, GROUP_CHAT_SCENE)
     audit_learning_profile_use(session, task, profile_preview, "AI活群任务")
     generation_config = _generation_config_with_profile(config, account_memories, account_profiles, topic_thread, topic_plan, profile_preview)
-    cycle_index = _next_cycle_index(session, task)
     cycle_id = f"{task.id}:cycle:{cycle_index}"
     try:
         contents, tokens = generate_group_messages(session, task.tenant_id, generation_config, count=turn_count, target_label=target_label, history=history)
@@ -355,14 +355,15 @@ def _last_successful_ai_action_at(session: Session, task: Task) -> datetime | No
     return _naive_datetime(action.executed_at or action.scheduled_at or action.created_at)
 
 
-def _select_cycle_accounts(accounts: list, config: dict, mode: str, ramp_ratio: float, *, has_context: bool) -> tuple[list, int]:
+def _select_cycle_accounts(accounts: list, config: dict, mode: str, ramp_ratio: float, *, has_context: bool, cycle_index: int = 1) -> tuple[list, int]:
+    rotated_accounts = _rotate_accounts(accounts, cycle_index)
     if str(config.get("messages_per_round_mode") or "auto") == "manual":
         jitter = float(config.get("participation_jitter") or 0)
         rate = float(config.get("participation_rate") or 0.6) * ramp_ratio
-        desired = max(1, round(len(accounts) * rate * random.uniform(max(0.1, 1 - jitter), 1 + jitter)))
+        desired = max(1, round(len(rotated_accounts) * rate * random.uniform(max(0.1, 1 - jitter), 1 + jitter)))
         if mode == "静默期":
             desired = min(desired, int(config.get("silent_max_accounts") or 5))
-        selected = accounts[: min(desired, len(accounts))]
+        selected = rotated_accounts[: min(desired, len(rotated_accounts))]
         messages_per_round = int(config.get("messages_per_round") or 1)
         if mode == "静默期":
             messages_per_round = min(messages_per_round, int(config.get("silent_messages_per_round") or 1))
@@ -370,8 +371,15 @@ def _select_cycle_accounts(accounts: list, config: dict, mode: str, ramp_ratio: 
     limit = 2 if mode == "静默期" else 5
     if not has_context:
         limit = min(limit, 3)
-    selected = accounts[: min(limit, len(accounts))]
+    selected = rotated_accounts[: min(limit, len(rotated_accounts))]
     return selected, max(1, len(selected))
+
+
+def _rotate_accounts(accounts: list, cycle_index: int) -> list:
+    if len(accounts) <= 1:
+        return accounts
+    offset = (max(1, int(cycle_index or 1)) - 1) % len(accounts)
+    return accounts[offset:] + accounts[:offset]
 
 
 def _bootstrap_history(config: dict, group: TgGroup) -> str:
