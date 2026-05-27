@@ -358,6 +358,48 @@ def test_context_expired_skip_clears_same_cycle_pending_actions(monkeypatch):
         assert task.next_run_at < now_value + timedelta(minutes=5)
 
 
+def test_context_expiration_ignores_backfilled_older_messages(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        snapshot = GroupContextMessage(
+            tenant_id=1,
+            group_id=7,
+            listener_account_id=11,
+            content="当前快照",
+            remote_message_id="snapshot",
+            sent_at=now_value - timedelta(minutes=1),
+            created_at=now_value,
+        )
+        session.add(snapshot)
+        session.flush()
+        backfilled_old = GroupContextMessage(
+            tenant_id=1,
+            group_id=7,
+            listener_account_id=11,
+            content="补录旧消息",
+            remote_message_id="backfilled-old",
+            sent_at=now_value - timedelta(minutes=30),
+            created_at=now_value + timedelta(seconds=1),
+        )
+        session.add(backfilled_old)
+        session.add(_cycle_action("action-backfill", now_value, _expired_cycle_payload(snapshot.id, cycle_id="cycle-backfill", text="should send")))
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: SendResult(True, remote_message_id="tg-context-ok"))
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert dispatcher.dispatch_action(session, claimed) is True
+
+        refreshed = session.get(Action, "action-backfill")
+        assert refreshed.status == "success"
+        assert refreshed.result["telegram_msg_id"] == "tg-context-ok"
+
+
 def test_gateway_exception_after_call_started_marks_unknown_after_send(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

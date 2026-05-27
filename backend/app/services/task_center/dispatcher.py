@@ -980,13 +980,26 @@ def _retry_after_seconds(detail: str) -> int:
 def _context_expired(session: Session, payload: SendMessagePayload) -> bool:
     if not payload.cycle_id or not payload.group_id or not payload.context_snapshot_message_id or payload.context_expire_after_messages <= 0:
         return False
-    newer_count = session.scalar(
-        select(func.count(GroupContextMessage.id)).where(
-            GroupContextMessage.group_id == payload.group_id,
-            GroupContextMessage.id > payload.context_snapshot_message_id,
+    return _newer_context_count(session, payload) >= payload.context_expire_after_messages
+
+
+def _newer_context_count(session: Session, payload: SendMessagePayload) -> int:
+    snapshot = session.get(GroupContextMessage, payload.context_snapshot_message_id)
+    filters = [
+        GroupContextMessage.group_id == payload.group_id,
+        GroupContextMessage.is_bot.is_(False),
+    ]
+    if snapshot and snapshot.sent_at:
+        filters.extend(
+            [
+                GroupContextMessage.sent_at.is_not(None),
+                GroupContextMessage.sent_at > snapshot.sent_at,
+            ]
         )
-    ) or 0
-    return int(newer_count) >= payload.context_expire_after_messages
+    else:
+        filters.append(GroupContextMessage.id > payload.context_snapshot_message_id)
+    newer_count = session.scalar(select(func.count(GroupContextMessage.id)).where(*filters)) or 0
+    return int(newer_count)
 
 
 def _skip_context_expired_cycle(session: Session, current: Action, payload: SendMessagePayload) -> None:
