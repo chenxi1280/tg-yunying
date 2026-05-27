@@ -539,6 +539,7 @@ class ActionOut(ApiModel):
     retry_count: int
     failure_type: str = ""
     failure_reason: str = ""
+    failure_diagnosis: dict[str, Any] = Field(default_factory=dict)
     raw_error: str = ""
     trace_id: str = ""
     operation_issue_id: str = ""

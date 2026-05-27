@@ -41,6 +41,10 @@ function DetailStatusBadge({ status }: { status?: string | null }) {
   return <StatusBadge status={status} label={statusLabel(status)} />;
 }
 
+function membershipFailureSummary(item: Record<string, any>) {
+  return item.failure_diagnosis?.operator_summary || item.failure_reason || '-';
+}
+
 function mediaUrl(value?: string | null) {
   if (!value) return '';
   return value.startsWith('http') ? value : `${API_ORIGIN}${value}`;
@@ -96,7 +100,7 @@ export function TaskCenterDetailModal({
     { title: '账号', key: 'account', width: 180, render: (_, item) => <Space direction="vertical" size={0}><Typography.Text strong>{item.display_name || `账号 #${item.account_id}`}</Typography.Text><Typography.Text type="secondary">{item.username ? `@${item.username}` : '-'}</Typography.Text></Space> },
     { title: '状态', dataIndex: 'membership_status', width: 150, render: (value) => <Tag>{value || '-'}</Tag> },
     { title: '目标', dataIndex: 'target_display', width: 180, ellipsis: true },
-    { title: '失败原因', dataIndex: 'failure_reason', ellipsis: true, render: (value) => value || '-' },
+    { title: '失败原因', key: 'failure_reason', ellipsis: true, render: (_, item) => membershipFailureSummary(item) },
     { title: '计划时间', dataIndex: 'scheduled_at', width: 170, render: (value) => formatDateTime(value) },
     { title: '完成时间', dataIndex: 'completed_at', width: 170, render: (value) => formatDateTime(value) },
   ];

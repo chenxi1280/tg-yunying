@@ -42,6 +42,13 @@ export type TaskCenterAction = {
   retry_count: number;
   failure_type: string;
   failure_reason: string;
+  failure_diagnosis: {
+    category?: string;
+    scope?: string;
+    operator_summary?: string;
+    suggested_action?: string;
+    [key: string]: any;
+  };
   raw_error: string;
   trace_id: string;
   operation_issue_id: string;

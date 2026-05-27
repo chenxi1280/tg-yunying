@@ -57,6 +57,12 @@ function ActionStatusBadge({ status }: { status?: string | null }) {
   return <StatusBadge status={status} label={actionStatusLabel(status)} />;
 }
 
+function failureDiagnosis(action: TaskCenterAction) {
+  const diagnosis = action.failure_diagnosis ?? {};
+  if (!diagnosis.operator_summary && !diagnosis.suggested_action) return null;
+  return diagnosis;
+}
+
 type DangerousTaskAction = 'stop' | 'reset' | 'delete';
 type TaskTypeFilter = TaskCenterAnyTaskType | 'all';
 const TASK_CREATE_TIMEOUT_MS = 120_000;
@@ -920,6 +926,8 @@ export default function TaskCenterView({
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <ActionStatusBadge status={value} /> },
     { title: '目标', key: 'target', width: 180, render: (_, action) => actionTarget(action) },
     { title: '内容', key: 'content', ellipsis: true, render: (_, action) => actionContent(action) },
+    { title: '账号/目标原因', key: 'failure_diagnosis_summary', width: 260, ellipsis: true, render: (_, action) => failureDiagnosis(action)?.operator_summary || action.failure_reason || action.result?.error_message || action.result?.detail || '-' },
+    { title: '处理建议', key: 'failure_diagnosis_action', width: 260, ellipsis: true, render: (_, action) => failureDiagnosis(action)?.suggested_action || '-' },
     { title: '失败类型', key: 'failure_type', width: 140, render: (_, action) => action.failure_type || action.result?.error_code || '-' },
     { title: '可读原因', key: 'failure_reason', width: 220, ellipsis: true, render: (_, action) => action.failure_reason || action.result?.error_message || action.result?.detail || '-' },
     { title: '运营异常', key: 'operation_issue', width: 130, render: (_, action) => action.operation_issue_rolled_up ? <Tag color="red">已上卷 #{action.operation_issue_id.slice(0, 8)}</Tag> : '-' },
@@ -1076,6 +1084,7 @@ export default function TaskCenterView({
   const executedActions = detail?.actions.filter((action) => !isPlannedAction(action)) ?? [];
   const detailProfile = detail && !isSystemTask(detail.task) ? currentOperationProfile({ pacing_config: detail.task.pacing_config }) : null;
   const detailPlannedTotal = (detail?.stats.total_actions ?? 0) + plannedActions.length;
+  const attemptDiagnosis = attemptDetail ? failureDiagnosis(attemptDetail.action) : null;
 
   return (
     <>
@@ -1194,6 +1203,15 @@ export default function TaskCenterView({
         destroyOnHidden
         centered
       >
+        {attemptDiagnosis && (
+          <Alert
+            className="form-alert"
+            type="warning"
+            showIcon
+            message={attemptDiagnosis.operator_summary}
+            description={<Space direction="vertical" size={2}><Typography.Text strong>处理建议</Typography.Text><Typography.Text>{attemptDiagnosis.suggested_action}</Typography.Text></Space>}
+          />
+        )}
         <Table<TaskExecutionAttempt>
           className="tg-table"
           rowKey="id"

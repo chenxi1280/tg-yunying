@@ -8,7 +8,7 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import Action, ChannelMessage, ExecutionAttempt, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuntimeMetricSnapshot, RuleSet, RuleSetVersion, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
+from app.models import Action, ChannelMessage, ExecutionAttempt, FailureType, MessageFingerprint, OperationIssue, OperationPlanTaskLink, OperationTarget, ReviewQueue, RuntimeMetricSnapshot, RuleSet, RuleSetVersion, Task, TaskRuntimeSummary, TgAccount, TgGroup, WorkerHeartbeat
 from app.schemas.task_center import (
     ChannelCapacityCheckRequest,
     ChannelCommentConfig,
@@ -65,6 +65,20 @@ _empty_stats = empty_stats
 _next_run_after_task = next_run_after_task
 _retry_failed_actions = retry_failed_actions
 OPEN_PLAN_ACTION_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
+TARGET_PERMISSION_MARKERS = (
+    "lack permission",
+    "banned",
+    "private",
+    "sendmessagerequest",
+    "chatwriteforbidden",
+    "userbanned",
+    "该账号不可向此群发送",
+    "群无权限",
+    "账号不可发言",
+    "缓存频道不可访问",
+)
+ACCOUNT_AUTH_MARKERS = ("session", "auth key", "auth_key", "unauthorized", "重新登录", "账号没有可用 session", "session 已失效")
+RATE_LIMIT_MARKERS = ("floodwait", "too many requests", "slowmode", "慢速模式", "冷却")
 
 
 from .config_fields import (
@@ -1146,6 +1160,7 @@ class _ActionPayload(dict):
 def _action_payload(action: Action, issue: OperationIssue | None = None) -> dict[str, Any]:
     result = action.result or {}
     failure_type = _action_failure_type(action)
+    failure_reason = _action_failure_reason(action)
     return _ActionPayload({
         "id": action.id,
         "tenant_id": action.tenant_id,
@@ -1160,7 +1175,8 @@ def _action_payload(action: Action, issue: OperationIssue | None = None) -> dict
         "result": result,
         "retry_count": action.retry_count,
         "failure_type": failure_type,
-        "failure_reason": _action_failure_reason(action),
+        "failure_reason": failure_reason,
+        "failure_diagnosis": _action_failure_diagnosis(action, failure_type, failure_reason),
         "raw_error": str(result.get("raw_error") or result.get("raw_response") or result.get("exception") or ""),
         "trace_id": str(result.get("trace_id") or result.get("request_id") or ""),
         "operation_issue_id": issue.id if issue else "",
@@ -1178,6 +1194,99 @@ def _action_failure_type(action: Action) -> str:
 def _action_failure_reason(action: Action) -> str:
     result = action.result or {}
     return str(result.get("error_message") or result.get("failure_reason") or result.get("detail") or "")
+
+
+def _action_failure_diagnosis(action: Action, failure_type: str, failure_reason: str) -> dict[str, str]:
+    if action.status not in {"failed", "retryable_failed", "skipped"} and not failure_type and not failure_reason:
+        return {}
+    text = _action_failure_text(action, failure_type, failure_reason)
+    if _has_failure_marker(text, TARGET_PERMISSION_MARKERS) or failure_type in _target_permission_types():
+        return _target_permission_diagnosis()
+    if _has_failure_marker(text, ACCOUNT_AUTH_MARKERS) or failure_type in _account_auth_types():
+        return _account_auth_diagnosis()
+    if _has_failure_marker(text, RATE_LIMIT_MARKERS) or failure_type in _rate_limit_types():
+        return _rate_limit_diagnosis(failure_type)
+    if failure_type == FailureType.CONTENT_REJECTED.value:
+        return _content_policy_diagnosis()
+    if "context_expired" in text or "上下文过期" in text:
+        return _context_expired_diagnosis()
+    return _unknown_failure_diagnosis()
+
+
+def _action_failure_text(action: Action, failure_type: str, failure_reason: str) -> str:
+    result = action.result or {}
+    parts = [failure_type, failure_reason, result.get("raw_error"), result.get("exception"), result.get("validation_stage")]
+    return " ".join(str(part).lower() for part in parts if part)
+
+
+def _has_failure_marker(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker.lower() in text for marker in markers)
+
+
+def _target_permission_types() -> set[str]:
+    return {FailureType.GROUP_PERMISSION_DENIED.value, FailureType.PEER_INVALID.value, FailureType.CHANNEL_POST_DENIED.value}
+
+
+def _account_auth_types() -> set[str]:
+    return {FailureType.ACCOUNT_UNAVAILABLE.value, FailureType.ACCOUNT_LIMITED.value}
+
+
+def _rate_limit_types() -> set[str]:
+    return {FailureType.FLOOD_WAIT.value, FailureType.SLOWMODE.value}
+
+
+def _target_permission_diagnosis() -> dict[str, str]:
+    return {
+        "category": "target_permission",
+        "scope": "account_target",
+        "operator_summary": "账号在线但不能向该目标发送，通常是未加入、被禁言/被踢、目标群私有或准入失效；不是账号掉线。",
+        "suggested_action": "到运营目标详情确认目标群准入和账号发言权限，必要时重新拉账号入群、解除禁言，或换可向目标群发言的账号。",
+    }
+
+
+def _account_auth_diagnosis() -> dict[str, str]:
+    return {
+        "category": "account_auth",
+        "scope": "account",
+        "operator_summary": "账号会话不可用或账号受限，发送前已被账号状态拦截。",
+        "suggested_action": "到 TG 账号管理检查账号状态，按账号详情提示重新登录、刷新 session 或执行健康检查。",
+    }
+
+
+def _rate_limit_diagnosis(failure_type: str) -> dict[str, str]:
+    return {
+        "category": "rate_limit",
+        "scope": "account_target" if failure_type == FailureType.SLOWMODE.value else "account",
+        "operator_summary": "Telegram 节流或目标慢速模式触发，当前失败不是配置丢失。",
+        "suggested_action": "等待失败详情中的冷却时间后重试，并降低该账号或该目标的发送频率。",
+    }
+
+
+def _content_policy_diagnosis() -> dict[str, str]:
+    return {
+        "category": "content_policy",
+        "scope": "content",
+        "operator_summary": "内容在发送前命中规则或风控策略，被系统主动拦截。",
+        "suggested_action": "检查规则中心命中的关键词、链接白名单或 AI 候选内容，调整规则或素材后再重试。",
+    }
+
+
+def _context_expired_diagnosis() -> dict[str, str]:
+    return {
+        "category": "context_expired",
+        "scope": "task_context",
+        "operator_summary": "这条动作依赖的上下文已经过期，系统跳过旧上下文以避免补发过时内容。",
+        "suggested_action": "通常无需重新登录账号；等待新群聊上下文触发，或重置任务重新生成执行计划。",
+    }
+
+
+def _unknown_failure_diagnosis() -> dict[str, str]:
+    return {
+        "category": "unknown",
+        "scope": "action",
+        "operator_summary": "当前错误还不能自动归类，需要结合尝试记录和 Trace 查看原始返回。",
+        "suggested_action": "打开“尝试”查看原始失败详情；若同一账号持续失败，再检查账号状态和目标群权限。",
+    }
 
 
 def _naive_datetime(value):

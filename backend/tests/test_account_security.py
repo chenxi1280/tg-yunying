@@ -502,6 +502,29 @@ def test_profile_batch_is_visible_as_readonly_task_center_projection():
         assert detail["profile_batch"]["items"][0]["profile_status"] == "pending"
 
 
+def test_profile_batch_task_list_uses_lightweight_projection(monkeypatch):
+    from app.services.task_center import profile_batch_projection
+
+    with _session() as session:
+        account = _seed_account(session)
+        payload = AccountSecurityBatchCreate(
+            account_ids=[account.id],
+            action_types=["update_profile"],
+            confirm_text="确认",
+            profile_strategy=ProfileGenerationStrategy(generation_mode="template"),
+            reason="测试列表轻量投影",
+        )
+        batch = create_account_security_batch(session, 1, payload, "tester")
+
+        def fail_detail_search(*_args, **_kwargs):
+            raise AssertionError("task list must not build profile-batch detail search text")
+
+        monkeypatch.setattr(profile_batch_projection, "_projection_search_text", fail_detail_search)
+        rows = list_tasks(session, 1, task_type="account_profile_init")
+
+    assert [row["id"] for row in rows] == [f"account_security_batch:{batch.id}"]
+
+
 def test_delete_profile_batch_projection_hides_task_and_skips_pending_items():
     with _session() as session:
         account = _seed_account(session)

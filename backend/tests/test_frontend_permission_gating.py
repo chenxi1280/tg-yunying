@@ -463,6 +463,18 @@ def test_task_center_lifecycle_buttons_match_task_status():
     assert "return !isSystemTask(task) && task.status === 'running';" in source
     assert "canManageTasks && canStartTask(task) &&" in source
     assert "canManageTasks && canPauseTask(task) &&" in source
+
+
+def test_task_center_failure_diagnosis_is_visible_before_attempt_table():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    detail_modal = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+
+    assert "failure_diagnosis" in types
+    assert "failureDiagnosis(action)" in source
+    assert "处理建议" in source
+    assert "账号/目标原因" in source
+    assert "failure_diagnosis" in detail_modal
     assert "task.status === 'paused' ? 'resume' : 'start'" in source
     assert ">{task.status === 'paused' ? '恢复' : '启动'}</Button>" not in source
     assert "disabled={task.status !== 'running'}" not in source

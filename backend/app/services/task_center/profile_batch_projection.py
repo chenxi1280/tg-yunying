@@ -33,7 +33,7 @@ def list_profile_batch_tasks(session: Session, tenant_id: int, task_type: str | 
             .limit(50)
         )
     )
-    rows = [_projection_payload(session, batch) for batch in batches if _is_profile_batch(batch)]
+    rows = [_projection_payload(session, batch, include_detail_search=False) for batch in batches if _is_profile_batch(batch)]
     return [row for row in rows if not status or row["status"] == status]
 
 
@@ -98,9 +98,10 @@ def _skip_open_profile_batch_item(item: TgAccountSecurityBatchItem, reason: str,
             setattr(item, field, "skipped")
 
 
-def _projection_payload(session: Session, batch: TgAccountSecurityBatch) -> dict[str, Any]:
+def _projection_payload(session: Session, batch: TgAccountSecurityBatch, *, include_detail_search: bool = True) -> dict[str, Any]:
     items = _batch_items(session, batch.id)
     stats = _projection_stats(batch, items)
+    search_text = _projection_search_text(session, batch, items) if include_detail_search else _projection_light_search_text(batch)
     return {
         "id": f"{PROFILE_BATCH_TASK_PREFIX}{batch.id}",
         "tenant_id": batch.tenant_id,
@@ -120,7 +121,7 @@ def _projection_payload(session: Session, batch: TgAccountSecurityBatch) -> dict
         "type_config": {"source": "account_security_batch", "batch_id": batch.id},
         "stats": stats,
         "target_summary": f"账号资料初始化 / {batch.total_count} 个账号",
-        "search_text": _projection_search_text(session, batch, items),
+        "search_text": search_text,
         "created_at": batch.created_at,
         "updated_at": batch.finished_at or batch.started_at or batch.created_at,
     }
@@ -211,6 +212,11 @@ def _projection_search_text(session: Session, batch: TgAccountSecurityBatch, ite
             parts.extend([account.display_name, account.username, account.phone_number, account.phone_masked])
         if material:
             parts.extend([material.title, material.cache_ready_status])
+    return " ".join(str(part) for part in parts if part)
+
+
+def _projection_light_search_text(batch: TgAccountSecurityBatch) -> str:
+    parts = [batch.id, batch.reason, batch.trace_id, batch.status]
     return " ".join(str(part) for part in parts if part)
 
 

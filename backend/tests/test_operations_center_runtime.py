@@ -36,7 +36,7 @@ from app.services.group_listeners import process_group_listener
 from app.services.task_center.listener_runtime import drain_listener_runtime, reset_listener_runtime_cache, should_collect_listener
 from app.services.task_center.fingerprints import content_fingerprint
 from app.services.task_center.policies import validate_group_send_policy
-from app.services.task_center.service import _channel_subtask_status, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
+from app.services.task_center.service import _action_payload, _channel_subtask_status, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.runtime_summary import get_operation_issue_detail, refresh_task_summary, upsert_operation_issue
 from app.timezone import BEIJING_TZ, beijing_day_bounds
@@ -162,6 +162,31 @@ def test_task_center_list_treats_all_filters_as_unfiltered():
     assert {row["id"] for row in status_rows} == {"task-filter-running", "task-filter-paused"}
     assert {row["id"] for row in chinese_status_rows} == {"task-filter-running", "task-filter-paused"}
     assert {row["id"] for row in type_rows} == {"task-filter-running", "task-filter-paused"}
+
+
+def test_task_center_action_payload_explains_group_permission_failures():
+    action = Action(
+        id="diagnose-group-permission",
+        tenant_id=1,
+        task_id="task-permission",
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=8,
+        status="failed",
+        result={
+            "success": False,
+            "error_code": "未知错误",
+            "error_message": "The channel specified is private and you lack permission to access it. Another reason may be that you were banned from it (caused by SendMessageRequest)",
+            "validation_stage": "telegram_api",
+        },
+    )
+
+    payload = _action_payload(action)
+
+    assert payload["failure_diagnosis"]["category"] == "target_permission"
+    assert payload["failure_diagnosis"]["scope"] == "account_target"
+    assert "不是账号掉线" in payload["failure_diagnosis"]["operator_summary"]
+    assert "目标群" in payload["failure_diagnosis"]["suggested_action"]
 
 
 def test_message_task_list_treats_all_status_as_unfiltered():
