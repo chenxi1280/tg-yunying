@@ -163,9 +163,9 @@ def _summary_counts(summary: Any | None) -> dict[str, Any]:
 
 
 def _is_future(value: datetime) -> bool:
-    from app.services._common import _now
+    from app.services._common import _as_utc, _now
 
-    return value > _now()
+    return _as_utc(value) > _as_utc(_now())
 
 
 def _next_run_reason(task: Task) -> str:

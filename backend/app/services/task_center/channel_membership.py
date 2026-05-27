@@ -4,7 +4,7 @@ import random
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, Action, GroupAuthStatus, OperationTarget, Task, TgAccount, TgGroup, TgGroupAccount
@@ -185,7 +185,14 @@ def candidate_accounts_for_config(session: Session, tenant_id: int, account_conf
     mode = account_config.get("selection_mode") or "all"
     if mode == "manual":
         account_ids = [int(item) for item in account_config.get("account_ids") or []]
-        stmt = stmt.where(TgAccount.id.in_(account_ids)) if account_ids else None
+        if not account_ids:
+            stmt = None
+        else:
+            account_order = case(
+                {account_id: index for index, account_id in enumerate(account_ids)},
+                value=TgAccount.id,
+            )
+            stmt = stmt.where(TgAccount.id.in_(account_ids)).order_by(None).order_by(account_order.asc())
     elif mode == "group":
         pool_id = int(account_config.get("account_group_id") or 0)
         if not pool_id:

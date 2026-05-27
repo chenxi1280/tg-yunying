@@ -158,6 +158,7 @@ def build_plan(session: Session, task: Task) -> int:
     if not contents:
         _mark_quality_skip(task, config, mode, ramp_ratio, _context_mode(usable_context_rows, idle_continuation), chat_mode, quality_stats)
         return 0
+    selected = _prioritize_account_memory(selected, account_memories)
     add_tokens(task, tokens)
     times = schedule_times(len(contents), task.pacing_config or {})
     context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
@@ -380,6 +381,12 @@ def _rotate_accounts(accounts: list, cycle_index: int) -> list:
         return accounts
     offset = (max(1, int(cycle_index or 1)) - 1) % len(accounts)
     return accounts[offset:] + accounts[:offset]
+
+
+def _prioritize_account_memory(accounts: list, account_memories: dict[str, str]) -> list:
+    if len(accounts) <= 1 or not account_memories:
+        return accounts
+    return sorted(accounts, key=lambda account: 0 if account_memories.get(str(account.id)) else 1)
 
 
 def _bootstrap_history(config: dict, group: TgGroup) -> str:
