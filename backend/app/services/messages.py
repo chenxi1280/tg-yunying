@@ -33,7 +33,7 @@ from app.integrations.telegram import DeveloperAppCredentials, OutboundSegment
 from app.timezone import beijing_day_bounds
 from app.task_queue import get_task_queue
 
-from ._common import _as_utc, _now, audit, gateway, require_tenant
+from ._common import _as_utc, _now, audit, gateway, normalize_list_filter, require_tenant
 from app.schemas import DirectMessageTaskCreate, MessageSendBatchCreate, MessageSendTarget, MessageSendTaskCreate
 from app.schemas.risk_control import RiskPreflightRequest
 
@@ -1079,11 +1079,12 @@ def cancel_message_task(session: Session, task_id: int, actor: str) -> MessageTa
 
 def filter_tasks(session: Session, tenant_id: int, page: int, page_size: int, search: str | None, status: str | None) -> list[MessageTask]:
     require_tenant(session, tenant_id)
+    status_filter = normalize_list_filter(status)
     stmt = select(MessageTask).where(MessageTask.tenant_id == tenant_id)
     if search:
         stmt = stmt.where(MessageTask.content.like(f"%{search}%"))
-    if status:
-        stmt = stmt.where(MessageTask.status == status)
+    if status_filter:
+        stmt = stmt.where(MessageTask.status == status_filter)
     tasks = list(session.scalars(stmt.order_by(MessageTask.id.desc()).offset((page - 1) * page_size).limit(page_size)))
     return _attach_operation_issue_statuses(session, tasks)
 

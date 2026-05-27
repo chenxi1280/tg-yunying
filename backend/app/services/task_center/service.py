@@ -35,7 +35,7 @@ from app.schemas.task_center import (
     TaskSourceFilterOverrideRequest,
     TaskUpdate,
 )
-from app.services._common import _now, audit
+from app.services._common import _now, audit, normalize_list_filter
 
 from .account_pool import select_task_accounts
 from .ai_generator import generate_channel_comments, generate_group_messages
@@ -192,18 +192,20 @@ def _task_payload_with_runtime_summary(session: Session, task: Task, summary: Ta
 
 
 def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+    type_filter = normalize_list_filter(task_type)
+    status_filter = normalize_list_filter(status)
     stmt = select(Task).where(Task.tenant_id == tenant_id, Task.deleted_at.is_(None))
-    if task_type:
-        stmt = stmt.where(Task.type == task_type)
-    if status:
-        stmt = stmt.where(Task.status == status)
+    if type_filter:
+        stmt = stmt.where(Task.type == type_filter)
+    if status_filter:
+        stmt = stmt.where(Task.status == status_filter)
     tasks = list(session.scalars(stmt.order_by(Task.priority.asc(), Task.created_at.desc())))
     summaries = {
         summary.task_id: summary
         for summary in session.scalars(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id))
     }
     task_rows = [_task_payload_with_runtime_summary(session, task, summaries.get(task.id)) for task in tasks]
-    return [*task_rows, *list_profile_batch_tasks(session, tenant_id, task_type, status)]
+    return [*task_rows, *list_profile_batch_tasks(session, tenant_id, type_filter, status_filter)]
 
 
 def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str, Any]:

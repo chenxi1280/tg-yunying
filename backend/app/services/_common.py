@@ -49,6 +49,16 @@ def _is_expired(value: datetime | None) -> bool:
 
 
 SUBSCRIPTION_INACTIVE_DETAIL = "subscription inactive"
+ALL_FILTER_VALUES = {"all", "全部", "全部状态", "全部类型"}
+
+
+def normalize_list_filter(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized or normalized.lower() in ALL_FILTER_VALUES:
+        return None
+    return normalized
 
 
 def system_user_for_tenant(session: Session, tenant_id: int, *, service_name: str, missing_message: str) -> CurrentUser:

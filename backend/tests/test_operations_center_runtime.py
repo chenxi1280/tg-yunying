@@ -141,6 +141,50 @@ def test_task_center_list_does_not_load_channel_message_detail():
     assert not any("channel_messages" in statement.lower() for statement in statements)
 
 
+def test_task_center_list_treats_all_filters_as_unfiltered():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                Task(id="task-filter-running", tenant_id=1, name="运行任务", type="group_ai_chat", status="running"),
+                Task(id="task-filter-paused", tenant_id=1, name="暂停任务", type="channel_like", status="paused"),
+            ]
+        )
+        session.commit()
+
+        status_rows = list_tasks(session, 1, status="all")
+        chinese_status_rows = list_tasks(session, 1, status="全部")
+        type_rows = list_tasks(session, 1, task_type="all")
+
+    assert {row["id"] for row in status_rows} == {"task-filter-running", "task-filter-paused"}
+    assert {row["id"] for row in chinese_status_rows} == {"task-filter-running", "task-filter-paused"}
+    assert {row["id"] for row in type_rows} == {"task-filter-running", "task-filter-paused"}
+
+
+def test_message_task_list_treats_all_status_as_unfiltered():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                MessageTask(tenant_id=1, content="排队任务", status=TaskStatus.QUEUED.value, idempotency_key="all-status-queued"),
+                MessageTask(tenant_id=1, content="失败任务", status=TaskStatus.FAILED.value, idempotency_key="all-status-failed"),
+            ]
+        )
+        session.commit()
+
+        rows = filter_tasks(session, 1, 1, 10, None, "all")
+        chinese_rows = filter_tasks(session, 1, 1, 10, None, "全部")
+
+    assert {row.content for row in rows} == {"排队任务", "失败任务"}
+    assert {row.content for row in chinese_rows} == {"排队任务", "失败任务"}
+
+
 def test_task_list_and_detail_expose_derived_runtime_stage():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
