@@ -306,6 +306,7 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
             _fail_with_policy(action, FailureType.CONTENT_REJECTED.value, filtered.reason, auto_check="拦截", validation_stage="content_policy")
             return True
         if _context_expired(session, payload):
+            _skip_context_expired_cycle(session, action, payload)
             _skip(action, "context_expired", "上下文已过期，跳过本轮剩余发言")
             return True
         account_id = account.id
@@ -986,6 +987,37 @@ def _context_expired(session: Session, payload: SendMessagePayload) -> bool:
         )
     ) or 0
     return int(newer_count) >= payload.context_expire_after_messages
+
+
+def _skip_context_expired_cycle(session: Session, current: Action, payload: SendMessagePayload) -> None:
+    if not payload.cycle_id:
+        return
+    pending_actions = list(
+        session.scalars(
+            select(Action).where(
+                Action.id != current.id,
+                Action.tenant_id == current.tenant_id,
+                Action.task_id == current.task_id,
+                Action.action_type == "send_message",
+                Action.status == "pending",
+            )
+        )
+    )
+    for action in pending_actions:
+        action_payload = action.payload if isinstance(action.payload, dict) else {}
+        if _same_context_cycle(action_payload, payload):
+            _skip(action, "context_expired", "上下文已过期，跳过本轮剩余发言")
+    task = session.get(Task, current.task_id)
+    if task:
+        task.next_run_at = _now()
+
+
+def _same_context_cycle(action_payload: dict, payload: SendMessagePayload) -> bool:
+    return (
+        action_payload.get("cycle_id") == payload.cycle_id
+        and action_payload.get("group_id") == payload.group_id
+        and action_payload.get("context_snapshot_message_id") == payload.context_snapshot_message_id
+    )
 
 
 __all__ = ["claim_actions", "dispatch_action", "due_actions", "recover_expired_claims"]

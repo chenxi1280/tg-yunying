@@ -217,6 +217,147 @@ def test_dispatch_context_expired_skip_releases_reserved_account_runtime_resourc
         assert claimed.id not in dispatcher._ACTION_RESERVATIONS
 
 
+def _add_cycle_skip_basics(session: Session, now_value: datetime) -> None:
+    session.add(Tenant(id=1, name="默认运营空间"))
+    session.add(
+        Task(
+            id="task-cycle-skip",
+            tenant_id=1,
+            name="skip",
+            type="group_ai_chat",
+            status="running",
+            next_run_at=now_value + timedelta(hours=1),
+        )
+    )
+    session.add(
+        TgAccount(
+            id=11,
+            tenant_id=1,
+            display_name="账号",
+            phone_masked="+861***0011",
+            status="在线",
+            session_ciphertext="session",
+        )
+    )
+    session.add(
+        TgGroup(
+            id=7,
+            tenant_id=1,
+            tg_peer_id="-1007",
+            title="运营群",
+            auth_status="已授权运营",
+            can_send=True,
+            require_review=False,
+        )
+    )
+    session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
+
+
+def _add_cycle_contexts(session: Session, now_value: datetime) -> tuple[GroupContextMessage, GroupContextMessage]:
+    old_context = GroupContextMessage(
+        tenant_id=1,
+        group_id=7,
+        listener_account_id=11,
+        content="旧上下文",
+        remote_message_id="old",
+        created_at=now_value - timedelta(minutes=2),
+    )
+    new_context = GroupContextMessage(
+        tenant_id=1,
+        group_id=7,
+        listener_account_id=11,
+        content="新上下文",
+        remote_message_id="new",
+        created_at=now_value,
+    )
+    session.add_all([old_context, new_context])
+    session.flush()
+    return old_context, new_context
+
+
+def _cycle_action(action_id: str, scheduled_at: datetime, payload: dict) -> Action:
+    return Action(
+        id=action_id,
+        tenant_id=1,
+        task_id="task-cycle-skip",
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=11,
+        status="pending",
+        scheduled_at=scheduled_at,
+        payload=payload,
+    )
+
+
+def _expired_cycle_payload(
+    context_id: int,
+    *,
+    cycle_id: str = "cycle-stale",
+    text: str = "skip",
+) -> dict:
+    return {
+        "group_id": 7,
+        "message_text": text,
+        "review_approved": True,
+        "cycle_id": cycle_id,
+        "context_snapshot_message_id": context_id,
+        "context_expire_after_messages": 1,
+    }
+
+
+def test_context_expired_skip_clears_same_cycle_pending_actions(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        old_context, new_context = _add_cycle_contexts(session, now_value)
+        expired_payload = _expired_cycle_payload(old_context.id)
+        session.add_all(
+            [
+                _cycle_action("action-stale-due", now_value, expired_payload),
+                _cycle_action(
+                    "action-stale-future",
+                    now_value + timedelta(hours=1),
+                    _expired_cycle_payload(old_context.id, text="future"),
+                ),
+                _cycle_action(
+                    "action-fresh-future",
+                    now_value + timedelta(hours=1),
+                    _expired_cycle_payload(new_context.id, cycle_id="cycle-fresh"),
+                ),
+            ]
+        )
+        session.commit()
+        monkeypatch.setattr(
+            dispatcher,
+            "credentials_for_account",
+            lambda *args, **kwargs: object(),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("context expired action must not call TG")
+            ),
+        )
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert dispatcher.dispatch_action(session, claimed) is True
+
+        stale_due = session.get(Action, "action-stale-due")
+        stale_future = session.get(Action, "action-stale-future")
+        fresh_future = session.get(Action, "action-fresh-future")
+        task = session.get(Task, "task-cycle-skip")
+        assert stale_due.status == "skipped"
+        assert stale_future.status == "skipped"
+        assert stale_future.result["error_code"] == "context_expired"
+        assert fresh_future.status == "pending"
+        assert task.next_run_at < now_value + timedelta(minutes=5)
+
+
 def test_gateway_exception_after_call_started_marks_unknown_after_send(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
