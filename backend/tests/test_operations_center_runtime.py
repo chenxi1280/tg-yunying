@@ -2873,6 +2873,64 @@ def test_operation_profile_drives_schedule_and_ai_cycle_mode():
     assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 11, 30)) == ("高峰期", 1.0)
 
 
+def test_group_ai_chat_round_uses_near_term_schedule_with_operation_curve(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    round_start = datetime(2026, 5, 11, 22, 13, 0)
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        samples = ["线上吧", "微信视频可以", "QQ语音也行", "八点后方便", "风大别出门", "先拉个群", "我看行", "电脑开会稳", "手机也能听", "定个时间"]
+        return samples[:count], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: round_start)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="活群", auth_status="已授权运营"))
+        for account_id in range(101, 111):
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        session.add(
+            GroupContextMessage(
+                tenant_id=1,
+                group_id=7,
+                listener_account_id=101,
+                sender_name="真人",
+                content="线上还是线下",
+                remote_message_id="real-context",
+                sent_at=round_start - timedelta(minutes=1),
+            )
+        )
+        task = Task(
+            id="ai-near-round",
+            tenant_id=1,
+            name="活群近端排程",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 50, "cooldown_per_account_minutes": 0},
+            pacing_config={
+                "mode": "template",
+                "operation_profile": {
+                    "hourly_activity_curve": [10, 8, 5, 5, 0, 0, 8, 15, 35, 45, 55, 60, 45, 40, 55, 65, 70, 75, 80, 85, 70, 50, 25, 15],
+                    "quiet_threshold": 20,
+                    "peak_threshold": 70,
+                },
+            },
+            type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 10, "participation_rate": 1, "participation_jitter": 0, "fact_anchor_required": False},
+        )
+        session.add(task)
+        session.commit()
+
+        assert build_group_ai_chat_plan(session, task) == 10
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.scheduled_at.asc())))
+
+    assert len(actions) == 10
+    assert min(action.scheduled_at for action in actions) >= round_start
+    assert max(action.scheduled_at for action in actions) <= round_start + timedelta(hours=1)
+
+
 def test_group_ai_chat_bootstraps_without_history(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

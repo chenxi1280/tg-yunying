@@ -38,6 +38,14 @@ DEFAULT_IDLE_CONTINUATION_SECONDS = 300
 CHAT_MODE_REPLY = "reply"
 CHAT_MODE_IDLE_WARMUP = "idle_warmup"
 CHAT_MODE_BOOTSTRAP = "bootstrap"
+AI_CHAT_ROUND_INTERVALS_SECONDS = {
+    "高峰期": (20, 60),
+    "正常期": (45, 120),
+    "启动期": (60, 180),
+    "低频期": (180, 360),
+    "休眠期": (600, 1200),
+    "静默期": (300, 900),
+}
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -160,7 +168,7 @@ def build_plan(session: Session, task: Task) -> int:
         return 0
     selected = _prioritize_account_memory(selected, account_memories)
     add_tokens(task, tokens)
-    times = schedule_times(len(contents), task.pacing_config or {})
+    times = _round_schedule_times(len(contents), task.pacing_config or {}, mode)
     context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
     used_account_ids: set[int] = set()
     allow_account_repeat = bool(config.get("allow_account_repeat", True))
@@ -291,6 +299,22 @@ def _choose_turn_account(available: list, selected: list, index: int, used_accou
     if not allow_repeat:
         return None
     return candidates[index % len(candidates)] if candidates else None
+
+
+def _round_schedule_times(total: int, pacing_config: dict, mode: str) -> list[datetime]:
+    if not (pacing_config or {}).get("operation_profile"):
+        return schedule_times(total, pacing_config or {})
+    lo, hi = AI_CHAT_ROUND_INTERVALS_SECONDS.get(mode, AI_CHAT_ROUND_INTERVALS_SECONDS["正常期"])
+    hourly_cap = int((pacing_config or {}).get("max_actions_per_hour") or 0)
+    if hourly_cap > 0:
+        min_gap = max(1, (3600 + hourly_cap - 1) // hourly_cap)
+        lo = max(lo, min_gap)
+        hi = max(hi, lo)
+    return schedule_times(
+        total,
+        {"mode": "fixed", "interval_seconds_min": lo, "interval_seconds_max": hi, "jitter_percent": 20},
+        start_at=_now(),
+    )
 
 
 def _mark_waiting_context(
