@@ -166,6 +166,53 @@ def test_claim_actions_reassigns_account_before_reserving_runtime_resources_and_
         assert action.id not in dispatcher._ACTION_RESERVATIONS
 
 
+def test_claim_actions_reassigns_group_send_action_when_account_lost_permission(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    sent: dict[str, int] = {}
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_cooldown_seconds=3600, jitter_min_seconds=0, jitter_max_seconds=0))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),
+                TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"),
+            ]
+        )
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
+        session.add_all(
+            [
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=False, permission_label="群无权限或账号不可发言"),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True, permission_label="可发言"),
+            ]
+        )
+        session.add(Task(id="task-group-reassign", tenant_id=1, name="claim", type="group_ai_chat", status="running", priority=1, account_config={"selection_mode": "all", "max_concurrent": 2}))
+        session.add(Action(id="action-group-reassign", tenant_id=1, task_id="task-group-reassign", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"group_id": 7, "message_text": "new", "review_approved": True}))
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+
+        def fake_send_message(account_id, *_args, **_kwargs):  # noqa: ANN001
+            sent["account_id"] = account_id
+            return SendResult(True, remote_message_id="tg-group-reassigned")
+
+        monkeypatch.setattr(dispatcher.gateway, "send_message", fake_send_message)
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert claimed.account_id == 12
+        assert dispatcher.dispatch_action(session, claimed) is True
+
+        action = session.get(Action, "action-group-reassign")
+        assert sent["account_id"] == 12
+        assert action.status == "success"
+        assert action.result["original_account_id"] == 11
+        assert action.result["reassigned_account_id"] == 12
+        assert action.result["telegram_msg_id"] == "tg-group-reassigned"
+
+
 def test_dispatch_context_expired_skip_releases_reserved_account_runtime_resource(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

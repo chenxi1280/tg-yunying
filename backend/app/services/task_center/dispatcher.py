@@ -236,6 +236,19 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
             "shard_index": current_account_shard()[1],
         }
         return False
+    replacement = _replacement_for_lost_group_send_permission(session, action, account)
+    if replacement:
+        action.result = {
+            **(action.result or {}),
+            "auto_check": "转派",
+            "validation_stage": "account_target_permission",
+            "account_policy_action": "reassigned",
+            "account_policy_reason": "account_target_permission_unavailable",
+            "original_account_id": account.id,
+            "reassigned_account_id": replacement.id,
+        }
+        action.account_id = replacement.id
+        return True
     decision = account_capacity_decision(
         session,
         tenant_id=action.tenant_id,
@@ -265,6 +278,34 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
         decision.reason or "账号全局限额或冷却中，已延后执行",
     )
     return False
+
+
+def _replacement_for_lost_group_send_permission(session: Session, action: Action, account: TgAccount) -> TgAccount | None:
+    group_id = _action_group_id(action)
+    if not group_id or _account_can_send_group(session, action, account.id, group_id):
+        return None
+    return _replacement_account_for_action(session, action, account)
+
+
+def _action_group_id(action: Action) -> int | None:
+    if action.action_type != "send_message":
+        return None
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    group_id = int(payload.get("group_id") or 0)
+    return group_id or None
+
+
+def _account_can_send_group(session: Session, action: Action, account_id: int, group_id: int) -> bool:
+    return bool(
+        session.scalar(
+            select(TgGroupAccount.id).where(
+                TgGroupAccount.tenant_id == action.tenant_id,
+                TgGroupAccount.group_id == group_id,
+                TgGroupAccount.account_id == account_id,
+                TgGroupAccount.can_send.is_(True),
+            )
+        )
+    )
 
 
 
