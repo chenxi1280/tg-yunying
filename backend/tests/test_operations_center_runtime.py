@@ -1947,6 +1947,7 @@ def test_task_settings_update_accepts_group_ai_chat_quality_fields():
             TaskSettingsUpdate(
                 slang_prompt_template_id=31,
                 slang_terms={"老师": "特殊称呼"},
+                account_memory_depth=7,
                 context_expire_after_messages=25,
             ),
             "pytest",
@@ -1955,6 +1956,7 @@ def test_task_settings_update_accepts_group_ai_chat_quality_fields():
 
     assert config["slang_prompt_template_id"] == 31
     assert config["slang_terms"] == {"老师": "特殊称呼"}
+    assert config["account_memory_depth"] == 7
     assert config["context_expire_after_messages"] == 25
 
 

@@ -111,6 +111,7 @@ TYPE_SETTINGS_FIELDS = {
         "allow_account_repeat",
         "repeat_cooldown_rounds",
         "account_personas",
+        "account_memory_depth",
         "messages_per_round_mode",
         "messages_per_round",
         "history_fetch_account_id",
