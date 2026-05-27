@@ -6,6 +6,8 @@ from typing import Any
 import pytest
 
 from app.ai_gateway import AiGateway, AiProviderCredentials, mock_candidates, normalize_ai_model_name
+from app.integrations.telegram.gateway import TelethonTelegramGateway
+from app.models import FailureType
 from app.services.task_center.ai_generator import clean_channel_comment_contents, clean_group_chat_contents
 
 
@@ -42,6 +44,13 @@ def test_channel_comment_rejects_provider_refusal_text():
     contents = clean_channel_comment_contents(["The request was rejected because it was considered high risk"], limit=1)
 
     assert contents == []
+
+
+def test_send_message_private_channel_error_maps_to_group_permission_denied():
+    result = TelethonTelegramGateway._map_send_error(RuntimeError("The channel specified is private and you lack permission to access it (caused by SendMessageRequest)"))
+
+    assert result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value
+    assert result.detail == "群无权限或账号不可发言"
 
 
 class FakeResponse:

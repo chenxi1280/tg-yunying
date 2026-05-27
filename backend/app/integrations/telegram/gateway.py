@@ -13,8 +13,6 @@ from .contracts import (
     AccountHealth,
     AccountSecurityOperationResult,
     ArchiveSnapshot,
-    ArchivedMemberSnapshot,
-    ArchivedMessageSnapshot,
     CachedMediaResult,
     ChannelMembershipResult,
     ChannelCommentSnapshot,
@@ -649,6 +647,13 @@ class TelethonTelegramGateway(TelegramGateway):
         custom_emoji_markers = ("CUSTOM_EMOJI", "MessageEntityCustomEmoji", "custom emoji", "document id")
         if any(marker.lower() in detail.lower() for marker in custom_emoji_markers):
             return SendResult(False, failure_type="custom_emoji_unavailable", detail="custom emoji 当前账号或目标不可用")
+        send_permission_markers = (
+            "channel specified is private and you lack permission",
+            "another reason may be that you were banned from it",
+        )
+        lower_detail = detail.lower()
+        if "sendmessagerequest" in lower_detail and any(marker in lower_detail for marker in send_permission_markers):
+            return SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="群无权限或账号不可发言")
         if isinstance(exc, errors.FloodWaitError):
             return SendResult(False, failure_type=FailureType.FLOOD_WAIT.value, detail=f"FloodWait {exc.seconds} 秒")
         if isinstance(exc, getattr(errors, "SlowModeWaitError", ())):
