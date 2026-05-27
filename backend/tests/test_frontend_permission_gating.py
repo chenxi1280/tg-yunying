@@ -373,6 +373,14 @@ def test_app_refresh_does_not_replace_accounts_with_empty_fallback_on_account_ap
     assert "accounts: settledValue(results[3], [] as Account[])" not in source
 
 
+def test_navigation_does_not_reload_full_app_snapshot_for_self_loading_views():
+    context = (PROJECT_ROOT / "frontend/src/app/context.tsx").read_text()
+
+    assert "}, [token, taskStatusFilter, selectedPoolId, activeView]);" not in context
+    assert "}, [token, taskStatusFilter, selectedPoolId]);" in context
+    assert "refreshContentResourcesForActiveView" in context
+
+
 def test_auth_expired_api_errors_force_relogin_without_failure_modal():
     api_client = (PROJECT_ROOT / "frontend/src/shared/api/client.ts").read_text()
     context = (PROJECT_ROOT / "frontend/src/app/context.tsx").read_text()

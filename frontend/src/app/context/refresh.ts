@@ -74,7 +74,7 @@ export type AppSnapshot = {
   audits: AuditLog[];
 };
 
-async function loadContentResources(): Promise<ContentResourceSnapshot> {
+export async function loadContentResources(): Promise<ContentResourceSnapshot> {
   const results = await Promise.allSettled([
     api<Material[]>('/materials'),
     api<MaterialCacheHealth>('/materials/cache/health'),

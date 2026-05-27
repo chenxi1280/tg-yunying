@@ -1,8 +1,9 @@
 from contextlib import contextmanager
+from datetime import timedelta
 import socket
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -102,6 +103,35 @@ def test_risk_control_summary_reuses_existing_scheduling_setting():
     assert summary["global_policy"]["default_retry_backoff"] == "exponential"
     assert summary["account_scores"][0]["current_policy"] == "标准节奏"
     assert setting_count == 1
+
+
+def test_risk_control_summary_batches_account_capacity_queries():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    statements: list[str] = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _capture_sql(_conn, _cursor, statement, _parameters, _context, _executemany):  # noqa: ANN001
+        statements.append(statement)
+
+    now = _now()
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_cooldown_seconds=300))
+        for account_id in range(1, 26):
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, health_score=90))
+            session.add(Action(id=f"action-{account_id}", tenant_id=1, task_id="task", task_type="group_ai_chat", action_type="send_message", account_id=account_id, status="success", scheduled_at=now - timedelta(minutes=1)))
+        session.commit()
+        statements.clear()
+
+        summary = risk_control_summary(session, 1)
+
+    assert len(summary["account_scores"]) == 25
+    capacity_queries = [
+        statement for statement in statements
+        if "max(coalesce" in statement.lower() and ("FROM actions" in statement or "FROM message_tasks" in statement)
+    ]
+    assert len(capacity_queries) <= 4
 
 
 def test_risk_control_summary_includes_policy_audit_records():

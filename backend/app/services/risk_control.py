@@ -34,7 +34,13 @@ from app.models import (
 from app.schemas.risk_control import AccountProxyCreate, AccountProxyUpdate, ProxyBatchBindingRequest, ProxyBindingRequest, RiskControlGlobalPolicyUpdate, RiskPreflightRequest
 from app.security import encrypt_secret
 from app.services._common import _now, audit
-from app.services.account_capacity import account_capacity_decision
+from app.services.account_capacity import (
+    ACTION_OCCUPIED_STATUSES as CAPACITY_ACTION_OCCUPIED_STATUSES,
+    MESSAGE_TASK_OCCUPIED_STATUSES as CAPACITY_MESSAGE_TASK_OCCUPIED_STATUSES,
+    AccountCapacityDecision,
+    account_capacity_decision,
+    defer_until_with_jitter,
+)
 from app.services.ai_config import get_scheduling_setting
 from app.services.content_filters import tenant_keyword_rules
 
@@ -463,8 +469,9 @@ def risk_control_summary(session: Session, tenant_id: int) -> dict[str, Any]:
 
     account_scores = []
     disposition_queue = []
+    capacity_decisions = _capacity_decisions_by_account(session, tenant_id, account_ids, setting, now, hour_usage, day_usage)
     for account in accounts:
-        capacity = account_capacity_decision(session, tenant_id=tenant_id, account_id=account.id, scheduled_at=now)
+        capacity = capacity_decisions.get(account.id) or AccountCapacityDecision(available=True)
         recent_risk = recent_risks.get(account.id, "")
         security_snapshot = security_snapshots.get(account.id)
         score = _account_score_row(
@@ -500,6 +507,100 @@ def risk_control_summary(session: Session, tenant_id: int) -> dict[str, Any]:
         "policy_audits": _policy_audit_records(session, tenant_id),
         "proxy_alerts": proxy_alerts,
     }
+
+
+def _capacity_decisions_by_account(
+    session: Session,
+    tenant_id: int,
+    account_ids: list[int],
+    setting: SchedulingSetting,
+    scheduled_at: datetime,
+    hour_usage: dict[int, int],
+    day_usage: dict[int, int],
+) -> dict[int, AccountCapacityDecision]:
+    if not account_ids:
+        return {}
+    last_occupied = _last_occupied_by_account(session, tenant_id, account_ids, scheduled_at)
+    hour_end = _hour_start(scheduled_at) + timedelta(hours=1)
+    day_end = scheduled_at.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return {
+        account_id: _capacity_decision_from_counts(
+            setting,
+            scheduled_at,
+            last_occupied.get(account_id),
+            hour_usage.get(account_id, 0),
+            day_usage.get(account_id, 0),
+            hour_end,
+            day_end,
+        )
+        for account_id in account_ids
+    }
+
+
+def _capacity_decision_from_counts(
+    setting: SchedulingSetting,
+    scheduled_at: datetime,
+    last_occupied_at: datetime | None,
+    hour_count: int,
+    day_count: int,
+    hour_end: datetime,
+    day_end: datetime,
+) -> AccountCapacityDecision:
+    candidates: list[tuple[datetime, str, str]] = []
+    cooldown_until = _capacity_cooldown_until(setting, scheduled_at, last_occupied_at)
+    if cooldown_until:
+        candidates.append((cooldown_until, "account_cooldown", f"账号全局冷却中，延后至 {cooldown_until:%Y-%m-%d %H:%M:%S}"))
+    hour_limit = int(setting.default_account_hour_limit or 0)
+    if hour_limit > 0 and hour_count >= hour_limit:
+        candidates.append((hour_end, "account_hour_limit", f"账号每小时发送/互动已达上限 {hour_limit}"))
+    day_limit = int(setting.default_account_day_limit or 0)
+    if day_limit > 0 and day_count >= day_limit:
+        candidates.append((day_end, "account_day_limit", f"账号每日发送/互动已达上限 {day_limit}"))
+    if not candidates:
+        return AccountCapacityDecision(available=True)
+    defer_until, reason_code, reason = max(candidates, key=lambda item: item[0])
+    return AccountCapacityDecision(False, defer_until_with_jitter(setting, defer_until), reason_code, reason)
+
+
+def _capacity_cooldown_until(setting: SchedulingSetting, scheduled_at: datetime, last_occupied_at: datetime | None) -> datetime | None:
+    cooldown = int(setting.default_account_cooldown_seconds or 0)
+    if cooldown <= 0 or not last_occupied_at:
+        return None
+    cooldown_until = last_occupied_at.replace(tzinfo=None) + timedelta(seconds=cooldown)
+    return cooldown_until if cooldown_until > scheduled_at.replace(tzinfo=None) else None
+
+
+def _last_occupied_by_account(session: Session, tenant_id: int, account_ids: list[int], scheduled_at: datetime) -> dict[int, datetime]:
+    rows: dict[int, datetime] = {}
+    action_at = func.coalesce(Action.executed_at, Action.scheduled_at)
+    for account_id, last_at in session.execute(
+        select(Action.account_id, func.max(action_at))
+        .where(
+            Action.tenant_id == tenant_id,
+            Action.account_id.in_(account_ids),
+            Action.status.in_(CAPACITY_ACTION_OCCUPIED_STATUSES),
+            Action.scheduled_at <= scheduled_at,
+        )
+        .group_by(Action.account_id)
+    ):
+        if account_id is not None and last_at is not None:
+            rows[int(account_id)] = last_at
+    message_account_id = func.coalesce(MessageTask.account_id, MessageTask.preferred_account_id)
+    message_at = func.coalesce(MessageTask.sent_at, MessageTask.scheduled_at)
+    for account_id, last_at in session.execute(
+        select(message_account_id, func.max(message_at))
+        .where(
+            MessageTask.tenant_id == tenant_id,
+            message_account_id.in_(account_ids),
+            MessageTask.status.in_(CAPACITY_MESSAGE_TASK_OCCUPIED_STATUSES),
+            MessageTask.scheduled_at <= scheduled_at,
+        )
+        .group_by(message_account_id)
+    ):
+        if account_id is not None and last_at is not None:
+            parsed_id = int(account_id)
+            rows[parsed_id] = max(rows.get(parsed_id, last_at), last_at)
+    return rows
 
 
 def _policy_audit_records(session: Session, tenant_id: int) -> list[dict[str, Any]]:

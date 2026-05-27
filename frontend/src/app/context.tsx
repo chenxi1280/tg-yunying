@@ -48,7 +48,7 @@ import { createMessageActions } from './context/messageActions';
 import { createModalStateActions } from './context/modalState';
 import { createSystemActions } from './context/systemActions';
 import { EMPTY_ACCOUNT_LOGIN_FORM, defaultAccountCreateForm, defaultAccountPoolForm, defaultAdminUserForm, defaultAiProviderForm, defaultAuditFilters, defaultCloneForm, defaultDeveloperAppForm, defaultDirectMessageForm, defaultGroupPolicy, defaultKeywordRuleForm, defaultMaterialForm, defaultProfileForm, defaultPromptTemplateForm, defaultTenantForm } from './context/defaults';
-import { loadAppSnapshot } from './context/refresh';
+import { loadAppSnapshot, loadContentResources, viewNeedsContentResources } from './context/refresh';
 
 const AppContext = createContext<AppState | null>(null);
 export function useAppContext(): AppState {
@@ -225,6 +225,21 @@ export function AppProvider({ children }: AppProviderProps) {
     }
   }
 
+  async function refreshContentResourcesForActiveView() {
+    if (!viewNeedsContentResources(activeView)) return;
+    setBusy('刷新资源');
+    try {
+      const resources = await loadContentResources();
+      setMaterials(resources.materials);
+      setMaterialCacheHealth(resources.materialCacheHealth);
+      setMaterialCacheConfig(resources.materialCacheConfig);
+      setMaterialImports(resources.materialImports);
+      setContentKeywordRules(resources.contentKeywordRules);
+    } finally {
+      setBusy('');
+    }
+  }
+
   function expireAdminSession() {
     localStorage.removeItem('tg_ops_token');
     setToken('');
@@ -251,7 +266,18 @@ export function AppProvider({ children }: AppProviderProps) {
       }
       setNotice(`后端未连接或接口异常：${error.message}`);
     });
-  }, [token, taskStatusFilter, selectedPoolId, activeView]);
+  }, [token, taskStatusFilter, selectedPoolId]);
+
+  useEffect(() => {
+    if (!token || !viewNeedsContentResources(activeView)) return;
+    refreshContentResourcesForActiveView().catch((error) => {
+      if (isAuthExpiredError(error)) {
+        expireAdminSession();
+        return;
+      }
+      setNotice(`资源数据读取异常：${error.message}`);
+    });
+  }, [token, activeView]);
 
   const { showResult, errorMessage, handleActionError, closeModal, openConfirm } = createModalStateActions({
     message,
