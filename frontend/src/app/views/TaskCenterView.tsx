@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, Button, Card, Collapse, Form, Input, Modal, Select, Space, Steps, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { Activity, RefreshCcw } from 'lucide-react';
+import { Activity, CirclePause, CirclePlay, RefreshCcw } from 'lucide-react';
 import { api, ApiError } from '../../shared/api/client';
 import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskPrecheck } from '../types';
 import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
@@ -46,7 +46,11 @@ import { TaskCenterDetailModal } from './TaskCenterDetailModal';
 
 function TaskStatusBadge({ task, status }: { task?: TaskCenterTask; status?: string | null }) {
   const stage = task ? runtimeStage(task) : null;
-  return <StatusBadge status={stage?.stage_label || status} label={stage?.stage_label || statusLabel(status)} />;
+  return (
+    <span className={`task-status-indicator task-status-${task?.status || status || 'unknown'}`}>
+      <StatusBadge status={stage?.stage_label || status} label={stage?.stage_label || statusLabel(status)} />
+    </span>
+  );
 }
 
 function ActionStatusBadge({ status }: { status?: string | null }) {
@@ -887,8 +891,8 @@ export default function TaskCenterView({
       fixed: 'right',
       render: (_, task) => (
         <Space className="task-action-bar" size={6}>
-          {canManageTasks && canStartTask(task) && <Button size="small" loading={busyId === `${task.id}:${task.status === 'paused' ? 'resume' : 'start'}`} onClick={() => taskAction(task, task.status === 'paused' ? 'resume' : 'start')}>启动</Button>}
-          {canManageTasks && canPauseTask(task) && <Button size="small" loading={busyId === `${task.id}:pause`} onClick={() => taskAction(task, 'pause')}>暂停</Button>}
+          {canManageTasks && canStartTask(task) && <Button size="small" type="primary" icon={<CirclePlay size={14} />} loading={busyId === `${task.id}:${task.status === 'paused' ? 'resume' : 'start'}`} onClick={() => taskAction(task, task.status === 'paused' ? 'resume' : 'start')}>{task.status === 'paused' ? '恢复运行' : '启动'}</Button>}
+          {canManageTasks && canPauseTask(task) && <Button size="small" danger icon={<CirclePause size={14} />} loading={busyId === `${task.id}:pause`} onClick={() => taskAction(task, 'pause')}>暂停</Button>}
           {canManageTasks && !isSystemTask(task) && <Button size="small" loading={busyId === `${task.id}:retry`} onClick={() => taskAction(task, 'retry')}>重试</Button>}
           {canDispatchControl && !isSystemTask(task) && <Button size="small" danger loading={busyId === `${task.id}:reset`} onClick={() => openDangerTaskAction(task, 'reset')}>重置</Button>}
           {canManageTasks && !isSystemTask(task) && <Button size="small" danger loading={busyId === `${task.id}:stop`} onClick={() => openDangerTaskAction(task, 'stop')}>停止</Button>}

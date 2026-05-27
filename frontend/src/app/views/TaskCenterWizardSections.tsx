@@ -129,8 +129,11 @@ export function WizardTypeConfig({
               children: (
                 <div className="form-grid">
                   <Form.Item name="messages_per_round_mode" label="每轮发言"><Select options={[{ value: 'auto', label: '系统自动判定' }, { value: 'manual', label: '手动指定' }]} /></Form.Item>
-                  <Form.Item name="messages_per_round" label="手动每轮发言数"><InputNumber min={1} max={10} /></Form.Item>
-                  <Form.Item name="chat_history_depth" label="历史条数"><InputNumber min={1} max={200} /></Form.Item>
+                  <Form.Item name="messages_per_round" label="每轮总发言数"><InputNumber min={1} max={10} /></Form.Item>
+                  <Form.Item name="participation_rate" label="参与账号比例"><InputNumber min={0.01} max={1} step={0.01} /></Form.Item>
+                  <Form.Item name="allow_account_repeat" label="允许账号重复发言"><Select options={[{ value: true, label: '允许，账号不足时轮换复用' }, { value: false, label: '不允许，同轮尽量一号一条' }]} /></Form.Item>
+                  <Form.Item name="repeat_cooldown_rounds" label="重复冷却轮数"><InputNumber min={0} /></Form.Item>
+                  <Form.Item name="chat_history_depth" label="上下文历史条数（不是账号数）"><InputNumber min={1} max={200} /></Form.Item>
                   <Form.Item name="account_memory_depth" label="账号记忆条数"><InputNumber min={0} max={20} /></Form.Item>
                   <Form.Item name="account_personas" label="账号角色">
                     <Input.TextArea rows={3} placeholder={'101=提问型账号\n102=补充细节账号'} />
@@ -307,7 +310,7 @@ export function WizardOperationProfile({ form, values }: { form: any; values: Re
 export function TaskRuntimeAdvancedFields() {
   return (
     <>
-      <Form.Item name="max_concurrent" label="最大并发"><InputNumber min={1} max={500} /></Form.Item>
+      <Form.Item name="max_concurrent" label="账号并发上限（账号数）"><InputNumber min={1} max={500} /></Form.Item>
       <Form.Item name="cooldown_per_account_minutes" label="账号冷却分钟"><InputNumber min={0} /></Form.Item>
       <Form.Item name="ban_policy" label="异常账号处理"><Select options={[{ value: 'skip', label: '跳过账号' }, { value: 'pause_task', label: '暂停任务' }, { value: 'alert', label: '只告警' }]} /></Form.Item>
       <Form.Item name="max_actions_per_hour" label="每小时上限"><InputNumber min={1} /></Form.Item>

@@ -834,6 +834,29 @@
   min-width: 48px;
 }
 
+.task-status-indicator {
+  display: inline-flex;
+}
+
+.task-status-indicator .badge {
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  font-size: 13px;
+}
+
+.task-status-indicator.task-status-running .badge {
+  border-color: #22c55e;
+  background: #dcfce7;
+  color: #166534;
+}
+
+.task-status-indicator.task-status-paused .badge {
+  border-color: #ef4444;
+  background: #fee2e2;
+  color: #991b1b;
+}
+
 .full-width {
   width: 100%;
 }

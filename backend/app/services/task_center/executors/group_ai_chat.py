@@ -162,6 +162,8 @@ def build_plan(session: Session, task: Task) -> int:
     add_tokens(task, tokens)
     times = schedule_times(len(contents), task.pacing_config or {})
     context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
+    used_account_ids: set[int] = set()
+    allow_account_repeat = bool(config.get("allow_account_repeat", True))
     created = 0
     for index, quality_item in enumerate(quality_items):
         content = quality_item["content"]
@@ -173,7 +175,11 @@ def build_plan(session: Session, task: Task) -> int:
             content = policy_result.content
         planned_at = times[index]
         available = available_accounts_by_capacity(session, tenant_id=task.tenant_id, accounts=selected, scheduled_at=planned_at)
-        account = available[index % len(available)] if available else selected[index % len(selected)]
+        account = _choose_turn_account(available, selected, index, used_account_ids, allow_account_repeat)
+        if not account:
+            stats_inc(task, "skipped_count")
+            continue
+        used_account_ids.add(account.id)
         if not available:
             decision = next_capacity_window(
                 session,
@@ -277,6 +283,16 @@ def build_plan(session: Session, task: Task) -> int:
     return created
 
 
+def _choose_turn_account(available: list, selected: list, index: int, used_account_ids: set[int], allow_repeat: bool):
+    candidates = available or selected
+    for account in candidates:
+        if account.id not in used_account_ids:
+            return account
+    if not allow_repeat:
+        return None
+    return candidates[index % len(candidates)] if candidates else None
+
+
 def _mark_waiting_context(
     task: Task,
     config: dict,
@@ -359,21 +375,45 @@ def _last_successful_ai_action_at(session: Session, task: Task) -> datetime | No
 def _select_cycle_accounts(accounts: list, config: dict, mode: str, ramp_ratio: float, *, has_context: bool, cycle_index: int = 1) -> tuple[list, int]:
     rotated_accounts = _rotate_accounts(accounts, cycle_index)
     if str(config.get("messages_per_round_mode") or "auto") == "manual":
-        jitter = float(config.get("participation_jitter") or 0)
-        rate = float(config.get("participation_rate") or 0.6) * ramp_ratio
-        desired = max(1, round(len(rotated_accounts) * rate * random.uniform(max(0.1, 1 - jitter), 1 + jitter)))
-        if mode == "静默期":
-            desired = min(desired, int(config.get("silent_max_accounts") or 5))
-        selected = rotated_accounts[: min(desired, len(rotated_accounts))]
-        messages_per_round = int(config.get("messages_per_round") or 1)
-        if mode == "静默期":
-            messages_per_round = min(messages_per_round, int(config.get("silent_messages_per_round") or 1))
-        return selected, max(1, len(selected) * messages_per_round)
+        messages_per_round = _manual_messages_per_round(config, mode)
+        desired = _desired_participant_count(rotated_accounts, config, mode, ramp_ratio)
+        participant_count = _manual_participant_count(desired, messages_per_round, len(rotated_accounts), config)
+        selected = rotated_accounts[:participant_count]
+        turn_count = max(messages_per_round, participant_count)
+        if not bool(config.get("allow_account_repeat", True)):
+            turn_count = min(turn_count, len(selected))
+        return selected, max(1, turn_count)
     limit = 2 if mode == "静默期" else 5
     if not has_context:
         limit = min(limit, 3)
     selected = rotated_accounts[: min(limit, len(rotated_accounts))]
     return selected, max(1, len(selected))
+
+
+def _manual_messages_per_round(config: dict, mode: str) -> int:
+    messages_per_round = int(config.get("messages_per_round") or 1)
+    if mode == "静默期":
+        messages_per_round = min(messages_per_round, int(config.get("silent_messages_per_round") or 1))
+    return max(1, messages_per_round)
+
+
+def _desired_participant_count(accounts: list, config: dict, mode: str, ramp_ratio: float) -> int:
+    jitter = float(config.get("participation_jitter") or 0)
+    rate = float(config.get("participation_rate") or 0.6) * ramp_ratio
+    desired = max(1, round(len(accounts) * rate * random.uniform(max(0.1, 1 - jitter), 1 + jitter)))
+    if mode == "静默期":
+        desired = min(desired, int(config.get("silent_max_accounts") or 5))
+    return min(desired, len(accounts))
+
+
+def _manual_participant_count(desired: int, messages_per_round: int, account_count: int, config: dict) -> int:
+    if account_count <= 0:
+        return 0
+    spread_count = min(messages_per_round, account_count)
+    participant_count = max(desired, spread_count)
+    if not bool(config.get("allow_account_repeat", True)):
+        participant_count = max(participant_count, min(messages_per_round, account_count))
+    return min(participant_count, account_count)
 
 
 def _rotate_accounts(accounts: list, cycle_index: int) -> list:

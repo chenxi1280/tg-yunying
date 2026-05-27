@@ -157,6 +157,31 @@ def test_account_center_consumes_account_deep_link_query_on_load():
     assert "{onReturnToRiskControl && <Button onClick={onReturnToRiskControl}>返回风控中心</Button>}" in account_modals
 
 
+def test_task_center_running_and_paused_states_are_visually_distinct():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    styles = (PROJECT_ROOT / "frontend/src/styles/components.css").read_text()
+    start_button = source[source.index("{canManageTasks && canStartTask(task)"):source.index("{canManageTasks && canPauseTask(task)")]
+    pause_button = source[source.index("{canManageTasks && canPauseTask(task)"):source.index("{canManageTasks && !isSystemTask(task)")]
+
+    assert "className={`task-status-indicator task-status-${task?.status || status || 'unknown'}`}" in source
+    assert 'type="primary"' in start_button
+    assert 'danger' in pause_button
+    assert ".task-status-indicator.task-status-running" in styles
+    assert ".task-status-indicator.task-status-paused" in styles
+
+
+def test_task_center_ai_chat_account_distribution_controls_are_visible():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+
+    assert 'name="participation_rate"' in source
+    assert 'label="参与账号比例"' in source
+    assert 'name="allow_account_repeat"' in source
+    assert 'label="允许账号重复发言"' in source
+    assert 'label="每轮总发言数"' in source
+    assert 'label="上下文历史条数（不是账号数）"' in source
+    assert 'label="账号并发上限（账号数）"' in source
+
+
 def test_risk_control_restores_tab_filter_and_page_from_return_query():
     source = (PROJECT_ROOT / "frontend/src/app/views/RiskControlView.tsx").read_text()
 

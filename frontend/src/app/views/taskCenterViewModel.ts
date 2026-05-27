@@ -287,6 +287,8 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   if (type === 'group_ai_chat') {
     return {
       participation_rate: 0.6,
+      allow_account_repeat: true,
+      repeat_cooldown_rounds: 2,
       chat_history_depth: 50,
       messages_per_round_mode: 'auto',
       messages_per_round: 1,
