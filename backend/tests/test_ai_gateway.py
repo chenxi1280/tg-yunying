@@ -306,6 +306,40 @@ def test_deepseek_health_check_also_disables_thinking(monkeypatch):
     assert requests[1]["response_format"] == {"type": "json_object"}
 
 
+def test_generate_drafts_uses_custom_timeout(monkeypatch):
+    timeouts: list[int] = []
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        timeouts.append(timeout)
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {"content": '{"drafts":[{"sequence_index":1,"persona":"A","content":"继续聊。","risk_level":"低"}]}'},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = AiGateway().generate_drafts(
+        credentials(),
+        "请输出 json drafts",
+        count=1,
+        topic="产品讨论",
+        tone="自然",
+        persona_set=["A"],
+        temperature=0.1,
+        max_tokens=512,
+        timeout=120,
+    )
+
+    assert timeouts == [120]
+    assert result.candidates[0].content == "继续聊。"
+
+
 def test_generate_drafts_retries_reasoning_only_empty_content(monkeypatch):
     requests: list[dict[str, Any]] = []
     responses = [

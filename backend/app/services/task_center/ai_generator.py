@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.ai_gateway import normalize_ai_model_name
+from app.ai_gateway import DEFAULT_AI_REQUEST_TIMEOUT_SECONDS, normalize_ai_model_name
 from app.models import AiProvider, AiProviderHealthStatus, PromptTemplate, TenantAiSetting
 from app.services._common import ai_gateway
 from app.services.ai_config import ai_provider_credentials
@@ -17,6 +17,7 @@ from app.services.content_filters import looks_like_generated_template_noise, lo
 AI_GENERATION_UNAVAILABLE_MESSAGE = "AI 生成不可用，等待恢复后继续执行"
 GROUP_CHAT_PURPOSE = "群活跃续聊"
 CHANNEL_COMMENT_PURPOSE = "频道评论"
+GROUP_CHAT_REQUEST_TIMEOUT_SECONDS = 120
 AI_PROVIDER_REFUSAL_MARKERS = (
     "the request was rejected",
     "considered high risk",
@@ -137,9 +138,10 @@ def generate_contents(
             tone=tone,
             persona_set=persona_set,
             temperature=max(float(setting.temperature or 0.7), 0.75) if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE} else setting.temperature,
-            max_tokens=max(setting.max_tokens, 1024),
-            system_prompt=system_prompt,
-        )
+        max_tokens=max(setting.max_tokens, 1024),
+        system_prompt=system_prompt,
+        timeout=GROUP_CHAT_REQUEST_TIMEOUT_SECONDS if purpose == GROUP_CHAT_PURPOSE else DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+    )
     except Exception as exc:
         if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE}:
             raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc

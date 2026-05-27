@@ -60,6 +60,7 @@ MODEL_ALIASES = {
     "mimo-v2.5-pro": "mimo-v2.5-pro",
     "xiaomi mimo-v2.5-pro": "mimo-v2.5-pro",
 }
+DEFAULT_AI_REQUEST_TIMEOUT_SECONDS = 30
 
 
 def normalize_ai_model_name(model_name: str) -> str:
@@ -137,6 +138,7 @@ class AiGateway:
         material_ids: list[int] | None = None,
         selected_account_ids: list[int] | None = None,
         system_prompt: str | None = None,
+        timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
     ) -> AiGenerationResult:
         if credentials.base_url.startswith("mock://"):
             return AiGenerationResult(
@@ -154,6 +156,7 @@ class AiGateway:
             system_prompt=system_prompt or "你是一个 Telegram 群运营话术助手，只输出用户要求的 JSON。",
             response_format_json=True,
             reasoning_retry_max_tokens=self._generation_retry_max_tokens(credentials, max_tokens, count),
+            timeout=timeout,
         )
         return AiGenerationResult(
             candidates=self._parse_candidates(raw, count, persona_set, material_ids),
@@ -206,7 +209,7 @@ class AiGateway:
         system_prompt: str = "你是一个 Telegram 群运营话术助手，只输出用户要求的 JSON。",
         response_format_json: bool = False,
         reasoning_retry_max_tokens: int | None = None,
-        timeout: int = 30,
+        timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
     ) -> tuple[str, AiUsage]:
         url = self._chat_completions_url(credentials.base_url)
         headers = {"Content-Type": "application/json"}

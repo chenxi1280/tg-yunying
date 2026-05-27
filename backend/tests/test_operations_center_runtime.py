@@ -3014,6 +3014,7 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
         captured["tone"] = tone
         captured["temperature"] = temperature
         captured["max_tokens"] = max_tokens
+        captured["timeout"] = _kwargs.get("timeout")
         return AiGenerationResult(
             candidates=[AiDraftCandidate(persona="A", content="这个点接得上，先轻轻聊两句。", risk_level="低")],
             usage=AiUsage(total_tokens=88, billable=True),
@@ -3082,6 +3083,7 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
     assert captured["topic"] == "MiMo 续聊"
     assert captured["temperature"] == 0.75
     assert captured["max_tokens"] == 1024
+    assert captured["timeout"] == 120
     assert "MiMo 活跃群" in str(captured["prompt"])
     assert "现场接话消息" in str(captured["prompt"])
     assert "sequence_index" in str(captured["prompt"])
