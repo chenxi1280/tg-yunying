@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 import socket
 import time
@@ -38,7 +39,6 @@ from app.services.account_capacity import (
     ACTION_OCCUPIED_STATUSES as CAPACITY_ACTION_OCCUPIED_STATUSES,
     MESSAGE_TASK_OCCUPIED_STATUSES as CAPACITY_MESSAGE_TASK_OCCUPIED_STATUSES,
     AccountCapacityDecision,
-    account_capacity_decision,
     defer_until_with_jitter,
 )
 from app.services.ai_config import get_scheduling_setting
@@ -90,6 +90,17 @@ RISK_AUDIT_TARGET_LABELS = {
     "proxy_alert": "代理告警",
     "tg_account": "账号代理绑定",
 }
+
+
+@dataclass(frozen=True)
+class _PreflightAccountContext:
+    setting: SchedulingSetting
+    capacity_decisions: dict[int, AccountCapacityDecision]
+    hour_usage: dict[int, int]
+    day_usage: dict[int, int]
+    recent_risks: dict[int, str]
+    security_snapshots: dict[int, TgAccountSecuritySnapshot]
+    runtime_summaries: dict[int, AccountRuntimeSummary]
 
 
 def list_account_proxies(session: Session, tenant_id: int) -> list[dict[str, Any]]:
@@ -359,53 +370,12 @@ def risk_preflight(session: Session, tenant_id: int, payload: RiskPreflightReque
     missing_account_ids = sorted(requested_account_ids - found_account_ids)
     account_ids = [account.id for account in accounts]
     setting = get_scheduling_setting(session, tenant_id)
-    hour_usage = _usage_counts(session, tenant_id, account_ids, _hour_start(scheduled_at), _hour_start(scheduled_at) + timedelta(hours=1))
-    day_start = scheduled_at.replace(hour=0, minute=0, second=0, microsecond=0)
-    day_usage = _usage_counts(session, tenant_id, account_ids, day_start, day_start + timedelta(days=1))
-    recent_risks = _recent_risks_by_account(session, tenant_id)
-    security_snapshots = _security_snapshots_by_account(session, tenant_id, account_ids)
-    runtime_summaries = _runtime_summaries_by_account(session, tenant_id, account_ids)
-
-    available_accounts: list[dict[str, Any]] = []
-    limited_accounts: list[dict[str, Any]] = []
-    blocked_accounts: list[dict[str, Any]] = []
-    decision_reasons: list[str] = []
-    for account in accounts:
-        capacity = account_capacity_decision(session, tenant_id=tenant_id, account_id=account.id, scheduled_at=scheduled_at)
-        score = _account_score_row(
-            account,
-            setting,
-            capacity,
-            hour_usage,
-            day_usage,
-            recent_risks.get(account.id, ""),
-            [],
-            security_snapshots.get(account.id),
-            runtime_summaries.get(account.id),
-        )
-        item = {
-            "account_id": score["account_id"],
-            "display_name": score["display_name"],
-            "risk_level": score["risk_level"],
-            "health_score": score["health_score"],
-            "proxy_id": score["proxy_id"],
-            "proxy_status": score["proxy_status"],
-            "proxy_alert_status": score["proxy_alert_status"],
-            "reason": score["blocked_reason"] or "可参与",
-            "score_reasons": score["score_reasons"],
-        }
-        if score["can_join_task"]:
-            available_accounts.append(item)
-        elif score["risk_level"] in {"B", "C", "D"} and not _proxy_blocks_account(account):
-            limited_accounts.append(item)
-            decision_reasons.append("account_limited")
-        else:
-            blocked_accounts.append(item)
-            decision_reasons.append(_reason_code_for_score(score))
+    context = _preflight_account_context(session, tenant_id=tenant_id, account_ids=account_ids, scheduled_at=scheduled_at, setting=setting)
+    available_accounts, limited_accounts, blocked_accounts, decision_reasons = _split_preflight_accounts(accounts, context)
     if missing_account_ids:
         decision_reasons.append("account_missing")
-        for account_id in missing_account_ids:
-            blocked_accounts.append({
+        blocked_accounts.extend(
+            {
                 "account_id": account_id,
                 "display_name": f"账号 #{account_id}",
                 "risk_level": "E",
@@ -415,7 +385,9 @@ def risk_preflight(session: Session, tenant_id: int, payload: RiskPreflightReque
                 "proxy_alert_status": "",
                 "reason": "账号不存在或不可见",
                 "score_reasons": ["账号不存在、已删除或不属于当前租户"],
-            })
+            }
+            for account_id in missing_account_ids
+        )
     if not accounts and not missing_account_ids:
         decision_reasons.append("no_available_account")
 
@@ -445,6 +417,72 @@ def risk_preflight(session: Session, tenant_id: int, payload: RiskPreflightReque
         "decision_reasons": sorted(set(decision_reasons)),
         "expires_at": _now() + timedelta(seconds=60),
         "trace_id": trace_id,
+    }
+
+
+def _preflight_account_context(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_ids: list[int],
+    scheduled_at: datetime,
+    setting: SchedulingSetting,
+) -> _PreflightAccountContext:
+    hour_usage = _usage_counts(session, tenant_id, account_ids, _hour_start(scheduled_at), _hour_start(scheduled_at) + timedelta(hours=1))
+    day_start = scheduled_at.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_usage = _usage_counts(session, tenant_id, account_ids, day_start, day_start + timedelta(days=1))
+    return _PreflightAccountContext(
+        setting=setting,
+        capacity_decisions=_capacity_decisions_by_account(session, tenant_id, account_ids, setting, scheduled_at, hour_usage, day_usage),
+        hour_usage=hour_usage,
+        day_usage=day_usage,
+        recent_risks=_recent_risks_by_account(session, tenant_id),
+        security_snapshots=_security_snapshots_by_account(session, tenant_id, account_ids),
+        runtime_summaries=_runtime_summaries_by_account(session, tenant_id, account_ids),
+    )
+
+
+def _split_preflight_accounts(accounts: list[TgAccount], context: _PreflightAccountContext) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    available_accounts: list[dict[str, Any]] = []
+    limited_accounts: list[dict[str, Any]] = []
+    blocked_accounts: list[dict[str, Any]] = []
+    decision_reasons: list[str] = []
+    for account in accounts:
+        capacity = context.capacity_decisions.get(account.id) or AccountCapacityDecision(available=True)
+        score = _account_score_row(
+            account,
+            context.setting,
+            capacity,
+            context.hour_usage,
+            context.day_usage,
+            context.recent_risks.get(account.id, ""),
+            [],
+            context.security_snapshots.get(account.id),
+            context.runtime_summaries.get(account.id),
+        )
+        item = _preflight_account_item(score)
+        if score["can_join_task"]:
+            available_accounts.append(item)
+        elif score["risk_level"] in {"B", "C", "D"} and not _proxy_blocks_account(account):
+            limited_accounts.append(item)
+            decision_reasons.append("account_limited")
+        else:
+            blocked_accounts.append(item)
+            decision_reasons.append(_reason_code_for_score(score))
+    return available_accounts, limited_accounts, blocked_accounts, decision_reasons
+
+
+def _preflight_account_item(score: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "account_id": score["account_id"],
+        "display_name": score["display_name"],
+        "risk_level": score["risk_level"],
+        "health_score": score["health_score"],
+        "proxy_id": score["proxy_id"],
+        "proxy_status": score["proxy_status"],
+        "proxy_alert_status": score["proxy_alert_status"],
+        "reason": score["blocked_reason"] or "可参与",
+        "score_reasons": score["score_reasons"],
     }
 
 

@@ -528,6 +528,36 @@ def test_preflight_blocks_missing_or_empty_account_scope():
     assert missing["blocked_accounts"][0]["account_id"] == 999
 
 
+def test_risk_preflight_batches_capacity_checks_for_many_accounts():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    query_count = 0
+
+    def count_query(*_args):
+        nonlocal query_count
+        query_count += 1
+
+    event.listen(engine, "before_cursor_execute", count_query)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1, default_account_day_limit=5, default_account_cooldown_seconds=120))
+        session.add_all(
+            [
+                TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, health_score=95)
+                for account_id in range(1, 31)
+            ]
+        )
+        session.commit()
+        query_count = 0
+
+        preflight = risk_preflight(session, 1, RiskPreflightRequest(account_ids=list(range(1, 31)), content_preview="正常消息"))
+
+    event.remove(engine, "before_cursor_execute", count_query)
+    assert preflight["decision"] != "block"
+    assert len(preflight["available_accounts"]) == 30
+    assert query_count < 35
+
+
 def test_proxy_binding_precheck_rejects_disabled_proxy():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
