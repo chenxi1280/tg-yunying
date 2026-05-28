@@ -397,12 +397,16 @@ def test_auth_expired_api_errors_force_relogin_without_failure_modal():
 def test_task_center_precheck_uses_long_timeout_and_capacity_summary_labels():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
     assert "TASK_CREATE_TIMEOUT_MS" in source
     assert "timeoutMs: TASK_CREATE_TIMEOUT_MS" in source
     assert "capacity_summary" in wizard
     assert "目标每条" in wizard
     assert "最大并发" in wizard
+    assert "precheckReasonLabel" in view_model
+    assert "formatPrecheckReasons" in source
+    assert "formatPrecheckReasons" in wizard
 
 
 def test_target_profile_is_top_level_page_not_target_detail_governance():

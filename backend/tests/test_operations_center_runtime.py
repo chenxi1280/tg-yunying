@@ -1944,6 +1944,51 @@ def test_task_creation_precheck_covers_group_and_channel_requirements():
         assert blocked["blockers"]
 
 
+def test_group_ai_precheck_warns_for_preparable_target_and_mixed_account_health():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="在线号", phone_masked="11", status=AccountStatus.ACTIVE.value, health_score=95),
+                TgAccount(id=12, tenant_id=1, display_name="受限号", phone_masked="12", status=AccountStatus.LIMITED.value, health_score=30),
+                OperationTarget(
+                    id=21,
+                    tenant_id=1,
+                    target_type="group",
+                    tg_peer_id="-10021",
+                    title="待准入目标群",
+                    username="joinable_group",
+                    can_send=False,
+                    auth_status="只读归档",
+                ),
+            ]
+        )
+        session.commit()
+
+        result = precheck_task_creation(
+            session,
+            1,
+            TaskPrecheckRequest(
+                task_type="group_ai_chat",
+                payload={
+                    "name": "可补齐准入 AI 活跃",
+                    "target_operation_target_id": 21,
+                    "account_config": {"selection_mode": "manual", "account_ids": [11, 12], "cooldown_per_account_minutes": 0},
+                },
+            ),
+        )
+
+    assert result["target_ability"][0]["can_task"] is True
+    assert result["available_account_count"] == 1
+    assert result["decision"] == "warn"
+    assert result["blockers"] == []
+    assert "target_warning" in result["warnings"]
+    assert "account_blocked" in result["warnings"]
+
+
 def test_task_settings_update_normalizes_operation_target_references():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

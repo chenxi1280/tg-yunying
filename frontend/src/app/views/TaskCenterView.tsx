@@ -29,6 +29,7 @@ import {
   fieldsForSubmit,
   formatDateTime,
   formatKeyValueMap,
+  formatPrecheckReasons,
   initialValuesForType,
   isPlannedAction,
   normalizePromptTemplateType,
@@ -613,9 +614,9 @@ export default function TaskCenterView({
       });
       setPrecheck(result);
       if (result.decision === 'block') {
-        setActionWarning(`预检发现阻塞项：${result.blockers.join('；') || '请检查账号、目标和风控配置'}`);
+        setActionWarning(`预检发现阻塞项：${formatPrecheckReasons(result.blockers) || '请检查账号、目标和风控配置'}`);
       } else if (result.decision === 'warn') {
-        setActionWarning(`预检有风险提示：${[...result.warnings, ...result.risk_hits].filter(Boolean).slice(0, 3).join('；') || '建议确认后再启动'}`);
+        setActionWarning(`预检有风险提示：${formatPrecheckReasons([...result.warnings, ...result.risk_hits], 3) || '建议确认后再启动'}`);
       } else {
         setActionWarning('');
       }
@@ -634,7 +635,7 @@ export default function TaskCenterView({
       const values = form.getFieldsValue(true);
       const result = !options.skipCapacityCheck ? await runTaskPrecheck(values) : precheck;
       if (start && result?.decision === 'block') {
-        setActionError(`预检未通过：${result.blockers.join('；') || '存在阻塞项'}`);
+        setActionError(`预检未通过：${formatPrecheckReasons(result.blockers) || '存在阻塞项'}`);
         return;
       }
       await api<TaskCenterTask>((start ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType], {

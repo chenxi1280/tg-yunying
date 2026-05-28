@@ -20,6 +20,8 @@ NormalizeConfig = Callable[[Session, int, str, dict[str, Any]], dict[str, Any]]
 ValidateTypeConfig = Callable[[str, dict[str, Any]], dict[str, Any]]
 ValidateRuleBinding = Callable[[Session, int, dict[str, Any]], None]
 
+ACCOUNT_HEALTH_WARNING_REASONS = {"account_blocked", "account_limited", "account_limit", "account_login_required"}
+
 
 def run_precheck_task_creation(
     session: Session,
@@ -119,10 +121,13 @@ def run_precheck_task_creation(
             warnings.append(f"目标准入前置：已有 {failed} 个账号准备失败")
     if risk.get("decision") == "block":
         decision_reasons = _as_str_list(risk.get("decision_reasons")) or ["风控预检阻塞"]
-        if set(decision_reasons) <= {"target_warning"} and target_ability and all(bool(item.get("can_task")) for item in target_ability):
-            warnings.extend(decision_reasons)
-        else:
-            blockers.extend(decision_reasons)
+        blocking_reasons = _precheck_blocking_risk_reasons(
+            decision_reasons,
+            available_count=available_count,
+            target_ability=target_ability,
+        )
+        blockers.extend(blocking_reasons)
+        warnings.extend([reason for reason in decision_reasons if reason not in set(blocking_reasons)])
     elif risk.get("decision") == "warn":
         warnings.extend(_as_str_list(risk.get("decision_reasons")))
     if not candidates:
@@ -171,6 +176,23 @@ def _precheck_capacity_summary(
         "capacity_shortfall": max(int(shortfall or 0), 0),
         "limit_note": "max_concurrent 仅控制同时执行数量，不截断本轮可参与账号池",
     }
+
+
+def _precheck_blocking_risk_reasons(
+    decision_reasons: list[str],
+    *,
+    available_count: int,
+    target_ability: list[dict[str, Any]],
+) -> list[str]:
+    target_can_task = bool(target_ability) and all(bool(item.get("can_task")) for item in target_ability)
+    blockers: list[str] = []
+    for reason in decision_reasons:
+        if reason == "target_warning" and target_can_task:
+            continue
+        if reason in ACCOUNT_HEALTH_WARNING_REASONS and available_count > 0:
+            continue
+        blockers.append(reason)
+    return blockers
 
 
 def _precheck_candidate_accounts(session: Session, tenant_id: int, account_config: dict[str, Any]) -> list[TgAccount]:

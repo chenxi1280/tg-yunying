@@ -49,6 +49,31 @@ export const ACTION_LABEL: Record<string, string> = {
   view_message: '浏览',
 };
 
+const PRECHECK_REASON_LABELS: Record<string, string> = {
+  account_blocked: '账号不可用',
+  account_limited: '账号受限',
+  account_limit: '账号容量已达上限',
+  account_login_required: '账号需要重新登录',
+  account_missing: '账号不存在或不可见',
+  no_available_account: '没有可用账号',
+  target_warning: '目标权限或授权存在风险',
+  content_warning: '内容命中风控提示',
+  proxy_missing: '代理未配置',
+  proxy_alert_active: '代理告警',
+  proxy_disabled: '代理禁用',
+  proxy_unreachable: '代理不可达',
+  proxy_timeout: '代理超时',
+  proxy_auth_failed: '代理认证失败',
+};
+
+export function precheckReasonLabel(reason: string) {
+  return PRECHECK_REASON_LABELS[reason] ?? reason;
+}
+
+export function formatPrecheckReasons(reasons: string[], limit = 5) {
+  return reasons.filter(Boolean).slice(0, limit).map(precheckReasonLabel).join('；');
+}
+
 export function errorMessage(error: unknown) {
   if (error instanceof ApiError) {
     if (error.status === 408) {

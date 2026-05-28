@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
 import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, TaskCenterTaskType, TaskPrecheck } from '../types';
-import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, csvNumbers, curveNumbers, curveText, currentOperationProfile, formatDateTime, operationProfileSummary, operationTemplate, ruleSummary, targetName } from './taskCenterViewModel';
+import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, csvNumbers, curveNumbers, curveText, currentOperationProfile, formatDateTime, formatPrecheckReasons, operationProfileSummary, operationTemplate, precheckReasonLabel, ruleSummary, targetName } from './taskCenterViewModel';
 
 export function EditBasics() {
   return (
@@ -361,7 +361,7 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
           type={precheck.decision === 'block' ? 'error' : precheck.decision === 'warn' ? 'warning' : 'success'}
           showIcon
           message={`创建前预检：${precheckStatus}`}
-          description={[...precheck.blockers, ...precheck.warnings, ...precheck.risk_hits].filter(Boolean).slice(0, 5).join('；') || '账号、目标、规则和风控检查通过'}
+          description={formatPrecheckReasons([...precheck.blockers, ...precheck.warnings, ...precheck.risk_hits]) || '账号、目标、规则和风控检查通过'}
         />
       )}
       <Descriptions bordered column={2} size="small" items={[
@@ -378,8 +378,8 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       { key: 'pacing', label: '曲线摘要', children: `${operationProfileSummary(values)}；当前 ${String(profile.hour).padStart(2, '0')}:00 强度 ${profile.intensity}，${profile.mode}运行` },
       { key: 'rule', label: '规则版本', children: precheck?.rule_version ? `规则集 #${precheck.rule_version.rule_set_id} / v${precheck.rule_version.version} / ${precheck.rule_version.status}` : ['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType) ? ruleSummary(values, ruleSets) : '平台默认规则' },
       { key: 'ai', label: 'AI 摘要', children: taskType === 'group_ai_chat' ? `语气 ${values.tone || 'auto'}，黑话集 ${selectedSlang ? `${selectedSlang.name} / v${selectedSlang.version}` : '系统默认语气'}` : taskType === 'channel_comment' ? `评论方向 ${values.comment_style || 'mixed'}，主题 ${values.topic_hint || '按消息内容'}` : '-' },
-      { key: 'risk', label: '风控命中', children: precheck?.risk_hits?.length ? precheck.risk_hits.join('；') : `每小时上限 ${values.max_actions_per_hour || '按系统默认'}，每日上限 ${values.max_actions_per_day || '按系统默认'}，失败重试 ${values.max_retries ?? 3} 次` },
-      { key: 'blockers', label: '阻塞项', children: precheck?.blockers?.length ? precheck.blockers.join('；') : '无' },
+      { key: 'risk', label: '风控命中', children: precheck?.risk_hits?.length ? precheck.risk_hits.map(precheckReasonLabel).join('；') : `每小时上限 ${values.max_actions_per_hour || '按系统默认'}，每日上限 ${values.max_actions_per_day || '按系统默认'}，失败重试 ${values.max_retries ?? 3} 次` },
+      { key: 'blockers', label: '阻塞项', children: precheck?.blockers?.length ? precheck.blockers.map(precheckReasonLabel).join('；') : '无' },
       { key: 'mode', label: '启动说明', children: precheck?.decision === 'block' ? '当前预检存在阻塞项，需处理后再启动。' : account.online > 0 ? '创建后 worker 会再次校验账号、目标、规则和风控，再按曲线执行。' : '当前账号范围没有在线账号，创建后会等待账号恢复。' },
     ]} />
     </Space>
