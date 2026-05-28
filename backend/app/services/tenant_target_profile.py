@@ -327,7 +327,14 @@ def latest_quality_rule(session: Session, tenant_id: int) -> TenantLearningQuali
 
 def target_profile_usage(session: Session, tenant_id: int) -> dict[str, Any]:
     task_types = ["group_ai_chat", "channel_comment"]
-    rows = session.execute(select(Task.task_type, func.count()).where(Task.tenant_id == tenant_id, Task.task_type.in_(task_types), Task.status.in_(["running", "draft", "paused"])).group_by(Task.task_type)).all()
+    rows = session.execute(
+        select(Task.type, func.count()).where(
+            Task.tenant_id == tenant_id,
+            Task.type.in_(task_types),
+            Task.status.in_(["running", "draft", "paused"]),
+            Task.deleted_at.is_(None),
+        ).group_by(Task.type)
+    ).all()
     distribution = {task_type: int(count) for task_type, count in rows}
     return {"running_task_count": sum(distribution.values()), "task_type_distribution": distribution, "recent_uses": []}
 

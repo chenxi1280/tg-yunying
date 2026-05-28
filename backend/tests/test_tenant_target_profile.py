@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram.contracts import GroupMessageSnapshot
-from app.models import GroupContextMessage, OperationTarget, Tenant, TenantLearningProfile, TenantLearningQualityRule, TenantLearningRun, TenantLearningSample, TenantLearningSource, TgAccount, TgGroup, TgGroupAccount
+from app.models import GroupContextMessage, OperationTarget, Task, Tenant, TenantLearningProfile, TenantLearningQualityRule, TenantLearningRun, TenantLearningSample, TenantLearningSource, TgAccount, TgGroup, TgGroupAccount
 from app.services.group_listeners import collect_group_context
 from app.services.tenant_learning_samples import record_group_learning_sample
 from app.services.tenant_target_profile import (
@@ -17,6 +17,7 @@ from app.services.tenant_target_profile import (
     list_source_candidates,
     rebuild_profile,
     start_source_run,
+    target_profile_usage,
     update_sample_status,
     update_quality_rules,
 )
@@ -68,6 +69,25 @@ def test_source_candidates_explain_recommendation_and_auto_sync_blockers() -> No
     assert items[31]["cannot_auto_sync_reason"] == ""
     assert items[32]["recommended"] is False
     assert items[32]["cannot_auto_sync_reason"] == "target_not_listenable"
+
+
+def test_target_profile_usage_counts_supported_task_types() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                Task(id="task-ai", tenant_id=1, name="AI 活群", type="group_ai_chat", status="running"),
+                Task(id="task-comment", tenant_id=1, name="频道评论", type="channel_comment", status="paused"),
+                Task(id="task-done", tenant_id=1, name="已完成评论", type="channel_comment", status="completed"),
+                Task(id="task-relay", tenant_id=1, name="群转发", type="group_relay", status="running"),
+            ]
+        )
+        session.commit()
+
+        usage = target_profile_usage(session, 1)
+
+    assert usage["running_task_count"] == 2
+    assert usage["task_type_distribution"] == {"channel_comment": 1, "group_ai_chat": 1}
 
 
 def test_quality_rule_update_requires_reason_and_records_recompute_run() -> None:
