@@ -20,6 +20,7 @@ from app.services.tenant_target_profile import (
     target_profile_usage,
     update_sample_status,
     update_quality_rules,
+    update_sources,
 )
 from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.tenant_target_profile_admin import list_profile_versions, restore_profile_version, update_profile_settings
@@ -65,10 +66,43 @@ def test_source_candidates_explain_recommendation_and_auto_sync_blockers() -> No
 
     items = {item["target_id"]: item for item in result["items"]}
     assert items[31]["recommended"] is True
-    assert items[31]["recommend_reason"] == "可监听目标"
+    assert items[31]["recommend_reason"] == "可监听群聊"
     assert items[31]["cannot_auto_sync_reason"] == ""
-    assert items[32]["recommended"] is False
-    assert items[32]["cannot_auto_sync_reason"] == "target_not_listenable"
+    assert 32 not in items
+
+
+def test_group_chat_can_be_selected_as_learning_source_without_existing_target() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=41, tenant_id=1, tg_peer_id="-10041", title="真实群聊", listener_enabled=True))
+        session.commit()
+
+        candidates = list_source_candidates(session, 1)
+        selected = candidates["items"][0]
+        result = update_sources(
+            session,
+            1,
+            {"sources": [{"group_id": selected["group_id"], "is_enabled": True, "auto_sync_enabled": True}]},
+            actor="tester",
+            reason="选择群聊学习",
+        )
+        target = session.scalar(select(OperationTarget).where(OperationTarget.tg_peer_id == "-10041"))
+        source = session.scalar(select(TenantLearningSource))
+        target_type = target.target_type if target else ""
+        target_id = target.id if target else 0
+        source_target_id = source.target_id if source else 0
+        source_title = result["items"][0]["target_title"]
+        session.commit()
+
+    assert selected["source_key"] == "group:41"
+    assert selected["title"] == "真实群聊"
+    assert selected["target_id"] is None
+    assert selected["can_listen"] is True
+    assert target is not None
+    assert target_type == "group"
+    assert source is not None
+    assert source_target_id == target_id
+    assert source_title == "真实群聊"
 
 
 def test_target_profile_usage_counts_supported_task_types() -> None:
