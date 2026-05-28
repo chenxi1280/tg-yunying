@@ -41,8 +41,13 @@ from ._common import _now, ai_gateway, audit, gateway
 from .ai_config import ai_provider_credentials, get_tenant_ai_setting
 from .developer_apps import credentials_for_account
 from .group_listeners import collect_group_context, recent_context_messages
-from .tenant_learning_samples import GROUP_CHAT_SCENE, record_channel_comment_sample
 from .notifications import notify_ai_failure
+from .target_learning import (
+    CHANNEL_COMMENT_SCENE as TARGET_CHANNEL_COMMENT_SCENE,
+    GROUP_CHAT_SCENE as TARGET_GROUP_CHAT_SCENE,
+    learning_profile_preview,
+)
+from .tenant_learning_samples import GROUP_CHAT_SCENE, record_channel_comment_sample
 
 
 def _account_id_csv(values: list[int] | str | None) -> str:
@@ -1055,7 +1060,12 @@ def operation_target_detail(
     send_records = _send_records_for_detail(session, target)
     archive_records = _archive_records_for_detail(session, target, linked_group) if target.target_type == "group" else []
     risk = _risk_for_detail(target, accounts, linked_group)
-    learning_preview = {}
+    learning_preview = _learning_preview_for_detail(
+        session,
+        tenant_id,
+        target,
+        include_learning_profile=include_learning_profile,
+    )
     return {
         "target": _operation_target_list_payload(target, linked_group, {linked_group.id: group_links} if linked_group else {}),
         "linked_group": (
@@ -1111,6 +1121,19 @@ def _channel_message_url(channel: OperationTarget, message_id: int) -> str:
     if channel.tg_peer_id.startswith("-100") and channel.tg_peer_id[4:].isdigit():
         return f"https://t.me/c/{channel.tg_peer_id[4:]}/{message_id}"
     return ""
+
+
+def _learning_preview_for_detail(
+    session: Session,
+    tenant_id: int,
+    target: OperationTarget,
+    *,
+    include_learning_profile: bool,
+) -> dict:
+    if not include_learning_profile:
+        return {}
+    profile_scene = TARGET_CHANNEL_COMMENT_SCENE if target.target_type == "channel" else TARGET_GROUP_CHAT_SCENE
+    return learning_profile_preview(session, tenant_id, target.id, profile_scene)
 
 
 def _normalize_snapshot_datetime(value) -> datetime | None:

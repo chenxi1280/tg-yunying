@@ -25,7 +25,8 @@ from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, gateway, require
 from .campaigns import approve_all_drafts, create_campaign, generate_drafts
 from .developer_apps import credentials_for_account
 from .source_media import ensure_source_media_asset
-from .tenant_learning_samples import GROUP_CHAT_SCENE, record_group_learning_sample
+from .target_learning import record_group_learning_sample as record_target_group_learning_sample
+from .tenant_learning_samples import GROUP_CHAT_SCENE, record_group_learning_sample as record_tenant_group_learning_sample
 
 
 def validate_listener_accounts(session: Session, group: TgGroup, account_ids: list[int]) -> list[TgGroupAccount]:
@@ -297,10 +298,14 @@ def collect_group_context(
         )
         for snapshot in snapshots:
             content = str(snapshot.content or "").strip()
-            if not content or _is_ignored_sender(snapshot, ignored_sender_identity):
+            if not content:
                 continue
             if learning_scene:
-                record_group_learning_sample(session, group, snapshot)
+                record_target_group_learning_sample(session, group, snapshot, profile_scene=learning_scene)
+            if _is_ignored_sender(snapshot, ignored_sender_identity):
+                continue
+            if learning_scene:
+                record_tenant_group_learning_sample(session, group, snapshot)
             exists = session.scalar(
                 select(GroupContextMessage.id).where(
                     GroupContextMessage.group_id == group.id,
