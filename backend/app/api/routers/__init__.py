@@ -19,6 +19,7 @@ from .operations_center import router as operations_center_router
 from .risk_control import router as risk_control_router
 from .system import router as system_router
 from .task_center import router as task_center_router
+from .target_profile import router as target_profile_router
 
 
 router = APIRouter()
@@ -30,6 +31,7 @@ for sub_router in (
     account_pools_router,
     accounts_router,
     account_security_router,
+    target_profile_router,
     operations_router,
     operation_plans_router,
     operations_center_router,

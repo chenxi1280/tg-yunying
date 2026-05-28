@@ -4,6 +4,7 @@ export const VIEW_ROUTES: Record<string, string> = {
   overview: '/dashboard',
   accounts: '/accounts',
   targetManagement: '/targets',
+  targetProfile: '/target-profile',
   messageSending: '/message-sending',
   materials: '/materials',
   taskManagement: '/task-center',

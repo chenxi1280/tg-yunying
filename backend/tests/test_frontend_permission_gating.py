@@ -405,6 +405,24 @@ def test_task_center_precheck_uses_long_timeout_and_capacity_summary_labels():
     assert "最大并发" in wizard
 
 
+def test_target_profile_is_top_level_page_not_target_detail_governance():
+    routes = (PROJECT_ROOT / "frontend/src/app/routes.ts").read_text()
+    utils = (PROJECT_ROOT / "frontend/src/app/utils.ts").read_text()
+    shell = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
+    targets = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
+    modals = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
+
+    assert "targetProfile: '/target-profile'" in routes
+    assert "targetProfile: 'target_profile.view'" in utils
+    assert "TargetProfileView" in shell
+    assert "['targetProfile', '目标画像'" in shell
+    assert "目标画像来源状态" in targets
+    assert "openLearningAction('rebuild')" not in targets
+    assert "learning-versions" not in targets
+    assert "目标风控策略" not in targets
+    assert "target_learning." not in modals
+
+
 def test_api_error_message_supports_trace_id_in_structured_detail_objects():
     source = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 

@@ -58,12 +58,14 @@ from app.services.task_runtime_stage import derive_task_runtime_stage
 from .stats import empty_stats, next_run_after_task, refresh_task_stats, retry_failed_actions
 from .utils import as_int as _as_int, as_int_list as _as_int_list
 from .runtime_retention import cleanup_runtime_details
-from app.services.target_learning import CHANNEL_COMMENT_SCENE, GROUP_CHAT_SCENE, learning_profile_preview
+from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.source_media import WAITING_MATERIAL_CACHE, expire_waiting_source_media_actions, wake_waiting_actions_for_source_media
 
 _empty_stats = empty_stats
 _next_run_after_task = next_run_after_task
 _retry_failed_actions = retry_failed_actions
+CHANNEL_COMMENT_SCENE = "channel_comment"
+GROUP_CHAT_SCENE = "group_chat"
 OPEN_PLAN_ACTION_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
 TARGET_PERMISSION_MARKERS = (
     "lack permission",
@@ -254,13 +256,10 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
 
 
 def _task_learning_profile_preview(session: Session, task: Task) -> dict[str, Any]:
-    config = task.type_config or {}
     if task.type == "group_ai_chat":
-        target_id = _as_int(config.get("target_operation_target_id"))
-        return learning_profile_preview(session, task.tenant_id, target_id, GROUP_CHAT_SCENE)
+        return tenant_learning_profile_preview(session, task.tenant_id, GROUP_CHAT_SCENE)
     if task.type == "channel_comment":
-        target_id = _as_int(config.get("target_channel_id"))
-        return learning_profile_preview(session, task.tenant_id, target_id, CHANNEL_COMMENT_SCENE)
+        return tenant_learning_profile_preview(session, task.tenant_id, CHANNEL_COMMENT_SCENE)
     return {}
 
 

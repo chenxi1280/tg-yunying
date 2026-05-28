@@ -41,7 +41,7 @@ from ._common import _now, ai_gateway, audit, gateway
 from .ai_config import ai_provider_credentials, get_tenant_ai_setting
 from .developer_apps import credentials_for_account
 from .group_listeners import collect_group_context, recent_context_messages
-from .target_learning import CHANNEL_COMMENT_SCENE, GROUP_CHAT_SCENE, learning_profile_preview, record_channel_comment_learning_sample
+from .tenant_learning_samples import GROUP_CHAT_SCENE, record_channel_comment_sample
 from .notifications import notify_ai_failure
 
 
@@ -1055,8 +1055,7 @@ def operation_target_detail(
     send_records = _send_records_for_detail(session, target)
     archive_records = _archive_records_for_detail(session, target, linked_group) if target.target_type == "group" else []
     risk = _risk_for_detail(target, accounts, linked_group)
-    profile_scene = CHANNEL_COMMENT_SCENE if target.target_type == "channel" else GROUP_CHAT_SCENE
-    learning_preview = learning_profile_preview(session, tenant_id, target.id, profile_scene) if include_learning_profile else {}
+    learning_preview = {}
     return {
         "target": _operation_target_list_payload(target, linked_group, {linked_group.id: group_links} if linked_group else {}),
         "linked_group": (
@@ -1235,7 +1234,7 @@ def _sync_channel_message_comments(session: Session, message: ChannelMessage, *,
             existing.content_preview = snapshot.content_preview or existing.content_preview
             existing.reply_count = int(snapshot.reply_count or existing.reply_count or 0)
             existing.published_at = published_at or existing.published_at
-            record_channel_comment_learning_sample(session, existing)
+            record_channel_comment_sample(session, existing)
             continue
         comment = ChannelMessageComment(
             tenant_id=message.tenant_id,
@@ -1253,7 +1252,7 @@ def _sync_channel_message_comments(session: Session, message: ChannelMessage, *,
         )
         session.add(comment)
         session.flush()
-        record_channel_comment_learning_sample(session, comment)
+        record_channel_comment_sample(session, comment)
         inserted += 1
     target.last_sync_at = _now()
     target.updated_at = _now()

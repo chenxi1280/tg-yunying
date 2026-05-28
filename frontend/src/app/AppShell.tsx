@@ -28,6 +28,7 @@ const UsageReportsView = React.lazy(() => import('./views/UsageReportsView'));
 const GroupManagementView = React.lazy(() => import('./views/GroupManagementView'));
 const AuditsView = React.lazy(() => import('./views/AuditsView'));
 const OperationTargetsView = React.lazy(() => import('./views/OperationTargetsView'));
+const TargetProfileView = React.lazy(() => import('./views/TargetProfileView'));
 const TaskCenterView = React.lazy(() => import('./views/TaskCenterView'));
 const MessageSendingView = React.lazy(() => import('./views/MessageSendingView'));
 const MaterialsView = React.lazy(() => import('./views/MaterialsView'));
@@ -51,6 +52,7 @@ const SHELL_NAV_ITEMS: ShellNavItem[] = [
   ['overview', '运营中心', <LayoutDashboard size={18} />],
   ['accounts', 'TG账号管理', <Smartphone size={18} />],
   ['targetManagement', '运营目标', <Users size={18} />],
+  ['targetProfile', '目标画像', <Users size={18} />],
   ['messageSending', '消息发送', <MessageSquareText size={18} />],
   ['materials', '素材中心', <Database size={18} />],
   ['taskManagement', '任务中心', <Activity size={18} />],
@@ -473,9 +475,13 @@ function AppShell() {
               canManageTargets={hasPermission(currentUser, 'targets.manage')}
               canManageTasks={hasPermission(currentUser, 'tasks.manage')}
               canManageArchives={hasPermission(currentUser, 'archives.manage')}
-              canViewLearning={hasPermission(currentUser, 'target_learning.view')}
-              canManageLearning={hasPermission(currentUser, 'target_learning.manage')}
-              canRebuildLearning={hasPermission(currentUser, 'target_learning.rebuild')}
+              onOpenTargetProfile={() => goToView('targetProfile')}
+            />
+          )}
+          {activeView === 'targetProfile' && (
+            <TargetProfileView
+              canManage={hasPermission(currentUser, 'target_profile.manage')}
+              onOpenTargets={() => goToView('targetManagement')}
             />
           )}
           {activeView === 'messageSending' && (
@@ -541,7 +547,7 @@ function AppShell() {
           {activeView === 'listenerCenter' && (
             <ListenerCenterView
               canManageListeners={hasPermission(currentUser, 'listeners.manage')}
-              canManageLearning={hasPermission(currentUser, 'target_learning.manage')}
+              onOpenTargetProfile={() => goToView('targetProfile')}
             />
           )}
           {activeView === 'ruleCenter' && <RulesCenterView onOpenSystemConfig={() => openSystemConfig('resources')} />}

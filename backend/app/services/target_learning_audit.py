@@ -15,7 +15,7 @@ def audit_learning_profile_use(session: Session, task: Task, profile_preview: di
         tenant_id=task.tenant_id,
         actor=actor,
         action="AI使用目标画像",
-        target_type="target_learning_profile",
+        target_type="target_profile",
         target_id=profile_id,
         detail=f"task_id={task.id}; scene={profile_preview.get('profile_scene')}; version={profile_preview.get('profile_version')}",
     )

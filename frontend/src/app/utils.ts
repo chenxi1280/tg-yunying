@@ -5,6 +5,7 @@ export const VIEW_PERMISSION: Record<string, string> = {
   overview: 'overview.view',
   accounts: 'accounts.view',
   targetManagement: 'targets.view',
+  targetProfile: 'target_profile.view',
   messageSending: 'message_sending.view',
   taskManagement: 'tasks.view',
   listenerCenter: 'listeners.view',

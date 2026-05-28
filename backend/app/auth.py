@@ -185,9 +185,8 @@ ALL_PERMISSIONS = [
     "proxies.manage",
     "targets.view",
     "targets.manage",
-    "target_learning.view",
-    "target_learning.manage",
-    "target_learning.rebuild",
+    "target_profile.view",
+    "target_profile.manage",
     "message_sending.view",
     "message_sending.manage",
     "tasks.view",
@@ -282,9 +281,8 @@ ROLE_TEMPLATE_PERMISSIONS = {
         "accounts.profile.batch_update",
         "targets.view",
         "targets.manage",
-        "target_learning.view",
-        "target_learning.manage",
-        "target_learning.rebuild",
+        "target_profile.view",
+        "target_profile.manage",
         "message_sending.view",
         "message_sending.manage",
         "tasks.view",
@@ -308,7 +306,7 @@ ROLE_TEMPLATE_PERMISSIONS = {
         "audit.export",
     ],
     "账号添加专员": ["overview.view", "accounts.view", "accounts.create", "accounts.login", "accounts.sync"],
-    "只读观察员": ["overview.view", "targets.view", "target_learning.view", "listeners.view", "usage.view", "manual.view", "audits.view"],
+    "只读观察员": ["overview.view", "targets.view", "target_profile.view", "listeners.view", "usage.view", "manual.view", "audits.view"],
 }
 
 DEFAULT_USER_MENU_PERMISSIONS = ROLE_TEMPLATE_PERMISSIONS["运营管理员"]

@@ -1,5 +1,10 @@
+from pathlib import Path
+
 from app.auth import all_permissions, normalize_permissions
 from app.permission_middleware import required_permission
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_prd_permission_vocabulary_for_ai_prompt_and_proxy_controls():
@@ -50,13 +55,22 @@ def test_operation_metrics_prd_reports_and_export_routes_use_usage_permission():
     assert required_permission("POST", "/api/operation-metrics/export") == ("usage.export",)
 
 
-def test_target_learning_routes_use_learning_permissions_before_generic_target_rules():
-    assert required_permission("GET", "/api/operation-targets/12/learning-profile") == ("target_learning.view",)
-    assert required_permission("GET", "/api/operation-targets/12/learning-samples") == ("target_learning.view",)
-    assert required_permission("GET", "/api/operation-targets/12/learning-versions") == ("target_learning.view",)
-    assert required_permission("POST", "/api/operation-targets/12/learning/rebuild") == ("target_learning.rebuild",)
-    assert required_permission("POST", "/api/operation-targets/12/learning-versions/v1/restore") == ("target_learning.rebuild",)
-    assert required_permission("POST", "/api/operation-targets/12/learning/disable") == ("target_learning.manage",)
-    assert required_permission("PATCH", "/api/operation-targets/12/learning-samples/sample-1") == ("target_learning.manage",)
-    assert required_permission("GET", "/api/listeners/group/7/learning-profile") == ("target_learning.view",)
-    assert required_permission("POST", "/api/listeners/group/7/refresh") == ("target_learning.manage",)
+def test_target_profile_routes_use_top_level_permissions_and_old_routes_are_removed():
+    permissions = all_permissions()
+    operations_router = (PROJECT_ROOT / "backend/app/api/routers/operations.py").read_text()
+    operations_center_router = (PROJECT_ROOT / "backend/app/api/routers/operations_center.py").read_text()
+
+    assert "target_profile.view" in permissions
+    assert "target_profile.manage" in permissions
+    assert "target_learning.view" not in permissions
+    assert "target_learning.manage" not in permissions
+    assert "target_learning.rebuild" not in permissions
+    assert required_permission("GET", "/api/target-profile") == ("target_profile.view",)
+    assert required_permission("GET", "/api/target-profile/source-candidates") == ("target_profile.view",)
+    assert required_permission("POST", "/api/target-profile/rebuild") == ("target_profile.manage",)
+    assert required_permission("PATCH", "/api/target-profile/quality-rules") == ("target_profile.manage",)
+    assert "learning-profile" not in operations_router
+    assert "learning-samples" not in operations_router
+    assert "learning-versions" not in operations_router
+    assert "learning-profile" not in operations_center_router
+    assert "learning-samples" not in operations_center_router

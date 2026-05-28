@@ -11,9 +11,11 @@ from ..ai_generator import AiGenerationUnavailable, clean_channel_comment_conten
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import PostCommentPayload, create_comment_action
-from app.services.target_learning import CHANNEL_COMMENT_SCENE, learning_profile_preview
 from app.services.target_learning_audit import audit_learning_profile_use
+from app.services.tenant_target_profile import tenant_learning_profile_preview
 from .common import add_tokens, adjust_for_account_hour_limit, channel_message_action_count, channel_message_payload, channel_scope, pick_channel_account, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning, stats_inc
+
+CHANNEL_COMMENT_SCENE = "channel_comment"
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -30,7 +32,7 @@ def build_plan(session: Session, task: Task) -> int:
     channel, messages = channel_scope(session, task, config)
     if not channel or not messages:
         return 0
-    profile_preview = learning_profile_preview(session, task.tenant_id, channel.id, CHANNEL_COMMENT_SCENE)
+    profile_preview = tenant_learning_profile_preview(session, task.tenant_id, CHANNEL_COMMENT_SCENE)
     audit_learning_profile_use(session, task, profile_preview, "AI评论任务")
     config = _config_with_comment_profile(config, profile_preview)
     actions: list[tuple[ChannelMessage, str, int | None]] = []

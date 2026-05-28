@@ -13,8 +13,8 @@ from app.services._common import _now
 from app.services.account_capacity import available_accounts_by_capacity, next_capacity_window
 from app.services.content_filters import filter_outbound_content, looks_like_generated_template_noise, looks_like_operator_ui_content
 from app.services.group_listeners import collect_group_context, recent_context_messages
-from app.services.target_learning import GROUP_CHAT_SCENE, learning_profile_preview
 from app.services.target_learning_audit import audit_learning_profile_use
+from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 from app.services.material_rules import select_material_for_policy
 
@@ -34,6 +34,7 @@ WAITING_IDLE_CONTINUATION_MESSAGE = "持续监听中，等待新消息或空闲�
 AI_QUALITY_ANCHOR_SKIP_MESSAGE = "AI 候选缺少事实锚点，已跳过本轮"
 AI_QUALITY_DUPLICATE_SKIP_MESSAGE = "AI 候选语义重复风险过高，已跳过本轮"
 DEFAULT_IDLE_CONTINUATION_SECONDS = 300
+GROUP_CHAT_SCENE = "group_chat"
 
 CHAT_MODE_REPLY = "reply"
 CHAT_MODE_IDLE_WARMUP = "idle_warmup"
@@ -135,7 +136,7 @@ def build_plan(session: Session, task: Task) -> int:
     topic_plan = _topic_plan_summary(config, group, topic_thread, turn_count)
     account_memories = _recent_account_memories(session, task, [account.id for account in selected], depth=int(config.get("account_memory_depth") or 3))
     account_profiles = account_profile_summaries(session, task, [account.id for account in selected])
-    profile_preview = learning_profile_preview(session, task.tenant_id, int(config.get("target_operation_target_id") or 0) or None, GROUP_CHAT_SCENE)
+    profile_preview = tenant_learning_profile_preview(session, task.tenant_id, GROUP_CHAT_SCENE)
     audit_learning_profile_use(session, task, profile_preview, "AI活群任务")
     generation_config = _generation_config_with_profile(config, account_memories, account_profiles, topic_thread, topic_plan, profile_preview)
     cycle_id = f"{task.id}:cycle:{cycle_index}"
