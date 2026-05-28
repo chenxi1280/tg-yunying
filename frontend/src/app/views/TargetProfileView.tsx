@@ -31,7 +31,9 @@ type TargetProfileUsage = {
 };
 
 type SourceCandidate = {
-  target_id: number;
+  source_key: string;
+  group_id?: number | null;
+  target_id?: number | null;
   target_type: string;
   title: string;
   tg_peer_id: string;
@@ -186,10 +188,15 @@ function formToRule(values: QualityRuleForm, reason: string) {
   };
 }
 
+function candidateKey(item: SourceCandidate) {
+  return item.source_key || String(item.target_id ?? item.group_id ?? item.tg_peer_id);
+}
+
 function selectedSourceKeys(sources: LearningSource[], candidates: SourceCandidate[]): React.Key[] {
-  const active = sources.filter((item) => item.is_enabled).map((item) => item.target_id);
-  if (active.length) return active;
-  return candidates.filter((item) => item.recommended && item.can_listen).map((item) => item.target_id);
+  const activeTargetIds = new Set(sources.filter((item) => item.is_enabled).map((item) => item.target_id));
+  const activeKeys = candidates.filter((item) => item.target_id && activeTargetIds.has(item.target_id)).map(candidateKey);
+  if (activeKeys.length) return activeKeys;
+  return candidates.filter((item) => item.recommended && item.can_listen).map(candidateKey);
 }
 
 export default function TargetProfileView({ canManage, onOpenTargets }: Props) {
@@ -263,8 +270,8 @@ export default function TargetProfileView({ canManage, onOpenTargets }: Props) {
   }
 
   async function saveSelectedSources() {
-    const selectedIdSet = new Set(selectedSourceIds.map((item) => Number(item)));
-    const selected = candidates.filter((item) => selectedIdSet.has(item.target_id));
+    const selectedKeySet = new Set(selectedSourceIds.map((item) => String(item)));
+    const selected = candidates.filter((item) => selectedKeySet.has(candidateKey(item)));
     const reason = requireReason('填写保存学习来源的原因');
     if (!reason) return;
     await runAction(async () => {
@@ -273,6 +280,7 @@ export default function TargetProfileView({ canManage, onOpenTargets }: Props) {
         body: JSON.stringify({
           reason,
           sources: selected.map((item) => ({
+            group_id: item.group_id,
             target_id: item.target_id,
             is_enabled: true,
             auto_sync_enabled: true,
@@ -360,7 +368,7 @@ export default function TargetProfileView({ canManage, onOpenTargets }: Props) {
   ];
 
   const candidateColumns: ColumnsType<SourceCandidate> = [
-    { title: '目标', key: 'target', render: (_, item) => <Space direction="vertical" size={0}><Typography.Text strong>{item.title}</Typography.Text><Typography.Text type="secondary">{item.target_type} / {item.tg_peer_id}</Typography.Text></Space> },
+    { title: '群聊', key: 'target', render: (_, item) => <Space direction="vertical" size={0}><Typography.Text strong>{item.title}</Typography.Text><Typography.Text type="secondary">{item.target_type} / {item.tg_peer_id}</Typography.Text></Space> },
     { title: '可学习', key: 'can_listen', width: 120, render: (_, item) => item.can_listen ? <Tag color="green">可监听</Tag> : <Tag color="orange">{item.cannot_auto_sync_reason || '不可监听'}</Tag> },
     { title: '推荐', key: 'recommended', width: 110, render: (_, item) => item.recommended ? <Tag color="blue">推荐</Tag> : '-' },
     { title: '最近消息', key: 'recent', width: 180, render: (_, item) => formatDateTime(item.recent_message_at) },
@@ -411,7 +419,7 @@ export default function TargetProfileView({ canManage, onOpenTargets }: Props) {
             { key: 'available', label: 'AI 可用', children: profile?.available_for_ai ? <Tag color="green">可用</Tag> : <Tag color="orange">样本不足</Tag> },
             { key: 'scope', label: '使用范围', span: 2, children: (profile?.usage_scope || []).map((item) => TASK_LABELS[item] || item).join(' / ') },
             { key: 'usage', label: '当前使用', children: `${usage?.running_task_count ?? 0} 个任务` },
-            { key: 'source', label: '学习位置', children: `${profile?.source_count ?? 0} 个目标来源` },
+            { key: 'source', label: '学习位置', children: `${profile?.source_count ?? 0} 个群聊来源` },
             { key: 'samples', label: '采纳样本', children: profile?.source_sample_count ?? 0 },
             { key: 'rebuilt', label: '最近重建', children: formatDateTime(profile?.last_rebuilt_at) },
             { key: 'summary', label: '画像摘要', span: 3, children: profile?.style_summary || '暂无画像摘要，配置来源并采纳样本后可重建。' },
@@ -423,9 +431,9 @@ export default function TargetProfileView({ canManage, onOpenTargets }: Props) {
         <Table<LearningSource> rowKey="id" size="small" loading={loading} dataSource={sources} columns={sourceColumns} pagination={false} locale={{ emptyText: <Empty description="还没有选择学习来源" /> }} />
       </Card>
 
-      <Card className="panel" title="来源候选">
+      <Card className="panel" title="群聊候选">
         <Table<SourceCandidate>
-          rowKey="target_id"
+          rowKey={candidateKey}
           size="small"
           loading={loading}
           dataSource={candidates}

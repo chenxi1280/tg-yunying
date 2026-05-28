@@ -15,6 +15,7 @@ from app.models import (
     TenantLearningSample,
     TenantLearningSource,
     TgGroup,
+    TgGroupAccount,
 )
 from app.services._common import _now, audit
 
@@ -70,9 +71,15 @@ def tenant_learning_profile_preview(session: Session, tenant_id: int, profile_sc
 
 
 def list_source_candidates(session: Session, tenant_id: int) -> dict[str, Any]:
-    targets = session.scalars(select(OperationTarget).where(OperationTarget.tenant_id == tenant_id).order_by(OperationTarget.id.asc())).all()
-    linked_groups = _linked_groups(session, tenant_id)
-    items = [_candidate_payload(target, linked_groups.get(target.tg_peer_id)) for target in targets]
+    groups = session.scalars(
+        select(TgGroup)
+        .where(TgGroup.tenant_id == tenant_id, TgGroup.group_type != "channel")
+        .order_by(TgGroup.listener_enabled.desc(), TgGroup.id.desc())
+    ).all()
+    targets = session.scalars(select(OperationTarget).where(OperationTarget.tenant_id == tenant_id, OperationTarget.target_type == "group")).all()
+    targets_by_peer = {target.tg_peer_id: target for target in targets}
+    links_by_group = _group_links_by_group(session, tenant_id, [group.id for group in groups])
+    items = [_group_candidate_payload(group, targets_by_peer.get(group.tg_peer_id), links_by_group.get(group.id, [])) for group in groups]
     return {"items": items, "total": len(items)}
 
 
@@ -84,19 +91,17 @@ def list_sources(session: Session, tenant_id: int) -> dict[str, Any]:
 def update_sources(session: Session, tenant_id: int, payload: dict[str, Any], *, actor: str, reason: str) -> dict[str, Any]:
     if not reason.strip():
         raise ValueError("请填写学习来源变更原因")
-    target_ids = [int(item["target_id"]) for item in payload.get("sources", []) if item.get("target_id")]
-    targets = {target.id: target for target in session.scalars(select(OperationTarget).where(OperationTarget.tenant_id == tenant_id, OperationTarget.id.in_(target_ids))).all()}
+    source_items = list(payload.get("sources") or [])
+    resolved_sources = [_resolve_source_target(session, tenant_id, item) for item in source_items]
+    target_ids = [target.id for item, target, listener_ids in resolved_sources]
     existing = {source.target_id: source for source in session.scalars(select(TenantLearningSource).where(TenantLearningSource.tenant_id == tenant_id)).all()}
-    for item in payload.get("sources", []):
-        target_id = int(item["target_id"])
-        target = targets.get(target_id)
-        if not target:
-            raise ValueError("学习来源目标不存在")
+    for item, target, listener_ids in resolved_sources:
+        target_id = target.id
         source = existing.get(target_id) or TenantLearningSource(tenant_id=tenant_id, target_id=target_id)
         source.source_kind = target.target_type
         source.is_enabled = bool(item.get("is_enabled", True))
         source.auto_sync_enabled = bool(item.get("auto_sync_enabled", True))
-        source.listener_account_ids = list(item.get("listener_account_ids") or [])
+        source.listener_account_ids = list(item.get("listener_account_ids") or listener_ids)
         source.source_status = "active" if source.is_enabled else "disabled"
         source.last_failure_detail = str(item.get("last_failure_detail") or "")
         source.selected_by = actor
@@ -365,27 +370,66 @@ def _unavailable_preview(profile_scene: str, reason: str) -> dict[str, Any]:
     }
 
 
-def _linked_groups(session: Session, tenant_id: int) -> dict[str, TgGroup]:
-    groups = session.scalars(select(TgGroup).where(TgGroup.tenant_id == tenant_id)).all()
-    return {group.tg_peer_id: group for group in groups}
+def _group_links_by_group(session: Session, tenant_id: int, group_ids: list[int]) -> dict[int, list[Any]]:
+    if not group_ids:
+        return {}
+    links: dict[int, list[Any]] = {group_id: [] for group_id in group_ids}
+    for link in session.scalars(select(TgGroupAccount).where(TgGroupAccount.tenant_id == tenant_id, TgGroupAccount.group_id.in_(group_ids))):
+        links.setdefault(link.group_id, []).append(link)
+    return links
 
 
-def _candidate_payload(target: OperationTarget, group: TgGroup | None) -> dict[str, Any]:
-    can_listen = bool(group and group.listener_enabled)
-    reason = "" if can_listen else "target_not_listenable"
+def _group_candidate_payload(group: TgGroup, target: OperationTarget | None, links: list[Any]) -> dict[str, Any]:
+    listener_ids = [link.account_id for link in links if link.is_listener]
+    can_listen = bool(group.listener_enabled or listener_ids)
+    reason = "" if can_listen else "no_listener_account"
     return {
-        "target_id": target.id,
-        "target_type": target.target_type,
-        "title": target.title,
-        "tg_peer_id": target.tg_peer_id,
+        "source_key": f"group:{group.id}",
+        "group_id": group.id,
+        "target_id": target.id if target else None,
+        "target_type": "group",
+        "title": group.title,
+        "tg_peer_id": group.tg_peer_id,
         "can_listen": can_listen,
-        "listener_account_ids": group.listener_account_ids if group else [],
-        "recent_message_at": _iso(group.listener_last_polled_at) if group else None,
+        "listener_account_ids": listener_ids,
+        "recent_message_at": _iso(group.listener_last_polled_at),
         "associated_task_types": [],
         "recommended": can_listen,
-        "recommend_reason": "可监听目标" if can_listen else "",
+        "recommend_reason": "可监听群聊" if can_listen else "",
         "cannot_auto_sync_reason": reason,
     }
+
+
+def _resolve_source_target(session: Session, tenant_id: int, item: dict[str, Any]) -> tuple[dict[str, Any], OperationTarget, list[int]]:
+    if item.get("group_id"):
+        group = session.get(TgGroup, int(item["group_id"]))
+        if not group or group.tenant_id != tenant_id or group.group_type == "channel":
+            raise ValueError("学习来源群聊不存在")
+        links_by_group = _group_links_by_group(session, tenant_id, [group.id])
+        target = _ensure_group_target(session, group)
+        listener_ids = [link.account_id for link in links_by_group.get(group.id, []) if link.is_listener]
+        return item, target, listener_ids
+    if not item.get("target_id"):
+        raise ValueError("学习来源目标不存在")
+    target = session.get(OperationTarget, int(item["target_id"]))
+    if not target or target.tenant_id != tenant_id:
+        raise ValueError("学习来源目标不存在")
+    return item, target, []
+
+
+def _ensure_group_target(session: Session, group: TgGroup) -> OperationTarget:
+    target = session.scalar(select(OperationTarget).where(OperationTarget.tenant_id == group.tenant_id, OperationTarget.tg_peer_id == group.tg_peer_id))
+    if not target:
+        target = OperationTarget(tenant_id=group.tenant_id, tg_peer_id=group.tg_peer_id)
+        session.add(target)
+    target.target_type = "group"
+    target.title = group.title
+    target.member_count = group.member_count
+    target.can_send = group.can_send
+    target.auth_status = group.auth_status
+    target.updated_at = _now()
+    session.flush()
+    return target
 
 
 def _source_payload(source: TenantLearningSource, target: OperationTarget | None) -> dict[str, Any]:
