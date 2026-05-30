@@ -4594,11 +4594,7 @@ def test_task_center_send_message_payload_requires_destination(monkeypatch):
             assert "group_id or chat_id" in row.result["error_message"]
 
 
-def test_task_center_group_send_policy_includes_legacy_message_tasks(monkeypatch):
-    def should_not_send(*args, **kwargs):
-        raise AssertionError("legacy sent message cooldown must block task center sends")
-
-    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", should_not_send)
+def test_task_center_group_send_policy_ignores_legacy_message_cooldown():
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
@@ -4643,11 +4639,10 @@ def test_task_center_group_send_policy_includes_legacy_message_tasks(monkeypatch
                 session,
                 tenant_id=1,
                 group=session.get(TgGroup, group["id"]),
-                content="应被旧任务冷却拦截",
+                content="旧任务发送记录不再触发隐藏群冷却",
                 review_approved=True,
             )
-            assert failure_type == FailureType.SLOWMODE.value
-            assert "群冷却中" in failure_detail
+            assert (failure_type, failure_detail) == (None, None)
 
 
 def test_task_center_channel_failed_action_retries_before_task_failed(monkeypatch):

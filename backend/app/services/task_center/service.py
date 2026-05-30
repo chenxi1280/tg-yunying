@@ -45,7 +45,7 @@ from .channel_membership import (
     channel_membership_summary,
 )
 from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims
-from .executors import build_task_plan, reached_daily_action_limit
+from .executors import build_task_plan
 from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _membership_accounts, _membership_phase, _message_groups, _relay_batches, _relay_recent_sources, _task_payload
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
@@ -1020,10 +1020,6 @@ def _check_stop_conditions(session: Session, task: Task) -> bool:
     if scheduled_end and scheduled_end <= now:
         task.status = "completed"
         task.next_run_at = None
-        refresh_task_stats(session, task)
-        return True
-    if reached_daily_action_limit(session, task):
-        task.next_run_at = now + timedelta(hours=1)
         refresh_task_stats(session, task)
         return True
     return False
