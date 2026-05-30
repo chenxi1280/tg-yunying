@@ -657,13 +657,13 @@ def _policy_audit_records(session: Session, tenant_id: int) -> list[dict[str, An
 def _policy_audit_payload(row: AuditLog) -> dict[str, Any]:
     return {
         "id": row.id,
-        "actor": row.actor,
-        "action": row.action,
-        "target_type": row.target_type,
-        "target_id": row.target_id,
-        "target_label": RISK_AUDIT_TARGET_LABELS.get(row.target_type, row.target_type),
-        "detail": row.detail,
-        "occurred_at": row.created_at,
+        "actor": _str_value(row.actor, "system"),
+        "action": _str_value(row.action, "风控策略记录"),
+        "target_type": _str_value(row.target_type, "risk_global_policy"),
+        "target_id": _str_value(row.target_id, ""),
+        "target_label": RISK_AUDIT_TARGET_LABELS.get(row.target_type, _str_value(row.target_type, "风控策略")),
+        "detail": _str_value(row.detail, ""),
+        "occurred_at": _datetime_value(row.created_at),
     }
 
 
@@ -682,11 +682,13 @@ def _account_score_row(
     score_reasons = runtime_reasons or _score_reasons(account, capacity, recent_risk, security_snapshot)
     proxy_blocked = _proxy_blocks_account(account)
     security_blocked = _security_blocks_account(security_snapshot)
-    status_blocked = account.status in BLOCKED_ACCOUNT_STATUSES
+    login_status = _account_status(account)
+    base_health_score = _account_health_score(account)
+    status_blocked = login_status in BLOCKED_ACCOUNT_STATUSES
     capacity_blocked = not bool(capacity.available)
     adjusted_score = _runtime_health_score(runtime_summary)
     if adjusted_score is None:
-        adjusted_score = max(0, min(100, float(account.health_score or 0) + _proxy_score_delta(account) + _security_score_delta(security_snapshot)))
+        adjusted_score = max(0, min(100, base_health_score + _proxy_score_delta(account) + _security_score_delta(security_snapshot)))
     risk_level = _runtime_risk_level(runtime_summary) or _risk_level(adjusted_score, status_blocked=status_blocked or proxy_blocked or security_blocked, capacity_blocked=capacity_blocked)
     blocked_reason = _blocked_reason(account, capacity, recent_risk, security_snapshot)
     if runtime_summary and runtime_summary.unavailable_reason and not blocked_reason:
@@ -695,14 +697,15 @@ def _account_score_row(
         blocked_reason = _proxy_risk_reason(account)
     if security_blocked and not blocked_reason:
         blocked_reason = _security_blocked_reason(security_snapshot)
+    external_authorization_count = _int_value(security_snapshot.external_authorization_count, 0) if security_snapshot else 0
     return {
         "account_id": account.id,
-        "display_name": account.display_name,
+        "display_name": _account_display_name(account),
         "username": account.username,
-        "phone_masked": account.phone_masked,
+        "phone_masked": _str_value(account.phone_masked, ""),
         "phone_number": account.phone_number,
-        "pool_name": account.pool_name,
-        "login_status": account.status,
+        "pool_name": _str_value(account.pool_name, "默认账号池"),
+        "login_status": login_status,
         "health_score": round(adjusted_score, 1),
         "risk_level": risk_level,
         "current_policy": _policy_for_level(risk_level, capacity_blocked),
@@ -711,8 +714,8 @@ def _account_score_row(
         "day_usage": day_usage.get(account.id, 0),
         "day_limit": int(setting.default_account_day_limit or 0),
         "cooldown_until": capacity.defer_until if capacity_blocked else None,
-        "recent_risk": recent_risk,
-        "blocked_reason": blocked_reason,
+        "recent_risk": _str_value(recent_risk, ""),
+        "blocked_reason": _str_value(blocked_reason, ""),
         "score_reasons": score_reasons,
         "non_score_reasons": (non_score_reasons or _runtime_non_score_reasons(runtime_summary))[:5],
         "proxy_id": account.proxy_id,
@@ -721,12 +724,12 @@ def _account_score_row(
         "proxy_status": account.proxy_status,
         "proxy_alert_status": account.proxy_alert_status,
         "proxy_risk_reason": _proxy_risk_reason(account),
-        "trusted_session_status": security_snapshot.trusted_session_status if security_snapshot else "unknown",
-        "two_fa_status": security_snapshot.two_fa_status if security_snapshot else "unknown",
-        "external_authorization_count": security_snapshot.external_authorization_count if security_snapshot else 0,
-        "security_profile_status": security_snapshot.profile_status if security_snapshot else "unknown",
+        "trusted_session_status": _str_value(security_snapshot.trusted_session_status if security_snapshot else None, "unknown"),
+        "two_fa_status": _str_value(security_snapshot.two_fa_status if security_snapshot else None, "unknown"),
+        "external_authorization_count": external_authorization_count,
+        "security_profile_status": _str_value(security_snapshot.profile_status if security_snapshot else None, "unknown"),
         "security_risk_reason": _security_risk_reason(security_snapshot),
-        "can_join_task": account.status == AccountStatus.ACTIVE.value and risk_level in {"A", "B", "C"} and not capacity_blocked and not proxy_blocked and not security_blocked,
+        "can_join_task": login_status == AccountStatus.ACTIVE.value and risk_level in {"A", "B", "C"} and not capacity_blocked and not proxy_blocked and not security_blocked,
     }
 
 
@@ -804,7 +807,7 @@ def _queue_item(key: str, item_type: str, severity: str, account: TgAccount, rea
         "item_type": item_type,
         "severity": severity,
         "account_id": account.id,
-        "account_name": account.display_name,
+        "account_name": _account_display_name(account),
         "target": "",
         "reason": reason,
         "suggested_action": action,
@@ -1222,26 +1225,29 @@ def _policy_for_level(level: str, capacity_blocked: bool) -> str:
 
 
 def _blocked_reason(account: TgAccount, capacity: Any, recent_risk: str, security_snapshot: TgAccountSecuritySnapshot | None = None) -> str:
-    if account.status in BLOCKED_ACCOUNT_STATUSES:
-        return account.status
+    login_status = _account_status(account)
+    if login_status in BLOCKED_ACCOUNT_STATUSES:
+        return login_status
     security_reason = _security_blocked_reason(security_snapshot)
     if security_reason:
         return security_reason
     if not capacity.available:
         return capacity.reason
-    if account.health_score < 55:
+    if _account_health_score(account) < 55:
         return recent_risk or "健康分低于任务准入线"
     return ""
 
 
 def _score_reasons(account: TgAccount, capacity: Any, recent_risk: str, security_snapshot: TgAccountSecuritySnapshot | None = None) -> list[str]:
     reasons: list[str] = []
-    if account.status != AccountStatus.ACTIVE.value:
-        reasons.append(f"登录状态：{account.status}")
+    login_status = _account_status(account)
+    if login_status != AccountStatus.ACTIVE.value:
+        reasons.append(f"登录状态：{login_status}")
     if not capacity.available:
         reasons.append(capacity.reason)
-    if account.health_score < 55:
-        reasons.append(f"健康分 {float(account.health_score or 0):.1f} 低于任务准入线 55")
+    health_score = _account_health_score(account)
+    if health_score < 55:
+        reasons.append(f"健康分 {health_score:.1f} 低于任务准入线 55")
     proxy_reason = _proxy_risk_reason(account)
     if proxy_reason:
         reasons.append(proxy_reason)
@@ -1259,8 +1265,9 @@ def _security_score_delta(snapshot: TgAccountSecuritySnapshot | None) -> int:
     delta = 0
     if snapshot.trusted_session_status in {"missing", "unknown", "failed"}:
         delta -= 35
-    if snapshot.external_authorization_count > 0:
-        delta -= min(30, 10 + snapshot.external_authorization_count * 5)
+    external_count = _int_value(snapshot.external_authorization_count, 0)
+    if external_count > 0:
+        delta -= min(30, 10 + external_count * 5)
     if snapshot.two_fa_status in {"missing", "unknown", "failed"}:
         delta -= 20
     elif snapshot.two_fa_status in {"email_confirmation_required", "pending_email_confirmation"}:
@@ -1301,8 +1308,9 @@ def _security_score_reasons(snapshot: TgAccountSecuritySnapshot | None) -> list[
     reasons: list[str] = []
     if snapshot.trusted_session_status in {"missing", "unknown", "failed"}:
         reasons.append(f"平台可信设备：{snapshot.trusted_session_status}")
-    if snapshot.external_authorization_count > 0:
-        reasons.append(f"存在 {snapshot.external_authorization_count} 个外部登录设备")
+    external_count = _int_value(snapshot.external_authorization_count, 0)
+    if external_count > 0:
+        reasons.append(f"存在 {external_count} 个外部登录设备")
     if snapshot.two_fa_status in {"missing", "unknown", "failed", "email_confirmation_required", "pending_email_confirmation"}:
         reasons.append(f"二步验证：{snapshot.two_fa_status}")
     if snapshot.profile_status in {"unknown", "incomplete", "update_failed"}:
@@ -1318,8 +1326,9 @@ def _security_dispositions(account: TgAccount, snapshot: TgAccountSecuritySnapsh
     if snapshot.trusted_session_status in {"missing", "unknown", "failed"}:
         severity = "critical" if snapshot.trusted_session_status == "missing" else "warning"
         items.append(_queue_item(f"security:trusted:{account.id}", "可信设备异常", severity, account, f"平台可信设备：{snapshot.trusted_session_status}", "进入账号中心刷新设备并确认平台 Session", snapshot.last_device_scan_at or occurred_at))
-    if snapshot.external_authorization_count > 0:
-        items.append(_queue_item(f"security:external:{account.id}", "外部设备未清理", "warning", account, f"存在 {snapshot.external_authorization_count} 个外部登录设备", "进入账号中心执行安全加固，清理外部设备", snapshot.last_device_scan_at or occurred_at))
+    external_count = _int_value(snapshot.external_authorization_count, 0)
+    if external_count > 0:
+        items.append(_queue_item(f"security:external:{account.id}", "外部设备未清理", "warning", account, f"存在 {external_count} 个外部登录设备", "进入账号中心执行安全加固，清理外部设备", snapshot.last_device_scan_at or occurred_at))
     if snapshot.two_fa_status in {"missing", "unknown", "failed", "email_confirmation_required", "pending_email_confirmation"}:
         severity = "critical" if snapshot.two_fa_status in {"failed", "email_confirmation_required", "pending_email_confirmation"} else "warning"
         items.append(_queue_item(f"security:2fa:{account.id}", "二步验证待处理", severity, account, f"二步验证：{snapshot.two_fa_status}", "进入账号中心设置或确认 Telegram 二步验证", snapshot.last_2fa_check_at or occurred_at))
@@ -1383,11 +1392,11 @@ def _level_detail(level: str) -> str:
 
 
 def _quiet_active(setting: SchedulingSetting, now: datetime) -> bool:
-    if not setting.quiet_hours_enabled:
+    if not _bool_value(setting.quiet_hours_enabled, False):
         return False
     try:
-        start_hour, start_minute = [int(part) for part in setting.quiet_start.split(":", 1)]
-        end_hour, end_minute = [int(part) for part in setting.quiet_end.split(":", 1)]
+        start_hour, start_minute = [int(part) for part in _str_value(setting.quiet_start, "02:00").split(":", 1)]
+        end_hour, end_minute = [int(part) for part in _str_value(setting.quiet_end, "08:00").split(":", 1)]
     except ValueError:
         return False
     current = now.hour * 60 + now.minute
@@ -1509,11 +1518,14 @@ def _proxy_payload(proxy: AccountProxy, bound_count: int, *, trace_id: str = "")
 
 def _proxy_alert_payload(alert: ProxyAlert) -> dict[str, Any]:
     proxy = alert.proxy
+    protocol = _str_value(proxy.protocol if proxy else None, "socks5")
+    host = _str_value(proxy.host if proxy else None, "")
+    port = _int_value(proxy.port if proxy else None, 0)
     return {
         "id": alert.id,
         "proxy_id": alert.proxy_id,
-        "name": proxy.name if proxy else f"proxy_{alert.proxy_id}",
-        "local_address": proxy.local_address if proxy else "",
+        "name": _str_value(proxy.name if proxy else None, f"proxy_{alert.proxy_id or 'unknown'}"),
+        "local_address": f"{protocol}://{host}:{port}" if proxy else "",
         "alert_status": _str_value(alert.status, "alerting"),
         "severity": _str_value(alert.severity, "warning"),
         "alert_type": _str_value(alert.alert_type, ""),
@@ -1531,6 +1543,12 @@ def _int_value(value: Any, default: int) -> int:
     return int(value)
 
 
+def _float_value(value: Any, default: float) -> float:
+    if value is None or value == "":
+        return default
+    return float(value)
+
+
 def _str_value(value: Any, default: str) -> str:
     if value is None:
         return default
@@ -1544,6 +1562,18 @@ def _bool_value(value: Any, default: bool) -> bool:
 
 def _datetime_value(value: datetime | None) -> datetime:
     return value or _now()
+
+
+def _account_display_name(account: TgAccount) -> str:
+    return _str_value(account.display_name, f"账号 #{account.id}")
+
+
+def _account_status(account: TgAccount) -> str:
+    return _str_value(account.status, "unknown")
+
+
+def _account_health_score(account: TgAccount) -> float:
+    return max(0.0, min(100.0, _float_value(account.health_score, 0.0)))
 
 
 def _proxy_bound_counts(session: Session, tenant_id: int, proxy_ids: list[int]) -> dict[int, int]:
