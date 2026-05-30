@@ -407,6 +407,45 @@ def test_channel_comment_generation_uses_long_ai_timeout(monkeypatch):
     assert captured["timeout"] == AI_CONTENT_REQUEST_TIMEOUT_SECONDS
 
 
+def test_channel_comment_generation_scales_token_budget_for_many_candidates(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    captured: dict[str, int] = {}
+
+    def fake_generate_drafts(_credentials, _prompt, **kwargs):
+        captured["max_tokens"] = kwargs["max_tokens"]
+        return mock_generation_result("河东区这个位置方便吗")
+
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="MiMo",
+                provider_type="openai_compatible",
+                base_url="https://api.xiaomimimo.com/v1",
+                model_name="mimo-v2.5",
+                api_key_ciphertext=encrypt_secret("test-key"),
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
+        session.commit()
+
+        generate_channel_comments(
+            session,
+            1,
+            {"comment_style": "mixed"},
+            count=12,
+            message_content="【天津音乐学院】所在位置：河东区；服务：陪洗，无套口，制服",
+            target_label="天津音乐",
+        )
+
+    assert captured["max_tokens"] >= 12 * 512
+
+
 def test_channel_comment_allows_adult_service_context_in_ai_prompt(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

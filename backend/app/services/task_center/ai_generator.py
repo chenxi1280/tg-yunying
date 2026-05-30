@@ -161,7 +161,7 @@ def generate_contents(
             tone=tone,
             persona_set=persona_set,
             temperature=max(float(setting.temperature or 0.7), 0.75) if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE} else setting.temperature,
-            max_tokens=max(setting.max_tokens, 1024),
+            max_tokens=_content_max_tokens(setting.max_tokens, count, purpose),
             system_prompt=system_prompt,
             timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS if purpose in LONG_RUNNING_AI_PURPOSES else DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
         )
@@ -234,6 +234,14 @@ def _unavailable_reason(setting: TenantAiSetting | None) -> str:
     if not setting.ai_enabled:
         return "租户 AI 配置未启用"
     return "没有健康 AI 供应商"
+
+
+def _content_max_tokens(setting_max_tokens: int, count: int, purpose: str) -> int:
+    base = max(int(setting_max_tokens or 0), 1024)
+    if purpose not in LONG_RUNNING_AI_PURPOSES:
+        return base
+    per_candidate = 512 if purpose == CHANNEL_COMMENT_PURPOSE else 384
+    return max(base, max(1, int(count or 1)) * per_candidate)
 
 
 def _fallback_contents(topic: str, requirements: str, purpose: str, target_label: str, count: int) -> list[str]:
