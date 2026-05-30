@@ -25,6 +25,7 @@ SENSITIVE_CONTEXT_GUIDANCE = (
 )
 SENSITIVE_CONTEXT_SUMMARY = "成人服务描述已按安全口径概括：原文包含服务项目、价格或联系信息，生成时不得复述、扩写或撮合。"
 SENSITIVE_CONTEXT_MARKERS = (
+    "无套口",
     "无套",
     "口活",
     "陪洗",
@@ -45,21 +46,6 @@ SENSITIVE_CONTEXT_MARKERS = (
     "态度车",
     "工兵",
     "出击老师",
-)
-SENSITIVE_TRADE_OUTPUT_MARKERS = (
-    "价格",
-    "多少钱",
-    "费用",
-    "联系",
-    "微信",
-    "电报",
-    "飞机",
-    "上课",
-    "服务",
-    "安排",
-    "下单",
-    "预约",
-    "约吗",
 )
 AI_PROVIDER_REFUSAL_MARKERS = (
     "the request was rejected",
@@ -344,23 +330,18 @@ def _sanitize_sensitive_line(line: str) -> str:
     text = str(line or "").strip()
     if not text:
         return ""
-    if not any(marker in text for marker in SENSITIVE_CONTEXT_MARKERS):
-        return text.replace("老师编号", "对象编号").replace("妹子花名", "对象花名")
-    safe_parts = _sensitive_safe_facts(text)
-    if safe_parts:
-        return "；".join(safe_parts + [SENSITIVE_CONTEXT_SUMMARY])
-    return SENSITIVE_CONTEXT_SUMMARY
+    redacted = _redact_sensitive_keywords(text)
+    if redacted == text:
+        return text
+    return f"{redacted}；{SENSITIVE_CONTEXT_SUMMARY}"
 
 
-def _sensitive_safe_facts(text: str) -> list[str]:
-    facts: list[str] = []
-    for label in ("所在位置", "老师编号", "妹子花名"):
-        match = re.search(rf"{label}[】：:：\s]*([^；;\n，,]+)", text)
-        if not match:
-            continue
-        safe_label = label.replace("老师", "对象").replace("妹子", "对象")
-        facts.append(f"{safe_label}：{match.group(1).strip()}")
-    return facts
+def _redact_sensitive_keywords(text: str) -> str:
+    result = text
+    for marker in sorted(SENSITIVE_CONTEXT_MARKERS, key=len, reverse=True):
+        if marker:
+            result = result.replace(marker, "已过滤")
+    return result
 
 
 def clean_group_chat_contents(contents: list[str], *, restrict_sensitive_trade: bool = False) -> list[str]:
@@ -517,7 +498,7 @@ def _looks_like_bad_group_chat_content(content: str) -> bool:
 
 def _looks_like_sensitive_trade_facilitation(content: str) -> bool:
     normalized = _normalize_for_similarity(content)
-    markers = SENSITIVE_TRADE_OUTPUT_MARKERS + SENSITIVE_CONTEXT_MARKERS
+    markers = SENSITIVE_CONTEXT_MARKERS
     return any(_normalize_for_similarity(marker) in normalized for marker in markers)
 
 
