@@ -90,6 +90,11 @@ export function WizardTypeConfig({
   messageScope?: string;
   messageIds?: Array<number | string> | string | null;
 }) {
+  const form = Form.useFormInstance();
+  function markMessagesPerRoundManual(value: number | null) {
+    if (value != null) form.setFieldValue('messages_per_round_mode', 'manual');
+  }
+
   const versionOptions = ruleSets.flatMap((ruleSet) => ruleSet.versions.filter((version) => version.status === 'published').map((version) => ({
     value: version.id,
     label: `${ruleSet.name} / v${version.version} / ${version.status === 'published' ? '已发布' : '历史版本'}`,
@@ -130,7 +135,7 @@ export function WizardTypeConfig({
               children: (
                 <div className="form-grid">
                   <Form.Item name="messages_per_round_mode" label="每轮发言"><Select options={[{ value: 'auto', label: '系统自动判定' }, { value: 'manual', label: '手动指定' }]} /></Form.Item>
-                  <Form.Item name="messages_per_round" label="每轮总发言数"><InputNumber min={1} /></Form.Item>
+                  <Form.Item name="messages_per_round" label="每轮总发言数"><InputNumber min={1} onChange={markMessagesPerRoundManual} /></Form.Item>
                   <Form.Item name="participation_rate" label="参与账号比例"><InputNumber min={0.01} max={1} step={0.01} /></Form.Item>
                   <Form.Item name="allow_account_repeat" label="允许账号重复发言"><Select options={[{ value: true, label: '允许，账号不足时轮换复用' }, { value: false, label: '不允许，同轮尽量一号一条' }]} /></Form.Item>
                   <Form.Item name="repeat_cooldown_rounds" label="重复冷却轮数"><InputNumber min={0} /></Form.Item>
