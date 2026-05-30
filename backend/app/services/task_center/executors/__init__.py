@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 from app.models import Task
 
 from . import channel_comment, channel_like, channel_view, group_ai_chat, group_relay
-from .common import reached_daily_action_limit
 
 
 class TaskExecutor(Protocol):
@@ -32,4 +31,4 @@ def build_task_plan(session: Session, task: Task) -> int:
     return executor.build_plan(session, task)
 
 
-__all__ = ["EXECUTORS", "build_task_plan", "reached_daily_action_limit"]
+__all__ = ["EXECUTORS", "build_task_plan"]

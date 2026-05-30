@@ -337,7 +337,6 @@ export default function TaskCenterView({
       ban_policy: account.ban_policy ?? 'skip',
       pacing_mode: 'template',
       max_actions_per_hour: pacing.max_actions_per_hour ?? null,
-      max_actions_per_day: pacing.max_actions_per_day ?? null,
       operation_template_id: operationTemplateId,
       hourly_activity_curve: curveText(operationCurve),
       operation_profile_manual_override: Boolean(operationProfile.manual_override),
@@ -394,7 +393,6 @@ export default function TaskCenterView({
       mode: values.pacing_mode ?? 'template',
       operation_profile: operationProfileFromValues(values),
       max_actions_per_hour: values.max_actions_per_hour ?? null,
-      max_actions_per_day: values.max_actions_per_day ?? null,
     };
     return config;
   }

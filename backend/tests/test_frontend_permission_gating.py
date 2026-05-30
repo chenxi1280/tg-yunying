@@ -409,6 +409,16 @@ def test_task_center_precheck_uses_long_timeout_and_capacity_summary_labels():
     assert "formatPrecheckReasons" in wizard
 
 
+def test_task_center_runtime_form_exposes_hour_limit_without_task_daily_cap():
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+
+    assert 'name="max_actions_per_hour" label="每小时上限"' in wizard
+    assert 'name="max_actions_per_day" label="每日上限"' not in wizard
+    assert "每日上限 ${values.max_actions_per_day" not in wizard
+    assert "'max_actions_per_day'" not in view_model
+
+
 def test_target_profile_is_top_level_page_not_target_detail_governance():
     routes = (PROJECT_ROOT / "frontend/src/app/routes.ts").read_text()
     utils = (PROJECT_ROOT / "frontend/src/app/utils.ts").read_text()

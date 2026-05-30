@@ -1627,6 +1627,47 @@ def test_task_center_group_policy_uses_auto_validation_without_review_gate():
         ) == (None, None)
 
 
+def test_task_center_group_policy_ignores_hidden_group_rate_limits():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(
+            id=7,
+            tenant_id=1,
+            tg_peer_id="-1007",
+            title="目标群",
+            auth_status="已授权运营",
+            can_send=True,
+            daily_limit=1,
+            group_cooldown_seconds=3600,
+            banned_words="",
+        )
+        task = Task(id="task-ai", tenant_id=1, name="AI 活跃群", type="group_ai_chat", status="running")
+        session.add_all([group, task])
+        session.add(
+            Action(
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="send_message",
+                status="success",
+                executed_at=datetime.now(UTC).replace(tzinfo=None),
+                payload={"group_id": group.id},
+            )
+        )
+        session.commit()
+
+        assert validate_group_send_policy(
+            session,
+            tenant_id=1,
+            group=group,
+            content="任务中心只受全局风控和任务每小时上限约束",
+            review_approved=True,
+        ) == (None, None)
+
+
 def test_group_relay_transform_rules_are_applied_before_auto_send():
     content = "公告 @alice 访问 https://old.example/a 旧词保留"
 

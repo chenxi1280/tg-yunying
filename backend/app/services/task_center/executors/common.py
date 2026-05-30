@@ -325,15 +325,6 @@ def account_has_hour_capacity(session: Session, task: Task, account_id: int, act
     return int(count) < limit
 
 
-def reached_daily_action_limit(session: Session, task: Task) -> bool:
-    limit = (task.pacing_config or {}).get("max_actions_per_day")
-    if not limit:
-        return False
-    cutoff = _now() - timedelta(days=1)
-    count = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id, Action.created_at >= cutoff)) or 0
-    return int(count) >= int(limit)
-
-
 __all__ = [
     "add_tokens",
     "adjust_for_account_hour_limit",
@@ -347,7 +338,6 @@ __all__ = [
     "planned_channel_message_ids",
     "quantity_jitter_bounds",
     "quantity_with_jitter",
-    "reached_daily_action_limit",
     "record_channel_capacity_warning",
     "stats_inc",
     "unplanned_channel_messages",
