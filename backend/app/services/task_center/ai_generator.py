@@ -17,7 +17,8 @@ from app.services.content_filters import looks_like_generated_template_noise, lo
 AI_GENERATION_UNAVAILABLE_MESSAGE = "AI 生成不可用，等待恢复后继续执行"
 GROUP_CHAT_PURPOSE = "群活跃续聊"
 CHANNEL_COMMENT_PURPOSE = "频道评论"
-GROUP_CHAT_REQUEST_TIMEOUT_SECONDS = 120
+AI_CONTENT_REQUEST_TIMEOUT_SECONDS = 120
+LONG_RUNNING_AI_PURPOSES = frozenset({GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE})
 AI_PROVIDER_REFUSAL_MARKERS = (
     "the request was rejected",
     "considered high risk",
@@ -138,10 +139,10 @@ def generate_contents(
             tone=tone,
             persona_set=persona_set,
             temperature=max(float(setting.temperature or 0.7), 0.75) if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE} else setting.temperature,
-        max_tokens=max(setting.max_tokens, 1024),
-        system_prompt=system_prompt,
-        timeout=GROUP_CHAT_REQUEST_TIMEOUT_SECONDS if purpose == GROUP_CHAT_PURPOSE else DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
-    )
+            max_tokens=max(setting.max_tokens, 1024),
+            system_prompt=system_prompt,
+            timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS if purpose in LONG_RUNNING_AI_PURPOSES else DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+        )
     except Exception as exc:
         if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE}:
             raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
