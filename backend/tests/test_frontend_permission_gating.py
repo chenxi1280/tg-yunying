@@ -178,8 +178,40 @@ def test_task_center_ai_chat_account_distribution_controls_are_visible():
     assert 'name="allow_account_repeat"' in source
     assert 'label="允许账号重复发言"' in source
     assert 'label="每轮总发言数"' in source
+    assert '<InputNumber min={1} max={10}' not in source
+    assert "小时上限控制总量" in source
+    assert "参与比例按多轮统计" in source
     assert 'label="上下文历史条数（不是账号数）"' in source
     assert 'label="账号并发上限（账号数）"' in source
+
+
+def test_task_center_applies_ai_limit_recommendations_without_overwriting_manual_fields():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+
+    assert "recommended_limits" in types
+    assert "applyAiLimitRecommendations(result)" in source
+    assert "form.isFieldTouched(field)" in source
+    assert "max_actions_per_hour" in source
+    assert "messages_per_round" in source
+    assert "target_comments_per_message" in source
+    assert "max_comments_per_account_per_hour" in source
+    assert "推荐数量" in wizard
+    assert "recommended_limits" in wizard
+
+
+def test_task_center_edit_ai_limits_can_calculate_and_apply_recommendations():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    assert "editRecommendation" in source
+    assert "runEditAiLimitRecommendation" in source
+    assert "applyEditAiLimitRecommendations" in source
+    assert "settingsPayload(editableType, editForm.getFieldsValue(true))" in source
+    assert "result.capacity_summary?.recommended_limits" in source
+    assert "editForm.setFieldsValue(nextValues)" in source
+    assert "计算推荐数量" in source
+    assert "一键应用推荐" in source
 
 
 def test_risk_control_restores_tab_filter_and_page_from_return_query():
@@ -414,7 +446,7 @@ def test_task_center_runtime_form_exposes_hour_limit_without_task_daily_cap():
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
     assert 'name="max_actions_per_hour" label="每小时最大发送量"' in wizard
-    assert 'placeholder="不填则按系统默认"' in wizard
+    assert 'placeholder="预检后按账号数推荐"' in wizard
     assert 'name="max_actions_per_day" label="每日上限"' not in wizard
     assert "每日上限 ${values.max_actions_per_day" not in wizard
     assert "'max_actions_per_day'" not in view_model

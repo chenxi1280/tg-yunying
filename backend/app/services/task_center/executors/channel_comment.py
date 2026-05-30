@@ -7,6 +7,7 @@ from app.models import Action, ChannelMessage, ChannelMessageComment, OperationT
 
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 from ..account_pool import select_task_accounts
+from ..ai_limits import allocate_message_budget
 from ..ai_generator import AiGenerationUnavailable, clean_channel_comment_contents, generate_channel_comments
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
@@ -43,7 +44,7 @@ def build_plan(session: Session, task: Task) -> int:
         task.last_error = "回复对象不属于当前频道消息，请先采集评论后重新选择"
         return 0
     quality_skipped = False
-    for message in messages:
+    for message, quantity in _message_comment_quantities(session, task, config, messages):
         if rule_version:
             context_text = "\n".join(
                 item
@@ -58,9 +59,6 @@ def build_plan(session: Session, task: Task) -> int:
             if not input_result.passed:
                 stats_inc(task, "skipped_count")
                 continue
-        desired = quantity_with_jitter(int(config.get("target_comments_per_message") or 1), float(config.get("comment_count_jitter") or 0))
-        used_count = channel_message_action_count(session, task, "post_comment", message)
-        quantity = max(0, desired - used_count)
         if not quantity:
             continue
         try:
@@ -145,6 +143,19 @@ def build_plan(session: Session, task: Task) -> int:
         )
         created += 1
     return created
+
+
+def _message_comment_quantities(session: Session, task: Task, config: dict, messages: list[ChannelMessage]) -> list[tuple[ChannelMessage, int]]:
+    deficits = [_message_comment_deficit(session, task, config, message) for message in messages]
+    budget = int((task.pacing_config or {}).get("max_actions_per_hour") or 0)
+    quantities = allocate_message_budget(deficits, budget) if budget > 0 else deficits
+    return list(zip(messages, quantities, strict=False))
+
+
+def _message_comment_deficit(session: Session, task: Task, config: dict, message: ChannelMessage) -> int:
+    desired = quantity_with_jitter(int(config.get("target_comments_per_message") or 1), float(config.get("comment_count_jitter") or 0))
+    used_count = channel_message_action_count(session, task, "post_comment", message)
+    return max(0, desired - used_count)
 
 
 def _config_with_comment_profile(config: dict, profile_preview: dict) -> dict:

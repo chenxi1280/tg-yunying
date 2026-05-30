@@ -66,13 +66,40 @@ function failureDiagnosis(action: TaskCenterAction) {
 
 type DangerousTaskAction = 'stop' | 'reset' | 'delete';
 type TaskTypeFilter = TaskCenterAnyTaskType | 'all';
+type AiLimitRecommendation = NonNullable<TaskPrecheck['capacity_summary']['recommended_limits']>;
+type AiLimitRecommendationField = keyof Omit<AiLimitRecommendation, 'basis'>;
+type AiLimitTaskType = Extract<TaskCenterTaskType, 'group_ai_chat' | 'channel_comment'>;
 const TASK_CREATE_TIMEOUT_MS = 120_000;
+const GROUP_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'messages_per_round'];
+const COMMENT_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'target_comments_per_message', 'max_comments_per_account_per_hour'];
 
 const TASK_TYPE_FILTER_OPTIONS: Array<{ value: TaskTypeFilter; label: string }> = [
   { value: 'all', label: '全部类型' },
   ...TASK_TYPES,
   { value: 'account_profile_init', label: TYPE_LABEL.account_profile_init },
 ];
+
+function isAiLimitTaskType(type?: TaskCenterTaskType | string | null): type is AiLimitTaskType {
+  return type === 'group_ai_chat' || type === 'channel_comment';
+}
+
+function aiLimitRecommendationFields(type: AiLimitTaskType) {
+  return type === 'group_ai_chat' ? GROUP_AI_RECOMMENDATION_FIELDS : COMMENT_AI_RECOMMENDATION_FIELDS;
+}
+
+function recommendedLimitSummary(recommendations?: AiLimitRecommendation | null) {
+  if (!recommendations) return '暂无推荐数量';
+  const labels: Record<AiLimitRecommendationField, string> = {
+    max_actions_per_hour: '每小时',
+    messages_per_round: '每轮',
+    target_comments_per_message: '每条累计',
+    max_comments_per_account_per_hour: '每号每小时',
+  };
+  const parts = (Object.keys(labels) as AiLimitRecommendationField[])
+    .map((field) => typeof recommendations[field] === 'number' ? `${labels[field]} ${recommendations[field]}` : '')
+    .filter(Boolean);
+  return parts.length ? parts.join('；') : '暂无推荐数量';
+}
 
 interface DangerousTaskState {
   task: TaskCenterTask;
@@ -121,6 +148,8 @@ export default function TaskCenterView({
   const [attemptDetail, setAttemptDetail] = React.useState<{ action: TaskCenterAction; attempts: TaskExecutionAttempt[]; loading: boolean } | null>(null);
   const [precheck, setPrecheck] = React.useState<TaskPrecheck | null>(null);
   const [precheckLoading, setPrecheckLoading] = React.useState(false);
+  const [editRecommendation, setEditRecommendation] = React.useState<AiLimitRecommendation | null>(null);
+  const [editRecommendationLoading, setEditRecommendationLoading] = React.useState(false);
   const [wizardStep, setWizardStep] = React.useState(0);
   const [taskType, setTaskType] = React.useState<TaskCenterTaskType>('group_ai_chat');
   const [taskTypeFilter, setTaskTypeFilter] = React.useState<TaskTypeFilter>('all');
@@ -369,6 +398,7 @@ export default function TaskCenterView({
     if (isSystemTask(task)) return;
     setActionError('');
     setActionWarning('');
+    setEditRecommendation(null);
     const editableType = task.type as TaskCenterTaskType;
     setTaskType(editableType);
     await ensureTaskFormData(editableType);
@@ -408,6 +438,18 @@ export default function TaskCenterView({
       alert_on_failure: false,
       alert_webhook: null,
     };
+  }
+
+  function applyAiLimitRecommendations(result: TaskPrecheck) {
+    const recommendations = result.capacity_summary?.recommended_limits;
+    if (!recommendations || !isAiLimitTaskType(taskType)) return;
+    const fields = aiLimitRecommendationFields(taskType);
+    const nextValues: Record<string, number> = {};
+    fields.forEach((field) => {
+      const value = recommendations[field as keyof typeof recommendations];
+      if (typeof value === 'number' && !form.isFieldTouched(field)) nextValues[field] = value;
+    });
+    if (Object.keys(nextValues).length) form.setFieldsValue(nextValues);
   }
 
   function commonPayload(values: any) {
@@ -454,6 +496,27 @@ export default function TaskCenterView({
       target_views_per_message: dailyTarget,
       execution_mode: values.execution_mode ?? 'distribute',
     };
+  }
+
+  function channelCommentPayload(values: any, base: Record<string, any>, includeScope: boolean) {
+    const payload: Record<string, any> = {
+      ...base,
+      ...(includeScope ? channelScopePayload(values) : {}),
+      comment_mode: values.comment_mode ?? 'comment',
+      reply_to_message_ids: csvNumbers(values.reply_to_message_ids),
+      rule_set_id: values.rule_set_id ?? null,
+      rule_set_version_id: values.rule_set_version_id ?? null,
+      ai_model: values.ai_model ?? '',
+      comment_style: values.comment_style ?? 'mixed',
+      topic_hint: values.topic_hint ?? '',
+      system_prompt_override: values.system_prompt_override ?? '',
+      language: values.language ?? 'zh-CN',
+      max_comment_length: values.max_comment_length ?? null,
+      require_review: false,
+    };
+    if (values.target_comments_per_message != null) payload.target_comments_per_message = values.target_comments_per_message;
+    if (values.max_comments_per_account_per_hour != null) payload.max_comments_per_account_per_hour = values.max_comments_per_account_per_hour;
+    return payload;
   }
 
   function parseExcludedSenderInput(value?: string) {
@@ -566,7 +629,7 @@ export default function TaskCenterView({
     if (taskType === 'channel_like') {
       return { ...base, ...channelScopePayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
     }
-    return { ...base, ...channelScopePayload(values), target_comments_per_message: values.target_comments_per_message ?? 10, comment_mode: values.comment_mode ?? 'comment', reply_to_message_ids: csvNumbers(values.reply_to_message_ids), rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, ai_model: values.ai_model ?? '', comment_style: values.comment_style ?? 'mixed', topic_hint: values.topic_hint ?? '', system_prompt_override: values.system_prompt_override ?? '', language: values.language ?? 'zh-CN', max_comment_length: values.max_comment_length ?? null, max_comments_per_account_per_hour: values.max_comments_per_account_per_hour ?? 3, require_review: false };
+    return channelCommentPayload(values, base, true);
   }
 
   function settingsPayload(type: TaskCenterTaskType, values: any): Record<string, any> {
@@ -599,7 +662,7 @@ export default function TaskCenterView({
     if (type === 'channel_like') {
       return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
     }
-    return { ...base, target_comments_per_message: values.target_comments_per_message ?? 10, comment_mode: values.comment_mode ?? 'comment', reply_to_message_ids: csvNumbers(values.reply_to_message_ids), rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, ai_model: values.ai_model ?? '', comment_style: values.comment_style ?? 'mixed', topic_hint: values.topic_hint ?? '', system_prompt_override: values.system_prompt_override ?? '', language: values.language ?? 'zh-CN', max_comment_length: values.max_comment_length ?? null, max_comments_per_account_per_hour: values.max_comments_per_account_per_hour ?? 3, require_review: false };
+    return channelCommentPayload(values, base, false);
   }
 
   async function runTaskPrecheck(values: any) {
@@ -611,6 +674,7 @@ export default function TaskCenterView({
         timeoutMs: TASK_CREATE_TIMEOUT_MS,
       });
       setPrecheck(result);
+      applyAiLimitRecommendations(result);
       if (result.decision === 'block') {
         setActionWarning(`预检发现阻塞项：${formatPrecheckReasons(result.blockers) || '请检查账号、目标和风控配置'}`);
       } else if (result.decision === 'warn') {
@@ -621,6 +685,39 @@ export default function TaskCenterView({
       return result;
     } finally {
       setPrecheckLoading(false);
+    }
+  }
+
+  function applyEditAiLimitRecommendations() {
+    if (!detail || isSystemTask(detail.task) || !editRecommendation) return;
+    const editableType = detail.task.type as TaskCenterTaskType;
+    if (!isAiLimitTaskType(editableType)) return;
+    const nextValues: Record<string, number> = {};
+    aiLimitRecommendationFields(editableType).forEach((field) => {
+      const value = editRecommendation[field];
+      if (typeof value === 'number') nextValues[field] = value;
+    });
+    if (Object.keys(nextValues).length) editForm.setFieldsValue(nextValues);
+  }
+
+  async function runEditAiLimitRecommendation() {
+    if (!detail || isSystemTask(detail.task)) return;
+    const editableType = detail.task.type as TaskCenterTaskType;
+    if (!isAiLimitTaskType(editableType)) return;
+    setEditRecommendationLoading(true);
+    setActionError('');
+    try {
+      await editForm.validateFields(editFieldsForSubmit(editableType, editAccountMode, 'template'));
+      const result = await api<TaskPrecheck>('/tasks/precheck', {
+        method: 'POST',
+        body: JSON.stringify({ task_type: editableType, payload: settingsPayload(editableType, editForm.getFieldsValue(true)) }),
+        timeoutMs: TASK_CREATE_TIMEOUT_MS,
+      });
+      setEditRecommendation(result.capacity_summary?.recommended_limits ?? null);
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setEditRecommendationLoading(false);
     }
   }
 
@@ -636,9 +733,10 @@ export default function TaskCenterView({
         setActionError(`预检未通过：${formatPrecheckReasons(result.blockers) || '存在阻塞项'}`);
         return;
       }
+      const submitValues = form.getFieldsValue(true);
       await api<TaskCenterTask>((start ? CREATE_AND_START_ENDPOINT : CREATE_ENDPOINT)[taskType], {
         method: 'POST',
-        body: JSON.stringify(createPayload(values)),
+        body: JSON.stringify(createPayload(submitValues)),
         timeoutMs: TASK_CREATE_TIMEOUT_MS,
       });
       form.resetFields();
@@ -1079,6 +1177,8 @@ export default function TaskCenterView({
 
   const formValues = Form.useWatch([], form) ?? {};
   const editFormValues = Form.useWatch([], editForm) ?? {};
+  const editableTaskType = detail && !isSystemTask(detail.task) ? detail.task.type as TaskCenterTaskType : taskType;
+  const editShowsAiLimitRecommendation = isAiLimitTaskType(editableTaskType);
   const plannedActions = detail?.actions.filter(isPlannedAction) ?? [];
   const executedActions = detail?.actions.filter((action) => !isPlannedAction(action)) ?? [];
   const detailProfile = detail && !isSystemTask(detail.task) ? currentOperationProfile({ pacing_config: detail.task.pacing_config }) : null;
@@ -1165,6 +1265,21 @@ export default function TaskCenterView({
           <WizardAccounts accountMode={editAccountMode} accounts={accounts} accountPools={accountPools} />
           <Typography.Title level={5}>节奏策略</Typography.Title>
           <WizardOperationProfile form={editForm} values={editFormValues} />
+          {editShowsAiLimitRecommendation && (
+            <Alert
+              className="form-alert"
+              type="info"
+              showIcon
+              message="推荐数量"
+              description={(
+                <Space wrap>
+                  <Typography.Text>{recommendedLimitSummary(editRecommendation)}</Typography.Text>
+                  <Button loading={editRecommendationLoading} onClick={() => void runEditAiLimitRecommendation()}>计算推荐数量</Button>
+                  {editRecommendation && <Button type="primary" onClick={applyEditAiLimitRecommendations}>一键应用推荐</Button>}
+                </Space>
+              )}
+            />
+          )}
           <TaskRuntimeAdvancedFields />
         </Form>
       </Modal>

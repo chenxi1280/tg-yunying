@@ -11,6 +11,7 @@ from app.schemas.task_center import TaskPrecheckRequest
 from app.services.risk_control import risk_preflight
 
 from .account_pool import select_task_accounts
+from .ai_limits import recommend_ai_limits
 from .channel_membership import channel_membership_summary
 from .config_fields import COMMON_CREATE_FIELDS, TASK_CREATE_MODELS
 from .utils import as_int as _as_int, as_int_list as _as_int_list, as_str_list as _as_str_list
@@ -109,6 +110,10 @@ def run_precheck_task_creation(
         max_concurrent=int(account_config.get("max_concurrent") or 20),
         shortfall=capacity_shortfall,
     )
+    capacity_summary["recommended_limits"] = recommend_ai_limits(
+        task_type,
+        _precheck_ready_account_count(task_type, membership_summary, available_count),
+    )
     if capacity_shortfall:
         warnings.append(f"预计单轮需要 {max(int(target_per_unit), 1)} 个账号，当前可用 {available_count} 个")
     if membership_summary:
@@ -176,6 +181,13 @@ def _precheck_capacity_summary(
         "capacity_shortfall": max(int(shortfall or 0), 0),
         "limit_note": "max_concurrent 仅控制同时执行数量，不截断本轮可参与账号池",
     }
+
+
+def _precheck_ready_account_count(task_type: str, membership_summary: dict[str, Any], available_count: int) -> int:
+    if task_type in {"group_ai_chat", "channel_comment"} and membership_summary:
+        joined = int(membership_summary.get("joined_account_count") or 0)
+        return joined if joined > 0 else int(available_count or 0)
+    return int(available_count or 0)
 
 
 def _precheck_blocking_risk_reasons(

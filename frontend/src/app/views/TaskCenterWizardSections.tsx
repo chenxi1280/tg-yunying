@@ -112,6 +112,7 @@ export function WizardTypeConfig({
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
         <Alert type="info" showIcon message="AI 回复会按绑定规则集先过滤输入上下文，再逐条校验候选回复。" />
+        <Alert type="info" showIcon message="小时上限控制总量；每轮发言只分配本轮机会，参与比例按多轮统计。" />
         {ruleFields}
         <div className="form-grid">
           <Form.Item name="topic_hint" label="话题方向（可选）"><Input.TextArea rows={2} placeholder="不填时系统会按群目标方向或自然开场自动起聊" /></Form.Item>
@@ -129,7 +130,7 @@ export function WizardTypeConfig({
               children: (
                 <div className="form-grid">
                   <Form.Item name="messages_per_round_mode" label="每轮发言"><Select options={[{ value: 'auto', label: '系统自动判定' }, { value: 'manual', label: '手动指定' }]} /></Form.Item>
-                  <Form.Item name="messages_per_round" label="每轮总发言数"><InputNumber min={1} max={10} /></Form.Item>
+                  <Form.Item name="messages_per_round" label="每轮总发言数"><InputNumber min={1} /></Form.Item>
                   <Form.Item name="participation_rate" label="参与账号比例"><InputNumber min={0.01} max={1} step={0.01} /></Form.Item>
                   <Form.Item name="allow_account_repeat" label="允许账号重复发言"><Select options={[{ value: true, label: '允许，账号不足时轮换复用' }, { value: false, label: '不允许，同轮尽量一号一条' }]} /></Form.Item>
                   <Form.Item name="repeat_cooldown_rounds" label="重复冷却轮数"><InputNumber min={0} /></Form.Item>
@@ -235,6 +236,7 @@ export function WizardTypeConfig({
     <Space direction="vertical" style={{ width: '100%' }}>
       <div style={{ gridColumn: '1 / -1' }}>
         <Alert type="info" showIcon message="AI 评论会按绑定规则集逐条做输出校验，单条失败不会废弃整批评论。" />
+        <Alert type="info" showIcon message="小时上限控制总量；每条评论/回复是累计目标，系统按差额补计划。" />
       </div>
       <div className="form-grid">
         <div style={{ gridColumn: '1 / -1' }}>{ruleFields}</div>
@@ -313,7 +315,7 @@ export function TaskRuntimeAdvancedFields() {
       <Form.Item name="max_concurrent" label="账号并发上限（账号数）"><InputNumber min={1} max={500} /></Form.Item>
       <Form.Item name="cooldown_per_account_minutes" label="账号冷却分钟"><InputNumber min={0} /></Form.Item>
       <Form.Item name="ban_policy" label="异常账号处理"><Select options={[{ value: 'skip', label: '跳过账号' }, { value: 'pause_task', label: '暂停任务' }, { value: 'alert', label: '只告警' }]} /></Form.Item>
-      <Form.Item name="max_actions_per_hour" label="每小时最大发送量"><InputNumber min={1} placeholder="不填则按系统默认" /></Form.Item>
+      <Form.Item name="max_actions_per_hour" label="每小时最大发送量"><InputNumber min={1} placeholder="预检后按账号数推荐" /></Form.Item>
       <Form.Item name="max_retries" label="失败重试次数"><InputNumber min={0} max={10} /></Form.Item>
     </>
   );
@@ -346,6 +348,13 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
         : '-';
   const displayTarget = targetName(values, targets);
   const precheckStatus = loading ? '预检中' : precheck ? precheck.decision === 'allow' ? '通过' : precheck.decision === 'warn' ? '有风险' : '阻塞' : '未执行';
+  const recommended = precheck?.capacity_summary?.recommended_limits;
+  const recommendedSummary = recommended ? [
+    recommended.max_actions_per_hour ? `每小时 ${recommended.max_actions_per_hour}` : '',
+    recommended.messages_per_round ? `每轮 ${recommended.messages_per_round}` : '',
+    recommended.target_comments_per_message ? `每条 ${recommended.target_comments_per_message}` : '',
+    recommended.max_comments_per_account_per_hour ? `每号每小时 ${recommended.max_comments_per_account_per_hour}` : '',
+  ].filter(Boolean).join('；') : '等待预检';
   const resolution = precheck?.target_resolution;
   const resolutionItems = [...(resolution?.sources || []), ...(resolution?.targets || [])];
   const resolutionSummary = resolutionItems.length
@@ -373,6 +382,7 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       { key: 'membership', label: '准入前置', children: precheck?.membership_subtask_preview?.subtask_type ? `已满足 ${precheck.ready_account_count} 个，待准备 ${precheck.preparable_account_count} 个，预计准入动作 ${precheck.estimated_membership_actions} 个，进度 ${precheck.membership_subtask_preview.progress_percent ?? 0}%` : '无额外准入动作' },
       { key: 'targetAbility', label: '目标能力', children: precheck?.target_ability?.length ? precheck.target_ability.map((item) => `${item.title || item.target_id} / ${item.can_task ? '可创建任务' : item.auth_status || '不可用'}`).join('；') : displayTarget },
       { key: 'estimate', label: '预计动作量', children: precheck ? `预计 ${precheck.estimated_actions} 条，容量缺口 ${precheck.capacity_shortfall}` : '等待预检' },
+      { key: 'recommend', label: '推荐数量', children: recommendedSummary },
       { key: 'capacity', label: '容量口径', children: precheck?.capacity_summary ? `目标每条 ${precheck.capacity_summary.target_per_message ?? 0}，有效账号 ${precheck.capacity_summary.effective_account_count ?? 0}，最大并发 ${precheck.capacity_summary.max_concurrent ?? 0}，缺口 ${precheck.capacity_summary.capacity_shortfall ?? 0}。${precheck.capacity_summary.limit_note ?? ''}` : '等待预检' },
       { key: 'pacing', label: '曲线摘要', children: `${operationProfileSummary(values)}；当前 ${String(profile.hour).padStart(2, '0')}:00 强度 ${profile.intensity}，${profile.mode}运行` },
       { key: 'rule', label: '规则版本', children: precheck?.rule_version ? `规则集 #${precheck.rule_version.rule_set_id} / v${precheck.rule_version.version} / ${precheck.rule_version.status}` : ['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType) ? ruleSummary(values, ruleSets) : '平台默认规则' },

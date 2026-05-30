@@ -316,7 +316,6 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       repeat_cooldown_rounds: 2,
       chat_history_depth: 50,
       messages_per_round_mode: 'auto',
-      messages_per_round: 1,
       context_expire_after_messages: 10,
       idle_continuation_enabled: true,
       idle_continuation_seconds: 300,
@@ -365,12 +364,10 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   return {
     message_scope: 'dynamic_new',
     message_count: 10,
-    target_comments_per_message: 10,
     comment_mode: 'comment',
     reply_to_message_ids: '',
     language: 'zh-CN',
     comment_style: 'mixed',
-    max_comments_per_account_per_hour: 3,
   };
 }
 
