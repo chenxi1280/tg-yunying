@@ -17,6 +17,7 @@ from app.services.tenant_target_profile import tenant_learning_profile_preview
 from .common import add_tokens, adjust_for_account_hour_limit, channel_message_action_count, channel_message_payload, channel_scope, pick_channel_account, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning, stats_inc
 
 CHANNEL_COMMENT_SCENE = "channel_comment"
+MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE = 4
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -149,7 +150,8 @@ def _message_comment_quantities(session: Session, task: Task, config: dict, mess
     deficits = [_message_comment_deficit(session, task, config, message) for message in messages]
     budget = int((task.pacing_config or {}).get("max_actions_per_hour") or 0)
     quantities = allocate_message_budget(deficits, budget) if budget > 0 else deficits
-    return list(zip(messages, quantities, strict=False))
+    capped = [min(quantity, MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE) for quantity in quantities]
+    return list(zip(messages, capped, strict=False))
 
 
 def _message_comment_deficit(session: Session, task: Task, config: dict, message: ChannelMessage) -> int:
