@@ -1,6 +1,6 @@
 """track channel message comment availability
 
-Revision ID: 0054_channel_message_comment_available
+Revision ID: 0054_comment_availability
 Revises: 0053_tenant_learning_profiles
 Create Date: 2026-05-30
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0054_channel_message_comment_available"
+revision = "0054_comment_availability"
 down_revision = "0053_tenant_learning_profiles"
 branch_labels = None
 depends_on = None
