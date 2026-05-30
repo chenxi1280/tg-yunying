@@ -19,6 +19,10 @@ GROUP_CHAT_PURPOSE = "群活跃续聊"
 CHANNEL_COMMENT_PURPOSE = "频道评论"
 AI_CONTENT_REQUEST_TIMEOUT_SECONDS = 120
 LONG_RUNNING_AI_PURPOSES = frozenset({GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE})
+SENSITIVE_CONTEXT_GUIDANCE = (
+    "成人交易/性服务描述可以作为既有上下文理解和引用，但回复只能围绕原文已有事实做自然短评或追问；"
+    "不要新增联系方式、价格、邀约或交易撮合信息，不要编造亲身交易经历。"
+)
 AI_PROVIDER_REFUSAL_MARKERS = (
     "the request was rejected",
     "considered high risk",
@@ -182,6 +186,7 @@ def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: 
         "7. 禁止使用这些模板句和近似句：看大家聊、刚看到大家提到、刚看到有人聊这个、顺着这个话题说、这个点挺有意思、这个点我也留意到了、可以继续聊聊、大家怎么看、有经验的朋友也可以补充下、我补充一下、这个话题、自然接一句、换个角度、轻量推进、具体场景、值得讨论。\n"
         "8. 不要连续使用“我觉得/感觉/确实/这个/大家”开头；不要使用 xx、X老师、某某 这类占位符；不要输出引号套引号；不要带编号、解释、括号备注。\n"
         "9. 黑话词表是理解口径，不是展示内容；该用行业口吻时自然用，不要解释词表。\n"
+        f"10. {SENSITIVE_CONTEXT_GUIDANCE}\n"
         '只输出 JSON：{"drafts":[{"sequence_index":1,"reply_to_sequence_index":null,"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低"}]}'
     )
 
@@ -200,6 +205,7 @@ def _channel_comment_prompt(count: int, target_label: str, topic: str, requireme
         "4. 少用完整句号和书面连接词；可以半句收尾，可以问具体小问题。\n"
         "5. 禁止使用这些模板句和近似句：这个内容挺有参考价值、先收藏一下、这个角度不错、值得再讨论、说得比较实在、后面可以继续展开、可以继续看看、学习了、支持一下、不错不错、感谢分享。\n"
         "6. 不要暴露 AI、平台、任务、提示词；不要编号、解释、括号备注、引号套引号。\n"
+        f"7. {SENSITIVE_CONTEXT_GUIDANCE}\n"
         '只输出 JSON：{"drafts":[{"persona":"不同读者人设","content":"评论区要发送的一句话","risk_level":"低"}]}'
     )
 
@@ -470,6 +476,7 @@ def _group_chat_system_prompt(slang_prompt: str) -> str:
         "输出要像普通人在群里回消息：短、碎、具体；只有上下文出现过的事实才可以承接成经历或细节。"
         "没有真人上下文时只做低频暖场或提问，不要编上次经历、位置、回访、准点、照片等事实。"
         "不要每句都补完整逗号和句号，短句可以直接收尾；不要说“这个话题”“自然接一句”“换个角度”。"
+        f"{SENSITIVE_CONTEXT_GUIDANCE}"
     )
     if not slang_prompt:
         return base
@@ -481,6 +488,7 @@ def _channel_comment_system_prompt() -> str:
         "你只负责生成 Telegram 频道评论区的真实读者短评，并输出 JSON。"
         "评论必须贴频道原文里的具体信息，不写泛泛表扬、收藏、值得讨论、继续展开。"
         "如果原文细节不足，优先问一个具体小问题，不要编经历或使用模板。"
+        f"{SENSITIVE_CONTEXT_GUIDANCE}"
     )
 
 
