@@ -3531,7 +3531,7 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
                 status="running",
                 account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
                 pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
-                type_config={"target_group_id": 7, "messages_per_round_mode": "auto", "topic_hint": ""},
+                type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 2, "topic_hint": ""},
             )
         )
         session.commit()
