@@ -491,7 +491,7 @@ def test_channel_comment_allows_adult_service_context_in_ai_prompt(monkeypatch):
     assert "不要新增联系方式、价格、邀约或交易撮合信息" in captured["system_prompt"]
 
 
-def test_channel_comment_blocks_sensitive_trade_facilitation_output(monkeypatch):
+def test_channel_comment_keeps_adult_service_context_outputs(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -533,7 +533,7 @@ def test_channel_comment_blocks_sensitive_trade_facilitation_output(monkeypatch)
             target_label="天津音乐",
         )
 
-    assert contents == ["河东区这个位置方便吗"]
+    assert contents == ["价格有变吗", "河东区这个位置方便吗", "今天有新服务吗"]
 
 
 def test_group_chat_allows_adult_service_context_in_ai_prompt(monkeypatch):
@@ -581,7 +581,7 @@ def test_group_chat_allows_adult_service_context_in_ai_prompt(monkeypatch):
     assert "不要新增联系方式、价格、邀约或交易撮合信息" in captured["system_prompt"]
 
 
-def test_group_chat_blocks_sensitive_trade_facilitation_output(monkeypatch):
+def test_group_chat_keeps_adult_service_context_outputs(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -623,7 +623,7 @@ def test_group_chat_blocks_sensitive_trade_facilitation_output(monkeypatch):
             history="频道原文：所在位置：河东区；服务项目：陪洗，无套口，制服",
         )
 
-    assert contents == ["河东这个位置有人去过吗"]
+    assert contents == ["怎么联系", "河东这个位置有人去过吗", "能安排一下吗"]
 
 
 def mock_generation_result(content: str) -> AiGenerationResult:
