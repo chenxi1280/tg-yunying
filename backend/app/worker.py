@@ -123,8 +123,8 @@ def _drain_legacy_once(limit: int = 100) -> int:
         operation_count = drain_operation_tasks(SessionLocal, max(1, remaining))
     remaining = max(0, remaining - operation_count)
     archive_count = drain_archives(SessionLocal, max(1, remaining))
-    temp_cleanup_count = _safe_optional_drain("temp_files", cleanup_temp_files)
-    return count + profile_count + account_count + account_security_count + listener_count + source_media_count + material_cache_count + continuous_count + operation_count + archive_count + temp_cleanup_count
+    _safe_optional_drain("temp_files", cleanup_temp_files)
+    return count + profile_count + account_count + account_security_count + listener_count + source_media_count + material_cache_count + continuous_count + operation_count + archive_count
 
 
 def _drain_account_security_once(limit: int) -> int:
