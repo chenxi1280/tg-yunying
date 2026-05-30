@@ -190,13 +190,12 @@ def generate_contents(
             raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
         raise
     contents = [candidate.content.strip() for candidate in result.candidates if candidate.content.strip()]
-    restrict_sensitive_trade = SENSITIVE_CONTEXT_SUMMARY in prompt
     if purpose == GROUP_CHAT_PURPOSE:
-        contents = clean_group_chat_contents(contents, restrict_sensitive_trade=restrict_sensitive_trade)
+        contents = clean_group_chat_contents(contents)
         if not contents:
             raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
     if purpose == CHANNEL_COMMENT_PURPOSE:
-        contents = clean_channel_comment_contents(contents, limit=count, restrict_sensitive_trade=restrict_sensitive_trade)
+        contents = clean_channel_comment_contents(contents, limit=count)
         if not contents:
             raise AiGenerationUnavailable("AI 评论候选质量不达标，未创建评论")
     usage = getattr(result, "usage", None)
