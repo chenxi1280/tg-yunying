@@ -8,6 +8,7 @@ from app.models import (
     AccountStatus,
     Action,
     ChannelMessage,
+    ExecutionAttempt,
     GroupContextMessage,
     OperationTarget,
     Task,
@@ -19,7 +20,7 @@ from app.models import (
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
-from app.services.task_center.service import precheck_task_creation
+from app.services.task_center.service import precheck_task_creation, reset_task
 
 
 NOW = datetime(2026, 5, 30, 10, 0, 0)
@@ -245,6 +246,32 @@ def test_channel_comment_skips_messages_without_comment_thread(monkeypatch):
     assert generated_message_texts == ["频道消息 2"]
     assert created == 1
     assert [payload["channel_message_id"] for payload in payloads] == [42]
+
+
+def test_reset_task_preserves_pending_actions_with_execution_attempts():
+    with _session() as session:
+        _add_tenant(session)
+        task = Task(id="reset-attempt-task", tenant_id=1, name="重置已有执行记录", type="channel_comment", status="running", stats={})
+        action = Action(
+            id="attempted-pending-action",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="channel_comment",
+            action_type="post_comment",
+            scheduled_at=NOW,
+            status="pending",
+            payload={"message_id": 74},
+        )
+        session.add_all([task, action, ExecutionAttempt(tenant_id=1, action_id=action.id, attempt_no=1)])
+        session.commit()
+
+        reset_task(session, 1, task.id, "pytest", reason="重新规划")
+        preserved = session.get(Action, action.id)
+
+    assert preserved is not None
+    assert preserved.status == "skipped"
+    assert preserved.executed_at is not None
+    assert preserved.result["error_code"] == "plan_superseded"
 
 
 def test_precheck_returns_dynamic_ai_limit_recommendations():

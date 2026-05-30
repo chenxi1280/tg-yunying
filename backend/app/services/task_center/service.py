@@ -1066,9 +1066,28 @@ def _clear_unfinished_plan(session: Session, task: Task) -> None:
     if pending_action_ids:
         _clear_pending_relay_fingerprints(session, task, pending_actions)
         session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.action_id.in_(pending_action_ids)))
-        session.execute(delete(Action).where(Action.task_id == task.id, Action.status == "pending"))
+        attempted_action_ids = set(session.scalars(select(ExecutionAttempt.action_id).where(ExecutionAttempt.action_id.in_(pending_action_ids))))
+        _skip_attempted_pending_actions(pending_actions, attempted_action_ids)
+        deletable_action_ids = [action_id for action_id in pending_action_ids if action_id not in attempted_action_ids]
+        if deletable_action_ids:
+            session.execute(delete(Action).where(Action.id.in_(deletable_action_ids)))
     _supersede_active_plan_actions(session, task)
     session.execute(delete(ReviewQueue).where(ReviewQueue.task_id == task.id, ReviewQueue.status == "pending"))
+
+
+def _skip_attempted_pending_actions(pending_actions: list[Action], attempted_action_ids: set[str]) -> None:
+    now = _now()
+    for action in pending_actions:
+        if action.id not in attempted_action_ids:
+            continue
+        action.status = "skipped"
+        action.executed_at = now
+        action.lease_owner = ""
+        action.lease_expires_at = None
+        action.claim_owner = ""
+        action.claim_token = ""
+        action.claim_expires_at = None
+        action.result = {"success": False, "error_code": "plan_superseded", "error_message": "任务配置已更新，旧执行计划已废弃"}
 
 
 def _supersede_active_plan_actions(session: Session, task: Task) -> None:
