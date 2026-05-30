@@ -846,24 +846,24 @@ def _overview(
 
 def _global_policy(setting: SchedulingSetting) -> dict[str, Any]:
     return {
-        "jitter_min_seconds": setting.jitter_min_seconds,
-        "jitter_max_seconds": setting.jitter_max_seconds,
-        "batch_interval_seconds": setting.batch_interval_seconds,
-        "respect_send_window": setting.respect_send_window,
-        "quiet_hours_enabled": setting.quiet_hours_enabled,
-        "quiet_start": setting.quiet_start,
-        "quiet_end": setting.quiet_end,
-        "quiet_timezone": setting.quiet_timezone,
-        "default_max_retries": setting.default_max_retries,
-        "default_retry_delay_seconds": setting.default_retry_delay_seconds,
-        "default_retry_backoff": setting.default_retry_backoff,
-        "default_on_account_banned": setting.default_on_account_banned,
-        "default_on_api_rate_limit": setting.default_on_api_rate_limit,
-        "default_on_content_rejected": setting.default_on_content_rejected,
-        "default_account_hour_limit": setting.default_account_hour_limit,
-        "default_account_day_limit": setting.default_account_day_limit,
-        "default_account_cooldown_seconds": setting.default_account_cooldown_seconds,
-        "updated_at": setting.updated_at,
+        "jitter_min_seconds": _int_value(setting.jitter_min_seconds, 15),
+        "jitter_max_seconds": _int_value(setting.jitter_max_seconds, 180),
+        "batch_interval_seconds": _int_value(setting.batch_interval_seconds, 45),
+        "respect_send_window": _bool_value(setting.respect_send_window, True),
+        "quiet_hours_enabled": _bool_value(setting.quiet_hours_enabled, False),
+        "quiet_start": _str_value(setting.quiet_start, "02:00"),
+        "quiet_end": _str_value(setting.quiet_end, "08:00"),
+        "quiet_timezone": _str_value(setting.quiet_timezone, "Asia/Shanghai"),
+        "default_max_retries": _int_value(setting.default_max_retries, 3),
+        "default_retry_delay_seconds": _int_value(setting.default_retry_delay_seconds, 60),
+        "default_retry_backoff": _str_value(setting.default_retry_backoff, "exponential"),
+        "default_on_account_banned": _str_value(setting.default_on_account_banned, "skip_account"),
+        "default_on_api_rate_limit": _str_value(setting.default_on_api_rate_limit, "wait_and_retry"),
+        "default_on_content_rejected": _str_value(setting.default_on_content_rejected, "skip_message"),
+        "default_account_hour_limit": _int_value(setting.default_account_hour_limit, 0),
+        "default_account_day_limit": _int_value(setting.default_account_day_limit, 0),
+        "default_account_cooldown_seconds": _int_value(setting.default_account_cooldown_seconds, 0),
+        "updated_at": _datetime_value(setting.updated_at),
     }
 
 
@@ -1478,28 +1478,31 @@ def _require_account(session: Session, tenant_id: int, account_id: int) -> TgAcc
 
 
 def _proxy_payload(proxy: AccountProxy, bound_count: int, *, trace_id: str = "") -> dict[str, Any]:
+    protocol = _str_value(proxy.protocol, "socks5")
+    host = _str_value(proxy.host, "127.0.0.1")
+    port = _int_value(proxy.port, 0)
     return {
         "id": proxy.id,
         "tenant_id": proxy.tenant_id,
-        "name": proxy.name,
-        "protocol": proxy.protocol,
-        "host": proxy.host,
-        "port": proxy.port,
-        "username": proxy.username,
-        "status": proxy.status,
-        "alert_status": proxy.alert_status,
-        "check_interval_seconds": proxy.check_interval_seconds,
-        "timeout_ms": proxy.timeout_ms,
-        "max_bound_accounts": proxy.max_bound_accounts,
-        "max_concurrent_sessions": proxy.max_concurrent_sessions,
+        "name": _str_value(proxy.name, f"proxy_{proxy.id}"),
+        "protocol": protocol,
+        "host": host,
+        "port": port,
+        "username": _str_value(proxy.username, ""),
+        "status": _str_value(proxy.status, "unknown"),
+        "alert_status": _str_value(proxy.alert_status, "normal"),
+        "check_interval_seconds": _int_value(proxy.check_interval_seconds, 300),
+        "timeout_ms": _int_value(proxy.timeout_ms, 3000),
+        "max_bound_accounts": _int_value(proxy.max_bound_accounts, 5),
+        "max_concurrent_sessions": _int_value(proxy.max_concurrent_sessions, 2),
         "last_check_at": proxy.last_check_at,
-        "last_error": proxy.last_error,
-        "disabled_reason": proxy.disabled_reason,
-        "notes": proxy.notes,
-        "local_address": proxy.local_address,
+        "last_error": _str_value(proxy.last_error, ""),
+        "disabled_reason": _str_value(proxy.disabled_reason, ""),
+        "notes": _str_value(proxy.notes, ""),
+        "local_address": f"{protocol}://{host}:{port}",
         "bound_account_count": bound_count,
-        "created_at": proxy.created_at,
-        "updated_at": proxy.updated_at,
+        "created_at": _datetime_value(proxy.created_at),
+        "updated_at": _datetime_value(proxy.updated_at),
         "trace_id": trace_id,
     }
 
@@ -1511,15 +1514,36 @@ def _proxy_alert_payload(alert: ProxyAlert) -> dict[str, Any]:
         "proxy_id": alert.proxy_id,
         "name": proxy.name if proxy else f"proxy_{alert.proxy_id}",
         "local_address": proxy.local_address if proxy else "",
-        "alert_status": alert.status,
-        "severity": alert.severity,
-        "alert_type": alert.alert_type,
-        "reason_code": alert.reason_code,
+        "alert_status": _str_value(alert.status, "alerting"),
+        "severity": _str_value(alert.severity, "warning"),
+        "alert_type": _str_value(alert.alert_type, ""),
+        "reason_code": _str_value(alert.reason_code, ""),
         "bound_accounts": len(alert.affected_account_ids or []),
-        "last_error": proxy.last_error if proxy else alert.reason_code,
-        "suggested_action": alert.suggested_action,
+        "last_error": _str_value(proxy.last_error if proxy else alert.reason_code, ""),
+        "suggested_action": _str_value(alert.suggested_action, ""),
         "occurred_at": alert.last_seen_at,
     }
+
+
+def _int_value(value: Any, default: int) -> int:
+    if value is None or value == "":
+        return default
+    return int(value)
+
+
+def _str_value(value: Any, default: str) -> str:
+    if value is None:
+        return default
+    text = str(value)
+    return text if text else default
+
+
+def _bool_value(value: Any, default: bool) -> bool:
+    return default if value is None else bool(value)
+
+
+def _datetime_value(value: datetime | None) -> datetime:
+    return value or _now()
 
 
 def _proxy_bound_counts(session: Session, tenant_id: int, proxy_ids: list[int]) -> dict[int, int]:
