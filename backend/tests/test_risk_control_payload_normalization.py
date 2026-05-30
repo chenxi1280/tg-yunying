@@ -4,11 +4,8 @@ from app.schemas.risk_control import (
     RiskControlSummaryOut,
 )
 from app.services.account_capacity import AccountCapacityDecision
-from app.services.risk_control import (
-    _account_score_row,
-    _policy_audit_payload,
-    _proxy_alert_payload,
-)
+from app.services.risk_control import _account_score_row, _policy_audit_payload, _proxy_alert_payload, _sort_datetime
+from app.timezone import BEIJING_TZ
 
 
 def test_account_score_payload_coerces_legacy_null_fields():
@@ -83,3 +80,12 @@ def test_policy_audit_and_proxy_alert_payloads_coerce_legacy_null_fields():
     payload = RiskControlSummaryOut.model_validate(summary)
     assert payload.policy_audits[0].actor == "system"
     assert payload.proxy_alerts[0].name == "proxy_41"
+
+
+def test_sort_datetime_normalizes_aware_and_naive_values():
+    aware = _sort_datetime(_policy_audit_payload(AuditLog(id=1, actor="a", action="b", target_type="c", target_id="d"))["occurred_at"].replace(tzinfo=BEIJING_TZ))
+    naive = _sort_datetime(_policy_audit_payload(AuditLog(id=2, actor="a", action="b", target_type="c", target_id="d"))["occurred_at"])
+
+    assert aware.tzinfo is None
+    assert naive.tzinfo is None
+    sorted([aware, naive], reverse=True)
