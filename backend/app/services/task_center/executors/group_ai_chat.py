@@ -19,6 +19,7 @@ from app.services.rule_engine import apply_output_policy, bound_rule_version, ev
 from app.services.material_rules import select_material_for_policy
 
 from ..account_pool import select_task_accounts
+from ..ai_limits import AI_GROUP_ROUNDS_PER_HOUR
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
 from ..channel_membership import gate_channel_membership
 from ..fingerprints import fingerprint_exists, remember_fingerprint
@@ -119,7 +120,7 @@ def build_plan(session: Session, task: Task) -> int:
             )
             return 0
     cycle_index = _next_cycle_index(session, task)
-    selected, turn_count = _select_cycle_accounts(accounts, config, mode, ramp_ratio, has_context=bool(usable_context_rows), cycle_index=cycle_index)
+    selected, turn_count = _select_cycle_accounts(accounts, config, mode, ramp_ratio, has_context=bool(usable_context_rows), cycle_index=cycle_index, pacing_config=task.pacing_config or {})
     history_parts = [f"{row.sender_name}: {row.content}" for row in usable_context_rows[-50:]]
     if idle_continuation:
         history_parts.append(_idle_continuation_history(config, group, previous_ai_messages))
@@ -397,22 +398,37 @@ def _last_successful_ai_action_at(session: Session, task: Task) -> datetime | No
     return _naive_datetime(action.executed_at or action.scheduled_at or action.created_at)
 
 
-def _select_cycle_accounts(accounts: list, config: dict, mode: str, ramp_ratio: float, *, has_context: bool, cycle_index: int = 1) -> tuple[list, int]:
+def _select_cycle_accounts(accounts: list, config: dict, mode: str, ramp_ratio: float, *, has_context: bool, cycle_index: int = 1, pacing_config: dict | None = None) -> tuple[list, int]:
     rotated_accounts = _rotate_accounts(accounts, cycle_index)
     if str(config.get("messages_per_round_mode") or "auto") == "manual":
         messages_per_round = _manual_messages_per_round(config, mode)
         desired = _desired_participant_count(rotated_accounts, config, mode, ramp_ratio)
         participant_count = _manual_participant_count(desired, messages_per_round, len(rotated_accounts), config)
         selected = rotated_accounts[:participant_count]
-        turn_count = max(messages_per_round, participant_count)
+        turn_count = messages_per_round
         if not bool(config.get("allow_account_repeat", True)):
             turn_count = min(turn_count, len(selected))
         return selected, max(1, turn_count)
-    limit = 2 if mode == "静默期" else 5
+    turn_count = _auto_messages_per_round(config, mode, has_context, pacing_config or {})
+    desired = _desired_participant_count(rotated_accounts, config, mode, ramp_ratio)
+    selected_count = min(max(turn_count, desired), len(rotated_accounts))
+    selected = rotated_accounts[:selected_count]
+    if not bool(config.get("allow_account_repeat", True)):
+        turn_count = min(turn_count, len(selected))
+    return selected, max(1, turn_count)
+
+
+def _auto_messages_per_round(config: dict, mode: str, has_context: bool, pacing_config: dict) -> int:
+    hourly_cap = int((pacing_config or {}).get("max_actions_per_hour") or 0)
+    if hourly_cap > 0:
+        base = max(1, (hourly_cap + AI_GROUP_ROUNDS_PER_HOUR - 1) // AI_GROUP_ROUNDS_PER_HOUR)
+    else:
+        base = 2 if mode == "静默期" else 5
+    if mode == "静默期":
+        base = min(base, int(config.get("silent_messages_per_round") or 1))
     if not has_context:
-        limit = min(limit, 3)
-    selected = rotated_accounts[: min(limit, len(rotated_accounts))]
-    return selected, max(1, len(selected))
+        base = min(base, 3)
+    return max(1, base)
 
 
 def _manual_messages_per_round(config: dict, mode: str) -> int:

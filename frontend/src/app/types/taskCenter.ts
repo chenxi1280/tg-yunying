@@ -321,6 +321,13 @@ export type TaskPrecheck = {
     max_concurrent?: number;
     capacity_shortfall?: number;
     limit_note?: string;
+    recommended_limits?: {
+      max_actions_per_hour?: number;
+      messages_per_round?: number;
+      target_comments_per_message?: number;
+      max_comments_per_account_per_hour?: number;
+      basis?: Record<string, any>;
+    };
   };
   rule_version: Record<string, any> | null;
   risk_hits: string[];
