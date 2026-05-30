@@ -9,10 +9,19 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import AccountProxy, AccountRuntimeSummary, AccountStatus, Action, AuditLog, FailureType, MessageTask, MessageTaskAttempt, ProxyAlert, SchedulingSetting, Task, TaskStatus, Tenant, TgAccount, TgAccountSecuritySnapshot
 from app.schemas import MessageSendTaskCreate
-from app.schemas.risk_control import ProxyBindingRequest, RiskPreflightRequest
+from app.schemas.risk_control import AccountProxyOut, ProxyBindingRequest, RiskControlGlobalPolicyOut, RiskPreflightRequest
 from app.services._common import _now
 from app.services.messages import create_message_send_task
-from app.services.risk_control import bind_account_proxy, check_account_proxy, disable_account_proxy, risk_control_summary, risk_preflight, update_proxy_alert_status
+from app.services.risk_control import (
+    _global_policy,
+    _proxy_payload,
+    bind_account_proxy,
+    check_account_proxy,
+    disable_account_proxy,
+    risk_control_summary,
+    risk_preflight,
+    update_proxy_alert_status,
+)
 
 
 @contextmanager
@@ -103,6 +112,53 @@ def test_risk_control_summary_reuses_existing_scheduling_setting():
     assert summary["global_policy"]["default_retry_backoff"] == "exponential"
     assert summary["account_scores"][0]["current_policy"] == "标准节奏"
     assert setting_count == 1
+
+
+def test_risk_control_response_payloads_coerce_legacy_null_fields():
+    setting = SchedulingSetting(tenant_id=1)
+    for field in [
+        "jitter_min_seconds",
+        "jitter_max_seconds",
+        "batch_interval_seconds",
+        "respect_send_window",
+        "quiet_hours_enabled",
+        "quiet_start",
+        "quiet_end",
+        "quiet_timezone",
+        "default_max_retries",
+        "default_retry_delay_seconds",
+        "default_retry_backoff",
+        "default_on_account_banned",
+        "default_on_api_rate_limit",
+        "default_on_content_rejected",
+        "default_account_hour_limit",
+        "default_account_day_limit",
+        "default_account_cooldown_seconds",
+        "updated_at",
+    ]:
+        setattr(setting, field, None)
+
+    proxy = AccountProxy(id=31, tenant_id=1, name="legacy-proxy", port=1080)
+    for field in [
+        "protocol",
+        "host",
+        "username",
+        "status",
+        "alert_status",
+        "check_interval_seconds",
+        "timeout_ms",
+        "max_bound_accounts",
+        "max_concurrent_sessions",
+        "last_error",
+        "disabled_reason",
+        "notes",
+        "created_at",
+        "updated_at",
+    ]:
+        setattr(proxy, field, None)
+
+    assert RiskControlGlobalPolicyOut.model_validate(_global_policy(setting)).default_account_hour_limit == 0
+    assert AccountProxyOut.model_validate(_proxy_payload(proxy, 0)).status == "unknown"
 
 
 def test_risk_control_summary_batches_account_capacity_queries():
