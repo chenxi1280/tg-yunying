@@ -189,6 +189,31 @@ def test_task_center_action_payload_explains_group_permission_failures():
     assert "目标群" in payload["failure_diagnosis"]["suggested_action"]
 
 
+def test_task_center_action_payload_explains_comment_unavailable_failures():
+    action = Action(
+        id="diagnose-comment-unavailable",
+        tenant_id=1,
+        task_id="task-comment",
+        task_type="channel_comment",
+        action_type="post_comment",
+        account_id=8,
+        status="failed",
+        result={
+            "success": False,
+            "error_code": FailureType.COMMENT_UNAVAILABLE.value,
+            "error_message": "频道帖子无法解析到评论区，请确认消息ID属于频道帖子、频道已绑定讨论组，且执行账号可进入讨论组并评论",
+            "validation_stage": "telegram_api",
+        },
+    )
+
+    payload = _action_payload(action)
+
+    assert payload["failure_diagnosis"]["category"] == "comment_unavailable"
+    assert payload["failure_diagnosis"]["scope"] == "channel_message"
+    assert "无法解析到评论区" in payload["failure_diagnosis"]["operator_summary"]
+    assert "重新采集频道消息" in payload["failure_diagnosis"]["suggested_action"]
+
+
 def test_message_task_list_treats_all_status_as_unfiltered():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

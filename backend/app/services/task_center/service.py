@@ -79,6 +79,13 @@ TARGET_PERMISSION_MARKERS = (
     "账号不可发言",
     "缓存频道不可访问",
 )
+COMMENT_UNAVAILABLE_MARKERS = (
+    "评论区不可用",
+    "无法解析到评论区",
+    "comment_unavailable",
+    "msgidinvalid",
+    "discussion",
+)
 ACCOUNT_AUTH_MARKERS = ("session", "auth key", "auth_key", "unauthorized", "重新登录", "账号没有可用 session", "session 已失效")
 RATE_LIMIT_MARKERS = ("floodwait", "too many requests", "slowmode", "慢速模式", "冷却")
 
@@ -1214,6 +1221,8 @@ def _action_failure_diagnosis(action: Action, failure_type: str, failure_reason:
     if action.status not in {"failed", "retryable_failed", "skipped"} and not failure_type and not failure_reason:
         return {}
     text = _action_failure_text(action, failure_type, failure_reason)
+    if _has_failure_marker(text, COMMENT_UNAVAILABLE_MARKERS) or failure_type == FailureType.COMMENT_UNAVAILABLE.value:
+        return _comment_unavailable_diagnosis()
     if _has_failure_marker(text, TARGET_PERMISSION_MARKERS) or failure_type in _target_permission_types():
         return _target_permission_diagnosis()
     if _has_failure_marker(text, ACCOUNT_AUTH_MARKERS) or failure_type in _account_auth_types():
@@ -1282,6 +1291,15 @@ def _content_policy_diagnosis() -> dict[str, str]:
         "scope": "content",
         "operator_summary": "内容在发送前命中规则或风控策略，被系统主动拦截。",
         "suggested_action": "检查规则中心命中的关键词、链接白名单或 AI 候选内容，调整规则或素材后再重试。",
+    }
+
+
+def _comment_unavailable_diagnosis() -> dict[str, str]:
+    return {
+        "category": "comment_unavailable",
+        "scope": "channel_message",
+        "operator_summary": "该频道帖子当前无法解析到评论区，通常是帖子未开放讨论、讨论组不可达，或该消息不是可评论频道帖。",
+        "suggested_action": "跳过这条频道消息并重新采集频道消息；系统会优先规划已确认可评论的帖子。",
     }
 
 
