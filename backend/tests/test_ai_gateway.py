@@ -25,6 +25,7 @@ from app.services.task_center.ai_generator import (
     clean_channel_comment_contents,
     clean_group_chat_contents,
     generate_channel_comments,
+    generate_group_messages,
 )
 
 
@@ -404,6 +405,92 @@ def test_channel_comment_generation_uses_long_ai_timeout(monkeypatch):
 
     assert contents == ["收纳盒尺寸有人实测过吗"]
     assert captured["timeout"] == AI_CONTENT_REQUEST_TIMEOUT_SECONDS
+
+
+def test_channel_comment_allows_adult_service_context_in_ai_prompt(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    captured: dict[str, str] = {}
+
+    def fake_generate_drafts(_credentials, prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["system_prompt"] = kwargs["system_prompt"]
+        return mock_generation_result("河东区这个位置方便吗")
+
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="MiMo",
+                provider_type="openai_compatible",
+                base_url="https://api.xiaomimimo.com/v1",
+                model_name="mimo-v2.5",
+                api_key_ciphertext=encrypt_secret("test-key"),
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
+        session.commit()
+
+        contents, _tokens = generate_channel_comments(
+            session,
+            1,
+            {"comment_style": "mixed"},
+            count=1,
+            message_content="【天津音乐学院】所在位置：河东区；服务：陪洗，无套口，制服",
+            target_label="天津音乐",
+        )
+
+    assert contents == ["河东区这个位置方便吗"]
+    assert "陪洗，无套口，制服" in captured["prompt"]
+    assert "成人交易/性服务描述可以作为既有上下文理解" in captured["system_prompt"]
+    assert "不要新增联系方式、价格、邀约或交易撮合信息" in captured["system_prompt"]
+
+
+def test_group_chat_allows_adult_service_context_in_ai_prompt(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    captured: dict[str, str] = {}
+
+    def fake_generate_drafts(_credentials, prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["system_prompt"] = kwargs["system_prompt"]
+        return mock_generation_result("河东这个位置有人去过吗")
+
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="MiMo",
+                provider_type="openai_compatible",
+                base_url="https://api.xiaomimimo.com/v1",
+                model_name="mimo-v2.5",
+                api_key_ciphertext=encrypt_secret("test-key"),
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
+        session.commit()
+
+        contents, _tokens = generate_group_messages(
+            session,
+            1,
+            {"topic_hint": "天津音乐学院", "max_message_length": 80},
+            count=1,
+            target_label="天津音乐群",
+            history="频道原文：所在位置：河东区；服务：陪洗，无套口，制服",
+        )
+
+    assert contents == ["河东这个位置有人去过吗"]
+    assert "陪洗，无套口，制服" in captured["prompt"]
+    assert "成人交易/性服务描述可以作为既有上下文理解" in captured["system_prompt"]
+    assert "不要新增联系方式、价格、邀约或交易撮合信息" in captured["system_prompt"]
 
 
 def mock_generation_result(content: str) -> AiGenerationResult:
