@@ -23,6 +23,24 @@ SENSITIVE_CONTEXT_GUIDANCE = (
     "成人交易/性服务描述可以作为既有上下文理解和引用，但回复只能围绕原文已有事实做自然短评或追问；"
     "不要新增联系方式、价格、邀约或交易撮合信息，不要编造亲身交易经历。"
 )
+SENSITIVE_CONTEXT_SUMMARY = "成人服务描述已按安全口径概括：原文包含服务项目、价格或联系信息，生成时不得复述、扩写或撮合。"
+SENSITIVE_CONTEXT_MARKERS = (
+    "无套",
+    "口活",
+    "陪洗",
+    "制服",
+    "丝袜",
+    "洛丽塔",
+    "潮喷",
+    "舌吻",
+    "上课费用",
+    "联系方",
+    "嫩妹车",
+    "颜值车",
+    "态度车",
+    "工兵",
+    "出击老师",
+)
 AI_PROVIDER_REFUSAL_MARKERS = (
     "the request was rejected",
     "considered high risk",
@@ -276,6 +294,47 @@ def _fallback_recent_context(requirements: str) -> str:
     return ""
 
 
+def _sanitize_sensitive_context(text: str) -> str:
+    raw = str(text or "")
+    if not any(marker in raw for marker in SENSITIVE_CONTEXT_MARKERS):
+        return raw
+    lines = [_sanitize_sensitive_line(line) for line in raw.splitlines()]
+    cleaned: list[str] = []
+    summary_added = False
+    for line in lines:
+        if not line:
+            continue
+        if line == SENSITIVE_CONTEXT_SUMMARY:
+            if summary_added:
+                continue
+            summary_added = True
+        cleaned.append(line)
+    return "\n".join(cleaned)
+
+
+def _sanitize_sensitive_line(line: str) -> str:
+    text = str(line or "").strip()
+    if not text:
+        return ""
+    if not any(marker in text for marker in SENSITIVE_CONTEXT_MARKERS):
+        return text.replace("老师编号", "对象编号").replace("妹子花名", "对象花名")
+    safe_parts = _sensitive_safe_facts(text)
+    if safe_parts:
+        return "；".join(safe_parts + [SENSITIVE_CONTEXT_SUMMARY])
+    return SENSITIVE_CONTEXT_SUMMARY
+
+
+def _sensitive_safe_facts(text: str) -> list[str]:
+    facts: list[str] = []
+    for label in ("所在位置", "老师编号", "妹子花名"):
+        match = re.search(rf"{label}[】：:：\s]*([^；;\n，,]+)", text)
+        if not match:
+            continue
+        safe_label = label.replace("老师", "对象").replace("妹子", "对象")
+        facts.append(f"{safe_label}：{match.group(1).strip()}")
+    return facts
+
+
 def clean_group_chat_contents(contents: list[str]) -> list[str]:
     accepted: list[str] = []
     starts: set[str] = set()
@@ -455,6 +514,7 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
         ]
         if part
     )
+    requirements = _sanitize_sensitive_context(requirements)
     contents, tokens = generate_contents(
         session,
         tenant_id,
@@ -545,11 +605,12 @@ def _slang_terms_prompt(value: object) -> str:
 
 def generate_channel_comments(session: Session, tenant_id: int, config: dict, *, count: int, message_content: str, target_label: str) -> tuple[list[str], int]:
     topic = config.get("topic_hint") or "频道评论"
+    safe_message_content = _sanitize_sensitive_context(message_content)
     requirements = (
-        f"频道消息：{message_content}\n"
+        f"频道消息：{safe_message_content}\n"
         f"评论风格：{config.get('comment_style') or 'mixed'}\n"
         f"语言：{config.get('language') or 'zh-CN'}\n"
-        f"{config.get('system_prompt_override') or ''}"
+        f"{_sanitize_sensitive_context(config.get('system_prompt_override') or '')}"
     )
     contents, tokens = generate_contents(
         session,
