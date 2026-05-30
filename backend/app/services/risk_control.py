@@ -34,6 +34,7 @@ from app.models import (
 from app.schemas.risk_control import AccountProxyCreate, AccountProxyUpdate, ProxyBatchBindingRequest, ProxyBindingRequest, RiskControlGlobalPolicyUpdate, RiskPreflightRequest
 from app.security import encrypt_secret
 from app.services._common import _now, audit
+from app.timezone import as_beijing
 from app.services.account_capacity import (
     ACTION_OCCUPIED_STATUSES as CAPACITY_ACTION_OCCUPIED_STATUSES,
     MESSAGE_TASK_OCCUPIED_STATUSES as CAPACITY_MESSAGE_TASK_OCCUPIED_STATUSES,
@@ -491,12 +492,12 @@ def risk_control_summary(session: Session, tenant_id: int) -> dict[str, Any]:
     hit_records = _risk_hit_records(session, tenant_id)
     disposition_queue.extend(_hit_dispositions(hit_records))
     disposition_queue = _dedupe_queue(disposition_queue)
-    disposition_queue.sort(key=lambda item: (_severity_sort(item["severity"]), item.get("occurred_at") or now), reverse=True)
+    disposition_queue.sort(key=lambda item: (_severity_sort(item["severity"]), _sort_datetime(item.get("occurred_at"))), reverse=True)
 
     proxy_alerts = list_proxy_alerts(session, tenant_id)
     disposition_queue.extend(_proxy_dispositions(proxy_alerts))
     disposition_queue = _dedupe_queue(disposition_queue)
-    disposition_queue.sort(key=lambda item: (_severity_sort(item["severity"]), item.get("occurred_at") or now), reverse=True)
+    disposition_queue.sort(key=lambda item: (_severity_sort(item["severity"]), _sort_datetime(item.get("occurred_at"))), reverse=True)
     overview = _overview(setting, account_scores, disposition_queue, hit_records, now, proxy_alerts)
     return {
         "overview": overview,
@@ -1068,7 +1069,7 @@ def _risk_hit_records(session: Session, tenant_id: int) -> list[dict[str, Any]]:
             occurred_at=record.created_at,
         ))
 
-    records.sort(key=lambda item: item.get("occurred_at") or datetime.min, reverse=True)
+    records.sort(key=lambda item: _sort_datetime(item.get("occurred_at")), reverse=True)
     return records
 
 
@@ -1524,6 +1525,12 @@ def _bool_value(value: Any, default: bool) -> bool:
 
 def _datetime_value(value: datetime | None) -> datetime:
     return value or _now()
+
+
+def _sort_datetime(value: Any) -> datetime:
+    if not isinstance(value, datetime):
+        return datetime.min
+    return as_beijing(value) or datetime.min
 
 
 def _account_display_name(account: TgAccount) -> str:
