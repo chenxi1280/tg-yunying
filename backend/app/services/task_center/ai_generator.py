@@ -518,7 +518,8 @@ def _looks_like_bad_group_chat_content(content: str) -> bool:
 
 def _looks_like_sensitive_trade_facilitation(content: str) -> bool:
     normalized = _normalize_for_similarity(content)
-    return any(_normalize_for_similarity(marker) in normalized for marker in SENSITIVE_TRADE_OUTPUT_MARKERS)
+    markers = SENSITIVE_TRADE_OUTPUT_MARKERS + SENSITIVE_CONTEXT_MARKERS
+    return any(_normalize_for_similarity(marker) in normalized for marker in markers)
 
 
 def _looks_like_ai_provider_refusal(content: str) -> bool:

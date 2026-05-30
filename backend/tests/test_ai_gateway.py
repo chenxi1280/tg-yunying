@@ -501,6 +501,7 @@ def test_channel_comment_blocks_sensitive_trade_facilitation_output(monkeypatch)
                 AiDraftCandidate(persona="读者", content="价格有变吗"),
                 AiDraftCandidate(persona="读者", content="河东区这个位置方便吗"),
                 AiDraftCandidate(persona="读者", content="今天有新服务吗"),
+                AiDraftCandidate(persona="读者", content="胸围这个点挺特别"),
             ],
             usage=AiUsage(total_tokens=22),
         )
@@ -590,6 +591,7 @@ def test_group_chat_blocks_sensitive_trade_facilitation_output(monkeypatch):
                 AiDraftCandidate(persona="群友", content="怎么联系"),
                 AiDraftCandidate(persona="群友", content="河东这个位置有人去过吗"),
                 AiDraftCandidate(persona="群友", content="能安排一下吗"),
+                AiDraftCandidate(persona="群友", content="大蟒蛇具体是啥"),
             ],
             usage=AiUsage(total_tokens=22),
         )
