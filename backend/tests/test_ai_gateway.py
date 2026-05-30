@@ -4,11 +4,28 @@ import json
 from typing import Any
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
-from app.ai_gateway import AiGateway, AiProviderCredentials, mock_candidates, normalize_ai_model_name
+from app.ai_gateway import (
+    AiDraftCandidate,
+    AiGateway,
+    AiGenerationResult,
+    AiProviderCredentials,
+    AiUsage,
+    mock_candidates,
+    normalize_ai_model_name,
+)
+from app.database import Base
 from app.integrations.telegram.gateway import TelethonTelegramGateway
-from app.models import FailureType
-from app.services.task_center.ai_generator import clean_channel_comment_contents, clean_group_chat_contents
+from app.models import AiProvider, FailureType, Tenant, TenantAiSetting
+from app.security import encrypt_secret
+from app.services.task_center.ai_generator import (
+    AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
+    clean_channel_comment_contents,
+    clean_group_chat_contents,
+    generate_channel_comments,
+)
 
 
 def credentials() -> AiProviderCredentials:
@@ -347,6 +364,53 @@ def test_generate_drafts_uses_custom_timeout(monkeypatch):
 
     assert timeouts == [120]
     assert result.candidates[0].content == "继续聊。"
+
+
+def test_channel_comment_generation_uses_long_ai_timeout(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    captured: dict[str, int] = {}
+
+    def fake_generate_drafts(_credentials, _prompt, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return mock_generation_result("收纳盒尺寸有人实测过吗")
+
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="MiMo",
+                provider_type="openai_compatible",
+                base_url="https://api.xiaomimimo.com/v1",
+                model_name="mimo-v2.5",
+                api_key_ciphertext=encrypt_secret("test-key"),
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
+        session.commit()
+
+        contents, _tokens = generate_channel_comments(
+            session,
+            1,
+            {"comment_style": "mixed"},
+            count=1,
+            message_content="这款收纳盒宽 12cm，适合桌面小物。",
+            target_label="太郎日记",
+        )
+
+    assert contents == ["收纳盒尺寸有人实测过吗"]
+    assert captured["timeout"] == AI_CONTENT_REQUEST_TIMEOUT_SECONDS
+
+
+def mock_generation_result(content: str) -> AiGenerationResult:
+    return AiGenerationResult(
+        candidates=[AiDraftCandidate(persona="读者", content=content)],
+        usage=AiUsage(total_tokens=11),
+    )
 
 
 def test_generate_drafts_retries_reasoning_only_empty_content(monkeypatch):
