@@ -313,7 +313,7 @@ export function TaskRuntimeAdvancedFields() {
       <Form.Item name="max_concurrent" label="账号并发上限（账号数）"><InputNumber min={1} max={500} /></Form.Item>
       <Form.Item name="cooldown_per_account_minutes" label="账号冷却分钟"><InputNumber min={0} /></Form.Item>
       <Form.Item name="ban_policy" label="异常账号处理"><Select options={[{ value: 'skip', label: '跳过账号' }, { value: 'pause_task', label: '暂停任务' }, { value: 'alert', label: '只告警' }]} /></Form.Item>
-      <Form.Item name="max_actions_per_hour" label="每小时上限"><InputNumber min={1} /></Form.Item>
+      <Form.Item name="max_actions_per_hour" label="每小时最大发送量"><InputNumber min={1} placeholder="不填则按系统默认" /></Form.Item>
       <Form.Item name="max_retries" label="失败重试次数"><InputNumber min={0} max={10} /></Form.Item>
     </>
   );
@@ -377,7 +377,7 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       { key: 'pacing', label: '曲线摘要', children: `${operationProfileSummary(values)}；当前 ${String(profile.hour).padStart(2, '0')}:00 强度 ${profile.intensity}，${profile.mode}运行` },
       { key: 'rule', label: '规则版本', children: precheck?.rule_version ? `规则集 #${precheck.rule_version.rule_set_id} / v${precheck.rule_version.version} / ${precheck.rule_version.status}` : ['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType) ? ruleSummary(values, ruleSets) : '平台默认规则' },
       { key: 'ai', label: 'AI 摘要', children: taskType === 'group_ai_chat' ? `语气 ${values.tone || 'auto'}，黑话集 ${selectedSlang ? `${selectedSlang.name} / v${selectedSlang.version}` : '系统默认语气'}` : taskType === 'channel_comment' ? `评论方向 ${values.comment_style || 'mixed'}，主题 ${values.topic_hint || '按消息内容'}` : '-' },
-      { key: 'risk', label: '风控命中', children: precheck?.risk_hits?.length ? precheck.risk_hits.map(precheckReasonLabel).join('；') : `每小时上限 ${values.max_actions_per_hour || '按系统默认'}，失败重试 ${values.max_retries ?? 3} 次` },
+      { key: 'risk', label: '风控命中', children: precheck?.risk_hits?.length ? precheck.risk_hits.map(precheckReasonLabel).join('；') : `每小时最大发送量 ${values.max_actions_per_hour || '按系统默认'}，失败重试 ${values.max_retries ?? 3} 次` },
       { key: 'blockers', label: '阻塞项', children: precheck?.blockers?.length ? precheck.blockers.map(precheckReasonLabel).join('；') : '无' },
       { key: 'mode', label: '启动说明', children: precheck?.decision === 'block' ? '当前预检存在阻塞项，需处理后再启动。' : account.online > 0 ? '创建后 worker 会再次校验账号、目标、规则和风控，再按曲线执行。' : '当前账号范围没有在线账号，创建后会等待账号恢复。' },
     ]} />

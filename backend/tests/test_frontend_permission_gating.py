@@ -413,7 +413,8 @@ def test_task_center_runtime_form_exposes_hour_limit_without_task_daily_cap():
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
-    assert 'name="max_actions_per_hour" label="每小时上限"' in wizard
+    assert 'name="max_actions_per_hour" label="每小时最大发送量"' in wizard
+    assert 'placeholder="不填则按系统默认"' in wizard
     assert 'name="max_actions_per_day" label="每日上限"' not in wizard
     assert "每日上限 ${values.max_actions_per_day" not in wizard
     assert "'max_actions_per_day'" not in view_model
