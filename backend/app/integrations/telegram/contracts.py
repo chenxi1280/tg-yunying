@@ -163,6 +163,7 @@ class ChannelMessageSnapshot:
     content_preview: str = ""
     message_url: str = ""
     published_at: datetime | None = None
+    comment_available: bool = True
 
 
 @dataclass(frozen=True)

@@ -64,6 +64,7 @@ class ChannelMessageCreate(BaseModel):
     message_id: int = Field(ge=1)
     message_url: str = ""
     content_preview: str = ""
+    comment_available: bool = True
     published_at: datetime | None = None
 
 
@@ -74,6 +75,7 @@ class ChannelMessageOut(ApiModel):
     message_id: int
     message_url: str
     content_preview: str
+    comment_available: bool
     published_at: datetime | None
     created_at: datetime
 

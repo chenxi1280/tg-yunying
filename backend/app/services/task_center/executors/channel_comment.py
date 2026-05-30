@@ -31,7 +31,7 @@ def build_plan(session: Session, task: Task) -> int:
     gate = gate_channel_membership(session, task, channel)
     if not gate.ready:
         return gate.created
-    channel, messages = channel_scope(session, task, config)
+    channel, messages = channel_scope(session, task, config, comment_available_only=True)
     if not channel or not messages:
         return 0
     profile_preview = tenant_learning_profile_preview(session, task.tenant_id, CHANNEL_COMMENT_SCENE)
