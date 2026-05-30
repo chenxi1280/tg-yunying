@@ -403,9 +403,9 @@ def _select_cycle_accounts(accounts: list, config: dict, mode: str, ramp_ratio: 
     if str(config.get("messages_per_round_mode") or "auto") == "manual":
         messages_per_round = _manual_messages_per_round(config, mode)
         desired = _desired_participant_count(rotated_accounts, config, mode, ramp_ratio)
-        participant_count = _manual_participant_count(desired, messages_per_round, len(rotated_accounts), config)
+        turn_count = _manual_turn_count(desired, messages_per_round)
+        participant_count = _manual_participant_count(desired, turn_count, len(rotated_accounts), config)
         selected = rotated_accounts[:participant_count]
-        turn_count = messages_per_round
         if not bool(config.get("allow_account_repeat", True)):
             turn_count = min(turn_count, len(selected))
         return selected, max(1, turn_count)
@@ -438,6 +438,12 @@ def _manual_messages_per_round(config: dict, mode: str) -> int:
     return max(1, messages_per_round)
 
 
+def _manual_turn_count(desired: int, messages_per_round: int) -> int:
+    if messages_per_round == 1:
+        return max(1, desired)
+    return max(1, messages_per_round)
+
+
 def _desired_participant_count(accounts: list, config: dict, mode: str, ramp_ratio: float) -> int:
     jitter = float(config.get("participation_jitter") or 0)
     rate = float(config.get("participation_rate") or 0.6) * ramp_ratio
@@ -447,13 +453,13 @@ def _desired_participant_count(accounts: list, config: dict, mode: str, ramp_rat
     return min(desired, len(accounts))
 
 
-def _manual_participant_count(desired: int, messages_per_round: int, account_count: int, config: dict) -> int:
+def _manual_participant_count(desired: int, turn_count: int, account_count: int, config: dict) -> int:
     if account_count <= 0:
         return 0
-    spread_count = min(messages_per_round, account_count)
+    spread_count = min(turn_count, account_count)
     participant_count = max(desired, spread_count)
     if not bool(config.get("allow_account_repeat", True)):
-        participant_count = max(participant_count, min(messages_per_round, account_count))
+        participant_count = max(participant_count, spread_count)
     return min(participant_count, account_count)
 
 
