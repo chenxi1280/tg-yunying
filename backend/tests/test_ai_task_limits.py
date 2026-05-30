@@ -70,11 +70,21 @@ def _add_group_task(session: Session, type_config: dict) -> Task:
     return task
 
 
-def _add_channel(session: Session, message_count: int, account_count: int) -> OperationTarget:
+def _add_channel(session: Session, message_count: int, account_count: int, comment_flags: list[bool] | None = None) -> OperationTarget:
     channel = OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营")
     session.add(channel)
     for index in range(message_count):
-        session.add(ChannelMessage(id=41 + index, tenant_id=1, channel_target_id=31, message_id=9001 + index, content_preview=f"频道消息 {index + 1}"))
+        comment_available = comment_flags[index] if comment_flags and index < len(comment_flags) else True
+        session.add(
+            ChannelMessage(
+                id=41 + index,
+                tenant_id=1,
+                channel_target_id=31,
+                message_id=9001 + index,
+                content_preview=f"频道消息 {index + 1}",
+                comment_available=comment_available,
+            )
+        )
     for account_id in range(101, 101 + account_count):
         session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"评论账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, health_score=100))
     return channel
@@ -211,6 +221,30 @@ def test_channel_comment_caps_single_message_generation_batch(monkeypatch):
 
     assert generated_counts == [4]
     assert created == 4
+
+
+def test_channel_comment_skips_messages_without_comment_thread(monkeypatch):
+    generated_message_texts: list[str] = []
+
+    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
+        generated_message_texts.append(message_content)
+        return [f"{message_content} 可评论"], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+    with _session() as session:
+        _add_tenant(session)
+        _add_channel(session, message_count=2, account_count=2, comment_flags=[False, True])
+        task = _add_comment_task(session)
+        task.pacing_config = {"mode": "fixed", "max_actions_per_hour": 10, "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0}
+        task.type_config = {**task.type_config, "message_ids": [41, 42], "target_comments_per_message": 1}
+        session.commit()
+
+        created = build_channel_comment_plan(session, task)
+        payloads = session.scalars(select(Action.payload).where(Action.task_id == task.id)).all()
+
+    assert generated_message_texts == ["频道消息 2"]
+    assert created == 1
+    assert [payload["channel_message_id"] for payload in payloads] == [42]
 
 
 def test_precheck_returns_dynamic_ai_limit_recommendations():

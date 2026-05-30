@@ -46,18 +46,18 @@ def add_tokens(task: Task, tokens: int) -> None:
     task.stats = stats
 
 
-def channel_scope(session: Session, task: Task, config: dict) -> tuple[OperationTarget | None, list[ChannelMessage]]:
+def channel_scope(session: Session, task: Task, config: dict, *, comment_available_only: bool = False) -> tuple[OperationTarget | None, list[ChannelMessage]]:
     channel = session.get(OperationTarget, int(config.get("target_channel_id") or 0))
     if not channel or channel.tenant_id != task.tenant_id or channel.target_type != "channel":
         task.last_error = "目标频道不存在"
         return None, []
     if _channel_scope_name(config) != "specific":
         if config.get("listen_new_messages") is False:
-            existing_messages = channel_messages(session, task.tenant_id, config)
+            existing_messages = channel_messages(session, task.tenant_id, config, comment_available_only=comment_available_only)
             if existing_messages:
                 return channel, existing_messages
         collect_channel_messages(session, task, channel, config)
-    messages = channel_messages(session, task.tenant_id, config)
+    messages = channel_messages(session, task.tenant_id, config, comment_available_only=comment_available_only)
     if not messages:
         task.last_error = task.last_error or "未找到频道消息，等待下一轮采集"
         return None, []
@@ -99,6 +99,7 @@ def collect_channel_messages(session: Session, task: Task, channel: OperationTar
         if existing:
             existing.content_preview = snapshot.content_preview or existing.content_preview
             existing.message_url = snapshot.message_url or existing.message_url or channel_message_url(channel, snapshot.message_id)
+            existing.comment_available = bool(snapshot.comment_available)
             existing.published_at = published_at or existing.published_at
             continue
         session.add(
@@ -108,6 +109,7 @@ def collect_channel_messages(session: Session, task: Task, channel: OperationTar
                 message_id=snapshot.message_id,
                 message_url=snapshot.message_url or channel_message_url(channel, snapshot.message_id),
                 content_preview=snapshot.content_preview,
+                comment_available=bool(snapshot.comment_available),
                 published_at=published_at,
             )
         )
@@ -232,8 +234,10 @@ def record_channel_capacity_warning(task: Task, action_label: str, target_per_me
         task.last_error = ""
 
 
-def channel_messages(session: Session, tenant_id: int, config: dict) -> list[ChannelMessage]:
+def channel_messages(session: Session, tenant_id: int, config: dict, *, comment_available_only: bool = False) -> list[ChannelMessage]:
     stmt = select(ChannelMessage).where(ChannelMessage.tenant_id == tenant_id, ChannelMessage.channel_target_id == int(config.get("target_channel_id") or 0))
+    if comment_available_only:
+        stmt = stmt.where(ChannelMessage.comment_available.is_(True))
     scope = _channel_scope_name(config)
     ids = [int(item) for item in config.get("message_ids") or []]
     if scope == "specific" and ids:

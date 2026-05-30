@@ -38,6 +38,7 @@ class ChannelMessage(Base):
     message_id: Mapped[int] = mapped_column(Integer)
     message_url: Mapped[str] = mapped_column(String(300), default="")
     content_preview: Mapped[str] = mapped_column(Text, default="")
+    comment_available: Mapped[bool] = mapped_column(Boolean, default=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 

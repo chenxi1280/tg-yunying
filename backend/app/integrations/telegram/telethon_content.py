@@ -209,12 +209,14 @@ async def fetch_channel_messages(client, channel_peer_id: str, limit: int) -> li
             continue
         text = (getattr(message, "message", "") or "").strip()
         message_url = f"https://t.me/{username}/{message_id}" if username else ""
+        replies = getattr(message, "replies", None)
         snapshots.append(
             ChannelMessageSnapshot(
                 message_id=message_id,
                 content_preview=text[:500],
                 message_url=message_url,
                 published_at=getattr(message, "date", None),
+                comment_available=bool(replies and getattr(replies, "comments", False)),
             )
         )
     return snapshots

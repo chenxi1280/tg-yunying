@@ -1188,6 +1188,7 @@ def _sync_channel_target_messages(session: Session, target: OperationTarget, *, 
         if existing:
             existing.content_preview = snapshot.content_preview or existing.content_preview
             existing.message_url = snapshot.message_url or existing.message_url or _channel_message_url(target, message_id)
+            existing.comment_available = bool(snapshot.comment_available)
             existing.published_at = published_at or existing.published_at
             continue
         session.add(
@@ -1197,6 +1198,7 @@ def _sync_channel_target_messages(session: Session, target: OperationTarget, *, 
                 message_id=message_id,
                 message_url=snapshot.message_url or _channel_message_url(target, message_id),
                 content_preview=snapshot.content_preview,
+                comment_available=bool(snapshot.comment_available),
                 published_at=published_at,
             )
         )
