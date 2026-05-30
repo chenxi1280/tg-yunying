@@ -28,6 +28,11 @@ SENSITIVE_CONTEXT_MARKERS = (
     "无套",
     "口活",
     "陪洗",
+    "服务项目",
+    "上课",
+    "胸围",
+    "蝴蝶B",
+    "大蟒蛇",
     "制服",
     "丝袜",
     "洛丽塔",
@@ -40,6 +45,21 @@ SENSITIVE_CONTEXT_MARKERS = (
     "态度车",
     "工兵",
     "出击老师",
+)
+SENSITIVE_TRADE_OUTPUT_MARKERS = (
+    "价格",
+    "多少钱",
+    "费用",
+    "联系",
+    "微信",
+    "电报",
+    "飞机",
+    "上课",
+    "服务",
+    "安排",
+    "下单",
+    "预约",
+    "约吗",
 )
 AI_PROVIDER_REFUSAL_MARKERS = (
     "the request was rejected",
@@ -170,12 +190,13 @@ def generate_contents(
             raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
         raise
     contents = [candidate.content.strip() for candidate in result.candidates if candidate.content.strip()]
+    restrict_sensitive_trade = SENSITIVE_CONTEXT_SUMMARY in prompt
     if purpose == GROUP_CHAT_PURPOSE:
-        contents = clean_group_chat_contents(contents)
+        contents = clean_group_chat_contents(contents, restrict_sensitive_trade=restrict_sensitive_trade)
         if not contents:
             raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
     if purpose == CHANNEL_COMMENT_PURPOSE:
-        contents = clean_channel_comment_contents(contents, limit=count)
+        contents = clean_channel_comment_contents(contents, limit=count, restrict_sensitive_trade=restrict_sensitive_trade)
         if not contents:
             raise AiGenerationUnavailable("AI 评论候选质量不达标，未创建评论")
     usage = getattr(result, "usage", None)
@@ -343,12 +364,14 @@ def _sensitive_safe_facts(text: str) -> list[str]:
     return facts
 
 
-def clean_group_chat_contents(contents: list[str]) -> list[str]:
+def clean_group_chat_contents(contents: list[str], *, restrict_sensitive_trade: bool = False) -> list[str]:
     accepted: list[str] = []
     starts: set[str] = set()
     for content in contents:
         cleaned = _clean_generated_content(content)
         if not cleaned or _looks_like_bad_group_chat_content(cleaned):
+            continue
+        if restrict_sensitive_trade and _looks_like_sensitive_trade_facilitation(cleaned):
             continue
         normalized = _normalize_for_similarity(cleaned)
         if len(normalized) < 2:
@@ -363,7 +386,13 @@ def clean_group_chat_contents(contents: list[str]) -> list[str]:
     return accepted
 
 
-def clean_channel_comment_contents(contents: list[str], previous_contents: list[str] | None = None, *, limit: int | None = None) -> list[str]:
+def clean_channel_comment_contents(
+    contents: list[str],
+    previous_contents: list[str] | None = None,
+    *,
+    limit: int | None = None,
+    restrict_sensitive_trade: bool = False,
+) -> list[str]:
     accepted: list[str] = []
     previous = [_normalize_for_similarity(item) for item in previous_contents or []]
     clusters = {_channel_comment_cluster(item) for item in previous_contents or []}
@@ -371,6 +400,8 @@ def clean_channel_comment_contents(contents: list[str], previous_contents: list[
     for content in contents:
         cleaned = _clean_generated_content(content)
         if not cleaned or _looks_like_bad_channel_comment(cleaned):
+            continue
+        if restrict_sensitive_trade and _looks_like_sensitive_trade_facilitation(cleaned):
             continue
         normalized = _normalize_for_similarity(cleaned)
         if len(normalized) < 2:
@@ -483,6 +514,11 @@ def _looks_like_bad_group_chat_content(content: str) -> bool:
     if looks_like_generated_template_noise(content) or looks_like_operator_ui_content(content):
         return True
     return content.count("“") + content.count("”") >= 4
+
+
+def _looks_like_sensitive_trade_facilitation(content: str) -> bool:
+    normalized = _normalize_for_similarity(content)
+    return any(_normalize_for_similarity(marker) in normalized for marker in SENSITIVE_TRADE_OUTPUT_MARKERS)
 
 
 def _looks_like_ai_provider_refusal(content: str) -> bool:
