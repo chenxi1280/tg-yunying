@@ -623,7 +623,7 @@ def test_group_chat_keeps_adult_service_context_outputs(monkeypatch):
             history="频道原文：所在位置：河东区；服务项目：陪洗，无套口，制服",
         )
 
-    assert contents == ["怎么联系", "河东这个位置有人去过吗", "能安排一下吗"]
+    assert contents == ["怎么联系", "河东这个位置有人去过吗", "能安排一下吗", "大蟒蛇具体是啥"]
 
 
 def mock_generation_result(content: str) -> AiGenerationResult:
