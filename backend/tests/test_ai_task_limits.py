@@ -190,6 +190,29 @@ def test_channel_comment_planner_respects_current_hour_budget(monkeypatch):
     assert sorted(per_message) == [2, 3]
 
 
+def test_channel_comment_caps_single_message_generation_batch(monkeypatch):
+    generated_counts: list[int] = []
+    seeds = ["河东区位置挺具体", "对象编号这个信息清楚", "报告入口可以再看看", "积分优惠这个点有人用过吗"]
+
+    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
+        generated_counts.append(count)
+        return seeds[:count], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+    with _session() as session:
+        _add_tenant(session)
+        _add_channel(session, message_count=1, account_count=20)
+        task = _add_comment_task(session)
+        task.pacing_config = {"mode": "fixed", "max_actions_per_hour": 20, "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0}
+        task.type_config = {**task.type_config, "message_ids": [41], "target_comments_per_message": 80}
+        session.commit()
+
+        created = build_channel_comment_plan(session, task)
+
+    assert generated_counts == [4]
+    assert created == 4
+
+
 def test_precheck_returns_dynamic_ai_limit_recommendations():
     with _session() as session:
         _add_tenant(session)
