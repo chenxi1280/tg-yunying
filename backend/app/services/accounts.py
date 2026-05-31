@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -64,14 +65,28 @@ class LoginStartFailure(ValueError):
         super().__init__(LOGIN_START_FAILURE_MESSAGE)
         self.detail = detail
 
+
+@dataclass(frozen=True, kw_only=True)
+class AccountListFilters:
+    tenant_id: int
+    page: int = 1
+    page_size: int = 50
+    search: str | None = None
+    status: str | None = None
+    pool_id: int | None = None
+    include_deleted: bool = False
+
 __all__ = [
     "account_contacts",
     "account_detail",
     "account_groups",
     "account_message_records",
     "account_profile_snapshot",
+    "AccountListFilters",
     "check_qr_login",
+    "count_accounts",
     "filter_accounts",
+    "filter_accounts_page",
     "create_account",
     "drain_account_sync_records",
     "drain_profile_sync_records",
@@ -1378,32 +1393,63 @@ def account_detail(session: Session, account_id: int, actor: str, *, include_ver
     }
 
 
-def filter_accounts(session: Session, tenant_id: int, page: int, page_size: int, search: str | None, status: str | None, pool_id: int | None = None, include_deleted: bool = False) -> list[TgAccount]:
-    require_tenant(session, tenant_id)
+def _account_listing_stmt(session: Session, filters: AccountListFilters):
+    require_tenant(session, filters.tenant_id)
     seed_account_pools(session)
-    stmt = select(TgAccount).where(TgAccount.tenant_id == tenant_id)
-    if not include_deleted:
+    stmt = select(TgAccount).where(TgAccount.tenant_id == filters.tenant_id)
+    if not filters.include_deleted:
         stmt = stmt.where(TgAccount.deleted_at.is_(None))
-    if status:
-        stmt = stmt.where(TgAccount.status == status)
-    if pool_id:
-        pool = session.get(AccountPool, pool_id)
-        if not pool or pool.tenant_id != tenant_id:
+    if filters.status:
+        stmt = stmt.where(TgAccount.status == filters.status)
+    if filters.pool_id:
+        pool = session.get(AccountPool, filters.pool_id)
+        if not pool or pool.tenant_id != filters.tenant_id:
             raise ValueError("account pool not found")
         stmt = stmt.where(TgAccount.pool_id == pool.id)
+    return stmt
+
+
+def _account_matches_search(account: TgAccount, needle: str) -> bool:
+    values = [
+        account.display_name,
+        account.username,
+        account.phone_masked,
+        get_account_phone(account),
+    ]
+    return any(needle in str(value).lower() for value in values if value)
+
+
+def _searched_accounts(session: Session, stmt, search: str | None) -> list[TgAccount]:
     needle = (search or "").strip().lower()
-    if needle:
-        accounts = list(session.scalars(stmt.order_by(TgAccount.id)))
+    accounts = list(session.scalars(stmt.order_by(TgAccount.id)))
+    return [account for account in accounts if _account_matches_search(account, needle)] if needle else accounts
 
-        def matches(account: TgAccount) -> bool:
-            values = [
-                account.display_name,
-                account.username,
-                account.phone_masked,
-                get_account_phone(account),
-            ]
-            return any(needle in str(value).lower() for value in values if value)
 
-        offset = (page - 1) * page_size
-        return [account for account in accounts if matches(account)][offset : offset + page_size]
-    return list(session.scalars(stmt.order_by(TgAccount.id).offset((page - 1) * page_size).limit(page_size)))
+def count_accounts(session: Session, filters: AccountListFilters) -> int:
+    stmt = _account_listing_stmt(session, filters)
+    if (filters.search or "").strip():
+        return len(_searched_accounts(session, stmt, filters.search))
+    return int(session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+
+
+def filter_accounts_page(session: Session, filters: AccountListFilters) -> list[TgAccount]:
+    stmt = _account_listing_stmt(session, filters)
+    if (filters.search or "").strip():
+        accounts = _searched_accounts(session, stmt, filters.search)
+        offset = (filters.page - 1) * filters.page_size
+        return accounts[offset : offset + filters.page_size]
+    offset = (filters.page - 1) * filters.page_size
+    return list(session.scalars(stmt.order_by(TgAccount.id).offset(offset).limit(filters.page_size)))
+
+
+def filter_accounts(session: Session, tenant_id: int, page: int, page_size: int, search: str | None, status: str | None, pool_id: int | None = None, include_deleted: bool = False) -> list[TgAccount]:
+    filters = AccountListFilters(
+        tenant_id=tenant_id,
+        page=page,
+        page_size=page_size,
+        search=search,
+        status=status,
+        pool_id=pool_id,
+        include_deleted=include_deleted,
+    )
+    return filter_accounts_page(session, filters)
