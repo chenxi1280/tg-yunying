@@ -804,6 +804,67 @@ def test_task_center_dispatch_reassigns_when_account_limit_reached(monkeypatch):
         assert action.result["telegram_msg_id"] == "reassigned-ok"
 
 
+def _channel_comment_action(action_id: str, comment_text: str, scheduled_at: datetime) -> Action:
+    return Action(
+        id=action_id,
+        tenant_id=1,
+        task_id="task-comment-permission",
+        task_type="channel_comment",
+        action_type="post_comment",
+        account_id=11,
+        status="pending",
+        scheduled_at=scheduled_at,
+        payload={
+            "channel_id": "-10031",
+            "channel_target_id": 31,
+            "channel_message_id": 41,
+            "message_id": 7301,
+            "message_content": "招生信息",
+            "comment_text": comment_text,
+            "target_display": "天津音乐学院频道",
+        },
+        result={},
+    )
+
+
+def test_post_comment_permission_denied_closes_thread_and_skips_siblings(monkeypatch):
+    from app.services.task_center import dispatcher
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        now_value = datetime.now(UTC).replace(tzinfo=None)
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="评论号", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"),
+                OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="天津音乐学院频道", can_send=True, auth_status="已授权运营"),
+                ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=7301, content_preview="招生信息", comment_available=True),
+                Task(id="task-comment-permission", tenant_id=1, name="频道评论", type="channel_comment", status="running"),
+                _channel_comment_action("action-comment-main", "想了解一下今年的招生安排", now_value),
+                _channel_comment_action("action-comment-sibling", "这个信息很实用", now_value),
+            ]
+        )
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "reply_channel_message",
+            lambda *args, **kwargs: SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="群无权限或账号不可发言"),
+        )
+        action = session.get(Action, "action-comment-main")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        sibling = session.get(Action, "action-comment-sibling")
+        message = session.get(ChannelMessage, 41)
+        assert action.status == "failed"
+        assert sibling.status == "skipped"
+        assert sibling.result["error_code"] == "comment_permission_denied_sibling"
+        assert message.comment_available is False
+
+
 def test_message_send_reassigns_group_and_defers_private_when_account_limit_reached(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
