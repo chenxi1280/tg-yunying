@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from app.integrations.telegram import OutboundSegment
 from app.config import get_settings
-from app.models import AccountStatus, Action, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, TgGroupAccount
+from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now, gateway
 from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
@@ -30,6 +30,11 @@ from . import runtime_resources as _runtime_resources
 _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
 _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
 _redis_client = _runtime_resources._redis_client
+_COMMENT_THREAD_UNAVAILABLE_FAILURES = {FailureType.COMMENT_UNAVAILABLE.value, FailureType.GROUP_PERMISSION_DENIED.value}
+_COMMENT_THREAD_SKIP_CODES = {
+    FailureType.COMMENT_UNAVAILABLE.value: "comment_unavailable_sibling",
+    FailureType.GROUP_PERMISSION_DENIED.value: "comment_permission_denied_sibling",
+}
 
 
 def _reserve_runtime_resources(action: Action) -> bool:
@@ -671,6 +676,8 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
             account.health_score = min(account.health_score, 55)
         if failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
             _mark_group_account_cannot_send(action, account, detail or failure_type)
+        if failure_type in _COMMENT_THREAD_UNAVAILABLE_FAILURES:
+            _close_unavailable_comment_thread(action, failure_type, detail or failure_type)
         _apply_default_failure_policy(action, failure_type or FailureType.UNKNOWN.value)
     action.executed_at = None if action.status == "pending" else _now()
     _finish_execution_attempt(attempt, action, remote_id=remote_id, failure_type=failure_type or "", detail=detail or "")
@@ -698,6 +705,62 @@ def _mark_group_account_cannot_send(action: Action, account: TgAccount, detail: 
         return
     link.can_send = False
     link.permission_label = detail[:80] or "群无权限或账号不可发言"
+
+
+def _close_unavailable_comment_thread(action: Action, failure_type: str, detail: str) -> None:
+    from sqlalchemy.orm import object_session
+
+    if action.action_type != "post_comment":
+        return
+    session = object_session(action)
+    if not session:
+        return
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    channel_target_id, channel_message_id = _comment_thread_identity(payload)
+    if not channel_target_id or not channel_message_id:
+        return
+    message = session.get(ChannelMessage, channel_message_id)
+    if message and message.tenant_id == action.tenant_id and message.channel_target_id == channel_target_id:
+        message.comment_available = False
+    _skip_unavailable_comment_siblings(session, action, channel_target_id, channel_message_id, failure_type, detail)
+
+
+def _comment_thread_identity(payload: dict) -> tuple[int, int]:
+    channel_target_id = int(payload.get("channel_target_id") or 0)
+    channel_message_id = int(payload.get("channel_message_id") or 0)
+    return channel_target_id, channel_message_id
+
+
+def _skip_unavailable_comment_siblings(
+    session: Session,
+    action: Action,
+    channel_target_id: int,
+    channel_message_id: int,
+    failure_type: str,
+    detail: str,
+) -> None:
+    code = _COMMENT_THREAD_SKIP_CODES.get(failure_type, "comment_unavailable_sibling")
+    reason = _comment_thread_skip_reason(failure_type, detail)
+    siblings = session.scalars(
+        select(Action).where(
+            Action.tenant_id == action.tenant_id,
+            Action.task_id == action.task_id,
+            Action.id != action.id,
+            Action.action_type == "post_comment",
+            Action.status.in_(["pending", "claiming", "retryable_failed"]),
+            Action.payload["channel_target_id"].as_integer() == channel_target_id,
+            Action.payload["channel_message_id"].as_integer() == channel_message_id,
+        )
+    )
+    for sibling in siblings:
+        _skip(sibling, code, reason)
+        sibling.result = {**(sibling.result or {}), "validation_stage": "channel_comment_runtime"}
+
+
+def _comment_thread_skip_reason(failure_type: str, detail: str) -> str:
+    if failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
+        return f"评论目标权限不可用，已跳过同帖待执行评论：{detail}"
+    return f"评论区不可用，已跳过同帖待执行评论：{detail}"
 
 
 def _fail(action: Action, failure_type: str, detail: str, *, auto_check: str = "失败", validation_stage: str = "") -> None:
