@@ -355,6 +355,34 @@ def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[
     return account, group
 
 
+def mark_test_channel_comment_ready(channel_target_id: int, account_ids: list[int]) -> None:
+    with SessionLocal() as session:
+        channel = session.get(OperationTarget, channel_target_id)
+        assert channel is not None
+        group = session.query(TgGroup).filter_by(tenant_id=channel.tenant_id, tg_peer_id=channel.tg_peer_id).first()
+        if group is None:
+            group = TgGroup(
+                tenant_id=channel.tenant_id,
+                tg_peer_id=channel.tg_peer_id,
+                title=channel.title,
+                group_type="channel",
+                auth_status="已授权运营",
+                can_send=True,
+            )
+            session.add(group)
+            session.flush()
+        group.auth_status = "已授权运营"
+        group.can_send = True
+        for account_id in account_ids:
+            link = session.query(TgGroupAccount).filter_by(group_id=group.id, account_id=account_id).first()
+            if link is None:
+                link = TgGroupAccount(tenant_id=channel.tenant_id, group_id=group.id, account_id=account_id)
+                session.add(link)
+            link.can_send = True
+            link.permission_label = "普通成员"
+        session.commit()
+
+
 def test_clean_seed_requires_config_before_account_create():
     with TestClient(app) as client:
         headers = auth_headers(client)
@@ -3192,6 +3220,7 @@ def test_task_center_channel_view_like_comment_execute(monkeypatch):
                 "auth_status": "已授权运营",
             },
         ).json()
+        mark_test_channel_comment_ready(channel_target["id"], [account["id"]])
         channel_message = client.post(
             "/api/channel-messages",
             headers=headers,
@@ -3615,6 +3644,7 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
                 "auth_status": "已授权运营",
             },
         ).json()
+        mark_test_channel_comment_ready(channel_target["id"], [account["id"]])
         created = client.post(
             endpoint,
             headers=headers,
@@ -3863,6 +3893,7 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
                 "auth_status": "已授权运营",
             },
         ).json()
+        mark_test_channel_comment_ready(channel_target["id"], [account["id"]])
         created = client.post(
             "/api/tasks/channel-comment",
             headers=headers,
