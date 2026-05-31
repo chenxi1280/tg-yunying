@@ -570,8 +570,9 @@ def test_target_membership_requires_send_rechecks_existing_group_link(monkeypatc
         assert link is not None
         assert link.can_send is False
         assert link.permission_label == "缓存频道不可访问 / 账号无权限"
-        assert action.status == "failed"
-        assert action.result["error_code"] == "群无权限"
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "membership_permission_denied"
+        assert action.result["membership_status"] == "permission_denied"
         verification = session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7, VerificationTask.account_id == 11))
         assert verification is not None
         assert verification.status == "待处理"

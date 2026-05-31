@@ -1144,6 +1144,15 @@ def test_gateway_maps_join_channel_permission_denied():
     assert result.detail == "群无权限或账号不可发言"
 
 
+def test_gateway_maps_join_request_pending_to_permission_denied():
+    result = TelethonTelegramGateway._map_send_error(
+        Exception("You have successfully requested to join this chat or channel (caused by JoinChannelRequest)")
+    )
+
+    assert result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value
+    assert result.detail == "已提交入群申请，等待审批后才能发言"
+
+
 def test_telethon_resolve_uses_migrated_target_for_basic_groups():
     from telethon.tl import types
 

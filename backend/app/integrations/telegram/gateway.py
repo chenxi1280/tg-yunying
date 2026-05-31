@@ -670,6 +670,8 @@ class TelethonTelegramGateway(TelegramGateway):
         permission_request_markers = ("sendmessagerequest", "joinchannelrequest", "importchatinviterequest")
         if any(request in lower_detail for request in permission_request_markers) and any(marker in lower_detail for marker in send_permission_markers):
             return SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="群无权限或账号不可发言")
+        if "joinchannelrequest" in lower_detail and "successfully requested to join" in lower_detail:
+            return SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="已提交入群申请，等待审批后才能发言")
         if isinstance(exc, errors.FloodWaitError):
             return SendResult(False, failure_type=FailureType.FLOOD_WAIT.value, detail=f"FloodWait {exc.seconds} 秒")
         if isinstance(exc, getattr(errors, "SlowModeWaitError", ())):
