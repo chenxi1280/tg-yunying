@@ -667,7 +667,8 @@ class TelethonTelegramGateway(TelegramGateway):
             "another reason may be that you were banned from it",
         )
         lower_detail = detail.lower()
-        if "sendmessagerequest" in lower_detail and any(marker in lower_detail for marker in send_permission_markers):
+        permission_request_markers = ("sendmessagerequest", "joinchannelrequest", "importchatinviterequest")
+        if any(request in lower_detail for request in permission_request_markers) and any(marker in lower_detail for marker in send_permission_markers):
             return SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="群无权限或账号不可发言")
         if isinstance(exc, errors.FloodWaitError):
             return SendResult(False, failure_type=FailureType.FLOOD_WAIT.value, detail=f"FloodWait {exc.seconds} 秒")
