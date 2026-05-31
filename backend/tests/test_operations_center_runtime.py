@@ -11,6 +11,7 @@ from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage
 from app.config import Settings
 from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult, _resolve_telethon_target, _telethon_send_target
+from app.integrations.telegram.gateway import TelethonTelegramGateway
 from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
@@ -1107,6 +1108,15 @@ def test_telethon_send_target_marks_legacy_basic_group_ids():
     assert _telethon_send_target("-1003984659798", group_id=16) == -1003984659798
     assert _telethon_send_target("5129187268", group_id=0) == 5129187268
     assert _telethon_send_target("@demo_group", group_id=16) == "@demo_group"
+
+
+def test_gateway_maps_join_channel_permission_denied():
+    result = TelethonTelegramGateway._map_send_error(
+        Exception("The channel specified is private and you lack permission to access it. Another reason may be that you were banned from it (caused by JoinChannelRequest)")
+    )
+
+    assert result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value
+    assert result.detail == "群无权限或账号不可发言"
 
 
 def test_telethon_resolve_uses_migrated_target_for_basic_groups():
