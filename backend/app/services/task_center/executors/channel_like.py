@@ -8,7 +8,9 @@ from ..account_pool import select_task_accounts
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import LikeMessagePayload, create_like_action
-from .common import adjust_for_account_hour_limit, available_channel_accounts_for_message, channel_message_account_ids, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
+from .common import adjust_for_account_hour_limit, channel_message_account_ids, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
+
+LIKE_UNAVAILABLE_SKIP_CODES = {"reaction_unavailable_message", "reaction_unavailable_sibling"}
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -45,9 +47,10 @@ def build_plan(session: Session, task: Task) -> int:
     record_channel_capacity_warning(task, "点赞", target_per_message, len(accounts))
     actions: list[tuple[ChannelMessage, int, str]] = []
     for message in messages:
-        available_accounts = available_channel_accounts_for_message(session, task, "like_message", message, accounts)
+        used_accounts = channel_message_account_ids(session, task, "like_message", message, include_skipped_codes=LIKE_UNAVAILABLE_SKIP_CODES)
+        available_accounts = [account for account in accounts if account.id not in used_accounts]
         desired = quantity_with_jitter(target_per_message, float(config.get("like_count_jitter") or 0))
-        used_count = len(channel_message_account_ids(session, task, "like_message", message))
+        used_count = len(used_accounts)
         quantity = min(max(0, desired - used_count), len(available_accounts))
         actions.extend((message, available_accounts[index].id, reactions[index % len(reactions)]) for index in range(quantity))
     if not actions:

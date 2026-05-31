@@ -10,7 +10,7 @@ import app.services.archives as archive_service
 from app.ai_gateway import AiDraftCandidate, AiGenerationResult, AiUsage
 from app.config import Settings
 from app.database import Base
-from app.integrations.telegram import SendResult, _resolve_telethon_target, _telethon_send_target
+from app.integrations.telegram import OperationResult, SendResult, _resolve_telethon_target, _telethon_send_target
 from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
@@ -825,6 +825,67 @@ def _channel_comment_action(action_id: str, comment_text: str, scheduled_at: dat
         },
         result={},
     )
+
+
+def _channel_like_action(action_id: str, account_id: int, scheduled_at: datetime) -> Action:
+    return Action(
+        id=action_id,
+        tenant_id=1,
+        task_id="task-like-unavailable",
+        task_type="channel_like",
+        action_type="like_message",
+        account_id=account_id,
+        status="pending",
+        scheduled_at=scheduled_at,
+        payload={
+            "channel_id": "-10031",
+            "channel_target_id": 31,
+            "channel_message_id": 41,
+            "message_id": 7301,
+            "message_content": "招生信息",
+            "reaction_emoji": "👍",
+            "target_display": "天津音乐学院频道",
+        },
+        result={},
+    )
+
+
+def test_channel_like_reaction_unavailable_skips_message_siblings(monkeypatch):
+    from app.services.task_center import dispatcher
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        now_value = datetime.now(UTC).replace(tzinfo=None)
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="点赞号1", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"),
+                TgAccount(id=12, tenant_id=1, display_name="点赞号2", phone_masked="12", status=AccountStatus.ACTIVE.value, session_ciphertext="session-12"),
+                OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="天津音乐学院频道", can_send=True, auth_status="已授权运营"),
+                ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=7301, content_preview="招生信息", comment_available=True),
+                Task(id="task-like-unavailable", tenant_id=1, name="频道点赞", type="channel_like", status="running"),
+                _channel_like_action("action-like-main", 11, now_value),
+                _channel_like_action("action-like-sibling", 12, now_value),
+            ]
+        )
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_channel_reaction",
+            lambda *args, **kwargs: OperationResult(False, "失败", FailureType.REACTION_UNAVAILABLE.value, "频道消息不可点赞或消息ID无效"),
+        )
+        action = session.get(Action, "action-like-main")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        sibling = session.get(Action, "action-like-sibling")
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "reaction_unavailable_message"
+        assert sibling.status == "skipped"
+        assert sibling.result["error_code"] == "reaction_unavailable_sibling"
 
 
 def test_post_comment_permission_denied_blocks_account_and_skips_account_siblings(monkeypatch):

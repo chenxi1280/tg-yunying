@@ -170,11 +170,21 @@ def unplanned_channel_messages(session: Session, task: Task, action_type: str, m
     return [message for message in messages if message.id not in planned]
 
 
-def channel_message_account_ids(session: Session, task: Task, action_type: str, message: ChannelMessage, *, execution_date: str | None = None) -> set[int]:
+def channel_message_account_ids(
+    session: Session,
+    task: Task,
+    action_type: str,
+    message: ChannelMessage,
+    *,
+    execution_date: str | None = None,
+    include_skipped_codes: set[str] | None = None,
+) -> set[int]:
     account_ids: set[int] = set()
     statuses = ["pending", "executing", "success"] if execution_date else ["pending", "executing", "success", "failed"]
-    for account_id, payload in session.execute(
-        select(Action.account_id, Action.payload).where(
+    if include_skipped_codes:
+        statuses.append("skipped")
+    for account_id, payload, status, result in session.execute(
+        select(Action.account_id, Action.payload, Action.status, Action.result).where(
             Action.task_id == task.id,
             Action.action_type == action_type,
             Action.account_id.is_not(None),
@@ -183,11 +193,19 @@ def channel_message_account_ids(session: Session, task: Task, action_type: str, 
     ):
         if not isinstance(payload, dict):
             continue
+        if status == "skipped" and not _skipped_code_matches(result, include_skipped_codes):
+            continue
         if execution_date and str(payload.get("execution_date") or "") != execution_date:
             continue
         if payload.get("channel_message_id") == message.id or payload.get("message_id") == message.message_id:
             account_ids.add(int(account_id))
     return account_ids
+
+
+def _skipped_code_matches(result: dict | None, include_skipped_codes: set[str] | None) -> bool:
+    if not include_skipped_codes or not isinstance(result, dict):
+        return False
+    return str(result.get("error_code") or "") in include_skipped_codes
 
 
 def channel_message_action_count(session: Session, task: Task, action_type: str, message: ChannelMessage) -> int:
