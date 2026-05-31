@@ -86,7 +86,7 @@ def channel_member_accounts(session: Session, task: Task, channel: OperationTarg
     if not require_send and not _target_requires_membership_for_candidates(channel, accounts):
         return accounts
     group = linked_channel_group(session, channel, create=False)
-    directly_ready_ids = {account.id for account in accounts if account_satisfies_authorized_target(channel, account, require_send=require_send)}
+    directly_ready_ids = _directly_ready_channel_account_ids(channel, accounts, require_send=require_send)
     if not group:
         return [account for account in accounts if account.id in directly_ready_ids]
     member_ids, blocked_send_ids = _channel_member_id_sets(session, task.tenant_id, group.id, require_send=require_send)
@@ -108,6 +108,12 @@ def _channel_member_id_sets(session: Session, tenant_id: int, group_id: int, *, 
             continue
         member_ids.add(int(link.account_id))
     return member_ids, blocked_send_ids
+
+
+def _directly_ready_channel_account_ids(channel: OperationTarget, accounts: list[TgAccount], *, require_send: bool) -> set[int]:
+    if require_send and channel.target_type == "channel":
+        return set()
+    return {account.id for account in accounts if account_satisfies_authorized_target(channel, account, require_send=require_send)}
 
 
 def mark_channel_membership_joined(session: Session, tenant_id: int, channel_target_id: int, account_id: int, *, permission_label: str = "已关注") -> None:
@@ -275,10 +281,10 @@ def _create_missing_membership_actions(session: Session, task: Task, channel: Op
         TgGroupAccount.tenant_id == task.tenant_id,
         TgGroupAccount.group_id == group.id,
     )
-    if require_send and channel.target_type == "group":
+    if require_send:
         link_stmt = link_stmt.where(TgGroupAccount.can_send.is_(True))
     joined_ids = {int(account_id) for account_id in session.scalars(link_stmt)}
-    joined_ids.update(account.id for account in candidates if account_satisfies_authorized_target(channel, account, require_send=require_send))
+    joined_ids.update(_directly_ready_channel_account_ids(channel, candidates, require_send=require_send))
     missing = [account for account in candidates if account.id not in existing]
     random.shuffle(missing)
     if not missing:

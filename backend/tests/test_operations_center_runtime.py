@@ -840,6 +840,8 @@ def test_post_comment_permission_denied_blocks_account_and_skips_account_sibling
             [
                 TgAccount(id=11, tenant_id=1, display_name="评论号", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"),
                 OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="天津音乐学院频道", can_send=True, auth_status="已授权运营"),
+                TgGroup(id=32, tenant_id=1, tg_peer_id="-10031", title="天津音乐学院频道", group_type="channel", auth_status="已授权运营", can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=32, account_id=11, can_send=True),
                 ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=7301, content_preview="招生信息", comment_available=True),
                 Task(id="task-comment-permission", tenant_id=1, name="频道评论", type="channel_comment", status="running"),
                 _channel_comment_action("action-comment-main", "想了解一下今年的招生安排", now_value),
@@ -860,11 +862,130 @@ def test_post_comment_permission_denied_blocks_account_and_skips_account_sibling
         sibling = session.get(Action, "action-comment-sibling")
         message = session.get(ChannelMessage, 41)
         link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.account_id == 11))
-        assert action.status == "failed"
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "comment_account_permission_denied"
         assert sibling.status == "skipped"
         assert sibling.result["error_code"] == "comment_account_permission_denied"
         assert link.can_send is False
         assert message.comment_available is True
+
+
+def test_post_comment_without_membership_creates_membership_and_defers(monkeypatch):
+    from app.services.task_center import dispatcher
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        now_value = datetime.now(UTC).replace(tzinfo=None)
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="评论号", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"),
+                OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="天津音乐学院频道", can_send=True, auth_status="已授权运营"),
+                ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=7301, content_preview="招生信息", comment_available=True),
+                Task(id="task-comment-membership", tenant_id=1, name="频道评论", type="channel_comment", status="running"),
+                _channel_comment_action("action-comment-main", "想了解一下今年的招生安排", now_value),
+            ]
+        )
+        session.get(Action, "action-comment-main").task_id = "task-comment-membership"
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "reply_channel_message", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("comment must wait for membership")))
+        action = session.get(Action, "action-comment-main")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        membership = session.scalar(select(Action).where(Action.task_id == "task-comment-membership", Action.action_type == "ensure_target_membership"))
+        assert action.status == "pending"
+        assert action.scheduled_at > now_value
+        assert action.result["error_code"] == "comment_membership_required"
+        assert membership is not None
+        assert membership.account_id == 11
+        assert membership.payload["channel_target_id"] == 31
+        assert membership.payload["require_send"] is True
+
+
+def test_post_comment_membership_error_requeues_membership_even_with_stale_link(monkeypatch):
+    from app.services.task_center import dispatcher
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        now_value = datetime.now(UTC).replace(tzinfo=None)
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="评论号", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"),
+                OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="天津音乐学院频道", can_send=True, auth_status="已授权运营"),
+                TgGroup(id=32, tenant_id=1, tg_peer_id="-10031", title="天津音乐学院频道", group_type="channel", auth_status="已授权运营", can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=32, account_id=11, can_send=True),
+                ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=7301, content_preview="招生信息", comment_available=True),
+                Task(id="task-comment-stale-membership", tenant_id=1, name="频道评论", type="channel_comment", status="running"),
+                _channel_comment_action("action-comment-main", "想了解一下今年的招生安排", now_value),
+            ]
+        )
+        session.get(Action, "action-comment-main").task_id = "task-comment-stale-membership"
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "reply_channel_message",
+            lambda *args, **kwargs: SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="账号未关注/未加入目标频道或无法进入关联讨论区"),
+        )
+        action = session.get(Action, "action-comment-main")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        membership = session.scalar(select(Action).where(Action.task_id == "task-comment-stale-membership", Action.action_type == "ensure_target_membership"))
+        assert action.status == "pending"
+        assert action.result["error_code"] == "comment_membership_required"
+        assert membership is not None
+        assert membership.payload["require_send"] is True
+
+
+def test_post_comment_unavailable_marks_message_and_skips_siblings(monkeypatch):
+    from app.services.task_center import dispatcher
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        now_value = datetime.now(UTC).replace(tzinfo=None)
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="评论号", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"),
+                OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="天津音乐学院频道", can_send=True, auth_status="已授权运营"),
+                TgGroup(id=32, tenant_id=1, tg_peer_id="-10031", title="天津音乐学院频道", group_type="channel", auth_status="已授权运营", can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=32, account_id=11, can_send=True),
+                ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=7301, content_preview="招生信息", comment_available=True),
+                Task(id="task-comment-unavailable", tenant_id=1, name="频道评论", type="channel_comment", status="running"),
+                _channel_comment_action("action-comment-main", "想了解一下今年的招生安排", now_value),
+                _channel_comment_action("action-comment-sibling", "这个信息很实用", now_value),
+            ]
+        )
+        for action_id in ["action-comment-main", "action-comment-sibling"]:
+            session.get(Action, action_id).task_id = "task-comment-unavailable"
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "reply_channel_message",
+            lambda *args, **kwargs: SendResult(False, failure_type=FailureType.COMMENT_UNAVAILABLE.value, detail="频道帖子无法解析到评论区"),
+        )
+        action = session.get(Action, "action-comment-main")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        sibling = session.get(Action, "action-comment-sibling")
+        message = session.get(ChannelMessage, 41)
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "comment_unavailable_message"
+        assert sibling.status == "skipped"
+        assert sibling.result["error_code"] == "comment_unavailable_sibling"
+        assert message.comment_available is False
 
 
 def test_message_send_reassigns_group_and_defers_private_when_account_limit_reached(monkeypatch):

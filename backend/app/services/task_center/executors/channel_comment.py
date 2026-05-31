@@ -28,7 +28,7 @@ def build_plan(session: Session, task: Task) -> int:
     if not channel or channel.tenant_id != task.tenant_id or channel.target_type != "channel":
         task.last_error = "目标频道不存在"
         return 0
-    gate = gate_channel_membership(session, task, channel)
+    gate = gate_channel_membership(session, task, channel, require_send=True)
     if not gate.ready:
         return gate.created
     channel, messages = channel_scope(session, task, config, comment_available_only=True)
