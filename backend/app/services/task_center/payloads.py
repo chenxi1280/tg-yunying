@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Action, Task
@@ -154,6 +155,9 @@ def _create_action(session: Session, task: Task, action_type: str, account_id: i
     payload_data = payload.model_dump(mode="json")
     plan_batch_key = _plan_batch_key(task, scheduled_at)
     action_dedupe_key = _action_dedupe_key(task, plan_batch_key, action_type, account_id, payload_data)
+    existing = _existing_action(session, task.tenant_id, action_dedupe_key)
+    if existing:
+        return existing
     action = Action(
         tenant_id=task.tenant_id,
         task_id=task.id,
@@ -170,6 +174,15 @@ def _create_action(session: Session, task: Task, action_type: str, account_id: i
     session.add(action)
     session.flush()
     return action
+
+
+def _existing_action(session: Session, tenant_id: int, action_dedupe_key: str) -> Action | None:
+    return session.scalar(
+        select(Action).where(
+            Action.tenant_id == tenant_id,
+            Action.action_dedupe_key == action_dedupe_key,
+        )
+    )
 
 
 def _plan_batch_key(task: Task, scheduled_at: datetime) -> str:
