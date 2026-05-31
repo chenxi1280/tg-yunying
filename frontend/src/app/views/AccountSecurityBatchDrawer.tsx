@@ -145,6 +145,7 @@ export function AccountSecurityBatchDrawer({
   const [loading, setLoading] = React.useState(false);
   const [step, setStep] = React.useState(0);
   const selected = React.useMemo(() => selectedAccounts(accounts, draftAccountIds), [accounts, draftAccountIds]);
+  const profileIncompleteAccounts = React.useMemo(() => accounts.filter(accountNeedsProfile), [accounts]);
   const filteredAccounts = React.useMemo(() => {
     const query = accountQuery.trim().toLowerCase();
     return accounts.filter((account) => {
@@ -249,6 +250,19 @@ export function AccountSecurityBatchDrawer({
     setRangeStart(start);
     setRangeEnd(end);
     mergeDraftAccountIds(filteredAccounts.slice(start - 1, end).map((account) => account.id));
+  }
+
+  function showProfileIncompleteAccounts() {
+    setAccountFilter('profile_incomplete');
+    setAccountQuery('');
+  }
+
+  function selectProfileIncompleteAccounts() {
+    if (!profileIncompleteAccounts.length) {
+      void message.warning('当前没有资料待初始化账号');
+      return;
+    }
+    mergeDraftAccountIds(profileIncompleteAccounts.map((account) => account.id));
   }
 
   function changeAvatarMode(modeValue: string) {
@@ -496,6 +510,8 @@ export function AccountSecurityBatchDrawer({
               ]}
               onChange={setAccountFilter}
             />
+            {isProfileMode && <Button onClick={showProfileIncompleteAccounts}>只看待初始化</Button>}
+            {isProfileMode && <Button disabled={!profileIncompleteAccounts.length} onClick={selectProfileIncompleteAccounts}>选择待初始化</Button>}
             <Button onClick={() => setDraftAccountIds(filteredAccounts.map((account) => account.id))}>选择当前筛选</Button>
             <Button onClick={() => mergeDraftAccountIds(filteredAccounts.slice(0, BATCH_SELECTION_LIMIT).map((account) => account.id))}>选择当前筛选前 100 个</Button>
             <Button onClick={() => mergeDraftAccountIds(filteredAccounts.map((account) => account.id))}>追加当前筛选全部</Button>

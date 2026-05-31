@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, get_current_user, require_core_feature_access, resolve_tenant_id
 from app.database import get_session
 from app.common.http import not_found
+from app.api.pagination import pagination_headers
 from app.api.response_permissions import account_availability_out_for_user, account_detail_out_for_user, account_out_for_user
 from app.models import (
     AccountCloneItem, AccountClonePlan, AccountPool, TgAccount, VerificationTask,
@@ -25,9 +26,11 @@ from app.schemas import (
 from app.services import (
     account_clone_plan_detail, account_clone_plans, account_contacts,
     account_detail, account_groups, account_message_records,
+    AccountListFilters,
     check_qr_login, confirm_account_clone_plan, create_account,
     create_account_clone_plan, create_direct_message_task,
-    filter_accounts, health_check_account, list_account_sync_records,
+    count_accounts, filter_accounts_page, health_check_account,
+    list_account_sync_records,
     list_login_flows, list_profile_sync_records, list_verification_codes,
     LoginStartFailure,
     list_verification_tasks, move_account_pool,
@@ -46,6 +49,7 @@ router = APIRouter()
 
 @router.get("/api/tg-accounts", response_model=list[AccountOut])
 def list_accounts(
+    response: Response,
     tenant_id: int | None = None,
     page: int = 1,
     page_size: int = 50,
@@ -57,7 +61,19 @@ def list_accounts(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> list[dict]:
     try:
-        accounts = filter_accounts(session, resolve_tenant_id(current_user, tenant_id), page, page_size, search, status, pool_id, include_deleted)
+        resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+        filters = AccountListFilters(
+            tenant_id=resolved_tenant_id,
+            page=page,
+            page_size=page_size,
+            search=search,
+            status=status,
+            pool_id=pool_id,
+            include_deleted=include_deleted,
+        )
+        total_count = count_accounts(session, filters)
+        accounts = filter_accounts_page(session, filters)
+        response.headers.update(pagination_headers(total_count=total_count, page=page, page_size=page_size))
         return [account_out_for_user(account, current_user) for account in accounts]
     except ValueError as exc:
         raise not_found(str(exc)) from exc
