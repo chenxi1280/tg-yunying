@@ -428,6 +428,12 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
             _apply_operation_result(action, account, False, probe_result.failure_type, probe_result.detail or probe_result.failure_type, attempt=attempt)
             return True
         _mark_membership_joined(session, action, account, payload)
+    elif result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
+        _record_group_send_permission_denied(session, action, account, payload, result.detail or result.failure_type)
+        _skip_membership_permission_denied(action, result.detail or result.failure_type)
+        _finish_execution_attempt(attempt, action, failure_type=result.failure_type, detail=result.detail or result.failure_type)
+        _release_runtime_resources(action)
+        return True
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail or result.membership_status, attempt=attempt)
     if result.ok:
         action.result = {**(action.result or {}), "membership_status": result.membership_status or "joined"}
@@ -460,6 +466,11 @@ def _dispatch_existing_membership(
         action.result = {**(action.result or {}), "membership_status": "already_joined"}
         return True
     _record_group_send_permission_denied(session, action, account, payload, result.detail or result.failure_type)
+    if result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
+        _skip_membership_permission_denied(action, result.detail or result.failure_type)
+        _finish_execution_attempt(attempt, action, failure_type=result.failure_type, detail=result.detail or result.failure_type)
+        _release_runtime_resources(action)
+        return True
     _apply_operation_result(action, account, False, result.failure_type, result.detail or result.failure_type, attempt=attempt)
     return True
 
@@ -477,6 +488,11 @@ def _probe_joined_group_send_permission(session: Session, action: Action, accoun
 def _skip_membership_already_joined(action: Action) -> None:
     _skip(action, "already_joined", "账号已满足目标准入")
     action.result = {**(action.result or {}), "success": True, "membership_status": "already_joined"}
+
+
+def _skip_membership_permission_denied(action: Action, detail: str) -> None:
+    _skip(action, "membership_permission_denied", f"账号无法加入/访问目标：{detail}")
+    action.result = {**(action.result or {}), "membership_status": "permission_denied", "validation_stage": "target_membership_runtime"}
 
 
 def _mark_membership_joined(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload) -> None:
