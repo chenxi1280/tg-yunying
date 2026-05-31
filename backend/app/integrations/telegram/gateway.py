@@ -644,6 +644,13 @@ class TelethonTelegramGateway(TelegramGateway):
                 failure_type=FailureType.COMMENT_UNAVAILABLE.value,
                 detail="频道帖子无法解析到评论区，请确认消息ID属于频道帖子、频道已绑定讨论组，且执行账号可进入讨论组并评论",
             )
+        reaction_unavailable_markers = (
+            "SendReactionRequest",
+            "can't do that operation on such message",
+            "specified message ID is invalid",
+        )
+        if any(marker.lower() in detail.lower() for marker in reaction_unavailable_markers):
+            return SendResult(False, failure_type=FailureType.REACTION_UNAVAILABLE.value, detail="频道消息不可点赞或消息ID无效")
         membership_required_markers = (
             "UserNotParticipant",
             "not a participant",

@@ -34,6 +34,7 @@ _COMMENT_THREAD_UNAVAILABLE_FAILURES = {FailureType.COMMENT_UNAVAILABLE.value}
 _COMMENT_THREAD_SKIP_CODES = {
     FailureType.COMMENT_UNAVAILABLE.value: "comment_unavailable_sibling",
 }
+_REACTION_UNAVAILABLE_SKIP_CODE = "reaction_unavailable_sibling"
 _COMMENT_MEMBERSHIP_RETRY_DELAY = timedelta(minutes=5)
 _COMMENT_MEMBERSHIP_REQUIRED_MARKERS = (
     "not participant",
@@ -745,6 +746,8 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
                 _mark_channel_comment_account_cannot_send(action, account, detail or failure_type)
         if failure_type in _COMMENT_THREAD_UNAVAILABLE_FAILURES:
             _close_unavailable_comment_thread(action, failure_type, detail or failure_type)
+        if failure_type == FailureType.REACTION_UNAVAILABLE.value:
+            _close_unavailable_reaction(action, detail or failure_type)
         if action.status == "failed":
             _apply_default_failure_policy(action, failure_type or FailureType.UNKNOWN.value)
     action.executed_at = None if action.status == "pending" else _now()
@@ -913,6 +916,45 @@ def _comment_thread_skip_reason(failure_type: str, detail: str) -> str:
 def _skip_comment_unavailable_message(action: Action, detail: str) -> None:
     _skip(action, "comment_unavailable_message", f"该消息无法评论：{detail}")
     action.result = {**(action.result or {}), "validation_stage": "channel_comment_runtime"}
+
+
+def _close_unavailable_reaction(action: Action, detail: str) -> None:
+    from sqlalchemy.orm import object_session
+
+    if action.action_type != "like_message":
+        return
+    session = object_session(action)
+    if not session:
+        return
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    channel_target_id = int(payload.get("channel_target_id") or 0)
+    channel_message_id = int(payload.get("channel_message_id") or 0)
+    if not channel_target_id or not channel_message_id:
+        return
+    _skip_like_unavailable_message(action, detail)
+    siblings = _unavailable_reaction_siblings(session, action, channel_target_id, channel_message_id)
+    for sibling in siblings:
+        _skip(sibling, _REACTION_UNAVAILABLE_SKIP_CODE, f"频道消息不可点赞，已跳过同帖待执行点赞：{detail}")
+        sibling.result = {**(sibling.result or {}), "validation_stage": "channel_like_runtime"}
+
+
+def _unavailable_reaction_siblings(session: Session, action: Action, channel_target_id: int, channel_message_id: int):
+    return session.scalars(
+        select(Action).where(
+            Action.tenant_id == action.tenant_id,
+            Action.task_id == action.task_id,
+            Action.id != action.id,
+            Action.action_type == "like_message",
+            Action.status.in_(["pending", "claiming", "retryable_failed"]),
+            Action.payload["channel_target_id"].as_integer() == channel_target_id,
+            Action.payload["channel_message_id"].as_integer() == channel_message_id,
+        )
+    )
+
+
+def _skip_like_unavailable_message(action: Action, detail: str) -> None:
+    _skip(action, "reaction_unavailable_message", f"该消息无法点赞：{detail}")
+    action.result = {**(action.result or {}), "validation_stage": "channel_like_runtime"}
 
 
 def _fail(action: Action, failure_type: str, detail: str, *, auto_check: str = "失败", validation_stage: str = "") -> None:
