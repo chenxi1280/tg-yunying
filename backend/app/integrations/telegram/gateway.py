@@ -644,6 +644,14 @@ class TelethonTelegramGateway(TelegramGateway):
                 failure_type=FailureType.COMMENT_UNAVAILABLE.value,
                 detail="频道帖子无法解析到评论区，请确认消息ID属于频道帖子、频道已绑定讨论组，且执行账号可进入讨论组并评论",
             )
+        membership_required_markers = (
+            "UserNotParticipant",
+            "not a participant",
+            "not participant",
+            "not a member",
+        )
+        if any(marker.lower() in detail.lower() for marker in membership_required_markers):
+            return SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="账号未关注/未加入目标频道或无法进入关联讨论区")
         custom_emoji_markers = ("CUSTOM_EMOJI", "MessageEntityCustomEmoji", "custom emoji", "document id")
         if any(marker.lower() in detail.lower() for marker in custom_emoji_markers):
             return SendResult(False, failure_type="custom_emoji_unavailable", detail="custom emoji 当前账号或目标不可用")

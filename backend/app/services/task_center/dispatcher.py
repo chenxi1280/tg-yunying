@@ -22,7 +22,7 @@ from app.services.verification import create_verification_task
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
-from .payloads import EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, payload_error_message, validate_action_payload
+from .payloads import EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from . import runtime_resources as _runtime_resources
@@ -34,6 +34,16 @@ _COMMENT_THREAD_UNAVAILABLE_FAILURES = {FailureType.COMMENT_UNAVAILABLE.value}
 _COMMENT_THREAD_SKIP_CODES = {
     FailureType.COMMENT_UNAVAILABLE.value: "comment_unavailable_sibling",
 }
+_COMMENT_MEMBERSHIP_RETRY_DELAY = timedelta(minutes=5)
+_COMMENT_MEMBERSHIP_REQUIRED_MARKERS = (
+    "not participant",
+    "not a participant",
+    "usernotparticipant",
+    "未关注",
+    "未加入",
+    "不在目标",
+    "无法进入关联讨论区",
+)
 
 
 def _reserve_runtime_resources(action: Action) -> bool:
@@ -431,6 +441,8 @@ def _dispatch_existing_membership(
     payload: EnsureChannelMembershipPayload,
     link: TgGroupAccount,
 ) -> bool:
+    if payload.target_type == "channel" and payload.require_send:
+        return False
     if not _requires_group_send_probe(payload):
         _skip_membership_already_joined(action)
         return True
@@ -628,6 +640,8 @@ def _ensure_channel_action_membership(session: Session, action: Action, account:
         )
         return False
     channel = session.get(OperationTarget, int(channel_target_id))
+    if action.action_type == "post_comment":
+        return _ensure_post_comment_membership(session, action, account, channel)
     if channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel" and account_satisfies_authorized_target(channel, account):
         return True
     group = (
@@ -658,6 +672,58 @@ def _ensure_channel_action_membership(session: Session, action: Action, account:
     return False
 
 
+def _ensure_post_comment_membership(session: Session, action: Action, account: TgAccount, channel: OperationTarget | None) -> bool:
+    if not channel or channel.tenant_id != action.tenant_id or channel.target_type != "channel":
+        _fail_with_policy(action, FailureType.PEER_INVALID.value, "频道评论目标不存在", auto_check="拦截", validation_stage="account_channel_membership")
+        return False
+    group = linked_channel_group(session, channel, create=False)
+    link = _channel_account_link(session, action.tenant_id, group.id, account.id) if group else None
+    if link and link.can_send:
+        return True
+    if link and link.can_send is False:
+        _skip_comment_account_permission_denied(action, "该账号对频道评论区不可发言")
+        return False
+    _defer_comment_for_membership(session, action, account, channel, "账号未关注 / 加入目标频道，等待准入后继续评论")
+    return False
+
+
+def _defer_comment_for_membership(session: Session, action: Action, account: TgAccount, channel: OperationTarget, detail: str) -> None:
+    task = session.get(Task, action.task_id)
+    if task and not _open_comment_membership_action(session, action, account.id, channel.id):
+        create_membership_action(session, task, account.id, _now(), _comment_membership_payload(channel))
+    action.status = "pending"
+    action.scheduled_at = _now() + _COMMENT_MEMBERSHIP_RETRY_DELAY
+    action.executed_at = None
+    _clear_action_lease(action)
+    action.result = {"success": False, "error_code": "comment_membership_required", "error_message": detail, "auto_check": "等待准入", "validation_stage": "account_channel_membership"}
+    _release_runtime_resources(action)
+
+
+def _open_comment_membership_action(session: Session, action: Action, account_id: int, channel_target_id: int) -> Action | None:
+    return session.scalar(
+        select(Action).where(
+            Action.tenant_id == action.tenant_id,
+            Action.task_id == action.task_id,
+            Action.action_type.in_(["ensure_channel_membership", "ensure_target_membership"]),
+            Action.account_id == account_id,
+            Action.status.in_(["pending", "claiming", "executing", "retryable_failed"]),
+            Action.payload["channel_target_id"].as_integer() == channel_target_id,
+        )
+    )
+
+
+def _comment_membership_payload(channel: OperationTarget) -> EnsureChannelMembershipPayload:
+    return EnsureChannelMembershipPayload(
+        channel_id=channel.tg_peer_id,
+        channel_target_id=channel.id,
+        target_type=channel.target_type,
+        target_display=channel.title,
+        target_username=channel.username or "",
+        invite_link=channel.username or channel.tg_peer_id,
+        require_send=True,
+    )
+
+
 def _apply_operation_result(action: Action, account: TgAccount, ok: bool, failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None) -> None:
     _apply_send_result(action, account, ok, "", failure_type, detail, attempt=attempt)
 
@@ -674,14 +740,37 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
             account.status = AccountStatus.LIMITED.value
             account.health_score = min(account.health_score, 55)
         if failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
-            _mark_group_account_cannot_send(action, account, detail or failure_type)
-            _mark_channel_comment_account_cannot_send(action, account, detail or failure_type)
+            if not _defer_comment_membership_from_gateway_failure(action, account, detail or failure_type):
+                _mark_group_account_cannot_send(action, account, detail or failure_type)
+                _mark_channel_comment_account_cannot_send(action, account, detail or failure_type)
         if failure_type in _COMMENT_THREAD_UNAVAILABLE_FAILURES:
             _close_unavailable_comment_thread(action, failure_type, detail or failure_type)
-        _apply_default_failure_policy(action, failure_type or FailureType.UNKNOWN.value)
+        if action.status == "failed":
+            _apply_default_failure_policy(action, failure_type or FailureType.UNKNOWN.value)
     action.executed_at = None if action.status == "pending" else _now()
     _finish_execution_attempt(attempt, action, remote_id=remote_id, failure_type=failure_type or "", detail=detail or "")
     _release_runtime_resources(action)
+
+
+def _defer_comment_membership_from_gateway_failure(action: Action, account: TgAccount, detail: str) -> bool:
+    from sqlalchemy.orm import object_session
+
+    if action.action_type != "post_comment" or not _comment_failure_requires_membership(detail):
+        return False
+    session = object_session(action)
+    if not session:
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    channel = session.get(OperationTarget, int(payload.get("channel_target_id") or 0))
+    if not channel or channel.tenant_id != action.tenant_id or channel.target_type != "channel":
+        return False
+    _defer_comment_for_membership(session, action, account, channel, "账号未关注 / 加入目标频道，等待准入后继续评论")
+    return True
+
+
+def _comment_failure_requires_membership(detail: str) -> bool:
+    lowered = str(detail or "").lower()
+    return any(marker in lowered for marker in _COMMENT_MEMBERSHIP_REQUIRED_MARKERS)
 
 
 def _mark_group_account_cannot_send(action: Action, account: TgAccount, detail: str) -> None:
@@ -727,6 +816,7 @@ def _mark_channel_comment_account_cannot_send(action: Action, account: TgAccount
         session.add(link)
     link.can_send = False
     link.permission_label = (detail or "频道评论区不可发言")[:80]
+    _skip_comment_account_permission_denied(action, detail or "频道评论区不可发言")
     _skip_channel_comment_account_siblings(session, action, channel_target_id, account.id, detail)
 
 
@@ -758,6 +848,11 @@ def _skip_channel_comment_account_siblings(session: Session, action: Action, cha
         sibling.result = {**(sibling.result or {}), "validation_stage": "channel_comment_runtime"}
 
 
+def _skip_comment_account_permission_denied(action: Action, detail: str) -> None:
+    _skip(action, "comment_account_permission_denied", f"该账号对频道评论区不可发言：{detail}")
+    action.result = {**(action.result or {}), "validation_stage": "channel_comment_runtime"}
+
+
 def _close_unavailable_comment_thread(action: Action, failure_type: str, detail: str) -> None:
     from sqlalchemy.orm import object_session
 
@@ -773,6 +868,7 @@ def _close_unavailable_comment_thread(action: Action, failure_type: str, detail:
     message = session.get(ChannelMessage, channel_message_id)
     if message and message.tenant_id == action.tenant_id and message.channel_target_id == channel_target_id:
         message.comment_available = False
+    _skip_comment_unavailable_message(action, detail)
     _skip_unavailable_comment_siblings(session, action, channel_target_id, channel_message_id, failure_type, detail)
 
 
@@ -812,6 +908,11 @@ def _comment_thread_skip_reason(failure_type: str, detail: str) -> str:
     if failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
         return f"评论目标权限不可用，已跳过同帖待执行评论：{detail}"
     return f"评论区不可用，已跳过同帖待执行评论：{detail}"
+
+
+def _skip_comment_unavailable_message(action: Action, detail: str) -> None:
+    _skip(action, "comment_unavailable_message", f"该消息无法评论：{detail}")
+    action.result = {**(action.result or {}), "validation_stage": "channel_comment_runtime"}
 
 
 def _fail(action: Action, failure_type: str, detail: str, *, auto_check: str = "失败", validation_stage: str = "") -> None:
