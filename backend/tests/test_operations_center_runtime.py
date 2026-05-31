@@ -39,6 +39,7 @@ from app.services.task_center.fingerprints import content_fingerprint
 from app.services.task_center.policies import validate_group_send_policy
 from app.services.task_center.service import _action_payload, _channel_subtask_status, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
+from app.services.task_center.payloads import ViewMessagePayload, create_view_action
 from app.services.runtime_summary import get_operation_issue_detail, refresh_task_summary, upsert_operation_issue
 from app.timezone import BEIJING_TZ, beijing_day_bounds
 
@@ -53,6 +54,30 @@ def test_listener_runtime_deduplicates_same_object_within_window():
 
     reset_listener_runtime_cache()
     assert should_collect_listener("group", 1001, window_seconds=30) is True
+
+
+def test_create_view_action_returns_existing_dedupe_action():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        scheduled_at = datetime(2026, 5, 31, 20, 0)
+        task = Task(id="task-view-dedupe", tenant_id=1, name="频道浏览", type="channel_view", status="running")
+        payload = ViewMessagePayload(
+            channel_id="jdkejshe",
+            channel_target_id=6,
+            channel_message_id=66,
+            message_id=66,
+            execution_date="2026-05-31",
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+        first = create_view_action(session, task, 110, scheduled_at, payload)
+        second = create_view_action(session, task, 110, scheduled_at, payload)
+
+        assert second.id == first.id
+        assert session.query(Action).filter_by(task_id=task.id, action_type="view_message").count() == 1
 
 
 def test_legacy_campaign_routes_are_opt_in_outside_test(monkeypatch):
