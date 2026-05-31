@@ -827,7 +827,7 @@ def _channel_comment_action(action_id: str, comment_text: str, scheduled_at: dat
     )
 
 
-def test_post_comment_permission_denied_closes_thread_and_skips_siblings(monkeypatch):
+def test_post_comment_permission_denied_blocks_account_and_skips_account_siblings(monkeypatch):
     from app.services.task_center import dispatcher
 
     engine = create_engine("sqlite:///:memory:", future=True)
@@ -859,10 +859,12 @@ def test_post_comment_permission_denied_closes_thread_and_skips_siblings(monkeyp
 
         sibling = session.get(Action, "action-comment-sibling")
         message = session.get(ChannelMessage, 41)
+        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.account_id == 11))
         assert action.status == "failed"
         assert sibling.status == "skipped"
-        assert sibling.result["error_code"] == "comment_permission_denied_sibling"
-        assert message.comment_available is False
+        assert sibling.result["error_code"] == "comment_account_permission_denied"
+        assert link.can_send is False
+        assert message.comment_available is True
 
 
 def test_message_send_reassigns_group_and_defers_private_when_account_limit_reached(monkeypatch):
