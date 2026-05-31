@@ -98,6 +98,7 @@ def build_plan(session: Session, task: Task) -> int:
             limit=account_scan_limit,
             enforce_max_concurrent=False,
         ),
+        require_send=True,
     )
     if not accounts:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"

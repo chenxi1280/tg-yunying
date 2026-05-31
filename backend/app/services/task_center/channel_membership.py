@@ -82,23 +82,32 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
     return MembershipGateResult(True)
 
 
-def channel_member_accounts(session: Session, task: Task, channel: OperationTarget, accounts: list[TgAccount]) -> list[TgAccount]:
-    if not _target_requires_membership_for_candidates(channel, accounts):
+def channel_member_accounts(session: Session, task: Task, channel: OperationTarget, accounts: list[TgAccount], *, require_send: bool = False) -> list[TgAccount]:
+    if not require_send and not _target_requires_membership_for_candidates(channel, accounts):
         return accounts
     group = linked_channel_group(session, channel, create=False)
-    directly_ready_ids = {account.id for account in accounts if account_satisfies_authorized_target(channel, account)}
+    directly_ready_ids = {account.id for account in accounts if account_satisfies_authorized_target(channel, account, require_send=require_send)}
     if not group:
         return [account for account in accounts if account.id in directly_ready_ids]
-    member_ids = {
-        int(account_id)
-        for account_id in session.scalars(
-            select(TgGroupAccount.account_id).where(
-                TgGroupAccount.tenant_id == task.tenant_id,
-                TgGroupAccount.group_id == group.id,
-            )
+    member_ids, blocked_send_ids = _channel_member_id_sets(session, task.tenant_id, group.id, require_send=require_send)
+    return [account for account in accounts if account.id not in blocked_send_ids and (account.id in member_ids or account.id in directly_ready_ids)]
+
+
+def _channel_member_id_sets(session: Session, tenant_id: int, group_id: int, *, require_send: bool) -> tuple[set[int], set[int]]:
+    links = session.scalars(
+        select(TgGroupAccount).where(
+            TgGroupAccount.tenant_id == tenant_id,
+            TgGroupAccount.group_id == group_id,
         )
-    }
-    return [account for account in accounts if account.id in member_ids or account.id in directly_ready_ids]
+    )
+    member_ids: set[int] = set()
+    blocked_send_ids: set[int] = set()
+    for link in links:
+        if require_send and link.can_send is False:
+            blocked_send_ids.add(int(link.account_id))
+            continue
+        member_ids.add(int(link.account_id))
+    return member_ids, blocked_send_ids
 
 
 def mark_channel_membership_joined(session: Session, tenant_id: int, channel_target_id: int, account_id: int, *, permission_label: str = "已关注") -> None:
