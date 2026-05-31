@@ -111,8 +111,6 @@ def _channel_member_id_sets(session: Session, tenant_id: int, group_id: int, *, 
 
 
 def _directly_ready_channel_account_ids(channel: OperationTarget, accounts: list[TgAccount], *, require_send: bool) -> set[int]:
-    if require_send and channel.target_type == "channel":
-        return set()
     return {account.id for account in accounts if account_satisfies_authorized_target(channel, account, require_send=require_send)}
 
 
