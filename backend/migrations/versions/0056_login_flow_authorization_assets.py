@@ -1,6 +1,6 @@
 """add authorization asset fields to login flows
 
-Revision ID: 0056_login_flow_authorization_assets
+Revision ID: 0056_login_flow_auth_assets
 Revises: 0055_account_authorizations
 Create Date: 2026-06-01
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0056_login_flow_authorization_assets"
+revision = "0056_login_flow_auth_assets"
 down_revision = "0055_account_authorizations"
 branch_labels = None
 depends_on = None
