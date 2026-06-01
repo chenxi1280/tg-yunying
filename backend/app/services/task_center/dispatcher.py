@@ -817,6 +817,7 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
         action.result = {**(action.result or {}), "success": True, "telegram_msg_id": remote_id, "auto_check": "通过", "validation_stage": "sent"}
         _clear_action_lease(action)
         account.last_active_at = _now()
+        _release_runtime_resources(action)
     else:
         _fail(action, failure_type or FailureType.UNKNOWN.value, detail or "执行失败", auto_check="失败", validation_stage="telegram_api")
         if failure_type == FailureType.ACCOUNT_LIMITED.value:

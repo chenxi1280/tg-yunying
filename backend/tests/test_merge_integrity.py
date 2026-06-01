@@ -31,7 +31,7 @@ def test_alembic_versions_have_single_head():
             referenced.update(item for item in down_revision if item)
 
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0054_comment_availability"]
+    assert heads == ["0056_login_flow_auth_assets"]
 
 
 def test_backend_test_names_are_unique_per_file():

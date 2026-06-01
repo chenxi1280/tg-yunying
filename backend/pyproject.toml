@@ -13,6 +13,7 @@ dependencies = [
   "python-multipart>=0.0.9",
   "alembic>=1.13.0",
   "telethon>=1.36.0",
+  "PySocks>=1.7.1",
   "redis>=5.0.0",
   "cryptography>=42.0.0",
 ]
