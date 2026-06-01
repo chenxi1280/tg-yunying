@@ -465,9 +465,15 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
             return True
         _mark_membership_joined(session, action, account, payload)
     elif result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
-        _record_group_send_permission_denied(session, action, account, payload, result.detail or result.failure_type)
-        _skip_membership_permission_denied(action, result.detail or result.failure_type)
-        _finish_execution_attempt(attempt, action, failure_type=result.failure_type, detail=result.detail or result.failure_type)
+        recovered = _recover_group_send_permission_with_linked_channel(action, account, credentials, payload, result)
+        if recovered.ok:
+            _record_group_send_permission_allowed(session, action, account, payload)
+            _apply_operation_result(action, account, True, "", recovered.detail or "linked_channel_joined", attempt=attempt)
+            action.result = {**(action.result or {}), "membership_status": "joined", "prerequisite_channel_followed": True}
+            return True
+        _record_group_send_permission_denied(session, action, account, payload, recovered.detail or recovered.failure_type)
+        _skip_membership_permission_denied(action, recovered.detail or recovered.failure_type)
+        _finish_execution_attempt(attempt, action, failure_type=recovered.failure_type, detail=recovered.detail or recovered.failure_type)
         _release_runtime_resources(action)
         return True
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail or result.membership_status, attempt=attempt)
