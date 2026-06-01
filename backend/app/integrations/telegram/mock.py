@@ -199,6 +199,15 @@ class TelegramGateway:
     ) -> OperationResult:
         return OperationResult(True, detail=f"{target_type}:{target_peer_id}:可访问")
 
+    def ensure_linked_channel_membership(
+        self,
+        account_id: int,
+        group_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        return OperationResult(True, "已处理", detail=f"linked-channel:{group_peer_id}:{account_id}")
+
     def poll_verification_codes(
         self,
         account_id: int,
