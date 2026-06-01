@@ -92,7 +92,7 @@ def dispatch_action(session: Session, action: Action) -> bool:
     if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
         return True
-    account = _account_after_global_policy(session, action, account, allow_reassign=action.status != "executing")
+    account = _account_after_global_policy(session, action, account, allow_reassign=action.status != "executing" and not _is_membership_action(action))
     if account is None:
         return True
     try:
@@ -299,7 +299,7 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
     )
     if decision.available:
         return True
-    replacement = _replacement_account_for_action(session, action, account)
+    replacement = _replacement_account_for_action(session, action, account) if not _is_membership_action(action) else None
     if replacement:
         action.result = {
             **(action.result or {}),
@@ -319,6 +319,10 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
         decision.reason or "账号全局限额或冷却中，已延后执行",
     )
     return False
+
+
+def _is_membership_action(action: Action) -> bool:
+    return action.action_type in {"ensure_channel_membership", "ensure_target_membership"}
 
 
 def _replacement_for_lost_group_send_permission(session: Session, action: Action, account: TgAccount) -> TgAccount | None:
