@@ -80,6 +80,14 @@ def _can_send_text_in_group(target: Any, permissions: Any) -> bool:
     return not _text_sending_banned(getattr(target, "default_banned_rights", None))
 
 
+def _linked_chat_from_full_channel(full: Any, linked_id: int) -> Any | None:
+    for chat in getattr(full, "chats", []) or []:
+        chat_id = getattr(chat, "id", None)
+        if chat_id is not None and abs(int(chat_id)) == abs(int(linked_id)):
+            return chat
+    return None
+
+
 async def _is_group_verification_message(message: Any, bot_name: str) -> bool:
     if not getattr(message, "buttons", None):
         return False
@@ -814,6 +822,49 @@ class TelethonTelegramGateway(TelegramGateway):
         invite_link: str = "",
     ) -> ChannelMembershipResult:
         return self._run(self._ensure_channel_membership_async(session_ciphertext, channel_peer_id, self._usable_credentials(credentials), invite_link))
+
+    async def _ensure_linked_channel_membership_async(
+        self,
+        session_ciphertext: str | None,
+        group_peer_id: str,
+        credentials: DeveloperAppCredentials,
+    ) -> OperationResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
+        try:
+            from telethon import functions, types
+            from telethon.errors import UserAlreadyParticipantError
+
+            group = await resolve_telethon_target(client, group_peer_id, group_id=0)
+            full = await client(functions.channels.GetFullChannelRequest(group))
+            linked_id = getattr(getattr(full, "full_chat", None), "linked_chat_id", None)
+            if not linked_id:
+                return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "未解析到群关联频道")
+            linked = _linked_chat_from_full_channel(full, linked_id)
+            if linked is None:
+                linked = await client.get_entity(types.PeerChannel(int(linked_id)))
+            try:
+                await client(functions.channels.JoinChannelRequest(linked))
+            except UserAlreadyParticipantError:
+                pass
+            title = getattr(linked, "title", "") or str(linked_id)
+            return OperationResult(True, "已处理", detail=f"已关注关联频道：{title}")
+        except Exception as exc:
+            mapped = self._map_send_error(exc)
+            return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+
+    def ensure_linked_channel_membership(
+        self,
+        account_id: int,
+        group_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        return self._run(self._ensure_linked_channel_membership_async(session_ciphertext, group_peer_id, self._usable_credentials(credentials)))
 
     async def _send_channel_reaction_async(
         self,
