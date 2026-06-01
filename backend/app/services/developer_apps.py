@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.integrations.telegram import DeveloperAppCredentials
 from app.models import (
+    AccountProxy,
     AccountStatus,
     DeveloperAppHealthStatus,
     TelegramDeveloperApp,
@@ -188,7 +189,7 @@ def assign_developer_app_round_robin(session: Session, account: TgAccount) -> Te
     return app
 
 
-def credentials_for_developer_app(app: TelegramDeveloperApp) -> DeveloperAppCredentials:
+def credentials_for_developer_app(app: TelegramDeveloperApp, proxy: AccountProxy | None = None) -> DeveloperAppCredentials:
     if not app.is_active:
         raise ValueError("开发者应用未启用")
     if app.health_status != DeveloperAppHealthStatus.HEALTHY.value:
@@ -202,6 +203,7 @@ def credentials_for_developer_app(app: TelegramDeveloperApp) -> DeveloperAppCred
         api_hash=api_hash,
         credentials_version=app.credentials_version,
         app_name=app.app_name,
+        **_proxy_credentials(proxy),
     )
 
 
@@ -214,7 +216,20 @@ def credentials_for_account(session: Session, account: TgAccount, *, assign_if_m
     if app.credentials_version > account.developer_app_version:
         account.status = AccountStatus.NEED_RELOGIN.value
         raise ValueError("开发者应用凭证已轮换，账号需要重新登录")
-    return credentials_for_developer_app(app)
+    return credentials_for_developer_app(app, account.proxy)
+
+
+def _proxy_credentials(proxy: AccountProxy | None) -> dict:
+    if proxy is None:
+        return {}
+    return {
+        "proxy_id": proxy.id,
+        "proxy_protocol": proxy.protocol,
+        "proxy_host": proxy.host,
+        "proxy_port": proxy.port,
+        "proxy_username": proxy.username,
+        "proxy_password": decrypt_secret(proxy.password_ciphertext) if proxy.password_ciphertext else "",
+    }
 
 
 __all__ = [

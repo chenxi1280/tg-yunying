@@ -12,6 +12,12 @@ from .config import Settings, get_settings
 class DeveloperAppCredentialsLike(Protocol):
     api_id: int
     api_hash: str
+    proxy_id: int | None
+    proxy_protocol: str
+    proxy_host: str
+    proxy_port: int | None
+    proxy_username: str
+    proxy_password: str
 
 
 @dataclass
@@ -26,7 +32,7 @@ class TelethonClientLifecycle:
 
     _loop: asyncio.AbstractEventLoop | None = None
     _loop_thread: threading.Thread | None = None
-    _cache: dict[tuple[int, str], _ClientCacheEntry] = {}
+    _cache: dict[tuple[int, str, str], _ClientCacheEntry] = {}
     _lock: threading.Lock = threading.Lock()
 
     def __init__(self, settings: Settings | None = None) -> None:
@@ -57,12 +63,17 @@ class TelethonClientLifecycle:
             raise RuntimeError("Telethon package is not installed") from exc
         from telethon.sessions import StringSession
 
-        return TelegramClient(StringSession(raw_session or ""), int(credentials.api_id), credentials.api_hash)
+        return TelegramClient(
+            StringSession(raw_session or ""),
+            int(credentials.api_id),
+            credentials.api_hash,
+            proxy=self._proxy_config(credentials),
+        )
 
     async def get_or_create_client(self, credentials: DeveloperAppCredentialsLike, raw_session: str) -> Any:
         await self.prune_idle_clients()
         api_id = int(credentials.api_id)
-        cache_key = (api_id, raw_session)
+        cache_key = self._cache_key(credentials, raw_session)
         now = time.monotonic()
 
         with self._lock:
@@ -92,13 +103,13 @@ class TelethonClientLifecycle:
         return client
 
     async def remember_connected_client(self, credentials: DeveloperAppCredentialsLike, raw_session: str, client: Any) -> None:
-        cache_key = (int(credentials.api_id), raw_session)
+        cache_key = self._cache_key(credentials, raw_session)
         now = time.monotonic()
         with self._lock:
             self._cache[cache_key] = _ClientCacheEntry(client=client, created_at=now, last_used_at=now)
 
     async def invalidate_client(self, credentials: DeveloperAppCredentialsLike, raw_session: str) -> None:
-        cache_key = (int(credentials.api_id), raw_session)
+        cache_key = self._cache_key(credentials, raw_session)
         with self._lock:
             entry = self._cache.pop(cache_key, None)
         if entry is not None:
@@ -128,6 +139,43 @@ class TelethonClientLifecycle:
                 evicted.append(self._cache.pop(oldest_key))
         await self._disconnect_entries(evicted)
         return len(evicted)
+
+    def _cache_key(self, credentials: DeveloperAppCredentialsLike, raw_session: str) -> tuple[int, str, str]:
+        return (int(credentials.api_id), raw_session, self._proxy_fingerprint(credentials))
+
+    @staticmethod
+    def _proxy_fingerprint(credentials: DeveloperAppCredentialsLike) -> str:
+        proxy_id = getattr(credentials, "proxy_id", None)
+        protocol = getattr(credentials, "proxy_protocol", "") or ""
+        host = getattr(credentials, "proxy_host", "") or ""
+        port = getattr(credentials, "proxy_port", None) or ""
+        username = getattr(credentials, "proxy_username", "") or ""
+        return f"{proxy_id}:{protocol}:{host}:{port}:{username}"
+
+    @staticmethod
+    def _proxy_config(credentials: DeveloperAppCredentialsLike):
+        host = getattr(credentials, "proxy_host", "") or ""
+        port = getattr(credentials, "proxy_port", None)
+        if not host or not port:
+            return None
+        try:
+            import socks
+        except ImportError as exc:
+            raise RuntimeError("PySocks package is required for Telegram proxy support") from exc
+        protocol = (getattr(credentials, "proxy_protocol", "") or "socks5").lower()
+        username = getattr(credentials, "proxy_username", "") or None
+        password = getattr(credentials, "proxy_password", "") or None
+        return (TelethonClientLifecycle._proxy_type(socks, protocol), host, int(port), True, username, password)
+
+    @staticmethod
+    def _proxy_type(socks_module, protocol: str):
+        if protocol == "socks5":
+            return socks_module.SOCKS5
+        if protocol == "socks4":
+            return socks_module.SOCKS4
+        if protocol in {"http", "https"}:
+            return socks_module.HTTP
+        raise ValueError(f"不支持的代理协议：{protocol}")
 
     @classmethod
     async def shutdown_all(cls) -> int:

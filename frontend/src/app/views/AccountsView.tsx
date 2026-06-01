@@ -12,6 +12,7 @@ import { formatBeijingDateTime } from '../time';
 const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', '异常']);
 const ACCOUNT_RESTRICTED_STATUSES = new Set(['受限', '疑似封禁', '已封禁', 'Session失效']);
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
+const authorizationStatusLabel = (status: string) => status === 'active' ? '主授权可用' : status === 'missing' ? '主授权缺失' : status;
 function accountHealthScore(account: Account, availabilityByAccountId: Map<number, AccountAvailabilitySummary>) {
   return availabilityByAccountId.get(account.id)?.health_score ?? account.health_score;
 }
@@ -99,6 +100,9 @@ export default function AccountsView({
         account.status,
         account.profile_sync_status,
         account.developer_app_name,
+        account.authorization_summary.primary_status,
+        account.authorization_summary.risk_hint,
+        account.authorization_summary.has_standby ? '已有备用授权' : '未配置备用授权 无缝切换风险',
         canSecurityRead ? account.developer_app_health_status : '',
         account.proxy_name,
         canSecurityRead ? account.proxy_local_address : '',
@@ -205,6 +209,21 @@ export default function AccountsView({
           <Typography.Text strong>{account.developer_app_name ? '正常' : '未绑定'}</Typography.Text>
           <Typography.Text type="secondary">{account.developer_app_name ? '登录能力已分配' : '登录时自动准备'}</Typography.Text>
           {canSecurityRead && <StatusBadge status={account.developer_app_health_status ?? '未配置'} label={account.developer_app_health_status === '健康' ? '正常' : account.developer_app_health_status ?? '未配置'} />}
+          <Space size={4} wrap>
+            <StatusBadge
+              status={account.authorization_summary.primary_status === 'active' ? '可用' : '不可用'}
+              label={authorizationStatusLabel(account.authorization_summary.primary_status)}
+            />
+            <StatusBadge
+              status={account.authorization_summary.has_standby ? '可用' : '待处理'}
+              label={`备用 ${account.authorization_summary.standby_count}/${account.authorization_summary.target_standby_count}`}
+            />
+          </Space>
+          {account.authorization_summary.risk_hint && (
+            <Typography.Text type={account.authorization_summary.is_blocking ? 'danger' : 'warning'}>
+              {account.authorization_summary.risk_hint}
+            </Typography.Text>
+          )}
           <Typography.Text type="secondary">{account.proxy_name ? `代理：${account.proxy_name}` : '代理：未绑定'}</Typography.Text>
           {canSecurityRead ? (
             <>

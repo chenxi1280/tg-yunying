@@ -14,6 +14,7 @@ from app.integrations.telegram import OutboundSegment
 from app.config import get_settings
 from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now, gateway
+from app.services.account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery
 from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
 from app.services.developer_apps import credentials_for_account
@@ -44,6 +45,25 @@ _COMMENT_MEMBERSHIP_REQUIRED_MARKERS = (
     "未加入",
     "不在目标",
     "无法进入关联讨论区",
+)
+_ACCOUNT_SESSION_FAILURE_MARKERS = (
+    "session",
+    "auth key",
+    "auth_key",
+    "unauthorized",
+    "重新登录",
+    "账号没有可用 session",
+    "session 已失效",
+)
+_ACCOUNT_PROXY_FAILURE_MARKERS = (
+    "proxy",
+    "代理",
+    "connect",
+    "connection",
+    "timeout",
+    "timed out",
+    "unreachable",
+    "network",
 )
 
 
@@ -756,6 +776,10 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
         if failure_type == FailureType.ACCOUNT_LIMITED.value:
             account.status = AccountStatus.LIMITED.value
             account.health_score = min(account.health_score, 55)
+        if _is_account_proxy_failure(failure_type, detail):
+            _recover_account_proxy_after_failure(action, account, detail or failure_type)
+        elif _is_account_session_failure(failure_type, detail):
+            _recover_account_session_after_failure(action, account, detail or failure_type)
         if failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
             if not _defer_comment_membership_from_gateway_failure(action, account, detail or failure_type):
                 _mark_group_account_cannot_send(action, account, detail or failure_type)
@@ -768,6 +792,58 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
             _apply_default_failure_policy(action, failure_type or FailureType.UNKNOWN.value)
     action.executed_at = None if action.status == "pending" else _now()
     _finish_execution_attempt(attempt, action, remote_id=remote_id, failure_type=failure_type or "", detail=detail or "")
+
+
+def _is_account_session_failure(failure_type: str, detail: str) -> bool:
+    if failure_type != FailureType.ACCOUNT_UNAVAILABLE.value:
+        return False
+    text = f"{failure_type} {detail}".lower()
+    return any(marker.lower() in text for marker in _ACCOUNT_SESSION_FAILURE_MARKERS)
+
+
+def _is_account_proxy_failure(failure_type: str, detail: str) -> bool:
+    if failure_type != FailureType.ACCOUNT_UNAVAILABLE.value:
+        return False
+    text = f"{failure_type} {detail}".lower()
+    return any(marker.lower() in text for marker in _ACCOUNT_PROXY_FAILURE_MARKERS)
+
+
+def _recover_account_proxy_after_failure(action: Action, account: TgAccount, reason: str) -> None:
+    from sqlalchemy.orm import object_session
+
+    session = object_session(account) or object_session(action)
+    if session is None:
+        return
+    recovered = attempt_primary_proxy_recovery(session, account, actor="task-dispatcher", reason=reason)
+    if recovered is None:
+        return
+    action.result = {
+        **(action.result or {}),
+        "proxy_recovered": True,
+        "recovered_proxy_id": recovered.id,
+    }
+    action.status = "pending"
+    action.executed_at = None
+
+
+def _recover_account_session_after_failure(action: Action, account: TgAccount, reason: str) -> None:
+    from sqlalchemy.orm import object_session
+
+    session = object_session(account) or object_session(action)
+    if session is None:
+        return
+    recovered = attempt_standby_authorization_recovery(session, account, actor="task-dispatcher", reason=reason)
+    if recovered is None:
+        account.status = AccountStatus.NEED_RELOGIN.value
+        account.health_score = min(account.health_score, 45)
+        return
+    action.result = {
+        **(action.result or {}),
+        "account_recovered": True,
+        "recovered_authorization_id": recovered.id,
+    }
+    action.status = "pending"
+    action.executed_at = None
     _release_runtime_resources(action)
 
 

@@ -5,16 +5,31 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser, get_current_user, require_core_feature_access, resolve_tenant_id
+from app.auth import CurrentUser, ensure_permission, get_current_user, require_core_feature_access, resolve_tenant_id
 from app.database import get_session
 from app.common.http import not_found
 from app.api.pagination import pagination_headers
-from app.api.response_permissions import account_availability_out_for_user, account_detail_out_for_user, account_out_for_user
+from app.api.response_permissions import (
+    account_availability_out_for_user,
+    account_detail_out_for_user,
+    account_out_for_user,
+    accounts_out_for_user,
+)
+from app.services.account_authorizations import (
+    check_standby_authorization_qr_login,
+    list_account_authorizations,
+    start_standby_authorization_login,
+    switch_primary_authorization,
+    verify_standby_authorization_login,
+)
 from app.models import (
     AccountCloneItem, AccountClonePlan, AccountPool, TgAccount, VerificationTask,
 )
 from app.repositories.tenant import require_resource_tenant
 from app.schemas import (
+    AccountAuthorizationLoginStartRequest, AccountAuthorizationLoginVerifyRequest,
+    AccountAuthorizationQrCheckRequest,
+    AccountAuthorizationOut, AccountAuthorizationSwitchRequest,
     AccountCloneItemOut, AccountClonePlanCreate, AccountClonePlanOut,
     AccountDetailOut, AccountGroupOut, AccountOut, AccountSyncRecordOut,
     AvatarUploadOut, ContactOut, DirectMessageTaskCreate, GroupOut,
@@ -74,7 +89,7 @@ def list_accounts(
         total_count = count_accounts(session, filters)
         accounts = filter_accounts_page(session, filters)
         response.headers.update(pagination_headers(total_count=total_count, page=page, page_size=page_size))
-        return [account_out_for_user(account, current_user) for account in accounts]
+        return accounts_out_for_user(accounts, current_user)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -222,6 +237,111 @@ def get_login_flows(
         return list_login_flows(session, account_id)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
+
+
+# ── Authorization assets ──
+
+@router.get("/api/tg-accounts/{account_id}/authorizations", response_model=list[AccountAuthorizationOut])
+def get_account_authorizations(
+    account_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return list_account_authorizations(session, account_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/authorizations/login/start", response_model=LoginFlowOut)
+def post_authorization_login_start(
+    account_id: int,
+    payload: AccountAuthorizationLoginStartRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    ensure_permission(current_user, "accounts.authorizations.manage")
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return start_standby_authorization_login(
+            session,
+            account_id,
+            method=payload.method,
+            role=payload.role,
+            developer_app_id=payload.developer_app_id,
+            proxy_id=payload.proxy_id,
+            actor=current_user.name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/authorizations/login/verify", response_model=AccountAuthorizationOut)
+def post_authorization_login_verify(
+    account_id: int,
+    payload: AccountAuthorizationLoginVerifyRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    ensure_permission(current_user, "accounts.authorizations.manage")
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        asset = verify_standby_authorization_login(
+            session,
+            account_id,
+            payload.flow_id,
+            code=payload.code,
+            password_2fa=payload.password_2fa,
+            actor=current_user.name,
+        )
+        return _authorization_out(session, account_id, asset.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/authorizations/login/qr/check", response_model=AccountAuthorizationOut)
+def post_authorization_login_qr_check(
+    account_id: int,
+    payload: AccountAuthorizationQrCheckRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    ensure_permission(current_user, "accounts.authorizations.manage")
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        asset = check_standby_authorization_qr_login(session, account_id, payload.flow_id, actor=current_user.name)
+        return _authorization_out(session, account_id, asset.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/authorizations/{authorization_id}/switch-primary", response_model=AccountOut)
+def post_authorization_switch_primary(
+    account_id: int,
+    authorization_id: int,
+    payload: AccountAuthorizationSwitchRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    ensure_permission(current_user, "accounts.authorizations.manage")
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        account = switch_primary_authorization(session, account_id, authorization_id, actor=current_user.name, reason=payload.reason)
+        return account_out_for_user(account, current_user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _authorization_out(session: Session, account_id: int, authorization_id: int | None) -> dict:
+    for item in list_account_authorizations(session, account_id):
+        if item["id"] == authorization_id:
+            return item
+    raise HTTPException(status_code=404, detail="authorization not found")
 
 
 # ── Health / Sync ──

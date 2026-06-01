@@ -1,0 +1,11 @@
+PRIMARY_ROLE = "primary"
+STANDBY_ROLES = {"standby_1", "standby_2"}
+REPAIR_ROLE = "standby_repair"
+ACTIVE_STATUSES = {"active", "standby"}
+HEALTHY_PROXY_STATUSES = {"healthy", "健康"}
+HEALTHY_PROXY_ALERT_STATUSES = {"normal", "recovered", ""}
+NEEDS_REPAIR_STATUS = "needs_repair"
+LEGACY_PRIMARY_SOURCE = "legacy_account"
+EXPLICIT_PRIMARY_SOURCE = "authorization_asset"
+NO_STANDBY_HINT = "未配置备用授权，主 session 失效时需要扫码或验证码恢复"
+PROXY_FAILURE_MARKERS = ("proxy", "代理", "connect", "connection", "timeout", "timed out", "unreachable", "network")

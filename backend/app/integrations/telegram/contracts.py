@@ -203,3 +203,9 @@ class DeveloperAppCredentials:
     api_hash: str
     credentials_version: int
     app_name: str = ""
+    proxy_id: int | None = None
+    proxy_protocol: str = ""
+    proxy_host: str = ""
+    proxy_port: int | None = None
+    proxy_username: str = ""
+    proxy_password: str = ""
