@@ -1036,6 +1036,55 @@ def test_profile_init_replaces_system_generated_display_name_with_generated_chin
         assert updated.display_name != "导入0519-0000-001"
 
 
+def test_profile_init_replaces_remote_tg_name_when_platform_name_is_placeholder(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        account.display_name = "新托管账号"
+        account.tg_first_name = "旧TG名"
+        account.tg_last_name = "旧TG姓"
+        session.commit()
+        calls: list[dict[str, str]] = []
+
+        def capture_update_profile(*args, **kwargs):
+            calls.append(
+                {
+                    "first_name": kwargs["first_name"],
+                    "last_name": kwargs["last_name"],
+                    "bio": kwargs["bio"],
+                }
+            )
+            return SimpleNamespace(ok=True, detail="profile updated", failure_type="")
+
+        monkeypatch.setattr(account_security_service.gateway, "update_profile", capture_update_profile)
+        payload = AccountSecurityBatchCreate(
+            account_ids=[account.id],
+            action_types=["update_profile"],
+            confirm_text="确认加固",
+            profile_strategy=ProfileGenerationStrategy(generation_mode="template", overwrite_existing=False),
+            preview_overrides=[
+                AccountSecurityProfileOverride(
+                    account_id=account.id,
+                    generated_display_name="锅巴洋芋",
+                    generated_first_name="锅巴洋芋",
+                    generated_last_name="",
+                    generated_bio="看到有意思的会回两句",
+                )
+            ],
+            reason="测试资料初始化同时更新TG名称",
+        )
+        batch = create_account_security_batch(session, 1, payload, "tester")
+
+        drain_account_security_batches(lambda: Session(session.bind), limit=10)
+        item = session.scalar(select(TgAccountSecurityBatchItem).where(TgAccountSecurityBatchItem.batch_id == batch.id))
+        updated = session.get(TgAccount, account.id)
+
+        assert item.profile_status == "succeeded"
+        assert updated.display_name == "锅巴洋芋"
+        assert updated.tg_first_name == "锅巴洋芋"
+        assert updated.tg_last_name == ""
+        assert calls == [{"first_name": "锅巴洋芋", "last_name": "", "bio": "看到有意思的会回两句"}]
+
+
 def test_create_account_generates_import_time_phone_tail_sequence_name():
     with _session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))

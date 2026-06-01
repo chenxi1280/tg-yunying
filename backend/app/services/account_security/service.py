@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,6 +51,18 @@ PROFILE_AI_MAX_TIMEOUT_SECONDS = 180
 PROFILE_ACTIONS = {"update_profile", "update_username", "update_avatar"}
 SECURITY_ACTIONS = {"cleanup_devices", "set_two_fa"}
 ALL_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS
+
+
+@dataclass(frozen=True)
+class ProfileUpdateValues:
+    display_name: str
+    first_name: str
+    last_name: str
+    bio: str
+    replace_tg_name: bool
+    replace_bio: bool
+
+
 PROFILE_NAME_PREFIXES = [
     "锅巴",
     "蕉太",
@@ -732,23 +745,22 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
                 snapshot.two_fa_password_hint = "TG运营平台托管"
                 snapshot.two_fa_password_stored_at = _now()
         if "update_profile" in action_types and item.profile_status not in {"succeeded", "skipped"}:
-            display_name = item.generated_display_name if batch.overwrite_existing_profile or _can_replace_display_name(account.display_name) else account.display_name
-            first_name = item.generated_first_name if batch.overwrite_existing_profile or not account.tg_first_name else account.tg_first_name
-            last_name = item.generated_last_name if batch.overwrite_existing_profile or not account.tg_last_name else account.tg_last_name
-            bio = item.generated_bio if batch.overwrite_existing_profile or not account.tg_bio else account.tg_bio
+            profile_values = _profile_update_values(account, item, overwrite_existing=batch.overwrite_existing_profile)
             profile_result = gateway.update_profile(
                 account.session_ciphertext,
-                first_name=first_name or display_name or account.display_name,
-                last_name=last_name,
-                bio=bio,
+                first_name=profile_values.first_name or profile_values.display_name or account.display_name,
+                last_name=profile_values.last_name,
+                bio=profile_values.bio,
                 credentials=credentials,
             )
             item.profile_status = "succeeded" if profile_result.ok else "failed"
             if profile_result.ok:
-                account.display_name = display_name or account.display_name
-                account.tg_first_name = first_name or account.tg_first_name
-                account.tg_last_name = last_name or account.tg_last_name
-                account.tg_bio = bio or account.tg_bio
+                account.display_name = profile_values.display_name or account.display_name
+                if profile_values.replace_tg_name:
+                    account.tg_first_name = profile_values.first_name or profile_values.display_name
+                    account.tg_last_name = profile_values.last_name
+                if profile_values.replace_bio:
+                    account.tg_bio = profile_values.bio
                 account.profile_sync_status = "已同步"
                 account.profile_sync_error = ""
                 account.profile_synced_at = _now()
@@ -1129,12 +1141,18 @@ def _apply_preview_override(generated_item: dict[str, object], override) -> dict
     if not override:
         return generated_item
     item = dict(generated_item)
-    for key in ["generated_display_name", "generated_first_name", "generated_last_name", "generated_bio", "avatar_source"]:
-        value = getattr(override, key, "")
-        if value:
-            target = key.removeprefix("generated_")
-            item[target] = value
-    if override.username_candidates:
+    fields_set = getattr(override, "model_fields_set", set())
+    if "generated_display_name" in fields_set and override.generated_display_name:
+        item["display_name"] = override.generated_display_name
+    if "generated_first_name" in fields_set:
+        item["first_name"] = override.generated_first_name
+    if "generated_last_name" in fields_set:
+        item["last_name"] = override.generated_last_name
+    if "generated_bio" in fields_set:
+        item["bio"] = override.generated_bio
+    if "avatar_source" in fields_set and override.avatar_source:
+        item["avatar_source"] = override.avatar_source
+    if "username_candidates" in fields_set:
         item["username_candidates"] = [candidate.strip().lstrip("@") for candidate in override.username_candidates if candidate.strip()]
     return item
 
@@ -1296,6 +1314,21 @@ def _romanize_name(value: str) -> str:
 def _can_replace_display_name(display_name: str | None) -> bool:
     value = (display_name or "").strip()
     return value in GENERIC_DISPLAY_NAMES or bool(SYSTEM_DISPLAY_NAME_RE.match(value))
+
+
+def _profile_update_values(account: TgAccount, item: TgAccountSecurityBatchItem, *, overwrite_existing: bool) -> ProfileUpdateValues:
+    replace_display_name = overwrite_existing or _can_replace_display_name(account.display_name)
+    replace_tg_name = replace_display_name or not account.tg_first_name
+    replace_bio = overwrite_existing or not account.tg_bio
+    display_name = item.generated_display_name if replace_display_name else account.display_name
+    return ProfileUpdateValues(
+        display_name=display_name or "",
+        first_name=item.generated_first_name if replace_tg_name else account.tg_first_name,
+        last_name=item.generated_last_name if replace_tg_name else account.tg_last_name,
+        bio=item.generated_bio if replace_bio else account.tg_bio,
+        replace_tg_name=replace_tg_name,
+        replace_bio=replace_bio,
+    )
 
 
 def _avatar_source(session: Session, account: TgAccount, index: int, strategy) -> str:
