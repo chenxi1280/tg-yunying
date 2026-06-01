@@ -700,6 +700,51 @@ def test_target_membership_follows_linked_channel_before_blocking_group_send(mon
         assert session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7)) is None
 
 
+def test_target_membership_claim_does_not_reassign_account_on_cooldown(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-membership-cooldown", tenant_id=1, name="membership", type="group_ai_chat", status="running"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="原账号", phone_masked="+861***0011", status="在线", session_ciphertext="session-11"),
+                TgAccount(id=12, tenant_id=1, display_name="替换账号", phone_masked="+861***0012", status="在线", session_ciphertext="session-12"),
+            ]
+        )
+        session.add(
+            Action(
+                id="action-membership-cooldown",
+                tenant_id=1,
+                task_id="task-membership-cooldown",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"channel_id": "-10021", "channel_target_id": 21, "target_type": "group", "target_display": "目标群", "require_send": True},
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(
+            dispatcher,
+            "account_capacity_decision",
+            lambda *args, **kwargs: SimpleNamespace(available=False, defer_until=now_value + timedelta(minutes=3), reason="账号冷却中"),
+        )
+        monkeypatch.setattr(dispatcher, "_replacement_account_for_action", lambda *args, **kwargs: session.get(TgAccount, 12))
+
+        assert claim_actions(session, limit=1, worker_id="worker-test") == []
+
+        action = session.get(Action, "action-membership-cooldown")
+        assert action.account_id == 11
+        assert action.status == "pending"
+        assert action.result["validation_stage"] == "account_policy"
+        assert action.result.get("account_policy_action") != "reassigned"
+
+
 def test_claim_actions_db_unique_index_blocks_cross_worker_same_account_execution():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
