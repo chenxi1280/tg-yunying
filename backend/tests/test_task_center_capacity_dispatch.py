@@ -700,6 +700,55 @@ def test_target_membership_follows_linked_channel_before_blocking_group_send(mon
         assert session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7)) is None
 
 
+def test_target_membership_follows_linked_channel_when_join_entry_is_blocked(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-linked-entry", tenant_id=1, name="linked-entry", type="group_ai_chat", status="running"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-10021", title="目标群", auth_status="已授权运营", can_send=True))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-10021", title="目标群", auth_status="已授权运营", can_send=True, require_review=False))
+        session.add(
+            Action(
+                id="action-linked-entry",
+                tenant_id=1,
+                task_id="task-linked-entry",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"channel_id": "-10021", "channel_target_id": 21, "target_type": "group", "target_display": "目标群", "require_send": True},
+            )
+        )
+        session.commit()
+
+        followed: list[tuple[int, str]] = []
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *args, **kwargs: OperationResult(False, "失败", "群无权限", "缓存频道不可访问 / 账号无权限"))
+        monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", lambda *args, **kwargs: OperationResult(True, detail="group:-10021:可访问"))
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "ensure_linked_channel_membership",
+            lambda account_id, target_peer_id, *args, **kwargs: followed.append((account_id, target_peer_id)) or OperationResult(True, "已处理", detail="已关注关联频道"),
+            raising=False,
+        )
+
+        action = session.get(Action, "action-linked-entry")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.group_id == 7, TgGroupAccount.account_id == 11))
+        assert followed == [(11, "-10021")]
+        assert link is not None and link.can_send is True
+        assert action.status == "success"
+        assert action.result["membership_status"] == "joined"
+        assert action.result["prerequisite_channel_followed"] is True
+        assert session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7)) is None
+
+
 def test_target_membership_claim_does_not_reassign_account_on_cooldown(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
