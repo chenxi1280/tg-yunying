@@ -12,6 +12,9 @@ from app.services._common import _now
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
 from .pacing import next_run_after
 
+ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
+BUSINESS_MEMBERSHIP_ACTION_TYPES = ["ensure_channel_membership", "ensure_target_membership"]
+
 
 def next_run_after_task(task: Task):
     config = task.type_config or {}
@@ -27,15 +30,18 @@ def next_run_after_task(task: Task):
 
 def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
     session.flush()
-    business_filter = Action.action_type.notin_(["ensure_channel_membership", "ensure_target_membership"])
+    business_filter = Action.action_type.notin_(BUSINESS_MEMBERSHIP_ACTION_TYPES)
     rows = session.execute(select(Action.status, func.count(Action.id)).where(Action.task_id == task.id, business_filter).group_by(Action.status)).all()
     counts = {str(status): int(count) for status, count in rows}
+    raw_skipped_count = counts.get("skipped", 0)
+    archived_skipped_count = _archived_skipped_count(session, task, business_filter)
+    skipped_count = max(0, raw_skipped_count - archived_skipped_count)
     accounts_used = session.scalar(select(func.count(func.distinct(Action.account_id))).where(Action.task_id == task.id, business_filter, Action.account_id.is_not(None))) or 0
     last_action_at = session.scalar(select(func.max(Action.executed_at)).where(Action.task_id == task.id, business_filter))
     stats = dict(task.stats or empty_stats())
     stats.update(
         {
-            "total_actions": sum(counts.values()),
+            "total_actions": max(0, sum(counts.values()) - archived_skipped_count),
             "success_count": counts.get("success", 0),
             "failure_count": counts.get("failed", 0),
             "pending_count": counts.get("pending", 0),
@@ -43,7 +49,9 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
             "executing_count": counts.get("executing", 0),
             "retryable_failed_count": counts.get("retryable_failed", 0),
             "unknown_after_send_count": counts.get("unknown_after_send", 0),
-            "skipped_count": counts.get("skipped", 0),
+            "skipped_count": skipped_count,
+            "raw_skipped_count": raw_skipped_count,
+            "archived_skipped_count": archived_skipped_count,
             "accounts_used": int(accounts_used or 0),
             "last_action_at": last_action_at.isoformat() if last_action_at else stats.get("last_action_at"),
         }
@@ -53,6 +61,21 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
 
     refresh_task_summary(session, task)
     return stats
+
+
+def _archived_skipped_count(session: Session, task: Task, business_filter) -> int:
+    if task.type != "group_ai_chat":
+        return 0
+    count = session.scalar(
+        select(func.count(Action.id)).where(
+            Action.task_id == task.id,
+            business_filter,
+            Action.action_type == "send_message",
+            Action.status == "skipped",
+            Action.result["error_code"].as_string().in_(ARCHIVED_SKIP_ERROR_CODES),
+        )
+    )
+    return int(count or 0)
 
 
 def retry_failed_actions(session: Session, task: Task) -> int:

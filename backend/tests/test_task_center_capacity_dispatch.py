@@ -16,6 +16,7 @@ from app.services.task_center import account_pool
 from app.services.task_center.dispatcher import claim_actions
 from app.services.task_center.runtime_retention import cleanup_runtime_details
 from app.services.task_center.service import _recover_stale_executing_actions
+from app.services.task_center.stats import refresh_task_stats
 
 
 @pytest.fixture(autouse=True)
@@ -262,6 +263,73 @@ def test_dispatch_context_expired_skip_releases_reserved_account_runtime_resourc
         assert claimed.result["error_code"] == "context_expired"
         assert 11 not in dispatcher._IN_FLIGHT_ACCOUNTS
         assert claimed.id not in dispatcher._ACTION_RESERVATIONS
+
+
+def test_refresh_task_stats_archives_context_expired_skips_from_primary_counts():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(id="task-archived-skip", tenant_id=1, name="活跃群", type="group_ai_chat", status="running", stats={})
+        session.add(task)
+        session.add_all(
+            [
+                Action(
+                    id="send-success",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="success",
+                    scheduled_at=now_value,
+                    executed_at=now_value,
+                ),
+                Action(
+                    id="send-context-expired",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="skipped",
+                    scheduled_at=now_value,
+                    executed_at=now_value,
+                    result={"error_code": "context_expired"},
+                ),
+                Action(
+                    id="send-real-skip",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="skipped",
+                    scheduled_at=now_value,
+                    executed_at=now_value,
+                    result={"error_code": "keyword_filtered"},
+                ),
+                Action(
+                    id="membership-context-expired",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    status="skipped",
+                    scheduled_at=now_value,
+                    executed_at=now_value,
+                    result={"error_code": "context_expired"},
+                ),
+            ]
+        )
+        session.commit()
+
+        stats = refresh_task_stats(session, task)
+
+        assert stats["success_count"] == 1
+        assert stats["skipped_count"] == 1
+        assert stats["total_actions"] == 2
+        assert stats["archived_skipped_count"] == 1
+        assert stats["raw_skipped_count"] == 2
 
 
 def _add_cycle_skip_basics(session: Session, now_value: datetime) -> None:

@@ -105,6 +105,9 @@ export function TaskCenterDetailModal({
     { title: '完成时间', dataIndex: 'completed_at', width: 170, render: (value) => formatDateTime(value) },
   ];
   const profileBatchItems = detail?.profile_batch?.items ?? [];
+  const archivedSkippedCount = Number(detail?.stats?.archived_skipped_count ?? 0);
+  const effectiveSkippedCount = Number(detail?.stats?.skipped_count ?? 0);
+  const effectiveTotalActions = Number(detail?.stats?.total_actions ?? 0);
   const profileBatchColumns: ColumnsType<typeof profileBatchItems[number]> = [
     {
       title: '账号',
@@ -166,10 +169,11 @@ export function TaskCenterDetailModal({
               { key: 'executing', label: '执行中', children: detail.actions.filter((action) => action.status === 'executing').length },
               { key: 'success', label: '已成功', children: detail.stats.success_count ?? 0 },
               { key: 'failure', label: '失败', children: detail.stats.failure_count ?? 0 },
-              { key: 'skipped', label: '跳过', children: detail.stats.skipped_count ?? 0 },
-              { key: 'total', label: '总动作', children: detail.stats.total_actions ?? 0 },
+              { key: 'skipped', label: '跳过', children: effectiveSkippedCount },
+              { key: 'total', label: '总动作', children: effectiveTotalActions },
+              ...(archivedSkippedCount > 0 ? [{ key: 'archived-skipped', label: '历史归档跳过', children: archivedSkippedCount }] : []),
               { key: 'curve-now', label: '当前曲线', children: detailProfile ? `${String(detailProfile.hour).padStart(2, '0')}:00 强度 ${detailProfile.intensity}，${detailProfile.mode}运行` : '-' },
-              { key: 'curve-gap', label: '原因分解', children: `计划 ${detailPlannedTotal}，成功 ${detail.stats.success_count ?? 0}，失败 ${detail.stats.failure_count ?? 0}，跳过 ${detail.stats.skipped_count ?? 0}，待执行 ${plannedActions.length}` },
+              { key: 'curve-gap', label: '原因分解', children: `计划 ${detailPlannedTotal}，成功 ${detail.stats.success_count ?? 0}，失败 ${detail.stats.failure_count ?? 0}，跳过 ${effectiveSkippedCount}，待执行 ${plannedActions.length}` },
               { key: 'next', label: '下次运行', children: formatDateTime(detail.task.next_run_at) },
               { key: 'summary-updated', label: '汇总更新', children: summaryUpdatedAt ? formatDateTime(summaryUpdatedAt) : '-' },
               { key: 'summary-state', label: '汇总状态', children: !summaryUpdatedAt ? <Tag>暂无汇总</Tag> : summaryStale ? <Tag color="gold">可能延迟</Tag> : <Tag color="green">正常</Tag> },
