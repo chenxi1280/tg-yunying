@@ -10,6 +10,10 @@ export type LoginFlow = {
   code_preview: string | null;
   code_expires_at: string | null;
   qr_payload: string | null;
+  authorization_role: string;
+  authorization_id: number | null;
+  developer_app_id: number | null;
+  proxy_id: number | null;
   created_at: string;
 };
 
@@ -55,6 +59,35 @@ export type Account = {
   proxy_local_address: string | null;
   proxy_status: string | null;
   proxy_alert_status: string | null;
+  authorization_summary: AccountAuthorizationSummary;
+};
+
+export type AccountAuthorizationSummary = {
+  primary_status: string;
+  primary_source: string;
+  standby_count: number;
+  target_standby_count: number;
+  has_standby: boolean;
+  is_blocking: boolean;
+  risk_hint: string;
+};
+
+export type AccountAuthorizationAsset = {
+  id: number | null;
+  account_id: number;
+  role: string;
+  developer_app_id: number | null;
+  proxy_id: number | null;
+  status: string;
+  health_status: string;
+  is_current: boolean;
+  session_available: boolean;
+  primary_source: string;
+  failure_reason: string;
+  last_health_check_at: string | null;
+  last_success_at: string | null;
+  last_switched_at: string | null;
+  disabled_at: string | null;
 };
 
 export type AccountAvailabilitySummary = {

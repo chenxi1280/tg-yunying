@@ -325,28 +325,6 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> AccountSecurityOperationResult:
         return self._run(self._cleanup_authorization_async(session_ciphertext, authorization_hash, self._usable_credentials(credentials)))
 
-    async def _cleanup_other_authorizations_async(
-        self,
-        session_ciphertext: str | None,
-        credentials: DeveloperAppCredentials,
-    ) -> AccountSecurityOperationResult:
-        client = await self._authorized_client(session_ciphertext, credentials, error_message="账号没有可用 session")
-        from telethon import functions
-
-        try:
-            await client(functions.auth.ResetAuthorizationsRequest())
-        except Exception as exc:  # noqa: BLE001 - keep Telegram security restriction visible.
-            mapped = self._map_send_error(exc)
-            return AccountSecurityOperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
-        return AccountSecurityOperationResult(True, "已清理", detail="已退出除当前 Session 外的其他授权")
-
-    def cleanup_other_authorizations(
-        self,
-        session_ciphertext: str | None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> AccountSecurityOperationResult:
-        return self._run(self._cleanup_other_authorizations_async(session_ciphertext, self._usable_credentials(credentials)))
-
     async def _get_two_fa_status_async(
         self,
         session_ciphertext: str | None,

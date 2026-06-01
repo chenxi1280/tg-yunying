@@ -6,8 +6,9 @@
 
 ```text
 账号已登录
-  -> 清理非平台登录设备
-  -> 只保留平台可信 Session
+  -> 建立平台主授权和备用授权状态
+  -> 保留官方锚点设备
+  -> 清理陌生或废弃登录设备
   -> 设置平台可信设备显示名
   -> 检查是否已设置 Telegram 二步验证密码
   -> 未设置的账号尽量批量设置二步验证密码
@@ -20,9 +21,11 @@
 目标：
 
 - 账号中心能看到每个 TG 账号的登录设备、平台可信状态、二步验证状态和最近加固结果。
+- 账号中心能看到每个 TG 账号的主授权、备用授权数量、备用健康状态和官方锚点设备风险。
 - 管理员可以先点击“清理登录设备”或“设置二步密码”，再在抽屉内选择账号并创建批次。
 - 管理员可以先点击“资料初始化”，再在抽屉内选择账号，批量设置 TG 账号头像、昵称 / 姓名、简介和 `@username`。
-- 昵称、姓名、简介和 `@username` 默认用一次 AI 请求生成整批资料，支持命名风格提示、预览、去重、可编辑、可重抽；序号递增只作为手工兜底策略。
+- 昵称、TG 姓名、简介和 `@username` 默认用一次 AI 请求生成整批资料，支持命名风格提示、预览、去重、可编辑、可重抽；序号递增只作为手工兜底策略。
+- 资料初始化的昵称 / TG 姓名必须同时回写平台账号展示名并调用 Telegram profile 更新。平台展示名属于“新托管账号”“托管账号”或导入占位名等可替换名称时，即使未开启“覆盖已有资料”，也要把本次生成名同步到 TG `first_name` / `last_name`。
 - 资料初始化批次确认后，账号中心展示批次入口，任务中心展示后台运行状态；运营人员必须能看到等待缓存、执行中、成功、跳过、失败和最近失败原因。
 - 选择随机头像包时必须从素材中心头像包自动分配，不要求管理员手填素材 ID 或平台路径；头像更新只允许使用已完成 TG 缓存的素材。
 - 头像更新成功后必须回写账号头像对象和预览 URL，账号列表和账号详情必须回显新头像。
@@ -37,15 +40,20 @@
 - 不把“设备清理”做成任务中心的运营任务。
 - 不绕过 Telegram 官方安全限制，例如新登录 Session 24 小时内不能退出其他 Session 的限制。
 - 不删除当前平台 Session，否则平台会失去该账号控制能力。
+- 不要求迁移期账号必须立刻补齐备用 Session。没有备用 Session 时，账号管理只提示风险，不阻塞当前主 Session 的既有能力。
+- 不把二步验证密码当成免验证码登录入口。2FA 只用于 Telegram 完成第一步授权后要求二次校验的场景。
 
 ## 2. 概念定义
 
 | 概念 | 说明 |
 | --- | --- |
 | 平台可信设备 | 当前平台使用 `session_ciphertext + developer_app_id + proxy_id` 连接 Telegram 的授权 Session。产品上叫“平台可信设备”，技术上是当前 MTProto 授权会话。 |
+| 主授权 | 当前任务执行和同步默认使用的账号授权资产，由 `developer_app_id + proxy_id + session_ciphertext` 组成。 |
+| 备用授权 | 已提前真实登录成功、可在主授权异常时切换使用的账号授权资产。只配置开发者应用但没有可用 session，不算备用授权。 |
+| 官方锚点设备 | 保留在 Telegram 官方手机端或桌面端上的已登录设备，用于平台 session 全部失效时扫码恢复。 |
 | 平台设备显示名 | Telegram 授权列表里展示的平台客户端信息，例如 device_model、system_version、app_version。它帮助识别平台 Session，不等同于 TG 账号昵称。 |
 | 外部设备 | Telegram 返回的其他授权会话，例如手机端、桌面端、网页版、未知 API 客户端等。 |
-| 设备清理 | 退出外部设备，只保留平台可信设备。 |
+| 设备清理 | 退出陌生设备、历史废弃平台授权或管理员明确选择的无用设备；必须保留主授权、健康备用授权和至少 1 个官方锚点设备。 |
 | 二步验证密码 | Telegram 账号的 2FA password，不是平台后台用户登录密码。 |
 | 账号资料初始化 | 批量设置 TG 账号头像、first_name、last_name、bio 和 `@username`。 |
 | AI 随机命名 | 调用平台 AI 能力，按运营画像、语言风格、性别倾向、地区倾向、禁用词和命名风格提示生成随机昵称、姓名、简介和 username 候选。 |
@@ -59,7 +67,6 @@
 
 - 读取登录设备：`account.getAuthorizations`，用于获取当前账号已授权 Session 列表。
 - 退出指定设备：`account.resetAuthorization(hash)`，按 Session hash 退出单个外部授权。
-- 退出其他设备：`auth.resetAuthorizations`，退出除当前 Session 外的其他授权。
 - 设置二步验证密码：`account.updatePasswordSettings`，需要按 SRP 流程生成密码校验和新密码设置。
 - 设置账号姓名 / 简介 / 头像：更新 Telegram profile，例如 first_name、last_name、about、profile photo。
 - 设置 `@username`：更新 Telegram username，必须先做格式和冲突预检，最终以 Telegram 返回结果为准。
@@ -68,6 +75,8 @@
 
 - Telegram 可能禁止新登录不到 24 小时的 Session 退出其他设备，错误通常表现为 `FRESH_RESET_AUTHORISATION_FORBIDDEN`。
 - 不能退出当前平台 Session；如果退出当前 Session，该账号在平台内会变成需重新登录。
+- 不能把所有非平台设备都退出。若平台主备 Session 全部失效且没有官方锚点设备，账号只能走短信、邮箱、Fragment 或官方恢复路径。
+- 多个 TG Developer App 只能分散登录容量和授权风险，不能替代已登录 Session。备用授权必须提前登录成功并定期健康检查。
 - 二步验证密码设置可能需要恢复邮箱确认；邮箱未确认时必须进入“待邮箱验证码确认”状态。
 - 已有二步验证密码的账号不能直接覆盖；需要提供旧密码或进入人工恢复流程。
 - `@username` 可能已被占用、格式不合法或触发 Telegram 限制；批量设置时必须支持自动跳号、重试候选名和失败留痕。
@@ -78,17 +87,16 @@
 
 - Telegram `account.getAuthorizations`: https://core.telegram.org/method/account.getAuthorizations
 - Telegram `account.resetAuthorization`: https://core.telegram.org/method/account.resetAuthorization
-- Telegram `auth.resetAuthorizations`: https://core.telegram.org/method/auth.resetAuthorizations
 - Telegram 2FA / SRP: https://core.telegram.org/api/srp
 
 ## 4. 模块归属
 
 ```text
 账号中心
-  展示账号安全事实，发起单账号/批量设置二步密码、清理登录设备、资料初始化、同步安全状态，查看批次和账号结果
+  展示账号安全事实、主备授权、官方锚点设备、发起单账号/批量设置二步密码、清理登录设备、资料初始化、同步安全状态，查看批次和账号结果
 
 风控中心
-  汇总外部设备未清理、2FA 未设置、资料不完整、设备异常变化等风险，并阻塞或降级账号参与任务
+  汇总外部设备未清理、2FA 未设置、资料不完整、设备异常变化、主备授权缺失等风险；主授权可用但缺少备用授权时只提示恢复风险，主备授权均不可用时才阻塞或降级账号参与任务
 
 任务中心
   读取账号资料初始化等后台批次的系统任务投影，展示批次进度、头像缓存进度、账号级结果和失败事实；不作为发起账号维护动作的主入口
@@ -111,6 +119,8 @@
 | 字段 | 展示 |
 | --- | --- |
 | 平台可信设备 | 已确认、待确认、无法确认 |
+| 授权资产 | 主授权可用、备用 0/1/2 个、备用异常、可切换状态 |
+| 官方锚点设备 | 已保留、未识别、缺失风险 |
 | 外部设备 | 无外部设备、存在 N 个外部设备、读取失败 |
 | 二步验证 | 已设置、未设置、待邮箱确认、未知、设置失败 |
 | 资料完整度 | 头像、昵称、用户名是否已设置 |
@@ -200,9 +210,9 @@
   ↓
 调用 getAuthorizations
   ↓
-识别平台可信 Session
+识别平台主授权、备用授权和官方锚点设备
   ↓
-计算外部设备列表
+计算可清理设备列表
   ↓
 预检是否可退出外部设备
   ↓
@@ -210,17 +220,19 @@
   ↓
 重新读取设备列表
   ↓
-确认只剩平台可信 Session 或记录剩余外部设备
+确认主备授权和官方锚点设备仍保留，记录剩余外部设备
   ↓
 回写账号安全快照和审计
 ```
 
-识别平台可信 Session 的原则：
+识别平台可信 Session 与锚点设备的原则：
 
 - 优先识别当前连接对应的授权会话。
+- 备用授权应通过授权资产表或授权快照中的 `developer_app_id + proxy_id + session` 关系识别；无法确认的备用不得被自动清理。
+- 官方锚点设备优先识别 Telegram 官方手机端或桌面端，并允许管理员在设备列表中标记“保留为锚点”。
 - 结合 `api_id`、应用名、平台标识、创建时间、活跃时间和当前 Session 特征判断。
 - 不能只依赖设备名称；设备名称可以被伪造或变化。
-- 如果无法稳定识别平台可信 Session，只允许使用“退出其他设备但保留当前 Session”的 Telegram 官方能力，不允许按猜测删除。
+- 如果无法稳定识别平台可信 Session、备用授权或官方锚点设备，不允许执行“退出其他设备”类批量清理，只能进入人工确认。
 
 失败处理：
 
@@ -229,7 +241,9 @@
 | Session 失效 | 标记需重新登录，跳过设备清理 |
 | 新 Session 未满 24 小时 | 标记“需等待”，建议自动延后到可执行时间 |
 | 外部设备 hash 无效 | 重新读取设备列表后重试一次 |
-| 无法识别平台 Session | 不执行单设备删除，进入人工确认 |
+| 无法识别平台主备授权 | 不执行自动设备删除，进入人工确认 |
+| 无法识别官方锚点设备 | 允许提示风险；不阻塞当前账号使用，但禁止“一键清空非平台设备” |
+| 无备用授权 | 账号管理提示“未配置备用授权”；不阻塞现有主 Session 继续使用 |
 | 清理后仍有外部设备 | 标记部分成功，保留剩余设备明细 |
 
 ### 6.2 二步验证设置流程
@@ -302,7 +316,7 @@
   ↓
 创建资料初始化批次，并向任务中心提供系统任务投影
   ↓
-逐账号调用 Telegram profile / username / photo 更新
+逐账号调用 Telegram profile / username / photo 更新，其中昵称 / TG 姓名同时更新平台展示名和 TG `first_name` / `last_name`
   ↓
 同步远端资料并回写账号详情
   ↓
@@ -604,7 +618,7 @@ frontend/src/app/views/AccountSecurityBatchDetailModal.tsx
 | username | 开关：生成 username 候选 / 不修改 username |
 | 命名风格提示 | 文本框：补充昵称风格、禁用正式姓名或营销号口吻 |
 | 头像策略 | 随机素材池 / 顺序分配 / 导入映射 / 只补空头像 |
-| 覆盖已有资料 | 开关，默认关闭 |
+| 覆盖已有资料 | 开关，默认关闭；平台展示名为占位名时，昵称 / TG 姓名仍随资料初始化同步更新 |
 
 操作区：
 
@@ -893,6 +907,40 @@ tg_account_security_snapshots
 
 ### 9.2 登录设备快照
 
+授权资产权威表：
+
+```text
+tg_account_authorizations
+  id
+  tenant_id
+  account_id
+  role: primary / standby_1 / standby_2
+  developer_app_id
+  proxy_id
+  session_ciphertext
+  status: active / standby / unhealthy / disabled
+  health_status
+  is_current
+  telegram_authorization_hash_ciphertext
+  last_health_check_at
+  last_success_at
+  last_switched_at
+  failure_reason
+  disabled_at
+  created_by
+  created_at
+  updated_at
+```
+
+规则：
+
+- 每条授权资产必须对应一次真实 Telegram 登录成功记录；只有开发者应用或代理配置，没有 `session_ciphertext`，不算可切换备用授权。
+- 存量账号迁移期没有授权资产表记录时，由 `tg_accounts.developer_app_id + tg_accounts.proxy_id + tg_accounts.session_ciphertext` 投影为主授权。
+- 备用授权切换为主授权时更新 `is_current` 和 `role`，旧主授权进入异常或备用待修复状态，不自动删除 session。
+- 停用授权资产必须写审计，并且不得清理官方锚点设备。
+
+登录设备快照只记录 Telegram 当前返回的授权设备事实，不替代授权资产权威表：
+
 ```text
 tg_account_authorization_snapshots
   id
@@ -1102,7 +1150,6 @@ GET /api/tasks/{task_id}
 ```text
 list_authorizations(session_ciphertext, credentials, proxy)
 cleanup_authorization(session_ciphertext, credentials, proxy, authorization_hash)
-cleanup_other_authorizations(session_ciphertext, credentials, proxy)
 get_two_fa_status(session_ciphertext, credentials, proxy)
 set_two_fa_password(session_ciphertext, credentials, proxy, password, hint, recovery_email)
 confirm_two_fa_email(session_ciphertext, credentials, proxy, code)
@@ -1117,6 +1164,7 @@ read_current_authorization(session_ciphertext, credentials, proxy)
 - 所有 Telegram 调用继续走账号绑定代理。
 - 网关返回稳定中文 failure_type，不把 Telethon 原始异常直接暴露给前端。
 - 清理设备前后都要读取设备列表，不能只相信单次 API 返回。
+- 不提供 `cleanup_other_authorizations` 作为业务接口；批量设备清理必须基于设备列表逐个 `cleanup_authorization`，并在执行前确认不会清理主授权、健康备用授权或官方锚点设备。
 - 2FA 设置走独立服务封装 SRP 细节，业务层只处理状态机。
 - 资料初始化要拆成 profile、username、avatar 三个独立步骤；某一步失败不能抹掉其他步骤的成功结果。
 - username 设置必须支持候选名重试，并把最终成功用户名回写账号资料。

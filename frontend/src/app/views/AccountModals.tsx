@@ -10,6 +10,7 @@ import { FormActions, StatusBadge, useAntdTableControls } from '../components/sh
 import { statusAccent, operationLabel, syncTypeLabel } from '../utils';
 import { api } from '../../shared/api/client';
 import { formatBeijingDateTime, parseBeijingDate } from '../time';
+import { AccountAuthorizationAssetsPanel } from './AccountAuthorizationAssetsPanel';
 
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
 const contactPhone = (contact: Contact) => contact.phone_number || contact.phone_masked || '';
@@ -202,6 +203,7 @@ interface AccountDetailModalProps {
   canViewCodes?: boolean;
   canSecurityRead?: boolean;
   canSecurityBatch?: boolean;
+  canManageAuthorizations?: boolean;
   canProfileBatchUpdate?: boolean;
   canMovePool?: boolean;
   canClone?: boolean;
@@ -220,7 +222,7 @@ export function AccountDetailModal({
   onResolveGroupRestrictionBatch,
   onOpenConfirm, onSetReturnAfterVerification, onSetModal,
   onSetCloneForm, onReturnToRiskControl, accountName, isActionPending,
-  canSyncAccount = true, canViewCodes = true, canSecurityRead = true, canSecurityBatch = true, canProfileBatchUpdate = true,
+  canSyncAccount = true, canViewCodes = true, canSecurityRead = true, canSecurityBatch = true, canManageAuthorizations = true, canProfileBatchUpdate = true,
   canMovePool = true, canClone = true,
 }: AccountDetailModalProps) {
   const [manualTargetId, setManualTargetId] = React.useState<number | null>(null);
@@ -696,6 +698,11 @@ export function AccountDetailModal({
               <Empty description={securityLoading ? '正在读取账号安全状态' : '暂无账号安全快照，点击刷新读取。'} />
             )}
           </Card>
+          <AccountAuthorizationAssetsPanel
+            accountId={accountDetail.account.id}
+            canManage={canManageAuthorizations}
+            onChanged={onRefreshAccountDetail}
+          />
           <Card className="sub-panel compact-panel" title="登录设备列表">
             <Table<AccountAuthorizationSnapshot>
               className="tg-table"

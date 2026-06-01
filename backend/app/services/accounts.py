@@ -34,6 +34,7 @@ from app.security import encrypt_secret, encrypt_session
 from app.storage import object_path, preview_url, save_avatar_bytes
 
 from ._common import _is_expired, _now, audit, gateway, get_account_phone, mask_phone, require_tenant
+from .account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery, is_proxy_recovery_signal
 from .developer_apps import credentials_for_account, first_assignable_developer_app
 from .tenants import ensure_account_quota_available
 from .verification import list_verification_tasks, create_verification_task
@@ -849,6 +850,18 @@ def health_check_account(session: Session, account_id: int) -> TgAccount:
     account.health_score = result.health_score
     account.last_active_at = _now() if result.status == AccountStatus.ACTIVE.value else account.last_active_at
     audit(session, tenant_id=account.tenant_id, actor="system", action="账号健康检查", target_type="tg_account", target_id=str(account.id), detail=result.detail)
+    if result.status in {AccountStatus.NEED_RELOGIN.value, AccountStatus.SESSION_EXPIRED.value}:
+        if is_proxy_recovery_signal(result.detail):
+            proxy = attempt_primary_proxy_recovery(session, account, actor="system", reason=result.detail)
+            if proxy is not None:
+                account.status = AccountStatus.ACTIVE.value
+                session.commit()
+                session.refresh(account)
+                return account
+        recovered = attempt_standby_authorization_recovery(session, account, actor="system", reason=result.detail)
+        if recovered is not None:
+            session.refresh(account)
+            return account
     session.commit()
     session.refresh(account)
     return account

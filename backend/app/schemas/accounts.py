@@ -79,6 +79,55 @@ class AccountClonePlanCreate(BaseModel):
 
 # ── Output schemas ──
 
+class AccountAuthorizationSummaryOut(ApiModel):
+    primary_status: str = "missing"
+    primary_source: str = "legacy_account"
+    standby_count: int = 0
+    target_standby_count: int = 2
+    has_standby: bool = False
+    is_blocking: bool = False
+    risk_hint: str = ""
+
+
+class AccountAuthorizationOut(ApiModel):
+    id: int | None
+    account_id: int
+    role: str
+    developer_app_id: int | None
+    proxy_id: int | None
+    status: str
+    health_status: str
+    is_current: bool
+    session_available: bool
+    primary_source: str
+    failure_reason: str = ""
+    last_health_check_at: datetime | None = None
+    last_success_at: datetime | None = None
+    last_switched_at: datetime | None = None
+    disabled_at: datetime | None = None
+
+
+class AccountAuthorizationSwitchRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=255)
+
+
+class AccountAuthorizationLoginStartRequest(BaseModel):
+    method: str = Field(pattern="^(code|qr)$")
+    role: str = Field(pattern="^standby_[12]$")
+    developer_app_id: int
+    proxy_id: int
+
+
+class AccountAuthorizationLoginVerifyRequest(BaseModel):
+    flow_id: int
+    code: str | None = None
+    password_2fa: str | None = None
+
+
+class AccountAuthorizationQrCheckRequest(BaseModel):
+    flow_id: int
+
+
 class AvatarUploadOut(BaseModel):
     object_key: str
     preview_url: str
@@ -117,6 +166,7 @@ class AccountOut(ApiModel):
     proxy_local_address: str | None = None
     proxy_status: str | None = None
     proxy_alert_status: str | None = None
+    authorization_summary: AccountAuthorizationSummaryOut = Field(default_factory=AccountAuthorizationSummaryOut)
     deleted_at: datetime | None = None
     deleted_by: str = ""
     delete_reason: str = ""
@@ -141,6 +191,10 @@ class LoginFlowOut(ApiModel):
     code_preview: str | None
     code_expires_at: datetime | None
     qr_payload: str | None
+    authorization_role: str = "primary"
+    authorization_id: int | None = None
+    developer_app_id: int | None = None
+    proxy_id: int | None = None
     failure_type: str = ""
     failure_detail: str = ""
     trace_id: str = ""
@@ -328,6 +382,8 @@ __all__ = [
     "TgAccountCreate", "AccountPoolCreate", "AccountPoolUpdate",
     "MoveAccountPoolRequest", "TgAccountProfileUpdate",
     "LoginStartRequest", "LoginVerifyRequest", "SensitiveActionReasonRequest", "AccountClonePlanCreate",
+    "AccountAuthorizationLoginStartRequest", "AccountAuthorizationLoginVerifyRequest",
+    "AccountAuthorizationOut", "AccountAuthorizationQrCheckRequest", "AccountAuthorizationSwitchRequest",
     "AvatarUploadOut",
     "AccountOut", "AccountPoolOut", "LoginFlowOut", "VerificationCodeOut",
     "ProfileSyncRecordOut", "AccountSyncRecordOut",

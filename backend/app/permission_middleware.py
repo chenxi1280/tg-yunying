@@ -68,6 +68,7 @@ PERMISSION_RULES: list[PermissionRule] = [
     _compile("POST", r"^/api/tg-accounts$", "accounts.create"),
     _compile("POST", r"^/api/tg-accounts/availability/rebuild$", "accounts.sync"),
     _compile("POST", r"^/api/tg-accounts/\d+/login(?:/.*)?$", "accounts.login"),
+    _compile("POST", r"^/api/tg-accounts/\d+/authorizations(?:/.*)?$", "accounts.authorizations.manage"),
     _compile("POST", r"^/api/tg-accounts/\d+/(?:sync-groups|sync-now|sync-targets|contacts/sync|health-check|profile-sync/retry)$", "accounts.sync"),
     _compile("PATCH", r"^/api/tg-accounts/\d+/profile$", "accounts.profile.batch_update"),
     _compile("POST", r"^/api/tg-accounts/\d+/avatar$", "accounts.profile.batch_update"),

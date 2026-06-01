@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.orm import object_session
+
 from app.auth import CurrentUser
 from app.schemas import AccountOut, AccountRuntimeSummaryOut, AuditLogOut
+from app.services.account_authorizations import authorization_summaries_for_accounts, authorization_summary_for_account
 
 
 SENSITIVE_AUDIT_MARKERS = (
@@ -17,13 +20,16 @@ SENSITIVE_AUDIT_MARKERS = (
 )
 
 
-def account_out_for_user(account: Any, current_user: CurrentUser) -> dict[str, Any]:
+def account_out_for_user(
+    account: Any,
+    current_user: CurrentUser,
+    authorization_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     data = AccountOut.model_validate(account).model_dump()
-    can_read_phone = (
-        current_user.has_permission("accounts.sensitive.read")
-        or current_user.has_permission("accounts.create")
-        or current_user.has_permission("accounts.login")
-    )
+    summary = authorization_summary or _authorization_summary_for_loaded_account(account)
+    if summary:
+        data["authorization_summary"] = summary
+    can_read_phone = _can_read_phone(current_user)
     if not can_read_phone:
         data["phone_number"] = None
     if not current_user.has_permission("accounts.sensitive.read"):
@@ -35,6 +41,35 @@ def account_out_for_user(account: Any, current_user: CurrentUser) -> dict[str, A
         data["proxy_status"] = None
         data["proxy_alert_status"] = None
     return data
+
+
+def accounts_out_for_user(accounts: list[Any], current_user: CurrentUser) -> list[dict[str, Any]]:
+    summaries = _authorization_summaries_for_loaded_accounts(accounts)
+    return [account_out_for_user(account, current_user, summaries.get(account.id)) for account in accounts]
+
+
+def _authorization_summary_for_loaded_account(account: Any) -> dict[str, Any] | None:
+    session = object_session(account)
+    if session is None:
+        return None
+    return authorization_summary_for_account(session, account)
+
+
+def _authorization_summaries_for_loaded_accounts(accounts: list[Any]) -> dict[int, dict[str, Any]]:
+    if not accounts:
+        return {}
+    session = object_session(accounts[0])
+    if session is None:
+        return {}
+    return authorization_summaries_for_accounts(session, accounts)
+
+
+def _can_read_phone(current_user: CurrentUser) -> bool:
+    return (
+        current_user.has_permission("accounts.sensitive.read")
+        or current_user.has_permission("accounts.create")
+        or current_user.has_permission("accounts.login")
+    )
 
 
 def account_availability_out_for_user(summary: Any, current_user: CurrentUser) -> dict[str, Any]:
@@ -56,7 +91,7 @@ def account_detail_out_for_user(detail: dict[str, Any], current_user: CurrentUse
 
 def account_pool_detail_out_for_user(detail: dict[str, Any], current_user: CurrentUser) -> dict[str, Any]:
     data = dict(detail)
-    data["accounts"] = [account_out_for_user(account, current_user) for account in data.get("accounts", [])]
+    data["accounts"] = accounts_out_for_user(data.get("accounts", []), current_user)
     return data
 
 

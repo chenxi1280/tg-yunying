@@ -342,15 +342,6 @@ class TelegramGateway:
             return AccountSecurityOperationResult(False, "失败", "当前平台Session受保护", "不能退出当前平台可信设备")
         return AccountSecurityOperationResult(True, "已清理", detail=f"mock cleaned {authorization_hash}")
 
-    def cleanup_other_authorizations(
-        self,
-        session_ciphertext: str | None,
-        credentials: DeveloperAppCredentials | None = None,
-    ) -> AccountSecurityOperationResult:
-        if not session_ciphertext:
-            return AccountSecurityOperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
-        return AccountSecurityOperationResult(True, "已清理", detail="mock cleaned other authorizations")
-
     def get_two_fa_status(
         self,
         session_ciphertext: str | None,
