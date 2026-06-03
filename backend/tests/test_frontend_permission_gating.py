@@ -248,6 +248,16 @@ def test_task_center_membership_items_support_server_side_filters():
     assert "value={membershipFilters.manualRequired}" in panel
 
 
+def test_task_detail_opens_before_membership_page_load():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    membership_loader = source[source.index("async function loadMembershipForDetail"):source.index("\n  async function loadDetail")]
+    load_detail = source[source.index("async function loadDetail"):source.index("\n  async function fetchMembershipItems")]
+
+    assert "setDetail(taskDetail)" in load_detail
+    assert load_detail.index("setDetail(taskDetail)") < load_detail.index("loadMembershipForDetail")
+    assert "读取准入前置失败" in membership_loader
+
+
 def test_risk_control_restores_tab_filter_and_page_from_return_query():
     source = (PROJECT_ROOT / "frontend/src/app/views/RiskControlView.tsx").read_text()
 
