@@ -7,7 +7,7 @@ from typing import Any
 AI_GROUP_HOURLY_PER_ACCOUNT = 6
 AI_GROUP_MIN_HOURLY = 20
 AI_GROUP_MAX_HOURLY = 120
-AI_GROUP_ROUNDS_PER_HOUR = 12
+AI_GROUP_DEFAULT_ROUNDS_PER_HOUR = 6
 
 AI_COMMENT_HOURLY_PER_ACCOUNT = 4
 AI_COMMENT_MIN_HOURLY = 20
@@ -23,14 +23,17 @@ def clamp_int(value: int, lower: int, upper: int) -> int:
     return max(lower, min(upper, int(value)))
 
 
-def recommend_ai_limits(task_type: str, ready_account_count: int) -> dict[str, Any]:
+def recommend_ai_limits(task_type: str, ready_account_count: int, *, current_hour_rounds: int = AI_GROUP_DEFAULT_ROUNDS_PER_HOUR) -> dict[str, Any]:
     account_count = max(0, int(ready_account_count or 0))
     if task_type == "group_ai_chat":
         hourly = _recommended_group_hourly(account_count)
+        rounds = max(1, int(current_hour_rounds or AI_GROUP_DEFAULT_ROUNDS_PER_HOUR))
         return {
             "max_actions_per_hour": hourly,
-            "messages_per_round": max(1, ceil(hourly / AI_GROUP_ROUNDS_PER_HOUR)),
-            "basis": {"ready_account_count": account_count, "hourly_per_account": AI_GROUP_HOURLY_PER_ACCOUNT},
+            "messages_per_round": max(1, ceil(hourly / rounds)),
+            "current_hour_rounds": rounds,
+            "estimated_hourly_capacity": min(hourly, rounds * max(1, ceil(hourly / rounds))),
+            "basis": {"ready_account_count": account_count, "hourly_per_account": AI_GROUP_HOURLY_PER_ACCOUNT, "hourly_rounds": rounds},
         }
     if task_type == "channel_comment":
         hourly = _recommended_comment_hourly(account_count)

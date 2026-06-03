@@ -19,12 +19,11 @@ from app.services.rule_engine import apply_output_policy, bound_rule_version, ev
 from app.services.material_rules import select_material_for_policy
 
 from ..account_pool import select_task_accounts
-from ..ai_limits import AI_GROUP_ROUNDS_PER_HOUR
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
 from ..channel_membership import gate_channel_membership
 from ..fingerprints import fingerprint_exists, remember_fingerprint
 from ..listener_runtime import should_collect_listener
-from ..pacing import operation_intensity, schedule_times
+from ..pacing import current_hour_rounds, operation_intensity, schedule_times
 from ..payloads import SendMessagePayload, create_send_action
 from ..targets import group_from_reference
 from .common import add_tokens, stats_inc
@@ -421,7 +420,8 @@ def _select_cycle_accounts(accounts: list, config: dict, mode: str, ramp_ratio: 
 def _auto_messages_per_round(config: dict, mode: str, has_context: bool, pacing_config: dict) -> int:
     hourly_cap = int((pacing_config or {}).get("max_actions_per_hour") or 0)
     if hourly_cap > 0:
-        base = max(1, (hourly_cap + AI_GROUP_ROUNDS_PER_HOUR - 1) // AI_GROUP_ROUNDS_PER_HOUR)
+        rounds = current_hour_rounds(pacing_config or {}, _now())
+        base = max(1, (hourly_cap + max(1, rounds) - 1) // max(1, rounds))
     else:
         base = 2 if mode == "静默期" else 5
     if mode == "静默期":
@@ -446,7 +446,7 @@ def _manual_turn_count(desired: int, messages_per_round: int) -> int:
 
 def _desired_participant_count(accounts: list, config: dict, mode: str, ramp_ratio: float) -> int:
     jitter = float(config.get("participation_jitter") or 0)
-    rate = float(config.get("participation_rate") or 0.6) * ramp_ratio
+    rate = float(config.get("participation_rate") or 0.6)
     desired = max(1, round(len(accounts) * rate * random.uniform(max(0.1, 1 - jitter), 1 + jitter)))
     if mode == "静默期":
         desired = min(desired, int(config.get("silent_max_accounts") or 5))

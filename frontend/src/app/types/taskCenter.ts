@@ -139,6 +139,30 @@ export type RuleSetBoundTask = {
   updated_at: string;
 };
 
+export type TaskMembershipItem = {
+  item_id: string;
+  latest_action_id: string;
+  account_id: number;
+  display_name: string;
+  username: string;
+  status: string;
+  phase: string;
+  can_send: boolean;
+  target_id: number | null;
+  target_type: string;
+  target_display: string;
+  scheduled_at: string | null;
+  completed_at: string | null;
+  failure_type: string;
+  failure_detail: string;
+  manual_required: boolean;
+  verification_task_id: number | null;
+  verification_status: string;
+  verification_action: string;
+  can_auto_resolve: boolean;
+  challenge_question: string;
+};
+
 export type TaskCenterDetail = {
   task: TaskCenterTask;
   actions: TaskCenterAction[];
@@ -147,7 +171,7 @@ export type TaskCenterDetail = {
   operation_plan_links?: Array<{ id: number; plan_id: number; target_id: number | null; task_id: string; relation: string; status: string; created_at: string }>;
   accounts: Array<{ id: number; display_name: string; username: string | null; status: string }>;
   membership_phase: Record<string, any>;
-  membership_accounts: Array<Record<string, any>>;
+  membership_accounts: TaskMembershipItem[];
   learning_profile_preview?: Record<string, any>;
   message_groups: Array<{
     channel_target_id: number | null;
@@ -326,9 +350,17 @@ export type TaskPrecheck = {
       messages_per_round?: number;
       target_comments_per_message?: number;
       max_comments_per_account_per_hour?: number;
+      current_hour_rounds?: number;
+      estimated_hourly_capacity?: number;
       basis?: Record<string, any>;
     };
   };
+  hourly_round_curve?: number[];
+  current_hour_rounds?: number;
+  messages_per_round?: number;
+  max_actions_per_hour?: number;
+  estimated_hourly_capacity?: number;
+  round_capacity_explanation?: string;
   rule_version: Record<string, any> | null;
   risk_hits: string[];
   blockers: string[];

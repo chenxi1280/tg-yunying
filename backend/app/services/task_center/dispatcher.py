@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import socket
+from dataclasses import dataclass
 from uuid import uuid4
 from datetime import timedelta
 
@@ -13,7 +14,7 @@ from pydantic import ValidationError
 from app.integrations.telegram import OperationResult, OutboundSegment
 from app.config import get_settings
 from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, TgGroupAccount
-from app.services._common import _now, gateway
+from app.services._common import _now, audit, gateway
 from app.services.account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery
 from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
@@ -52,6 +53,8 @@ _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS = (
     "无法进入关联讨论区",
     "缓存频道不可访问",
 )
+_GROUP_SEND_BUTTON_VERIFICATION_MARKERS = ("按钮", "button", "click", "点击")
+_GROUP_SEND_REPLY_VERIFICATION_MARKERS = ("/start", "发送验证回复", "send reply")
 _ACCOUNT_SESSION_FAILURE_MARKERS = (
     "session",
     "auth key",
@@ -71,6 +74,16 @@ _ACCOUNT_PROXY_FAILURE_MARKERS = (
     "unreachable",
     "network",
 )
+
+
+@dataclass(frozen=True)
+class MembershipDispatchContext:
+    session: Session
+    action: Action
+    account: TgAccount
+    credentials: object
+    payload: EnsureChannelMembershipPayload
+    attempt: ExecutionAttempt | None
 
 
 def _reserve_runtime_resources(action: Action) -> bool:
@@ -441,6 +454,7 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
         if existing_link and _dispatch_existing_membership(session, action, account, credentials, payload, existing_link):
             return True
     attempt = _begin_execution_attempt(session, action, account)
+    ctx = MembershipDispatchContext(session, action, account, credentials, payload, attempt)
     _mark_executing(action)
     session.commit()
     _mark_gateway_call_started(session, attempt)
@@ -454,33 +468,10 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
     if result.ok:
         probe_result = _probe_joined_group_send_permission(session, action, account, credentials, payload)
         if probe_result is not None and not probe_result.ok:
-            recovered = _recover_group_send_permission_with_linked_channel(action, account, credentials, payload, probe_result)
-            if recovered.ok:
-                _record_group_send_permission_allowed(session, action, account, payload)
-                _apply_operation_result(action, account, True, "", recovered.detail or "linked_channel_joined", attempt=attempt)
-                action.result = {**(action.result or {}), "membership_status": "joined", "prerequisite_channel_followed": True}
-                return True
-            _record_group_send_permission_denied(session, action, account, payload, recovered.detail or recovered.failure_type)
-            if recovered.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
-                _skip_membership_permission_denied(action, recovered.detail or recovered.failure_type)
-                _finish_execution_attempt(attempt, action, failure_type=recovered.failure_type, detail=recovered.detail or recovered.failure_type)
-                _release_runtime_resources(action)
-                return True
-            _apply_operation_result(action, account, False, recovered.failure_type, recovered.detail or recovered.failure_type, attempt=attempt)
-            return True
+            return _handle_group_send_permission_denied(ctx, probe_result, membership_status="joined", skip_on_failure=False)
         _mark_membership_joined(session, action, account, payload)
     elif result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
-        recovered = _recover_group_send_permission_with_linked_channel(action, account, credentials, payload, result)
-        if recovered.ok:
-            _record_group_send_permission_allowed(session, action, account, payload)
-            _apply_operation_result(action, account, True, "", recovered.detail or "linked_channel_joined", attempt=attempt)
-            action.result = {**(action.result or {}), "membership_status": "joined", "prerequisite_channel_followed": True}
-            return True
-        _record_group_send_permission_denied(session, action, account, payload, recovered.detail or recovered.failure_type)
-        _skip_membership_permission_denied(action, recovered.detail or recovered.failure_type)
-        _finish_execution_attempt(attempt, action, failure_type=recovered.failure_type, detail=recovered.detail or recovered.failure_type)
-        _release_runtime_resources(action)
-        return True
+        return _handle_group_send_permission_denied(ctx, result, membership_status="joined", skip_on_failure=True)
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail or result.membership_status, attempt=attempt)
     if result.ok:
         action.result = {**(action.result or {}), "membership_status": result.membership_status or "joined"}
@@ -503,6 +494,7 @@ def _dispatch_existing_membership(
     if not link.can_send:
         return False
     attempt = _begin_execution_attempt(session, action, account)
+    ctx = MembershipDispatchContext(session, action, account, credentials, payload, attempt)
     _mark_executing(action)
     session.commit()
     _mark_gateway_call_started(session, attempt)
@@ -512,14 +504,16 @@ def _dispatch_existing_membership(
         _apply_operation_result(action, account, True, "", "already_joined", attempt=attempt)
         action.result = {**(action.result or {}), "membership_status": "already_joined"}
         return True
-    recovered = _recover_group_send_permission_with_linked_channel(action, account, credentials, payload, result)
+    recovered = _recover_group_send_permission_with_linked_channel(session, action, account, credentials, payload, result)
     if recovered.ok:
         _record_group_send_permission_allowed(session, action, account, payload)
         _apply_operation_result(action, account, True, "", recovered.detail or "linked_channel_joined", attempt=attempt)
         action.result = {**(action.result or {}), "membership_status": "already_joined", "prerequisite_channel_followed": True}
         return True
     result = recovered
-    _record_group_send_permission_denied(session, action, account, payload, result.detail or result.failure_type)
+    verification = _record_group_send_permission_denied(session, action, account, payload, result.detail or result.failure_type)
+    if _auto_verify_and_apply_group_send(ctx, verification, membership_status="joined"):
+        return True
     if result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
         _skip_membership_permission_denied(action, result.detail or result.failure_type)
         _finish_execution_attempt(attempt, action, failure_type=result.failure_type, detail=result.detail or result.failure_type)
@@ -540,6 +534,7 @@ def _probe_joined_group_send_permission(session: Session, action: Action, accoun
 
 
 def _recover_group_send_permission_with_linked_channel(
+    session: Session,
     action: Action,
     account: TgAccount,
     credentials,
@@ -548,6 +543,8 @@ def _recover_group_send_permission_with_linked_channel(
 ):
     detail = probe_result.detail or probe_result.failure_type or ""
     if not _group_send_permission_needs_linked_channel(detail):
+        return probe_result
+    if not _auto_follow_required_channel_enabled(session, action):
         return probe_result
     follow = getattr(gateway, "ensure_linked_channel_membership", None)
     if not callable(follow):
@@ -559,6 +556,39 @@ def _recover_group_send_permission_with_linked_channel(
     if reprobe.ok:
         return OperationResult(True, detail=followed.detail or "已关注关联频道并通过群发言验证")
     return OperationResult(False, "失败", reprobe.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, reprobe.detail or detail)
+
+
+def _handle_group_send_permission_denied(
+    ctx: MembershipDispatchContext,
+    probe_result,
+    *,
+    membership_status: str,
+    skip_on_failure: bool,
+) -> bool:
+    recovered = _recover_group_send_permission_with_linked_channel(
+        ctx.session,
+        ctx.action,
+        ctx.account,
+        ctx.credentials,
+        ctx.payload,
+        probe_result,
+    )
+    if recovered.ok:
+        _record_group_send_permission_allowed(ctx.session, ctx.action, ctx.account, ctx.payload)
+        _apply_operation_result(ctx.action, ctx.account, True, "", recovered.detail or "linked_channel_joined", attempt=ctx.attempt)
+        ctx.action.result = {**(ctx.action.result or {}), "membership_status": membership_status, "prerequisite_channel_followed": True}
+        return True
+    detail = recovered.detail or recovered.failure_type
+    verification = _record_group_send_permission_denied(ctx.session, ctx.action, ctx.account, ctx.payload, detail)
+    if _auto_verify_and_apply_group_send(ctx, verification, membership_status=membership_status):
+        return True
+    if skip_on_failure or recovered.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
+        _skip_membership_permission_denied(ctx.action, detail)
+        _finish_execution_attempt(ctx.attempt, ctx.action, failure_type=recovered.failure_type, detail=detail)
+        _release_runtime_resources(ctx.action)
+        return True
+    _apply_operation_result(ctx.action, ctx.account, False, recovered.failure_type, detail, attempt=ctx.attempt)
+    return True
 
 
 def _group_send_permission_needs_linked_channel(detail: str) -> bool:
@@ -597,7 +627,7 @@ def _record_group_send_permission_allowed(session: Session, action: Action, acco
     _sync_group_target_send_state(session, group, target)
 
 
-def _record_group_send_permission_denied(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload, detail: str) -> None:
+def _record_group_send_permission_denied(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload, detail: str):
     target = session.get(OperationTarget, payload.channel_target_id)
     if not target:
         return
@@ -606,7 +636,7 @@ def _record_group_send_permission_denied(session: Session, action: Action, accou
     link.can_send = False
     link.permission_label = (detail or FailureType.GROUP_PERMISSION_DENIED.value)[:80]
     _sync_group_target_send_state(session, group, target)
-    create_verification_task(
+    return create_verification_task(
         session,
         tenant_id=action.tenant_id,
         account_id=account.id,
@@ -614,10 +644,77 @@ def _record_group_send_permission_denied(session: Session, action: Action, accou
         message_task_id=None,
         verification_type="群发言权限",
         detected_reason=detail or "账号已加入但没有群发言权限",
-        suggested_action="人工处理",
+        suggested_action=_group_send_verification_action(detail),
         target_peer_id=group.tg_peer_id,
         target_display=group.title,
     )
+
+
+def _auto_verify_and_apply_group_send(ctx: MembershipDispatchContext, verification_task, *, membership_status: str) -> bool:
+    if not _auto_verification_enabled(ctx.session, ctx.action):
+        return False
+    auto_verified = _try_auto_group_send_verification(ctx, verification_task)
+    if not auto_verified.ok:
+        return False
+    _apply_operation_result(ctx.action, ctx.account, True, "", auto_verified.detail or "verification_resolved", attempt=ctx.attempt)
+    ctx.action.result = {
+        **(ctx.action.result or {}),
+        "membership_status": membership_status,
+        "verification_status": verification_task.status,
+        "verification_action": verification_task.suggested_action,
+    }
+    return True
+
+
+def _auto_verification_enabled(session: Session, action: Action) -> bool:
+    task = session.get(Task, action.task_id) if action.task_id else None
+    config = task.type_config if task else {}
+    return bool((config or {}).get("auto_resolve_verification", True))
+
+
+def _auto_follow_required_channel_enabled(session: Session, action: Action) -> bool:
+    task = session.get(Task, action.task_id) if action.task_id else None
+    config = task.type_config if task else {}
+    return bool((config or {}).get("auto_follow_required_channel", True))
+
+
+def _try_auto_group_send_verification(ctx: MembershipDispatchContext, verification_task):
+    if verification_task is None:
+        return OperationResult(False, "需人工处理", FailureType.GROUP_PERMISSION_DENIED.value, "未生成验证辅助任务")
+    if not getattr(verification_task, "can_auto_resolve", False):
+        return OperationResult(False, "需人工处理", FailureType.GROUP_PERMISSION_DENIED.value, verification_task.detected_reason)
+    result = gateway.resolve_verification_task(
+        ctx.account.id,
+        verification_task.suggested_action,
+        verification_task.target_peer_id or ctx.payload.channel_id,
+        ctx.account.session_ciphertext,
+        ctx.credentials,
+    )
+    verification_task.status = result.status
+    verification_task.failure_detail = result.detail
+    if result.status != "需人工处理":
+        verification_task.handled_at = _now()
+    audit(ctx.session, tenant_id=ctx.action.tenant_id, actor="system", action="自动处理验证辅助任务", target_type="verification_task", target_id=str(verification_task.id), detail=f"{result.status}:{result.detail}")
+    if not result.ok:
+        return OperationResult(False, result.status, FailureType.GROUP_PERMISSION_DENIED.value, result.detail or result.failure_type)
+    reprobe = gateway.probe_target_capabilities(ctx.account.id, ctx.payload.channel_id, ctx.payload.target_type, ctx.account.session_ciphertext, ctx.credentials)
+    if reprobe.ok:
+        _record_group_send_permission_allowed(ctx.session, ctx.action, ctx.account, ctx.payload)
+        return OperationResult(True, "已完成", detail=result.detail or reprobe.detail or "verification_resolved")
+    verification_task.status = "失败"
+    verification_task.failure_detail = reprobe.detail or reprobe.failure_type
+    return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, verification_task.failure_detail)
+
+
+def _group_send_verification_action(detail: str) -> str:
+    normalized = str(detail or "").lower()
+    if any(marker.lower() in normalized for marker in _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS):
+        return "关注频道"
+    if any(marker.lower() in normalized for marker in _GROUP_SEND_BUTTON_VERIFICATION_MARKERS):
+        return "点击按钮"
+    if any(marker.lower() in normalized for marker in _GROUP_SEND_REPLY_VERIFICATION_MARKERS):
+        return "发送验证回复"
+    return "人工处理"
 
 
 def _group_account_link(session: Session, tenant_id: int, group_id: int, account_id: int, *, create: bool) -> TgGroupAccount:

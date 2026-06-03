@@ -120,6 +120,17 @@ def test_group_ai_schema_allows_large_round_plan():
     assert payload.messages_per_round == 30
 
 
+def test_group_ai_schema_exposes_membership_strategy_defaults():
+    payload = GroupAIChatTaskCreate(name="准入策略", target_group_id=7)
+
+    assert payload.auto_join_target is True
+    assert payload.auto_follow_required_channel is True
+    assert payload.auto_resolve_verification is True
+    assert payload.ai_assisted_verification is True
+    assert payload.captcha_failure_policy == "manual"
+    assert payload.membership_max_concurrent == 5
+
+
 def test_group_ai_manual_participation_does_not_raise_turn_count(monkeypatch):
     generated_counts: list[int] = []
 

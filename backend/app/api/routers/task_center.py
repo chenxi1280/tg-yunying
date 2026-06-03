@@ -31,6 +31,7 @@ from app.schemas import (
     ReviewQueueOut,
     ReviewRejectRequest,
     TaskDetailOut,
+    TaskMembershipItemOut,
     TaskOut,
     TaskActionReasonRequest,
     TaskPrecheckOut,
@@ -60,6 +61,7 @@ from app.services.task_center import (
     get_task_detail,
     list_actions_page,
     list_action_attempts,
+    list_membership_items_page,
     list_reviews,
     list_tasks,
     pause_task,
@@ -356,6 +358,39 @@ def get_task_actions(
         sort_by=sort_by,
         sort_order=sort_order,
     )
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Page"] = str(page)
+    response.headers["X-Page-Size"] = str(page_size)
+    return rows
+
+
+@router.get("/api/tasks/{task_id}/membership-items", response_model=list[TaskMembershipItemOut])
+def get_task_membership_items(
+    task_id: str,
+    response: Response,
+    status: str | None = None,
+    phase: str | None = None,
+    account_id: int | None = None,
+    manual_required: bool | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        rows, total = list_membership_items_page(
+            session,
+            current_user.tenant_id or 1,
+            task_id,
+            status=status,
+            phase=phase,
+            account_id=account_id,
+            manual_required=manual_required,
+            page=page,
+            page_size=page_size,
+        )
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
     response.headers["X-Total-Count"] = str(total)
     response.headers["X-Page"] = str(page)
     response.headers["X-Page-Size"] = str(page_size)

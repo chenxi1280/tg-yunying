@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, ExecutionAttempt, GroupContextMessage, OperationTarget, Task, TgAccount, TgGroup
+from app.models import Action, ChannelMessage, ExecutionAttempt, GroupContextMessage, OperationTarget, Task, TgAccount, TgGroup, VerificationTask
 
 from .executors.common import quantity_jitter_bounds
 from .executors.group_ai_chat import account_profile_summaries
@@ -353,6 +353,146 @@ def _membership_accounts(session: Session, actions: list[Action]) -> list[dict[s
             }
         )
     return result
+
+
+def _membership_items(session: Session, task: Task, actions: list[Action]) -> list[dict[str, Any]]:
+    rows = [action for action in actions if _is_membership_action(action)]
+    if not rows:
+        return []
+    accounts = _accounts_by_id(session, rows)
+    groups = _groups_by_target_id(session, task.tenant_id, rows)
+    verifications = _verification_tasks_by_group_account(session, task.tenant_id, groups, rows)
+    attempts = _latest_attempts_by_action(session, rows)
+    return [
+        _membership_item_payload(action, accounts, groups, verifications, attempts)
+        for action in sorted(rows, key=lambda item: (item.scheduled_at or item.created_at, item.created_at), reverse=True)
+    ]
+
+
+def _is_membership_action(action: Action) -> bool:
+    return action.action_type in {"ensure_channel_membership", "ensure_target_membership"} and bool(action.account_id)
+
+
+def _accounts_by_id(session: Session, actions: list[Action]) -> dict[int, TgAccount]:
+    account_ids = sorted({int(action.account_id) for action in actions if action.account_id})
+    if not account_ids:
+        return {}
+    return {account.id: account for account in session.scalars(select(TgAccount).where(TgAccount.id.in_(account_ids)))}
+
+
+def _groups_by_target_id(session: Session, tenant_id: int, actions: list[Action]) -> dict[int, TgGroup]:
+    target_ids = _membership_target_ids(actions)
+    targets = list(session.scalars(select(OperationTarget).where(OperationTarget.tenant_id == tenant_id, OperationTarget.id.in_(target_ids)))) if target_ids else []
+    peers = [target.tg_peer_id for target in targets if target.target_type == "group" and target.tg_peer_id]
+    groups = list(session.scalars(select(TgGroup).where(TgGroup.tenant_id == tenant_id, TgGroup.tg_peer_id.in_(peers)))) if peers else []
+    by_peer = {group.tg_peer_id: group for group in groups}
+    return {target.id: by_peer[target.tg_peer_id] for target in targets if target.tg_peer_id in by_peer}
+
+
+def _membership_target_ids(actions: list[Action]) -> list[int]:
+    target_ids: set[int] = set()
+    for action in actions:
+        target_id = _membership_target_id(action.payload or {})
+        if target_id:
+            target_ids.add(target_id)
+    return sorted(target_ids)
+
+
+def _membership_target_id(payload: dict[str, Any]) -> int | None:
+    try:
+        return int(payload.get("channel_target_id") or 0) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def _verification_tasks_by_group_account(session: Session, tenant_id: int, groups: dict[int, TgGroup], actions: list[Action]) -> dict[tuple[int, int], VerificationTask]:
+    group_ids = sorted({group.id for group in groups.values()})
+    account_ids = sorted({int(action.account_id) for action in actions if action.account_id})
+    if not group_ids or not account_ids:
+        return {}
+    tasks = list(
+        session.scalars(
+            select(VerificationTask)
+            .where(VerificationTask.tenant_id == tenant_id, VerificationTask.group_id.in_(group_ids), VerificationTask.account_id.in_(account_ids))
+            .order_by(VerificationTask.id.desc())
+        )
+    )
+    latest: dict[tuple[int, int], VerificationTask] = {}
+    for task in tasks:
+        if task.group_id and task.account_id:
+            latest.setdefault((task.group_id, task.account_id), task)
+    return latest
+
+
+def _membership_item_payload(
+    action: Action,
+    accounts: dict[int, TgAccount],
+    groups: dict[int, TgGroup],
+    verifications: dict[tuple[int, int], VerificationTask],
+    attempts: dict[str, ExecutionAttempt],
+) -> dict[str, Any]:
+    payload = action.payload or {}
+    result = action.result or {}
+    account_id = int(action.account_id or 0)
+    target_id = _membership_target_id(payload)
+    group = groups.get(target_id or 0)
+    verification = verifications.get((group.id, account_id)) if group else None
+    phase = _membership_item_phase(action, verification)
+    latest_attempt = attempts.get(action.id)
+    return {
+        "item_id": action.id,
+        "latest_action_id": action.id,
+        "account_id": account_id,
+        "display_name": accounts[account_id].display_name if account_id in accounts else f"账号 #{account_id}",
+        "username": accounts[account_id].username if account_id in accounts else "",
+        "status": action.status,
+        "phase": phase,
+        "can_send": phase == "ready",
+        "target_id": target_id,
+        "target_type": payload.get("target_type") or "channel",
+        "target_display": payload.get("target_display") or "",
+        "scheduled_at": action.scheduled_at,
+        "completed_at": latest_attempt.after_call_at if latest_attempt and latest_attempt.after_call_at else action.executed_at,
+        "failure_type": result.get("error_code") or _attempt_failure_type(latest_attempt),
+        "failure_detail": result.get("error_message") or result.get("detail") or _attempt_failure_detail(latest_attempt),
+        "manual_required": phase == "manual_required",
+        "verification_task_id": verification.id if verification else None,
+        "verification_status": verification.status if verification else "",
+        "verification_action": verification.suggested_action if verification else "",
+        "can_auto_resolve": bool(verification.can_auto_resolve) if verification else False,
+        "challenge_question": verification.detected_reason if verification else "",
+    }
+
+
+def _membership_item_phase(action: Action, verification: VerificationTask | None) -> str:
+    if _membership_item_ready(action):
+        return "ready"
+    if verification and not verification.can_auto_resolve:
+        return "manual_required"
+    if verification and verification.can_auto_resolve:
+        return "challenge_solving" if action.status in {"claiming", "executing"} else "challenge_required"
+    if action.status in {"claiming", "executing"}:
+        return "joining"
+    if action.status in {"pending", "retryable_failed"}:
+        return "not_joined"
+    if action.status == "failed":
+        return "failed"
+    return "manual_required" if (action.result or {}).get("membership_status") == "permission_denied" else action.status
+
+
+def _membership_item_ready(action: Action) -> bool:
+    result = action.result or {}
+    if result.get("membership_status") in {"joined", "already_joined"}:
+        return True
+    return action.status == "success" and bool(result.get("success"))
+
+
+def _attempt_failure_type(attempt: ExecutionAttempt | None) -> str:
+    return attempt.failure_type if attempt and attempt.failure_type else ""
+
+
+def _attempt_failure_detail(attempt: ExecutionAttempt | None) -> str:
+    return attempt.failure_detail if attempt and attempt.failure_detail else ""
 
 
 def _latest_attempts_by_action(session: Session, actions: list[Action]) -> dict[str, ExecutionAttempt]:

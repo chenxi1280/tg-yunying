@@ -644,7 +644,7 @@ def test_target_membership_requires_send_rechecks_existing_group_link(monkeypatc
         verification = session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7, VerificationTask.account_id == 11))
         assert verification is not None
         assert verification.status == "待处理"
-        assert verification.suggested_action == "人工处理"
+        assert verification.suggested_action == "关注频道"
 
 
 def test_target_membership_follows_linked_channel_before_blocking_group_send(monkeypatch):
@@ -788,6 +788,112 @@ def test_target_membership_skips_when_joined_probe_still_cannot_send(monkeypatch
         assert action.result["membership_status"] == "permission_denied"
         verification = session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7, VerificationTask.account_id == 11))
         assert verification is not None
+        assert verification.suggested_action == "关注频道"
+
+
+def test_group_send_permission_denied_classifies_button_verification(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="目标群", auth_status="已授权运营", can_send=True))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群", auth_status="已授权运营", can_send=True))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号11", phone_masked="+861***0011", status="在线", session_ciphertext="cipher"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
+        session.add(
+            Task(
+                id="task-button-verification",
+                tenant_id=1,
+                name="按钮验证",
+                type="group_ai_chat",
+                status="running",
+                account_config={"selection_mode": "all"},
+                pacing_config={},
+                type_config={},
+            )
+        )
+        session.add(
+            Action(
+                id="action-button-verification",
+                tenant_id=1,
+                task_id="task-button-verification",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=11,
+                scheduled_at=now_value,
+                payload={"channel_id": "-1007", "channel_target_id": 21, "target_type": "group", "target_display": "目标群", "require_send": True},
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *args, **kwargs: OperationResult(True, detail="joined"))
+        monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", lambda *args, **kwargs: OperationResult(False, "失败", "群验证", "需要点击按钮完成验证"))
+
+        action = session.get(Action, "action-button-verification")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        verification = session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7, VerificationTask.account_id == 11))
+        assert verification is not None
+        assert verification.suggested_action == "点击按钮"
+
+
+def test_target_membership_auto_verification_rechecks_send_permission(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    probe_calls = {"count": 0}
+    resolve_calls: list[str] = []
+
+    def fake_probe(*_args, **_kwargs):
+        probe_calls["count"] += 1
+        if probe_calls["count"] == 1:
+            return OperationResult(False, "失败", "群验证", "需要点击按钮完成验证")
+        return OperationResult(True, "已完成", detail="验证后可发言")
+
+    def fake_resolve(_account_id, action, *_args, **_kwargs):
+        resolve_calls.append(action)
+        return OperationResult(True, "已处理", detail="已点击首个验证按钮")
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="目标群", auth_status="已授权运营", can_send=True))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群", auth_status="已授权运营", can_send=True))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号11", phone_masked="+861***0011", status="在线", session_ciphertext="cipher"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
+        session.add(Task(id="task-auto-verification", tenant_id=1, name="自动验证", type="group_ai_chat", status="running"))
+        session.add(
+            Action(
+                id="action-auto-verification",
+                tenant_id=1,
+                task_id="task-auto-verification",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=11,
+                scheduled_at=now_value,
+                payload={"channel_id": "-1007", "channel_target_id": 21, "target_type": "group", "target_display": "目标群", "require_send": True},
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *args, **kwargs: OperationResult(True, detail="joined"))
+        monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", fake_probe)
+        monkeypatch.setattr(dispatcher.gateway, "resolve_verification_task", fake_resolve)
+
+        action = session.get(Action, "action-auto-verification")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.group_id == 7, TgGroupAccount.account_id == 11))
+        verification = session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7, VerificationTask.account_id == 11))
+        assert action.status == "success"
+        assert action.result["membership_status"] == "joined"
+        assert link is not None and link.can_send is True
+        assert verification is not None and verification.status == "已处理"
+        assert resolve_calls == ["点击按钮"]
+        assert probe_calls["count"] == 2
 
 
 def test_target_membership_claim_does_not_reassign_account_on_cooldown(monkeypatch):

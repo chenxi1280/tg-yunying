@@ -22,10 +22,18 @@ def _operation_curve(config: dict) -> list[int]:
     curve: list[int] = []
     for item in raw_curve:
         try:
-            curve.append(min(100, max(0, int(item))))
+            curve.append(min(60, max(0, int(item))))
         except (TypeError, ValueError):
             curve.append(0)
     return curve
+
+
+def current_hour_rounds(config: dict, value: datetime | None = None) -> int:
+    current = value or _now()
+    curve = _operation_curve(config)
+    if not curve:
+        return 0
+    return max(0, int(curve[current.hour]))
 
 
 def operation_intensity(config: dict, value: datetime | None = None) -> tuple[str, float, int]:
@@ -34,8 +42,8 @@ def operation_intensity(config: dict, value: datetime | None = None) -> tuple[st
     if not curve:
         return "正常期", 1.0, 100
     profile = config.get("operation_profile") or {}
-    quiet_threshold = int(profile.get("quiet_threshold") or 20)
-    peak_threshold = int(profile.get("peak_threshold") or 70)
+    quiet_threshold = int(profile.get("quiet_threshold") or 2)
+    peak_threshold = int(profile.get("peak_threshold") or 8)
     intensity = int(curve[current.hour])
     if intensity <= 0:
         return "休眠期", 0.0, intensity
@@ -198,4 +206,13 @@ def next_run_after(config: dict) -> datetime:
     return _next_active_time(_now() + timedelta(minutes=5), config)
 
 
-__all__ = ["next_run_after", "operation_intensity", "schedule_times"]
+def ai_next_run_after(config: dict, value: datetime | None = None) -> datetime:
+    current = value or _now()
+    rounds = current_hour_rounds(config, current)
+    if rounds <= 0:
+        return _next_active_time(current, config)
+    interval_seconds = max(60, 3600 // max(1, rounds))
+    return _next_active_time(current + timedelta(seconds=interval_seconds), config)
+
+
+__all__ = ["ai_next_run_after", "current_hour_rounds", "next_run_after", "operation_intensity", "schedule_times"]

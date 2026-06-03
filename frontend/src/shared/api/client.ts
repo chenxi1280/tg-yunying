@@ -24,6 +24,12 @@ export interface ApiRequestOptions extends RequestInit {
   timeoutMs?: number;
 }
 
+export interface ApiResponse<T> {
+  data: T;
+  headers: Headers;
+  status: number;
+}
+
 export function isAuthExpiredError(error: unknown): boolean {
   return error instanceof AuthExpiredError || (error instanceof ApiError && isAuthExpiredResponse(error.status, error.body));
 }
@@ -38,6 +44,10 @@ function notifyAuthExpired(status: number, body: string): void {
 }
 
 export async function api<T>(path: string, options?: ApiRequestOptions): Promise<T> {
+  return (await apiWithMeta<T>(path, options)).data;
+}
+
+export async function apiWithMeta<T>(path: string, options?: ApiRequestOptions): Promise<ApiResponse<T>> {
   const token = localStorage.getItem('tg_ops_token');
   const isFormData = options?.body instanceof FormData;
   const controller = new AbortController();
@@ -62,13 +72,13 @@ export async function api<T>(path: string, options?: ApiRequestOptions): Promise
       throw new ApiError(response.status, text);
     }
     if (response.status === 204) {
-      return undefined as T;
+      return { data: undefined as T, headers: response.headers, status: response.status };
     }
     const text = await response.text();
     if (!text.trim()) {
-      return undefined as T;
+      return { data: undefined as T, headers: response.headers, status: response.status };
     }
-    return JSON.parse(text) as T;
+    return { data: JSON.parse(text) as T, headers: response.headers, status: response.status };
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new ApiError(408, 'request timeout');

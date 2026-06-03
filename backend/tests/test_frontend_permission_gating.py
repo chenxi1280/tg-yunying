@@ -172,6 +172,8 @@ def test_task_center_running_and_paused_states_are_visually_distinct():
 
 def test_task_center_ai_chat_account_distribution_controls_are_visible():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
     assert 'name="participation_rate"' in source
     assert 'label="参与账号比例"' in source
@@ -184,8 +186,24 @@ def test_task_center_ai_chat_account_distribution_controls_are_visible():
     assert "function markMessagesPerRoundManual" in source
     assert "setFieldValue('messages_per_round_mode', 'manual')" in source
     assert "onChange={markMessagesPerRoundManual}" in source
+    assert "准入策略" in source
+    assert 'name="auto_join_target"' in source
+    assert 'name="auto_follow_required_channel"' in source
+    assert 'name="auto_resolve_verification"' in source
+    assert 'name="ai_assisted_verification"' in source
+    assert 'name="captcha_failure_policy"' in source
+    assert 'name="membership_max_concurrent"' in source
+    assert "auto_join_target: values.auto_join_target !== false" in view
+    assert "'membership_max_concurrent'" in view_model
     assert 'label="上下文历史条数（不是账号数）"' in source
     assert 'label="账号并发上限（账号数）"' in source
+
+
+def test_task_center_review_uses_task_specific_curve_units():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+
+    assert "const profileUnit = taskType === 'group_ai_chat' ? '轮/小时' : '权重'" in source
+    assert "${profile.intensity} ${profileUnit}" in source
 
 
 def test_task_center_applies_ai_limit_recommendations_without_overwriting_manual_fields():
@@ -215,6 +233,19 @@ def test_task_center_edit_ai_limits_can_calculate_and_apply_recommendations():
     assert "editForm.setFieldsValue(nextValues)" in source
     assert "计算推荐数量" in source
     assert "一键应用推荐" in source
+
+
+def test_task_center_membership_items_support_server_side_filters():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    modal = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+    panel = (PROJECT_ROOT / "frontend/src/app/views/TaskMembershipPanel.tsx").read_text()
+
+    assert "type MembershipFilters" in source
+    assert "params.set('phase', filters.phase)" in source
+    assert "params.set('manual_required', 'true')" in source
+    assert "onMembershipFiltersChange" in modal
+    assert "value={membershipFilters.phase}" in panel
+    assert "value={membershipFilters.manualRequired}" in panel
 
 
 def test_risk_control_restores_tab_filter_and_page_from_return_query():

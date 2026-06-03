@@ -33,11 +33,11 @@ export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
 export const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号与节奏', '预检确认'];
 
 export const OPERATION_PROFILE_TEMPLATES = [
-  { value: 'natural_full_day', label: '全天自然活跃', curve: [10, 8, 5, 5, 0, 0, 8, 15, 35, 45, 55, 60, 45, 40, 55, 65, 70, 75, 80, 85, 70, 50, 25, 15] },
-  { value: 'evening_peak', label: '晚间高峰', curve: [5, 5, 3, 3, 0, 0, 5, 10, 20, 25, 30, 35, 35, 30, 35, 40, 45, 55, 65, 85, 90, 90, 75, 45] },
-  { value: 'workday_double_peak', label: '工作日双峰', curve: [5, 5, 3, 3, 0, 0, 8, 18, 30, 45, 75, 80, 45, 35, 45, 75, 85, 80, 55, 35, 25, 18, 10, 8] },
-  { value: 'event_warmup', label: '活动预热', curve: [5, 5, 3, 3, 0, 0, 8, 12, 20, 25, 30, 35, 40, 45, 55, 65, 75, 85, 95, 100, 85, 65, 35, 15] },
-  { value: 'conservative', label: '低打扰保守', curve: [5, 5, 3, 3, 0, 0, 5, 8, 12, 18, 22, 25, 20, 18, 22, 25, 28, 30, 28, 25, 18, 12, 8, 5] },
+  { value: 'natural_full_day', label: '全天自然活跃', curve: [2, 2, 1, 1, 0, 0, 1, 2, 4, 5, 6, 6, 5, 4, 6, 7, 8, 9, 10, 10, 8, 6, 4, 3] },
+  { value: 'evening_peak', label: '晚间高峰', curve: [1, 1, 1, 1, 0, 0, 1, 1, 2, 3, 3, 4, 4, 3, 4, 5, 6, 7, 9, 12, 12, 12, 9, 6] },
+  { value: 'workday_double_peak', label: '工作日双峰', curve: [1, 1, 1, 1, 0, 0, 1, 2, 3, 5, 8, 8, 5, 4, 5, 8, 9, 8, 6, 4, 3, 2, 1, 1] },
+  { value: 'event_warmup', label: '活动预热', curve: [1, 1, 1, 1, 0, 0, 1, 2, 3, 3, 4, 4, 5, 5, 6, 7, 9, 10, 12, 15, 12, 8, 5, 2] },
+  { value: 'conservative', label: '低打扰保守', curve: [1, 1, 1, 1, 0, 0, 1, 1, 1, 2, 2, 3, 2, 2, 2, 3, 3, 3, 3, 3, 2, 1, 1, 1] },
 ];
 
 export type OperationProfileTemplateId = typeof OPERATION_PROFILE_TEMPLATES[number]['value'];
@@ -148,7 +148,7 @@ export function curveNumbers(value?: Array<number | string> | string | null): nu
     .map((item) => Number(item))
     .filter((item) => Number.isFinite(item))
     .slice(0, 24)
-    .map((item) => Math.min(100, Math.max(0, Math.round(item))));
+    .map((item) => Math.min(60, Math.max(0, Math.round(item))));
   const fallback = OPERATION_PROFILE_TEMPLATES[0].curve;
   return Array.from({ length: 24 }, (_, index) => curve[index] ?? fallback[index] ?? 0);
 }
@@ -168,20 +168,21 @@ export function operationProfileFromValues(values: any) {
     template_id: template.value,
     source: values.operation_profile_manual_override ? 'manual' : 'built_in_default',
     hourly_activity_curve: curve,
-    quiet_threshold: values.quiet_threshold ?? 20,
-    peak_threshold: values.peak_threshold ?? 70,
+    quiet_threshold: values.quiet_threshold ?? 2,
+    peak_threshold: values.peak_threshold ?? 8,
     manual_override: Boolean(values.operation_profile_manual_override),
   };
 }
 
 export function operationProfileSummary(values: Record<string, any>): string {
   const curve = curveNumbers(values.hourly_activity_curve ?? operationTemplate(values.operation_template_id).curve);
-  const quietThreshold = values.quiet_threshold ?? 20;
-  const peakThreshold = values.peak_threshold ?? 70;
+  const quietThreshold = values.quiet_threshold ?? 2;
+  const peakThreshold = values.peak_threshold ?? 8;
   const quietHours = curve.map((value, hour) => (value > 0 && value <= quietThreshold ? hour : null)).filter((item) => item !== null);
   const sleepHours = curve.map((value, hour) => (value === 0 ? hour : null)).filter((item) => item !== null);
   const peakHours = curve.map((value, hour) => (value >= peakThreshold ? hour : null)).filter((item) => item !== null);
-  return `高峰 ${peakHours.length || 0} 小时，低频 ${quietHours.length || 0} 小时，休眠 ${sleepHours.length || 0} 小时`;
+  const totalRounds = curve.reduce((sum, value) => sum + value, 0);
+  return `全天 ${totalRounds} 轮，高峰 ${peakHours.length || 0} 小时，低频 ${quietHours.length || 0} 小时，休眠 ${sleepHours.length || 0} 小时`;
 }
 
 export function currentOperationProfile(values: Record<string, any>) {
@@ -189,8 +190,8 @@ export function currentOperationProfile(values: Record<string, any>) {
   const curve = curveNumbers(profile.hourly_activity_curve);
   const hour = new Date().getHours();
   const intensity = curve[hour] ?? 0;
-  const quietThreshold = profile.quiet_threshold ?? 20;
-  const peakThreshold = profile.peak_threshold ?? 70;
+  const quietThreshold = profile.quiet_threshold ?? 2;
+  const peakThreshold = profile.peak_threshold ?? 8;
   const mode = intensity <= 0 ? '休眠' : intensity <= quietThreshold ? '低频' : intensity >= peakThreshold ? '高峰' : '常规';
   return { curve, hour, intensity, mode };
 }
@@ -297,8 +298,8 @@ export function commonInitialValues(setting?: SchedulingSetting | null) {
     operation_template_id: template.value,
     hourly_activity_curve: curveText(template.curve),
     operation_profile_manual_override: false,
-    quiet_threshold: 20,
-    peak_threshold: 70,
+    quiet_threshold: 2,
+    peak_threshold: 8,
     max_retries: setting?.default_max_retries ?? 3,
     retry_delay_seconds: setting?.default_retry_delay_seconds ?? 60,
     retry_backoff: setting?.default_retry_backoff ?? 'exponential',
@@ -316,6 +317,12 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       repeat_cooldown_rounds: 2,
       chat_history_depth: 50,
       messages_per_round_mode: 'auto',
+      auto_join_target: true,
+      auto_follow_required_channel: true,
+      auto_resolve_verification: true,
+      ai_assisted_verification: true,
+      captcha_failure_policy: 'manual',
+      membership_max_concurrent: 5,
       context_expire_after_messages: 10,
       idle_continuation_enabled: true,
       idle_continuation_seconds: 300,
@@ -437,7 +444,21 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'topic_hint',
       'slang_prompt_template_id',
       'tone',
+      'participation_rate',
+      'allow_account_repeat',
+      'repeat_cooldown_rounds',
+      'messages_per_round_mode',
+      'messages_per_round',
+      'auto_join_target',
+      'auto_follow_required_channel',
+      'auto_resolve_verification',
+      'ai_assisted_verification',
+      'captcha_failure_policy',
+      'membership_max_concurrent',
+      'account_memory_depth',
       'idle_continuation_enabled',
+      'idle_continuation_seconds',
+      'context_expire_after_messages',
     ];
   }
   if (taskType === 'group_relay') {
@@ -468,7 +489,7 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
   void pacingMode;
   const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFields(accountMode), 'max_actions_per_hour', 'max_retries'];
   if (taskType === 'group_ai_chat') {
-    return [...baseFields, 'target_operation_target_id', 'rule_set_id', 'rule_set_version_id', 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'slang_prompt_template_id', 'slang_terms', 'tone', 'language', 'max_message_length', 'participation_rate', 'allow_account_repeat', 'repeat_cooldown_rounds', 'account_personas', 'account_memory_depth', 'messages_per_round_mode', 'messages_per_round', 'history_fetch_account_id', 'idle_continuation_enabled', 'idle_continuation_seconds', 'context_expire_after_messages'];
+    return [...baseFields, 'target_operation_target_id', 'rule_set_id', 'rule_set_version_id', 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'slang_prompt_template_id', 'slang_terms', 'tone', 'language', 'max_message_length', 'participation_rate', 'allow_account_repeat', 'repeat_cooldown_rounds', 'account_personas', 'account_memory_depth', 'messages_per_round_mode', 'messages_per_round', 'history_fetch_account_id', 'auto_join_target', 'auto_follow_required_channel', 'auto_resolve_verification', 'ai_assisted_verification', 'captcha_failure_policy', 'membership_max_concurrent', 'idle_continuation_enabled', 'idle_continuation_seconds', 'context_expire_after_messages'];
   }
   if (taskType === 'group_relay') {
     return [...baseFields, 'source_operation_target_ids', 'source_groups', 'target_operation_target_id', 'target_operation_target_ids', 'rule_set_id', 'rule_set_version_id', 'content_mode', 'filter_bot_messages', 'filter_admin_messages', 'excluded_sender_peer_ids', 'excluded_sender_input'];
