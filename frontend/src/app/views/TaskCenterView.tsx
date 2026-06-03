@@ -300,25 +300,45 @@ export default function TaskCenterView({
     if (!focusTask || appliedFocusNonce.current === focusTask.nonce) return;
     appliedFocusNonce.current = focusTask.nonce;
     setActionError('');
-    fetchTaskDetailWithMembership(focusTask.taskId, 1, MEMBERSHIP_PAGE_SIZE, DEFAULT_MEMBERSHIP_FILTERS)
-      .then((taskDetail) => setDetail(taskDetail))
+    fetchTaskDetail(focusTask.taskId)
+      .then((taskDetail) => {
+        setDetail(taskDetail);
+        void loadMembershipForDetail(taskDetail, 1, MEMBERSHIP_PAGE_SIZE, DEFAULT_MEMBERSHIP_FILTERS);
+      })
       .catch(() => setActionError(`读取任务 ${focusTask.taskId} 详情失败`))
       .finally(() => onFocusTaskConsumed?.());
   }, [focusTask, onFocusTaskConsumed]);
 
-  async function fetchTaskDetailWithMembership(taskId: string, page: number, pageSize: number, filters: MembershipFilters = membershipFilters) {
-    const taskDetail = await api<TaskCenterDetail>(`/tasks/${taskId}`);
+  async function fetchTaskDetail(taskId: string) {
+    return api<TaskCenterDetail>(`/tasks/${taskId}`);
+  }
+
+  async function loadMembershipForDetail(taskDetail: TaskCenterDetail, page: number, pageSize: number, filters: MembershipFilters = membershipFilters) {
     if (isSystemTask(taskDetail.task)) {
       setMembershipPage({ current: 1, pageSize: MEMBERSHIP_PAGE_SIZE, total: 0, loading: false });
       return taskDetail;
     }
-    const membershipItems = await fetchMembershipItems(taskId, page, pageSize, filters);
-    return { ...taskDetail, membership_accounts: membershipItems };
+    try {
+      const membershipItems = await fetchMembershipItems(taskDetail.task.id, page, pageSize, filters);
+      const nextDetail = { ...taskDetail, membership_accounts: membershipItems };
+      setDetail((current) => current && current.task.id === taskDetail.task.id ? nextDetail : current);
+      return nextDetail;
+    } catch (error) {
+      setActionError(`读取准入前置失败：${errorMessage(error)}`);
+      return taskDetail;
+    }
   }
 
   async function loadDetail(task: TaskCenterTask) {
     setMembershipFilters(DEFAULT_MEMBERSHIP_FILTERS);
-    setDetail(await fetchTaskDetailWithMembership(task.id, 1, membershipPage.pageSize, DEFAULT_MEMBERSHIP_FILTERS));
+    setActionError('');
+    try {
+      const taskDetail = await fetchTaskDetail(task.id);
+      setDetail(taskDetail);
+      await loadMembershipForDetail(taskDetail, 1, membershipPage.pageSize, DEFAULT_MEMBERSHIP_FILTERS);
+    } catch (error) {
+      setActionError(`读取任务 ${task.id} 详情失败：${errorMessage(error)}`);
+    }
   }
 
   async function fetchMembershipItems(taskId: string, page: number, pageSize: number, filters: MembershipFilters = membershipFilters) {
