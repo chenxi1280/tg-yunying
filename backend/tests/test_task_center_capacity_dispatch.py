@@ -643,7 +643,7 @@ def test_target_membership_requires_send_rechecks_existing_group_link(monkeypatc
         assert action.result["membership_status"] == "permission_denied"
         verification = session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7, VerificationTask.account_id == 11))
         assert verification is not None
-        assert verification.status == "待处理"
+        assert verification.status == "失败"
         assert verification.suggested_action == "关注频道"
 
 
