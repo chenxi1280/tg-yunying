@@ -155,6 +155,25 @@ export function WizardTypeConfig({
             },
           ]}
         />
+        <Collapse
+          ghost
+          items={[
+            {
+              key: 'membership-strategy',
+              label: '准入策略',
+              children: (
+                <div className="form-grid">
+                  <Form.Item name="auto_join_target" label="自动入群"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
+                  <Form.Item name="auto_follow_required_channel" label="自动关注关联频道"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
+                  <Form.Item name="auto_resolve_verification" label="自动处理验证"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
+                  <Form.Item name="ai_assisted_verification" label="AI 辅助验证"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
+                  <Form.Item name="captcha_failure_policy" label="图形验证码失败处理"><Select options={[{ value: 'manual', label: '转人工处理' }]} /></Form.Item>
+                  <Form.Item name="membership_max_concurrent" label="准入子任务并发数"><InputNumber min={1} max={50} /></Form.Item>
+                </div>
+              ),
+            },
+          ]}
+        />
       </Space>
     );
   }
@@ -264,12 +283,32 @@ export function WizardTypeConfig({
   );
 }
 
-export function WizardOperationProfile({ form, values }: { form: any; values: Record<string, any> }) {
+export function WizardOperationProfile({ form, values, taskType }: { form: any; values: Record<string, any>; taskType: TaskCenterTaskType }) {
   const selectedTemplate = operationTemplate(values.operation_template_id);
   const curve = curveNumbers(values.hourly_activity_curve ?? selectedTemplate.curve);
+  const isAiGroup = taskType === 'group_ai_chat';
+  const currentHour = new Date().getHours();
+  const currentRounds = curve[currentHour] ?? 0;
+  const messagesPerRound = Number(values.messages_per_round || 0);
+  const hourlyLimit = Number(values.max_actions_per_hour || 0);
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
-      <Alert type="info" showIcon message={`预计运行摘要：${operationProfileSummary(values)}。系统会按曲线、账号容量和风控自动推导静默、低频、爬坡和收尾。`} />
+      <Alert
+        type="info"
+        showIcon
+        message={
+          isAiGroup
+            ? `AI 活跃群曲线表示每小时启动轮数：当前 ${String(currentHour).padStart(2, '0')}:00 为 ${currentRounds} 轮/小时；每轮上限和小时硬上限共同决定发送量。`
+            : `预计运行摘要：${operationProfileSummary(values)}。频道类任务会按曲线、账号容量和风控分配动作预算。`
+        }
+      />
+      {isAiGroup && (
+        <Alert
+          type="info"
+          showIcon
+          message={`本小时理论最大发送：${hourlyLimit && messagesPerRound ? Math.min(currentRounds * messagesPerRound, hourlyLimit) : currentRounds * Math.max(1, messagesPerRound || 1)} 条；曲线不再压低参与账号比例。`}
+        />
+      )}
       <div className="form-grid">
         <Form.Item name="operation_template_id" label="24 小时活跃曲线">
           <Select
@@ -296,14 +335,14 @@ export function WizardOperationProfile({ form, values }: { form: any; values: Re
             label: '手动微调曲线',
             children: (
               <div className="form-grid">
-                <Form.Item name="hourly_activity_curve" label="小时强度">
+                <Form.Item name="hourly_activity_curve" label={isAiGroup ? '每小时轮数' : '小时预算权重'}>
                   <Input.TextArea
                     rows={3}
                     onChange={() => form.setFieldsValue({ operation_profile_manual_override: true })}
                   />
                 </Form.Item>
-                <Form.Item name="quiet_threshold" label="低频阈值"><InputNumber min={0} max={100} /></Form.Item>
-                <Form.Item name="peak_threshold" label="高峰阈值"><InputNumber min={0} max={100} /></Form.Item>
+                <Form.Item name="quiet_threshold" label="低频阈值"><InputNumber min={0} max={60} /></Form.Item>
+                <Form.Item name="peak_threshold" label="高峰阈值"><InputNumber min={0} max={60} /></Form.Item>
                 <Form.Item name="operation_profile_manual_override" hidden><Checkbox /></Form.Item>
               </div>
             ),
@@ -354,9 +393,12 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
   const displayTarget = targetName(values, targets);
   const precheckStatus = loading ? '预检中' : precheck ? precheck.decision === 'allow' ? '通过' : precheck.decision === 'warn' ? '有风险' : '阻塞' : '未执行';
   const recommended = precheck?.capacity_summary?.recommended_limits;
+  const profileUnit = taskType === 'group_ai_chat' ? '轮/小时' : '权重';
   const recommendedSummary = recommended ? [
+    recommended.current_hour_rounds ? `当前轮数 ${recommended.current_hour_rounds}` : '',
     recommended.max_actions_per_hour ? `每小时 ${recommended.max_actions_per_hour}` : '',
     recommended.messages_per_round ? `每轮 ${recommended.messages_per_round}` : '',
+    recommended.estimated_hourly_capacity ? `理论小时容量 ${recommended.estimated_hourly_capacity}` : '',
     recommended.target_comments_per_message ? `每条 ${recommended.target_comments_per_message}` : '',
     recommended.max_comments_per_account_per_hour ? `每号每小时 ${recommended.max_comments_per_account_per_hour}` : '',
   ].filter(Boolean).join('；') : '等待预检';
@@ -387,9 +429,9 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       { key: 'membership', label: '准入前置', children: precheck?.membership_subtask_preview?.subtask_type ? `已满足 ${precheck.ready_account_count} 个，待准备 ${precheck.preparable_account_count} 个，预计准入动作 ${precheck.estimated_membership_actions} 个，进度 ${precheck.membership_subtask_preview.progress_percent ?? 0}%` : '无额外准入动作' },
       { key: 'targetAbility', label: '目标能力', children: precheck?.target_ability?.length ? precheck.target_ability.map((item) => `${item.title || item.target_id} / ${item.can_task ? '可创建任务' : item.auth_status || '不可用'}`).join('；') : displayTarget },
       { key: 'estimate', label: '预计动作量', children: precheck ? `预计 ${precheck.estimated_actions} 条，容量缺口 ${precheck.capacity_shortfall}` : '等待预检' },
-      { key: 'recommend', label: '推荐数量', children: recommendedSummary },
+      { key: 'recommend', label: '推荐数量', children: precheck?.round_capacity_explanation ?? recommendedSummary },
       { key: 'capacity', label: '容量口径', children: precheck?.capacity_summary ? `目标每条 ${precheck.capacity_summary.target_per_message ?? 0}，有效账号 ${precheck.capacity_summary.effective_account_count ?? 0}，最大并发 ${precheck.capacity_summary.max_concurrent ?? 0}，缺口 ${precheck.capacity_summary.capacity_shortfall ?? 0}。${precheck.capacity_summary.limit_note ?? ''}` : '等待预检' },
-      { key: 'pacing', label: '曲线摘要', children: `${operationProfileSummary(values)}；当前 ${String(profile.hour).padStart(2, '0')}:00 强度 ${profile.intensity}，${profile.mode}运行` },
+      { key: 'pacing', label: '曲线摘要', children: `${operationProfileSummary(values)}；当前 ${String(profile.hour).padStart(2, '0')}:00 ${profile.intensity} ${profileUnit}，${profile.mode}运行` },
       { key: 'rule', label: '规则版本', children: precheck?.rule_version ? `规则集 #${precheck.rule_version.rule_set_id} / v${precheck.rule_version.version} / ${precheck.rule_version.status}` : ['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType) ? ruleSummary(values, ruleSets) : '平台默认规则' },
       { key: 'ai', label: 'AI 摘要', children: taskType === 'group_ai_chat' ? `语气 ${values.tone || 'auto'}，黑话集 ${selectedSlang ? `${selectedSlang.name} / v${selectedSlang.version}` : '系统默认语气'}` : taskType === 'channel_comment' ? `评论方向 ${values.comment_style || 'mixed'}，主题 ${values.topic_hint || '按消息内容'}` : '-' },
       { key: 'risk', label: '风控命中', children: precheck?.risk_hits?.length ? precheck.risk_hits.map(precheckReasonLabel).join('；') : `每小时最大发送量 ${values.max_actions_per_hour || '按系统默认'}，失败重试 ${values.max_retries ?? 3} 次` },

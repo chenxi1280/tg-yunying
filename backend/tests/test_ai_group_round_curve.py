@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+import pytest
+
+from app.schemas.task_center import OperationProfile
+from app.services.task_center.pacing import ai_next_run_after
+from app.services.task_center.executors import group_ai_chat
+
+
+def _curve(hour: int, rounds: int) -> list[int]:
+    values = [0 for _ in range(24)]
+    values[hour] = rounds
+    return values
+
+
+def test_operation_profile_treats_curve_values_as_hourly_rounds() -> None:
+    profile = OperationProfile(hourly_activity_curve=_curve(20, 60))
+
+    assert profile.hourly_activity_curve[20] == 60
+
+
+def test_operation_profile_rejects_hourly_rounds_above_product_limit() -> None:
+    with pytest.raises(ValueError, match="每小时轮数"):
+        OperationProfile(hourly_activity_curve=_curve(20, 61))
+
+
+def test_auto_messages_per_round_uses_current_hour_rounds(monkeypatch) -> None:
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: datetime(2026, 6, 3, 20, 0, 0))
+    pacing_config = {
+        "max_actions_per_hour": 120,
+        "operation_profile": {"hourly_activity_curve": _curve(20, 6)},
+    }
+
+    assert group_ai_chat._auto_messages_per_round({}, "高峰期", True, pacing_config) == 20
+
+
+def test_participant_count_does_not_apply_curve_ramp_ratio(monkeypatch) -> None:
+    accounts = [object() for _ in range(100)]
+    monkeypatch.setattr(group_ai_chat.random, "uniform", lambda _lo, _hi: 1.0)
+
+    assert group_ai_chat._desired_participant_count(accounts, {"participation_rate": 0.8}, "低频期", 0.1) == 80
+
+
+def test_ai_next_run_after_uses_hourly_round_interval() -> None:
+    pacing_config = {"operation_profile": {"hourly_activity_curve": _curve(20, 6)}}
+
+    assert ai_next_run_after(pacing_config, datetime(2026, 6, 3, 20, 0, 0)) == datetime(2026, 6, 3, 20, 10, 0)
+
+
+def test_ai_next_run_after_skips_sleep_hours() -> None:
+    pacing_config = {"operation_profile": {"hourly_activity_curve": _curve(20, 6)}}
+
+    assert ai_next_run_after(pacing_config, datetime(2026, 6, 3, 19, 30, 0)) == datetime(2026, 6, 3, 20, 0, 0)

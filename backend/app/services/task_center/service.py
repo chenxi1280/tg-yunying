@@ -46,7 +46,7 @@ from .channel_membership import (
 )
 from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims
 from .executors import build_task_plan
-from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _membership_accounts, _membership_phase, _message_groups, _relay_batches, _relay_recent_sources, _task_payload
+from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _membership_accounts, _membership_items, _membership_phase, _message_groups, _relay_batches, _relay_recent_sources, _task_payload
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
@@ -562,6 +562,50 @@ def list_actions_page(
         )
     )
     return _action_payloads_with_issue_rollup(session, tenant_id, actions), int(total)
+
+
+def list_membership_items_page(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    *,
+    status: str | None = None,
+    phase: str | None = None,
+    account_id: int | None = None,
+    manual_required: bool | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> tuple[list[dict[str, Any]], int]:
+    task = _get_task(session, tenant_id, task_id)
+    actions = _list_membership_actions(session, tenant_id, task.id, status=status, account_id=account_id)
+    rows = _membership_items(session, task, actions)
+    if phase:
+        rows = [row for row in rows if row["phase"] == phase]
+    if manual_required is not None:
+        rows = [row for row in rows if row["manual_required"] == manual_required]
+    total = len(rows)
+    start = (page - 1) * page_size
+    return rows[start : start + page_size], total
+
+
+def _list_membership_actions(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    *,
+    status: str | None = None,
+    account_id: int | None = None,
+) -> list[Action]:
+    filters = [
+        Action.tenant_id == tenant_id,
+        Action.task_id == task_id,
+        Action.action_type.in_([TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]),
+    ]
+    if status:
+        filters.append(Action.status == status)
+    if account_id is not None:
+        filters.append(Action.account_id == account_id)
+    return list(session.scalars(select(Action).where(*filters).order_by(Action.scheduled_at.desc(), Action.created_at.desc())))
 
 
 def list_action_attempts(session: Session, tenant_id: int, task_id: str, action_id: str) -> list[ExecutionAttempt]:
@@ -1378,6 +1422,7 @@ __all__ = [
     "list_action_attempts",
     "list_actions_page",
     "list_actions",
+    "list_membership_items_page",
     "list_reviews",
     "list_tasks",
     "pause_task",

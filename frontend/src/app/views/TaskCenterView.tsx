@@ -2,8 +2,8 @@ import React from 'react';
 import { Alert, Button, Card, Collapse, Form, Input, Modal, Select, Space, Steps, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, CirclePause, CirclePlay, RefreshCcw } from 'lucide-react';
-import { api, ApiError } from '../../shared/api/client';
-import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskPrecheck } from '../types';
+import { api, apiWithMeta, ApiError } from '../../shared/api/client';
+import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskMembershipItem, TaskPrecheck } from '../types';
 import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
 import { fromBeijingDateTimeLocalValue } from '../time';
 import {
@@ -67,9 +67,13 @@ function failureDiagnosis(action: TaskCenterAction) {
 type DangerousTaskAction = 'stop' | 'reset' | 'delete';
 type TaskTypeFilter = TaskCenterAnyTaskType | 'all';
 type AiLimitRecommendation = NonNullable<TaskPrecheck['capacity_summary']['recommended_limits']>;
-type AiLimitRecommendationField = keyof Omit<AiLimitRecommendation, 'basis'>;
+type AiLimitRecommendationField = 'max_actions_per_hour' | 'messages_per_round' | 'target_comments_per_message' | 'max_comments_per_account_per_hour' | 'current_hour_rounds' | 'estimated_hourly_capacity';
 type AiLimitTaskType = Extract<TaskCenterTaskType, 'group_ai_chat' | 'channel_comment'>;
+type MembershipPageState = { current: number; pageSize: number; total: number; loading: boolean };
+type MembershipFilters = { phase: string; manualRequired: string };
 const TASK_CREATE_TIMEOUT_MS = 120_000;
+const MEMBERSHIP_PAGE_SIZE = 20;
+const DEFAULT_MEMBERSHIP_FILTERS: MembershipFilters = { phase: 'all', manualRequired: 'all' };
 const GROUP_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'messages_per_round'];
 const COMMENT_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'target_comments_per_message', 'max_comments_per_account_per_hour'];
 
@@ -94,6 +98,8 @@ function recommendedLimitSummary(recommendations?: AiLimitRecommendation | null)
     messages_per_round: '每轮',
     target_comments_per_message: '每条累计',
     max_comments_per_account_per_hour: '每号每小时',
+    current_hour_rounds: '当前轮数',
+    estimated_hourly_capacity: '理论小时容量',
   };
   const parts = (Object.keys(labels) as AiLimitRecommendationField[])
     .map((field) => typeof recommendations[field] === 'number' ? `${labels[field]} ${recommendations[field]}` : '')
@@ -150,6 +156,8 @@ export default function TaskCenterView({
   const [precheckLoading, setPrecheckLoading] = React.useState(false);
   const [editRecommendation, setEditRecommendation] = React.useState<AiLimitRecommendation | null>(null);
   const [editRecommendationLoading, setEditRecommendationLoading] = React.useState(false);
+  const [membershipPage, setMembershipPage] = React.useState<MembershipPageState>({ current: 1, pageSize: MEMBERSHIP_PAGE_SIZE, total: 0, loading: false });
+  const [membershipFilters, setMembershipFilters] = React.useState<MembershipFilters>(DEFAULT_MEMBERSHIP_FILTERS);
   const [wizardStep, setWizardStep] = React.useState(0);
   const [taskType, setTaskType] = React.useState<TaskCenterTaskType>('group_ai_chat');
   const [taskTypeFilter, setTaskTypeFilter] = React.useState<TaskTypeFilter>('all');
@@ -292,14 +300,57 @@ export default function TaskCenterView({
     if (!focusTask || appliedFocusNonce.current === focusTask.nonce) return;
     appliedFocusNonce.current = focusTask.nonce;
     setActionError('');
-    api<TaskCenterDetail>(`/tasks/${focusTask.taskId}`)
+    fetchTaskDetailWithMembership(focusTask.taskId, 1, MEMBERSHIP_PAGE_SIZE, DEFAULT_MEMBERSHIP_FILTERS)
       .then((taskDetail) => setDetail(taskDetail))
       .catch(() => setActionError(`读取任务 ${focusTask.taskId} 详情失败`))
       .finally(() => onFocusTaskConsumed?.());
   }, [focusTask, onFocusTaskConsumed]);
 
+  async function fetchTaskDetailWithMembership(taskId: string, page: number, pageSize: number, filters: MembershipFilters = membershipFilters) {
+    const taskDetail = await api<TaskCenterDetail>(`/tasks/${taskId}`);
+    if (isSystemTask(taskDetail.task)) {
+      setMembershipPage({ current: 1, pageSize: MEMBERSHIP_PAGE_SIZE, total: 0, loading: false });
+      return taskDetail;
+    }
+    const membershipItems = await fetchMembershipItems(taskId, page, pageSize, filters);
+    return { ...taskDetail, membership_accounts: membershipItems };
+  }
+
   async function loadDetail(task: TaskCenterTask) {
-    setDetail(await api<TaskCenterDetail>(`/tasks/${task.id}`));
+    setMembershipFilters(DEFAULT_MEMBERSHIP_FILTERS);
+    setDetail(await fetchTaskDetailWithMembership(task.id, 1, membershipPage.pageSize, DEFAULT_MEMBERSHIP_FILTERS));
+  }
+
+  async function fetchMembershipItems(taskId: string, page: number, pageSize: number, filters: MembershipFilters = membershipFilters) {
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    if (filters.phase !== 'all') params.set('phase', filters.phase);
+    if (filters.manualRequired === 'true') params.set('manual_required', 'true');
+    if (filters.manualRequired === 'false') params.set('manual_required', 'false');
+    setMembershipPage((current) => ({ ...current, current: page, pageSize, loading: true }));
+    try {
+      const response = await apiWithMeta<TaskMembershipItem[]>(`/tasks/${taskId}/membership-items?${params.toString()}`);
+      const total = Number(response.headers.get('X-Total-Count') || response.data.length);
+      setMembershipPage({ current: page, pageSize, total, loading: false });
+      return response.data;
+    } catch (error) {
+      setMembershipPage((current) => ({ ...current, loading: false }));
+      throw error;
+    }
+  }
+
+  async function loadMembershipPage(page: number, pageSize: number, filters: MembershipFilters = membershipFilters) {
+    if (!detail || isSystemTask(detail.task)) return;
+    try {
+      const membershipItems = await fetchMembershipItems(detail.task.id, page, pageSize, filters);
+      setDetail((current) => current && current.task.id === detail.task.id ? { ...current, membership_accounts: membershipItems } : current);
+    } catch (error) {
+      setActionError(errorMessage(error));
+    }
+  }
+
+  function updateMembershipFilters(filters: MembershipFilters) {
+    setMembershipFilters(filters);
+    void loadMembershipPage(1, membershipPage.pageSize, filters);
   }
 
   function isSystemTask(task: TaskCenterTask | null | undefined) {
@@ -369,8 +420,8 @@ export default function TaskCenterView({
       operation_template_id: operationTemplateId,
       hourly_activity_curve: curveText(operationCurve),
       operation_profile_manual_override: Boolean(operationProfile.manual_override),
-      quiet_threshold: operationProfile.quiet_threshold ?? 20,
-      peak_threshold: operationProfile.peak_threshold ?? 70,
+      quiet_threshold: operationProfile.quiet_threshold ?? 2,
+      peak_threshold: operationProfile.peak_threshold ?? 8,
       max_retries: failure.max_retries ?? 3,
       retry_delay_seconds: failure.retry_delay_seconds ?? 60,
       retry_backoff: failure.retry_backoff ?? 'exponential',
@@ -562,6 +613,17 @@ export default function TaskCenterView({
     return [...usernames, ...names].filter(Boolean).join('\n');
   }
 
+  function membershipStrategyPayload(values: any) {
+    return {
+      auto_join_target: values.auto_join_target !== false,
+      auto_follow_required_channel: values.auto_follow_required_channel !== false,
+      auto_resolve_verification: values.auto_resolve_verification !== false,
+      ai_assisted_verification: values.ai_assisted_verification !== false,
+      captcha_failure_policy: values.captcha_failure_policy ?? 'manual',
+      membership_max_concurrent: values.membership_max_concurrent ?? 5,
+    };
+  }
+
   function createPayload(values: any): Record<string, any> {
     const base = commonPayload(values);
     if (taskType === 'group_ai_chat') {
@@ -592,6 +654,7 @@ export default function TaskCenterView({
         messages_per_round_mode: values.messages_per_round_mode ?? 'auto',
         messages_per_round: values.messages_per_round ?? 1,
         history_fetch_account_id: values.history_fetch_account_id ?? null,
+        ...membershipStrategyPayload(values),
         context_expire_after_messages: values.context_expire_after_messages ?? 10,
         idle_continuation_enabled: values.idle_continuation_enabled ?? true,
         idle_continuation_seconds: values.idle_continuation_seconds ?? 300,
@@ -645,7 +708,7 @@ export default function TaskCenterView({
     };
     if (type === 'group_ai_chat') {
       const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
-      return { ...base, target_operation_target_id: values.target_operation_target_id ?? null, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, target_group_name: target?.title ?? '', topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', slang_prompt_template_id: values.slang_prompt_template_id ?? null, slang_terms: parseKeyValueMap(values.slang_terms), tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, account_personas: parseKeyValueMap(values.account_personas), account_memory_depth: values.account_memory_depth ?? 3, messages_per_round_mode: values.messages_per_round_mode ?? 'auto', messages_per_round: values.messages_per_round ?? 1, history_fetch_account_id: values.history_fetch_account_id ?? null, idle_continuation_enabled: values.idle_continuation_enabled ?? true, idle_continuation_seconds: values.idle_continuation_seconds ?? 300, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
+      return { ...base, target_operation_target_id: values.target_operation_target_id ?? null, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, target_group_name: target?.title ?? '', topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', slang_prompt_template_id: values.slang_prompt_template_id ?? null, slang_terms: parseKeyValueMap(values.slang_terms), tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, account_personas: parseKeyValueMap(values.account_personas), account_memory_depth: values.account_memory_depth ?? 3, messages_per_round_mode: values.messages_per_round_mode ?? 'auto', messages_per_round: values.messages_per_round ?? 1, history_fetch_account_id: values.history_fetch_account_id ?? null, ...membershipStrategyPayload(values), idle_continuation_enabled: values.idle_continuation_enabled ?? true, idle_continuation_seconds: values.idle_continuation_seconds ?? 300, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
     }
     if (type === 'group_relay') {
       const sourceTargetIds = csvNumbers(values.source_operation_target_ids);
@@ -1214,7 +1277,7 @@ export default function TaskCenterView({
           {wizardStep === 3 && (
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
               <WizardAccounts accountMode={accountMode} accounts={accounts} accountPools={accountPools} />
-              <WizardOperationProfile form={form} values={formValues} />
+              <WizardOperationProfile form={form} values={formValues} taskType={taskType} />
               <Collapse
                 ghost
                 items={[
@@ -1264,7 +1327,7 @@ export default function TaskCenterView({
           <Typography.Title level={5}>账号选择</Typography.Title>
           <WizardAccounts accountMode={editAccountMode} accounts={accounts} accountPools={accountPools} />
           <Typography.Title level={5}>节奏策略</Typography.Title>
-          <WizardOperationProfile form={editForm} values={editFormValues} />
+          <WizardOperationProfile form={editForm} values={editFormValues} taskType={editableTaskType} />
           {editShowsAiLimitRecommendation && (
             <Alert
               className="form-alert"
@@ -1292,6 +1355,9 @@ export default function TaskCenterView({
         executedActions={executedActions}
         detailProfile={detailProfile}
         detailPlannedTotal={detailPlannedTotal}
+        membershipLoading={membershipPage.loading}
+        membershipPagination={membershipPage}
+        membershipFilters={membershipFilters}
         aiGenerationColumns={aiGenerationColumns}
         aiAccountProfileColumns={aiAccountProfileColumns}
         aiCycleColumns={aiCycleColumns}
@@ -1304,8 +1370,14 @@ export default function TaskCenterView({
         recordColumns={recordColumns}
         onEditTask={(task) => void openEditTask(task)}
         onRefreshTask={(task) => void loadDetail(task)}
+        onMembershipPageChange={(page, pageSize) => void loadMembershipPage(page, pageSize)}
+        onMembershipFiltersChange={updateMembershipFilters}
         onResumeTask={(task) => void taskAction(task, 'resume')}
-        onClose={() => setDetail(null)}
+        onClose={() => {
+          setDetail(null);
+          setMembershipPage({ current: 1, pageSize: MEMBERSHIP_PAGE_SIZE, total: 0, loading: false });
+          setMembershipFilters(DEFAULT_MEMBERSHIP_FILTERS);
+        }}
       />
       <Modal
         className="tg-modal large"

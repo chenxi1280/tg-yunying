@@ -23,7 +23,7 @@ class QuietHours(BaseModel):
     timezone: str = "Asia/Shanghai"
 
 
-DEFAULT_HOURLY_ACTIVITY_CURVE = [10, 8, 5, 5, 0, 0, 8, 15, 35, 45, 55, 60, 45, 40, 55, 65, 70, 75, 80, 85, 70, 50, 25, 15]
+DEFAULT_HOURLY_ACTIVITY_CURVE = [2, 2, 1, 1, 0, 0, 1, 2, 4, 5, 6, 6, 5, 4, 6, 7, 8, 9, 10, 10, 8, 6, 4, 3]
 
 
 class OperationProfile(BaseModel):
@@ -32,15 +32,20 @@ class OperationProfile(BaseModel):
     template_id: str = "natural_full_day"
     source: Literal["built_in_default", "target_recommended", "manual"] = "built_in_default"
     hourly_activity_curve: list[int] = Field(default_factory=lambda: list(DEFAULT_HOURLY_ACTIVITY_CURVE))
-    quiet_threshold: int = Field(default=20, ge=0, le=100)
-    peak_threshold: int = Field(default=70, ge=0, le=100)
+    quiet_threshold: int = Field(default=2, ge=0, le=60)
+    peak_threshold: int = Field(default=8, ge=0, le=60)
     manual_override: bool = False
 
     @model_validator(mode="after")
     def validate_curve(self) -> "OperationProfile":
         if len(self.hourly_activity_curve) != 24:
-            raise ValueError("hourly_activity_curve 必须包含 24 个小时强度点")
-        self.hourly_activity_curve = [min(100, max(0, int(item))) for item in self.hourly_activity_curve]
+            raise ValueError("hourly_activity_curve 必须包含 24 个每小时轮数点")
+        normalized = [int(item) for item in self.hourly_activity_curve]
+        if any(item < 0 or item > 60 for item in normalized):
+            raise ValueError("hourly_activity_curve 每小时轮数必须在 0-60 之间")
+        if not any(item > 0 for item in normalized):
+            raise ValueError("hourly_activity_curve 不能全为 0")
+        self.hourly_activity_curve = normalized
         if self.peak_threshold < self.quiet_threshold:
             self.peak_threshold = self.quiet_threshold
         return self
@@ -167,6 +172,12 @@ class GroupAIChatConfig(BaseModel):
     messages_per_round_mode: Literal["auto", "manual"] = "auto"
     messages_per_round: int = Field(default=1, ge=1)
     history_fetch_account_id: int | None = None
+    auto_join_target: bool = True
+    auto_follow_required_channel: bool = True
+    auto_resolve_verification: bool = True
+    ai_assisted_verification: bool = True
+    captcha_failure_policy: Literal["manual"] = "manual"
+    membership_max_concurrent: int = Field(default=5, ge=1, le=50)
     idle_continuation_enabled: bool = True
     idle_continuation_seconds: int = Field(default=300, ge=30, le=86400)
     silent_mode_enabled: bool = True
@@ -743,6 +754,30 @@ class TaskDetailOut(BaseModel):
     learning_profile_preview: dict[str, Any] = Field(default_factory=dict)
 
 
+class TaskMembershipItemOut(BaseModel):
+    item_id: str
+    latest_action_id: str
+    account_id: int
+    display_name: str = ""
+    username: str = ""
+    status: str
+    phase: str
+    can_send: bool = False
+    target_id: int | None = None
+    target_type: str = ""
+    target_display: str = ""
+    scheduled_at: datetime | None = None
+    completed_at: datetime | None = None
+    failure_type: str = ""
+    failure_detail: str = ""
+    manual_required: bool = False
+    verification_task_id: int | None = None
+    verification_status: str = ""
+    verification_action: str = ""
+    can_auto_resolve: bool = False
+    challenge_question: str = ""
+
+
 class TaskRetryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -826,6 +861,12 @@ class TaskPrecheckOut(ApiModel):
     membership_warnings: list[str] = Field(default_factory=list)
     membership_subtask_preview: dict[str, Any] = Field(default_factory=dict)
     learning_profile_preview: dict[str, Any] = Field(default_factory=dict)
+    hourly_round_curve: list[int] = Field(default_factory=list)
+    current_hour_rounds: int = 0
+    messages_per_round: int = 0
+    max_actions_per_hour: int = 0
+    estimated_hourly_capacity: int = 0
+    round_capacity_explanation: str = ""
     estimated_actions: int
     capacity_shortfall: int
     capacity_summary: dict[str, Any] = Field(default_factory=dict)
@@ -903,6 +944,7 @@ __all__ = [
     "TaskAICycleOut",
     "TaskAIGenerationRecordOut",
     "TaskDetailOut",
+    "TaskMembershipItemOut",
     "TaskDetailAccountOut",
     "TaskAITurnOut",
     "TaskMessageGroupOut",

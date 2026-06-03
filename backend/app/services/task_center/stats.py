@@ -10,7 +10,7 @@ from app.models import Action, Task
 from app.services._common import _now
 
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
-from .pacing import next_run_after
+from .pacing import ai_next_run_after, next_run_after
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
 BUSINESS_MEMBERSHIP_ACTION_TYPES = ["ensure_channel_membership", "ensure_target_membership"]
@@ -22,6 +22,7 @@ def next_run_after_task(task: Task):
         waiting_until = _stats_datetime(task, "idle_continuation_next_run_at")
         if waiting_until:
             return waiting_until
+        return ai_next_run_after(task.pacing_config or {})
     if task.type in CHANNEL_DYNAMIC_TASK_TYPES and (config.get("message_scope") or "latest_n") == "dynamic_new":
         interval = int(config.get("listener_interval_seconds") or 30)
         return utc_now_naive() + timedelta(seconds=max(1, interval))

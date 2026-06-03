@@ -14,6 +14,7 @@ from .account_pool import select_task_accounts
 from .ai_limits import recommend_ai_limits
 from .channel_membership import channel_membership_summary
 from .config_fields import COMMON_CREATE_FIELDS, TASK_CREATE_MODELS
+from .pacing import current_hour_rounds
 from .utils import as_int as _as_int, as_int_list as _as_int_list, as_str_list as _as_str_list
 
 
@@ -47,6 +48,7 @@ def run_precheck_task_creation(
     target_resolution: dict[str, Any] = {}
     membership_summary: dict[str, Any] = {}
     capacity_summary: dict[str, Any] = {}
+    type_config: dict[str, Any] = {}
     estimated_actions = 0
     capacity_shortfall = 0
     try:
@@ -69,7 +71,7 @@ def run_precheck_task_creation(
     account_config = create_payload.account_config.model_dump(mode="json") if create_payload else dict((payload.payload or {}).get("account_config") or {})
     candidates = _precheck_candidate_accounts(session, tenant_id, account_config)
     if task_type in {"channel_view", "channel_like", "channel_comment", "group_ai_chat", "group_relay"} and target_ability:
-        membership_summary = _precheck_membership_summary(session, tenant_id, target_ability, account_config, candidates)
+        membership_summary = _precheck_membership_summary(session, tenant_id, target_ability, account_config, type_config, candidates)
     membership_subtask_preview = _membership_subtask_preview(membership_summary)
     available_accounts = (
         select_task_accounts(
@@ -110,9 +112,11 @@ def run_precheck_task_creation(
         max_concurrent=int(account_config.get("max_concurrent") or 20),
         shortfall=capacity_shortfall,
     )
+    ai_round_summary = _precheck_ai_round_summary(task_type, create_payload, membership_summary, available_count)
     capacity_summary["recommended_limits"] = recommend_ai_limits(
         task_type,
         _precheck_ready_account_count(task_type, membership_summary, available_count),
+        current_hour_rounds=max(1, int(ai_round_summary.get("current_hour_rounds") or 0)),
     )
     if capacity_shortfall:
         warnings.append(f"预计单轮需要 {max(int(target_per_unit), 1)} 个账号，当前可用 {available_count} 个")
@@ -153,6 +157,7 @@ def run_precheck_task_creation(
         "estimated_membership_actions": int(membership_summary.get("estimated_membership_actions") or 0),
         "membership_warnings": _membership_warnings(membership_summary),
         "membership_subtask_preview": membership_subtask_preview,
+        **ai_round_summary,
         "estimated_actions": estimated_actions,
         "capacity_shortfall": capacity_shortfall,
         "capacity_summary": capacity_summary,
@@ -162,6 +167,36 @@ def run_precheck_task_creation(
         "warnings": sorted(set(filter(None, warnings))),
         "suggested_actions": sorted(set(filter(None, suggested_actions))),
         "trace_id": trace_id,
+    }
+
+
+def _precheck_ai_round_summary(task_type: str, create_payload: Any, membership_summary: dict[str, Any], available_count: int) -> dict[str, Any]:
+    if task_type != "group_ai_chat" or not create_payload:
+        return {}
+    pacing_config = create_payload.pacing_config.model_dump(mode="json")
+    curve = ((pacing_config.get("operation_profile") or {}).get("hourly_activity_curve") or [])
+    rounds = current_hour_rounds(pacing_config)
+    max_actions_per_hour = int(pacing_config.get("max_actions_per_hour") or 0)
+    ready_count = _precheck_ready_account_count(task_type, membership_summary, available_count)
+    recommended = recommend_ai_limits(task_type, ready_count, current_hour_rounds=max(1, rounds))
+    messages_per_round = int(recommended.get("messages_per_round") or 0)
+    if str(getattr(create_payload, "messages_per_round_mode", "auto")) == "manual":
+        messages_per_round = int(getattr(create_payload, "messages_per_round", messages_per_round) or messages_per_round)
+    hourly_capacity = min(
+        value
+        for value in [
+            rounds * max(0, messages_per_round),
+            max_actions_per_hour or None,
+        ]
+        if value is not None
+    ) if rounds and messages_per_round else 0
+    return {
+        "hourly_round_curve": curve,
+        "current_hour_rounds": rounds,
+        "messages_per_round": messages_per_round,
+        "max_actions_per_hour": max_actions_per_hour,
+        "estimated_hourly_capacity": hourly_capacity,
+        "round_capacity_explanation": f"当前小时 {rounds} 轮，每轮最多 {messages_per_round} 条，小时硬上限 {max_actions_per_hour or '未设置'} 条",
     }
 
 
@@ -353,6 +388,7 @@ def _precheck_membership_summary(
     tenant_id: int,
     target_ability: list[dict[str, Any]],
     account_config: dict[str, Any],
+    type_config: dict[str, Any],
     candidates: list[TgAccount],
 ) -> dict[str, Any]:
     summaries: list[dict[str, Any]] = []
@@ -370,6 +406,16 @@ def _precheck_membership_summary(
         summary["estimated_duration_seconds_min"] = 0 if not summary.get("need_join_account_count") else 30
         summary["estimated_duration_seconds_max"] = int(summary.get("need_join_account_count") or 0) * 180
         summary["effective_interaction_account_count"] = int(summary.get("joined_account_count") or 0) + int(summary.get("need_join_account_count") or 0)
+        if not _membership_strategy_enabled(type_config, target):
+            need_join = int(summary.get("need_join_account_count") or 0)
+            summary["strategy_disabled"] = True
+            summary["strategy_disabled_reason"] = _membership_strategy_disabled_reason(target)
+            summary["blocked_account_count"] = int(summary.get("blocked_account_count") or 0) + need_join
+            summary["need_join_account_count"] = 0
+            summary["estimated_membership_actions"] = 0
+            summary["estimated_duration_seconds_min"] = 0
+            summary["estimated_duration_seconds_max"] = 0
+            summary["effective_interaction_account_count"] = int(summary.get("joined_account_count") or 0)
         ability["membership"] = summary
         summaries.append(summary)
     if not summaries:
@@ -389,14 +435,27 @@ def _precheck_membership_summary(
         "estimated_duration_seconds_min": min(int(item.get("estimated_duration_seconds_min") or 0) for item in summaries),
         "estimated_duration_seconds_max": sum(int(item.get("estimated_duration_seconds_max") or 0) for item in summaries),
         "effective_interaction_account_count": sum(int(item.get("effective_interaction_account_count") or 0) for item in summaries),
+        "strategy_disabled_reason": "；".join(str(item.get("strategy_disabled_reason") or "") for item in summaries if item.get("strategy_disabled_reason")),
         "targets": summaries,
     }
+
+
+def _membership_strategy_enabled(type_config: dict[str, Any], target: OperationTarget) -> bool:
+    if target.target_type == "channel":
+        return bool(type_config.get("auto_follow_required_channel", True))
+    return bool(type_config.get("auto_join_target", True))
+
+
+def _membership_strategy_disabled_reason(target: OperationTarget) -> str:
+    return "准入策略已关闭自动关注关联频道" if target.target_type == "channel" else "准入策略已关闭自动入群"
 
 
 def _membership_warnings(summary: dict[str, Any]) -> list[str]:
     if not summary:
         return []
     warnings: list[str] = []
+    if summary.get("strategy_disabled_reason"):
+        warnings.append(str(summary["strategy_disabled_reason"]))
     if int(summary.get("need_join_account_count") or 0):
         warnings.append("部分账号需要先完成关注或加入")
     if int(summary.get("failed_account_count") or 0):

@@ -44,9 +44,19 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
         task.stats = stats
         return MembershipGateResult(False, blocked=True)
 
-    open_count = _open_membership_action_count(session, task)
-    created = _create_missing_membership_actions(session, task, channel, candidates, require_send=require_send)
     ready_count = int(summary.get("joined_account_count") or 0)
+    open_count = _open_membership_action_count(session, task)
+    strategy_enabled, disabled_reason = _membership_action_strategy(task, channel)
+    if not strategy_enabled:
+        stats["membership_stage"] = "membership_partial" if ready_count > 0 else "membership_blocked"
+        task.stats = stats
+        if ready_count > 0:
+            if task.last_error == disabled_reason:
+                task.last_error = ""
+            return MembershipGateResult(True)
+        task.last_error = disabled_reason
+        return MembershipGateResult(False, blocked=True)
+    created = _create_missing_membership_actions(session, task, channel, candidates, require_send=require_send)
     if created:
         stats["membership_stage"] = "membership_running"
         stats["membership_created_actions"] = int(stats.get("membership_created_actions") or 0) + created
@@ -314,8 +324,18 @@ def _create_missing_membership_actions(session: Session, task: Task, channel: Op
     return created
 
 
+def _membership_action_strategy(task: Task, channel: OperationTarget) -> tuple[bool, str]:
+    config = task.type_config or {}
+    if channel.target_type == "channel":
+        return bool(config.get("auto_follow_required_channel", True)), "准入策略已关闭自动关注关联频道"
+    return bool(config.get("auto_join_target", True)), "准入策略已关闭自动入群"
+
+
 def _membership_pacing_config(task: Task) -> dict[str, Any]:
     config = dict(task.pacing_config or {})
+    membership_concurrent = int((task.type_config or {}).get("membership_max_concurrent") or 0)
+    if membership_concurrent:
+        config["max_concurrent"] = membership_concurrent
     if (config.get("mode") or "template") == "fixed":
         return config
     return {**config, "template": config.get("template") or "moderate_6h"}

@@ -3260,17 +3260,17 @@ def test_ai_cycle_mode_applies_silent_window_and_daily_ramp():
 def test_operation_profile_drives_schedule_and_ai_cycle_mode():
     pacing_config = {
         "operation_profile": {
-            "hourly_activity_curve": [0, 0, 0, 0, 0, 0, 10, 20, 40, 60, 80, 100, 80, 60, 40, 30, 50, 70, 90, 100, 80, 50, 20, 10],
-            "quiet_threshold": 20,
-            "peak_threshold": 70,
+            "hourly_activity_curve": [0, 0, 0, 0, 0, 0, 1, 2, 4, 6, 8, 10, 8, 6, 4, 3, 5, 7, 9, 10, 8, 5, 2, 1],
+            "quiet_threshold": 2,
+            "peak_threshold": 8,
         }
     }
     times = schedule_times(6, pacing_config, start_at=datetime(2026, 5, 11, 1, 10))
     assert len(times) == 6
     assert all(item.hour >= 6 for item in times)
     assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 1, 30)) == ("休眠期", 0.0)
-    assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 6, 30)) == ("低频期", 0.1)
-    assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 11, 30)) == ("高峰期", 1.0)
+    assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 6, 30)) == ("低频期", 0.05)
+    assert ai_cycle_mode({"pacing_config": pacing_config}, now=datetime(2026, 5, 11, 11, 30)) == ("高峰期", 0.1)
 
 
 def test_group_ai_chat_round_uses_near_term_schedule_with_operation_curve(monkeypatch):
@@ -3313,9 +3313,9 @@ def test_group_ai_chat_round_uses_near_term_schedule_with_operation_curve(monkey
             pacing_config={
                 "mode": "template",
                 "operation_profile": {
-                    "hourly_activity_curve": [10, 8, 5, 5, 0, 0, 8, 15, 35, 45, 55, 60, 45, 40, 55, 65, 70, 75, 80, 85, 70, 50, 25, 15],
-                    "quiet_threshold": 20,
-                    "peak_threshold": 70,
+                    "hourly_activity_curve": [2, 2, 1, 1, 0, 0, 1, 2, 4, 5, 6, 6, 5, 4, 6, 7, 8, 9, 10, 10, 8, 6, 4, 3],
+                    "quiet_threshold": 2,
+                    "peak_threshold": 8,
                 },
             },
             type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 10, "participation_rate": 1, "participation_jitter": 0, "fact_anchor_required": False},
