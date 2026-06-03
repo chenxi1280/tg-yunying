@@ -277,13 +277,13 @@ def test_risk_control_account_quick_filter_drives_table_rows_before_pagination()
 
 
 def test_task_detail_membership_completion_uses_completed_at():
-    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskMembershipPanel.tsx").read_text()
 
     assert "完成时间" in source
     assert "dataIndex: 'completed_at'" in source
-    assert "detail.membership_phase?.status" in source
-    assert "detail.membership_phase?.progress_percent" in source
-    assert "detail.membership_phase?.current_phase" in source
+    assert "membershipPhase?.status" in source
+    assert "membershipPhase?.progress_percent" in source
+    assert "membershipPhase?.current_phase" in source
     assert "ready_account_count" in source
     assert "pending_account_count" in source
 
@@ -574,14 +574,12 @@ def test_task_center_lifecycle_buttons_match_task_status():
 
 def test_task_center_failure_diagnosis_is_visible_before_attempt_table():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
-    detail_modal = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
 
     assert "failure_diagnosis" in types
     assert "failureDiagnosis(action)" in source
     assert "处理建议" in source
     assert "账号/目标原因" in source
-    assert "failure_diagnosis" in detail_modal
     assert "task.status === 'paused' ? 'resume' : 'start'" in source
     assert ">{task.status === 'paused' ? '恢复' : '启动'}</Button>" not in source
     assert "disabled={task.status !== 'running'}" not in source

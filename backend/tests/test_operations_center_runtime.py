@@ -2129,7 +2129,7 @@ def test_group_tasks_accept_operation_target_ids_as_primary_references():
         assert relay_task.type_config["target_group_id"] == 9
         assert relay_task.type_config["target_group_ids"] == [9]
 
-        manual_curve = [0, 0, 0, 0, 0, 0, 10, 20, 40, 60, 80, 100, 80, 60, 40, 30, 50, 70, 90, 100, 80, 50, 20, 10]
+        manual_curve = [0, 0, 0, 0, 0, 0, 2, 4, 8, 12, 16, 20, 16, 12, 8, 6, 10, 14, 18, 20, 16, 10, 4, 2]
         custom_task = create_group_ai_chat_task(
             session,
             1,

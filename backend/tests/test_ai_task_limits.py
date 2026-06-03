@@ -168,7 +168,16 @@ def test_group_ai_auto_turn_count_uses_hour_limit(monkeypatch):
         _add_tenant(session)
         _add_group(session, account_count=30)
         task = _add_group_task(session, {"messages_per_round_mode": "auto", "participation_rate": 1, "participation_jitter": 0})
-        task.pacing_config = {"mode": "fixed", "max_actions_per_hour": 120, "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0}
+        round_curve = [0] * 24
+        round_curve[NOW.hour] = 12
+        task.pacing_config = {
+            "mode": "fixed",
+            "max_actions_per_hour": 120,
+            "interval_seconds_min": 0,
+            "interval_seconds_max": 0,
+            "jitter_percent": 0,
+            "operation_profile": {"hourly_activity_curve": round_curve},
+        }
         session.commit()
 
         created = build_group_ai_chat_plan(session, task)
