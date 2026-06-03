@@ -426,6 +426,12 @@ class TaskSettingsUpdate(TaskUpdate):
     messages_per_round_mode: Literal["auto", "manual"] | None = None
     messages_per_round: int | None = Field(default=None, ge=1)
     history_fetch_account_id: int | None = None
+    auto_join_target: bool | None = None
+    auto_follow_required_channel: bool | None = None
+    auto_resolve_verification: bool | None = None
+    ai_assisted_verification: bool | None = None
+    captcha_failure_policy: Literal["manual"] | None = None
+    membership_max_concurrent: int | None = Field(default=None, ge=1, le=50)
     idle_continuation_enabled: bool | None = None
     idle_continuation_seconds: int | None = Field(default=None, ge=30, le=86400)
     context_expire_after_messages: int | None = Field(default=None, ge=0, le=500)

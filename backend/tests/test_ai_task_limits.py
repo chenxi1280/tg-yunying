@@ -17,7 +17,7 @@ from app.models import (
     TgGroup,
     TgGroupAccount,
 )
-from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
+from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest, TaskSettingsUpdate
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.service import precheck_task_creation, reset_task
@@ -129,6 +129,24 @@ def test_group_ai_schema_exposes_membership_strategy_defaults():
     assert payload.ai_assisted_verification is True
     assert payload.captcha_failure_policy == "manual"
     assert payload.membership_max_concurrent == 5
+
+
+def test_group_ai_settings_update_accepts_membership_strategy_fields():
+    payload = TaskSettingsUpdate(
+        auto_join_target=False,
+        auto_follow_required_channel=False,
+        auto_resolve_verification=False,
+        ai_assisted_verification=False,
+        captcha_failure_policy="manual",
+        membership_max_concurrent=8,
+    )
+
+    assert payload.auto_join_target is False
+    assert payload.auto_follow_required_channel is False
+    assert payload.auto_resolve_verification is False
+    assert payload.ai_assisted_verification is False
+    assert payload.captcha_failure_policy == "manual"
+    assert payload.membership_max_concurrent == 8
 
 
 def test_group_ai_manual_participation_does_not_raise_turn_count(monkeypatch):
