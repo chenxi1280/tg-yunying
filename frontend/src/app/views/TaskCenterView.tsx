@@ -429,6 +429,7 @@ export default function TaskCenterView({
       timezone: task.timezone,
       scheduled_start: toDateTimeLocal(task.scheduled_start),
       scheduled_end: toDateTimeLocal(task.scheduled_end),
+      ...config,
       selection_mode: account.selection_mode ?? 'all',
       account_group_id: account.account_group_id ?? null,
       account_ids: account.account_ids ?? [],
@@ -448,7 +449,6 @@ export default function TaskCenterView({
       on_account_banned: failure.on_account_banned ?? 'skip_account',
       on_api_rate_limit: failure.on_api_rate_limit ?? 'wait_and_retry',
       on_content_rejected: failure.on_content_rejected ?? 'skip_message',
-      ...config,
       source_operation_target_ids: Array.isArray(config.source_groups)
         ? config.source_groups.map((item: any) => item?.operation_target_id).filter(Boolean)
         : [],
