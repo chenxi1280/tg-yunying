@@ -36,6 +36,7 @@ from app.schemas.task_center import (
     TaskUpdate,
 )
 from app.services._common import _now, audit, normalize_list_filter
+from app.timezone import as_beijing
 
 from .account_pool import select_task_accounts
 from .ai_generator import generate_channel_comments, generate_group_messages
@@ -320,7 +321,7 @@ def update_task_settings(session: Session, tenant_id: int, task_id: str, payload
         task.type_config = validated_type_config(task.type, next_config)
     _clear_unfinished_plan(session, task)
     if task.status not in {"completed", "failed"}:
-        now = _utc_now_naive()
+        now = _now()
         scheduled_start = _naive_datetime(task.scheduled_start)
         task.status = "pending" if scheduled_start and scheduled_start > now else "running"
         task.next_run_at = scheduled_start if task.status == "pending" else now
@@ -795,7 +796,7 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
                 continue
             processed += retry_failed_actions(session, task)
             if task.type == "group_ai_chat" and _has_open_actions(session, task):
-                if task.next_run_at and _absolute_naive_datetime(task.next_run_at) > _utc_now_naive():
+                if task.next_run_at and _business_naive_datetime(task.next_run_at) > _now():
                     future_open_action_task_ids.add(task.id)
                 refresh_task_stats(session, task)
                 session.commit()
@@ -1391,8 +1392,8 @@ def _absolute_naive_datetime(value: datetime) -> datetime:
     return value
 
 
-def _utc_now_naive() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+def _business_naive_datetime(value: datetime) -> datetime:
+    return as_beijing(value) or value
 
 
 __all__ = [
