@@ -756,7 +756,7 @@ class TaskDetailOut(BaseModel):
     ai_account_profiles: list[TaskAIAccountProfileOut] = Field(default_factory=list)
     relay_batches: list[TaskRelayBatchOut] = Field(default_factory=list)
     recent_relay_sources: list[TaskRelaySourceOut] = Field(default_factory=list)
-    profile_batch: dict[str, Any] = Field(default_factory=dict)
+    profile_batch: dict[str, Any] | None = None
     learning_profile_preview: dict[str, Any] = Field(default_factory=dict)
 
 
