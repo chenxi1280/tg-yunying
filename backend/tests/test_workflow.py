@@ -11,6 +11,7 @@ from app.database import SessionLocal
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult
 from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.services._common import _now
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
 from fastapi.testclient import TestClient
@@ -5019,7 +5020,7 @@ def test_task_center_settings_updates_config_and_rebuilds_unfinished_plan():
             next_run_at = session.get(Task, task_id).next_run_at
             if next_run_at.tzinfo:
                 next_run_at = next_run_at.replace(tzinfo=None)
-            assert next_run_at <= datetime.now(UTC).replace(tzinfo=None)
+            assert next_run_at <= _now()
 
 
 def test_task_center_settings_accepts_target_scope_refresh():
