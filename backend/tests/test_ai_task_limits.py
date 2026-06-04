@@ -17,7 +17,7 @@ from app.models import (
     TgGroup,
     TgGroupAccount,
 )
-from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest, TaskSettingsUpdate
+from app.schemas import GroupAIChatTaskCreate, TaskDetailOut, TaskPrecheckRequest, TaskSettingsUpdate
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.service import precheck_task_creation, reset_task
@@ -147,6 +147,37 @@ def test_group_ai_settings_update_accepts_membership_strategy_fields():
     assert payload.ai_assisted_verification is False
     assert payload.captcha_failure_policy == "manual"
     assert payload.membership_max_concurrent == 8
+
+
+def test_regular_task_detail_does_not_default_to_empty_profile_batch():
+    detail = TaskDetailOut(
+        task={
+            "id": "ai-limit-task",
+            "tenant_id": 1,
+            "name": "AI 活群数量",
+            "type": "group_ai_chat",
+            "status": "running",
+            "priority": 3,
+            "timezone": "Asia/Shanghai",
+            "scheduled_start": None,
+            "scheduled_end": None,
+            "max_duration_hours": None,
+            "next_run_at": NOW,
+            "last_error": "",
+            "account_config": {},
+            "pacing_config": {},
+            "failure_policy": {},
+            "type_config": {},
+            "stats": {},
+            "created_at": NOW,
+            "updated_at": NOW,
+        },
+        actions=[],
+        stats={},
+    )
+
+    assert detail.profile_batch is None
+    assert detail.model_dump()["profile_batch"] is None
 
 
 def test_group_ai_manual_participation_does_not_raise_turn_count(monkeypatch):
