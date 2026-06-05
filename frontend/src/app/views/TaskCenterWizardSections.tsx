@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
 import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, TaskCenterTaskType, TaskPrecheck } from '../types';
-import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, csvNumbers, curveNumbers, curveText, currentOperationProfile, formatDateTime, formatPrecheckReasons, operationProfileSummary, operationTemplate, precheckReasonLabel, ruleSummary, targetName } from './taskCenterViewModel';
+import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, curveNumbers, curveText, currentOperationProfile, formatDateTime, formatPrecheckReasons, operationProfileSummary, operationTemplate, precheckReasonLabel, ruleSummary, targetName } from './taskCenterViewModel';
 
 export function EditBasics() {
   return (
@@ -75,11 +75,7 @@ export function WizardTypeConfig({
   taskType,
   ruleSets = [],
   slangTemplates = [],
-  comments = [],
   relaySourceOptions = [],
-  targetChannelId,
-  messageScope = 'latest_n',
-  messageIds,
 }: {
   taskType: TaskCenterTaskType;
   ruleSets?: RuleSet[];
@@ -94,6 +90,26 @@ export function WizardTypeConfig({
   function markMessagesPerRoundManual(value: number | null) {
     if (value != null) form.setFieldValue('messages_per_round_mode', 'manual');
   }
+  const replyMinPerRoundRules = [
+    ({ getFieldValue }: any) => ({
+      validator(_: unknown, value: number | null) {
+        const total = Number(getFieldValue('messages_per_round') || 0);
+        if (value != null && !Number.isInteger(Number(value))) return Promise.reject(new Error('必须填写整数'));
+        if (value == null || Number(value) <= total) return Promise.resolve();
+        return Promise.reject(new Error('不能大于每轮总发言数'));
+      },
+    }),
+  ];
+  const replyMinPerMessageRules = [
+    ({ getFieldValue }: any) => ({
+      validator(_: unknown, value: number | null) {
+        const total = Number(getFieldValue('target_comments_per_message') || 0);
+        if (value != null && !Number.isInteger(Number(value))) return Promise.reject(new Error('必须填写整数'));
+        if (value == null || Number(value) <= total) return Promise.resolve();
+        return Promise.reject(new Error('不能大于预计每条评论/回复'));
+      },
+    }),
+  ];
 
   const versionOptions = ruleSets.flatMap((ruleSet) => ruleSet.versions.filter((version) => version.status === 'published').map((version) => ({
     value: version.id,
@@ -125,6 +141,9 @@ export function WizardTypeConfig({
           <Form.Item name="slang_prompt_template_id" label="AI 黑话配置">
             <Select allowClear options={slangOptions} placeholder="选择系统设置里的 AI 黑话词表" />
           </Form.Item>
+          <Form.Item name="messages_per_round_mode" label="每轮发言"><Select options={[{ value: 'auto', label: '系统自动判定' }, { value: 'manual', label: '手动指定' }]} /></Form.Item>
+          <Form.Item name="messages_per_round" label="每轮总发言数"><InputNumber min={1} onChange={markMessagesPerRoundManual} /></Form.Item>
+          <Form.Item name="reply_min_per_round" label="每轮最少引用回复数" dependencies={['messages_per_round']} rules={replyMinPerRoundRules}><InputNumber min={0} /></Form.Item>
         </div>
         <Collapse
           ghost
@@ -134,8 +153,6 @@ export function WizardTypeConfig({
               label: '高级设置',
               children: (
                 <div className="form-grid">
-                  <Form.Item name="messages_per_round_mode" label="每轮发言"><Select options={[{ value: 'auto', label: '系统自动判定' }, { value: 'manual', label: '手动指定' }]} /></Form.Item>
-                  <Form.Item name="messages_per_round" label="每轮总发言数"><InputNumber min={1} onChange={markMessagesPerRoundManual} /></Form.Item>
                   <Form.Item name="participation_rate" label="参与账号比例"><InputNumber min={0.01} max={1} step={0.01} /></Form.Item>
                   <Form.Item name="allow_account_repeat" label="允许账号重复发言"><Select options={[{ value: true, label: '允许，账号不足时轮换复用' }, { value: false, label: '不允许，同轮尽量一号一条' }]} /></Form.Item>
                   <Form.Item name="repeat_cooldown_rounds" label="重复冷却轮数"><InputNumber min={0} /></Form.Item>
@@ -245,17 +262,6 @@ export function WizardTypeConfig({
       </Space>
     );
   }
-  const selectedMessageIds = new Set(csvNumbers(messageIds));
-  const commentOptions = comments
-    .filter((comment) => {
-      if (targetChannelId && comment.channel_target_id !== targetChannelId) return false;
-      if (messageScope === 'specific') return selectedMessageIds.size > 0 && selectedMessageIds.has(comment.channel_message_id);
-      return true;
-    })
-    .map((comment) => ({
-      value: comment.comment_message_id,
-      label: `消息#${comment.channel_message_id} / 评论#${comment.comment_message_id} / ${comment.author_name || '未知用户'} / ${comment.content_preview || '无内容预览'}`,
-    }));
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <div style={{ gridColumn: '1 / -1' }}>
@@ -265,16 +271,7 @@ export function WizardTypeConfig({
       <div className="form-grid">
         <div style={{ gridColumn: '1 / -1' }}>{ruleFields}</div>
         <Form.Item name="target_comments_per_message" label="预计每条评论/回复"><InputNumber min={1} /></Form.Item>
-        <Form.Item name="comment_mode" label="互动方式"><Select options={[{ value: 'comment', label: '评论频道消息' }, { value: 'reply', label: '回复指定评论' }, { value: 'mixed', label: '评论+回复' }]} /></Form.Item>
-        <Form.Item name="reply_to_message_ids" label="回复对象">
-          <Select
-            mode="multiple"
-            allowClear
-            showSearch
-            placeholder="选择当前频道消息下已采集评论"
-            options={commentOptions}
-          />
-        </Form.Item>
+        <Form.Item name="reply_min_per_message" label="每条最少引用回复数" dependencies={['target_comments_per_message']} rules={replyMinPerMessageRules}><InputNumber min={0} /></Form.Item>
         <Form.Item name="comment_style" label="评论方向"><Select options={[{ value: 'mixed', label: '混合' }, { value: 'relevant', label: '相关' }, { value: 'question', label: '提问' }, { value: 'praise', label: '正向' }, { value: 'discussion', label: '讨论' }]} /></Form.Item>
         <Form.Item name="topic_hint" label="主题方向"><Input /></Form.Item>
       </div>
@@ -393,6 +390,7 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
   const displayTarget = targetName(values, targets);
   const precheckStatus = loading ? '预检中' : precheck ? precheck.decision === 'allow' ? '通过' : precheck.decision === 'warn' ? '有风险' : '阻塞' : '未执行';
   const recommended = precheck?.capacity_summary?.recommended_limits;
+  const replyReference = precheck?.capacity_summary?.reply_reference_summary;
   const profileUnit = taskType === 'group_ai_chat' ? '轮/小时' : '权重';
   const recommendedSummary = recommended ? [
     recommended.current_hour_rounds ? `当前轮数 ${recommended.current_hour_rounds}` : '',
@@ -403,6 +401,14 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
     recommended.max_comments_per_account_per_hour ? `每号每小时 ${recommended.max_comments_per_account_per_hour}` : '',
   ].filter(Boolean).join('；') : '等待预检';
   const resolution = precheck?.target_resolution;
+  const replySummary = taskType === 'group_ai_chat'
+    ? `每轮总发言 ${values.messages_per_round || 1}，最少引用回复 ${values.reply_min_per_round || 0}`
+    : taskType === 'channel_comment'
+      ? `每条目标 ${values.target_comments_per_message || 1}，最少引用回复 ${values.reply_min_per_message || 0}`
+      : '-';
+  const replyReferenceText = replyReference
+    ? `；可引用 ${replyReference.available_reference_count ?? 0}，缺口 ${replyReference.shortfall_count ?? 0}`
+    : '';
   const resolutionItems = [...(resolution?.sources || []), ...(resolution?.targets || [])];
   const resolutionSummary = resolutionItems.length
     ? resolutionItems.map((item: any) => `${item.role === 'listen_source' ? '源' : '目标'} ${item.status || 'resolved'} / #${item.target_id || '-'} / ${item.title || item.tg_peer_id || item.target_input || '-'}`).join('；')
@@ -429,6 +435,7 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       { key: 'membership', label: '准入前置', children: precheck?.membership_subtask_preview?.subtask_type ? `已满足 ${precheck.ready_account_count} 个，待准备 ${precheck.preparable_account_count} 个，预计准入动作 ${precheck.estimated_membership_actions} 个，进度 ${precheck.membership_subtask_preview.progress_percent ?? 0}%` : '无额外准入动作' },
       { key: 'targetAbility', label: '目标能力', children: precheck?.target_ability?.length ? precheck.target_ability.map((item) => `${item.title || item.target_id} / ${item.can_task ? '可创建任务' : item.auth_status || '不可用'}`).join('；') : displayTarget },
       { key: 'estimate', label: '预计动作量', children: precheck ? `预计 ${precheck.estimated_actions} 条，容量缺口 ${precheck.capacity_shortfall}` : '等待预检' },
+      { key: 'reply', label: '引用回复配置', children: `${replySummary}${replyReferenceText}` },
       { key: 'recommend', label: '推荐数量', children: precheck?.round_capacity_explanation ?? recommendedSummary },
       { key: 'capacity', label: '容量口径', children: precheck?.capacity_summary ? `目标每条 ${precheck.capacity_summary.target_per_message ?? 0}，有效账号 ${precheck.capacity_summary.effective_account_count ?? 0}，最大并发 ${precheck.capacity_summary.max_concurrent ?? 0}，缺口 ${precheck.capacity_summary.capacity_shortfall ?? 0}。${precheck.capacity_summary.limit_note ?? ''}` : '等待预检' },
       { key: 'pacing', label: '曲线摘要', children: `${operationProfileSummary(values)}；当前 ${String(profile.hour).padStart(2, '0')}:00 ${profile.intensity} ${profileUnit}，${profile.mode}运行` },

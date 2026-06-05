@@ -563,13 +563,17 @@ def _message_groups(session: Session, task: Task, actions: list[Action]) -> list
                 "duplicate_count": 0,
                 "capacity_shortfall": 0,
                 "subtask_status": "运行中",
-                "stats": {"target": target_count, "total": 0, "pending": 0, "executing": 0, "success": 0, "failed": 0, "skipped": 0, "duplicate": 0},
+                "stats": {"target": target_count, "total": 0, "pending": 0, "executing": 0, "success": 0, "failed": 0, "skipped": 0, "duplicate": 0, "direct": 0, "reply": 0},
                 "actions": [],
             },
         )
         item["actions"].append(action)
         stats = item["stats"]
         stats["total"] += 1
+        if payload.get("reply_to_message_id"):
+            stats["reply"] += 1
+        else:
+            stats["direct"] += 1
         if action.status in stats:
             stats[action.status] += 1
         if _is_duplicate_action(action):
@@ -682,6 +686,11 @@ def _ai_cycles(actions: list[Action]) -> list[dict[str, Any]]:
                 "topic_plan": str(payload.get("topic_plan") or ""),
                 "intent": str(payload.get("intent") or ""),
                 "content": str(payload.get("message_text") or ""),
+                "reply_to_message_id": int(payload.get("reply_to_message_id")) if payload.get("reply_to_message_id") else None,
+                "reply_target_label": str(payload.get("reply_target_label") or ""),
+                "reply_target_author": str(payload.get("reply_target_author") or ""),
+                "reply_target_preview": str(payload.get("reply_target_preview") or ""),
+                "reply_target_source": str(payload.get("reply_target_source") or ""),
                 "status": action.status,
                 "scheduled_at": action.scheduled_at,
                 "executed_at": action.executed_at,

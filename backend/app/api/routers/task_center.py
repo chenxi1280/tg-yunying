@@ -227,6 +227,8 @@ def delete_task_route(task_id: str, payload: TaskActionReasonRequest, session: S
     try:
         delete_task(session, current_user.tenant_id or 1, task_id, current_user.name, payload.reason)
         return Response(status_code=204)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 

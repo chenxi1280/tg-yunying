@@ -75,6 +75,7 @@ function noticeMessageType(notice: string): 'success' | 'error' | 'warning' | 'i
 
 function accountDetailTabSlug(tab: string) {
   if (/登录|验证|验证码|扫码/.test(tab)) return 'login';
+  if (/授权|备用|standby|session/.test(tab)) return 'authorizations';
   if (/安全|二步|可信|设备|资料/.test(tab)) return 'security';
   if (/代理/.test(tab)) return 'proxy';
   return 'availability';
@@ -82,6 +83,7 @@ function accountDetailTabSlug(tab: string) {
 
 function accountDetailTabLabel(tab: string) {
   if (tab === 'login') return 'TG 官方验证码';
+  if (tab === 'authorizations') return '授权资产';
   if (tab === 'security') return '账号安全';
   return '可用性';
 }
@@ -463,7 +465,7 @@ function AppShell() {
           )}
           {activeView === 'usageReports' && <UsageReportsView usageLedgers={usageLedgers} usageSummary={usageSummary} currentUser={currentUser} />}
           {activeView === 'accounts' && (
-            <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => openSystemConfig('developer-apps')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onExtractCodes={openAccountVerificationCodes} onMovePool={openAccountMovePool} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onDeleteAccount={(account) => openConfirm({ title: '移除账号', message: `确认移除 ${account.display_name}？历史任务、群归档和审计记录会保留，手机号可以重新新增。`, confirmLabel: '移除账号', tone: 'danger', onConfirm: () => deleteAccount(account) })} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} isActionPending={isActionPending} canCreateAccount={hasPermission(currentUser, 'accounts.create')} canLoginAccount={hasPermission(currentUser, 'accounts.login')} canSyncAccount={hasPermission(currentUser, 'accounts.sync')} canViewCodes={hasPermission(currentUser, 'accounts.codes.read')} canSecurityRead={hasPermission(currentUser, 'accounts.security.read')} canSecurityBatch={hasPermission(currentUser, 'accounts.security.batch')} canProfileBatchUpdate={hasPermission(currentUser, 'accounts.profile.batch_update')} canMovePool={hasPermission(currentUser, 'accounts.pool_manage')} canDeleteAccount={hasPermission(currentUser, 'accounts.delete')} />
+            <AccountsView accounts={accounts} accountPools={accountPools} selectedPoolId={selectedPoolId} setSelectedPoolId={setSelectedPoolId} selectedPool={selectedPool ?? undefined} avatarUrl={avatarUrl} runtime={runtime} onConfigureDeveloperApps={() => openSystemConfig('developer-apps')} onCreatePoolClick={() => setModal({ type: 'accountPoolCreate' })} onCreateAccount={openAccountCreate} onOpenPoolDetail={openAccountPoolDetail} onOpenAccountDetail={openAccountDetail} onExtractCodes={openAccountVerificationCodes} onMovePool={openAccountMovePool} onRunLogin={runLogin} onVerifyAccount={verifyAccount} onDeleteAccount={(account) => openConfirm({ title: '移除账号', message: `确认移除 ${account.display_name}？历史任务、群归档和审计记录会保留，手机号可以重新新增。`, confirmLabel: '移除账号', tone: 'danger', onConfirm: () => deleteAccount(account) })} onHealthCheck={healthCheck} onSyncGroups={syncAccountGroups} isActionPending={isActionPending} canCreateAccount={hasPermission(currentUser, 'accounts.create')} canLoginAccount={hasPermission(currentUser, 'accounts.login')} canSyncAccount={hasPermission(currentUser, 'accounts.sync')} canViewCodes={hasPermission(currentUser, 'accounts.codes.read')} canSecurityRead={hasPermission(currentUser, 'accounts.security.read')} canSecurityBatch={hasPermission(currentUser, 'accounts.security.batch')} canManageAuthorizations={hasPermission(currentUser, 'accounts.security.session_manage') || hasPermission(currentUser, 'accounts.authorizations.manage')} canProfileBatchUpdate={hasPermission(currentUser, 'accounts.profile.batch_update')} canMovePool={hasPermission(currentUser, 'accounts.pool_manage')} canDeleteAccount={hasPermission(currentUser, 'accounts.delete')} />
           )}
           {activeView === 'targetManagement' && (
             <OperationTargetsView

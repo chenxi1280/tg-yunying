@@ -171,6 +171,7 @@ class GroupAIChatConfig(BaseModel):
     account_memory_depth: int = Field(default=3, ge=0, le=20)
     messages_per_round_mode: Literal["auto", "manual"] = "auto"
     messages_per_round: int = Field(default=1, ge=1)
+    reply_min_per_round: int = Field(default=0, ge=0)
     history_fetch_account_id: int | None = None
     auto_join_target: bool = True
     auto_follow_required_channel: bool = True
@@ -196,6 +197,8 @@ class GroupAIChatConfig(BaseModel):
     def validate_target_reference(self) -> "GroupAIChatConfig":
         if not self.target_group_id and not self.target_operation_target_id and not (self.target_input or "").strip():
             raise ValueError("target_group_id、target_operation_target_id 或 target_input 至少填写一个")
+        if self.reply_min_per_round > self.messages_per_round:
+            raise ValueError("reply_min_per_round 不能大于 messages_per_round")
         return self
 
 
@@ -318,6 +321,7 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     comment_count_jitter: float = Field(default=0.3, ge=0, le=1)
     comment_mode: Literal["comment", "reply", "mixed"] = "comment"
     reply_to_message_ids: list[int] = Field(default_factory=list)
+    reply_min_per_message: int = Field(default=0, ge=0)
     rule_set_id: int | None = None
     rule_set_version_id: int | None = None
     ai_model: str = ""
@@ -333,6 +337,8 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     def disable_manual_review(self) -> "ChannelCommentConfig":
         if self.comment_mode == "reply" and not self.reply_to_message_ids:
             raise ValueError("comment_mode=reply 时 reply_to_message_ids 必填")
+        if self.reply_min_per_message > self.target_comments_per_message:
+            raise ValueError("reply_min_per_message 不能大于 target_comments_per_message")
         self.require_review = False
         return self
 
@@ -425,6 +431,7 @@ class TaskSettingsUpdate(TaskUpdate):
     account_memory_depth: int | None = Field(default=None, ge=0, le=20)
     messages_per_round_mode: Literal["auto", "manual"] | None = None
     messages_per_round: int | None = Field(default=None, ge=1)
+    reply_min_per_round: int | None = Field(default=None, ge=0)
     history_fetch_account_id: int | None = None
     auto_join_target: bool | None = None
     auto_follow_required_channel: bool | None = None
@@ -484,6 +491,7 @@ class TaskSettingsUpdate(TaskUpdate):
     comment_count_jitter: float | None = Field(default=None, ge=0, le=1)
     comment_mode: Literal["comment", "reply", "mixed"] | None = None
     reply_to_message_ids: list[int] | None = None
+    reply_min_per_message: int | None = Field(default=None, ge=0)
     comment_style: Literal["relevant", "question", "praise", "discussion", "mixed"] | None = None
     max_comment_length: int | None = Field(default=None, ge=1)
     max_comments_per_account_per_hour: int | None = Field(default=None, ge=1, le=500)
@@ -636,6 +644,11 @@ class TaskAITurnOut(BaseModel):
     topic_thread: str = ""
     intent: str = ""
     content: str = ""
+    reply_to_message_id: int | None = None
+    reply_target_label: str = ""
+    reply_target_author: str = ""
+    reply_target_preview: str = ""
+    reply_target_source: str = ""
     status: str
     scheduled_at: datetime
     executed_at: datetime | None = None
@@ -757,6 +770,7 @@ class TaskDetailOut(BaseModel):
     relay_batches: list[TaskRelayBatchOut] = Field(default_factory=list)
     recent_relay_sources: list[TaskRelaySourceOut] = Field(default_factory=list)
     profile_batch: dict[str, Any] | None = None
+    account_security_batch: dict[str, Any] | None = None
     learning_profile_preview: dict[str, Any] = Field(default_factory=dict)
 
 

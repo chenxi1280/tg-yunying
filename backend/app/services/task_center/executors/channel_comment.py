@@ -8,7 +8,7 @@ from app.models import Action, ChannelMessage, ChannelMessageComment, OperationT
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 from ..account_pool import select_task_accounts
 from ..ai_limits import allocate_message_budget
-from ..ai_generator import AiGenerationUnavailable, clean_channel_comment_contents, generate_channel_comments
+from ..ai_generator import AiGenerationUnavailable, clean_channel_comment_contents, generate_channel_comments, generate_channel_reply_comments
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import PostCommentPayload, create_comment_action
@@ -37,7 +37,8 @@ def build_plan(session: Session, task: Task) -> int:
     profile_preview = tenant_learning_profile_preview(session, task.tenant_id, CHANNEL_COMMENT_SCENE)
     audit_learning_profile_use(session, task, profile_preview, "AI评论任务")
     config = _config_with_comment_profile(config, profile_preview)
-    actions: list[tuple[ChannelMessage, str, int | None]] = []
+    actions: list[tuple[ChannelMessage, str, dict | None]] = []
+    reply_min_by_message: dict[int, int] = {}
     requested_reply_targets = [int(item) for item in config.get("reply_to_message_ids") or [] if int(item or 0) > 0]
     comment_mode = config.get("comment_mode") or "comment"
     reply_targets = _valid_reply_targets(session, task, channel.id, messages, requested_reply_targets)
@@ -62,15 +63,18 @@ def build_plan(session: Session, task: Task) -> int:
                 continue
         if not quantity:
             continue
+        reply_min = min(quantity, int(config.get("reply_min_per_message") or 0))
+        reply_target_pool = _message_reply_targets(session, task, channel.id, message)
+        if reply_min > len(reply_target_pool):
+            stats_inc(task, "reply_target_shortfall_count")
+            task.last_error = "可引用评论不足，等待采集到可回复评论后继续执行"
+            return 0
+        reply_min_by_message[message.id] = reply_min
+        minimum_targets = reply_target_pool[:reply_min]
         try:
-            raw_contents, tokens = generate_channel_comments(
-                session,
-                task.tenant_id,
-                config,
-                count=quantity,
-                message_content=message.content_preview or message.message_url,
-                target_label=channel.title,
-            )
+            reply_contents, reply_tokens = _generate_minimum_reply_comments(session, task, config, minimum_targets, message, channel.title)
+            normal_count = max(0, quantity - len(reply_contents))
+            raw_contents, tokens = _generate_normal_channel_comments(session, task, config, normal_count, message, channel.title)
         except AiGenerationUnavailable as exc:
             task.last_error = str(exc)
             return 0
@@ -79,7 +83,8 @@ def build_plan(session: Session, task: Task) -> int:
             quality_skipped = True
             stats_inc(task, "skipped_count")
             continue
-        add_tokens(task, tokens)
+        add_tokens(task, tokens + reply_tokens)
+        actions.extend((message, content, target) for content, target in zip(reply_contents, minimum_targets, strict=False))
         actions.extend((message, content, _reply_target_for_index(comment_mode, reply_targets, index)) for index, content in enumerate(contents))
     if not actions:
         task.last_error = "AI 评论候选语义重复或模板化，已跳过本轮" if quality_skipped else ""
@@ -105,8 +110,9 @@ def build_plan(session: Session, task: Task) -> int:
         return 0
     record_channel_capacity_warning(task, "回复", target_per_message, len(accounts))
     times = schedule_times(len(actions), task.pacing_config or {})
+    prepared_actions: list[tuple[int, object, PostCommentPayload]] = []
     created = 0
-    for index, (message, content, reply_to_message_id) in enumerate(actions):
+    for index, (message, content, reply_target) in enumerate(actions):
         if rule_version:
             policy_result = apply_output_policy(content, rule_version.output_checks or {}, rule_version.transforms or {})
             if not policy_result.allowed:
@@ -119,32 +125,92 @@ def build_plan(session: Session, task: Task) -> int:
             stats_inc(task, "failure_count")
             continue
         planned_at = adjust_for_account_hour_limit(session, task, account.id, "post_comment", planned_at, config)
-        create_comment_action(
-            session,
-            task,
-            account.id,
-            planned_at,
-            PostCommentPayload(
-                **channel_message_payload(channel, message),
-                comment_text=content,
-                comment_mode="reply" if reply_to_message_id else "comment",
-                reply_to_message_id=reply_to_message_id,
-                reply_target_label=f"回复消息 #{reply_to_message_id}" if reply_to_message_id else "",
-                review_approved=True,
-                rule_set_id=rule_version.rule_set_id if rule_version else None,
-                rule_set_name=rule_set.name if rule_set else "",
-                rule_set_version_id=rule_version.id if rule_version else None,
-                resolved_rule_set_version_id=rule_version.id if rule_version else None,
-                rule_set_version=rule_version.version if rule_version else None,
-                rule_binding_mode="fixed_version" if rule_version and config.get("rule_set_version_id") else "follow_current" if rule_version else "",
-                profile_scene=str(profile_preview.get("profile_scene") or CHANNEL_COMMENT_SCENE),
-                profile_version=int(profile_preview.get("profile_version") or 0),
-                profile_hit_summary=str(profile_preview.get("profile_hit_summary") or ""),
-                profile_unavailable_reason=str(profile_preview.get("profile_unavailable_reason") or ""),
-            ),
+        prepared_actions.append(
+            (
+                account.id,
+                planned_at,
+                PostCommentPayload(
+                    **channel_message_payload(channel, message),
+                    comment_text=content,
+                    comment_mode="reply" if reply_target else "comment",
+                    reply_to_message_id=_reply_target_message_id(reply_target),
+                    reply_target_label=_reply_target_label(reply_target),
+                    reply_target_author=_reply_target_text(reply_target, "author"),
+                    reply_target_preview=_reply_target_text(reply_target, "preview"),
+                    reply_target_source=_reply_target_text(reply_target, "source"),
+                    review_approved=True,
+                    rule_set_id=rule_version.rule_set_id if rule_version else None,
+                    rule_set_name=rule_set.name if rule_set else "",
+                    rule_set_version_id=rule_version.id if rule_version else None,
+                    resolved_rule_set_version_id=rule_version.id if rule_version else None,
+                    rule_set_version=rule_version.version if rule_version else None,
+                    rule_binding_mode="fixed_version" if rule_version and config.get("rule_set_version_id") else "follow_current" if rule_version else "",
+                    profile_scene=str(profile_preview.get("profile_scene") or CHANNEL_COMMENT_SCENE),
+                    profile_version=int(profile_preview.get("profile_version") or 0),
+                    profile_hit_summary=str(profile_preview.get("profile_hit_summary") or ""),
+                    profile_unavailable_reason=str(profile_preview.get("profile_unavailable_reason") or ""),
+                ),
+            )
         )
+    prepared_reply_counts: dict[int, int] = {}
+    for _account_id, _planned_at, payload in prepared_actions:
+        if payload.reply_to_message_id:
+            prepared_reply_counts[payload.channel_message_id] = prepared_reply_counts.get(payload.channel_message_id, 0) + 1
+    if any(prepared_reply_counts.get(message_id, 0) < required for message_id, required in reply_min_by_message.items()):
+        stats_inc(task, "reply_candidate_shortfall_count")
+        task.last_error = "AI 引用评论候选不足，已跳过本轮"
+        return 0
+    stats = dict(task.stats or {})
+    stats["reply_planned_count"] = sum(prepared_reply_counts.values())
+    task.stats = stats
+    for account_id, planned_at, payload in prepared_actions:
+        create_comment_action(session, task, account_id, planned_at, payload)
         created += 1
     return created
+
+
+def _generate_minimum_reply_comments(
+    session: Session,
+    task: Task,
+    config: dict,
+    reply_targets: list[dict],
+    message: ChannelMessage,
+    target_label: str,
+) -> tuple[list[str], int]:
+    if not reply_targets:
+        return [], 0
+    contents, tokens = generate_channel_reply_comments(
+        session,
+        task.tenant_id,
+        config,
+        reply_targets=reply_targets,
+        message_content=message.content_preview or message.message_url,
+        target_label=target_label,
+    )
+    if len(contents) < len(reply_targets):
+        stats_inc(task, "reply_candidate_shortfall_count")
+        raise AiGenerationUnavailable("AI 引用评论候选不足，已跳过本轮")
+    return contents, tokens
+
+
+def _generate_normal_channel_comments(
+    session: Session,
+    task: Task,
+    config: dict,
+    count: int,
+    message: ChannelMessage,
+    target_label: str,
+) -> tuple[list[str], int]:
+    if count <= 0:
+        return [], 0
+    return generate_channel_comments(
+        session,
+        task.tenant_id,
+        config,
+        count=count,
+        message_content=message.content_preview or message.message_url,
+        target_label=target_label,
+    )
 
 
 def _message_comment_quantities(session: Session, task: Task, config: dict, messages: list[ChannelMessage]) -> list[tuple[ChannelMessage, int]]:
@@ -195,39 +261,167 @@ def _recent_comment_texts(session: Session, task: Task, message: ChannelMessage,
     return comments
 
 
-def _reply_target_for_index(comment_mode: str, reply_targets: list[int], index: int) -> int | None:
+def _reply_target_for_index(comment_mode: str, reply_targets: list[dict], index: int) -> dict | None:
     if not reply_targets:
         return None
     if comment_mode == "reply":
-        return reply_targets[index % len(reply_targets)]
+        return reply_targets[index] if index < len(reply_targets) else None
     if comment_mode == "mixed" and index % 2 == 1:
-        return reply_targets[(index // 2) % len(reply_targets)]
+        target_index = index // 2
+        return reply_targets[target_index] if target_index < len(reply_targets) else None
     return None
 
 
-def _valid_reply_targets(session: Session, task: Task, channel_target_id: int, messages: list[ChannelMessage], requested_ids: list[int]) -> list[int]:
+def _valid_reply_targets(session: Session, task: Task, channel_target_id: int, messages: list[ChannelMessage], requested_ids: list[int]) -> list[dict]:
     if not requested_ids:
         return []
     channel_message_ids = [message.id for message in messages]
     if not channel_message_ids:
         return []
-    valid_ids = set(
-        session.scalars(
-            select(ChannelMessageComment.comment_message_id).where(
-                ChannelMessageComment.tenant_id == task.tenant_id,
-                ChannelMessageComment.channel_target_id == channel_target_id,
-                ChannelMessageComment.channel_message_id.in_(channel_message_ids),
-                ChannelMessageComment.comment_message_id.in_(requested_ids),
-            )
+    comments = session.scalars(
+        select(ChannelMessageComment).where(
+            ChannelMessageComment.tenant_id == task.tenant_id,
+            ChannelMessageComment.channel_target_id == channel_target_id,
+            ChannelMessageComment.channel_message_id.in_(channel_message_ids),
+            ChannelMessageComment.comment_message_id.in_(requested_ids),
         )
     )
+    by_id = {int(comment.comment_message_id): _reply_target_from_comment(comment) for comment in comments}
     seen: set[int] = set()
-    filtered: list[int] = []
+    filtered: list[dict] = []
     for target_id in requested_ids:
-        if target_id in valid_ids and target_id not in seen:
-            filtered.append(target_id)
+        if target_id in by_id and target_id not in seen:
+            filtered.append(by_id[target_id])
             seen.add(target_id)
     return filtered
+
+
+def _message_reply_targets(session: Session, task: Task, channel_target_id: int, message: ChannelMessage, *, limit: int = 20) -> list[dict]:
+    used_ids = _used_channel_reply_target_ids(session, task, channel_target_id, message)
+    limit_value = max(1, int(limit))
+    comment_query = (
+        select(ChannelMessageComment)
+        .where(
+            ChannelMessageComment.tenant_id == task.tenant_id,
+            ChannelMessageComment.channel_target_id == channel_target_id,
+            ChannelMessageComment.channel_message_id == message.id,
+        )
+    )
+    if used_ids:
+        comment_query = comment_query.where(~ChannelMessageComment.comment_message_id.in_(used_ids))
+    comments = session.scalars(
+        comment_query.order_by(ChannelMessageComment.created_at.asc(), ChannelMessageComment.id.asc()).limit(limit_value)
+    )
+    targets = [_reply_target_from_comment(comment) for comment in comments]
+    targets.extend(_historical_channel_reply_targets(session, task, channel_target_id, message, limit=limit_value + len(used_ids)))
+    return _exclude_used_reply_targets(_dedupe_reply_targets(targets), used_ids)
+
+
+def _dedupe_reply_targets(targets: list[dict]) -> list[dict]:
+    seen: set[int] = set()
+    deduped: list[dict] = []
+    for target in targets:
+        message_id = int(target.get("message_id") or 0)
+        if not message_id or message_id in seen:
+            continue
+        seen.add(message_id)
+        deduped.append(target)
+    return deduped
+
+
+def _exclude_used_reply_targets(targets: list[dict], used_ids: set[int]) -> list[dict]:
+    if not used_ids:
+        return targets
+    return [target for target in targets if int(target.get("message_id") or 0) not in used_ids]
+
+
+def _used_channel_reply_target_ids(session: Session, task: Task, channel_target_id: int, message: ChannelMessage) -> set[int]:
+    actions = session.scalars(
+        select(Action).where(
+            Action.task_id == task.id,
+            Action.task_type == "channel_comment",
+            Action.action_type == "post_comment",
+        )
+    )
+    used_ids: set[int] = set()
+    for action in actions:
+        if _payload_int(action, "channel_target_id") != channel_target_id:
+            continue
+        if not _is_same_channel_message(action, message):
+            continue
+        reply_to_message_id = _payload_int(action, "reply_to_message_id")
+        if reply_to_message_id:
+            used_ids.add(reply_to_message_id)
+    return used_ids
+
+
+def _is_same_channel_message(action: Action, message: ChannelMessage) -> bool:
+    channel_message_id = _payload_int(action, "channel_message_id")
+    message_id = _payload_int(action, "message_id")
+    return channel_message_id == message.id or message_id == message.message_id
+
+
+def _payload_int(action: Action, key: str) -> int:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    raw = str(payload.get(key) or "").strip()
+    return int(raw) if raw.isdigit() else 0
+
+
+def _historical_channel_reply_targets(session: Session, task: Task, channel_target_id: int, message: ChannelMessage, *, limit: int = 20) -> list[dict]:
+    rows = session.scalars(
+        select(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.task_type == "channel_comment",
+            Action.action_type == "post_comment",
+            Action.status == "success",
+            Action.payload["channel_target_id"].as_integer() == channel_target_id,
+            or_(
+                Action.payload["channel_message_id"].as_integer() == message.id,
+                Action.payload["message_id"].as_integer() == message.message_id,
+            ),
+        )
+        .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
+        .limit(max(1, int(limit)))
+    )
+    return [target for action in rows if (target := _reply_target_from_comment_action(action))]
+
+
+def _reply_target_from_comment_action(action: Action) -> dict | None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    result = action.result if isinstance(action.result, dict) else {}
+    raw_id = str(result.get("telegram_msg_id") or result.get("remote_message_id") or "").strip()
+    content = str(payload.get("comment_text") or "").strip()
+    if not raw_id.isdigit() or not content:
+        return None
+    return {
+        "message_id": int(raw_id),
+        "author": str(payload.get("account_role") or "历史评论账号").strip(),
+        "preview": content[:120],
+        "source": "own_history",
+    }
+
+
+def _reply_target_from_comment(comment: ChannelMessageComment) -> dict:
+    return {
+        "message_id": int(comment.comment_message_id),
+        "author": str(comment.author_name or "读者").strip(),
+        "preview": str(comment.content_preview or "").strip()[:120],
+        "source": "channel_comment",
+    }
+
+
+def _reply_target_message_id(target: dict | None) -> int | None:
+    return int(target.get("message_id")) if target and target.get("message_id") else None
+
+
+def _reply_target_label(target: dict | None) -> str:
+    message_id = _reply_target_message_id(target)
+    return f"回复消息 #{message_id}" if message_id else ""
+
+
+def _reply_target_text(target: dict | None, key: str) -> str:
+    return str(target.get(key) or "") if target else ""
 
 
 __all__ = ["build_plan"]

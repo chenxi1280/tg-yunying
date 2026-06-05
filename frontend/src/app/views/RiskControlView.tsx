@@ -525,6 +525,7 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
 
   function accountDetailTabFor(row: RiskControlAccountScore) {
     const reason = `${row.blocked_reason} ${row.proxy_risk_reason} ${row.security_risk_reason} ${row.score_reasons?.join(' ')}`;
+    if (/备用|授权|standby|session/i.test(reason)) return '授权资产';
     if (/代理/.test(reason)) return '可用性';
     if (/二步|可信|外部|资料/.test(reason)) return '账号安全';
     return '可用性';

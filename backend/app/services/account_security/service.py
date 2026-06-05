@@ -14,16 +14,20 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     AccountStatus,
+    AccountProxy,
     AiProvider,
     AiProviderHealthStatus,
     Material,
     MaterialGroup,
     TgAccount,
+    TgAccountAuthorization,
     TgAccountAuthorizationSnapshot,
     TgAccountProfileBatchRule,
     TgAccountSecurityBatch,
     TgAccountSecurityBatchItem,
     TgAccountSecuritySnapshot,
+    TgVerificationCode,
+    TelegramDeveloperApp,
 )
 from app.schemas.account_security import (
     AccountSecurityBatchCreate,
@@ -34,11 +38,14 @@ from app.schemas.account_security import (
     AccountSecurityPreviewItem,
     AccountSecurityRetryRequest,
     AccountSecuritySummaryOut,
+    ManagedTwoFaOut,
+    ManagedTwoFaRequest,
 )
 from app.security import decrypt_secret, encrypt_secret
 from app.storage import media_root, object_path, save_avatar_bytes
 
 from .._common import _now, ai_gateway, audit, gateway, require_tenant
+from ..account_authorizations import attempt_standby_authorization_recovery, start_standby_authorization_login, verify_standby_authorization_login
 from ..ai_config import ai_provider_credentials, get_tenant_ai_setting
 from ..developer_apps import credentials_for_account
 
@@ -50,7 +57,10 @@ PROFILE_AI_BASE_TIMEOUT_SECONDS = 45
 PROFILE_AI_MAX_TIMEOUT_SECONDS = 180
 PROFILE_ACTIONS = {"update_profile", "update_username", "update_avatar"}
 SECURITY_ACTIONS = {"cleanup_devices", "set_two_fa"}
-ALL_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS
+STANDBY_SESSION_ACTIONS = {"provision_standby_session", "self_heal_session"}
+ALL_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS | STANDBY_SESSION_ACTIONS
+OFFICIAL_ANCHOR_API_IDS = {4, 6, 8, 2040, 2834, 21724}
+OFFICIAL_ANCHOR_PLATFORM_HINTS = ("android", "ios", "iphone", "ipad", "mac", "windows", "linux", "desktop")
 
 
 @dataclass(frozen=True)
@@ -256,6 +266,7 @@ def _item_out(item: TgAccountSecurityBatchItem):
         "precheck_status": item.precheck_status,
         "cleanup_status": item.cleanup_status,
         "two_fa_status": item.two_fa_status,
+        "standby_session_status": _standby_session_status(item),
         "profile_status": item.profile_status,
         "username_status": item.username_status,
         "avatar_status": item.avatar_status,
@@ -277,6 +288,36 @@ def _item_out(item: TgAccountSecurityBatchItem):
         "started_at": item.started_at,
         "finished_at": item.finished_at,
     }
+
+
+def _standby_session_status(item: TgAccountSecurityBatchItem) -> str:
+    if item.failure_type == "standby_session_executor_missing":
+        return "manual_required"
+    if item.status in {"pending", "running", "waiting", "failed", "succeeded", "manual_required"}:
+        return item.status
+    return "pending" if item.precheck_status == "pending" else item.precheck_status
+
+
+def _require_account(session: Session, tenant_id: int, account_id: int) -> TgAccount:
+    account = session.get(TgAccount, account_id)
+    if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
+        raise ValueError("account not found")
+    return account
+
+
+def _record_managed_two_fa(snapshot: TgAccountSecuritySnapshot, password: str) -> None:
+    snapshot.two_fa_status = "enabled"
+    snapshot.two_fa_password_ciphertext = encrypt_secret(password)
+    snapshot.two_fa_password_hint = "TG运营平台托管"
+    snapshot.two_fa_password_stored_at = _now()
+
+
+def _managed_two_fa_out(account_id: int, snapshot: TgAccountSecuritySnapshot) -> ManagedTwoFaOut:
+    return ManagedTwoFaOut(
+        account_id=account_id,
+        two_fa_status=snapshot.two_fa_status,
+        password_stored_at=snapshot.two_fa_password_stored_at,
+    )
 
 
 def account_security_summary(session: Session, tenant_id: int) -> AccountSecuritySummaryOut:
@@ -341,8 +382,9 @@ def refresh_account_security(session: Session, tenant_id: int, account_id: int, 
     trusted = False
     for authorization in authorizations:
         is_current = bool(authorization.is_current)
+        is_anchor = _is_official_anchor_authorization(authorization)
         trusted = trusted or is_current
-        if not is_current:
+        if not is_current and not is_anchor:
             external_count += 1
         session.add(
             TgAccountAuthorizationSnapshot(
@@ -429,6 +471,40 @@ def account_security_detail(session: Session, tenant_id: int, account_id: int) -
     )
 
 
+def save_managed_two_fa_password(
+    session: Session,
+    tenant_id: int,
+    account_id: int,
+    payload: ManagedTwoFaRequest,
+    actor: str,
+) -> ManagedTwoFaOut:
+    account = _require_account(session, tenant_id, account_id)
+    snapshot = _snapshot(session, account)
+    _record_managed_two_fa(snapshot, payload.password)
+    audit(session, tenant_id=tenant_id, actor=actor, action="保存账号托管二步密码", target_type="tg_account", target_id=str(account.id), detail=payload.reason)
+    session.commit()
+    return _managed_two_fa_out(account.id, snapshot)
+
+
+def rotate_managed_two_fa_password(
+    session: Session,
+    tenant_id: int,
+    account_id: int,
+    payload: ManagedTwoFaRequest,
+    actor: str,
+) -> ManagedTwoFaOut:
+    account = _require_account(session, tenant_id, account_id)
+    credentials = credentials_for_account(session, account)
+    result = gateway.set_two_fa_password(account.session_ciphertext, payload.password, credentials=credentials, hint="TG运营平台托管")
+    if not result.ok:
+        raise ValueError(result.detail or result.failure_type or "2FA rotate failed")
+    snapshot = _snapshot(session, account)
+    _record_managed_two_fa(snapshot, payload.password)
+    audit(session, tenant_id=tenant_id, actor=actor, action="轮换账号托管二步密码", target_type="tg_account", target_id=str(account.id), detail=payload.reason)
+    session.commit()
+    return _managed_two_fa_out(account.id, snapshot)
+
+
 def precheck_account_security_batch(session: Session, tenant_id: int, payload: AccountSecurityPrecheckRequest) -> AccountSecurityPrecheckOut:
     require_tenant(session, tenant_id)
     action_types = _valid_actions(payload.action_types)
@@ -464,7 +540,8 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
         warnings: list[str] = []
         suggested: list[str] = []
         status = "executable"
-        if account.status != AccountStatus.ACTIVE.value or not account.session_ciphertext:
+        can_self_heal = "self_heal_session" in action_types and _has_switchable_standby(session, account)
+        if (account.status != AccountStatus.ACTIVE.value or not account.session_ciphertext) and not can_self_heal:
             blockers.append("账号未在线或缺少可用 session")
             suggested.append("已自动跳过；处理登录或 session 后可重新发起")
             status = "skipped"
@@ -475,6 +552,13 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
             status = "waiting"
         if "set_two_fa" in action_types and snapshot.two_fa_status == "enabled":
             warnings.append("账号已设置二步验证，将跳过 2FA 设置")
+        if "provision_standby_session" in action_types and account.status == AccountStatus.ACTIVE.value and account.session_ciphertext:
+            standby_status = _standby_precheck_status(session, account, payload.standby_slot_strategy)
+            blockers.extend(standby_status.blockers)
+            warnings.extend(standby_status.warnings)
+            suggested.extend(standby_status.suggested_actions)
+            if standby_status.blockers and status == "executable":
+                status = "manual_required"
         override = overrides.get(account.id)
         generated_item = _apply_preview_override(generated[index], override)
         if generated_item.get("generation_error"):
@@ -536,6 +620,8 @@ def create_account_security_batch(session: Session, tenant_id: int, payload: Acc
     preview = precheck_account_security_batch(session, tenant_id, payload)
     confirmed = _is_batch_confirmed(payload.confirm_text)
     initial_status = "running" if confirmed and preview.summary.get("executable", 0) > 0 else "ready"
+    profile_strategy_payload = payload.profile_strategy.model_dump(mode="json")
+    profile_strategy_payload["standby_slot_strategy"] = payload.standby_slot_strategy
     batch = TgAccountSecurityBatch(
         tenant_id=tenant_id,
         action_types=json.dumps(preview.action_types, ensure_ascii=False),
@@ -545,7 +631,7 @@ def create_account_security_batch(session: Session, tenant_id: int, payload: Acc
         confirmed_by=actor if confirmed else "",
         confirm_text=payload.confirm_text,
         password_strategy=payload.password_strategy,
-        profile_strategy=payload.profile_strategy.model_dump_json(),
+        profile_strategy=json.dumps(profile_strategy_payload, ensure_ascii=False),
         username_strategy=json.dumps({"mode": payload.profile_strategy.generation_mode}, ensure_ascii=False),
         avatar_strategy=payload.avatar_strategy.model_dump_json(),
         overwrite_existing_profile=payload.profile_strategy.overwrite_existing,
@@ -729,7 +815,10 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
     session.commit()
     failures: list[str] = []
     try:
-        credentials = credentials_for_account(session, account)
+        credentials = None
+        needs_account_credentials = bool(action_types & (SECURITY_ACTIONS | PROFILE_ACTIONS))
+        if needs_account_credentials:
+            credentials = credentials_for_account(session, account)
         if "cleanup_devices" in action_types:
             failures.extend(_execute_cleanup(session, account, item, credentials))
         if "set_two_fa" in action_types:
@@ -744,6 +833,8 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
                 snapshot.two_fa_password_ciphertext = encrypt_secret(generated_password)
                 snapshot.two_fa_password_hint = "TG运营平台托管"
                 snapshot.two_fa_password_stored_at = _now()
+        if action_types & STANDBY_SESSION_ACTIONS:
+            failures.extend(_execute_standby_session_provision(session, account, item, action_types))
         if "update_profile" in action_types and item.profile_status not in {"succeeded", "skipped"}:
             profile_values = _profile_update_values(account, item, overwrite_existing=batch.overwrite_existing_profile)
             profile_result = gateway.update_profile(
@@ -788,7 +879,8 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
         snapshot.profile_status = _profile_status(account)
         snapshot.last_hardened_at = _now()
         snapshot.last_error = ";".join(failures)
-        item.status = "waiting" if _item_should_wait(item, failures) else "partial_success" if failures and _item_has_success(item) else "failed" if failures else "succeeded"
+        if item.status != "manual_required":
+            item.status = "waiting" if _item_should_wait(item, failures) else "partial_success" if failures and _item_has_success(item) else "failed" if failures else "succeeded"
         item.failure_type = _item_failure_type(item, failures)
         item.failure_detail = ";".join(failures)
     except Exception as exc:  # noqa: BLE001 - operator-facing batch failure.
@@ -801,6 +893,106 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
     session.commit()
 
 
+def _execute_standby_session_provision(
+    session: Session,
+    account: TgAccount,
+    item: TgAccountSecurityBatchItem,
+    action_types: set[str],
+) -> list[str]:
+    if "self_heal_session" in action_types:
+        recovered = attempt_standby_authorization_recovery(
+            session,
+            account,
+            actor="account-security-worker",
+            reason="账号安全批次触发备用 session 自愈恢复",
+        )
+        if recovered is not None:
+            item.failure_type = ""
+            item.failure_detail = f"已从 {recovered.role} 激活恢复"
+            return []
+    if "provision_standby_session" in action_types:
+        provision_failure = _auto_provision_standby_session(session, account, item)
+        if not provision_failure:
+            return []
+        item.failure_detail = provision_failure
+    item.status = "manual_required"
+    item.failure_type = "standby_session_executor_missing"
+    item.failure_detail = item.failure_detail or "备用 session 自动补齐执行器尚未接入登录网关"
+    return [item.failure_detail]
+
+
+def _auto_provision_standby_session(session: Session, account: TgAccount, item: TgAccountSecurityBatchItem) -> str:
+    if not account.session_ciphertext:
+        return "主 session 不可用，无法自动读取备用登录验证码"
+    role = _target_standby_role(session, account, item)
+    if not role:
+        item.failure_detail = "备用 session 已满足一主两从"
+        return ""
+    app = _auto_standby_developer_app(session, account)
+    if app is None:
+        return "没有可用的 TG 开发者应用用于备用 session 登录"
+    proxy = _auto_standby_proxy(session, account)
+    if proxy is None:
+        return "没有可用代理用于备用 session 登录"
+    password_2fa = _managed_two_fa_password(session, account)
+    flow = start_standby_authorization_login(
+        session,
+        account.id,
+        method="code",
+        role=role,
+        developer_app_id=app.id,
+        proxy_id=proxy.id,
+        actor="account-security-worker",
+    )
+    code = _standby_login_code(session, account, flow)
+    if not code:
+        return "验证码不可读取，已记录备用授权登录流水"
+    try:
+        asset = verify_standby_authorization_login(
+            session,
+            account.id,
+            flow.id,
+            code=code,
+            password_2fa=password_2fa,
+            actor="account-security-worker",
+        )
+    except ValueError as exc:
+        return str(exc)
+    item.failure_detail = f"已补齐 {asset.role} 备用 session"
+    return ""
+
+
+def _standby_login_code(session: Session, account: TgAccount, flow) -> str | None:
+    if flow.code_preview:
+        return flow.code_preview
+    try:
+        snapshots = gateway.poll_verification_codes(
+            account.id,
+            session_ciphertext=account.session_ciphertext,
+            credentials=credentials_for_account(session, account),
+        )
+    except Exception as exc:
+        flow.failure_type = "verification_code_poll_failed"
+        flow.failure_detail = str(exc)
+        return None
+    if not snapshots:
+        return None
+    snapshot = snapshots[0]
+    flow.code_preview = snapshot.code
+    flow.code_expires_at = snapshot.expires_at
+    session.add(
+        TgVerificationCode(
+            tenant_id=account.tenant_id,
+            account_id=account.id,
+            source="standby_authorization_auto_login",
+            code_preview=snapshot.code,
+            expires_at=snapshot.expires_at,
+            raw_hint=snapshot.raw_hint,
+        )
+    )
+    return snapshot.code
+
+
 def _execute_cleanup(session: Session, account: TgAccount, item: TgAccountSecurityBatchItem, credentials) -> list[str]:
     failures: list[str] = []
     authorizations = list(
@@ -809,9 +1001,18 @@ def _execute_cleanup(session: Session, account: TgAccount, item: TgAccountSecuri
         )
     )
     if not authorizations:
-        refresh_account_security(session, account.tenant_id, account.id, actor="account-security-worker")
+        snapshot = refresh_account_security(session, account.tenant_id, account.id, actor="account-security-worker")
+        if snapshot.trusted_session_status == "unknown" and snapshot.last_error:
+            item.cleanup_status = "failed"
+            return [f"设备扫描失败：{snapshot.last_error}"]
         authorizations = list(session.scalars(select(TgAccountAuthorizationSnapshot).where(TgAccountAuthorizationSnapshot.account_id == account.id)))
-    external = [authorization for authorization in authorizations if not authorization.is_current_session]
+    protected_hashes = _protected_authorization_hashes(session, account)
+    if not _has_official_anchor_authorization(authorizations):
+        item.status = "manual_required"
+        item.cleanup_status = "manual_required"
+        item.failure_type = "official_anchor_missing"
+        return ["无法识别官方锚点设备，禁止一键清理登录设备"]
+    external = [authorization for authorization in authorizations if _can_cleanup_authorization(authorization, protected_hashes)]
     item.external_devices_before = len(external)
     cleaned = 0
     for authorization in external:
@@ -832,6 +1033,158 @@ def _execute_cleanup(session: Session, account: TgAccount, item: TgAccountSecuri
     snapshot.external_authorization_count = item.external_devices_after
     snapshot.last_device_scan_at = _now()
     return failures
+
+
+def _can_cleanup_authorization(authorization: TgAccountAuthorizationSnapshot, protected_hashes: set[str]) -> bool:
+    if authorization.is_current_session or authorization.is_platform_trusted:
+        return False
+    if _is_official_anchor_authorization(authorization):
+        return False
+    raw_hash = decrypt_secret(authorization.authorization_hash_ciphertext) or authorization.authorization_hash_ciphertext
+    if raw_hash in protected_hashes:
+        return False
+    return authorization.status == "active"
+
+
+def _has_official_anchor_authorization(authorizations: list[TgAccountAuthorizationSnapshot]) -> bool:
+    return any(_is_official_anchor_authorization(authorization) for authorization in authorizations)
+
+
+def _is_official_anchor_authorization(authorization) -> bool:
+    if bool(getattr(authorization, "is_current_session", False)) or bool(getattr(authorization, "is_current", False)):
+        return False
+    if bool(getattr(authorization, "is_platform_trusted", False)):
+        return False
+    app_name = str(getattr(authorization, "app_name", "") or "").lower()
+    platform = str(getattr(authorization, "platform", "") or "").lower()
+    device_model = str(getattr(authorization, "device_model", "") or "").lower()
+    api_id = int(getattr(authorization, "api_id", 0) or 0)
+    if api_id not in OFFICIAL_ANCHOR_API_IDS and "telegram" not in app_name:
+        return False
+    return bool(any(hint in platform for hint in OFFICIAL_ANCHOR_PLATFORM_HINTS) or device_model)
+
+
+def _protected_authorization_hashes(session: Session, account: TgAccount) -> set[str]:
+    rows = session.scalars(
+        select(TgAccountAuthorization).where(
+            TgAccountAuthorization.account_id == account.id,
+            TgAccountAuthorization.disabled_at.is_(None),
+            TgAccountAuthorization.telegram_authorization_hash_ciphertext != "",
+        )
+    )
+    return {
+        value
+        for row in rows
+        if row.role in {"primary", "standby_1", "standby_2"} or row.is_current
+        for value in [decrypt_secret(row.telegram_authorization_hash_ciphertext) or row.telegram_authorization_hash_ciphertext]
+        if value
+    }
+
+
+def _has_switchable_standby(session: Session, account: TgAccount) -> bool:
+    return bool(
+        session.scalar(
+            select(TgAccountAuthorization.id)
+            .where(
+                TgAccountAuthorization.account_id == account.id,
+                TgAccountAuthorization.disabled_at.is_(None),
+                TgAccountAuthorization.role.in_(["standby_1", "standby_2"]),
+                TgAccountAuthorization.status.in_(["active", "standby"]),
+                TgAccountAuthorization.session_ciphertext != "",
+            )
+            .limit(1)
+        )
+    )
+
+
+def _target_standby_role(session: Session, account: TgAccount, item: TgAccountSecurityBatchItem) -> str:
+    return _target_standby_role_for_strategy(session, account, _standby_slot_strategy(session, item))
+
+
+def _target_standby_role_for_strategy(session: Session, account: TgAccount, requested: str) -> str:
+    existing_roles = set(
+        session.scalars(
+            select(TgAccountAuthorization.role).where(
+                TgAccountAuthorization.account_id == account.id,
+                TgAccountAuthorization.disabled_at.is_(None),
+                TgAccountAuthorization.role.in_(["standby_1", "standby_2"]),
+                TgAccountAuthorization.status.in_(["active", "standby"]),
+                TgAccountAuthorization.session_ciphertext != "",
+            )
+        )
+    )
+    if requested in {"standby_1", "standby_2"}:
+        return "" if requested in existing_roles else requested
+    for role in ["standby_1", "standby_2"]:
+        if role not in existing_roles:
+            return role
+    return ""
+
+
+def _standby_slot_strategy(session: Session, item: TgAccountSecurityBatchItem) -> str:
+    batch = session.get(TgAccountSecurityBatch, item.batch_id)
+    strategy = _json_dict(batch.profile_strategy).get("standby_slot_strategy") if batch else ""
+    return str(strategy or "auto")
+
+
+@dataclass(frozen=True)
+class StandbyPrecheckStatus:
+    blockers: list[str]
+    warnings: list[str]
+    suggested_actions: list[str]
+
+
+def _standby_precheck_status(session: Session, account: TgAccount, standby_slot_strategy: str) -> StandbyPrecheckStatus:
+    blockers: list[str] = []
+    warnings: list[str] = []
+    suggested: list[str] = []
+    role = _target_standby_role_for_strategy(session, account, standby_slot_strategy)
+    if not role:
+        warnings.append("备用 session 已满足一主两从")
+        return StandbyPrecheckStatus(blockers, warnings, suggested)
+    if _auto_standby_developer_app(session, account) is None:
+        blockers.append("没有可用的 TG 开发者应用用于备用 session 登录")
+        suggested.append("先在系统配置中补充健康 TG 开发者应用")
+    if _auto_standby_proxy(session, account) is None:
+        blockers.append("没有可用代理用于备用 session 登录")
+        suggested.append("先绑定或补充健康账号代理")
+    if not _managed_two_fa_password(session, account):
+        warnings.append("账号未托管 2FA；如果 Telegram 要求二步密码，备用 session 补齐会进入人工处理")
+    return StandbyPrecheckStatus(blockers, warnings, suggested)
+
+
+def _auto_standby_developer_app(session: Session, account: TgAccount) -> TelegramDeveloperApp | None:
+    stmt = (
+        select(TelegramDeveloperApp)
+        .where(
+            TelegramDeveloperApp.is_active.is_(True),
+            TelegramDeveloperApp.health_status == "健康",
+        )
+        .order_by((TelegramDeveloperApp.id == account.developer_app_id).asc(), TelegramDeveloperApp.id.asc())
+        .limit(1)
+    )
+    return session.scalar(stmt)
+
+
+def _auto_standby_proxy(session: Session, account: TgAccount) -> AccountProxy | None:
+    stmt = (
+        select(AccountProxy)
+        .where(
+            AccountProxy.tenant_id == account.tenant_id,
+            AccountProxy.status.in_(["healthy", "健康"]),
+            AccountProxy.alert_status.in_(["normal", "recovered", ""]),
+        )
+        .order_by((AccountProxy.id == account.proxy_id).asc(), AccountProxy.id.asc())
+        .limit(1)
+    )
+    return session.scalar(stmt)
+
+
+def _managed_two_fa_password(session: Session, account: TgAccount) -> str | None:
+    snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
+    if not snapshot or not snapshot.two_fa_password_ciphertext:
+        return None
+    return decrypt_secret(snapshot.two_fa_password_ciphertext)
 
 
 def _fresh_session_wait_until(session: Session, account: TgAccount):
@@ -897,6 +1250,8 @@ def _item_failure_type(item: TgAccountSecurityBatchItem, failures: list[str]) ->
         return ""
     if item.avatar_status == "waiting_cache":
         return "waiting_material_cache"
+    if item.status == "manual_required":
+        return item.failure_type or "manual_required"
     if item.status == "waiting":
         return "需等待"
     if item.status == "partial_success":
@@ -1089,6 +1444,10 @@ def _refresh_batch_counts(session: Session, batch: TgAccountSecurityBatch) -> No
         batch.status = "partial_success"
     elif batch.failed_count:
         batch.status = "failed"
+    elif batch.success_count:
+        batch.status = "succeeded"
+    elif batch.skipped_count:
+        batch.status = "manual_required"
     else:
         batch.status = "succeeded"
 
@@ -1387,4 +1746,6 @@ __all__ = [
     "precheck_account_security_batch",
     "refresh_account_security",
     "retry_account_security_batch",
+    "rotate_managed_two_fa_password",
+    "save_managed_two_fa_password",
 ]

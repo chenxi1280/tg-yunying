@@ -554,6 +554,84 @@ def test_profile_batch_account_picker_supports_top_100_cross_page_and_range_sele
     assert "区间选择" in source
 
 
+def test_account_center_exposes_standby_session_batch_entry_and_filters():
+    accounts_view = (PROJECT_ROOT / "frontend/src/app/views/AccountsView.tsx").read_text()
+    drawer = (PROJECT_ROOT / "frontend/src/app/views/AccountSecurityBatchDrawer.tsx").read_text()
+
+    assert "'standby_session'" in accounts_view
+    assert "补齐备用 session" in accounts_view
+    assert "setSecurityDrawerMode('standby_session')" in accounts_view
+    assert "canManageAuthorizations" in accounts_view
+    assert "standby_1 session 缺失" in accounts_view
+    assert "standby_2 session 缺失" in accounts_view
+    assert "可从备用 session 激活恢复" in accounts_view
+    assert "未做过登录设备清理" in accounts_view
+    assert "standby_session: {" in drawer
+    assert "provision_standby_session" in drawer
+    assert "self_heal_session" in drawer
+    assert "account_standby_session_provision" in drawer
+    assert "自动补齐缺失槽位" in drawer
+    assert "仅 standby_1" in drawer
+    assert "仅 standby_2" in drawer
+    assert "standby_slot_strategy: standbySlotStrategy" in drawer
+
+
+def test_account_detail_has_authorization_assets_tab_with_slot_cards_and_recovery_action():
+    modals = (PROJECT_ROOT / "frontend/src/app/views/AccountModals.tsx").read_text()
+    assets_panel = (PROJECT_ROOT / "frontend/src/app/views/AccountAuthorizationAssetsPanel.tsx").read_text()
+
+    assert "'授权资产'" in modals
+    assert "accountDetailTab === '授权资产'" in modals
+    assert "AccountAuthorizationAssetsPanel" in modals
+    assert "恢复能力" in assets_panel
+    assert "primary session" in assets_panel
+    assert "standby_1 session" in assets_panel
+    assert "standby_2 session" in assets_panel
+    assert "激活恢复" in assets_panel
+    assert "故障槽位" in assets_panel
+    assert "验证码不可读取" in assets_panel
+    assert "2FA 未托管" in assets_panel
+
+
+def test_security_drawers_show_cleanup_preservation_and_managed_2fa_policy():
+    drawer = (PROJECT_ROOT / "frontend/src/app/views/AccountSecurityBatchDrawer.tsx").read_text()
+    modals = (PROJECT_ROOT / "frontend/src/app/views/AccountModals.tsx").read_text()
+    managed_2fa = (PROJECT_ROOT / "frontend/src/app/views/AccountManaged2FaSettingsPanel.tsx").read_text()
+    router = (PROJECT_ROOT / "backend/app/api/routers/account_security.py").read_text()
+    auth = (PROJECT_ROOT / "backend/app/auth.py").read_text()
+
+    assert "不会清理 primary / standby_1 / standby_2 / 官方锚点设备" in drawer
+    assert "预计清理外部设备" in drawer
+    assert "平台托管 2FA" in drawer
+    assert "已设置且平台托管旧密码" in drawer
+    assert "旧密码未知" in drawer
+    assert "AccountManaged2FaSettingsPanel" in modals
+    assert "托管 2FA" in modals
+    assert "密码设置 / 轮换不回显旧密码" in modals
+    assert "accountId={accountDetail.account.id}" in modals
+    assert "`/tg-accounts/${accountId}/security/managed-2fa`" in managed_2fa
+    assert "`/tg-accounts/${accountId}/security/managed-2fa/rotate`" in managed_2fa
+    assert "post_account_security_managed_2fa" in router
+    assert "post_account_security_managed_2fa_rotate" in router
+    assert "accounts.security.credential_manage" in auth
+
+
+def test_task_center_account_security_system_task_detail_switches_by_batch_type():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+
+    assert "account_security_batch" in types
+    assert "system_task_type" in types
+    assert "account_device_cleanup" in source
+    assert "account_2fa_setup" in source
+    assert "account_standby_session_provision" in source
+    assert "primary / standby_1 / standby_2 / 官方锚点设备" in source
+    assert "目标槽位" in source
+    assert "验证码读取" in source
+    assert "params.set('type', nextTaskTypeFilter)" in view
+
+
 def test_task_center_exposes_task_type_filter_request_parameter():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
@@ -563,12 +641,13 @@ def test_task_center_exposes_task_type_filter_request_parameter():
     assert "api<TaskCenterTask[]>(`/tasks${query ? `?${query}` : ''}`)" in source
 
 
-def test_task_center_allows_profile_batch_delete_without_lifecycle_controls():
+def test_task_center_hides_delete_for_account_security_system_tasks():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
+    assert "function canDeleteTask(task: TaskCenterTask)" in source
     assert "canDeleteTask(task)" in source
     assert "openDangerTaskAction(task, 'delete')" in source
-    assert "canManageTasks && !isSystemTask(task) && <Button size=\"small\" danger loading={busyId === `${task.id}:delete`}" not in source
+    assert "return canManageTasks && Boolean(task.id) && !isSystemTask(task);" in source
 
 
 def test_task_center_lifecycle_buttons_match_task_status():

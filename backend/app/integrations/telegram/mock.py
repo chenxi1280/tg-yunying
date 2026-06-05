@@ -86,6 +86,7 @@ class TelegramGateway:
         session_ciphertext: str | None = None,
         peer_id: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        reply_to_message_id: int | None = None,
     ) -> SendResult:
         payload_parts = [content]
         for segment in segments or []:

@@ -11,6 +11,7 @@ import { statusAccent, operationLabel, syncTypeLabel } from '../utils';
 import { api } from '../../shared/api/client';
 import { formatBeijingDateTime, parseBeijingDate } from '../time';
 import { AccountAuthorizationAssetsPanel } from './AccountAuthorizationAssetsPanel';
+import { AccountManaged2FaSettingsPanel } from './AccountManaged2FaSettingsPanel';
 
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
 const contactPhone = (contact: Contact) => contact.phone_number || contact.phone_masked || '';
@@ -204,6 +205,7 @@ interface AccountDetailModalProps {
   canSecurityRead?: boolean;
   canSecurityBatch?: boolean;
   canManageAuthorizations?: boolean;
+  canManageCredentials?: boolean;
   canProfileBatchUpdate?: boolean;
   canMovePool?: boolean;
   canClone?: boolean;
@@ -222,7 +224,7 @@ export function AccountDetailModal({
   onResolveGroupRestrictionBatch,
   onOpenConfirm, onSetReturnAfterVerification, onSetModal,
   onSetCloneForm, onReturnToRiskControl, accountName, isActionPending,
-  canSyncAccount = true, canViewCodes = true, canSecurityRead = true, canSecurityBatch = true, canManageAuthorizations = true, canProfileBatchUpdate = true,
+  canSyncAccount = true, canViewCodes = true, canSecurityRead = true, canSecurityBatch = true, canManageAuthorizations = true, canManageCredentials = true, canProfileBatchUpdate = true,
   canMovePool = true, canClone = true,
 }: AccountDetailModalProps) {
   const [manualTargetId, setManualTargetId] = React.useState<number | null>(null);
@@ -563,7 +565,7 @@ export function AccountDetailModal({
         className="tabs-row"
         activeKey={accountDetailTab}
         onChange={setAccountDetailTab}
-        items={['资料', '可用性', ...(canSecurityRead ? ['账号安全'] : []), '账号状态记录', ...(canViewCodes ? ['TG 官方验证码'] : []), '验证待处理', '执行记录', ...(canClone ? ['克隆'] : [])].map((tabName) => ({ key: tabName, label: tabName }))}
+        items={['资料', '可用性', ...(canSecurityRead ? ['授权资产', '账号安全', '托管 2FA'] : []), '账号状态记录', ...(canViewCodes ? ['TG 官方验证码'] : []), '验证待处理', '执行记录', ...(canClone ? ['克隆'] : [])].map((tabName) => ({ key: tabName, label: tabName }))}
       />
 
       {accountDetailTab === '资料' && (
@@ -665,6 +667,14 @@ export function AccountDetailModal({
         </div>
       )}
 
+      {accountDetailTab === '授权资产' && (
+        <AccountAuthorizationAssetsPanel
+          accountId={accountDetail.account.id}
+          canManage={canManageAuthorizations}
+          onChanged={onRefreshAccountDetail}
+        />
+      )}
+
       {accountDetailTab === '账号安全' && (
         <div className="flow-sections">
           <Card
@@ -698,11 +708,6 @@ export function AccountDetailModal({
               <Empty description={securityLoading ? '正在读取账号安全状态' : '暂无账号安全快照，点击刷新读取。'} />
             )}
           </Card>
-          <AccountAuthorizationAssetsPanel
-            accountId={accountDetail.account.id}
-            canManage={canManageAuthorizations}
-            onChanged={onRefreshAccountDetail}
-          />
           <Card className="sub-panel compact-panel" title="登录设备列表">
             <Table<AccountAuthorizationSnapshot>
               className="tg-table"
@@ -730,6 +735,13 @@ export function AccountDetailModal({
             </div>
           </Card>
         </div>
+      )}
+
+      {accountDetailTab === '托管 2FA' && (
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Text type="secondary">密码设置 / 轮换不回显旧密码</Typography.Text>
+          <AccountManaged2FaSettingsPanel accountId={accountDetail.account.id} canManageCredentials={canManageCredentials} />
+        </Space>
       )}
 
       {accountDetailTab === '账号状态记录' && (

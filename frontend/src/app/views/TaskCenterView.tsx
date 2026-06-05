@@ -64,6 +64,14 @@ function failureDiagnosis(action: TaskCenterAction) {
   return diagnosis;
 }
 
+function actionReplyTarget(action: TaskCenterAction) {
+  const payload = action.payload ?? {};
+  const isCommentAction = action.task_type === 'channel_comment' || action.action_type === 'post_comment';
+  if (!payload.reply_to_message_id) return <Tag>{isCommentAction ? '普通评论' : '普通发言'}</Tag>;
+  const label = payload.reply_target_author || payload.reply_target_label || `#${payload.reply_to_message_id}`;
+  return <Space size={4}><Tag color="blue">{isCommentAction ? '回复评论' : '引用回复'}</Tag><Typography.Text ellipsis>{label}：{payload.reply_target_preview || '-'}</Typography.Text></Space>;
+}
+
 type DangerousTaskAction = 'stop' | 'reset' | 'delete';
 type TaskTypeFilter = TaskCenterAnyTaskType | 'all';
 type AiLimitRecommendation = NonNullable<TaskPrecheck['capacity_summary']['recommended_limits']>;
@@ -81,6 +89,9 @@ const TASK_TYPE_FILTER_OPTIONS: Array<{ value: TaskTypeFilter; label: string }> 
   { value: 'all', label: '全部类型' },
   ...TASK_TYPES,
   { value: 'account_profile_init', label: TYPE_LABEL.account_profile_init },
+  { value: 'account_device_cleanup', label: TYPE_LABEL.account_device_cleanup },
+  { value: 'account_2fa_setup', label: TYPE_LABEL.account_2fa_setup },
+  { value: 'account_standby_session_provision', label: TYPE_LABEL.account_standby_session_provision },
 ];
 
 function isAiLimitTaskType(type?: TaskCenterTaskType | string | null): type is AiLimitTaskType {
@@ -374,11 +385,14 @@ export default function TaskCenterView({
   }
 
   function isSystemTask(task: TaskCenterTask | null | undefined) {
-    return task?.type === 'account_profile_init';
+    return task?.type === 'account_profile_init'
+      || task?.type === 'account_device_cleanup'
+      || task?.type === 'account_2fa_setup'
+      || task?.type === 'account_standby_session_provision';
   }
 
   function canDeleteTask(task: TaskCenterTask) {
-    return canManageTasks && Boolean(task.id);
+    return canManageTasks && Boolean(task.id) && !isSystemTask(task);
   }
 
   function canStartTask(task: TaskCenterTask) {
@@ -460,7 +474,6 @@ export default function TaskCenterView({
       excluded_sender_peer_ids: Array.isArray(config.excluded_sender_peer_ids) ? config.excluded_sender_peer_ids : [],
       excluded_sender_input: formatExcludedSenderInput(config),
       allowed_reactions: Array.isArray(config.allowed_reactions) ? config.allowed_reactions.join(',') : config.allowed_reactions,
-      reply_to_message_ids: Array.isArray(config.reply_to_message_ids) ? config.reply_to_message_ids : csvNumbers(config.reply_to_message_ids),
       max_message_length: config.max_message_length ?? null,
     };
   }
@@ -573,8 +586,7 @@ export default function TaskCenterView({
     const payload: Record<string, any> = {
       ...base,
       ...(includeScope ? channelScopePayload(values) : {}),
-      comment_mode: values.comment_mode ?? 'comment',
-      reply_to_message_ids: csvNumbers(values.reply_to_message_ids),
+      reply_min_per_message: values.reply_min_per_message ?? 0,
       rule_set_id: values.rule_set_id ?? null,
       rule_set_version_id: values.rule_set_version_id ?? null,
       ai_model: values.ai_model ?? '',
@@ -673,6 +685,7 @@ export default function TaskCenterView({
         account_memory_depth: values.account_memory_depth ?? 3,
         messages_per_round_mode: values.messages_per_round_mode ?? 'auto',
         messages_per_round: values.messages_per_round ?? 1,
+        reply_min_per_round: values.reply_min_per_round ?? 0,
         history_fetch_account_id: values.history_fetch_account_id ?? null,
         ...membershipStrategyPayload(values),
         context_expire_after_messages: values.context_expire_after_messages ?? 10,
@@ -728,7 +741,7 @@ export default function TaskCenterView({
     };
     if (type === 'group_ai_chat') {
       const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
-      return { ...base, target_operation_target_id: values.target_operation_target_id ?? null, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, target_group_name: target?.title ?? '', topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', slang_prompt_template_id: values.slang_prompt_template_id ?? null, slang_terms: parseKeyValueMap(values.slang_terms), tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, account_personas: parseKeyValueMap(values.account_personas), account_memory_depth: values.account_memory_depth ?? 3, messages_per_round_mode: values.messages_per_round_mode ?? 'auto', messages_per_round: values.messages_per_round ?? 1, history_fetch_account_id: values.history_fetch_account_id ?? null, ...membershipStrategyPayload(values), idle_continuation_enabled: values.idle_continuation_enabled ?? true, idle_continuation_seconds: values.idle_continuation_seconds ?? 300, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
+      return { ...base, target_operation_target_id: values.target_operation_target_id ?? null, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, target_group_name: target?.title ?? '', topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', slang_prompt_template_id: values.slang_prompt_template_id ?? null, slang_terms: parseKeyValueMap(values.slang_terms), tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, account_personas: parseKeyValueMap(values.account_personas), account_memory_depth: values.account_memory_depth ?? 3, messages_per_round_mode: values.messages_per_round_mode ?? 'auto', messages_per_round: values.messages_per_round ?? 1, reply_min_per_round: values.reply_min_per_round ?? 0, history_fetch_account_id: values.history_fetch_account_id ?? null, ...membershipStrategyPayload(values), idle_continuation_enabled: values.idle_continuation_enabled ?? true, idle_continuation_seconds: values.idle_continuation_seconds ?? 300, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
     }
     if (type === 'group_relay') {
       const sourceTargetIds = csvNumbers(values.source_operation_target_ids);
@@ -1095,6 +1108,7 @@ export default function TaskCenterView({
     { title: '账号', dataIndex: 'account_id', width: 170, render: (value) => accountDisplay(detail, value) },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <ActionStatusBadge status={value} /> },
     { title: '目标', key: 'target', width: 180, render: (_, action) => actionTarget(action) },
+    { title: '引用回复', key: 'reply_target', width: 260, render: (_, action) => actionReplyTarget(action) },
     { title: '内容', key: 'content', ellipsis: true, render: (_, action) => actionContent(action) },
   ];
 
@@ -1105,6 +1119,7 @@ export default function TaskCenterView({
     { title: '账号', dataIndex: 'account_id', width: 170, render: (value) => accountDisplay(detail, value) },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <ActionStatusBadge status={value} /> },
     { title: '目标', key: 'target', width: 180, render: (_, action) => actionTarget(action) },
+    { title: '引用回复', key: 'reply_target', width: 260, render: (_, action) => actionReplyTarget(action) },
     { title: '内容', key: 'content', ellipsis: true, render: (_, action) => actionContent(action) },
     { title: '账号/目标原因', key: 'failure_diagnosis_summary', width: 260, ellipsis: true, render: (_, action) => failureDiagnosis(action)?.operator_summary || action.failure_reason || action.result?.error_message || action.result?.detail || '-' },
     { title: '处理建议', key: 'failure_diagnosis_action', width: 260, ellipsis: true, render: (_, action) => failureDiagnosis(action)?.suggested_action || '-' },
@@ -1152,6 +1167,8 @@ export default function TaskCenterView({
     },
     { title: '动作', dataIndex: 'action_label', width: 100 },
     { title: '目标', dataIndex: 'target_count', width: 80 },
+    { title: '直接评论', key: 'direct', width: 90, render: (_, item) => item.stats.direct ?? 0 },
+    { title: '回复评论', key: 'reply', width: 90, render: (_, item) => item.stats.reply ?? 0 },
     { title: '完成', dataIndex: 'completed_count', width: 80 },
     { title: '失败', dataIndex: 'failed_count', width: 80 },
     { title: '重复', dataIndex: 'duplicate_count', width: 80 },
@@ -1180,6 +1197,15 @@ export default function TaskCenterView({
     { title: '话题脉络', dataIndex: 'topic_thread', width: 280, ellipsis: true, render: (value) => value || '-' },
     { title: '话题计划', dataIndex: 'topic_plan', width: 280, ellipsis: true, render: (value) => value || '-' },
     { title: '意图', dataIndex: 'intent', width: 140 },
+    {
+      title: '引用回复',
+      key: 'reply_target',
+      width: 260,
+      ellipsis: true,
+      render: (_, turn) => turn.reply_to_message_id
+        ? <Space size={4}><Tag color="blue">引用回复</Tag><span>{turn.reply_target_author || turn.reply_target_label || `#${turn.reply_to_message_id}`}：{turn.reply_target_preview || '-'}</span></Space>
+        : <Tag>普通发言</Tag>,
+    },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <TaskStatusBadge status={value} /> },
     { title: '内容', dataIndex: 'content', ellipsis: true },
     { title: '结果', key: 'result', width: 220, render: (_, turn) => turn.result?.error_message || (turn.result?.success === true ? '成功' : '-') },
@@ -1292,7 +1318,7 @@ export default function TaskCenterView({
         <Steps className="wizard-steps" current={wizardStep} items={WIZARD_STEPS.map((title) => ({ title }))} />
         <Form form={form} layout="vertical" initialValues={initialValuesForType(taskType, schedulingSetting)}>
           {wizardStep === 0 && <WizardBasics taskType={taskType} onTypeChange={resetTypeFields} />}
-          {wizardStep === 1 && <WizardTarget taskType={taskType} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} />}
+          {wizardStep === 1 && <WizardTarget taskType={taskType} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={messageScope} targetChannelId={targetChannelId} onTargetChannelChange={() => form.setFieldsValue({ message_ids: [] })} />}
           {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} />}
           {wizardStep === 3 && (
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -1339,7 +1365,7 @@ export default function TaskCenterView({
           {detail && !isSystemTask(detail.task) && ['group_ai_chat', 'group_relay'].includes(detail.task.type) && (
             <>
               <Typography.Title level={5}>目标来源</Typography.Title>
-              <WizardTarget taskType={detail.task.type as TaskCenterTaskType} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [], reply_to_message_ids: [] })} allowInlineTarget={false} />
+              <WizardTarget taskType={detail.task.type as TaskCenterTaskType} groupTargets={groupTargets} channelTargets={channelTargets} messages={messages} messageScope={editMessageScope} targetChannelId={editTargetChannelId} onTargetChannelChange={() => editForm.setFieldsValue({ message_ids: [] })} allowInlineTarget={false} />
             </>
           )}
           <Typography.Title level={5}>类型参数</Typography.Title>

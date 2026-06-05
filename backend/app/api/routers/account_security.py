@@ -13,6 +13,8 @@ from app.schemas.account_security import (
     AccountSecurityBatchCreate,
     AccountSecurityBatchOut,
     AccountSecurityDetailOut,
+    ManagedTwoFaOut,
+    ManagedTwoFaRequest,
     AccountSecurityPrecheckOut,
     AccountSecurityPrecheckRequest,
     AccountSecurityRetryRequest,
@@ -29,11 +31,14 @@ from app.services.account_security import (
     precheck_account_security_batch,
     refresh_account_security,
     retry_account_security_batch,
+    rotate_managed_two_fa_password,
+    save_managed_two_fa_password,
 )
 
 router = APIRouter()
 
 SECURITY_ACTION_TYPES = {"cleanup_devices", "set_two_fa"}
+STANDBY_SESSION_ACTION_TYPES = {"provision_standby_session", "self_heal_session"}
 PROFILE_ACTION_TYPES = {"update_profile", "update_username", "update_avatar"}
 
 
@@ -41,9 +46,11 @@ def _require_batch_action_permissions(current_user: CurrentUser, action_types: l
     actions = set(action_types or [])
     if actions & SECURITY_ACTION_TYPES and not current_user.has_permission("accounts.security.batch"):
         raise HTTPException(status_code=403, detail="accounts.security.batch required")
+    if actions & STANDBY_SESSION_ACTION_TYPES and not current_user.has_permission("accounts.authorizations.manage"):
+        raise HTTPException(status_code=403, detail="accounts.authorizations.manage required")
     if actions & PROFILE_ACTION_TYPES and not current_user.has_permission("accounts.profile.batch_update"):
         raise HTTPException(status_code=403, detail="accounts.profile.batch_update required")
-    unknown = actions - SECURITY_ACTION_TYPES - PROFILE_ACTION_TYPES
+    unknown = actions - SECURITY_ACTION_TYPES - STANDBY_SESSION_ACTION_TYPES - PROFILE_ACTION_TYPES
     if unknown:
         raise HTTPException(status_code=400, detail=f"unknown action_types: {', '.join(sorted(unknown))}")
 
@@ -127,6 +134,40 @@ def post_account_security_set_2fa(
         payload.confirm_text = payload.confirm_text or "确认"
         payload.reason = _require_reason(payload.reason)
         return create_account_security_batch(session, current_user.tenant_id or 1, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/security/managed-2fa", response_model=ManagedTwoFaOut)
+def post_account_security_managed_2fa(
+    account_id: int,
+    payload: ManagedTwoFaRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    if not current_user.has_permission("accounts.security.credential_manage"):
+        raise HTTPException(status_code=403, detail="accounts.security.credential_manage required")
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return save_managed_two_fa_password(session, current_user.tenant_id or 1, account_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/security/managed-2fa/rotate", response_model=ManagedTwoFaOut)
+def post_account_security_managed_2fa_rotate(
+    account_id: int,
+    payload: ManagedTwoFaRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    if not current_user.has_permission("accounts.security.credential_manage"):
+        raise HTTPException(status_code=403, detail="accounts.security.credential_manage required")
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return rotate_managed_two_fa_password(session, current_user.tenant_id or 1, account_id, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

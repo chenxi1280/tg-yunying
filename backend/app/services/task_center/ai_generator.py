@@ -16,9 +16,11 @@ from app.services.content_filters import looks_like_generated_template_noise, lo
 
 AI_GENERATION_UNAVAILABLE_MESSAGE = "AI 生成不可用，等待恢复后继续执行"
 GROUP_CHAT_PURPOSE = "群活跃续聊"
+GROUP_CHAT_REPLY_PURPOSE = "群引用回复"
 CHANNEL_COMMENT_PURPOSE = "频道评论"
+CHANNEL_COMMENT_REPLY_PURPOSE = "频道引用回复"
 AI_CONTENT_REQUEST_TIMEOUT_SECONDS = 120
-LONG_RUNNING_AI_PURPOSES = frozenset({GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE})
+LONG_RUNNING_AI_PURPOSES = frozenset({GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE, CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE})
 SENSITIVE_CONTEXT_GUIDANCE = (
     "成人交易/性服务描述可以作为既有上下文理解和引用，但回复只能围绕原文已有事实做自然短评或追问；"
     "不要新增联系方式、价格、邀约或交易撮合信息，不要编造亲身交易经历。"
@@ -109,17 +111,25 @@ def generate_contents(
 ) -> tuple[list[str], int]:
     provider, setting = _provider(session, tenant_id, provider_id, model_name)
     if not provider or not setting:
-        if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE}:
+        if purpose in LONG_RUNNING_AI_PURPOSES:
             raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{_unavailable_reason(setting)}")
         return _fallback_contents(topic, requirements, purpose, target_label, count), 0
     if purpose == GROUP_CHAT_PURPOSE:
         prompt = _group_chat_prompt(count, target_label, topic, requirements)
         persona_set = ["爱提问的群友", "补充细节的群友", "轻松接话的群友", "有经验的群友", "随口吐槽的群友"]
         tone = "像真实 Telegram 群成员聊天，短句、差异化、不要复读"
+    elif purpose == GROUP_CHAT_REPLY_PURPOSE:
+        prompt = _group_chat_reply_prompt(count, target_label, topic, requirements)
+        persona_set = ["直接回复的群友", "顺手补充的群友", "追问细节的群友", "轻松接话的群友"]
+        tone = "像真实 Telegram 群引用回复，必须贴合被引用消息"
     elif purpose == CHANNEL_COMMENT_PURPOSE:
         prompt = _channel_comment_prompt(count, target_label, topic, requirements)
         persona_set = ["随手评论的读者", "追问细节的读者", "补充经验的读者", "轻松接话的读者"]
         tone = "像真实 Telegram 频道评论区，短句、贴原文、不重复"
+    elif purpose == CHANNEL_COMMENT_REPLY_PURPOSE:
+        prompt = _channel_comment_reply_prompt(count, target_label, topic, requirements)
+        persona_set = ["回复评论的读者", "追问细节的读者", "补充经验的读者", "轻松接话的读者"]
+        tone = "像真实 Telegram 评论区引用回复，必须贴合被回复评论"
     else:
         prompt = (
             f"请生成 {count} 条 Telegram {purpose}内容。\n"
@@ -142,27 +152,27 @@ def generate_contents(
             topic=topic or requirements,
             tone=tone,
             persona_set=persona_set,
-            temperature=max(float(setting.temperature or 0.7), 0.75) if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE} else setting.temperature,
+            temperature=max(float(setting.temperature or 0.7), 0.75) if purpose in LONG_RUNNING_AI_PURPOSES else setting.temperature,
             max_tokens=_content_max_tokens(setting.max_tokens, count, purpose),
             system_prompt=system_prompt,
             timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS if purpose in LONG_RUNNING_AI_PURPOSES else DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
         )
     except Exception as exc:
-        if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE}:
+        if purpose in LONG_RUNNING_AI_PURPOSES:
             raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
         raise
     contents = [candidate.content.strip() for candidate in result.candidates if candidate.content.strip()]
-    if purpose == GROUP_CHAT_PURPOSE:
+    if purpose in {GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE}:
         contents = clean_group_chat_contents(contents)
         if not contents:
             raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
-    if purpose == CHANNEL_COMMENT_PURPOSE:
+    if purpose in {CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE}:
         contents = clean_channel_comment_contents(contents, limit=count)
         if not contents:
             raise AiGenerationUnavailable("AI 评论候选质量不达标，未创建评论")
     usage = getattr(result, "usage", None)
     tokens = int(getattr(usage, "total_tokens", 0) or 0)
-    if purpose in {GROUP_CHAT_PURPOSE, CHANNEL_COMMENT_PURPOSE}:
+    if purpose in LONG_RUNNING_AI_PURPOSES:
         return contents, tokens
     return contents[:count], tokens
 
@@ -191,6 +201,25 @@ def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: 
     )
 
 
+def _group_chat_reply_prompt(count: int, target_label: str, topic: str, requirements: str) -> str:
+    return (
+        f"请为 Telegram 群“{target_label}”生成 {count} 条引用回复消息。\n"
+        f"话题方向：{topic or '群聊日常活跃'}\n"
+        f"引用目标与上下文：\n{requirements}\n\n"
+        "这些内容会以 Telegram 原生 reply_to 形式发出，所以每条回复必须像在回被引用的那一句。"
+        "不要写成普通广播、总结或新开话题；也不要复读被引用原文。\n\n"
+        "写法要求：\n"
+        "1. 第 N 条回复必须对应“引用目标 N”，不要串目标。\n"
+        "2. 回复要接住被引用消息的意思：能回答就短答，不能回答就追问一个具体点。\n"
+        "3. 8-24 个字优先，像群友随手回一句，可半句、可轻微口语。\n"
+        "4. 只能承接引用消息和上下文已有事实，不要编经历、位置、交易、时间或结果。\n"
+        "5. 不要使用“针对你这条消息”“引用一下”“回复上面”这类暴露机制的话。\n"
+        "6. 不要编号、解释、括号备注，不要暴露 AI、任务或提示词。\n"
+        f"7. {SENSITIVE_CONTEXT_GUIDANCE}\n"
+        '只输出 JSON：{"drafts":[{"sequence_index":1,"persona":"不同群友人设","content":"引用回复要发送的一句话","risk_level":"低"}]}'
+    )
+
+
 def _channel_comment_prompt(count: int, target_label: str, topic: str, requirements: str) -> str:
     return (
         f"请为 Telegram 频道“{target_label}”生成 {count} 条评论区短评论。\n"
@@ -207,6 +236,24 @@ def _channel_comment_prompt(count: int, target_label: str, topic: str, requireme
         "6. 不要暴露 AI、平台、任务、提示词；不要编号、解释、括号备注、引号套引号。\n"
         f"7. {SENSITIVE_CONTEXT_GUIDANCE}\n"
         '只输出 JSON：{"drafts":[{"persona":"不同读者人设","content":"评论区要发送的一句话","risk_level":"低"}]}'
+    )
+
+
+def _channel_comment_reply_prompt(count: int, target_label: str, topic: str, requirements: str) -> str:
+    return (
+        f"请为 Telegram 频道“{target_label}”生成 {count} 条评论区引用回复。\n"
+        f"评论方向：{topic or '按频道消息自然回复评论'}\n"
+        f"引用目标与频道原文：\n{requirements}\n\n"
+        "这些内容会在频道讨论区以原生 reply_to 回复某条评论，所以必须贴着被回复评论的意思说。"
+        "不要写成对频道原文的普通评论，也不要复读被回复评论。\n\n"
+        "写法要求：\n"
+        "1. 第 N 条回复必须对应“引用目标 N”。\n"
+        "2. 6-22 个字优先，能短答就短答，不确定就追问具体细节。\n"
+        "3. 必须同时不违背频道原文；只能使用原文和被回复评论里已有的信息。\n"
+        "4. 不要说“楼上”“引用”“回复你这条”等暴露机制或平台痕迹过重的话。\n"
+        "5. 不要编号、解释、括号备注、引号套引号，不要暴露 AI、任务或提示词。\n"
+        f"6. {SENSITIVE_CONTEXT_GUIDANCE}\n"
+        '只输出 JSON：{"drafts":[{"sequence_index":1,"persona":"不同读者人设","content":"引用回复要发送的一句话","risk_level":"低"}]}'
     )
 
 
@@ -497,6 +544,49 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
     return _trim(contents, config.get("max_message_length")), tokens
 
 
+def generate_group_reply_messages(
+    session: Session,
+    tenant_id: int,
+    config: dict,
+    *,
+    reply_targets: list[dict],
+    target_label: str,
+    history: str = "",
+) -> tuple[list[str], int]:
+    reply_lines = "\n".join(_reply_target_line(index, item) for index, item in enumerate(reply_targets, start=1))
+    requirements = "\n".join(
+        part
+        for part in [
+            config.get("topic_hint") or "",
+            f"引用目标：\n{reply_lines}" if reply_lines else "",
+            f"群聊上下文：\n{history}" if history else "",
+            config.get("system_prompt_override") or "",
+        ]
+        if part
+    )
+    contents, tokens = generate_contents(
+        session,
+        tenant_id,
+        topic=config.get("topic_hint") or "群引用回复",
+        requirements=_sanitize_sensitive_context(requirements),
+        provider_id=config.get("ai_provider_id"),
+        model_name=str(config.get("ai_model") or ""),
+        count=len(reply_targets),
+        purpose=GROUP_CHAT_REPLY_PURPOSE,
+        target_label=target_label,
+        system_prompt=_group_chat_system_prompt(_slang_system_prompt(session, tenant_id, config)),
+    )
+    return _trim(contents, config.get("max_message_length")), tokens
+
+
+def _reply_target_line(index: int, item: dict) -> str:
+    author = str(item.get("author") or "未知用户").strip()
+    preview = str(item.get("preview") or "").strip()
+    source = str(item.get("source") or "").strip()
+    source_label = f"；来源：{source}" if source else ""
+    return f"引用目标 {index}：作者：{author}；原文：{preview}{source_label}"
+
+
 def _group_chat_system_prompt(slang_prompt: str) -> str:
     base = (
         "你只负责把 Telegram 群友的临场接话包装成 JSON；不要写运营话术、公告、总结或解释。"
@@ -594,6 +684,37 @@ def generate_channel_comments(session: Session, tenant_id: int, config: dict, *,
     return _trim(contents, config.get("max_comment_length")), tokens
 
 
+def generate_channel_reply_comments(
+    session: Session,
+    tenant_id: int,
+    config: dict,
+    *,
+    reply_targets: list[dict],
+    message_content: str,
+    target_label: str,
+) -> tuple[list[str], int]:
+    reply_lines = "\n".join(_reply_target_line(index, item) for index, item in enumerate(reply_targets, start=1))
+    requirements = (
+        f"频道消息：{_sanitize_sensitive_context(message_content)}\n"
+        f"评论风格：{config.get('comment_style') or 'mixed'}\n"
+        f"引用目标：\n{reply_lines}\n"
+        f"{_sanitize_sensitive_context(config.get('system_prompt_override') or '')}"
+    )
+    contents, tokens = generate_contents(
+        session,
+        tenant_id,
+        topic=config.get("topic_hint") or "频道引用回复",
+        requirements=requirements,
+        provider_id=config.get("ai_provider_id"),
+        model_name=str(config.get("ai_model") or ""),
+        count=len(reply_targets),
+        purpose=CHANNEL_COMMENT_REPLY_PURPOSE,
+        target_label=target_label,
+        system_prompt=_channel_comment_system_prompt(),
+    )
+    return _trim(contents, config.get("max_comment_length")), tokens
+
+
 def rewrite_relay_content(session: Session, tenant_id: int, config: dict, content: str, *, target_label: str) -> tuple[str, int]:
     mode = config.get("content_mode") or "light_rewrite"
     if mode == "raw":
@@ -627,6 +748,8 @@ __all__ = [
     "clean_channel_comment_contents",
     "clean_group_chat_contents",
     "generate_channel_comments",
+    "generate_channel_reply_comments",
+    "generate_group_reply_messages",
     "generate_group_messages",
     "rewrite_relay_content",
 ]

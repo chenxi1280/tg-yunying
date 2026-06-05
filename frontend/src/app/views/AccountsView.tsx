@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, Avatar, Button, Card, Progress, Segmented, Space, Table, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { Activity, Database, ShieldAlert } from 'lucide-react';
+import { Activity, Database, LockKeyhole, ShieldAlert } from 'lucide-react';
 import { api } from '../../shared/api/client';
 import type { Account, AccountAvailabilitySummary, AccountPool } from '../types';
 import type { RuntimeConfig } from '../types';
@@ -44,6 +44,7 @@ interface Props {
   canViewCodes?: boolean;
   canSecurityRead?: boolean;
   canSecurityBatch?: boolean;
+  canManageAuthorizations?: boolean;
   canProfileBatchUpdate?: boolean;
   canMovePool?: boolean;
   canDeleteAccount?: boolean;
@@ -76,12 +77,13 @@ export default function AccountsView({
   canViewCodes = true,
   canSecurityRead = true,
   canSecurityBatch = true,
+  canManageAuthorizations = true,
   canProfileBatchUpdate = true,
   canMovePool = true,
   canDeleteAccount = true,
 }: Props) {
   const [selectedAccountIds, setSelectedAccountIds] = React.useState<number[]>([]);
-  const [securityDrawerMode, setSecurityDrawerMode] = React.useState<'cleanup_devices' | 'set_two_fa' | 'profile' | null>(null);
+  const [securityDrawerMode, setSecurityDrawerMode] = React.useState<'cleanup_devices' | 'set_two_fa' | 'profile' | 'standby_session' | null>(null);
   const [refreshingSecurity, setRefreshingSecurity] = React.useState(false);
   const [availabilityLoading, setAvailabilityLoading] = React.useState(false);
   const [availabilityByAccountId, setAvailabilityByAccountId] = React.useState<Map<number, AccountAvailabilitySummary>>(new Map());
@@ -103,6 +105,9 @@ export default function AccountsView({
         account.authorization_summary.primary_status,
         account.authorization_summary.risk_hint,
         account.authorization_summary.has_standby ? '已有备用授权' : '未配置备用授权 无缝切换风险',
+        account.authorization_summary.standby_count < account.authorization_summary.target_standby_count ? '备用 session 缺口 健康备用 session 不足 2 个 standby_1 session 缺失 standby_2 session 缺失 备用 session 未登录' : '健康备用 session 已补齐',
+        account.authorization_summary.primary_status !== 'active' && account.authorization_summary.standby_count > 0 ? '可从备用 session 激活恢复' : '',
+        account.authorization_summary.risk_hint.includes('设备') ? '未做过登录设备清理 外部设备未清理 最近设备清理失败' : '',
         canSecurityRead ? account.developer_app_health_status : '',
         account.proxy_name,
         canSecurityRead ? account.proxy_local_address : '',
@@ -355,6 +360,7 @@ export default function AccountsView({
         {canProfileBatchUpdate && <Button icon={<Activity size={16} />} onClick={() => setSecurityDrawerMode('profile')}>资料初始化</Button>}
         {canSecurityBatch && <Button icon={<ShieldAlert size={16} />} onClick={() => setSecurityDrawerMode('set_two_fa')}>设置二步密码</Button>}
         {canSecurityBatch && <Button icon={<Database size={16} />} onClick={() => setSecurityDrawerMode('cleanup_devices')}>清理登录设备</Button>}
+        {canManageAuthorizations && <Button icon={<LockKeyhole size={16} />} onClick={() => setSecurityDrawerMode('standby_session')}>补齐备用 session</Button>}
         {canSecurityRead && <Button disabled={!selectedAccountIds.length} loading={refreshingSecurity} onClick={refreshSelectedSecurity}>刷新安全状态</Button>}
         <Button disabled={!selectedAccountIds.length} onClick={() => setSelectedAccountIds([])}>清空选择</Button>
       </Space>
