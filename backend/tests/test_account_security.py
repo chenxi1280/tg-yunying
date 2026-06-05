@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
+from app.integrations.telegram.contracts import AccountAuthorizationSnapshot as RemoteAuthorizationSnapshot
 from app.models import AiProvider, AccountProxy, AccountStatus, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot, TgVerificationCode
 from app.schemas import TgAccountCreate
 from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ManagedTwoFaRequest, ProfileGenerationStrategy
@@ -69,6 +70,47 @@ def _seed_account(session: Session, *, status: str = AccountStatus.ACTIVE.value,
     return account
 
 
+def _remote_authorization(
+    authorization_hash: str,
+    *,
+    is_current: bool = False,
+    device_model: str = "Unknown Device",
+    platform: str = "Unknown",
+    api_id: int = 999999,
+    app_name: str = "Unknown App",
+) -> RemoteAuthorizationSnapshot:
+    return RemoteAuthorizationSnapshot(
+        authorization_hash=authorization_hash,
+        is_current=is_current,
+        device_model=device_model,
+        platform=platform,
+        system_version="",
+        api_id=api_id,
+        app_name=app_name,
+        app_version="",
+    )
+
+
+def _remote_cleanup_authorizations() -> list[RemoteAuthorizationSnapshot]:
+    return [
+        _remote_authorization(
+            "primary",
+            is_current=True,
+            device_model="平台主控",
+            platform="Linux",
+            app_name="TG运营平台",
+        ),
+        _remote_authorization("external", device_model="Unknown", platform="Unknown", app_name="Legacy Client"),
+        _remote_authorization(
+            "official-anchor",
+            device_model="Telegram Desktop",
+            platform="macOS",
+            api_id=2040,
+            app_name="Telegram Desktop",
+        ),
+    ]
+
+
 def test_refresh_account_security_records_trusted_session_and_external_device():
     with _session() as session:
         account = _seed_account(session)
@@ -77,7 +119,7 @@ def test_refresh_account_security_records_trusted_session_and_external_device():
 
         assert snapshot.trusted_session_status == "confirmed"
         assert snapshot.two_fa_status == "missing"
-        assert snapshot.external_authorization_count == 1
+        assert snapshot.external_authorization_count == 0
         assert snapshot.profile_status == "incomplete"
 
 
@@ -1052,46 +1094,13 @@ def test_confirmed_batch_drains_profile_username_and_device_cleanup_independentl
 def test_device_cleanup_preserves_current_and_platform_trusted_authorizations(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
-        for index, flags in enumerate(
-            [
-                {"is_current_session": True, "is_platform_trusted": True, "hash": "primary"},
-                {"is_current_session": False, "is_platform_trusted": True, "hash": "standby"},
-                {"is_current_session": False, "is_platform_trusted": False, "hash": "external"},
-            ],
-            start=1,
-        ):
-            session.add(
-                TgAccountAuthorizationSnapshot(
-                    id=index,
-                    tenant_id=1,
-                    account_id=account.id,
-                    authorization_hash_ciphertext=encrypt_secret(flags["hash"]),
-                    is_current_session=flags["is_current_session"],
-                    is_platform_trusted=flags["is_platform_trusted"],
-                    status="active",
-                )
-            )
-        session.add(
-            TgAccountAuthorizationSnapshot(
-                tenant_id=1,
-                account_id=account.id,
-                authorization_hash_ciphertext=encrypt_secret("official-anchor"),
-                is_current_session=False,
-                is_platform_trusted=False,
-                device_model="iPhone",
-                platform="iOS",
-                api_id=8,
-                app_name="Telegram iOS",
-                status="active",
-            )
-        )
-        session.commit()
         cleaned_hashes: list[str] = []
 
         def record_cleanup(_session_ciphertext, authorization_hash, _credentials):
             cleaned_hashes.append(authorization_hash)
             return SimpleNamespace(ok=True, detail="cleaned", failure_type="")
 
+        monkeypatch.setattr(account_security_service.gateway, "list_authorizations", lambda *_args, **_kwargs: _remote_cleanup_authorizations())
         monkeypatch.setattr(account_security_service.gateway, "cleanup_authorization", record_cleanup)
         batch = create_account_security_batch(
             session,
@@ -1121,34 +1130,6 @@ def test_device_cleanup_preserves_recorded_primary_and_standby_authorization_has
                     status="standby",
                     telegram_authorization_hash_ciphertext=encrypt_secret("standby-hash"),
                 ),
-                TgAccountAuthorizationSnapshot(
-                    tenant_id=1,
-                    account_id=account.id,
-                    authorization_hash_ciphertext=encrypt_secret("standby-hash"),
-                    is_current_session=False,
-                    is_platform_trusted=False,
-                    status="active",
-                ),
-                TgAccountAuthorizationSnapshot(
-                    tenant_id=1,
-                    account_id=account.id,
-                    authorization_hash_ciphertext=encrypt_secret("external-hash"),
-                    is_current_session=False,
-                    is_platform_trusted=False,
-                    status="active",
-                ),
-                TgAccountAuthorizationSnapshot(
-                    tenant_id=1,
-                    account_id=account.id,
-                    authorization_hash_ciphertext=encrypt_secret("official-anchor"),
-                    is_current_session=False,
-                    is_platform_trusted=False,
-                    device_model="Telegram Desktop",
-                    platform="macOS",
-                    api_id=2040,
-                    app_name="Telegram Desktop",
-                    status="active",
-                ),
             ]
         )
         session.commit()
@@ -1158,6 +1139,16 @@ def test_device_cleanup_preserves_recorded_primary_and_standby_authorization_has
             cleaned_hashes.append(authorization_hash)
             return SimpleNamespace(ok=True, detail="cleaned", failure_type="")
 
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "list_authorizations",
+            lambda *_args, **_kwargs: [
+                _remote_authorization("primary", is_current=True, device_model="平台主控", platform="Linux", app_name="TG运营平台"),
+                _remote_authorization("standby-hash", device_model="Standby", platform="Linux", app_name="TG运营平台备用"),
+                _remote_authorization("external-hash", device_model="Unknown", platform="Unknown", app_name="Legacy Client"),
+                _remote_authorization("official-anchor", device_model="Telegram Desktop", platform="macOS", api_id=2040, app_name="Telegram Desktop"),
+            ],
+        )
         monkeypatch.setattr(account_security_service.gateway, "cleanup_authorization", record_cleanup)
         batch = create_account_security_batch(
             session,
@@ -1174,23 +1165,20 @@ def test_device_cleanup_preserves_recorded_primary_and_standby_authorization_has
 def test_device_cleanup_requires_official_anchor_authorization(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
-        session.add(
-            TgAccountAuthorizationSnapshot(
-                tenant_id=1,
-                account_id=account.id,
-                authorization_hash_ciphertext=encrypt_secret("external-hash"),
-                is_current_session=False,
-                is_platform_trusted=False,
-                status="active",
-            )
-        )
-        session.commit()
         cleaned_hashes: list[str] = []
 
         def record_cleanup(_session_ciphertext, authorization_hash, _credentials):
             cleaned_hashes.append(authorization_hash)
             return SimpleNamespace(ok=True, detail="cleaned", failure_type="")
 
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "list_authorizations",
+            lambda *_args, **_kwargs: [
+                _remote_authorization("primary", is_current=True, device_model="平台主控", platform="Linux", app_name="TG运营平台"),
+                _remote_authorization("external-hash", device_model="Unknown", platform="Unknown", app_name="Legacy Client"),
+            ],
+        )
         monkeypatch.setattr(account_security_service.gateway, "cleanup_authorization", record_cleanup)
         batch = create_account_security_batch(
             session,
@@ -1379,6 +1367,7 @@ def test_waiting_account_security_item_is_retried_when_due(monkeypatch):
                 return SimpleNamespace(ok=False, detail="FRESH_RESET_AUTHORISATION_FORBIDDEN 24 SESSION", failure_type="等待限制")
             return SimpleNamespace(ok=True, detail="cleaned", failure_type="")
 
+        monkeypatch.setattr(account_security_service.gateway, "list_authorizations", lambda *_args, **_kwargs: _remote_cleanup_authorizations())
         monkeypatch.setattr(account_security_service.gateway, "cleanup_authorization", cleanup_once_then_succeed)
         payload = AccountSecurityBatchCreate(
             account_ids=[account.id],
