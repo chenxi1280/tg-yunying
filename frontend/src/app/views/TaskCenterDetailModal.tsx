@@ -103,11 +103,15 @@ export function TaskCenterDetailModal({
     { title: '时间', dataIndex: 'sent_at', width: 170, render: (value) => formatDateTime(value) },
     { title: '操作', key: 'action', width: 150, render: (_, item) => canManageTasks ? <Button size="small" onClick={() => onBlockRelaySource(item)}>加入不转发名单</Button> : '-' },
   ];
-  const profileBatchItems = detail?.profile_batch?.items ?? [];
+  const accountSecurityBatch = detail?.account_security_batch ?? (detail?.profile_batch ? {
+    ...detail.profile_batch,
+    system_task_type: 'account_profile_init',
+  } : null);
+  const profileBatchItems = accountSecurityBatch?.items ?? [];
   const archivedSkippedCount = Number(detail?.stats?.archived_skipped_count ?? 0);
   const effectiveSkippedCount = Number(detail?.stats?.skipped_count ?? 0);
   const effectiveTotalActions = Number(detail?.stats?.total_actions ?? 0);
-  const profileBatchColumns: ColumnsType<typeof profileBatchItems[number]> = [
+  const accountSecurityBatchColumns: ColumnsType<typeof profileBatchItems[number]> = [
     {
       title: '账号',
       key: 'account',
@@ -123,6 +127,12 @@ export function TaskCenterDetailModal({
     { title: 'Username', dataIndex: 'username_status', width: 110, render: (value) => <DetailStatusBadge status={value} /> },
     { title: '头像', dataIndex: 'avatar_status', width: 120, render: (value) => <DetailStatusBadge status={value} /> },
     { title: '缓存', dataIndex: 'avatar_cache_status', width: 120, render: (value) => value ? <Tag>{value}</Tag> : '-' },
+    { title: '设备清理', dataIndex: 'device_cleanup_status', width: 120, render: (value) => value ? <DetailStatusBadge status={value} /> : '-' },
+    { title: '2FA', dataIndex: 'two_fa_status', width: 100, render: (value) => value ? <DetailStatusBadge status={value} /> : '-' },
+    { title: '备用 session', dataIndex: 'standby_session_status', width: 130, render: (value) => value ? <DetailStatusBadge status={value} /> : '-' },
+    { title: '目标槽位', dataIndex: 'target_slot', width: 110, render: (value) => value || '-' },
+    { title: '验证码读取', dataIndex: 'verification_code_status', width: 120, render: (value) => value || '-' },
+    { title: '保留设备', dataIndex: 'preserved_devices_summary', width: 220, render: (value) => value || 'primary / standby_1 / standby_2 / 官方锚点设备' },
     {
       title: '头像回显',
       dataIndex: 'avatar_preview_url',
@@ -132,9 +142,9 @@ export function TaskCenterDetailModal({
     { title: '失败原因', key: 'failure', ellipsis: true, render: (_, item) => item.failure_detail || item.failure_type || '-' },
   ];
   const detailTabs = detail ? [
-    detail.profile_batch ? {
-      key: 'profile-batch',
-      label: '资料初始化',
+    accountSecurityBatch ? {
+      key: 'account-security-batch',
+      label: TYPE_LABEL[accountSecurityBatch.system_task_type] || '账号安全批次',
       children: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           <Descriptions
@@ -142,20 +152,21 @@ export function TaskCenterDetailModal({
             size="small"
             column={5}
             items={[
-              { key: 'batch', label: '批次', children: `#${detail.profile_batch.batch_id}` },
-              { key: 'batch_status', label: '批次状态', children: <DetailStatusBadge status={detail.profile_batch.batch_status} /> },
-              { key: 'ready', label: '头像已缓存', children: detail.profile_batch.avatar_cache?.ready ?? 0 },
-              { key: 'waiting', label: '等待缓存', children: detail.profile_batch.avatar_cache?.waiting ?? 0 },
-              { key: 'failed', label: '缓存失败', children: detail.profile_batch.avatar_cache?.failed ?? 0 },
+              { key: 'batch', label: '批次', children: `#${accountSecurityBatch.batch_id}` },
+              { key: 'batch_status', label: '批次状态', children: <DetailStatusBadge status={accountSecurityBatch.batch_status} /> },
+              { key: 'type', label: '系统任务', children: TYPE_LABEL[accountSecurityBatch.system_task_type] || accountSecurityBatch.system_task_type },
+              { key: 'preserve', label: '设备保护', children: accountSecurityBatch.system_task_type === 'account_device_cleanup' ? 'primary / standby_1 / standby_2 / 官方锚点设备' : '-' },
+              { key: 'two-fa', label: '二步密码', children: accountSecurityBatch.system_task_type === 'account_2fa_setup' ? '平台托管 2FA 设置 / 替换 / 旧密码未知跳过' : '-' },
+              { key: 'standby', label: '备用补齐', children: accountSecurityBatch.system_task_type === 'account_standby_session_provision' ? '目标槽位 / 开发者应用 / 代理 / 验证码读取 / 2FA 使用 / 健康检查' : '-' },
             ]}
           />
           <Table
             rowKey={(item) => `${item.account_id}:${item.avatar_source || 'profile'}`}
-            columns={profileBatchColumns}
+            columns={accountSecurityBatchColumns}
             dataSource={profileBatchItems}
             pagination={{ pageSize: 8 }}
             size="small"
-            scroll={{ x: 1050 }}
+            scroll={{ x: 1700 }}
           />
         </Space>
       ),

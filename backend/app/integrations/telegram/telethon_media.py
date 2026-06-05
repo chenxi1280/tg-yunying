@@ -8,18 +8,18 @@ from .contracts import OutboundSegment
 from .telethon_utils import resolve_telethon_target
 
 
-async def send_media_segment(client: Any, target: Any, segment: OutboundSegment) -> Any:
+async def send_media_segment(client: Any, target: Any, segment: OutboundSegment, *, reply_to_message_id: int | None = None) -> Any:
     source = segment.source or segment.content
     if not source:
         raise ValueError("媒体素材缺少可发送来源")
     custom_emoji = _parse_custom_emoji_source(source)
     if custom_emoji:
         document_id, alt = custom_emoji
-        return await _send_custom_emoji_segment(client, target, document_id, alt, segment.caption or segment.content or "")
+        return await _send_custom_emoji_segment(client, target, document_id, alt, segment.caption or segment.content or "", reply_to_message_id=reply_to_message_id)
     caption = segment.caption or segment.content or None
     cache_ref = _parse_tg_cache_source(source)
     if not cache_ref:
-        return await client.send_file(target, source, caption=caption)
+        return await client.send_file(target, source, caption=caption, reply_to=reply_to_message_id)
     cache_peer, message_id = cache_ref
     cache_target = await resolve_telethon_target(client, cache_peer, group_id=0)
     cached_message = await client.get_messages(cache_target, ids=message_id)
@@ -29,7 +29,7 @@ async def send_media_segment(client: Any, target: Any, segment: OutboundSegment)
         downloaded = await client.download_media(cached_message, file=temp_dir)
         if not downloaded:
             raise ValueError("TG 缓存媒体下载失败")
-        return await client.send_file(target, downloaded, caption=caption)
+        return await client.send_file(target, downloaded, caption=caption, reply_to=reply_to_message_id)
 
 
 def _parse_tg_cache_source(source: str) -> tuple[str, int] | None:
@@ -52,7 +52,7 @@ def _parse_custom_emoji_source(source: str) -> tuple[int, str] | None:
     return int(parts[1]), parts[2].strip()
 
 
-async def _send_custom_emoji_segment(client: Any, target: Any, document_id: int, alt: str, caption: str) -> Any:
+async def _send_custom_emoji_segment(client: Any, target: Any, document_id: int, alt: str, caption: str, *, reply_to_message_id: int | None = None) -> Any:
     from telethon import types
 
     prefix = f"{caption}\n" if caption else ""
@@ -63,9 +63,9 @@ async def _send_custom_emoji_segment(client: Any, target: Any, document_id: int,
         document_id=document_id,
     )
     try:
-        return await client.send_message(target, text, formatting_entities=[entity])
+        return await client.send_message(target, text, formatting_entities=[entity], reply_to=reply_to_message_id)
     except TypeError:
-        return await client.send_message(target, text, entities=[entity])
+        return await client.send_message(target, text, entities=[entity], reply_to=reply_to_message_id)
 
 
 def _telegram_entity_length(text: str) -> int:

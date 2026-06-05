@@ -701,6 +701,7 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials,
         *,
         group_id: int = 0,
+        reply_to_message_id: int | None = None,
     ) -> SendResult:
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
@@ -717,15 +718,15 @@ class TelethonTelegramGateway(TelegramGateway):
             if segments:
                 for segment in segments:
                     if segment.segment_type == "文本":
-                        message = await client.send_message(target, segment.content)
+                        message = await client.send_message(target, segment.content, reply_to=reply_to_message_id)
                     elif segment.segment_type == "链接":
                         text = "\n".join(piece for piece in [segment.content, segment.source] if piece).strip()
-                        message = await client.send_message(target, text)
+                        message = await client.send_message(target, text, reply_to=reply_to_message_id)
                     else:
-                        message = await send_media_segment(client, target, segment)
+                        message = await send_media_segment(client, target, segment, reply_to_message_id=reply_to_message_id)
                     remote_message_id = str(getattr(message, "id", remote_message_id or uuid4().hex[:8]))
             else:
-                message = await client.send_message(target, content)
+                message = await client.send_message(target, content, reply_to=reply_to_message_id)
                 remote_message_id = str(message.id)
             return SendResult(True, remote_message_id=remote_message_id)
         except Exception as exc:  # Telethon exposes many RPC subclasses; map them at the adapter boundary.
@@ -740,8 +741,19 @@ class TelethonTelegramGateway(TelegramGateway):
         session_ciphertext: str | None = None,
         peer_id: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
+        reply_to_message_id: int | None = None,
     ) -> SendResult:
-        return self._run(self._send_async(session_ciphertext, peer_id, content, segments, self._usable_credentials(credentials), group_id=group_id))
+        return self._run(
+            self._send_async(
+                session_ciphertext,
+                peer_id,
+                content,
+                segments,
+                self._usable_credentials(credentials),
+                group_id=group_id,
+                reply_to_message_id=reply_to_message_id,
+            )
+        )
 
     async def _view_channel_message_async(
         self,

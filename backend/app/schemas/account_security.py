@@ -43,6 +43,7 @@ class AccountSecurityPrecheckRequest(BaseModel):
     account_ids: list[int] = Field(default_factory=list)
     action_types: list[str] = Field(default_factory=list)
     password_strategy: str = ""
+    standby_slot_strategy: str = "auto"
     profile_strategy: ProfileGenerationStrategy = Field(default_factory=ProfileGenerationStrategy)
     avatar_strategy: AvatarStrategy = Field(default_factory=AvatarStrategy)
     preview_overrides: list[AccountSecurityProfileOverride] = Field(default_factory=list)
@@ -56,6 +57,17 @@ class AccountSecurityBatchCreate(AccountSecurityPrecheckRequest):
 
 class AccountSecurityRetryRequest(BaseModel):
     item_ids: list[int] = Field(default_factory=list)
+
+
+class ManagedTwoFaRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=255)
+    reason: str = Field(min_length=1, max_length=255)
+
+
+class ManagedTwoFaOut(BaseModel):
+    account_id: int
+    two_fa_status: str
+    password_stored_at: datetime | None
 
 
 class AccountAuthorizationSnapshotOut(ApiModel):
@@ -137,6 +149,7 @@ class AccountSecurityBatchItemOut(ApiModel):
     precheck_status: str
     cleanup_status: str
     two_fa_status: str
+    standby_session_status: str = ""
     profile_status: str
     username_status: str
     avatar_status: str
@@ -214,5 +227,7 @@ __all__ = [
     "AccountSecuritySnapshotOut",
     "AccountSecuritySummaryOut",
     "AvatarStrategy",
+    "ManagedTwoFaOut",
+    "ManagedTwoFaRequest",
     "ProfileGenerationStrategy",
 ]

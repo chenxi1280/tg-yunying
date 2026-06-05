@@ -1,5 +1,5 @@
 export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment';
-export type TaskCenterSystemTaskType = 'account_profile_init';
+export type TaskCenterSystemTaskType = 'account_profile_init' | 'account_device_cleanup' | 'account_2fa_setup' | 'account_standby_session_provision';
 export type TaskCenterAnyTaskType = TaskCenterTaskType | TaskCenterSystemTaskType;
 
 export type TaskCenterTask = {
@@ -208,6 +208,11 @@ export type TaskCenterDetail = {
       topic_plan: string;
       intent: string;
       content: string;
+      reply_to_message_id?: number | null;
+      reply_target_label?: string;
+      reply_target_author?: string;
+      reply_target_preview?: string;
+      reply_target_source?: string;
       status: string;
       scheduled_at: string;
       executed_at: string | null;
@@ -319,6 +324,37 @@ export type TaskCenterDetail = {
       failure_detail: string;
     }>;
   };
+  account_security_batch?: {
+    batch_id: number;
+    system_task_type: TaskCenterSystemTaskType;
+    action_types: string[];
+    batch_status: string;
+    avatar_cache?: Record<string, number>;
+    items: Array<{
+      account_id: number;
+      display_name: string;
+      phone_number: string;
+      status: string;
+      profile_status: string;
+      username_status: string;
+      avatar_status: string;
+      device_cleanup_status?: string;
+      two_fa_status?: string;
+      standby_session_status?: string;
+      target_slot?: string;
+      developer_app_label?: string;
+      proxy_label?: string;
+      verification_code_status?: string;
+      two_fa_usage_status?: string;
+      preserved_devices_summary?: string;
+      cleaned_devices_summary?: string;
+      avatar_source: string;
+      avatar_cache_status: string;
+      avatar_preview_url: string;
+      failure_type: string;
+      failure_detail: string;
+    }>;
+  };
 	};
 
 export type TaskPrecheck = {
@@ -345,10 +381,13 @@ export type TaskPrecheck = {
     max_concurrent?: number;
     capacity_shortfall?: number;
     limit_note?: string;
+    reply_reference_summary?: Record<string, any>;
     recommended_limits?: {
       max_actions_per_hour?: number;
       messages_per_round?: number;
+      reply_min_per_round?: number;
       target_comments_per_message?: number;
+      reply_min_per_message?: number;
       max_comments_per_account_per_hour?: number;
       current_hour_rounds?: number;
       estimated_hourly_capacity?: number;

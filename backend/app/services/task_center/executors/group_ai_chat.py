@@ -19,7 +19,7 @@ from app.services.rule_engine import apply_output_policy, bound_rule_version, ev
 from app.services.material_rules import select_material_for_policy
 
 from ..account_pool import select_task_accounts
-from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
+from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages, generate_group_reply_messages
 from ..channel_membership import gate_channel_membership
 from ..fingerprints import fingerprint_exists, remember_fingerprint
 from ..listener_runtime import should_collect_listener
@@ -140,8 +140,24 @@ def build_plan(session: Session, task: Task) -> int:
     audit_learning_profile_use(session, task, profile_preview, "AI活群任务")
     generation_config = _generation_config_with_profile(config, account_memories, account_profiles, topic_thread, topic_plan, profile_preview)
     cycle_id = f"{task.id}:cycle:{cycle_index}"
+    reply_min = min(turn_count, int(config.get("reply_min_per_round") or 0))
+    reply_target_pool = _group_reply_target_pool(session, task, group, usable_context_rows)
+    if reply_min > len(reply_target_pool):
+        stats_inc(task, "reply_target_shortfall_count")
+        task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
+        return 0
+    reply_targets = reply_target_pool[:reply_min]
+    normal_count = max(0, turn_count - len(reply_targets))
     try:
-        contents, tokens = generate_group_messages(session, task.tenant_id, generation_config, count=turn_count, target_label=target_label, history=history)
+        planned_items, tokens = _generate_group_planned_items(
+            session,
+            task,
+            generation_config,
+            reply_targets=reply_targets,
+            normal_count=normal_count,
+            target_label=target_label,
+            history=history,
+        )
     except AiGenerationUnavailable as exc:
         task.last_error = str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE
         stats = dict(task.stats or {})
@@ -150,12 +166,12 @@ def build_plan(session: Session, task: Task) -> int:
         stats["context_mode"] = _context_mode(usable_context_rows, idle_continuation)
         task.stats = stats
         return 0
-    contents = [content for content in contents if not _looks_like_generated_noise(content)]
-    contents = _drop_repeated_ai_messages(contents, previous_ai_messages)
+    planned_items = [item for item in planned_items if not _looks_like_generated_noise(item["content"])]
+    planned_items = _drop_repeated_planned_items(planned_items, previous_ai_messages)
     chat_mode = _chat_mode(usable_context_rows, idle_continuation)
     context_message_ids = [int(row.id) for row in usable_context_rows[-history_depth:]]
     quality_items, quality_stats = _quality_filter_ai_messages(
-        contents,
+        [item["content"] for item in planned_items],
         previous_ai_messages,
         chat_mode=chat_mode,
         anchor_message_ids=context_message_ids,
@@ -163,16 +179,17 @@ def build_plan(session: Session, task: Task) -> int:
         low_confidence_silence_enabled=bool(config.get("low_confidence_silence_enabled", True)),
         limit=turn_count,
     )
-    contents = [item["content"] for item in quality_items]
-    if not contents:
+    quality_items = _attach_reply_targets(quality_items, planned_items)
+    if not quality_items:
         _mark_quality_skip(task, config, mode, ramp_ratio, _context_mode(usable_context_rows, idle_continuation), chat_mode, quality_stats)
         return 0
     selected = _prioritize_account_memory(selected, account_memories)
     add_tokens(task, tokens)
-    times = _round_schedule_times(len(contents), task.pacing_config or {}, mode)
+    times = _round_schedule_times(len(quality_items), task.pacing_config or {}, mode)
     context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
     used_account_ids: set[int] = set()
     allow_account_repeat = bool(config.get("allow_account_repeat", True))
+    prepared_actions: list[tuple[int, datetime, SendMessagePayload]] = []
     created = 0
     for index, quality_item in enumerate(quality_items):
         content = quality_item["content"]
@@ -198,7 +215,8 @@ def build_plan(session: Session, task: Task) -> int:
             )
             if decision.defer_until:
                 planned_at = decision.defer_until
-        filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=group, content=content, reject_mentions=True, reject_replies=True)
+        has_native_reply = _reply_target_message_id(quality_item) is not None
+        filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=group, content=content, reject_mentions=True, reject_replies=not has_native_reply)
         if not filtered.ok:
             stats_inc(task, "failure_count")
             continue
@@ -213,60 +231,72 @@ def build_plan(session: Session, task: Task) -> int:
             stats_inc(task, "failure_count")
             continue
         media_segments = [material_result.segment] if material_result.ok and material_result.segment else []
-        create_send_action(
-            session,
-            task,
-            account.id,
-            planned_at,
-            SendMessagePayload(
-                chat_id=group.tg_peer_id,
-                group_id=group.id,
-                operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
-                target_display=target_label,
-                message_text=filtered.content,
-                media_segments=media_segments,
-                review_approved=True,
-                cycle_id=cycle_id,
-                turn_index=index + 1,
-                account_role=_role_for_account(account.id, index, config),
-                account_memory=account_memories.get(str(account.id), ""),
-                account_profile=account_profiles.get(str(account.id), ""),
-                topic_thread=topic_thread,
-                topic_plan=topic_plan,
-                intent=_intent_for_turn(index),
-                chat_mode=chat_mode,
-                anchor_message_ids=context_message_ids,
-                semantic_cluster=str(quality_item.get("semantic_cluster") or ""),
-                duplicate_risk=str(quality_item.get("duplicate_risk") or ""),
-                hallucination_risk=str(quality_item.get("hallucination_risk") or ""),
-                quality_skip_reason=str(quality_item.get("quality_skip_reason") or ""),
-                context_message_ids=context_message_ids,
-                context_snapshot_message_id=context_snapshot_message_id,
-                context_expire_after_messages=int(config.get("context_expire_after_messages") or 0),
-                ai_generation_id=cycle_id,
-                ai_generation_status="success",
-                ai_generation_tokens=tokens,
-                ai_generation_count=len(contents),
-                ai_generation_context_count=len(context_message_ids),
-                ai_generation_memory_count=len(account_memories),
-                profile_scene=str(profile_preview.get("profile_scene") or GROUP_CHAT_SCENE),
-                profile_version=int(profile_preview.get("profile_version") or 0),
-                profile_hit_summary=str(profile_preview.get("profile_hit_summary") or ""),
-                profile_unavailable_reason=str(profile_preview.get("profile_unavailable_reason") or ""),
-                rule_set_id=rule_version.rule_set_id if rule_version else None,
-                rule_set_name=rule_set.name if rule_set else "",
-                rule_set_version_id=rule_version.id if rule_version else None,
-                resolved_rule_set_version_id=rule_version.id if rule_version else None,
-                rule_set_version=rule_version.version if rule_version else None,
-                rule_binding_mode="fixed_version" if rule_version and config.get("rule_set_version_id") else "follow_current" if rule_version else "",
-                rule_trace={
-                    "material_policy": (rule_version.routing or {}).get("material_policy") if rule_version else {},
-                    "material_action": material_result.action,
-                    "material_id": material_result.selected.id if material_result.selected else None,
-                    "material_failure_reason": material_result.failure_reason,
-                },
-            ),
+        prepared_actions.append(
+            (
+                account.id,
+                planned_at,
+                SendMessagePayload(
+                    chat_id=group.tg_peer_id,
+                    group_id=group.id,
+                    operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
+                    target_display=target_label,
+                    message_text=filtered.content,
+                    media_segments=media_segments,
+                    review_approved=True,
+                    cycle_id=cycle_id,
+                    turn_index=index + 1,
+                    account_role=_role_for_account(account.id, index, config),
+                    account_memory=account_memories.get(str(account.id), ""),
+                    account_profile=account_profiles.get(str(account.id), ""),
+                    topic_thread=topic_thread,
+                    topic_plan=topic_plan,
+                    intent=_intent_for_turn(index),
+                    chat_mode=chat_mode,
+                    anchor_message_ids=context_message_ids,
+                    semantic_cluster=str(quality_item.get("semantic_cluster") or ""),
+                    duplicate_risk=str(quality_item.get("duplicate_risk") or ""),
+                    hallucination_risk=str(quality_item.get("hallucination_risk") or ""),
+                    quality_skip_reason=str(quality_item.get("quality_skip_reason") or ""),
+                    context_message_ids=context_message_ids,
+                    context_snapshot_message_id=context_snapshot_message_id,
+                    context_expire_after_messages=int(config.get("context_expire_after_messages") or 0),
+                    ai_generation_id=cycle_id,
+                    ai_generation_status="success",
+                    ai_generation_tokens=tokens,
+                    ai_generation_count=len(quality_items),
+                    ai_generation_context_count=len(context_message_ids),
+                    ai_generation_memory_count=len(account_memories),
+                    profile_scene=str(profile_preview.get("profile_scene") or GROUP_CHAT_SCENE),
+                    profile_version=int(profile_preview.get("profile_version") or 0),
+                    profile_hit_summary=str(profile_preview.get("profile_hit_summary") or ""),
+                    profile_unavailable_reason=str(profile_preview.get("profile_unavailable_reason") or ""),
+                    rule_set_id=rule_version.rule_set_id if rule_version else None,
+                    rule_set_name=rule_set.name if rule_set else "",
+                    rule_set_version_id=rule_version.id if rule_version else None,
+                    resolved_rule_set_version_id=rule_version.id if rule_version else None,
+                    rule_set_version=rule_version.version if rule_version else None,
+                    rule_binding_mode="fixed_version" if rule_version and config.get("rule_set_version_id") else "follow_current" if rule_version else "",
+                    reply_to_message_id=_reply_target_message_id(quality_item),
+                    reply_target_label=_reply_target_label(quality_item),
+                    reply_target_author=_reply_target_text(quality_item, "author"),
+                    reply_target_preview=_reply_target_text(quality_item, "preview"),
+                    reply_target_source=_reply_target_text(quality_item, "source"),
+                    rule_trace={
+                        "material_policy": (rule_version.routing or {}).get("material_policy") if rule_version else {},
+                        "material_action": material_result.action,
+                        "material_id": material_result.selected.id if material_result.selected else None,
+                        "material_failure_reason": material_result.failure_reason,
+                    },
+                ),
+            )
         )
+    prepared_reply_count = sum(1 for _account_id, _planned_at, payload in prepared_actions if payload.reply_to_message_id)
+    if prepared_reply_count < reply_min:
+        stats_inc(task, "reply_candidate_shortfall_count")
+        task.last_error = "AI 引用回复候选不足，已跳过本轮"
+        return 0
+    for account_id, planned_at, payload in prepared_actions:
+        create_send_action(session, task, account_id, planned_at, payload)
         created += 1
     for row in unprocessed_rows:
         remember_fingerprint(session, task.tenant_id, fingerprint_source, _context_fingerprint(row))
@@ -275,6 +305,7 @@ def build_plan(session: Session, task: Task) -> int:
     stats["ramp_ratio"] = ramp_ratio
     stats["context_mode"] = _context_mode(usable_context_rows, idle_continuation)
     stats["chat_mode"] = chat_mode
+    stats["reply_planned_count"] = prepared_reply_count
     if quality_stats.get("duplicate_risk"):
         stats["duplicate_risk"] = quality_stats["duplicate_risk"]
     else:
@@ -290,6 +321,174 @@ def build_plan(session: Session, task: Task) -> int:
     task.stats = stats
     stats_inc(task, "total_rounds")
     return created
+
+
+def _generate_group_planned_items(
+    session: Session,
+    task: Task,
+    config: dict,
+    *,
+    reply_targets: list[dict],
+    normal_count: int,
+    target_label: str,
+    history: str,
+) -> tuple[list[dict], int]:
+    items: list[dict] = []
+    tokens = 0
+    if reply_targets:
+        contents, used_tokens = generate_group_reply_messages(
+            session,
+            task.tenant_id,
+            config,
+            reply_targets=reply_targets,
+            target_label=target_label,
+            history=history,
+        )
+        if len(contents) < len(reply_targets):
+            stats_inc(task, "reply_candidate_shortfall_count")
+            raise AiGenerationUnavailable("AI 引用回复候选不足，已跳过本轮")
+        tokens += used_tokens
+        items.extend({"content": content, "reply_target": target} for content, target in zip(contents, reply_targets, strict=False))
+    if normal_count > 0:
+        contents, used_tokens = generate_group_messages(session, task.tenant_id, config, count=normal_count, target_label=target_label, history=history)
+        tokens += used_tokens
+        items.extend({"content": content, "reply_target": None} for content in contents)
+    return items, tokens
+
+
+def _group_reply_target_pool(session: Session, task: Task, group: TgGroup, rows: list) -> list[dict]:
+    targets = [_reply_target_from_context_row(row) for row in reversed(rows) if _reply_target_from_context_row(row)]
+    targets.extend(_historical_group_reply_targets(session, task, group))
+    return _exclude_used_reply_targets(_dedupe_reply_targets(targets), _used_group_reply_target_ids(session, task, group))
+
+
+def _dedupe_reply_targets(targets: list[dict]) -> list[dict]:
+    seen: set[int] = set()
+    deduped: list[dict] = []
+    for target in targets:
+        message_id = int(target.get("message_id") or 0)
+        if not message_id or message_id in seen:
+            continue
+        seen.add(message_id)
+        deduped.append(target)
+    return deduped
+
+
+def _exclude_used_reply_targets(targets: list[dict], used_ids: set[int]) -> list[dict]:
+    if not used_ids:
+        return targets
+    return [target for target in targets if int(target.get("message_id") or 0) not in used_ids]
+
+
+def _reply_target_from_context_row(row) -> dict | None:
+    message_id = _context_remote_message_id(row)
+    preview = str(getattr(row, "content", "") or "").strip()
+    if not message_id or not preview:
+        return None
+    return {
+        "message_id": message_id,
+        "author": str(getattr(row, "sender_name", "") or "群友").strip(),
+        "preview": preview[:120],
+        "source": "human_context",
+    }
+
+
+def _context_remote_message_id(row) -> int:
+    raw = str(getattr(row, "remote_message_id", "") or "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return 0
+
+
+def _historical_group_reply_targets(session: Session, task: Task, group: TgGroup, *, limit: int = 20) -> list[dict]:
+    rows = session.scalars(
+        select(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.tenant_id == task.tenant_id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status == "success",
+            Action.payload["group_id"].as_integer() == group.id,
+        )
+        .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
+        .limit(max(1, int(limit)))
+    )
+    return [target for action in rows if (target := _reply_target_from_action(action, group))]
+
+
+def _used_group_reply_target_ids(session: Session, task: Task, group: TgGroup) -> set[int]:
+    actions = session.scalars(
+        select(Action).where(
+            Action.task_id == task.id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+        )
+    )
+    used_ids: set[int] = set()
+    for action in actions:
+        if _payload_int(action, "group_id") != group.id:
+            continue
+        reply_to_message_id = _payload_int(action, "reply_to_message_id")
+        if reply_to_message_id:
+            used_ids.add(reply_to_message_id)
+    return used_ids
+
+
+def _payload_int(action: Action, key: str) -> int:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    raw = str(payload.get(key) or "").strip()
+    return int(raw) if raw.isdigit() else 0
+
+
+def _reply_target_from_action(action: Action, group: TgGroup) -> dict | None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    result = action.result if isinstance(action.result, dict) else {}
+    raw_id = str(result.get("remote_message_id") or result.get("message_id") or "").strip()
+    content = str(payload.get("message_text") or "").strip()
+    if not raw_id.isdigit() or not content:
+        return None
+    return {
+        "message_id": int(raw_id),
+        "author": str(payload.get("account_role") or group.title or "历史账号").strip(),
+        "preview": content[:120],
+        "source": "own_history",
+    }
+
+
+def _drop_repeated_planned_items(items: list[dict], previous_messages: list[str]) -> list[dict]:
+    normal_contents = [item["content"] for item in items if not item.get("reply_target")]
+    remaining = _drop_repeated_ai_messages(normal_contents, previous_messages)
+    accepted: list[dict] = []
+    for item in items:
+        if item.get("reply_target"):
+            accepted.append(item)
+            continue
+        if not remaining or item["content"] != remaining[0]:
+            continue
+        accepted.append(item)
+        remaining.pop(0)
+    return accepted
+
+
+def _attach_reply_targets(quality_items: list[dict[str, str]], planned_items: list[dict]) -> list[dict]:
+    by_content: dict[str, dict | None] = {item["content"]: item.get("reply_target") for item in planned_items}
+    return [{**item, "reply_target": by_content.get(item["content"])} for item in quality_items]
+
+
+def _reply_target_message_id(item: dict) -> int | None:
+    target = item.get("reply_target") if isinstance(item, dict) else None
+    return int(target.get("message_id")) if isinstance(target, dict) and target.get("message_id") else None
+
+
+def _reply_target_label(item: dict) -> str:
+    message_id = _reply_target_message_id(item)
+    return f"回复消息 #{message_id}" if message_id else ""
+
+
+def _reply_target_text(item: dict, key: str) -> str:
+    target = item.get("reply_target") if isinstance(item, dict) else None
+    return str(target.get(key) or "") if isinstance(target, dict) else ""
 
 
 def _choose_turn_account(available: list, selected: list, index: int, used_account_ids: set[int], allow_repeat: bool):

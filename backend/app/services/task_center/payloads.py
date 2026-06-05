@@ -31,6 +31,11 @@ class SendMessagePayload(BaseModel):
     topic_plan: str = ""
     intent: str = ""
     chat_mode: str = ""
+    reply_to_message_id: int | None = None
+    reply_target_label: str = ""
+    reply_target_author: str = ""
+    reply_target_preview: str = ""
+    reply_target_source: str = ""
     anchor_message_ids: list[int] = Field(default_factory=list)
     semantic_cluster: str = ""
     duplicate_risk: str = ""
@@ -82,6 +87,8 @@ class SendMessagePayload(BaseModel):
     def require_destination(self) -> "SendMessagePayload":
         if self.group_id is None and not self.chat_id.strip():
             raise ValueError("send_message action requires group_id or chat_id")
+        if not self.reply_to_message_id and any([self.reply_target_label, self.reply_target_author, self.reply_target_preview, self.reply_target_source]):
+            raise ValueError("引用回复 action 缺少 reply_to_message_id")
         return self
 
 
@@ -109,6 +116,9 @@ class PostCommentPayload(ViewMessagePayload):
     comment_mode: str = "comment"
     reply_to_message_id: int | None = None
     reply_target_label: str = ""
+    reply_target_author: str = ""
+    reply_target_preview: str = ""
+    reply_target_source: str = ""
     review_approved: bool = False
     rule_set_id: int | None = None
     rule_set_name: str = ""
@@ -120,6 +130,15 @@ class PostCommentPayload(ViewMessagePayload):
     profile_version: int = 0
     profile_hit_summary: str = ""
     profile_unavailable_reason: str = ""
+
+    @model_validator(mode="after")
+    def require_reply_target_id(self) -> "PostCommentPayload":
+        has_reply_meta = any([self.reply_target_label, self.reply_target_author, self.reply_target_preview, self.reply_target_source])
+        if self.comment_mode == "reply" and not self.reply_to_message_id:
+            raise ValueError("引用评论 action 缺少 reply_to_message_id")
+        if has_reply_meta and not self.reply_to_message_id:
+            raise ValueError("引用评论 action 缺少 reply_to_message_id")
+        return self
 
 
 class EnsureChannelMembershipPayload(BaseModel):

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Card, Empty, Input, Modal, Select, Space, Table, Typography, message } from 'antd';
+import { Alert, Button, Card, Empty, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { AccountAuthorizationAsset, AccountProxy, DeveloperApp, LoginFlow } from '../types';
 import { StatusBadge } from '../components/shared';
@@ -14,6 +14,11 @@ const roleLabel = (role: string) => {
   if (role === 'standby_2') return '备用授权 2';
   if (role === 'standby_repair') return '待修复授权';
   return role;
+};
+const SLOT_SESSION_LABEL: Record<'primary' | 'standby_1' | 'standby_2', string> = {
+  primary: 'primary session',
+  standby_1: 'standby_1 session',
+  standby_2: 'standby_2 session',
 };
 
 const formatTime = (value: string | null | undefined) => value ? formatBeijingDateTime(value) : '暂无记录';
@@ -168,6 +173,41 @@ export function AccountAuthorizationAssetsPanel({
     }
   }
 
+  function assetForRole(role: string) {
+    return assets.find((asset) => asset.role === role);
+  }
+
+  function slotCard(role: 'primary' | 'standby_1' | 'standby_2') {
+    const asset = assetForRole(role);
+    const isPrimary = role === 'primary';
+    const canRecover = !isPrimary && asset?.session_available && SWITCHABLE_STATUSES.has(asset.status);
+    return (
+      <Card key={role} size="small" className="summary-card">
+        <Space direction="vertical" size={6}>
+          <Space wrap>
+            <Typography.Text strong>{SLOT_SESSION_LABEL[role]}</Typography.Text>
+            <StatusBadge status={asset?.health_status || asset?.status || '缺失'} />
+            {asset?.is_current && <Tag color="green">当前主授权</Tag>}
+          </Space>
+          <Typography.Text type="secondary">开发者应用：{asset?.developer_app_id ? `App #${asset.developer_app_id}` : '未绑定'}</Typography.Text>
+          <Typography.Text type="secondary">代理：{asset?.proxy_id ? `Proxy #${asset.proxy_id}` : '未绑定'}</Typography.Text>
+          <Typography.Text type="secondary">最近健康检查：{formatTime(asset?.last_health_check_at)}</Typography.Text>
+          <Typography.Text type={asset?.failure_reason ? 'danger' : 'secondary'}>{asset?.failure_reason || '验证码不可读取 / 2FA 未托管 / 代理异常等故障槽位原因会显示在这里'}</Typography.Text>
+          <Space wrap>
+            {!isPrimary && <Button size="small" disabled={!canManage} onClick={() => { setLoginForm((current) => ({ ...current, role })); void openLoginModal(); }}>补齐</Button>}
+            {!isPrimary && <Button size="small" disabled={!canRecover} loading={switchingId === asset?.id} onClick={() => asset && confirmSwitch(asset)}>激活恢复</Button>}
+          </Space>
+        </Space>
+      </Card>
+    );
+  }
+
+  const healthyStandbyCount = assets.filter((asset) => asset.role.startsWith('standby_') && asset.session_available && SWITCHABLE_STATUSES.has(asset.status)).length;
+  const primaryAsset = assetForRole('primary');
+  const recoveryStatus = primaryAsset?.session_available
+    ? healthyStandbyCount >= 2 ? '完整一主两备' : `健康备用 session ${healthyStandbyCount}/2`
+    : healthyStandbyCount > 0 ? '可从备用 session 激活恢复' : '主备均失效';
+
   const columns: ColumnsType<AccountAuthorizationAsset> = [
     {
       title: '授权角色',
@@ -226,6 +266,19 @@ export function AccountAuthorizationAssetsPanel({
         </Space>
       )}
     >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Alert
+          type={healthyStandbyCount >= 2 && primaryAsset?.session_available ? 'success' : healthyStandbyCount > 0 ? 'warning' : 'error'}
+          showIcon
+          message={`恢复能力：${recoveryStatus}`}
+          description="官方锚点设备状态来自登录设备清理预检；故障槽位会保留为待修复授权资产。"
+        />
+        <div className="summary-grid">
+          {slotCard('primary')}
+          {slotCard('standby_1')}
+          {slotCard('standby_2')}
+        </div>
+      </Space>
       <Table<AccountAuthorizationAsset>
         className="tg-table"
         rowKey={(asset) => `${asset.primary_source}-${asset.id ?? 'legacy'}`}

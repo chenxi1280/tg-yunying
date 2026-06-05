@@ -6,7 +6,7 @@ import { api } from '../../shared/api/client';
 import type { Account, AccountSecurityBatch, AccountSecurityBatchItem, AccountSecurityPrecheck, AccountSecurityPreviewItem } from '../types';
 import { StatusBadge } from '../components/shared';
 
-type Mode = 'cleanup_devices' | 'set_two_fa' | 'profile';
+type Mode = 'cleanup_devices' | 'set_two_fa' | 'profile' | 'standby_session';
 
 type ProfileStrategy = {
   generation_mode: string;
@@ -32,6 +32,8 @@ type AvatarStrategy = {
 const ACTION_LABEL: Record<string, string> = {
   cleanup_devices: '清理外部设备',
   set_two_fa: '设置二步验证',
+  provision_standby_session: '补齐备用 session',
+  self_heal_session: '自愈恢复 session',
   update_profile: '资料姓名简介',
   update_username: '设置 @username',
   update_avatar: '设置头像',
@@ -55,9 +57,16 @@ const MODE_CONFIG: Record<Mode, { title: string; alertType: 'info' | 'warning'; 
   cleanup_devices: {
     title: '批量清理登录设备',
     alertType: 'warning',
-    description: '只清理非本平台可信登录设备，保留当前平台 Session，不会修改资料或设置二步密码。',
+    description: '只清理非本平台可信登录设备，不会清理 primary / standby_1 / standby_2 / 官方锚点设备，不会修改资料或设置二步密码。',
     actions: ['cleanup_devices'],
     reason: '批量清理登录设备',
+  },
+  standby_session: {
+    title: '批量补齐备用 session',
+    alertType: 'warning',
+    description: '按账号授权槽位补齐 standby_1 / standby_2，使用验证码读取能力和平台托管 2FA；失败原因会进入任务中心。',
+    actions: ['provision_standby_session', 'self_heal_session'],
+    reason: '批量补齐备用 session',
   },
 };
 
@@ -112,6 +121,9 @@ function accountMatchesBatchFilter(account: Account, filter: string) {
   if (filter === 'login_required') return ['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', '异常'].includes(account.status);
   if (filter === 'profile_incomplete') return accountNeedsProfile(account);
   if (filter === 'proxy_alert') return Boolean(account.proxy_alert_status || account.proxy_status === '异常');
+  if (filter === 'standby_gap') return account.authorization_summary.standby_count < account.authorization_summary.target_standby_count;
+  if (filter === 'standby_recoverable') return account.authorization_summary.primary_status !== 'active' && account.authorization_summary.standby_count > 0;
+  if (filter === 'device_cleanup_missing') return account.authorization_summary.risk_hint.includes('设备');
   return true;
 }
 
@@ -142,6 +154,7 @@ export function AccountSecurityBatchDrawer({
   const [accountFilter, setAccountFilter] = React.useState('all');
   const [rangeStart, setRangeStart] = React.useState(1);
   const [rangeEnd, setRangeEnd] = React.useState(BATCH_SELECTION_LIMIT);
+  const [standbySlotStrategy, setStandbySlotStrategy] = React.useState('auto_missing');
   const [loading, setLoading] = React.useState(false);
   const [step, setStep] = React.useState(0);
   const selected = React.useMemo(() => selectedAccounts(accounts, draftAccountIds), [accounts, draftAccountIds]);
@@ -161,6 +174,9 @@ export function AccountSecurityBatchDrawer({
         account.profile_sync_status,
         account.proxy_name,
         account.proxy_status,
+        account.authorization_summary?.standby_count < account.authorization_summary?.target_standby_count ? '备用 session 缺口 健康备用 session 不足 2 个 standby_1 session 缺失 standby_2 session 缺失 备用 session 未登录' : '',
+        account.authorization_summary?.primary_status !== 'active' && account.authorization_summary?.standby_count > 0 ? '可从备用 session 激活恢复' : '',
+        account.authorization_summary?.risk_hint?.includes('设备') ? '未做过登录设备清理 外部设备未清理 最近设备清理失败' : '',
       ].filter(Boolean).join(' ').toLowerCase();
       return haystack.includes(query);
     });
@@ -192,6 +208,7 @@ export function AccountSecurityBatchDrawer({
     setAccountFilter('all');
     setRangeStart(1);
     setRangeEnd(BATCH_SELECTION_LIMIT);
+    setStandbySlotStrategy('auto_missing');
     setStep(0);
   }, [modeConfig, open, selectedAccountIds]);
 
@@ -208,6 +225,7 @@ export function AccountSecurityBatchDrawer({
   const payload = {
     account_ids: draftAccountIds,
     action_types: actions,
+    standby_slot_strategy: standbySlotStrategy,
     password_strategy: 'system_unique_encrypted',
     profile_strategy: profileStrategy,
     avatar_strategy: avatarStrategy,
@@ -218,10 +236,11 @@ export function AccountSecurityBatchDrawer({
   const payloadSignature = React.useMemo(() => JSON.stringify({
     account_ids: draftAccountIds,
     action_types: actions,
+    standby_slot_strategy: standbySlotStrategy,
     profile_strategy: profileStrategy,
     avatar_strategy: avatarStrategy,
     reason,
-  }), [actions, avatarStrategy, draftAccountIds, profileStrategy, reason]);
+  }), [actions, avatarStrategy, draftAccountIds, profileStrategy, reason, standbySlotStrategy]);
 
   React.useEffect(() => {
     if (!precheck || !precheckPayloadSignature || precheckPayloadSignature === payloadSignature) return;
@@ -263,6 +282,20 @@ export function AccountSecurityBatchDrawer({
       return;
     }
     mergeDraftAccountIds(profileIncompleteAccounts.map((account) => account.id));
+  }
+
+  function showStandbyGapAccounts() {
+    setAccountFilter('standby_gap');
+    setAccountQuery('');
+  }
+
+  function selectStandbyGapAccounts() {
+    const standbyGapAccounts = accounts.filter((account) => accountMatchesBatchFilter(account, 'standby_gap'));
+    if (!standbyGapAccounts.length) {
+      void message.warning('当前没有备用 session 缺口账号');
+      return;
+    }
+    mergeDraftAccountIds(standbyGapAccounts.map((account) => account.id));
   }
 
   function changeAvatarMode(modeValue: string) {
@@ -436,6 +469,7 @@ export function AccountSecurityBatchDrawer({
     { title: '总状态', dataIndex: 'status', width: 120, render: (value) => <StatusBadge status={value} label={statusText(value)} /> },
     { title: '设备', dataIndex: 'cleanup_status', width: 120, render: (value) => statusText(value) },
     { title: '2FA', dataIndex: 'two_fa_status', width: 120, render: (value) => statusText(value) },
+    { title: '备用 session', dataIndex: 'standby_session_status', width: 140, render: (value) => statusText(value || 'not_requested') },
     { title: '资料', dataIndex: 'profile_status', width: 120, render: (value) => statusText(value) },
     { title: 'username', dataIndex: 'username_status', width: 140, render: (_, item) => item.generated_username || statusText(item.username_status) },
     { title: '失败原因', dataIndex: 'failure_detail', width: 260, render: (value, item) => value || item.skipped_reason || '-' },
@@ -507,11 +541,16 @@ export function AccountSecurityBatchDrawer({
                 { label: '需登录处理', value: 'login_required' },
                 { label: '资料待初始化', value: 'profile_incomplete' },
                 { label: '代理异常', value: 'proxy_alert' },
+                { label: 'standby_1 session 缺失 / standby_2 session 缺失', value: 'standby_gap' },
+                { label: '可从备用 session 激活恢复', value: 'standby_recoverable' },
+                { label: '未做过登录设备清理 / 外部设备未清理 / 最近设备清理失败', value: 'device_cleanup_missing' },
               ]}
               onChange={setAccountFilter}
             />
             {isProfileMode && <Button onClick={showProfileIncompleteAccounts}>只看待初始化</Button>}
             {isProfileMode && <Button disabled={!profileIncompleteAccounts.length} onClick={selectProfileIncompleteAccounts}>选择待初始化</Button>}
+            {mode === 'standby_session' && <Button onClick={showStandbyGapAccounts}>只看备用 session 缺口</Button>}
+            {mode === 'standby_session' && <Button onClick={selectStandbyGapAccounts}>选择备用 session 缺口</Button>}
             <Button onClick={() => setDraftAccountIds(filteredAccounts.map((account) => account.id))}>选择当前筛选</Button>
             <Button onClick={() => mergeDraftAccountIds(filteredAccounts.slice(0, BATCH_SELECTION_LIMIT).map((account) => account.id))}>选择当前筛选前 100 个</Button>
             <Button onClick={() => mergeDraftAccountIds(filteredAccounts.map((account) => account.id))}>追加当前筛选全部</Button>
@@ -615,6 +654,49 @@ export function AccountSecurityBatchDrawer({
               )}
             </Space>
           </>
+        )}
+        {mode === 'standby_session' && (
+          <>
+            <Divider />
+            <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+              <Typography.Text strong>备用 session 补齐策略</Typography.Text>
+              <Space wrap>
+                <Select
+                  value={standbySlotStrategy}
+                  style={{ width: 220 }}
+                  options={[
+                    { label: '自动补齐缺失槽位', value: 'auto_missing' },
+                    { label: '仅 standby_1', value: 'standby_1' },
+                    { label: '仅 standby_2', value: 'standby_2' },
+                  ]}
+                  onChange={setStandbySlotStrategy}
+                />
+                <Tag>任务中心：account_standby_session_provision</Tag>
+              </Space>
+              <Alert
+                type="warning"
+                showIcon
+                message="预检会检查平台托管 2FA、开发者应用健康、代理健康、目标槽位和新登录限制。"
+                description="执行时会读取 TG 官方验证码并写入登录流水；验证码不可读取、2FA 未托管、开发者应用异常、代理异常或 Telegram 限制都会进入失败原因，不会静默标记成功。"
+              />
+            </Space>
+          </>
+        )}
+        {mode === 'cleanup_devices' && (
+          <Alert
+            type="warning"
+            showIcon
+            message="不会清理 primary / standby_1 / standby_2 / 官方锚点设备"
+            description="预检必须列出预计清理外部设备数量；无法确认任一平台 session 授权设备 hash 时，当前账号不能继续一键清理。预计清理外部设备会在批次项中展示。"
+          />
+        )}
+        {mode === 'set_two_fa' && (
+          <Alert
+            type="warning"
+            showIcon
+            message="平台托管 2FA"
+            description="未设置账号会写入平台托管 2FA；已设置且平台托管旧密码的账号可替换；旧密码未知的账号进入人工处理。"
+          />
         )}
         <Input.TextArea rows={2} value={reason} placeholder="操作原因" onChange={(event) => setReason(event.target.value)} />
         <Space wrap>

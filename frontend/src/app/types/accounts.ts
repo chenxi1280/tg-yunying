@@ -174,6 +174,7 @@ export type AccountSecurityPreviewItem = {
   trusted_session_status: string;
   external_authorization_count: number;
   two_fa_status: string;
+  standby_session_status?: string;
   profile_status: string;
   generated_display_name: string;
   generated_first_name: string;

@@ -5,7 +5,7 @@ from typing import Any, Callable
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import ChannelMessage, GroupAuthStatus, OperationTarget, RuleSet, RuleSetVersion, TgAccount
+from app.models import ChannelMessage, ChannelMessageComment, GroupAuthStatus, GroupContextMessage, OperationTarget, RuleSet, RuleSetVersion, TgAccount, TgGroup
 from app.schemas.risk_control import RiskPreflightRequest
 from app.schemas.task_center import TaskPrecheckRequest
 from app.services.risk_control import risk_preflight
@@ -112,6 +112,11 @@ def run_precheck_task_creation(
         max_concurrent=int(account_config.get("max_concurrent") or 20),
         shortfall=capacity_shortfall,
     )
+    reply_reference_summary = _precheck_reply_reference_summary(session, tenant_id, task_type, type_config)
+    if reply_reference_summary:
+        capacity_summary["reply_reference_summary"] = reply_reference_summary
+        if int(reply_reference_summary.get("shortfall_count") or 0):
+            warnings.append(str(reply_reference_summary.get("warning") or "引用回复对象不足"))
     ai_round_summary = _precheck_ai_round_summary(task_type, create_payload, membership_summary, available_count)
     capacity_summary["recommended_limits"] = recommend_ai_limits(
         task_type,
@@ -223,6 +228,103 @@ def _precheck_ready_account_count(task_type: str, membership_summary: dict[str, 
         joined = int(membership_summary.get("joined_account_count") or 0)
         return joined if joined > 0 else int(available_count or 0)
     return int(available_count or 0)
+
+
+def _precheck_reply_reference_summary(session: Session, tenant_id: int, task_type: str, config: dict[str, Any]) -> dict[str, Any]:
+    if task_type == "group_ai_chat":
+        required = int(config.get("reply_min_per_round") or 0)
+        if required <= 0:
+            return {}
+        available = _precheck_group_reply_reference_count(session, tenant_id, config)
+        shortfall = max(required - available, 0)
+        return {
+            "scope": "group_round",
+            "required_count": required,
+            "available_reference_count": available,
+            "shortfall_count": shortfall,
+            "warning": f"AI 活跃群可引用消息不足：每轮需要 {required} 条，当前可用 {available} 条" if shortfall else "",
+        }
+    if task_type == "channel_comment":
+        required = int(config.get("reply_min_per_message") or 0)
+        if required <= 0:
+            return {}
+        stats = _precheck_channel_reply_reference_stats(session, tenant_id, config)
+        shortfall = max(required - int(stats.get("min_reference_count_per_message") or 0), 0) if int(stats.get("message_count") or 0) else required
+        return {
+            "scope": "channel_message",
+            "required_count": required,
+            "message_count": int(stats.get("message_count") or 0),
+            "available_reference_count": int(stats.get("available_reference_count") or 0),
+            "min_reference_count_per_message": int(stats.get("min_reference_count_per_message") or 0),
+            "shortfall_count": shortfall,
+            "warning": f"AI 评论可引用评论不足：每条需要 {required} 条，当前最低可用 {int(stats.get('min_reference_count_per_message') or 0)} 条" if shortfall else "",
+        }
+    return {}
+
+
+def _precheck_group_reply_reference_count(session: Session, tenant_id: int, config: dict[str, Any]) -> int:
+    group_id = _precheck_group_id_for_reply(session, tenant_id, config)
+    if not group_id:
+        return 0
+    rows = list(
+        session.scalars(
+            select(GroupContextMessage.remote_message_id)
+            .where(
+                GroupContextMessage.tenant_id == tenant_id,
+                GroupContextMessage.group_id == group_id,
+                GroupContextMessage.is_bot.is_(False),
+                GroupContextMessage.remote_message_id != "",
+            )
+            .order_by(GroupContextMessage.sent_at.desc().nullslast(), GroupContextMessage.created_at.desc())
+            .limit(200)
+        )
+    )
+    return sum(1 for item in rows if str(item or "").isdigit())
+
+
+def _precheck_group_id_for_reply(session: Session, tenant_id: int, config: dict[str, Any]) -> int:
+    target_id = _as_int(config.get("target_operation_target_id"))
+    target = session.get(OperationTarget, target_id) if target_id else None
+    if not target or target.tenant_id != tenant_id:
+        return 0
+    group = session.scalar(select(TgGroup).where(TgGroup.tenant_id == tenant_id, TgGroup.tg_peer_id == target.tg_peer_id))
+    return int(group.id) if group else 0
+
+
+def _precheck_channel_reply_reference_stats(session: Session, tenant_id: int, config: dict[str, Any]) -> dict[str, int]:
+    message_ids = _precheck_channel_message_ids(session, tenant_id, config)
+    if not message_ids:
+        return {"message_count": 0, "available_reference_count": 0, "min_reference_count_per_message": 0}
+    rows = list(
+        session.execute(
+            select(ChannelMessageComment.channel_message_id, func.count(ChannelMessageComment.id))
+            .where(
+                ChannelMessageComment.tenant_id == tenant_id,
+                ChannelMessageComment.channel_message_id.in_(message_ids),
+                ChannelMessageComment.comment_message_id > 0,
+            )
+            .group_by(ChannelMessageComment.channel_message_id)
+        )
+    )
+    counts = {int(message_id): int(count or 0) for message_id, count in rows}
+    per_message = [counts.get(message_id, 0) for message_id in message_ids]
+    return {
+        "message_count": len(message_ids),
+        "available_reference_count": sum(per_message),
+        "min_reference_count_per_message": min(per_message) if per_message else 0,
+    }
+
+
+def _precheck_channel_message_ids(session: Session, tenant_id: int, config: dict[str, Any]) -> list[int]:
+    if (config.get("initial_message_scope") or config.get("message_scope")) == "specific":
+        return _as_int_list(config.get("message_ids"))
+    target_id = _as_int(config.get("target_channel_id"))
+    limit = max(1, int(config.get("latest_message_count") or config.get("message_count") or 1))
+    stmt = select(ChannelMessage.id).where(ChannelMessage.tenant_id == tenant_id)
+    if target_id:
+        stmt = stmt.where(ChannelMessage.channel_target_id == target_id)
+    stmt = stmt.order_by(ChannelMessage.published_at.desc().nullslast(), ChannelMessage.id.desc()).limit(limit)
+    return [int(message_id) for message_id in session.scalars(stmt)]
 
 
 def _precheck_blocking_risk_reasons(

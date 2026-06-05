@@ -126,6 +126,7 @@ def dispatch_action(session: Session, action: Action) -> bool:
         _fail(action, FailureType.UNKNOWN.value, f"未知 action_type: {action.action_type}")
         return True
     except (ValidationError, ValueError) as exc:
+        _update_reply_payload_error_stats(action)
         _fail(action, FailureType.UNKNOWN.value, payload_error_message(exc))
         return True
     except Exception as exc:  # noqa: BLE001 - worker must keep draining.
@@ -416,6 +417,7 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
         _mark_executing(action)
         session.commit()
         _mark_gateway_call_started(session, attempt)
+        send_kwargs = {"reply_to_message_id": payload.reply_to_message_id} if payload.reply_to_message_id else {}
         result = gateway.send_message(
             account_id,
             group_pk,
@@ -424,6 +426,7 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
             session_ciphertext,
             group_peer,
             credentials,
+            **send_kwargs,
         )
         _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
         if result.ok:
@@ -950,7 +953,43 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
         if action.status == "failed":
             _apply_default_failure_policy(action, failure_type or FailureType.UNKNOWN.value)
     action.executed_at = None if action.status == "pending" else _now()
+    _update_reply_result_stats(action, ok, failure_type or "")
     _finish_execution_attempt(attempt, action, remote_id=remote_id, failure_type=failure_type or "", detail=detail or "")
+
+
+def _update_reply_result_stats(action: Action, ok: bool, failure_type: str) -> None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if not payload.get("reply_to_message_id"):
+        return
+    from sqlalchemy.orm import object_session
+
+    session = object_session(action)
+    task = session.get(Task, action.task_id) if session and action.task_id else None
+    if not task:
+        return
+    stats = dict(task.stats or {})
+    key = "reply_success_count" if ok else "reply_failure_count"
+    stats[key] = int(stats.get(key) or 0) + 1
+    if not ok:
+        stats["telegram_reply_failure_count"] = int(stats.get("telegram_reply_failure_count") or 0) + 1
+        stats["last_reply_failure_type"] = failure_type
+    task.stats = stats
+
+
+def _update_reply_payload_error_stats(action: Action) -> None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    has_reply_meta = any(payload.get(key) for key in ["reply_target_label", "reply_target_author", "reply_target_preview", "reply_target_source"])
+    if payload.get("reply_to_message_id") or not (has_reply_meta or payload.get("comment_mode") == "reply"):
+        return
+    from sqlalchemy.orm import object_session
+
+    session = object_session(action)
+    task = session.get(Task, action.task_id) if session and action.task_id else None
+    if not task:
+        return
+    stats = dict(task.stats or {})
+    stats["reply_payload_error_count"] = int(stats.get("reply_payload_error_count") or 0) + 1
+    task.stats = stats
 
 
 def _is_account_session_failure(failure_type: str, detail: str) -> bool:

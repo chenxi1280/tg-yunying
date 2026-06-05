@@ -1,20 +1,40 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Material, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem
-from app.services._common import _now, audit
 
 PROFILE_BATCH_TASK_PREFIX = "account_security_batch:"
 PROFILE_BATCH_TASK_TYPE = "account_profile_init"
 DELETED_PROFILE_BATCH_STATUS = "deleted"
-OPEN_ITEM_STATUSES = {"pending", "running", "waiting"}
-OPEN_STEP_STATUSES = {"pending", "running", "waiting", "waiting_cache"}
+ACCOUNT_SECURITY_TASK_TYPES = {
+    "account_profile_init",
+    "account_device_cleanup",
+    "account_2fa_setup",
+    "account_standby_session_provision",
+}
+TASK_TYPE_LABELS = {
+    "account_profile_init": "资料初始化批次",
+    "account_device_cleanup": "清理登录设备批次",
+    "account_2fa_setup": "设置二步密码批次",
+    "account_standby_session_provision": "备用 session 补齐批次",
+}
+TASK_TYPE_SUMMARIES = {
+    "account_profile_init": "账号资料初始化",
+    "account_device_cleanup": "清理登录设备",
+    "account_2fa_setup": "设置二步密码",
+    "account_standby_session_provision": "备用 session 补齐",
+}
+TASK_TYPE_ACTIONS = {
+    "account_standby_session_provision": {"provision_standby_session", "self_heal_session"},
+    "account_device_cleanup": {"cleanup_devices"},
+    "account_2fa_setup": {"set_two_fa"},
+    "account_profile_init": {"update_profile", "update_username", "update_avatar"},
+}
 
 
 def is_profile_batch_task_id(task_id: str) -> bool:
@@ -22,7 +42,7 @@ def is_profile_batch_task_id(task_id: str) -> bool:
 
 
 def list_profile_batch_tasks(session: Session, tenant_id: int, task_type: str | None, status: str | None) -> list[dict[str, Any]]:
-    if task_type and task_type != PROFILE_BATCH_TASK_TYPE:
+    if task_type and task_type not in ACCOUNT_SECURITY_TASK_TYPES:
         return []
     batches = list(
         session.scalars(
@@ -33,14 +53,16 @@ def list_profile_batch_tasks(session: Session, tenant_id: int, task_type: str | 
             .limit(50)
         )
     )
-    rows = [_projection_payload(session, batch, include_detail_search=False) for batch in batches if _is_profile_batch(batch)]
+    rows = [_projection_payload(session, batch, include_detail_search=False) for batch in batches]
+    if task_type:
+        rows = [row for row in rows if row["type"] == task_type]
     return [row for row in rows if not status or row["status"] == status]
 
 
 def get_profile_batch_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str, Any]:
     batch_id = int(task_id.removeprefix(PROFILE_BATCH_TASK_PREFIX))
     batch = session.get(TgAccountSecurityBatch, batch_id)
-    if not batch or batch.tenant_id != tenant_id or not _is_profile_batch(batch) or batch.status == DELETED_PROFILE_BATCH_STATUS:
+    if not batch or batch.tenant_id != tenant_id or batch.status == DELETED_PROFILE_BATCH_STATUS:
         raise ValueError("task not found")
     payload = _projection_payload(session, batch)
     profile_batch = _profile_batch_detail(session, batch)
@@ -60,53 +82,28 @@ def get_profile_batch_task_detail(session: Session, tenant_id: int, task_id: str
         "relay_batches": [],
         "recent_relay_sources": [],
         "profile_batch": profile_batch,
+        "account_security_batch": profile_batch,
     }
 
 
 def delete_profile_batch_task(session: Session, tenant_id: int, task_id: str, *, actor: str, reason: str = "") -> None:
     batch_id = int(task_id.removeprefix(PROFILE_BATCH_TASK_PREFIX))
     batch = session.get(TgAccountSecurityBatch, batch_id)
-    if not batch or batch.tenant_id != tenant_id or not _is_profile_batch(batch) or batch.status == DELETED_PROFILE_BATCH_STATUS:
+    if not batch or batch.tenant_id != tenant_id or batch.status == DELETED_PROFILE_BATCH_STATUS:
         raise ValueError("task not found")
-    now = _now()
-    reason_text = reason.strip() or "任务已删除"
-    items = _batch_items(session, batch.id)
-    for item in items:
-        _skip_open_profile_batch_item(item, reason_text, now)
-    batch.status = DELETED_PROFILE_BATCH_STATUS
-    batch.skipped_count = sum(1 for item in items if item.status in {"skipped", "manual_required"})
-    batch.finished_at = now
-    audit(
-        session,
-        tenant_id=tenant_id,
-        actor=actor,
-        action="删除资料初始化批次",
-        target_type="account_security_batch",
-        target_id=str(batch.id),
-        detail=reason_text,
-    )
-    session.commit()
-
-
-def _skip_open_profile_batch_item(item: TgAccountSecurityBatchItem, reason: str, finished_at: datetime) -> None:
-    if item.status in OPEN_ITEM_STATUSES:
-        item.status = "skipped"
-        item.skipped_reason = reason
-        item.finished_at = finished_at
-    for field in ["precheck_status", "cleanup_status", "two_fa_status", "profile_status", "username_status", "avatar_status"]:
-        if getattr(item, field) in OPEN_STEP_STATUSES:
-            setattr(item, field, "skipped")
+    raise PermissionError("account security system task cannot be deleted")
 
 
 def _projection_payload(session: Session, batch: TgAccountSecurityBatch, *, include_detail_search: bool = True) -> dict[str, Any]:
     items = _batch_items(session, batch.id)
     stats = _projection_stats(batch, items)
     search_text = _projection_search_text(session, batch, items) if include_detail_search else _projection_light_search_text(batch)
+    task_type = _task_type_for_batch(batch)
     return {
         "id": f"{PROFILE_BATCH_TASK_PREFIX}{batch.id}",
         "tenant_id": batch.tenant_id,
-        "name": f"资料初始化批次 #{batch.id}",
-        "type": PROFILE_BATCH_TASK_TYPE,
+        "name": f"{TASK_TYPE_LABELS[task_type]} #{batch.id}",
+        "type": task_type,
         "status": _projection_status(batch.status),
         "priority": 3,
         "timezone": "Asia/Shanghai",
@@ -120,7 +117,7 @@ def _projection_payload(session: Session, batch: TgAccountSecurityBatch, *, incl
         "failure_policy": {},
         "type_config": {"source": "account_security_batch", "batch_id": batch.id},
         "stats": stats,
-        "target_summary": f"账号资料初始化 / {batch.total_count} 个账号",
+        "target_summary": f"{TASK_TYPE_SUMMARIES[task_type]} / {batch.total_count} 个账号",
         "search_text": search_text,
         "created_at": batch.created_at,
         "updated_at": batch.finished_at or batch.started_at or batch.created_at,
@@ -131,6 +128,7 @@ def _profile_batch_detail(session: Session, batch: TgAccountSecurityBatch) -> di
     items = _batch_items(session, batch.id)
     return {
         "batch_id": batch.id,
+        "system_task_type": _task_type_for_batch(batch),
         "action_types": _json_list(batch.action_types),
         "batch_status": batch.status,
         "avatar_cache": _avatar_cache_summary(session, items),
@@ -145,6 +143,7 @@ def _projection_stats(batch: TgAccountSecurityBatch, items: list[TgAccountSecuri
         "success_count": sum(1 for item in items if item.status == "succeeded"),
         "failure_count": sum(1 for item in items if item.status in {"failed", "partial_success"}),
         "skipped_count": sum(1 for item in items if item.status in {"skipped", "manual_required"}),
+        "manual_required_count": sum(1 for item in items if item.status == "manual_required"),
         "pending_count": sum(1 for item in items if item.status == "pending"),
         "waiting_cache_count": sum(1 for item in items if item.avatar_status == "waiting_cache"),
         "running_count": sum(1 for item in items if item.status == "running"),
@@ -161,6 +160,10 @@ def _profile_batch_item(session: Session, item: TgAccountSecurityBatchItem) -> d
         "display_name": item.generated_display_name or (account.display_name if account else ""),
         "phone_number": account.phone_number if account else "",
         "status": item.status,
+        "precheck_status": item.precheck_status,
+        "device_cleanup_status": item.cleanup_status,
+        "two_fa_status": item.two_fa_status,
+        "standby_session_status": _standby_session_status(item),
         "profile_status": item.profile_status,
         "username_status": item.username_status,
         "avatar_status": item.avatar_status,
@@ -169,6 +172,13 @@ def _profile_batch_item(session: Session, item: TgAccountSecurityBatchItem) -> d
         "avatar_preview_url": account.avatar_preview_url if account and account.avatar_object_key else "",
         "failure_type": item.failure_type,
         "failure_detail": item.failure_detail,
+        "preserved_devices_summary": "primary / standby_1 / standby_2 / 官方锚点设备",
+        "cleaned_devices_summary": _cleaned_devices_summary(item),
+        "target_slot": _target_slot(item),
+        "developer_app_label": "",
+        "proxy_label": "",
+        "verification_code_status": "",
+        "two_fa_usage_status": _two_fa_usage_status(item),
     }
 
 
@@ -197,7 +207,7 @@ def _projection_status(batch_status: str) -> str:
         return "completed"
     if batch_status == "failed":
         return "failed"
-    if batch_status in {"partial_success", "cancelled"}:
+    if batch_status in {"partial_success", "cancelled", "manual_required"}:
         return "stopped"
     return "running"
 
@@ -230,8 +240,37 @@ def _batch_items(session: Session, batch_id: int) -> list[TgAccountSecurityBatch
     )
 
 
-def _is_profile_batch(batch: TgAccountSecurityBatch) -> bool:
-    return bool(set(_json_list(batch.action_types)) & {"update_profile", "update_username", "update_avatar"})
+def _task_type_for_batch(batch: TgAccountSecurityBatch) -> str:
+    actions = set(_json_list(batch.action_types))
+    for task_type, markers in TASK_TYPE_ACTIONS.items():
+        if actions & markers:
+            return task_type
+    return PROFILE_BATCH_TASK_TYPE
+
+
+def _standby_session_status(item: TgAccountSecurityBatchItem) -> str:
+    if item.failure_type == "standby_session_executor_missing":
+        return "manual_required"
+    if item.status in {"pending", "running", "waiting", "failed", "succeeded", "manual_required"}:
+        return item.status
+    return "pending" if item.precheck_status == "pending" else item.precheck_status
+
+
+def _cleaned_devices_summary(item: TgAccountSecurityBatchItem) -> str:
+    cleaned = max(0, item.external_devices_before - item.external_devices_after)
+    return f"已清理 {cleaned} 个外部设备" if cleaned else ""
+
+
+def _target_slot(item: TgAccountSecurityBatchItem) -> str:
+    return "自动补齐缺失槽位" if item.precheck_status != "skipped" else ""
+
+
+def _two_fa_usage_status(item: TgAccountSecurityBatchItem) -> str:
+    if item.two_fa_status == "enabled":
+        return "平台托管密码已记录"
+    if item.two_fa_status == "failed":
+        return "2FA 设置失败"
+    return ""
 
 
 def _material_for_source(session: Session, source: str) -> Material | None:

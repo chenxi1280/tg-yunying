@@ -13,6 +13,9 @@ export const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
 
 export const TYPE_LABEL: Record<string, string> = Object.fromEntries(TASK_TYPES.map((item) => [item.value, item.label]));
 TYPE_LABEL.account_profile_init = '资料初始化批次';
+TYPE_LABEL.account_device_cleanup = '清理登录设备批次';
+TYPE_LABEL.account_2fa_setup = '设置二步密码批次';
+TYPE_LABEL.account_standby_session_provision = '备用 session 补齐批次';
 
 export const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
   group_ai_chat: '/tasks/group-ai-chat',
@@ -317,6 +320,8 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       repeat_cooldown_rounds: 2,
       chat_history_depth: 50,
       messages_per_round_mode: 'auto',
+      messages_per_round: 1,
+      reply_min_per_round: 0,
       auto_join_target: true,
       auto_follow_required_channel: true,
       auto_resolve_verification: true,
@@ -371,8 +376,7 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
   return {
     message_scope: 'dynamic_new',
     message_count: 10,
-    comment_mode: 'comment',
-    reply_to_message_ids: '',
+    reply_min_per_message: 0,
     language: 'zh-CN',
     comment_style: 'mixed',
   };
@@ -449,6 +453,7 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'repeat_cooldown_rounds',
       'messages_per_round_mode',
       'messages_per_round',
+      'reply_min_per_round',
       'auto_join_target',
       'auto_follow_required_channel',
       'auto_resolve_verification',
@@ -482,14 +487,14 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
   if (taskType === 'channel_like') {
     return [...baseFields, ...channelScopeFields(messageScope), 'target_likes_per_message', 'reaction_type', 'allowed_reactions'];
   }
-  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'comment_mode', 'reply_to_message_ids', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint'];
+  return [...baseFields, ...channelScopeFields(messageScope), 'target_comments_per_message', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'comment_style', 'topic_hint'];
 }
 
 export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: string, pacingMode: string): string[] {
   void pacingMode;
   const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFields(accountMode), 'max_actions_per_hour', 'max_retries'];
   if (taskType === 'group_ai_chat') {
-    return [...baseFields, 'target_operation_target_id', 'rule_set_id', 'rule_set_version_id', 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'slang_prompt_template_id', 'slang_terms', 'tone', 'language', 'max_message_length', 'participation_rate', 'allow_account_repeat', 'repeat_cooldown_rounds', 'account_personas', 'account_memory_depth', 'messages_per_round_mode', 'messages_per_round', 'history_fetch_account_id', 'auto_join_target', 'auto_follow_required_channel', 'auto_resolve_verification', 'ai_assisted_verification', 'captcha_failure_policy', 'membership_max_concurrent', 'idle_continuation_enabled', 'idle_continuation_seconds', 'context_expire_after_messages'];
+    return [...baseFields, 'target_operation_target_id', 'rule_set_id', 'rule_set_version_id', 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'slang_prompt_template_id', 'slang_terms', 'tone', 'language', 'max_message_length', 'participation_rate', 'allow_account_repeat', 'repeat_cooldown_rounds', 'account_personas', 'account_memory_depth', 'messages_per_round_mode', 'messages_per_round', 'reply_min_per_round', 'history_fetch_account_id', 'auto_join_target', 'auto_follow_required_channel', 'auto_resolve_verification', 'ai_assisted_verification', 'captcha_failure_policy', 'membership_max_concurrent', 'idle_continuation_enabled', 'idle_continuation_seconds', 'context_expire_after_messages'];
   }
   if (taskType === 'group_relay') {
     return [...baseFields, 'source_operation_target_ids', 'source_groups', 'target_operation_target_id', 'target_operation_target_ids', 'rule_set_id', 'rule_set_version_id', 'content_mode', 'filter_bot_messages', 'filter_admin_messages', 'excluded_sender_peer_ids', 'excluded_sender_input'];
@@ -500,5 +505,5 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
   if (taskType === 'channel_like') {
     return [...baseFields, 'target_likes_per_message', 'reaction_type', 'allowed_reactions', 'max_likes_per_account_per_hour'];
   }
-  return [...baseFields, 'target_comments_per_message', 'comment_mode', 'reply_to_message_ids', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];
+  return [...baseFields, 'target_comments_per_message', 'reply_min_per_message', 'rule_set_id', 'rule_set_version_id', 'ai_model', 'comment_style', 'topic_hint', 'system_prompt_override', 'language', 'max_comment_length', 'max_comments_per_account_per_hour'];
 }

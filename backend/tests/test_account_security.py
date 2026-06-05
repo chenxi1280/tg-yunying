@@ -10,9 +10,9 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
-from app.models import AiProvider, AccountStatus, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
+from app.models import AiProvider, AccountProxy, AccountStatus, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot, TgVerificationCode
 from app.schemas import TgAccountCreate
-from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ProfileGenerationStrategy
+from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ManagedTwoFaRequest, ProfileGenerationStrategy
 from app.security import encrypt_secret, encrypt_session
 from app.storage import save_avatar_bytes
 import app.services.account_security.service as account_security_service
@@ -23,6 +23,8 @@ from app.services.account_security import (
     drain_account_security_batches,
     precheck_account_security_batch,
     refresh_account_security,
+    rotate_managed_two_fa_password,
+    save_managed_two_fa_password,
 )
 from app.services.accounts import create_account
 from app.services.task_center.service import delete_task, get_task_detail, list_tasks
@@ -498,6 +500,7 @@ def test_profile_batch_is_visible_as_readonly_task_center_projection():
 
         assert detail["actions"] == []
         assert detail["profile_batch"]["batch_id"] == batch.id
+        assert detail["account_security_batch"]["system_task_type"] == "account_profile_init"
         assert detail["profile_batch"]["items"][0]["account_id"] == account.id
         assert detail["profile_batch"]["items"][0]["profile_status"] == "pending"
 
@@ -525,7 +528,7 @@ def test_profile_batch_task_list_uses_lightweight_projection(monkeypatch):
     assert [row["id"] for row in rows] == [f"account_security_batch:{batch.id}"]
 
 
-def test_delete_profile_batch_projection_hides_task_and_skips_pending_items():
+def test_account_security_system_task_cannot_be_deleted_from_task_center():
     with _session() as session:
         account = _seed_account(session)
         payload = AccountSecurityBatchCreate(
@@ -537,18 +540,250 @@ def test_delete_profile_batch_projection_hides_task_and_skips_pending_items():
         )
         batch = create_account_security_batch(session, 1, payload, "tester")
 
-        delete_task(session, 1, f"account_security_batch:{batch.id}", "tester", "用户删除")
+        with pytest.raises(PermissionError, match="cannot be deleted"):
+            delete_task(session, 1, f"account_security_batch:{batch.id}", "tester", "用户删除")
 
-        assert list_tasks(session, 1, task_type="account_profile_init") == []
-        with pytest.raises(ValueError, match="task not found"):
-            get_task_detail(session, 1, f"account_security_batch:{batch.id}")
+        assert list_tasks(session, 1, task_type="account_profile_init")
+        detail = get_task_detail(session, 1, f"account_security_batch:{batch.id}")
 
         db_batch = session.get(TgAccountSecurityBatch, batch.id)
         db_item = session.scalar(select(TgAccountSecurityBatchItem).where(TgAccountSecurityBatchItem.batch_id == batch.id))
-        assert db_batch.status == "deleted"
-        assert db_batch.finished_at is not None
-        assert db_item.status == "skipped"
-        assert db_item.skipped_reason == "用户删除"
+        assert detail["account_security_batch"]["batch_id"] == batch.id
+        assert db_batch.status == "running"
+        assert db_batch.finished_at is None
+        assert db_item.status == "pending"
+        assert db_item.skipped_reason == ""
+
+
+def test_account_security_batches_project_cleanup_2fa_and_standby_task_types():
+    with _session() as session:
+        account = _seed_account(session)
+        session.add(AccountProxy(id=1, tenant_id=1, name="备用代理", port=1080, status="healthy", alert_status="normal"))
+        session.commit()
+        batches = [
+            create_account_security_batch(
+                session,
+                1,
+                AccountSecurityBatchCreate(account_ids=[account.id], action_types=[action], confirm_text="确认", reason=reason),
+                "tester",
+            )
+            for action, reason in [
+                ("cleanup_devices", "清理登录设备"),
+                ("set_two_fa", "设置二步密码"),
+                ("provision_standby_session", "补齐备用 session"),
+            ]
+        ]
+
+        assert [row["type"] for row in list_tasks(session, 1, task_type="account_device_cleanup")] == ["account_device_cleanup"]
+        assert [row["type"] for row in list_tasks(session, 1, task_type="account_2fa_setup")] == ["account_2fa_setup"]
+        standby_rows = list_tasks(session, 1, task_type="account_standby_session_provision")
+        assert [row["type"] for row in standby_rows] == ["account_standby_session_provision"]
+        assert standby_rows[0]["target_summary"] == "备用 session 补齐 / 1 个账号"
+
+        detail = get_task_detail(session, 1, f"account_security_batch:{batches[-1].id}")
+        item = detail["account_security_batch"]["items"][0]
+        assert detail["account_security_batch"]["system_task_type"] == "account_standby_session_provision"
+        assert item["standby_session_status"] == "pending"
+        assert item["preserved_devices_summary"] == "primary / standby_1 / standby_2 / 官方锚点设备"
+
+
+def test_standby_slot_strategy_is_accepted_by_security_payload_schema():
+    payload = AccountSecurityBatchCreate(
+        account_ids=[11],
+        action_types=["provision_standby_session"],
+        standby_slot_strategy="standby_2",
+        confirm_text="确认",
+        reason="补齐备用授权",
+    )
+
+    assert payload.standby_slot_strategy == "standby_2"
+
+
+def test_standby_session_precheck_blocks_missing_auto_login_resources():
+    with _session() as session:
+        account = _seed_account(session)
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id],
+                action_types=["provision_standby_session"],
+            ),
+        )
+        item = preview.items[0]
+
+        assert preview.summary["manual_required"] == 1
+        assert item.precheck_status == "manual_required"
+        assert "没有可用代理用于备用 session 登录" in item.blockers
+        assert "账号未托管 2FA" in ";".join(item.warnings)
+
+
+def test_standby_session_batch_exposes_manual_required_instead_of_fake_success(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        session.add(AccountProxy(id=1, tenant_id=1, name="备用代理", port=1080, status="healthy", alert_status="normal"))
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "start_login",
+            lambda *_args, **_kwargs: SimpleNamespace(status="等待验证码", code_preview=None, code_expires_at=_now() + timedelta(minutes=3), qr_payload=None),
+        )
+        monkeypatch.setattr(account_security_service.gateway, "poll_verification_codes", lambda *_args, **_kwargs: [])
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(
+                account_ids=[account.id],
+                action_types=["provision_standby_session"],
+                confirm_text="确认",
+                reason="补齐备用 session",
+            ),
+            "tester",
+        )
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        detail = get_task_detail(session, 1, f"account_security_batch:{batch.id}")
+        item = detail["account_security_batch"]["items"][0]
+
+        assert detail["account_security_batch"]["batch_status"] == "manual_required"
+        assert detail["task"]["status"] == "stopped"
+        assert detail["task"]["stats"]["success_count"] == 0
+        assert item["status"] == "manual_required"
+        assert item["standby_session_status"] == "manual_required"
+        assert item["failure_type"] == "standby_session_executor_missing"
+
+
+def test_standby_session_batch_auto_provisions_missing_standby_slot(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        session.add(AccountProxy(id=1, tenant_id=1, name="备用代理", port=1080, status="healthy", alert_status="normal"))
+        save_managed_two_fa_password(
+            session,
+            1,
+            account.id,
+            ManagedTwoFaRequest(password="managed-password", reason="首次托管"),
+            "tester",
+        )
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "start_login",
+            lambda *_args, **_kwargs: SimpleNamespace(status="等待验证码", code_preview="12345", code_expires_at=_now() + timedelta(minutes=3), qr_payload=None),
+        )
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "finish_login",
+            lambda *_args, **_kwargs: (AccountStatus.ACTIVE.value, "standby-session-raw"),
+        )
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(
+                account_ids=[account.id],
+                action_types=["provision_standby_session"],
+                standby_slot_strategy="standby_2",
+                confirm_text="确认",
+                reason="自动补齐备用 session",
+            ),
+            "tester",
+        )
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        refreshed = account_security_batch_detail(session, 1, batch.id)
+        asset = session.scalar(select(TgAccountAuthorization).where(TgAccountAuthorization.account_id == account.id, TgAccountAuthorization.role == "standby_2"))
+
+        assert refreshed.status == "succeeded"
+        assert refreshed.items[0].status == "succeeded"
+        assert asset is not None
+        assert asset.session_ciphertext
+
+
+def test_standby_session_batch_polls_primary_session_code_when_challenge_has_no_preview(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        session.add(AccountProxy(id=1, tenant_id=1, name="备用代理", port=1080, status="healthy", alert_status="normal"))
+        save_managed_two_fa_password(
+            session,
+            1,
+            account.id,
+            ManagedTwoFaRequest(password="managed-password", reason="首次托管"),
+            "tester",
+        )
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "start_login",
+            lambda *_args, **_kwargs: SimpleNamespace(status="等待验证码", code_preview=None, code_expires_at=_now() + timedelta(minutes=3), qr_payload=None),
+        )
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "poll_verification_codes",
+            lambda *_args, **_kwargs: [SimpleNamespace(code="67890", raw_hint="TG 官方服务消息验证码", expires_at=_now() + timedelta(minutes=3))],
+        )
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "finish_login",
+            lambda code, *_args, **_kwargs: (AccountStatus.ACTIVE.value, f"standby-session-{code}"),
+        )
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(
+                account_ids=[account.id],
+                action_types=["provision_standby_session"],
+                confirm_text="确认",
+                reason="自动补齐备用 session",
+            ),
+            "tester",
+        )
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        refreshed = account_security_batch_detail(session, 1, batch.id)
+        asset = session.scalar(select(TgAccountAuthorization).where(TgAccountAuthorization.account_id == account.id, TgAccountAuthorization.role == "standby_1"))
+        code = session.scalar(select(TgVerificationCode).where(TgVerificationCode.account_id == account.id, TgVerificationCode.source == "standby_authorization_auto_login"))
+
+        assert refreshed.status == "succeeded"
+        assert refreshed.items[0].status == "succeeded"
+        assert asset is not None
+        assert asset.session_ciphertext
+        assert code is not None
+        assert code.code_preview == "67890"
+
+
+def test_standby_session_self_heal_activates_existing_standby_when_primary_session_missing():
+    with _session() as session:
+        account = _seed_account(session, status=AccountStatus.WAITING_CODE.value, session_value="")
+        session.add(
+            TgAccountAuthorization(
+                tenant_id=1,
+                account_id=account.id,
+                role="standby_1",
+                developer_app_id=1,
+                session_ciphertext=encrypt_session("standby-session"),
+                status="standby",
+                health_status="healthy",
+            )
+        )
+        session.commit()
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(
+                account_ids=[account.id],
+                action_types=["self_heal_session"],
+                confirm_text="确认",
+                reason="用备用 session 恢复",
+            ),
+            "tester",
+        )
+
+        assert batch.items[0].status == "pending"
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        refreshed = account_security_batch_detail(session, 1, batch.id)
+        updated = session.get(TgAccount, account.id)
+
+        assert refreshed.status == "succeeded"
+        assert refreshed.items[0].status == "succeeded"
+        assert updated.status == AccountStatus.ACTIVE.value
+        assert updated.session_ciphertext
 
 
 def test_profile_batch_avatar_waits_until_material_cache_ready(tmp_path, monkeypatch):
@@ -812,6 +1047,223 @@ def test_confirmed_batch_drains_profile_username_and_device_cleanup_independentl
         snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
         assert snapshot.external_authorization_count == 0
         assert snapshot.two_fa_password_ciphertext
+
+
+def test_device_cleanup_preserves_current_and_platform_trusted_authorizations(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        for index, flags in enumerate(
+            [
+                {"is_current_session": True, "is_platform_trusted": True, "hash": "primary"},
+                {"is_current_session": False, "is_platform_trusted": True, "hash": "standby"},
+                {"is_current_session": False, "is_platform_trusted": False, "hash": "external"},
+            ],
+            start=1,
+        ):
+            session.add(
+                TgAccountAuthorizationSnapshot(
+                    id=index,
+                    tenant_id=1,
+                    account_id=account.id,
+                    authorization_hash_ciphertext=encrypt_secret(flags["hash"]),
+                    is_current_session=flags["is_current_session"],
+                    is_platform_trusted=flags["is_platform_trusted"],
+                    status="active",
+                )
+            )
+        session.add(
+            TgAccountAuthorizationSnapshot(
+                tenant_id=1,
+                account_id=account.id,
+                authorization_hash_ciphertext=encrypt_secret("official-anchor"),
+                is_current_session=False,
+                is_platform_trusted=False,
+                device_model="iPhone",
+                platform="iOS",
+                api_id=8,
+                app_name="Telegram iOS",
+                status="active",
+            )
+        )
+        session.commit()
+        cleaned_hashes: list[str] = []
+
+        def record_cleanup(_session_ciphertext, authorization_hash, _credentials):
+            cleaned_hashes.append(authorization_hash)
+            return SimpleNamespace(ok=True, detail="cleaned", failure_type="")
+
+        monkeypatch.setattr(account_security_service.gateway, "cleanup_authorization", record_cleanup)
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(account_ids=[account.id], action_types=["cleanup_devices"], confirm_text="确认"),
+            "tester",
+        )
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        refreshed = account_security_batch_detail(session, 1, batch.id)
+
+        assert cleaned_hashes == ["external"]
+        assert refreshed.items[0].external_devices_before == 1
+        assert refreshed.items[0].external_devices_after == 0
+
+
+def test_device_cleanup_preserves_recorded_primary_and_standby_authorization_hashes(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        session.add_all(
+            [
+                TgAccountAuthorization(
+                    tenant_id=1,
+                    account_id=account.id,
+                    role="standby_1",
+                    session_ciphertext=encrypt_session("standby-session"),
+                    status="standby",
+                    telegram_authorization_hash_ciphertext=encrypt_secret("standby-hash"),
+                ),
+                TgAccountAuthorizationSnapshot(
+                    tenant_id=1,
+                    account_id=account.id,
+                    authorization_hash_ciphertext=encrypt_secret("standby-hash"),
+                    is_current_session=False,
+                    is_platform_trusted=False,
+                    status="active",
+                ),
+                TgAccountAuthorizationSnapshot(
+                    tenant_id=1,
+                    account_id=account.id,
+                    authorization_hash_ciphertext=encrypt_secret("external-hash"),
+                    is_current_session=False,
+                    is_platform_trusted=False,
+                    status="active",
+                ),
+                TgAccountAuthorizationSnapshot(
+                    tenant_id=1,
+                    account_id=account.id,
+                    authorization_hash_ciphertext=encrypt_secret("official-anchor"),
+                    is_current_session=False,
+                    is_platform_trusted=False,
+                    device_model="Telegram Desktop",
+                    platform="macOS",
+                    api_id=2040,
+                    app_name="Telegram Desktop",
+                    status="active",
+                ),
+            ]
+        )
+        session.commit()
+        cleaned_hashes: list[str] = []
+
+        def record_cleanup(_session_ciphertext, authorization_hash, _credentials):
+            cleaned_hashes.append(authorization_hash)
+            return SimpleNamespace(ok=True, detail="cleaned", failure_type="")
+
+        monkeypatch.setattr(account_security_service.gateway, "cleanup_authorization", record_cleanup)
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(account_ids=[account.id], action_types=["cleanup_devices"], confirm_text="确认"),
+            "tester",
+        )
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+
+        assert cleaned_hashes == ["external-hash"]
+
+
+def test_device_cleanup_requires_official_anchor_authorization(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        session.add(
+            TgAccountAuthorizationSnapshot(
+                tenant_id=1,
+                account_id=account.id,
+                authorization_hash_ciphertext=encrypt_secret("external-hash"),
+                is_current_session=False,
+                is_platform_trusted=False,
+                status="active",
+            )
+        )
+        session.commit()
+        cleaned_hashes: list[str] = []
+
+        def record_cleanup(_session_ciphertext, authorization_hash, _credentials):
+            cleaned_hashes.append(authorization_hash)
+            return SimpleNamespace(ok=True, detail="cleaned", failure_type="")
+
+        monkeypatch.setattr(account_security_service.gateway, "cleanup_authorization", record_cleanup)
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(account_ids=[account.id], action_types=["cleanup_devices"], confirm_text="确认"),
+            "tester",
+        )
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        refreshed = account_security_batch_detail(session, 1, batch.id)
+
+        assert cleaned_hashes == []
+        assert refreshed.status == "manual_required"
+        assert refreshed.items[0].status == "manual_required"
+        assert refreshed.items[0].cleanup_status == "manual_required"
+        assert refreshed.items[0].failure_type == "official_anchor_missing"
+
+
+def test_device_cleanup_scan_failure_is_not_marked_success(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+
+        def fail_authorization_scan(*_args, **_kwargs):
+            raise RuntimeError("scan failed")
+
+        monkeypatch.setattr(account_security_service.gateway, "list_authorizations", fail_authorization_scan)
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(account_ids=[account.id], action_types=["cleanup_devices"], confirm_text="确认"),
+            "tester",
+        )
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        refreshed = account_security_batch_detail(session, 1, batch.id)
+        item = refreshed.items[0]
+
+        assert refreshed.status == "failed"
+        assert item.cleanup_status == "failed"
+        assert "设备扫描失败" in item.failure_detail
+
+
+def test_managed_two_fa_save_and_rotate_store_encrypted_password(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        saved = save_managed_two_fa_password(
+            session,
+            1,
+            account.id,
+            ManagedTwoFaRequest(password="old-password", reason="首次托管"),
+            "tester",
+        )
+        calls: list[str] = []
+
+        def set_two_fa(_session_ciphertext, password, **_kwargs):
+            calls.append(password)
+            return SimpleNamespace(ok=True, status="enabled", detail="", failure_type="")
+
+        monkeypatch.setattr(account_security_service.gateway, "set_two_fa_password", set_two_fa)
+        rotated = rotate_managed_two_fa_password(
+            session,
+            1,
+            account.id,
+            ManagedTwoFaRequest(password="new-password", reason="轮换"),
+            "tester",
+        )
+        snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
+
+        assert saved.two_fa_status == "enabled"
+        assert rotated.two_fa_status == "enabled"
+        assert calls == ["new-password"]
+        assert snapshot.two_fa_password_ciphertext
+        assert snapshot.two_fa_password_ciphertext != "new-password"
 
 
 def test_modal_confirmation_text_starts_batch_without_legacy_phrase():
