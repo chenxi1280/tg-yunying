@@ -36,7 +36,6 @@ from app.schemas.task_center import (
     TaskUpdate,
 )
 from app.services._common import _now, audit, normalize_list_filter
-from app.timezone import as_beijing
 
 from .account_pool import select_task_accounts
 from .ai_generator import generate_channel_comments, generate_group_messages
@@ -800,10 +799,9 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
                 session.commit()
                 continue
             processed += retry_failed_actions(session, task)
-            if task.type == "group_ai_chat" and _has_open_actions(session, task) and not hard_hourly_requires_planning(session, task, _now()):
-                if not task.next_run_at or _business_naive_datetime(task.next_run_at) <= _now():
-                    task.next_run_at = next_run_after_task(task)
-                if task.next_run_at and _business_naive_datetime(task.next_run_at) > _now():
+            has_open_actions, open_actions_are_future = _open_actions_state(session, task)
+            if task.type == "group_ai_chat" and has_open_actions and not hard_hourly_requires_planning(session, task, _now()):
+                if open_actions_are_future:
                     future_open_action_task_ids.add(task.id)
                 refresh_task_stats(session, task)
                 session.commit()
@@ -1389,7 +1387,7 @@ def _naive_datetime(value):
     return value
 
 
-def _has_open_actions(session: Session, task: Task) -> bool:
+def _open_actions_state(session: Session, task: Task) -> tuple[bool, bool]:
     earliest = session.scalar(
         select(func.min(Action.scheduled_at)).where(
             Action.task_id == task.id,
@@ -1398,19 +1396,22 @@ def _has_open_actions(session: Session, task: Task) -> bool:
         )
     )
     if not earliest:
-        return False
+        return False, False
     task.next_run_at = _absolute_naive_datetime(earliest)
-    return True
+    return True, _scheduled_at_is_future(earliest)
+
+
+def _scheduled_at_is_future(value: datetime) -> bool:
+    if value.tzinfo is not None:
+        absolute_now = datetime.now(UTC).replace(tzinfo=None)
+        return _absolute_naive_datetime(value) > absolute_now
+    return value > _now()
 
 
 def _absolute_naive_datetime(value: datetime) -> datetime:
     if value.tzinfo is not None:
         return value.astimezone(UTC).replace(tzinfo=None)
     return value
-
-
-def _business_naive_datetime(value: datetime) -> datetime:
-    return as_beijing(value) or value
 
 
 __all__ = [
