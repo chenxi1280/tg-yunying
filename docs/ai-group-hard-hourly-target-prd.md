@@ -56,7 +56,7 @@ hour_start = 当前小时整点
 hour_end = 下一小时整点
 ```
 
-第一版沿用系统现有北京时间口径。后续如果任务时区已经被完整使用，应以任务 `timezone` 为准。
+小时窗口必须使用任务时区计算。任务未配置时区或时区非法时，回退到系统现有北京时间口径。统计时必须先把 `scheduled_at`、`executed_at` 归一化到该时区，再落入小时桶，避免 aware / naive datetime key 不一致导致统计为 0。
 
 ### 4.3 硬目标进度
 
@@ -89,10 +89,12 @@ action_type = send_message
 task_type = group_ai_chat
 ```
 
+已过计划时间但仍未执行的 action 不计入“未来待执行覆盖”，应单独统计为 `overdue_open_count` 并进入 `dispatcher_lag` 或执行滞后诊断。这样可以避免“pending 数量看起来覆盖缺口，但实际都已经过期没发”的误判。
+
 硬目标缺口：
 
 ```text
-deficit = hourly_min_messages - success_current_hour - open_current_hour
+deficit = hourly_min_messages - success_current_hour - future_open_current_hour
 ```
 
 当 `deficit > 0` 时，Planner 必须尝试追加规划。
@@ -208,6 +210,7 @@ AI 活跃群任务卡片增加硬目标摘要：
   "hard_hourly_bucket": "2026-06-07T20:00:00+08:00",
   "hard_hourly_success_count": 45,
   "hard_hourly_open_count": 3,
+  "hard_hourly_overdue_open_count": 0,
   "hard_hourly_deficit": 12,
   "hard_hourly_status": "catching_up",
   "hard_hourly_last_check_at": "2026-06-07T20:42:15+08:00",
@@ -229,6 +232,31 @@ AI 活跃群任务卡片增加硬目标摘要：
 | `catching_up` | 本小时未达标，系统正在强推规划 |
 | `blocked` | 本小时仍未达标且当前存在明确阻塞 |
 | `missed` | 小时结束后未达标 |
+
+`task.stats` 同时保留最近 24 个小时桶摘要，避免小时切换后丢失未达标事实：
+
+```json
+{
+  "hard_hourly_recent_buckets": [
+    {
+      "bucket": "2026-06-07T20:00:00+08:00",
+      "goal": 60,
+      "success_count": 45,
+      "future_open_count": 3,
+      "overdue_open_count": 2,
+      "deficit": 12,
+      "status": "missed",
+      "blockers": {
+        "account_capacity": 7,
+        "quality_filter": 3,
+        "tg_rate_limit": 2
+      }
+    }
+  ]
+}
+```
+
+第一版可以把最近 24 小时摘要放在 `task.stats`；如果后续运营数据需要跨天聚合，再落入 `RuntimeMetricSnapshot` 或专门的小时统计表。
 
 ### 7.3 Action 标记
 
@@ -269,6 +297,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 - `allow_account_repeat` 临时视为 `true`，但仍受账号容量、目标权限和风控限制。
 - 发送计划时间压缩到当前小时剩余窗口。
 - 如果当前小时剩余时间不足，仍尽量创建最近可执行时间；执行层如果因容量或 TG 限制延后，必须记录未达标原因。
+- 单次强推未能创建任何发送 action 时，必须记录原因并设置下一次检查时间，不能在同一 planner tick 中无限重试 AI 生成或质量过滤。
 
 ### 8.3 上下文等待
 
@@ -307,6 +336,22 @@ AI 活跃群任务卡片增加硬目标摘要：
 - 如果 `hourly_min_messages > max_actions_per_hour`，硬目标控制器以 `hourly_min_messages` 为优先目标，但详情必须提示“硬目标超过普通小时上限”。
 - 真实执行仍以账号容量、风控中心和 TG 结果为最终边界。
 
+### 8.6 强推失败后的重试节奏
+
+硬目标是强推目标，不是无限循环。缺口存在但本次强推没有创建 action 时，Planner 必须把失败原因写入 stats，并按原因设置下一次检查时间：
+
+| 原因 | 下一次检查 |
+| --- | --- |
+| `account_capacity` | 账号下一次容量窗口或 1 分钟后，取较早的可执行时间 |
+| `target_membership_pending` | membership 下一次计划时间或 1 分钟后 |
+| `no_context` | 30-60 秒后重试空闲续聊 / 暖场 |
+| `quality_filter` | 60-180 秒后重试，并记录过滤原因 |
+| `ai_generation_unavailable` | 1-5 分钟后重试 |
+| `tg_rate_limit` | FloodWait / TG 返回的可重试时间 |
+| `dispatcher_lag` | 不新增大量重复 action，优先等待 recovery / dispatcher |
+
+这个节奏是透明的运行控制，不是静默降级：目标值不降低，缺口不清零，任务详情必须显示“仍未达标”和下一次检查时间。
+
 ## 9. API 变更
 
 ### 9.1 创建任务
@@ -333,6 +378,8 @@ AI 活跃群任务卡片增加硬目标摘要：
 
 现有任务输出的 `stats` 中增加硬目标字段。前端不需要新增单独查询接口。
 
+任务列表、任务详情和 `/stats` 三个入口必须使用同一套硬目标统计函数。列表接口不能直接返回旧 `task.stats` JSON；如果在读请求中刷新 stats，必须保证响应和后续列表读取都使用刷新后的值，避免详情已清理但列表仍显示旧状态。
+
 ### 9.4 预检
 
 `POST /api/tasks/precheck` 增加硬目标预检摘要：
@@ -353,9 +400,38 @@ AI 活跃群任务卡片增加硬目标摘要：
 
 预检只提示风险，不因为目标过高直接禁止创建；但目标群不存在、无可用账号、规则绑定非法等既有硬错误仍按原逻辑处理。
 
-## 10. 验收口径
+预检必须把硬目标和当前账号容量分开展示：
 
-### 10.1 后端验收
+- `hourly_min_messages`：运营人员要求的硬目标。
+- `estimated_hourly_capacity`：按当前账号、容量、目标权限估算的真实可达量。
+- `capacity_gap`：硬目标和估算容量之间的差距。
+- `hard_target_over_capacity`：硬目标是否超过估算容量。
+
+不得因为 `max_actions_per_hour` 低于硬目标就把容量估算截断为普通上限；硬目标模式下普通上限只作为风险提示。
+
+## 10. 实现触点
+
+第一版实现必须覆盖以下触点，避免只改 planner 导致 UI 或统计仍旧：
+
+| 触点 | 要求 |
+| --- | --- |
+| `backend/app/schemas/task_center.py` | `GroupAIChatConfig`、创建、编辑和预览请求增加硬目标字段 |
+| `backend/app/services/task_center/config_fields.py` | 允许新字段通过任务配置白名单 |
+| `backend/app/services/task_center/precheck.py` | 返回硬目标容量预检摘要 |
+| `backend/app/services/task_center/executors/group_ai_chat.py` | 计算当前小时缺口、强推生成、压缩计划时间、写 action 标记 |
+| `backend/app/services/task_center/pacing.py` | 支持硬目标剩余窗口内的计划时间分配 |
+| `backend/app/services/task_center/stats.py` | 统一刷新当前小时和最近 24 小时硬目标 stats |
+| `backend/app/services/task_center/service.py` | 列表、详情、stats、reset、resume 使用同一统计口径 |
+| `frontend/src/app/views/TaskCenterView.tsx` | 创建、编辑、保存 payload 增加硬目标字段 |
+| `frontend/src/app/views/TaskCenterWizardSections.tsx` | 增加硬目标表单和说明 |
+| `frontend/src/app/views/taskCenterViewModel.ts` | 默认值、提交字段、编辑字段和摘要展示 |
+| `frontend/src/app/types/taskCenter.ts` | 类型定义增加硬目标字段和 stats 字段 |
+
+重置任务时应清空当前硬目标运行态和最近小时桶，但保留任务配置；暂停任务时不追加规划；恢复任务时从恢复后的当前小时重新计算目标。
+
+## 11. 验收口径
+
+### 11.1 后端验收
 
 - 旧任务未配置硬目标时，行为不变。
 - 开启 `hourly_min_messages=60` 后，当前小时成功 + 待执行小于 60 时，planner 创建补量发送动作。
@@ -365,24 +441,29 @@ AI 活跃群任务卡片增加硬目标摘要：
 - 质量过滤、内容规则、账号容量、目标权限和 TG 限制导致无法补足时，stats 记录原因。
 - `max_actions_per_hour` 小于硬目标时，不阻止硬目标规划，但 stats / 详情显示目标超过普通上限。
 - 已存在未来 pending 动作会计入 `open_current_hour`，避免重复规划。
+- 已过期 pending 不计入未来待执行覆盖，必须进入 overdue / dispatcher lag 口径。
+- 小时切换后，上一小时未达标结果保留在最近 24 小时桶中。
+- `/api/tasks`、`/api/tasks/{id}` 和 `/api/tasks/{id}/stats` 三个入口返回的硬目标 stats 一致。
 
-### 10.2 前端验收
+### 11.2 前端验收
 
 - 创建 AI 活跃群任务时可开启硬目标并填写每小时最低发送量。
 - 编辑已建 AI 活跃群任务时可开启、关闭或调整硬目标。
 - 任务列表展示当前小时 `成功 / 目标`、缺口和状态。
 - 任务详情展示硬目标小时桶、成功数、待执行数、缺口、最近强推和阻塞原因。
 - 未开启硬目标的任务不展示多余噪音。
+- 当前小时存在已过期 pending 时，详情必须显示执行滞后，而不是把它当成可覆盖缺口的待执行。
 
-### 10.3 线上验收
+### 11.3 线上验收
 
 - 新建一个测试 AI 活跃群任务，设置较低硬目标，例如 3 条 / 小时，确认当前小时缺口会触发追加规划。
 - 设置高于账号容量的硬目标，确认系统不会伪造成功，会展示容量不足或 TG 限制。
 - 对比 `/api/overview`、`/api/tasks`、`/api/tasks/{id}/stats` 和 action 明细，确认成功数、待执行数和缺口一致。
 - 暂停任务后，硬目标不再追加规划。
 - 恢复任务后，从恢复后的当前小时继续计算目标。
+- 人为制造已过期 pending 或 dispatcher 停滞时，确认系统标记 `dispatcher_lag`，不把过期 pending 当作已覆盖缺口。
 
-## 11. 实施优先级
+## 12. 实施优先级
 
 第一阶段：
 
@@ -397,4 +478,3 @@ AI 活跃群任务卡片增加硬目标摘要：
 - 运营数据聚合硬目标达标率。
 - 未达标 issue 上卷到运营中心。
 - 更细的小时历史报表。
-

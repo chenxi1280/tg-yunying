@@ -1,11 +1,9 @@
 # AI 活跃群每小时硬目标 OPS
 
 ## 1. 运行原则
-
 每小时硬目标是 AI 活跃群的强运营模式。它的目标是让系统主动追赶每小时最低真实发送量，而不是只靠自然曲线等待下一轮。
 
 运行原则：
-
 - 真实成功只认 `send_message` 的 `success`。
 - 未达标必须暴露原因。
 - 系统可以强推规划，但不能绕过账号安全、目标权限、TG 限制、内容风控和 AI 质量检查。
@@ -15,24 +13,22 @@
 ## 2. 关键指标
 
 ### 2.1 任务级指标
-
 每个启用硬目标的 AI 活跃群任务需要持续产生以下指标：
-
 | 指标 | 含义 |
 | --- | --- |
 | `hard_hourly_goal` | 当前小时目标发送量 |
 | `hard_hourly_success_count` | 当前小时已成功发送 |
 | `hard_hourly_open_count` | 当前小时已规划未完成发送 |
+| `hard_hourly_overdue_open_count` | 当前小时已过计划时间但仍未完成发送 |
 | `hard_hourly_deficit` | 当前小时缺口 |
 | `hard_hourly_status` | `met` / `catching_up` / `blocked` / `missed` |
 | `hard_hourly_last_check_at` | 最近一次硬目标检查时间 |
 | `hard_hourly_last_planned_count` | 最近一次强推创建的发送动作数 |
 | `hard_hourly_last_blockers` | 最近一次未补足原因分布 |
+| `hard_hourly_recent_buckets` | 最近 24 个小时的达标和阻塞摘要 |
 
 ### 2.2 Action 级指标
-
 硬目标补量 action 需要带：
-
 | 字段 | 含义 |
 | --- | --- |
 | `hard_hourly_target` | 是否由硬目标补量生成 |
@@ -42,20 +38,18 @@
 | `turn_index` | 本轮发言序号 |
 
 ### 2.3 全局指标
-
 运营中心或监控应聚合：
-
 - 硬目标任务数。
 - 当前小时未达标任务数。
 - 最近 24 小时未达标小时数。
 - 硬目标成功发送量。
 - 硬目标补量 action 数。
+- 已过期未执行硬目标 action 数。
 - 未达标原因 Top N。
 
 ## 3. 状态与告警
 
 ### 3.1 状态定义
-
 | 状态 | 触发条件 | 运营含义 |
 | --- | --- | --- |
 | `met` | 当前小时成功数达到目标 | 正常 |
@@ -64,11 +58,9 @@
 | `missed` | 小时结束后仍未达标 | 异常 |
 
 ### 3.2 告警规则
-
 第一版告警以任务详情和运营中心 issue 为主，不要求立即接入外部告警系统。
 
 必须生成 issue 的情况：
-
 - 当前小时结束后 `success_current_hour < hourly_min_messages`。
 - 连续两个小时处于 `missed`。
 - 当前小时 `blocked` 且阻塞原因是账号不可用、目标不可发、AI 生成不可用、TG FloodWait 或 dispatcher 延迟。
@@ -99,9 +91,7 @@ suggested_action
 | low | 当前小时 catching_up，无明确阻塞 |
 
 ## 4. 未达标原因分类
-
 未达标原因必须尽量归一化，便于统计和处理。
-
 | 原因码 | 说明 | 处理方向 |
 | --- | --- | --- |
 | `account_capacity` | 账号小时 / 日容量不足 | 增加账号、调整账号组、检查账号冷却 |
@@ -118,31 +108,56 @@ suggested_action
 
 不得使用“系统正常”“流程正常”掩盖这些原因。
 
-## 5. 日常巡检流程
+## 5. 时间窗口和数据一致性
 
-### 5.1 每小时巡检
+### 5.1 时间窗口
+硬目标按任务时区计算小时桶。任务未配置时区或时区非法时，使用北京时间。排查时必须确认：
+- `executed_at` 是否已经归一化到任务时区。
+- `scheduled_at` 是否落在当前小时。
+- API 输出的小时桶、数据库查询窗口和页面展示是否一致。
 
+### 5.2 待执行拆分
+硬目标的待执行必须拆成两类：
+| 类别 | 计入缺口覆盖 | 含义 |
+| --- | --- | --- |
+| `future_open_current_hour` | 是 | `scheduled_at >= now` 且 `< hour_end` 的 pending / claiming / executing |
+| `overdue_open_current_hour` | 否 | `scheduled_at < now` 但仍未成功、失败或跳过 |
+
+过期待执行不能用于抵扣缺口。它代表 dispatcher、claim、执行或 recovery 需要排查。
+
+### 5.3 API 一致性
+以下接口的硬目标统计必须一致：
+```text
+GET /api/tasks
+GET /api/tasks/{task_id}
+GET /api/tasks/{task_id}/stats
+```
+
+如果详情或 stats 接口刷新了 `task.stats`，列表接口也必须能返回同一份刷新后的硬目标字段。值班时发现三者不一致，应按统计刷新 bug 处理，而不是按任务未达标处理。
+
+## 6. 日常巡检流程
+
+### 6.1 每小时巡检
 运营人员或值班人员检查：
-
 1. 任务列表中 AI 活跃群硬目标状态。
 2. 当前小时 `成功 / 目标`。
 3. `hard_hourly_deficit` 是否大于 0。
 4. 缺口是否已经有待执行 action 覆盖。
-5. 未达标原因是否集中在账号、目标、AI、质量或 dispatcher。
+5. 是否存在 `hard_hourly_overdue_open_count`。
+6. 未达标原因是否集中在账号、目标、AI、质量或 dispatcher。
 
 判断口径：
 
 ```text
 成功数达到目标 -> 正常
-成功数未达标，但待执行覆盖缺口且计划时间未到 -> 追赶中
+成功数未达标，但未来待执行覆盖缺口且计划时间未到 -> 追赶中
 成功数未达标，待执行不足，且 blocker 明确 -> 异常
+成功数未达标，过期待执行较多 -> dispatcher_lag
 小时结束仍未达标 -> 异常
 ```
 
-### 5.2 任务详情排查
-
+### 6.2 任务详情排查
 进入任务详情后按顺序看：
-
 1. 硬目标执行区。
 2. 当前小时 action 明细。
 3. 失败 / 跳过 / unknown_after_send。
@@ -151,11 +166,10 @@ suggested_action
 6. AI 生成记录和质量过滤。
 7. listener_runtime 最近采集时间。
 8. dispatcher worker 心跳。
+9. 最近 24 小时硬目标桶。
 
-### 5.3 Action 明细口径
-
+### 6.3 Action 明细口径
 排查“很多消息没发”时，必须拆分：
-
 ```text
 当前小时成功发送
 当前小时待执行
@@ -169,9 +183,9 @@ suggested_action
 
 不能只看首页 `pending_actions` 总数。
 
-## 6. 现场处理手册
+## 7. 现场处理手册
 
-### 6.1 账号容量不足
+### 7.1 账号容量不足
 
 现象：
 
@@ -186,7 +200,7 @@ suggested_action
 - 检查账号小时 / 日容量配置。
 - 检查 `allow_account_repeat` 是否被任务配置限制；硬目标模式应临时允许复用。
 
-### 6.2 无上下文或等待新消息
+### 7.2 无上下文或等待新消息
 
 现象：
 
@@ -202,7 +216,7 @@ suggested_action
 
 硬目标模式下，单纯“等待真人上下文”不能作为长期停发理由；系统必须尝试暖场或明确记录质量 / 上下文阻塞。
 
-### 6.3 目标准入未完成
+### 7.3 目标准入未完成
 
 现象：
 
@@ -216,7 +230,7 @@ suggested_action
 - 处理验证码、关注频道、邀请链接失效或目标权限问题。
 - 主发送不足时记录 `target_membership_pending`，不应写成普通发送失败。
 
-### 6.4 AI 生成不足
+### 7.4 AI 生成不足
 
 现象：
 
@@ -230,7 +244,7 @@ suggested_action
 - 检查重复度、事实锚点和低置信静默规则。
 - 失败必须保留 `ai_generation_unavailable` 或 `quality_filter`，不能把目标当作已完成。
 
-### 6.5 Dispatcher 延迟
+### 7.5 Dispatcher 延迟
 
 现象：
 
@@ -243,10 +257,28 @@ suggested_action
 - 检查 `claiming` 过期恢复。
 - 检查运行指标 `actions.oldest_pending_age_seconds`。
 - 检查部署版本和 worker 日志。
+- 对比 `future_open_current_hour` 与 `overdue_open_current_hour`，确认缺口是否真的被未来计划覆盖。
 
-## 7. 发布与回滚
+### 7.6 强推失败反复重试
 
-### 7.1 发布前检查
+现象：
+
+- 当前小时有缺口。
+- 最近多次强推均创建 0 条 action。
+- AI 调用、质量过滤或账号容量失败次数快速增加。
+
+处理：
+
+- 查看 `hard_hourly_last_blockers`。
+- 查看下一次硬目标检查时间。
+- 如果是 `quality_filter`，检查提示词、重复度和事实锚点。
+- 如果是 `ai_generation_unavailable`，检查供应商健康和 token。
+- 如果是 `account_capacity`，检查账号下一容量窗口。
+- 不能通过降低目标或清空缺口来让状态变绿；只能处理根因或由运营人员关闭硬目标。
+
+## 8. 发布与回滚
+
+### 8.1 发布前检查
 
 - 旧任务未启用硬目标时行为不变。
 - 创建 / 编辑 AI 活跃群任务可保存硬目标字段。
@@ -254,8 +286,11 @@ suggested_action
 - 任务列表 / 详情 / stats 展示一致。
 - 预检能显示容量风险。
 - 单元和集成测试覆盖硬目标计算、补量、阻塞原因和列表展示。
+- 小时桶使用任务时区，且 aware / naive datetime 不会导致统计丢失。
+- 已过期 pending 不抵扣缺口。
+- 最近 24 小时桶能保留上一小时 missed 状态。
 
-### 7.2 发布流程
+### 8.2 发布流程
 
 Telegram 相关项目按现有流程：
 
@@ -269,9 +304,10 @@ master -> release -> push release -> GitHub Actions Deploy Production
 - `/api/tasks` 中旧任务 stats 正常。
 - 新硬目标测试任务可以创建。
 - 当前小时硬目标进度正确。
+- `/api/tasks`、`/api/tasks/{id}`、`/api/tasks/{id}/stats` 的硬目标字段一致。
 - overview 24 小时活动统计仍为非零。
 
-### 7.3 回滚口径
+### 8.3 回滚口径
 
 如果硬目标发布后影响普通任务：
 
@@ -280,9 +316,9 @@ master -> release -> push release -> GitHub Actions Deploy Production
 - 如果是 planner 误创建大量 action，暂停相关任务并检查补量 action 标记。
 - 如果影响全局 worker，回滚 release 到上一成功版本。
 
-## 8. 验收用例
+## 9. 验收用例
 
-### 8.1 低目标可达场景
+### 9.1 低目标可达场景
 
 配置：
 
@@ -298,7 +334,7 @@ hourly_min_messages = 3
 - 成功达到 3 条后停止硬目标补量。
 - 任务 stats 显示 `met`。
 
-### 8.2 高目标不可达场景
+### 9.2 高目标不可达场景
 
 配置：
 
@@ -314,7 +350,7 @@ hourly_min_messages = 100
 - 未补足部分显示 `account_capacity` 或其他明确原因。
 - 小时结束后生成 missed 状态或 issue。
 
-### 8.3 无上下文场景
+### 9.3 无上下文场景
 
 配置：
 
@@ -329,7 +365,7 @@ hourly_min_messages = 10
 - 如果质量门通过，创建补量 action。
 - 如果质量门不通过，记录 `no_context` 或 `quality_filter`。
 
-### 8.4 已有未来 pending 场景
+### 9.4 已有未来 pending 场景
 
 配置：
 
@@ -344,7 +380,7 @@ hourly_min_messages = 10
 - 缺口为 0。
 - 不重复规划 20 条。
 
-### 8.5 已过期 pending 场景
+### 9.5 已过期 pending 场景
 
 配置：
 
@@ -360,7 +396,23 @@ hourly_min_messages = 10
 - 不把已过期 pending 当作成功。
 - 如仍有时间，继续补量或推动 recovery。
 
-## 9. 数据核对 SQL 口径
+### 9.6 列表 / 详情一致性场景
+
+配置：
+
+```text
+任务 stats 里有旧 hard_hourly 字段
+当前小时实际已经恢复或达标
+```
+
+预期：
+
+- `/api/tasks` 不展示旧状态。
+- `/api/tasks/{id}` 不展示旧状态。
+- `/api/tasks/{id}/stats` 不展示旧状态。
+- 三个接口的目标、成功、待执行、缺口和状态一致。
+
+## 10. 数据核对 SQL 口径
 
 当前小时成功发送：
 
@@ -388,6 +440,19 @@ where task_id = :task_id
   and scheduled_at < :hour_end;
 ```
 
+当前小时已过期未执行：
+
+```sql
+select count(*)
+from actions
+where task_id = :task_id
+  and task_type = 'group_ai_chat'
+  and action_type = 'send_message'
+  and status in ('pending', 'claiming', 'executing')
+  and scheduled_at >= :hour_start
+  and scheduled_at < :now;
+```
+
 硬目标补量 action：
 
 ```sql
@@ -399,7 +464,13 @@ where task_id = :task_id
 order by scheduled_at desc;
 ```
 
-## 10. 值班结论模板
+最近 24 小时硬目标桶建议直接看任务 stats：
+
+```text
+hard_hourly_recent_buckets
+```
+
+## 11. 值班结论模板
 
 正常：
 
@@ -413,9 +484,14 @@ AI 活跃群硬目标正常。本小时目标 60，成功 63，缺口 0，无硬
 AI 活跃群硬目标追赶中。本小时目标 60，成功 42，当前小时待执行 18，缺口已被待执行覆盖，计划时间未到。
 ```
 
+执行滞后：
+
+```text
+AI 活跃群硬目标存在执行滞后。本小时目标 60，成功 40，未来待执行 5，已过期未执行 15，缺口 15。需检查 dispatcher / worker 心跳和 claim 恢复。
+```
+
 异常：
 
 ```text
 AI 活跃群硬目标未达成。本小时目标 60，成功 45，待执行 3，缺口 12。主要原因：账号容量不足 7、AI 质量过滤 3、TG FloodWait 2。已生成运营异常，需处理账号容量和目标权限。
 ```
-
