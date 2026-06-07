@@ -40,6 +40,7 @@ from app.services.task_center.policies import validate_group_send_policy
 from app.services.task_center.service import _action_payload, _channel_subtask_status, _planning_backlog_blocked, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.payloads import ViewMessagePayload, create_view_action
+from app.services.task_center.stats import refresh_task_stats
 from app.services.runtime_summary import get_operation_issue_detail, refresh_task_summary, upsert_operation_issue
 from app.timezone import BEIJING_TZ, beijing_day_bounds
 
@@ -4911,6 +4912,43 @@ def test_planning_backlog_blocked_clears_stale_stats_when_queue_recovers(monkeyp
 
     assert blocked is False
     assert task.stats == {"success_count": 12}
+
+
+def test_refresh_task_stats_clears_recovered_backlog_marker(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "app.services.task_center.stats.get_settings",
+        lambda: SimpleNamespace(
+            max_pending_global=10_000,
+            max_pending_per_task=1_000,
+            oldest_pending_age_seconds=3_600,
+        ),
+        raising=False,
+    )
+
+    stale_stats = {
+        "planner_backlog_blocked": True,
+        "planner_backlog_global_pending": 1887,
+        "success_count": 12,
+    }
+    with Session(engine) as session:
+        task = Task(
+            id="task-backlog-list-refresh",
+            tenant_id=1,
+            name="AI 活跃群",
+            type="group_ai_chat",
+            status="running",
+            stats=stale_stats,
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+        stats = refresh_task_stats(session, task)
+
+    assert "planner_backlog_blocked" not in stats
+    assert "planner_backlog_global_pending" not in stats
 
 
 def test_operation_targets_expose_linked_group_capability_summary():

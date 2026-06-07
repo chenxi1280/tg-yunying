@@ -6,14 +6,24 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import Action, Task
 from app.services._common import _now
+from app.timezone import as_beijing
 
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
 from .pacing import ai_next_run_after, next_run_after
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
 BUSINESS_MEMBERSHIP_ACTION_TYPES = ["ensure_channel_membership", "ensure_target_membership"]
+PLANNER_BACKLOG_OPEN_STATUSES = {"pending", "claiming", "executing"}
+PLANNER_BACKLOG_STAT_KEYS = (
+    "planner_backlog_blocked",
+    "planner_backlog_blocked_at",
+    "planner_backlog_global_pending",
+    "planner_backlog_task_pending",
+    "planner_backlog_oldest_age_seconds",
+)
 
 
 def next_run_after_task(task: Task):
@@ -40,6 +50,7 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
     accounts_used = session.scalar(select(func.count(func.distinct(Action.account_id))).where(Action.task_id == task.id, business_filter, Action.account_id.is_not(None))) or 0
     last_action_at = session.scalar(select(func.max(Action.executed_at)).where(Action.task_id == task.id, business_filter))
     stats = dict(task.stats or empty_stats())
+    stats = _clear_recovered_planner_backlog_stats(session, task, stats)
     stats.update(
         {
             "total_actions": max(0, sum(counts.values()) - archived_skipped_count),
@@ -62,6 +73,41 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
 
     refresh_task_summary(session, task)
     return stats
+
+
+def planner_backlog_snapshot(session: Session, task: Task) -> dict[str, int | bool]:
+    settings = get_settings()
+    global_pending = session.scalar(select(func.count(Action.id)).where(Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES))) or 0
+    task_pending = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id, Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES))) or 0
+    oldest_pending = session.scalar(select(func.min(Action.scheduled_at)).where(Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES)))
+    oldest_at = as_beijing(oldest_pending)
+    oldest_age = int((_now() - oldest_at).total_seconds()) if oldest_at else 0
+    blocked = (
+        int(global_pending or 0) >= int(settings.max_pending_global or 0)
+        or int(task_pending or 0) >= int(settings.max_pending_per_task or 0)
+        or oldest_age >= int(settings.oldest_pending_age_seconds or 0)
+    )
+    return {
+        "blocked": blocked,
+        "global_pending": int(global_pending or 0),
+        "task_pending": int(task_pending or 0),
+        "oldest_age_seconds": int(oldest_age),
+    }
+
+
+def clear_planner_backlog_stats(stats: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(stats or {})
+    for key in PLANNER_BACKLOG_STAT_KEYS:
+        updated.pop(key, None)
+    return updated
+
+
+def _clear_recovered_planner_backlog_stats(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, Any]:
+    if not stats.get("planner_backlog_blocked"):
+        return stats
+    if planner_backlog_snapshot(session, task)["blocked"]:
+        return stats
+    return clear_planner_backlog_stats(stats)
 
 
 def _archived_skipped_count(session: Session, task: Task, business_filter) -> int:

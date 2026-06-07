@@ -56,7 +56,7 @@ from .reviews import ReviewStateError, approve_review, list_reviews, reject_revi
 from .precheck import run_precheck_task_creation
 from .profile_batch_projection import delete_profile_batch_task, get_profile_batch_task_detail, is_profile_batch_task_id, list_profile_batch_tasks
 from app.services.task_runtime_stage import derive_task_runtime_stage
-from .stats import empty_stats, next_run_after_task, refresh_task_stats, retry_failed_actions
+from .stats import clear_planner_backlog_stats, empty_stats, next_run_after_task, planner_backlog_snapshot, refresh_task_stats, retry_failed_actions
 from .utils import as_int as _as_int, as_int_list as _as_int_list
 from .runtime_retention import cleanup_runtime_details
 from app.services.tenant_target_profile import tenant_learning_profile_preview
@@ -68,13 +68,6 @@ _retry_failed_actions = retry_failed_actions
 CHANNEL_COMMENT_SCENE = "channel_comment"
 GROUP_CHAT_SCENE = "group_chat"
 OPEN_PLAN_ACTION_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
-PLANNER_BACKLOG_STAT_KEYS = (
-    "planner_backlog_blocked",
-    "planner_backlog_blocked_at",
-    "planner_backlog_global_pending",
-    "planner_backlog_task_pending",
-    "planner_backlog_oldest_age_seconds",
-)
 TARGET_PERMISSION_MARKERS = (
     "lack permission",
     "banned",
@@ -920,42 +913,21 @@ def drain_task_metrics(session_factory, limit: int = 100) -> int:
 
 
 def _planning_backlog_blocked(session: Session, task: Task) -> bool:
-    settings = get_settings()
-    pending_statuses = {"pending", "claiming", "executing"}
-    global_pending = session.scalar(select(func.count(Action.id)).where(Action.status.in_(pending_statuses))) or 0
-    task_pending = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id, Action.status.in_(pending_statuses))) or 0
-    oldest_pending = session.scalar(select(func.min(Action.scheduled_at)).where(Action.status.in_(pending_statuses)))
+    snapshot = planner_backlog_snapshot(session, task)
     now_value = _now()
-    oldest_age = int((now_value - _naive_datetime(oldest_pending)).total_seconds()) if oldest_pending else 0
-    blocked = (
-        int(global_pending or 0) >= int(settings.max_pending_global or 0)
-        or int(task_pending or 0) >= int(settings.max_pending_per_task or 0)
-        or oldest_age >= int(settings.oldest_pending_age_seconds or 0)
-    )
-    if not blocked:
-        _clear_planning_backlog_stats(task)
+    if not snapshot["blocked"]:
+        task.stats = clear_planner_backlog_stats(dict(task.stats or {}))
         return False
     stats = dict(task.stats or {})
     stats["planner_backlog_blocked"] = True
     stats["planner_backlog_blocked_at"] = now_value.isoformat()
-    stats["planner_backlog_global_pending"] = int(global_pending or 0)
-    stats["planner_backlog_task_pending"] = int(task_pending or 0)
-    stats["planner_backlog_oldest_age_seconds"] = int(oldest_age)
+    stats["planner_backlog_global_pending"] = int(snapshot["global_pending"])
+    stats["planner_backlog_task_pending"] = int(snapshot["task_pending"])
+    stats["planner_backlog_oldest_age_seconds"] = int(snapshot["oldest_age_seconds"])
     task.stats = stats
     interval = max(10, min(300, int((task.pacing_config or {}).get("interval_seconds") or 30)))
     task.next_run_at = now_value + timedelta(seconds=interval)
     return True
-
-
-def _clear_planning_backlog_stats(task: Task) -> None:
-    stats = dict(task.stats or {})
-    changed = False
-    for key in PLANNER_BACKLOG_STAT_KEYS:
-        if key in stats:
-            stats.pop(key, None)
-            changed = True
-    if changed:
-        task.stats = stats
 
 
 def _recover_continuous_task_states(session: Session) -> int:
