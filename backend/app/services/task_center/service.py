@@ -99,6 +99,7 @@ from .config_fields import (
     GROUP_RELAY_LEGACY_CREATE_FIELDS,
     TYPE_SETTINGS_FIELDS,
 )
+from .hard_hourly import enabled as hard_hourly_enabled, requires_planning as hard_hourly_requires_planning
 from .config_normalization import (
     apply_default_slang_config,
     normalize_operation_target_references,
@@ -779,6 +780,7 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
         if process_type:
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
         _activate_pending_tasks(session)
+        _wake_hard_hourly_tasks(session, limit=limit)
         task_ids = list(
             session.scalars(
                 select(Task.id)
@@ -798,7 +800,9 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
                 session.commit()
                 continue
             processed += retry_failed_actions(session, task)
-            if task.type == "group_ai_chat" and _has_open_actions(session, task):
+            if task.type == "group_ai_chat" and _has_open_actions(session, task) and not hard_hourly_requires_planning(session, task, _now()):
+                if not task.next_run_at or _business_naive_datetime(task.next_run_at) <= _now():
+                    task.next_run_at = next_run_after_task(task)
                 if task.next_run_at and _business_naive_datetime(task.next_run_at) > _now():
                     future_open_action_task_ids.add(task.id)
                 refresh_task_stats(session, task)
@@ -809,8 +813,8 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
                 session.commit()
                 continue
             created = build_task_plan(session, task)
-            task.next_run_at = next_run_after_task(task)
             refresh_task_stats(session, task)
+            task.next_run_at = next_run_after_task(task)
             session.commit()
             processed += created
     return processed, future_open_action_task_ids
@@ -1058,6 +1062,25 @@ def _activate_pending_tasks(session: Session) -> None:
     for task in session.scalars(select(Task).where(Task.status == "pending", (Task.scheduled_start.is_(None)) | (Task.scheduled_start <= _now()))):
         task.status = "running"
         task.next_run_at = _now()
+
+
+def _wake_hard_hourly_tasks(session: Session, *, limit: int) -> None:
+    now = _now()
+    tasks = session.scalars(
+        select(Task)
+        .where(
+            Task.status == "running",
+            Task.type == "group_ai_chat",
+            Task.deleted_at.is_(None),
+            Task.next_run_at.is_not(None),
+            Task.next_run_at > now,
+        )
+        .order_by(Task.priority.asc(), Task.next_run_at.asc(), Task.created_at.asc())
+        .limit(max(1, limit))
+    )
+    for task in tasks:
+        if hard_hourly_enabled(task) and hard_hourly_requires_planning(session, task, now):
+            task.next_run_at = now
 
 
 def _check_stop_conditions(session: Session, task: Task) -> bool:

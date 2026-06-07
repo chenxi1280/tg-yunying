@@ -2,6 +2,44 @@ export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'channel_view
 export type TaskCenterSystemTaskType = 'account_profile_init' | 'account_device_cleanup' | 'account_2fa_setup' | 'account_standby_session_provision';
 export type TaskCenterAnyTaskType = TaskCenterTaskType | TaskCenterSystemTaskType;
 
+export type HardHourlyStrategy = 'force_planning';
+export type HardHourlyStatus = 'disabled' | 'met' | 'catching_up' | 'blocked' | 'missed';
+
+export type GroupAIChatHardHourlyConfig = {
+  hard_hourly_target_enabled?: boolean;
+  hourly_min_messages?: number | null;
+  hard_hourly_strategy?: HardHourlyStrategy;
+};
+
+export type HardHourlyBlockers = Record<string, number>;
+
+export type HardHourlyRecentBucket = {
+  bucket: string;
+  goal: number;
+  success_count: number;
+  future_open_count: number;
+  open_count?: number;
+  overdue_open_count: number;
+  deficit: number;
+  status: HardHourlyStatus;
+  blockers?: HardHourlyBlockers;
+};
+
+export type TaskCenterStats = Record<string, any> & {
+  hard_hourly_target_enabled?: boolean;
+  hard_hourly_goal?: number | null;
+  hard_hourly_bucket?: string | null;
+  hard_hourly_success_count?: number;
+  hard_hourly_open_count?: number;
+  hard_hourly_overdue_open_count?: number;
+  hard_hourly_deficit?: number;
+  hard_hourly_status?: HardHourlyStatus;
+  hard_hourly_last_check_at?: string | null;
+  hard_hourly_last_planned_count?: number;
+  hard_hourly_last_blockers?: HardHourlyBlockers;
+  hard_hourly_recent_buckets?: HardHourlyRecentBucket[];
+};
+
 export type TaskCenterTask = {
   id: string;
   tenant_id: number;
@@ -18,8 +56,8 @@ export type TaskCenterTask = {
   account_config: Record<string, any>;
   pacing_config: Record<string, any>;
   failure_policy: Record<string, any>;
-  type_config: Record<string, any>;
-  stats: Record<string, any>;
+  type_config: Record<string, any> & Partial<GroupAIChatHardHourlyConfig>;
+  stats: TaskCenterStats;
   runtime_stage?: Record<string, any>;
   target_summary?: string;
   search_text?: string;
@@ -399,6 +437,14 @@ export type TaskPrecheck = {
   messages_per_round?: number;
   max_actions_per_hour?: number;
   estimated_hourly_capacity?: number;
+  hard_hourly_target?: {
+    enabled: boolean;
+    hourly_min_messages?: number | null;
+    estimated_hourly_capacity?: number | null;
+    capacity_gap?: number;
+    hard_target_over_capacity?: boolean;
+    warnings?: string[];
+  };
   round_capacity_explanation?: string;
   rule_version: Record<string, any> | null;
   risk_hits: string[];

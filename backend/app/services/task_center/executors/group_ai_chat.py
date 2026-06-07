@@ -22,6 +22,7 @@ from ..account_pool import select_task_accounts
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages, generate_group_reply_messages
 from ..channel_membership import gate_channel_membership
 from ..fingerprints import fingerprint_exists, remember_fingerprint
+from ..hard_hourly import current_progress, enabled as hard_hourly_enabled, hard_schedule_times, mark_plan_result
 from ..listener_runtime import should_collect_listener
 from ..pacing import current_hour_rounds, operation_intensity, schedule_times
 from ..payloads import SendMessagePayload, create_send_action
@@ -51,12 +52,16 @@ AI_CHAT_ROUND_INTERVALS_SECONDS = {
 
 def build_plan(session: Session, task: Task) -> int:
     config = {**(task.type_config or {}), "pacing_config": task.pacing_config or {}}
+    hard_progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
+    hard_progress = hard_progress if int(hard_progress.get("deficit") or 0) > 0 else {}
     rule_version = bound_rule_version(session, task)
     rule_set = session.get(RuleSet, rule_version.rule_set_id) if rule_version else None
     target = session.get(OperationTarget, int(config.get("target_operation_target_id") or 0)) if int(config.get("target_operation_target_id") or 0) else None
     if target and target.tenant_id == task.tenant_id and target.target_type == "group":
         gate = gate_channel_membership(session, task, target, require_send=True)
         if not gate.ready:
+            if hard_progress:
+                mark_plan_result(task, hard_progress, 0, {"target_membership_pending": max(1, int(hard_progress.get("deficit") or gate.created or 1))})
             return gate.created
     group = group_from_reference(
         session,
@@ -67,6 +72,8 @@ def build_plan(session: Session, task: Task) -> int:
     )
     if not group:
         task.last_error = "目标群不存在或未授权"
+        if hard_progress:
+            mark_plan_result(task, hard_progress, 0, {"target_permission": max(1, int(hard_progress.get("deficit") or 1))})
         return 0
     target_label = target.title if target and target.tenant_id == task.tenant_id else group.title
     accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, target_group_id=group.id)
@@ -81,6 +88,9 @@ def build_plan(session: Session, task: Task) -> int:
             limit=1,
         )
         task.last_error = "账号冷却中，等待冷却后继续执行" if cooldown_candidates else "没有可用账号，等待账号恢复后继续执行"
+        if hard_progress:
+            reason = "account_capacity" if cooldown_candidates else "account_unavailable"
+            mark_plan_result(task, hard_progress, 0, {reason: max(1, int(hard_progress.get("deficit") or 1))})
         return 0
     history_fetch_account_id = int(config.get("history_fetch_account_id") or 0)
     available_account_ids = {account.id for account in accounts}
@@ -104,7 +114,7 @@ def build_plan(session: Session, task: Task) -> int:
     force_bootstrap_once = bool((task.stats or {}).get("force_bootstrap_once"))
     previous_ai_messages = _recent_ai_messages(session, task, limit=_semantic_repeat_window(config))
     idle_continuation = False
-    if not force_bootstrap_once and _should_wait_for_human_context(session, task, usable_context_rows, unprocessed_rows):
+    if not hard_progress and not force_bootstrap_once and _should_wait_for_human_context(session, task, usable_context_rows, unprocessed_rows):
         idle_decision = _idle_continuation_decision(session, task, config)
         if idle_decision["due"]:
             idle_continuation = True
@@ -119,7 +129,16 @@ def build_plan(session: Session, task: Task) -> int:
             )
             return 0
     cycle_index = _next_cycle_index(session, task)
-    selected, turn_count = _select_cycle_accounts(accounts, config, mode, ramp_ratio, has_context=bool(usable_context_rows), cycle_index=cycle_index, pacing_config=task.pacing_config or {})
+    round_config = _hard_hourly_round_config(config, hard_progress)
+    selected, turn_count = _select_cycle_accounts(
+        accounts,
+        round_config,
+        mode,
+        ramp_ratio,
+        has_context=bool(usable_context_rows),
+        cycle_index=cycle_index,
+        pacing_config=task.pacing_config or {},
+    )
     history_parts = [f"{row.sender_name}: {row.content}" for row in usable_context_rows[-50:]]
     if idle_continuation:
         history_parts.append(_idle_continuation_history(config, group, previous_ai_messages))
@@ -138,7 +157,7 @@ def build_plan(session: Session, task: Task) -> int:
     account_profiles = account_profile_summaries(session, task, [account.id for account in selected])
     profile_preview = tenant_learning_profile_preview(session, task.tenant_id, GROUP_CHAT_SCENE)
     audit_learning_profile_use(session, task, profile_preview, "AI活群任务")
-    generation_config = _generation_config_with_profile(config, account_memories, account_profiles, topic_thread, topic_plan, profile_preview)
+    generation_config = _generation_config_with_profile(round_config, account_memories, account_profiles, topic_thread, topic_plan, profile_preview)
     cycle_id = f"{task.id}:cycle:{cycle_index}"
     reply_min = min(turn_count, int(config.get("reply_min_per_round") or 0))
     reply_target_pool = _group_reply_target_pool(session, task, group, usable_context_rows)
@@ -165,6 +184,8 @@ def build_plan(session: Session, task: Task) -> int:
         stats["ramp_ratio"] = ramp_ratio
         stats["context_mode"] = _context_mode(usable_context_rows, idle_continuation)
         task.stats = stats
+        if hard_progress:
+            mark_plan_result(task, hard_progress, 0, {"ai_generation_unavailable": int(hard_progress.get("deficit") or 1)})
         return 0
     planned_items = [item for item in planned_items if not _looks_like_generated_noise(item["content"])]
     planned_items = _drop_repeated_planned_items(planned_items, previous_ai_messages)
@@ -182,13 +203,16 @@ def build_plan(session: Session, task: Task) -> int:
     quality_items = _attach_reply_targets(quality_items, planned_items)
     if not quality_items:
         _mark_quality_skip(task, config, mode, ramp_ratio, _context_mode(usable_context_rows, idle_continuation), chat_mode, quality_stats)
+        if hard_progress:
+            mark_plan_result(task, hard_progress, 0, {"quality_filter": int(hard_progress.get("deficit") or 1)})
         return 0
     selected = _prioritize_account_memory(selected, account_memories)
     add_tokens(task, tokens)
-    times = _round_schedule_times(len(quality_items), task.pacing_config or {}, mode)
+    times = _hard_hourly_schedule(task, hard_progress, len(quality_items)) or _round_schedule_times(len(quality_items), task.pacing_config or {}, mode)
     context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
     used_account_ids: set[int] = set()
-    allow_account_repeat = bool(config.get("allow_account_repeat", True))
+    allow_account_repeat = bool(round_config.get("allow_account_repeat", True))
+    hard_blockers: dict[str, int] = {}
     prepared_actions: list[tuple[int, datetime, SendMessagePayload]] = []
     created = 0
     for index, quality_item in enumerate(quality_items):
@@ -196,6 +220,7 @@ def build_plan(session: Session, task: Task) -> int:
         if rule_version:
             policy_result = apply_output_policy(content, rule_version.output_checks or {}, rule_version.transforms or {})
             if not policy_result.allowed:
+                _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
                 stats_inc(task, "failure_count")
                 continue
             content = policy_result.content
@@ -203,6 +228,7 @@ def build_plan(session: Session, task: Task) -> int:
         available = available_accounts_by_capacity(session, tenant_id=task.tenant_id, accounts=selected, scheduled_at=planned_at)
         account = _choose_turn_account(available, selected, index, used_account_ids, allow_account_repeat)
         if not account:
+            _hard_blocker_inc(hard_blockers, "account_capacity", hard_progress)
             stats_inc(task, "skipped_count")
             continue
         used_account_ids.add(account.id)
@@ -214,10 +240,15 @@ def build_plan(session: Session, task: Task) -> int:
                 scheduled_at=planned_at,
             )
             if decision.defer_until:
+                hour_end = hard_progress.get("hour_end") if hard_progress else None
+                if isinstance(hour_end, datetime) and decision.defer_until >= hour_end:
+                    _hard_blocker_inc(hard_blockers, "account_capacity", hard_progress)
+                    continue
                 planned_at = decision.defer_until
         has_native_reply = _reply_target_message_id(quality_item) is not None
         filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=group, content=content, reject_mentions=True, reject_replies=not has_native_reply)
         if not filtered.ok:
+            _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
             stats_inc(task, "failure_count")
             continue
         material_result = select_material_for_policy(
@@ -228,6 +259,7 @@ def build_plan(session: Session, task: Task) -> int:
             default_caption="",
         )
         if material_result.failure_reason and material_result.fallback == "skip":
+            _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
             stats_inc(task, "failure_count")
             continue
         media_segments = [material_result.segment] if material_result.ok and material_result.segment else []
@@ -264,6 +296,9 @@ def build_plan(session: Session, task: Task) -> int:
                     ai_generation_status="success",
                     ai_generation_tokens=tokens,
                     ai_generation_count=len(quality_items),
+                    hard_hourly_target=bool(hard_progress),
+                    hard_hourly_bucket=str(hard_progress.get("bucket") or ""),
+                    hard_hourly_deficit_at_plan=int(hard_progress.get("deficit") or 0),
                     ai_generation_context_count=len(context_message_ids),
                     ai_generation_memory_count=len(account_memories),
                     profile_scene=str(profile_preview.get("profile_scene") or GROUP_CHAT_SCENE),
@@ -319,6 +354,8 @@ def build_plan(session: Session, task: Task) -> int:
     stats.pop("force_bootstrap_once", None)
     task.last_error = ""
     task.stats = stats
+    if hard_progress:
+        mark_plan_result(task, hard_progress, created, hard_blockers or None)
     stats_inc(task, "total_rounds")
     return created
 
@@ -515,6 +552,29 @@ def _round_schedule_times(total: int, pacing_config: dict, mode: str) -> list[da
         {"mode": "fixed", "interval_seconds_min": lo, "interval_seconds_max": hi, "jitter_percent": 20},
         start_at=_now(),
     )
+
+
+def _hard_hourly_round_config(config: dict, progress: dict[str, object]) -> dict:
+    if not progress:
+        return config
+    deficit = max(1, int(progress.get("deficit") or 1))
+    updated = dict(config)
+    updated["messages_per_round_mode"] = "manual"
+    updated["messages_per_round"] = deficit
+    updated["allow_account_repeat"] = True
+    return updated
+
+
+def _hard_hourly_schedule(task: Task, progress: dict[str, object], total: int) -> list[datetime]:
+    if not progress:
+        return []
+    return hard_schedule_times(total, task, _now())
+
+
+def _hard_blocker_inc(blockers: dict[str, int], reason: str, progress: dict[str, object]) -> None:
+    if not progress:
+        return
+    blockers[reason] = int(blockers.get(reason) or 0) + 1
 
 
 def _mark_waiting_context(

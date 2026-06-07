@@ -110,6 +110,15 @@ export function WizardTypeConfig({
       },
     }),
   ];
+  const hardHourlyRules = [
+    ({ getFieldValue }: any) => ({
+      validator(_: unknown, value: number | null) {
+        if (!getFieldValue('hard_hourly_target_enabled')) return Promise.resolve();
+        if (Number.isInteger(Number(value)) && Number(value) >= 1) return Promise.resolve();
+        return Promise.reject(new Error('开启后必须填写不小于 1 的整数'));
+      },
+    }),
+  ];
 
   const versionOptions = ruleSets.flatMap((ruleSet) => ruleSet.versions.filter((version) => version.status === 'published').map((version) => ({
     value: version.id,
@@ -144,6 +153,31 @@ export function WizardTypeConfig({
           <Form.Item name="messages_per_round_mode" label="每轮发言"><Select options={[{ value: 'auto', label: '系统自动判定' }, { value: 'manual', label: '手动指定' }]} /></Form.Item>
           <Form.Item name="messages_per_round" label="每轮总发言数"><InputNumber min={1} onChange={markMessagesPerRoundManual} /></Form.Item>
           <Form.Item name="reply_min_per_round" label="每轮最少引用回复数" dependencies={['messages_per_round']} rules={replyMinPerRoundRules}><InputNumber min={0} /></Form.Item>
+          <Form.Item name="hard_hourly_strategy" hidden><Input /></Form.Item>
+          <Form.Item name="hard_hourly_target_enabled" valuePropName="checked">
+            <Checkbox onChange={(event) => {
+              if (event.target.checked) form.setFieldValue('hard_hourly_strategy', 'force_planning');
+            }}>启用每小时硬目标</Checkbox>
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, next) => prev.hard_hourly_target_enabled !== next.hard_hourly_target_enabled}>
+            {({ getFieldValue }) => getFieldValue('hard_hourly_target_enabled') ? (
+              <>
+                <Form.Item name="hourly_min_messages" label="每小时最低发送量" dependencies={['hard_hourly_target_enabled']} rules={hardHourlyRules}>
+                  <InputNumber min={1} precision={0} />
+                </Form.Item>
+                <Form.Item label="未达标处理">
+                  <Input readOnly value="强推规划" />
+                </Form.Item>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="系统会自动提高规划强度以追赶本小时最低发送量；真实执行仍受账号容量、目标权限、TG 限制、AI 质量和风控限制约束，未达标原因会在任务详情中展示。"
+                  />
+                </div>
+              </>
+            ) : null}
+          </Form.Item>
         </div>
         <Collapse
           ghost
@@ -409,6 +443,15 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
   const replyReferenceText = replyReference
     ? `；可引用 ${replyReference.available_reference_count ?? 0}，缺口 ${replyReference.shortfall_count ?? 0}`
     : '';
+  const hardTarget = precheck?.hard_hourly_target;
+  const hardTargetSummary = values.hard_hourly_target_enabled
+    ? [
+      `目标 ${values.hourly_min_messages || hardTarget?.hourly_min_messages || '-'} 条/小时`,
+      hardTarget?.estimated_hourly_capacity != null ? `估算容量 ${hardTarget.estimated_hourly_capacity}` : '',
+      hardTarget?.capacity_gap != null ? `容量缺口 ${hardTarget.capacity_gap}` : '',
+      hardTarget?.warnings?.length ? hardTarget.warnings.join('；') : '',
+    ].filter(Boolean).join('；')
+    : '未启用';
   const resolutionItems = [...(resolution?.sources || []), ...(resolution?.targets || [])];
   const resolutionSummary = resolutionItems.length
     ? resolutionItems.map((item: any) => `${item.role === 'listen_source' ? '源' : '目标'} ${item.status || 'resolved'} / #${item.target_id || '-'} / ${item.title || item.tg_peer_id || item.target_input || '-'}`).join('；')
@@ -436,6 +479,7 @@ export function WizardReview({ taskType, values, accounts, accountPools, targets
       { key: 'targetAbility', label: '目标能力', children: precheck?.target_ability?.length ? precheck.target_ability.map((item) => `${item.title || item.target_id} / ${item.can_task ? '可创建任务' : item.auth_status || '不可用'}`).join('；') : displayTarget },
       { key: 'estimate', label: '预计动作量', children: precheck ? `预计 ${precheck.estimated_actions} 条，容量缺口 ${precheck.capacity_shortfall}` : '等待预检' },
       { key: 'reply', label: '引用回复配置', children: `${replySummary}${replyReferenceText}` },
+      { key: 'hard-hourly', label: '每小时硬目标', children: hardTargetSummary },
       { key: 'recommend', label: '推荐数量', children: precheck?.round_capacity_explanation ?? recommendedSummary },
       { key: 'capacity', label: '容量口径', children: precheck?.capacity_summary ? `目标每条 ${precheck.capacity_summary.target_per_message ?? 0}，有效账号 ${precheck.capacity_summary.effective_account_count ?? 0}，最大并发 ${precheck.capacity_summary.max_concurrent ?? 0}，缺口 ${precheck.capacity_summary.capacity_shortfall ?? 0}。${precheck.capacity_summary.limit_note ?? ''}` : '等待预检' },
       { key: 'pacing', label: '曲线摘要', children: `${operationProfileSummary(values)}；当前 ${String(profile.hour).padStart(2, '0')}:00 ${profile.intensity} ${profileUnit}，${profile.mode}运行` },

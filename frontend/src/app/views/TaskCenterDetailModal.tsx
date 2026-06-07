@@ -1,11 +1,11 @@
 import React from 'react';
 import { Alert, Button, Descriptions, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { TaskCenterAction, TaskCenterDetail, TaskCenterTask } from '../types';
+import type { HardHourlyRecentBucket, TaskCenterAction, TaskCenterDetail, TaskCenterTask } from '../types';
 import { DetailModal, StatusBadge } from '../components/shared';
 import { parseBeijingDate } from '../time';
 import { API_ORIGIN } from '../../shared/api/client';
-import { TYPE_LABEL, formatDateTime, runtimeStage, statusLabel } from './taskCenterViewModel';
+import { TYPE_LABEL, formatDateTime, formatHardHourlyBlockers, hardHourlyStats, hardHourlyStatusColor, hardHourlyStatusLabel, runtimeStage, statusLabel } from './taskCenterViewModel';
 import { TaskMembershipPanel } from './TaskMembershipPanel';
 
 type DetailProfile = {
@@ -50,6 +50,64 @@ function DetailStatusBadge({ status }: { status?: string | null }) {
 function mediaUrl(value?: string | null) {
   if (!value) return '';
   return value.startsWith('http') ? value : `${API_ORIGIN}${value}`;
+}
+
+function HardHourlyExecutionPanel({ detail }: { detail: TaskCenterDetail }) {
+  const stats = hardHourlyStats(detail.task);
+  if (!stats) return null;
+  const goal = Number(stats.hard_hourly_goal ?? detail.task.type_config?.hourly_min_messages ?? 0);
+  const success = Number(stats.hard_hourly_success_count ?? 0);
+  const futureOpen = Number(stats.hard_hourly_open_count ?? 0);
+  const overdueOpen = Number(stats.hard_hourly_overdue_open_count ?? 0);
+  const deficit = Number(stats.hard_hourly_deficit ?? Math.max(0, goal - success - futureOpen));
+  const recentBuckets = stats.hard_hourly_recent_buckets ?? [];
+  const recentColumns: ColumnsType<HardHourlyRecentBucket> = [
+    { title: '小时桶', dataIndex: 'bucket', width: 180, render: (value) => formatDateTime(value) },
+    { title: '成功/目标', key: 'goal', width: 110, render: (_, item) => `${item.success_count ?? 0}/${item.goal ?? 0}` },
+    { title: '未来待执行', key: 'future', width: 110, render: (_, item) => item.future_open_count ?? item.open_count ?? 0 },
+    { title: '执行滞后', dataIndex: 'overdue_open_count', width: 100 },
+    { title: '缺口', dataIndex: 'deficit', width: 80 },
+    { title: '状态', dataIndex: 'status', width: 100, render: (value) => <Tag color={hardHourlyStatusColor(value)}>{hardHourlyStatusLabel(value)}</Tag> },
+    { title: '阻塞原因', key: 'blockers', ellipsis: true, render: (_, item) => formatHardHourlyBlockers(item.blockers) },
+  ];
+  return (
+    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+      {overdueOpen > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message={`当前小时有 ${overdueOpen} 条执行滞后`}
+          description="这些过期待执行项不抵扣硬目标缺口，请按 dispatcher_lag / worker 执行延迟排查。"
+        />
+      )}
+      <Descriptions
+        bordered
+        size="small"
+        column={4}
+        title="硬目标执行"
+        items={[
+          { key: 'bucket', label: '小时桶', children: formatDateTime(stats.hard_hourly_bucket) },
+          { key: 'status', label: '状态', children: <Tag color={hardHourlyStatusColor(stats.hard_hourly_status)}>{hardHourlyStatusLabel(stats.hard_hourly_status)}</Tag> },
+          { key: 'success', label: '成功 / 目标', children: `${success} / ${goal || '-'}` },
+          { key: 'deficit', label: '缺口', children: deficit },
+          { key: 'future-open', label: '未来待执行覆盖', children: futureOpen },
+          { key: 'overdue-open', label: '执行滞后（不抵扣缺口）', children: overdueOpen },
+          { key: 'last-plan', label: '最近强推', children: stats.hard_hourly_last_check_at ? `${formatDateTime(stats.hard_hourly_last_check_at)} / 创建 ${stats.hard_hourly_last_planned_count ?? 0} 条` : '-' },
+          { key: 'blockers', label: '阻塞原因', children: formatHardHourlyBlockers(stats.hard_hourly_last_blockers) },
+        ]}
+      />
+      {recentBuckets.length > 0 && (
+        <Table
+          rowKey={(item) => item.bucket}
+          columns={recentColumns}
+          dataSource={recentBuckets.slice(-6).reverse()}
+          pagination={false}
+          size="small"
+          scroll={{ x: 900 }}
+        />
+      )}
+    </Space>
+  );
 }
 
 export function TaskCenterDetailModal({
@@ -329,6 +387,7 @@ export function TaskCenterDetailModal({
                 { key: 'error', label: '错误', span: 3, children: detail.task.last_error || '无' },
               ]}
             />
+            <HardHourlyExecutionPanel detail={detail} />
             <Tabs className="tabs-row" items={detailTabs} />
           </Space>
         )}

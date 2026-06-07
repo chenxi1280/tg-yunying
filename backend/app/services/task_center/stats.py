@@ -12,6 +12,7 @@ from app.services._common import _now
 from app.timezone import as_beijing
 
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
+from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from .pacing import ai_next_run_after, next_run_after
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
@@ -29,6 +30,9 @@ PLANNER_BACKLOG_STAT_KEYS = (
 def next_run_after_task(task: Task):
     config = task.type_config or {}
     if task.type == "group_ai_chat":
+        hard_next = _stats_datetime(task, "hard_hourly_next_check_at")
+        if hard_hourly_enabled(task) and hard_next:
+            return hard_next
         waiting_until = _stats_datetime(task, "idle_continuation_next_run_at")
         if waiting_until:
             return waiting_until
@@ -68,6 +72,7 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
             "last_action_at": last_action_at.isoformat() if last_action_at else stats.get("last_action_at"),
         }
     )
+    stats = hard_hourly_stats(session, task, _now(), stats)
     task.stats = stats
     from app.services.runtime_summary import refresh_task_summary
 

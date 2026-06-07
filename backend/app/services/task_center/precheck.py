@@ -118,6 +118,8 @@ def run_precheck_task_creation(
         if int(reply_reference_summary.get("shortfall_count") or 0):
             warnings.append(str(reply_reference_summary.get("warning") or "引用回复对象不足"))
     ai_round_summary = _precheck_ai_round_summary(task_type, create_payload, membership_summary, available_count)
+    hard_hourly_target = _precheck_hard_hourly_target(task_type, create_payload, ai_round_summary)
+    warnings.extend(_as_str_list(hard_hourly_target.get("warnings") if hard_hourly_target else []))
     capacity_summary["recommended_limits"] = recommend_ai_limits(
         task_type,
         _precheck_ready_account_count(task_type, membership_summary, available_count),
@@ -163,6 +165,7 @@ def run_precheck_task_creation(
         "membership_warnings": _membership_warnings(membership_summary),
         "membership_subtask_preview": membership_subtask_preview,
         **ai_round_summary,
+        "hard_hourly_target": hard_hourly_target,
         "estimated_actions": estimated_actions,
         "capacity_shortfall": capacity_shortfall,
         "capacity_summary": capacity_summary,
@@ -187,21 +190,39 @@ def _precheck_ai_round_summary(task_type: str, create_payload: Any, membership_s
     messages_per_round = int(recommended.get("messages_per_round") or 0)
     if str(getattr(create_payload, "messages_per_round_mode", "auto")) == "manual":
         messages_per_round = int(getattr(create_payload, "messages_per_round", messages_per_round) or messages_per_round)
-    hourly_capacity = min(
-        value
-        for value in [
-            rounds * max(0, messages_per_round),
-            max_actions_per_hour or None,
-        ]
-        if value is not None
-    ) if rounds and messages_per_round else 0
+    natural_capacity = rounds * max(0, messages_per_round) if rounds and messages_per_round else 0
+    if max_actions_per_hour and not bool(getattr(create_payload, "hard_hourly_target_enabled", False)):
+        hourly_capacity = min(natural_capacity, max_actions_per_hour)
+    else:
+        hourly_capacity = natural_capacity
     return {
         "hourly_round_curve": curve,
         "current_hour_rounds": rounds,
         "messages_per_round": messages_per_round,
         "max_actions_per_hour": max_actions_per_hour,
         "estimated_hourly_capacity": hourly_capacity,
-        "round_capacity_explanation": f"当前小时 {rounds} 轮，每轮最多 {messages_per_round} 条，小时硬上限 {max_actions_per_hour or '未设置'} 条",
+        "round_capacity_explanation": (
+            f"当前小时 {rounds} 轮，每轮最多 {messages_per_round} 条，"
+            f"小时硬上限 {max_actions_per_hour or '未设置'} 条"
+        ),
+    }
+
+
+def _precheck_hard_hourly_target(task_type: str, create_payload: Any, ai_round_summary: dict[str, Any]) -> dict[str, Any]:
+    if task_type != "group_ai_chat" or not create_payload:
+        return {}
+    enabled = bool(getattr(create_payload, "hard_hourly_target_enabled", False))
+    minimum = int(getattr(create_payload, "hourly_min_messages", 0) or 0)
+    capacity = int(ai_round_summary.get("estimated_hourly_capacity") or 0)
+    gap = max(0, minimum - capacity) if enabled else 0
+    warnings = ["硬目标高于当前账号容量，可能持续未达标"] if gap else []
+    return {
+        "enabled": enabled,
+        "hourly_min_messages": minimum,
+        "estimated_hourly_capacity": capacity,
+        "capacity_gap": gap,
+        "hard_target_over_capacity": gap > 0,
+        "warnings": warnings,
     }
 
 

@@ -172,6 +172,9 @@ class GroupAIChatConfig(BaseModel):
     messages_per_round_mode: Literal["auto", "manual"] = "auto"
     messages_per_round: int = Field(default=1, ge=1)
     reply_min_per_round: int = Field(default=0, ge=0)
+    hard_hourly_target_enabled: bool = False
+    hourly_min_messages: int | None = Field(default=None, ge=1)
+    hard_hourly_strategy: Literal["force_planning"] = "force_planning"
     history_fetch_account_id: int | None = None
     auto_join_target: bool = True
     auto_follow_required_channel: bool = True
@@ -199,6 +202,8 @@ class GroupAIChatConfig(BaseModel):
             raise ValueError("target_group_id、target_operation_target_id 或 target_input 至少填写一个")
         if self.reply_min_per_round > self.messages_per_round:
             raise ValueError("reply_min_per_round 不能大于 messages_per_round")
+        if self.hard_hourly_target_enabled and not self.hourly_min_messages:
+            raise ValueError("启用每小时硬目标时必须填写 hourly_min_messages")
         return self
 
 
@@ -432,6 +437,9 @@ class TaskSettingsUpdate(TaskUpdate):
     messages_per_round_mode: Literal["auto", "manual"] | None = None
     messages_per_round: int | None = Field(default=None, ge=1)
     reply_min_per_round: int | None = Field(default=None, ge=0)
+    hard_hourly_target_enabled: bool | None = None
+    hourly_min_messages: int | None = Field(default=None, ge=1)
+    hard_hourly_strategy: Literal["force_planning"] | None = None
     history_fetch_account_id: int | None = None
     auto_join_target: bool | None = None
     auto_follow_required_channel: bool | None = None
@@ -887,6 +895,7 @@ class TaskPrecheckOut(ApiModel):
     max_actions_per_hour: int = 0
     estimated_hourly_capacity: int = 0
     round_capacity_explanation: str = ""
+    hard_hourly_target: dict[str, Any] = Field(default_factory=dict)
     estimated_actions: int
     capacity_shortfall: int
     capacity_summary: dict[str, Any] = Field(default_factory=dict)

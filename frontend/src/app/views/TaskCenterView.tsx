@@ -30,6 +30,9 @@ import {
   formatDateTime,
   formatKeyValueMap,
   formatPrecheckReasons,
+  hardHourlyStats,
+  hardHourlyStatusColor,
+  hardHourlyStatusLabel,
   initialValuesForType,
   isPlannedAction,
   normalizePromptTemplateType,
@@ -56,6 +59,23 @@ function TaskStatusBadge({ task, status }: { task?: TaskCenterTask; status?: str
 
 function ActionStatusBadge({ status }: { status?: string | null }) {
   return <StatusBadge status={status} label={actionStatusLabel(status)} />;
+}
+
+function HardHourlyTaskSummary({ task }: { task: TaskCenterTask }) {
+  const stats = hardHourlyStats(task);
+  if (!stats) return null;
+  const goal = Number(stats.hard_hourly_goal ?? task.type_config?.hourly_min_messages ?? 0);
+  const success = Number(stats.hard_hourly_success_count ?? 0);
+  const deficit = Number(stats.hard_hourly_deficit ?? Math.max(0, goal - success));
+  return (
+    <Space direction="vertical" size={0}>
+      <Typography.Text type="secondary">本小时硬目标 {success} / {goal || '-'}</Typography.Text>
+      <Space size={6}>
+        <Typography.Text type="secondary">缺口 {deficit}</Typography.Text>
+        <Tag color={hardHourlyStatusColor(stats.hard_hourly_status)}>{hardHourlyStatusLabel(stats.hard_hourly_status)}</Tag>
+      </Space>
+    </Space>
+  );
 }
 
 function failureDiagnosis(action: TaskCenterAction) {
@@ -656,6 +676,15 @@ export default function TaskCenterView({
     };
   }
 
+  function hardHourlyTargetPayload(values: any) {
+    const enabled = Boolean(values.hard_hourly_target_enabled);
+    return {
+      hard_hourly_target_enabled: enabled,
+      hourly_min_messages: enabled ? Number(values.hourly_min_messages) : null,
+      hard_hourly_strategy: 'force_planning',
+    };
+  }
+
   function createPayload(values: any): Record<string, any> {
     const base = commonPayload(values);
     if (taskType === 'group_ai_chat') {
@@ -686,6 +715,7 @@ export default function TaskCenterView({
         messages_per_round_mode: values.messages_per_round_mode ?? 'auto',
         messages_per_round: values.messages_per_round ?? 1,
         reply_min_per_round: values.reply_min_per_round ?? 0,
+        ...hardHourlyTargetPayload(values),
         history_fetch_account_id: values.history_fetch_account_id ?? null,
         ...membershipStrategyPayload(values),
         context_expire_after_messages: values.context_expire_after_messages ?? 10,
@@ -741,7 +771,36 @@ export default function TaskCenterView({
     };
     if (type === 'group_ai_chat') {
       const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
-      return { ...base, target_operation_target_id: values.target_operation_target_id ?? null, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, target_group_name: target?.title ?? '', topic_hint: values.topic_hint ?? '', chat_history_depth: values.chat_history_depth ?? 50, ai_model: values.ai_model ?? '', system_prompt_override: values.system_prompt_override ?? '', slang_prompt_template_id: values.slang_prompt_template_id ?? null, slang_terms: parseKeyValueMap(values.slang_terms), tone: values.tone ?? 'auto', language: values.language ?? 'zh-CN', max_message_length: values.max_message_length ?? null, participation_rate: values.participation_rate ?? 0.6, allow_account_repeat: values.allow_account_repeat ?? true, repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2, account_personas: parseKeyValueMap(values.account_personas), account_memory_depth: values.account_memory_depth ?? 3, messages_per_round_mode: values.messages_per_round_mode ?? 'auto', messages_per_round: values.messages_per_round ?? 1, reply_min_per_round: values.reply_min_per_round ?? 0, history_fetch_account_id: values.history_fetch_account_id ?? null, ...membershipStrategyPayload(values), idle_continuation_enabled: values.idle_continuation_enabled ?? true, idle_continuation_seconds: values.idle_continuation_seconds ?? 300, context_expire_after_messages: values.context_expire_after_messages ?? 10 };
+      return {
+        ...base,
+        target_operation_target_id: values.target_operation_target_id ?? null,
+        rule_set_id: values.rule_set_id ?? null,
+        rule_set_version_id: values.rule_set_version_id ?? null,
+        target_group_name: target?.title ?? '',
+        topic_hint: values.topic_hint ?? '',
+        chat_history_depth: values.chat_history_depth ?? 50,
+        ai_model: values.ai_model ?? '',
+        system_prompt_override: values.system_prompt_override ?? '',
+        slang_prompt_template_id: values.slang_prompt_template_id ?? null,
+        slang_terms: parseKeyValueMap(values.slang_terms),
+        tone: values.tone ?? 'auto',
+        language: values.language ?? 'zh-CN',
+        max_message_length: values.max_message_length ?? null,
+        participation_rate: values.participation_rate ?? 0.6,
+        allow_account_repeat: values.allow_account_repeat ?? true,
+        repeat_cooldown_rounds: values.repeat_cooldown_rounds ?? 2,
+        account_personas: parseKeyValueMap(values.account_personas),
+        account_memory_depth: values.account_memory_depth ?? 3,
+        messages_per_round_mode: values.messages_per_round_mode ?? 'auto',
+        messages_per_round: values.messages_per_round ?? 1,
+        reply_min_per_round: values.reply_min_per_round ?? 0,
+        ...hardHourlyTargetPayload(values),
+        history_fetch_account_id: values.history_fetch_account_id ?? null,
+        ...membershipStrategyPayload(values),
+        idle_continuation_enabled: values.idle_continuation_enabled ?? true,
+        idle_continuation_seconds: values.idle_continuation_seconds ?? 300,
+        context_expire_after_messages: values.context_expire_after_messages ?? 10,
+      };
     }
     if (type === 'group_relay') {
       const sourceTargetIds = csvNumbers(values.source_operation_target_ids);
@@ -1080,7 +1139,17 @@ export default function TaskCenterView({
         );
       },
     },
-    { title: '执行统计', key: 'stats', width: 180, render: (_, task) => `${task.stats?.success_count ?? 0}/${task.stats?.total_actions ?? 0} 成功，${task.stats?.failure_count ?? 0} 失败` },
+    {
+      title: '执行统计',
+      key: 'stats',
+      width: 220,
+      render: (_, task) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{task.stats?.success_count ?? 0}/{task.stats?.total_actions ?? 0} 成功，{task.stats?.failure_count ?? 0} 失败</Typography.Text>
+          <HardHourlyTaskSummary task={task} />
+        </Space>
+      ),
+    },
     { title: '下次运行', dataIndex: 'next_run_at', width: 180, render: (value) => formatDateTime(value) },
     { title: '错误', dataIndex: 'last_error', width: 220, render: (value) => value || '无' },
     {

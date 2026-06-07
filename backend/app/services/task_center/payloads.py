@@ -48,6 +48,9 @@ class SendMessagePayload(BaseModel):
     ai_generation_status: str = ""
     ai_generation_tokens: int = 0
     ai_generation_count: int = 0
+    hard_hourly_target: bool = False
+    hard_hourly_bucket: str = ""
+    hard_hourly_deficit_at_plan: int = 0
     ai_generation_context_count: int = 0
     ai_generation_memory_count: int = 0
     profile_scene: str = ""

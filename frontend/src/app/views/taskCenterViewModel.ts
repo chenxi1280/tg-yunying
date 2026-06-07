@@ -1,5 +1,5 @@
 import { ApiError } from '../../shared/api/client';
-import type { Account, AccountPool, OperationTarget, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterTaskType } from '../types';
+import type { Account, AccountPool, HardHourlyBlockers, HardHourlyStatus, OperationTarget, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterDetail, TaskCenterStats, TaskCenterTask, TaskCenterTaskType } from '../types';
 import { formatBeijingDateTime, toBeijingDateTimeLocalValue } from '../time';
 export { runtimeStage, runtimeStageLabel, statusLabel } from './taskRuntimeStage';
 
@@ -69,12 +69,66 @@ const PRECHECK_REASON_LABELS: Record<string, string> = {
   proxy_auth_failed: '代理认证失败',
 };
 
+const HARD_HOURLY_STATUS_LABELS: Record<HardHourlyStatus, string> = {
+  disabled: '未启用',
+  met: '已达标',
+  catching_up: '追赶中',
+  blocked: '阻塞',
+  missed: '未达标',
+};
+
+const HARD_HOURLY_STATUS_COLORS: Record<HardHourlyStatus, string> = {
+  disabled: 'default',
+  met: 'green',
+  catching_up: 'blue',
+  blocked: 'red',
+  missed: 'volcano',
+};
+
+const HARD_HOURLY_BLOCKER_LABELS: Record<string, string> = {
+  account_capacity: '账号容量不足',
+  account_unavailable: '账号不可用',
+  target_membership_pending: '目标准入未完成',
+  target_permission: '目标不可发',
+  no_context: '无可用上下文',
+  quality_filter: '质量过滤',
+  ai_generation_unavailable: 'AI 生成不可用',
+  content_policy: '内容风控',
+  tg_rate_limit: 'TG 限速',
+  dispatcher_lag: '执行滞后',
+  unknown_after_send: '发送结果未知',
+};
+
 export function precheckReasonLabel(reason: string) {
   return PRECHECK_REASON_LABELS[reason] ?? reason;
 }
 
 export function formatPrecheckReasons(reasons: string[], limit = 5) {
   return reasons.filter(Boolean).slice(0, limit).map(precheckReasonLabel).join('；');
+}
+
+export function hardHourlyStatusLabel(status?: string | null): string {
+  return HARD_HOURLY_STATUS_LABELS[(status as HardHourlyStatus) || 'disabled'] ?? status ?? '未启用';
+}
+
+export function hardHourlyStatusColor(status?: string | null): string {
+  return HARD_HOURLY_STATUS_COLORS[(status as HardHourlyStatus) || 'disabled'] ?? 'default';
+}
+
+export function hardHourlyBlockerLabel(reason: string): string {
+  return HARD_HOURLY_BLOCKER_LABELS[reason] ?? reason;
+}
+
+export function formatHardHourlyBlockers(blockers?: HardHourlyBlockers | null): string {
+  const entries = Object.entries(blockers ?? {}).filter(([, value]) => Number(value) > 0);
+  return entries.length ? entries.map(([key, value]) => `${hardHourlyBlockerLabel(key)} ${value}`).join('；') : '无';
+}
+
+export function hardHourlyStats(task?: TaskCenterTask | null): TaskCenterStats | null {
+  if (!task || task.type !== 'group_ai_chat') return null;
+  const stats = task.stats ?? {};
+  const enabled = Boolean(stats.hard_hourly_target_enabled ?? task.type_config?.hard_hourly_target_enabled);
+  return enabled ? stats : null;
 }
 
 export function errorMessage(error: unknown) {
@@ -322,6 +376,9 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       messages_per_round_mode: 'auto',
       messages_per_round: 1,
       reply_min_per_round: 0,
+      hard_hourly_target_enabled: false,
+      hourly_min_messages: null,
+      hard_hourly_strategy: 'force_planning',
       auto_join_target: true,
       auto_follow_required_channel: true,
       auto_resolve_verification: true,
@@ -454,6 +511,9 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'messages_per_round_mode',
       'messages_per_round',
       'reply_min_per_round',
+      'hard_hourly_target_enabled',
+      'hourly_min_messages',
+      'hard_hourly_strategy',
       'auto_join_target',
       'auto_follow_required_channel',
       'auto_resolve_verification',
@@ -494,7 +554,42 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
   void pacingMode;
   const baseFields = ['name', 'scheduled_end', 'operation_template_id', 'hourly_activity_curve', 'quiet_threshold', 'peak_threshold', ...accountFields(accountMode), 'max_actions_per_hour', 'max_retries'];
   if (taskType === 'group_ai_chat') {
-    return [...baseFields, 'target_operation_target_id', 'rule_set_id', 'rule_set_version_id', 'topic_hint', 'chat_history_depth', 'ai_model', 'system_prompt_override', 'slang_prompt_template_id', 'slang_terms', 'tone', 'language', 'max_message_length', 'participation_rate', 'allow_account_repeat', 'repeat_cooldown_rounds', 'account_personas', 'account_memory_depth', 'messages_per_round_mode', 'messages_per_round', 'reply_min_per_round', 'history_fetch_account_id', 'auto_join_target', 'auto_follow_required_channel', 'auto_resolve_verification', 'ai_assisted_verification', 'captcha_failure_policy', 'membership_max_concurrent', 'idle_continuation_enabled', 'idle_continuation_seconds', 'context_expire_after_messages'];
+    return [
+      ...baseFields,
+      'target_operation_target_id',
+      'rule_set_id',
+      'rule_set_version_id',
+      'topic_hint',
+      'chat_history_depth',
+      'ai_model',
+      'system_prompt_override',
+      'slang_prompt_template_id',
+      'slang_terms',
+      'tone',
+      'language',
+      'max_message_length',
+      'participation_rate',
+      'allow_account_repeat',
+      'repeat_cooldown_rounds',
+      'account_personas',
+      'account_memory_depth',
+      'messages_per_round_mode',
+      'messages_per_round',
+      'reply_min_per_round',
+      'hard_hourly_target_enabled',
+      'hourly_min_messages',
+      'hard_hourly_strategy',
+      'history_fetch_account_id',
+      'auto_join_target',
+      'auto_follow_required_channel',
+      'auto_resolve_verification',
+      'ai_assisted_verification',
+      'captcha_failure_policy',
+      'membership_max_concurrent',
+      'idle_continuation_enabled',
+      'idle_continuation_seconds',
+      'context_expire_after_messages',
+    ];
   }
   if (taskType === 'group_relay') {
     return [...baseFields, 'source_operation_target_ids', 'source_groups', 'target_operation_target_id', 'target_operation_target_ids', 'rule_set_id', 'rule_set_version_id', 'content_mode', 'filter_bot_messages', 'filter_admin_messages', 'excluded_sender_peer_ids', 'excluded_sender_input'];
