@@ -4951,6 +4951,42 @@ def test_refresh_task_stats_clears_recovered_backlog_marker(monkeypatch):
     assert "planner_backlog_global_pending" not in stats
 
 
+def test_list_tasks_returns_refreshed_backlog_stats(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "app.services.task_center.stats.get_settings",
+        lambda: SimpleNamespace(
+            max_pending_global=10_000,
+            max_pending_per_task=1_000,
+            oldest_pending_age_seconds=3_600,
+        ),
+        raising=False,
+    )
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-backlog-list-payload",
+            tenant_id=1,
+            name="AI 活跃群",
+            type="group_ai_chat",
+            status="running",
+            stats={
+                "planner_backlog_blocked": True,
+                "planner_backlog_global_pending": 1887,
+            },
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+        listed = list_tasks(session, 1, "group_ai_chat", "running")
+
+    stats = listed[0]["stats"]
+    assert "planner_backlog_blocked" not in stats
+    assert "planner_backlog_global_pending" not in stats
+
+
 def test_operation_targets_expose_linked_group_capability_summary():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

@@ -224,6 +224,9 @@ def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, s
     if status_filter:
         stmt = stmt.where(Task.status == status_filter)
     tasks = list(session.scalars(stmt.order_by(Task.priority.asc(), Task.created_at.desc())))
+    for task in tasks:
+        refresh_task_stats(session, task)
+    session.commit()
     summaries = {
         summary.task_id: summary
         for summary in session.scalars(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id))
