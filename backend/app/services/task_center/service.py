@@ -68,6 +68,13 @@ _retry_failed_actions = retry_failed_actions
 CHANNEL_COMMENT_SCENE = "channel_comment"
 GROUP_CHAT_SCENE = "group_chat"
 OPEN_PLAN_ACTION_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
+PLANNER_BACKLOG_STAT_KEYS = (
+    "planner_backlog_blocked",
+    "planner_backlog_blocked_at",
+    "planner_backlog_global_pending",
+    "planner_backlog_task_pending",
+    "planner_backlog_oldest_age_seconds",
+)
 TARGET_PERMISSION_MARKERS = (
     "lack permission",
     "banned",
@@ -926,6 +933,7 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
         or oldest_age >= int(settings.oldest_pending_age_seconds or 0)
     )
     if not blocked:
+        _clear_planning_backlog_stats(task)
         return False
     stats = dict(task.stats or {})
     stats["planner_backlog_blocked"] = True
@@ -937,6 +945,17 @@ def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     interval = max(10, min(300, int((task.pacing_config or {}).get("interval_seconds") or 30)))
     task.next_run_at = now_value + timedelta(seconds=interval)
     return True
+
+
+def _clear_planning_backlog_stats(task: Task) -> None:
+    stats = dict(task.stats or {})
+    changed = False
+    for key in PLANNER_BACKLOG_STAT_KEYS:
+        if key in stats:
+            stats.pop(key, None)
+            changed = True
+    if changed:
+        task.stats = stats
 
 
 def _recover_continuous_task_states(session: Session) -> int:

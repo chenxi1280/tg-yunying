@@ -23,7 +23,7 @@ from app.models import (
 )
 from app.services._common import _now
 from app.services.runtime_summary import operation_center_overview
-from app.timezone import beijing_day_bounds
+from app.timezone import as_beijing, beijing_day_bounds
 
 
 def build_overview(session: Session, tenant_id: int | None = None) -> dict:
@@ -159,6 +159,7 @@ def _hourly_activity_24h(session: Session, tenant_id: int | None = None) -> list
         .order_by(Action.executed_at.asc())
     ).all()
     for executed_at, action_type, status in rows:
+        executed_at = as_beijing(executed_at)
         if executed_at is None:
             continue
         hour = executed_at.replace(minute=0, second=0, microsecond=0)

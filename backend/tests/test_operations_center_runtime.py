@@ -29,7 +29,7 @@ from app.services.operations import filter_operation_targets, operation_target_d
 from app.services.task_center.executors.group_ai_chat import _choose_turn_account, _topic_relevant_context_rows, ai_cycle_mode, build_plan as build_group_ai_chat_plan
 from app.services.task_center.ai_generator import _humanize_group_chat_punctuation
 from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_listener_errors, list_listener_events, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, reset_listener_watermark, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
-from app.services.reports import build_overview
+from app.services.reports import _hourly_activity_24h, build_overview
 from app.services.task_center.executors.group_relay import apply_transform_rules, build_plan as build_group_relay_plan, passes_relay_filters, relay_source_filter_reason, resolve_relay_target_ids
 from app.services.task_center.executors.channel_like import build_plan as build_channel_like_plan
 from app.services.task_center.pacing import schedule_times
@@ -37,7 +37,7 @@ from app.services.group_listeners import process_group_listener
 from app.services.task_center.listener_runtime import drain_listener_runtime, reset_listener_runtime_cache, should_collect_listener
 from app.services.task_center.fingerprints import content_fingerprint
 from app.services.task_center.policies import validate_group_send_policy
-from app.services.task_center.service import _action_payload, _channel_subtask_status, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
+from app.services.task_center.service import _action_payload, _channel_subtask_status, _planning_backlog_blocked, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.payloads import ViewMessagePayload, create_view_action
 from app.services.runtime_summary import get_operation_issue_detail, refresh_task_summary, upsert_operation_issue
@@ -4850,6 +4850,67 @@ def test_overview_counts_new_task_center_tasks_not_legacy_campaigns():
     assert current_bucket["comments"] == 1
     assert current_bucket["success_rate"] == 75.0
     assert current_bucket["failure_rate"] == 25.0
+
+
+def test_overview_counts_timezone_aware_action_hours(monkeypatch):
+    fixed_now = datetime(2026, 6, 7, 20, 15, 30)
+
+    class AwareActionRows:
+        def all(self):
+            executed_at = fixed_now.replace(tzinfo=BEIJING_TZ)
+            return [(executed_at, "send_message", "success")]
+
+    class SessionWithAwareAction:
+        def execute(self, _statement):
+            return AwareActionRows()
+
+    monkeypatch.setattr("app.services.reports._now", lambda: fixed_now)
+
+    activity = _hourly_activity_24h(SessionWithAwareAction(), 1)
+
+    current_bucket = next(item for item in activity if item["hour"] == "20:00")
+    assert current_bucket["sent_messages"] == 1
+    assert current_bucket["success"] == 1
+    assert current_bucket["total"] == 1
+
+
+def test_planning_backlog_blocked_clears_stale_stats_when_queue_recovers(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "app.services.task_center.service.get_settings",
+        lambda: SimpleNamespace(
+            max_pending_global=10_000,
+            max_pending_per_task=1_000,
+            oldest_pending_age_seconds=3_600,
+        ),
+    )
+
+    stale_stats = {
+        "planner_backlog_blocked": True,
+        "planner_backlog_blocked_at": "2026-05-31T15:23:45.755171",
+        "planner_backlog_global_pending": 1887,
+        "planner_backlog_task_pending": 2,
+        "planner_backlog_oldest_age_seconds": 19425,
+        "success_count": 12,
+    }
+    with Session(engine) as session:
+        task = Task(
+            id="task-backlog-recovered",
+            tenant_id=1,
+            name="AI 活跃群",
+            type="group_ai_chat",
+            status="running",
+            stats=stale_stats,
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+        blocked = _planning_backlog_blocked(session, task)
+
+    assert blocked is False
+    assert task.stats == {"success_count": 12}
 
 
 def test_operation_targets_expose_linked_group_capability_summary():
