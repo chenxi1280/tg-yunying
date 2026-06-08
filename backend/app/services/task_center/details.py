@@ -75,8 +75,8 @@ def _target_summary(session: Session, task: Task) -> str:
         return str(config.get("target_channel_name") or "")
     if task.type == "group_ai_chat":
         return str(
-            config.get("target_group_name")
-            or _operation_target_title(session, task.tenant_id, config.get("target_operation_target_id"))
+            _operation_target_title(session, task.tenant_id, config.get("target_operation_target_id"))
+            or config.get("target_group_name")
             or config.get("target_group_id")
             or ""
         )

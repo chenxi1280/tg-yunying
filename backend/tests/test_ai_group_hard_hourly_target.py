@@ -13,7 +13,7 @@ from app.models import Action, OperationTarget, SchedulingSetting, Task, Tenant,
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.hard_hourly import hard_schedule_times, requires_planning as hard_hourly_requires_planning
-from app.services.task_center.service import _wake_hard_hourly_tasks, create_group_ai_chat_task, precheck_task_creation
+from app.services.task_center.service import _wake_hard_hourly_tasks, create_group_ai_chat_task, list_tasks, precheck_task_creation
 from app.services.task_center.stats import next_run_after_task, refresh_task_stats
 from app.timezone import BEIJING_TZ
 
@@ -103,6 +103,38 @@ def test_ai_group_hard_target_migration_repairs_target_and_stale_stats():
     assert stats["hard_hourly_goal"] == 500
     assert "hard_hourly_deficit" not in stats
     assert "hard_hourly_next_check_at" not in stats
+
+
+def test_ai_group_task_list_prefers_authoritative_target_title():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                OperationTarget(id=9, tenant_id=1, target_type="group", tg_peer_id="-1009", title="天津音乐学院"),
+                Task(
+                    id="task-stale-target-name",
+                    tenant_id=1,
+                    name="青岛师范学院",
+                    type="group_ai_chat",
+                    status="running",
+                    type_config={
+                        "target_operation_target_id": 9,
+                        "target_group_name": "青岛师范学院",
+                        "hard_hourly_target_enabled": True,
+                        "hourly_min_messages": 300,
+                    },
+                ),
+            ]
+        )
+        session.commit()
+
+        [task] = list_tasks(session, 1, task_type="group_ai_chat")
+
+    assert task["target_summary"] == "天津音乐学院"
+    assert task["name"] == "青岛师范学院"
 
 
 def test_group_ai_chat_create_rejects_disabled_or_low_hard_hourly_target():
