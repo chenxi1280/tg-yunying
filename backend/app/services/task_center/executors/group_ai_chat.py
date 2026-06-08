@@ -69,7 +69,8 @@ def build_plan(session: Session, task: Task) -> int:
         gate = gate_channel_membership(session, task, target, require_send=True)
         if not gate.ready:
             if hard_progress:
-                mark_plan_result(task, hard_progress, 0, {"target_membership_pending": max(1, int(hard_progress.get("deficit") or gate.created or 1))})
+                blocker = gate.blocker_reason or "target_membership_pending"
+                mark_plan_result(task, hard_progress, 0, {blocker: max(1, int(hard_progress.get("deficit") or gate.created or 1))})
             return gate.created
     group = group_from_reference(
         session,
@@ -100,12 +101,9 @@ def build_plan(session: Session, task: Task) -> int:
             reason = "account_capacity" if cooldown_candidates else "account_unavailable"
             mark_plan_result(task, hard_progress, 0, {reason: max(1, int(hard_progress.get("deficit") or 1))})
         return 0
-    history_fetch_account_id = int(config.get("history_fetch_account_id") or 0)
-    available_account_ids = {account.id for account in accounts}
-    collect_account_id = history_fetch_account_id if history_fetch_account_id in available_account_ids else accounts[0].id
     if should_collect_listener("group", group.id, window_seconds=group.listener_interval_seconds):
         try:
-            collect_group_context(session, group, [collect_account_id], create_source_media=False, learning_scene=GROUP_CHAT_SCENE)
+            _collect_context_with_candidate_accounts(session, task, group, _history_collect_account_ids(config, accounts))
         except Exception as exc:
             if not _is_target_history_permission_error(exc):
                 raise
@@ -591,6 +589,46 @@ def _hard_hourly_schedule(task: Task, progress: dict[str, object], total: int) -
     if not progress:
         return []
     return hard_schedule_times(total, task, _now())
+
+
+def _history_collect_account_ids(config: dict, accounts: list) -> list[int]:
+    account_ids = [int(account.id) for account in accounts]
+    preferred = int(config.get("history_fetch_account_id") or 0)
+    if preferred not in account_ids:
+        return account_ids
+    return [preferred, *[account_id for account_id in account_ids if account_id != preferred]]
+
+
+def _collect_context_with_candidate_accounts(session: Session, task: Task, group: TgGroup, account_ids: list[int]) -> int:
+    failed_ids: list[int] = []
+    last_error: Exception | None = None
+    for account_id in account_ids:
+        try:
+            inserted = collect_group_context(session, group, [account_id], create_source_media=False, learning_scene=GROUP_CHAT_SCENE)
+        except Exception as exc:
+            if not _is_target_history_permission_error(exc):
+                raise
+            failed_ids.append(account_id)
+            last_error = exc
+            continue
+        _record_history_collect_recovery(task, failed_ids, account_id)
+        return inserted
+    if last_error:
+        _record_history_collect_recovery(task, failed_ids, None)
+        raise last_error
+    return 0
+
+
+def _record_history_collect_recovery(task: Task, failed_ids: list[int], success_id: int | None) -> None:
+    if not failed_ids:
+        return
+    stats = dict(task.stats or {})
+    stats["history_fetch_failed_account_ids"] = failed_ids
+    if success_id is None:
+        stats.pop("history_fetch_fallback_account_id", None)
+    else:
+        stats["history_fetch_fallback_account_id"] = success_id
+    task.stats = stats
 
 
 def _hard_blocker_inc(blockers: dict[str, int], reason: str, progress: dict[str, object]) -> None:
