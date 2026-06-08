@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -38,6 +40,15 @@ def _send_action(
     )
 
 
+def _load_hard_target_migration():
+    migration_path = Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0057_ai_group_hard_target_300.py"
+    spec = importlib.util.spec_from_file_location("migration_0057_ai_group_hard_target_300", migration_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_group_ai_chat_create_persists_hard_hourly_target_config():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -53,14 +64,80 @@ def test_group_ai_chat_create_persists_hard_hourly_target_config():
                 name="硬目标 AI 活跃群",
                 target_group_id=7,
                 hard_hourly_target_enabled=True,
-                hourly_min_messages=60,
+                hourly_min_messages=360,
                 hard_hourly_strategy="force_planning",
             ),
             actor="tester",
         )
 
     assert task.type_config["hard_hourly_target_enabled"] is True
-    assert task.type_config["hourly_min_messages"] == 60
+    assert task.type_config["hourly_min_messages"] == 360
+    assert task.type_config["hard_hourly_strategy"] == "force_planning"
+
+
+def test_ai_group_hard_target_migration_repairs_target_and_stale_stats():
+    migration = _load_hard_target_migration()
+    config = migration._hard_hourly_config(
+        {
+            "target_operation_target_id": "9",
+            "target_group_name": "旧群名",
+            "hourly_min_messages": 500,
+        },
+        2,
+        {(1, 9): "青岛师范学院", (2, 9): "天津音乐学院"},
+    )
+    stats = migration._hard_hourly_stats(
+        {
+            "hard_hourly_status": "disabled",
+            "hard_hourly_goal": 20,
+            "hard_hourly_deficit": 12,
+            "hard_hourly_next_check_at": "2026-06-08T23:50:00",
+        },
+        config["hourly_min_messages"],
+    )
+
+    assert config["target_group_name"] == "天津音乐学院"
+    assert config["hard_hourly_target_enabled"] is True
+    assert config["hourly_min_messages"] == 500
+    assert stats["hard_hourly_status"] == "catching_up"
+    assert stats["hard_hourly_goal"] == 500
+    assert "hard_hourly_deficit" not in stats
+    assert "hard_hourly_next_check_at" not in stats
+
+
+def test_group_ai_chat_create_rejects_disabled_or_low_hard_hourly_target():
+    with pytest.raises(ValueError, match="必须启用每小时硬目标"):
+        GroupAIChatTaskCreate(
+            name="关闭硬目标",
+            target_group_id=7,
+            hard_hourly_target_enabled=False,
+        )
+    with pytest.raises(ValueError, match="不能低于 300"):
+        GroupAIChatTaskCreate(
+            name="低硬目标",
+            target_group_id=7,
+            hard_hourly_target_enabled=True,
+            hourly_min_messages=299,
+        )
+
+
+def test_group_ai_chat_create_defaults_to_hard_hourly_target_300():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+
+        task = create_group_ai_chat_task(
+            session,
+            1,
+            GroupAIChatTaskCreate(name="默认硬目标 AI 活跃群", target_group_id=7),
+            actor="tester",
+        )
+
+    assert task.type_config["hard_hourly_target_enabled"] is True
+    assert task.type_config["hourly_min_messages"] == 300
     assert task.type_config["hard_hourly_strategy"] == "force_planning"
 
 
@@ -1268,7 +1345,7 @@ def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(m
                     "messages_per_round_mode": "manual",
                     "messages_per_round": 3,
                     "hard_hourly_target_enabled": True,
-                    "hourly_min_messages": 5,
+                    "hourly_min_messages": 300,
                     "hard_hourly_strategy": "force_planning",
                 },
             ),
@@ -1278,9 +1355,9 @@ def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(m
     assert result["estimated_hourly_capacity"] == 3
     assert result["hard_hourly_target"] == {
         "enabled": True,
-        "hourly_min_messages": 5,
+        "hourly_min_messages": 300,
         "estimated_hourly_capacity": 3,
-        "capacity_gap": 2,
+        "capacity_gap": 297,
         "hard_target_over_capacity": True,
         "warnings": ["硬目标高于当前账号容量，可能持续未达标"],
     }

@@ -13,6 +13,7 @@ TaskTypeValue = Literal["group_ai_chat", "group_relay", "channel_view", "channel
 TaskStatusValue = Literal["draft", "pending", "running", "paused", "target_reached", "wrapping_up", "completed", "stopped", "failed", "deleted"]
 ActionStatusValue = Literal["pending", "executing", "success", "failed", "skipped"]
 ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
+GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 300
 
 
 class QuietHours(BaseModel):
@@ -172,8 +173,8 @@ class GroupAIChatConfig(BaseModel):
     messages_per_round_mode: Literal["auto", "manual"] = "auto"
     messages_per_round: int = Field(default=1, ge=1)
     reply_min_per_round: int = Field(default=0, ge=0)
-    hard_hourly_target_enabled: bool = False
-    hourly_min_messages: int | None = Field(default=None, ge=1)
+    hard_hourly_target_enabled: bool = True
+    hourly_min_messages: int | None = Field(default=GROUP_AI_HARD_HOURLY_MIN_MESSAGES, ge=1)
     hard_hourly_strategy: Literal["force_planning"] = "force_planning"
     history_fetch_account_id: int | None = None
     auto_join_target: bool = True
@@ -202,8 +203,12 @@ class GroupAIChatConfig(BaseModel):
             raise ValueError("target_group_id、target_operation_target_id 或 target_input 至少填写一个")
         if self.reply_min_per_round > self.messages_per_round:
             raise ValueError("reply_min_per_round 不能大于 messages_per_round")
-        if self.hard_hourly_target_enabled and not self.hourly_min_messages:
-            raise ValueError("启用每小时硬目标时必须填写 hourly_min_messages")
+        if not self.hard_hourly_target_enabled:
+            raise ValueError("AI 活跃群必须启用每小时硬目标")
+        if not self.hourly_min_messages:
+            raise ValueError("AI 活跃群必须填写每小时最低发送量")
+        if self.hourly_min_messages < GROUP_AI_HARD_HOURLY_MIN_MESSAGES:
+            raise ValueError("AI 活跃群每小时最低发送量不能低于 300")
         return self
 
 

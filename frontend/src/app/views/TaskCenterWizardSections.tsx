@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, Checkbox, Collapse, Descriptions, Form, Input, InputNumber, Select, Space, Typography } from 'antd';
 import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, TaskCenterTaskType, TaskPrecheck } from '../types';
-import { TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, curveNumbers, curveText, currentOperationProfile, formatDateTime, formatPrecheckReasons, operationProfileSummary, operationTemplate, precheckReasonLabel, ruleSummary, targetName } from './taskCenterViewModel';
+import { GROUP_AI_HARD_HOURLY_MIN_MESSAGES, TASK_TYPES, TYPE_LABEL, OPERATION_PROFILE_TEMPLATES, type OperationProfileTemplateId, accountPrecheck, curveNumbers, curveText, currentOperationProfile, formatDateTime, formatPrecheckReasons, operationProfileSummary, operationTemplate, precheckReasonLabel, ruleSummary, targetName } from './taskCenterViewModel';
 
 export function EditBasics() {
   return (
@@ -114,8 +114,8 @@ export function WizardTypeConfig({
     ({ getFieldValue }: any) => ({
       validator(_: unknown, value: number | null) {
         if (!getFieldValue('hard_hourly_target_enabled')) return Promise.resolve();
-        if (Number.isInteger(Number(value)) && Number(value) >= 1) return Promise.resolve();
-        return Promise.reject(new Error('开启后必须填写不小于 1 的整数'));
+        if (Number.isInteger(Number(value)) && Number(value) >= GROUP_AI_HARD_HOURLY_MIN_MESSAGES) return Promise.resolve();
+        return Promise.reject(new Error('开启后必须填写不小于 300 的整数'));
       },
     }),
   ];
@@ -157,13 +157,13 @@ export function WizardTypeConfig({
           <Form.Item name="hard_hourly_target_enabled" valuePropName="checked">
             <Checkbox onChange={(event) => {
               if (event.target.checked) form.setFieldValue('hard_hourly_strategy', 'force_planning');
-            }}>启用每小时硬目标</Checkbox>
+            }} disabled>启用每小时硬目标</Checkbox>
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, next) => prev.hard_hourly_target_enabled !== next.hard_hourly_target_enabled}>
             {({ getFieldValue }) => getFieldValue('hard_hourly_target_enabled') ? (
               <>
                 <Form.Item name="hourly_min_messages" label="每小时最低发送量" dependencies={['hard_hourly_target_enabled']} rules={hardHourlyRules}>
-                  <InputNumber min={1} precision={0} />
+                  <InputNumber min={GROUP_AI_HARD_HOURLY_MIN_MESSAGES} precision={0} />
                 </Form.Item>
                 <Form.Item label="未达标处理">
                   <Input readOnly value="强推规划" />

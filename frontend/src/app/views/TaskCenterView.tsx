@@ -9,6 +9,7 @@ import { fromBeijingDateTimeLocalValue } from '../time';
 import {
   CREATE_AND_START_ENDPOINT,
   CREATE_ENDPOINT,
+  GROUP_AI_HARD_HOURLY_MIN_MESSAGES,
   TASK_TYPES,
   TYPE_LABEL,
   WIZARD_STEPS,
@@ -76,6 +77,18 @@ function HardHourlyTaskSummary({ task }: { task: TaskCenterTask }) {
       </Space>
     </Space>
   );
+}
+
+function hardHourlyEditValues(config: Record<string, any>): Record<string, any> {
+  const configured = Number(config.hourly_min_messages);
+  const hourlyMin = Number.isFinite(configured)
+    ? Math.max(GROUP_AI_HARD_HOURLY_MIN_MESSAGES, configured)
+    : GROUP_AI_HARD_HOURLY_MIN_MESSAGES;
+  return {
+    hard_hourly_target_enabled: true,
+    hourly_min_messages: hourlyMin,
+    hard_hourly_strategy: 'force_planning',
+  };
 }
 
 function failureDiagnosis(action: TaskCenterAction) {
@@ -464,6 +477,7 @@ export default function TaskCenterView({
       scheduled_start: toDateTimeLocal(task.scheduled_start),
       scheduled_end: toDateTimeLocal(task.scheduled_end),
       ...config,
+      ...(task.type === 'group_ai_chat' ? hardHourlyEditValues(config) : {}),
       selection_mode: account.selection_mode ?? 'all',
       account_group_id: account.account_group_id ?? null,
       account_ids: account.account_ids ?? [],
@@ -677,10 +691,11 @@ export default function TaskCenterView({
   }
 
   function hardHourlyTargetPayload(values: any) {
-    const enabled = Boolean(values.hard_hourly_target_enabled);
+    const requested = Number(values.hourly_min_messages);
+    const hourlyMin = Number.isFinite(requested) ? requested : GROUP_AI_HARD_HOURLY_MIN_MESSAGES;
     return {
-      hard_hourly_target_enabled: enabled,
-      hourly_min_messages: enabled ? Number(values.hourly_min_messages) : null,
+      hard_hourly_target_enabled: true,
+      hourly_min_messages: Math.max(GROUP_AI_HARD_HOURLY_MIN_MESSAGES, hourlyMin),
       hard_hourly_strategy: 'force_planning',
     };
   }
