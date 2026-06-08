@@ -36,6 +36,7 @@ from app.schemas.task_center import (
     TaskUpdate,
 )
 from app.services._common import _now, audit, normalize_list_filter
+from app.timezone import as_beijing
 
 from .account_pool import select_task_accounts
 from .ai_generator import generate_channel_comments, generate_group_messages
@@ -88,6 +89,8 @@ COMMENT_UNAVAILABLE_MARKERS = (
 )
 ACCOUNT_AUTH_MARKERS = ("session", "auth key", "auth_key", "unauthorized", "重新登录", "账号没有可用 session", "session 已失效")
 RATE_LIMIT_MARKERS = ("floodwait", "too many requests", "slowmode", "慢速模式", "冷却")
+HARD_HOURLY_WAKE_MIN_SCAN = 20
+HARD_HOURLY_WAKE_SCAN_MULTIPLIER = 5
 
 
 from .config_fields import (
@@ -98,7 +101,7 @@ from .config_fields import (
     GROUP_RELAY_LEGACY_CREATE_FIELDS,
     TYPE_SETTINGS_FIELDS,
 )
-from .hard_hourly import enabled as hard_hourly_enabled, requires_planning as hard_hourly_requires_planning
+from .hard_hourly import current_progress as hard_hourly_current_progress, enabled as hard_hourly_enabled, requires_planning as hard_hourly_requires_planning
 from .config_normalization import (
     apply_default_slang_config,
     normalize_operation_target_references,
@@ -779,7 +782,7 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
         if process_type:
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
         _activate_pending_tasks(session)
-        _wake_hard_hourly_tasks(session, limit=limit)
+        hard_hourly_task_ids = _wake_hard_hourly_tasks(session, limit=limit)
         task_ids = list(
             session.scalars(
                 select(Task.id)
@@ -788,6 +791,7 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
                 .limit(max(1, limit))
             )
         )
+        task_ids = _merge_planner_task_ids(hard_hourly_task_ids, task_ids, limit)
         session.commit()
     future_open_action_task_ids: set[str] = set()
     for task_id in task_ids:
@@ -1062,23 +1066,61 @@ def _activate_pending_tasks(session: Session) -> None:
         task.next_run_at = _now()
 
 
-def _wake_hard_hourly_tasks(session: Session, *, limit: int) -> None:
+def _merge_planner_task_ids(primary: list[str], secondary: list[str], limit: int) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for task_id in [*primary, *secondary]:
+        if task_id in seen:
+            continue
+        merged.append(task_id)
+        seen.add(task_id)
+        if len(merged) >= max(1, limit):
+            break
+    return merged
+
+
+def _wake_hard_hourly_tasks(session: Session, *, limit: int) -> list[str]:
     now = _now()
+    scan_limit = max(HARD_HOURLY_WAKE_MIN_SCAN, max(1, limit) * HARD_HOURLY_WAKE_SCAN_MULTIPLIER)
     tasks = session.scalars(
         select(Task)
         .where(
             Task.status == "running",
             Task.type == "group_ai_chat",
             Task.deleted_at.is_(None),
-            Task.next_run_at.is_not(None),
-            Task.next_run_at > now,
         )
-        .order_by(Task.priority.asc(), Task.next_run_at.asc(), Task.created_at.asc())
-        .limit(max(1, limit))
+        .order_by(Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
+        .limit(scan_limit)
     )
+    task_ids: list[str] = []
     for task in tasks:
-        if hard_hourly_enabled(task) and hard_hourly_requires_planning(session, task, now):
+        if _hard_hourly_due_for_planner(session, task, now):
             task.next_run_at = now
+            task_ids.append(task.id)
+        if len(task_ids) >= max(1, limit):
+            break
+    return task_ids
+
+
+def _hard_hourly_due_for_planner(session: Session, task: Task, now: datetime) -> bool:
+    if not hard_hourly_enabled(task):
+        return False
+    progress = hard_hourly_current_progress(session, task, now)
+    if int(progress.get("deficit") or 0) <= 0:
+        return False
+    next_check_at = _hard_hourly_next_check_at(task)
+    return next_check_at is None or next_check_at <= now
+
+
+def _hard_hourly_next_check_at(task: Task) -> datetime | None:
+    stats = task.stats if isinstance(task.stats, dict) else {}
+    value = stats.get("hard_hourly_next_check_at")
+    if not value:
+        return None
+    try:
+        return as_beijing(datetime.fromisoformat(str(value)))
+    except ValueError:
+        return None
 
 
 def _check_stop_conditions(session: Session, task: Task) -> bool:

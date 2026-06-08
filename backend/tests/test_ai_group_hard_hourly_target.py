@@ -384,9 +384,58 @@ def test_hard_hourly_deficit_wakes_future_next_run(monkeypatch):
         session.add_all([Tenant(id=1, name="默认运营空间"), task])
         session.commit()
 
-        _wake_hard_hourly_tasks(session, limit=10)
+        task_ids = _wake_hard_hourly_tasks(session, limit=10)
 
     assert task.next_run_at == now_value
+    assert task_ids == ["task-hard-hourly-wake"]
+
+
+def test_hard_hourly_due_check_overrides_future_next_run(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+
+    with Session(engine) as session:
+        due_task = Task(
+            id="task-hard-hourly-due-check",
+            tenant_id=1,
+            name="硬目标到期检查",
+            type="group_ai_chat",
+            status="running",
+            next_run_at=datetime(2026, 6, 8, 4, 30),
+            type_config={
+                "target_group_id": 7,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 2,
+                "hard_hourly_strategy": "force_planning",
+            },
+            stats={"hard_hourly_next_check_at": "2026-06-07T20:29:30"},
+        )
+        future_task = Task(
+            id="task-hard-hourly-future-check",
+            tenant_id=1,
+            name="硬目标未到检查",
+            type="group_ai_chat",
+            status="running",
+            next_run_at=datetime(2026, 6, 8, 4, 30),
+            type_config={
+                "target_group_id": 7,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 2,
+                "hard_hourly_strategy": "force_planning",
+            },
+            stats={"hard_hourly_next_check_at": "2026-06-07T20:30:30"},
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), due_task, future_task])
+        session.commit()
+
+        task_ids = _wake_hard_hourly_tasks(session, limit=10)
+
+    assert task_ids == ["task-hard-hourly-due-check"]
+    assert due_task.next_run_at == now_value
+    assert future_task.next_run_at == datetime(2026, 6, 8, 4, 30)
 
 
 def test_next_run_after_task_uses_hard_hourly_next_check(monkeypatch):
