@@ -224,6 +224,7 @@ def _cooldown_until(
         exclude_message_task_id=exclude_message_task_id,
     )
     reserved_at = _last_reserved_at(reservations, account_id, scheduled_at)
+    last_at = _naive(last_at) if last_at else None
     if reserved_at and (last_at is None or reserved_at > last_at):
         last_at = reserved_at
     if not last_at:
@@ -263,7 +264,7 @@ def _last_occupied_at(
     message_at = session.scalar(
         select(func.max(func.coalesce(MessageTask.sent_at, MessageTask.scheduled_at))).where(*message_filters)
     )
-    values = [value for value in [action_at, message_at] if value is not None]
+    values = [_naive(value) for value in [action_at, message_at] if value is not None]
     return max(values) if values else None
 
 

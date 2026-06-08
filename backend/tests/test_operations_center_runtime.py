@@ -23,7 +23,7 @@ from app.services.audit import audit_logs_csv, filter_audit_logs
 from app.services.archives import create_archive
 from app.services.ai_config import create_material, create_prompt_template, get_scheduling_setting, update_material, update_prompt_template, update_scheduling_setting
 from app.services.risk_control import update_global_policy
-from app.services.account_capacity import account_capacity_decision
+from app.services.account_capacity import AccountCapacityReservation, account_capacity_decision
 from app.services.messages import create_message_send_task, dispatch_task, filter_tasks, retry_task, validate_group_task_policy
 from app.services.operations import filter_operation_targets, operation_target_detail, retry_operation_target_admission, sync_all_operation_targets, update_operation_target, update_operation_target_account_policy
 from app.services.task_center.executors.group_ai_chat import _choose_turn_account, _topic_relevant_context_rows, ai_cycle_mode, build_plan as build_group_ai_chat_plan
@@ -786,6 +786,32 @@ def test_account_capacity_counts_task_center_and_message_send_records():
 
     assert decision.available is False
     assert decision.reason_code == "account_hour_limit"
+
+
+def test_account_capacity_normalizes_aware_last_occupied_for_reservation_cooldown(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    scheduled_at = datetime(2026, 6, 8, 20, 10)
+    aware_last_at = datetime(2026, 6, 8, 20, 9, tzinfo=BEIJING_TZ)
+
+    monkeypatch.setattr("app.services.account_capacity._last_occupied_at", lambda *_args, **_kwargs: aware_last_at)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_cooldown_seconds=120, jitter_min_seconds=0, jitter_max_seconds=0))
+        session.commit()
+
+        decision = account_capacity_decision(
+            session,
+            tenant_id=1,
+            account_id=11,
+            scheduled_at=scheduled_at,
+            reservations=[AccountCapacityReservation(account_id=11, scheduled_at=scheduled_at)],
+        )
+
+    assert decision.available is False
+    assert decision.reason_code == "account_cooldown"
+    assert decision.defer_until == datetime(2026, 6, 8, 20, 12)
 
 
 def test_task_center_dispatch_reassigns_when_account_limit_reached(monkeypatch):
