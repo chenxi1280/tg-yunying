@@ -26,6 +26,7 @@ class MembershipGateResult:
     created: int = 0
     waiting: bool = False
     blocked: bool = False
+    blocker_reason: str = ""
 
 
 def gate_channel_membership(session: Session, task: Task, channel: OperationTarget, *, require_send: bool = False) -> MembershipGateResult:
@@ -42,7 +43,7 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
         task.last_error = f"没有匹配账号，无法准备目标{_target_noun(channel)}"
         stats["membership_stage"] = "membership_blocked"
         task.stats = stats
-        return MembershipGateResult(False, blocked=True)
+        return MembershipGateResult(False, blocked=True, blocker_reason="account_unavailable")
 
     ready_count = int(summary.get("joined_account_count") or 0)
     open_count = _open_membership_action_count(session, task)
@@ -55,7 +56,7 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
                 task.last_error = ""
             return MembershipGateResult(True)
         task.last_error = disabled_reason
-        return MembershipGateResult(False, blocked=True)
+        return MembershipGateResult(False, blocked=True, blocker_reason="target_membership_disabled")
     created = _create_missing_membership_actions(session, task, channel, candidates, require_send=require_send)
     if created:
         stats["membership_stage"] = "membership_running"
@@ -83,7 +84,7 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
         stats["membership_stage"] = "membership_blocked"
         task.stats = stats
         task.last_error = "没有账号成功准备目标"
-        return MembershipGateResult(False, blocked=True)
+        return MembershipGateResult(False, blocked=True, blocker_reason=_membership_blocker_reason(refreshed))
 
     stats["membership_stage"] = "membership_ready" if refreshed["failed_account_count"] == 0 else "membership_partial"
     task.stats = stats
@@ -173,11 +174,7 @@ def channel_membership_summary(
             link_stmt = link_stmt.where(TgGroupAccount.can_send.is_(True))
         joined_ids.update(int(account_id) for account_id in session.scalars(link_stmt))
     terminal_actions = _membership_actions_by_account(session, channel.id, task_id=task_id)
-    failed_ids = {
-        account_id
-        for account_id, action in terminal_actions.items()
-        if action.status == "failed" and account_id in candidate_ids
-    }
+    failed_ids = {account_id for account_id, action in terminal_actions.items() if account_id in candidate_ids and _is_failed_membership_action(action)}
     return {
         "channel_target_id": channel.id,
         "channel_title": channel.title,
@@ -359,6 +356,25 @@ def _membership_actions_by_account(session: Session, channel_target_id: int, *, 
         if action.account_id and action.account_id not in result:
             result[int(action.account_id)] = action
     return result
+
+
+def _is_failed_membership_action(action: Action) -> bool:
+    if action.status == "failed":
+        return True
+    if action.status != "skipped":
+        return False
+    result = action.result if isinstance(action.result, dict) else {}
+    return result.get("error_code") == "membership_permission_denied" or result.get("membership_status") == "permission_denied"
+
+
+def _membership_blocker_reason(summary: dict[str, Any]) -> str:
+    candidate_count = int(summary.get("candidate_account_count") or 0)
+    failed_count = int(summary.get("failed_account_count") or 0)
+    joined_count = int(summary.get("joined_account_count") or 0)
+    need_count = int(summary.get("need_join_account_count") or 0)
+    if candidate_count > 0 and joined_count <= 0 and need_count <= 0 and failed_count >= candidate_count:
+        return "target_permission"
+    return "target_membership_pending"
 
 
 def _open_membership_action_count(session: Session, task: Task) -> int:

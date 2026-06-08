@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -274,7 +275,61 @@ def test_group_ai_chat_hard_hourly_records_account_blocker_without_accounts(monk
     assert task.stats["hard_hourly_last_blockers"] == {"account_unavailable": 3}
 
 
-def test_group_ai_chat_hard_hourly_records_history_permission_blocker(monkeypatch):
+def test_group_ai_chat_hard_hourly_degrades_history_permission_and_plans(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    def denied_history(*_args, **_kwargs):
+        raise RuntimeError("ChannelPrivateError lack permission caused by GetHistoryRequest")
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        return ["先按群公告来就行", "报名入口有人再发下吗", "后面等通知"][:count], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.collect_group_context", denied_history)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营", listener_interval_seconds=1))
+        for account_id in [101, 102, 103]:
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        task = Task(
+            id="ai-hard-hourly-history-permission",
+            tenant_id=1,
+            name="硬目标历史权限",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 3,
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "fact_anchor_required": False,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 3,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+
+    assert created == 3
+    assert task.last_error == ""
+    assert task.stats["history_fetch_degraded"] is True
+    assert "GetHistoryRequest" in task.stats["history_fetch_degraded_reason"]
+    assert task.stats["hard_hourly_last_planned_count"] == 3
+    assert "hard_hourly_last_blockers" not in task.stats
+
+
+def test_group_ai_chat_non_hard_history_permission_still_blocks(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
@@ -288,13 +343,109 @@ def test_group_ai_chat_hard_hourly_records_history_permission_blocker(monkeypatc
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="普通活群", auth_status="已授权运营", listener_interval_seconds=1))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+        task = Task(
+            id="ai-normal-history-permission",
+            tenant_id=1,
+            name="普通历史权限",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={"target_group_id": 7},
+        )
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+
+    assert created == 0
+    assert actions == []
+    assert "监听账号无法读取目标群历史" in task.last_error
+    assert not task.stats.get("history_fetch_degraded")
+
+
+def test_group_ai_chat_hard_hourly_tries_next_history_account(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+    attempted: list[int] = []
+
+    def history_with_first_account_denied(_session, _group, account_ids, **_kwargs):
+        account_id = int(account_ids[0])
+        attempted.append(account_id)
+        if account_id == 101:
+            raise RuntimeError("ChannelPrivateError lack permission caused by GetHistoryRequest")
+        return 0
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        return ["先按群公告来就行", "报名入口有人再发下吗", "后面等通知"][:count], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.collect_group_context", history_with_first_account_denied)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营", listener_interval_seconds=1))
+        for account_id in [101, 102, 103]:
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        task = Task(
+            id="ai-hard-hourly-history-fallback",
+            tenant_id=1,
+            name="硬目标历史账号补救",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 3,
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "fact_anchor_required": False,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 3,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+
+    assert created == 3
+    assert attempted == [101, 102]
+    assert task.last_error == ""
+    assert task.stats["hard_hourly_last_planned_count"] == 3
+    assert "hard_hourly_last_blockers" not in task.stats
+
+
+def test_group_ai_chat_history_collect_exposes_non_permission_errors(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    def broken_history(*_args, **_kwargs):
+        raise RuntimeError("telegram gateway unavailable")
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.collect_group_context", broken_history)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营", listener_interval_seconds=1))
         session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         task = Task(
-            id="ai-hard-hourly-history-permission",
+            id="ai-hard-hourly-history-non-permission",
             tenant_id=1,
-            name="硬目标历史权限",
+            name="硬目标历史非权限错误",
             type="group_ai_chat",
             status="running",
             account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
@@ -308,12 +459,66 @@ def test_group_ai_chat_hard_hourly_records_history_permission_blocker(monkeypatc
         session.add(task)
         session.commit()
 
+        with pytest.raises(RuntimeError, match="telegram gateway unavailable"):
+            build_group_ai_chat_plan(session, task)
+
+
+def test_group_ai_chat_hard_hourly_membership_permission_blocker(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            OperationTarget(
+                id=21,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id="-10021",
+                title="权限失败群",
+                auth_status="已授权运营",
+                can_send=True,
+            )
+        )
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        task = Task(
+            id="ai-hard-hourly-membership-permission",
+            tenant_id=1,
+            name="硬目标准入权限失败",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_operation_target_id": 21,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 3,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add(task)
+        session.add(
+            Action(
+                id="membership-permission-denied",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=101,
+                status="skipped",
+                payload={"channel_target_id": 21},
+                result={"error_code": "membership_permission_denied", "membership_status": "permission_denied"},
+            )
+        )
+        session.commit()
+
         created = build_group_ai_chat_plan(session, task)
 
     assert created == 0
     assert task.stats["hard_hourly_last_planned_count"] == 0
     assert task.stats["hard_hourly_last_blockers"] == {"target_permission": 3}
-    assert "监听账号无法读取目标群历史" in task.last_error
 
 
 def test_hard_hourly_future_pending_covers_deficit_but_overdue_does_not(monkeypatch):
@@ -478,6 +683,111 @@ def test_hard_hourly_due_check_overrides_future_next_run(monkeypatch):
     assert task_ids == ["task-hard-hourly-due-check"]
     assert due_task.next_run_at == now_value
     assert future_task.next_run_at == datetime(2026, 6, 8, 4, 30)
+
+
+def test_hard_hourly_wake_scans_past_non_hard_tasks(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        for index in range(25):
+            session.add(
+                Task(
+                    id=f"task-normal-{index}",
+                    tenant_id=1,
+                    name=f"普通 AI {index}",
+                    type="group_ai_chat",
+                    status="running",
+                    priority=1,
+                    next_run_at=now_value - timedelta(minutes=1),
+                    created_at=now_value - timedelta(minutes=30 - index),
+                    type_config={"target_group_id": 7},
+                )
+            )
+        hard_task = Task(
+            id="task-hard-hourly-after-window",
+            tenant_id=1,
+            name="硬目标排在后面",
+            type="group_ai_chat",
+            status="running",
+            priority=2,
+            next_run_at=datetime(2026, 6, 8, 4, 30),
+            created_at=now_value,
+            type_config={
+                "target_group_id": 7,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 2,
+                "hard_hourly_strategy": "force_planning",
+            },
+            stats={"hard_hourly_next_check_at": "2026-06-07T20:29:30"},
+        )
+        session.add(hard_task)
+        session.commit()
+
+        task_ids = _wake_hard_hourly_tasks(session, limit=1)
+
+    assert task_ids == ["task-hard-hourly-after-window"]
+    assert hard_task.next_run_at == now_value
+
+
+def test_hard_hourly_wake_filters_non_hard_tasks_before_due_check(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 8, 4, 30)
+    checked_task_ids: list[str] = []
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+
+    def fake_due(_session, task: Task, _now_value: datetime) -> bool:
+        checked_task_ids.append(task.id)
+        return task.id == "task-hard-hourly-only-candidate"
+
+    monkeypatch.setattr("app.services.task_center.service._hard_hourly_due_for_planner", fake_due)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        for index in range(25):
+            session.add(
+                Task(
+                    id=f"task-normal-ai-{index}",
+                    tenant_id=1,
+                    name=f"普通 AI 活群 {index}",
+                    type="group_ai_chat",
+                    status="running",
+                    priority=1,
+                    next_run_at=now_value,
+                    created_at=now_value,
+                    type_config={"target_group_id": index + 1},
+                )
+            )
+        session.add(
+            Task(
+                id="task-hard-hourly-only-candidate",
+                tenant_id=1,
+                name="硬目标候选",
+                type="group_ai_chat",
+                status="running",
+                priority=2,
+                next_run_at=now_value,
+                created_at=now_value,
+                type_config={
+                    "target_group_id": 99,
+                    "hard_hourly_target_enabled": True,
+                    "hourly_min_messages": 2,
+                    "hard_hourly_strategy": "force_planning",
+                },
+            )
+        )
+        session.commit()
+
+        task_ids = _wake_hard_hourly_tasks(session, limit=1)
+
+    assert task_ids == ["task-hard-hourly-only-candidate"]
+    assert checked_task_ids == ["task-hard-hourly-only-candidate"]
 
 
 def test_next_run_after_task_uses_hard_hourly_next_check(monkeypatch):
