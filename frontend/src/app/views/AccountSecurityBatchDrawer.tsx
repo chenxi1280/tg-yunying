@@ -184,6 +184,9 @@ export function AccountSecurityBatchDrawer({
   const forbiddenText = profileStrategy.forbidden_words.join('，');
   const modeConfig = MODE_CONFIG[mode];
   const isProfileMode = mode === 'profile';
+  const precheckButtonLabel = mode === 'standby_session' ? '预检备用 session 补齐' : isProfileMode ? '预检 / AI 生成预览' : '预检动作';
+  const confirmButtonLabel = mode === 'standby_session' ? '确认补齐备用 session' : isProfileMode ? '确认执行资料初始化' : '确认创建批次';
+  const batchResultTargetLabel = mode === 'standby_session' ? '备用 session 状态' : isProfileMode ? '资料变化' : '安全状态';
   const autoSkippedCount = (precheck?.summary.skipped ?? 0) + (precheck?.summary.manual_required ?? 0);
   const avatarSourceHint = avatarStrategy.mode === 'random_from_material_pool'
     ? '系统会从素材中心已审核的头像包 / 上传图片中随机分配头像，不需要填写 material ID 或路径。'
@@ -373,7 +376,7 @@ export function AccountSecurityBatchDrawer({
       setBatch(result);
       setStep(2);
       setConfirmOpen(false);
-      void message.success(`批次 #${result.id} 已提交后台执行：共 ${result.total_count} 个，自动跳过 ${result.skipped_count} 个；后台 worker 完成后再刷新账号列表查看资料变化。`);
+      void message.success(`批次 #${result.id} 已提交后台执行：共 ${result.total_count} 个，自动跳过 ${result.skipped_count} 个；后台 worker 完成后再刷新账号列表查看${batchResultTargetLabel}。`);
     } catch (error) {
       void message.error(errorMessage(error, '创建批次失败'));
     } finally {
@@ -463,6 +466,9 @@ export function AccountSecurityBatchDrawer({
       ),
     },
   ];
+  const profilePreviewColumns = previewColumns;
+  const actionPrecheckColumns = previewColumns.filter((column) => column.title !== '资料预览（可编辑）');
+  const precheckColumns = isProfileMode ? profilePreviewColumns : actionPrecheckColumns;
 
   const itemColumns: ColumnsType<AccountSecurityBatchItem> = [
     { title: '账号ID', dataIndex: 'account_id', width: 90, fixed: 'left' },
@@ -700,8 +706,8 @@ export function AccountSecurityBatchDrawer({
         )}
         <Input.TextArea rows={2} value={reason} placeholder="操作原因" onChange={(event) => setReason(event.target.value)} />
         <Space wrap>
-          <Button icon={<RefreshCcw size={16} />} loading={loading} onClick={runPrecheck}>预检 / AI 生成预览</Button>
-          <Button icon={<Activity size={16} />} loading={loading} onClick={runPrecheck}>重抽全部</Button>
+          <Button icon={<RefreshCcw size={16} />} loading={loading} onClick={runPrecheck}>{precheckButtonLabel}</Button>
+          {isProfileMode && <Button icon={<Activity size={16} />} loading={loading} onClick={runPrecheck}>重抽全部</Button>}
           <Button
             type="primary"
             icon={<CheckCircle2 size={16} />}
@@ -709,7 +715,7 @@ export function AccountSecurityBatchDrawer({
             loading={loading}
             onClick={openCreateConfirm}
           >
-            确认创建批次
+            {confirmButtonLabel}
           </Button>
         </Space>
         {precheck && (
@@ -718,7 +724,7 @@ export function AccountSecurityBatchDrawer({
             <Table<AccountSecurityPreviewItem>
               className="tg-table"
               rowKey="account_id"
-              columns={previewColumns}
+              columns={precheckColumns}
               dataSource={precheck.items}
               pagination={{ pageSize: 50, showSizeChanger: true, pageSizeOptions: ['20', '50', '100'] }}
               scroll={{ x: 920 }}
@@ -741,7 +747,7 @@ export function AccountSecurityBatchDrawer({
         )}
       </Space>
       <Modal
-        title={`确认创建${modeConfig.title}批次？`}
+        title={`${confirmButtonLabel}？`}
         open={confirmOpen}
         okText="确认"
         cancelText="取消"

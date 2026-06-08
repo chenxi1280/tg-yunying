@@ -576,6 +576,18 @@ def test_account_center_exposes_standby_session_batch_entry_and_filters():
     assert "standby_slot_strategy: standbySlotStrategy" in drawer
 
 
+def test_standby_session_batch_uses_dedicated_confirmation_flow_not_profile_preview():
+    drawer = (PROJECT_ROOT / "frontend/src/app/views/AccountSecurityBatchDrawer.tsx").read_text()
+
+    assert "const precheckColumns = isProfileMode ? profilePreviewColumns : actionPrecheckColumns" in drawer
+    assert 'columns={precheckColumns}' in drawer
+    assert "precheckButtonLabel" in drawer
+    assert "'预检备用 session 补齐'" in drawer
+    assert "confirmButtonLabel" in drawer
+    assert "'确认补齐备用 session'" in drawer
+    assert "{isProfileMode && <Button icon={<Activity size={16} />} loading={loading} onClick={runPrecheck}>重抽全部</Button>}" in drawer
+
+
 def test_account_detail_has_authorization_assets_tab_with_slot_cards_and_recovery_action():
     modals = (PROJECT_ROOT / "frontend/src/app/views/AccountModals.tsx").read_text()
     assets_panel = (PROJECT_ROOT / "frontend/src/app/views/AccountAuthorizationAssetsPanel.tsx").read_text()
