@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import WorkerHeartbeat
+from app.services.task_center.heartbeat import record_worker_heartbeat
 
 
 def test_drain_once_dispatches_task_center_roles(monkeypatch):
@@ -127,6 +128,24 @@ def test_worker_main_healthcheck_fails_for_stale_role(monkeypatch):
     monkeypatch.setattr(worker, "SessionLocal", lambda: Session(engine))
 
     assert worker.main(["--healthcheck", "--role", "listener"]) == 1
+
+
+def test_explicit_worker_id_is_scoped_by_process_type(monkeypatch):
+    monkeypatch.setenv("TG_OPS_WORKER_ID", "pytest-worker")
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        record_worker_heartbeat(session, process_type="planner")
+        record_worker_heartbeat(session, process_type="dispatcher")
+        session.commit()
+        heartbeats = session.query(WorkerHeartbeat).order_by(WorkerHeartbeat.process_type).all()
+
+    assert [heartbeat.worker_id for heartbeat in heartbeats] == [
+        "pytest-worker:dispatcher",
+        "pytest-worker:planner",
+    ]
+    assert [heartbeat.process_type for heartbeat in heartbeats] == ["dispatcher", "planner"]
 
 
 def test_worker_health_module_checks_role_heartbeat_without_worker_imports(monkeypatch):

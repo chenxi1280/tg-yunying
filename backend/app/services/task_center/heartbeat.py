@@ -14,7 +14,7 @@ def worker_identity(process_type: str = "task_center") -> tuple[str, str, int]:
     hostname = socket.gethostname()
     pid = os.getpid()
     explicit = os.getenv("TG_OPS_WORKER_ID", "").strip()
-    worker_id = explicit or f"{hostname}:{pid}:{process_type}"
+    worker_id = f"{explicit}:{process_type}" if explicit else f"{hostname}:{pid}:{process_type}"
     return worker_id, hostname, pid
 
 
