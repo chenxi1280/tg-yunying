@@ -1105,6 +1105,7 @@ def _hard_hourly_wake_query(scan_limit: int, offset: int):
             Task.status == "running",
             Task.type == "group_ai_chat",
             Task.deleted_at.is_(None),
+            Task.type_config["hard_hourly_target_enabled"].as_boolean().is_(True),
         )
         .order_by(Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
         .offset(offset)

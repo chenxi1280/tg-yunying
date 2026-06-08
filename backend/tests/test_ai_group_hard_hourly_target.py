@@ -684,6 +684,62 @@ def test_hard_hourly_wake_scans_past_non_hard_tasks(monkeypatch):
     assert hard_task.next_run_at == now_value
 
 
+def test_hard_hourly_wake_filters_non_hard_tasks_before_due_check(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 8, 4, 30)
+    checked_task_ids: list[str] = []
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+
+    def fake_due(_session, task: Task, _now_value: datetime) -> bool:
+        checked_task_ids.append(task.id)
+        return task.id == "task-hard-hourly-only-candidate"
+
+    monkeypatch.setattr("app.services.task_center.service._hard_hourly_due_for_planner", fake_due)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        for index in range(25):
+            session.add(
+                Task(
+                    id=f"task-normal-ai-{index}",
+                    tenant_id=1,
+                    name=f"普通 AI 活群 {index}",
+                    type="group_ai_chat",
+                    status="running",
+                    priority=1,
+                    next_run_at=now_value,
+                    created_at=now_value,
+                    type_config={"target_group_id": index + 1},
+                )
+            )
+        session.add(
+            Task(
+                id="task-hard-hourly-only-candidate",
+                tenant_id=1,
+                name="硬目标候选",
+                type="group_ai_chat",
+                status="running",
+                priority=2,
+                next_run_at=now_value,
+                created_at=now_value,
+                type_config={
+                    "target_group_id": 99,
+                    "hard_hourly_target_enabled": True,
+                    "hourly_min_messages": 2,
+                    "hard_hourly_strategy": "force_planning",
+                },
+            )
+        )
+        session.commit()
+
+        task_ids = _wake_hard_hourly_tasks(session, limit=1)
+
+    assert task_ids == ["task-hard-hourly-only-candidate"]
+    assert checked_task_ids == ["task-hard-hourly-only-candidate"]
+
+
 def test_next_run_after_task_uses_hard_hourly_next_check(monkeypatch):
     now_value = datetime(2026, 6, 7, 20, 30)
     monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
