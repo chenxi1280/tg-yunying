@@ -48,6 +48,7 @@ AI_CHAT_ROUND_INTERVALS_SECONDS = {
     "休眠期": (600, 1200),
     "静默期": (300, 900),
 }
+HARD_HOURLY_MAX_BATCH_MESSAGES = 10
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -566,7 +567,7 @@ def _hard_hourly_round_config(config: dict, progress: dict[str, object]) -> dict
     deficit = max(1, int(progress.get("deficit") or 1))
     updated = dict(config)
     updated["messages_per_round_mode"] = "manual"
-    updated["messages_per_round"] = deficit
+    updated["messages_per_round"] = min(deficit, HARD_HOURLY_MAX_BATCH_MESSAGES)
     updated["allow_account_repeat"] = True
     return updated
 
