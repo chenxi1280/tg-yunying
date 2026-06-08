@@ -40,6 +40,39 @@ def test_role_drains_record_distinct_heartbeats(monkeypatch):
     assert metric_count >= 1
 
 
+def test_planner_refreshes_heartbeat_between_due_tasks(monkeypatch):
+    SessionFactory = _session_factory()
+    now_value = _now()
+    heartbeat_calls: list[str] = []
+    original_record = service.record_worker_heartbeat
+
+    def spy_record_worker_heartbeat(session, *, process_type: str = "task_center", metadata: dict | None = None):
+        heartbeat_calls.append(process_type)
+        return original_record(session, process_type=process_type, metadata=metadata)
+
+    monkeypatch.setattr(service, "record_worker_heartbeat", spy_record_worker_heartbeat)
+    monkeypatch.setattr(service, "build_task_plan", lambda *_args, **_kwargs: 0)
+
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        for index in range(2):
+            session.add(
+                Task(
+                    id=f"task-planner-heartbeat-{index}",
+                    tenant_id=1,
+                    name=f"心跳任务 {index}",
+                    type="channel_view",
+                    status="running",
+                    next_run_at=now_value - timedelta(seconds=1),
+                )
+            )
+        session.commit()
+
+    service.drain_task_planner(SessionFactory, 5)
+
+    assert heartbeat_calls.count("planner") >= 3
+
+
 def test_metrics_drain_does_not_rebuild_all_runtime_summaries() -> None:
     SessionFactory = _session_factory()
     now_value = _now()
