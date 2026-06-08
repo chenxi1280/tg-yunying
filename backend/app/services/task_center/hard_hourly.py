@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Action, Task
+from app.services.account_capacity import AccountCapacityReservation, account_capacity_decision
 from app.timezone import BEIJING_TZ
 
 OPEN_STATUSES = {"pending", "claiming", "executing"}
@@ -66,7 +67,7 @@ def hard_hourly_stats(session: Session, task: Task, now: datetime, current_stats
     return updated
 
 
-def hard_schedule_times(total: int, task: Task, now: datetime) -> list[datetime]:
+def hard_schedule_times(total: int, task: Task, now: datetime, *, target_total: int | None = None) -> list[datetime]:
     if total <= 0:
         return []
     current = normalize(task, now)
@@ -74,8 +75,12 @@ def hard_schedule_times(total: int, task: Task, now: datetime) -> list[datetime]
     available = max(0, int((hour_end - current).total_seconds()) - 1)
     if available <= 0 or total == 1:
         return [current for _ in range(total)]
-    step = max(1, available // max(total, 1))
-    return [min(current + timedelta(seconds=step * index), hour_end - timedelta(seconds=1)) for index in range(total)]
+    spacing_total = max(total, int(target_total or total), 1)
+    step = max(1, available // spacing_total)
+    return [
+        min(current + timedelta(seconds=step * index), hour_end - timedelta(seconds=1))
+        for index in range(total)
+    ]
 
 
 def mark_plan_result(task: Task, progress: dict[str, Any], created: int, blockers: dict[str, int] | None = None) -> None:
@@ -118,7 +123,10 @@ def _disabled_stats(stats: dict[str, Any]) -> dict[str, Any]:
 
 def _recent_buckets(session: Session, task: Task, now_local: datetime, current_start: datetime) -> list[dict[str, Any]]:
     actions = _recent_actions(session, task, current_start - timedelta(hours=23))
-    return [_bucket_summary(task, actions, current_start - timedelta(hours=offset), now_local) for offset in reversed(range(24))]
+    return [
+        _bucket_summary(session, task, actions, current_start - timedelta(hours=offset), now_local)
+        for offset in reversed(range(24))
+    ]
 
 
 def _recent_actions(session: Session, task: Task, earliest: datetime) -> list[Action]:
@@ -133,12 +141,30 @@ def _recent_actions(session: Session, task: Task, earliest: datetime) -> list[Ac
     )
 
 
-def _bucket_summary(task: Task, actions: list[Action], start: datetime, now_local: datetime) -> dict[str, Any]:
+def _bucket_summary(
+    session: Session,
+    task: Task,
+    actions: list[Action],
+    start: datetime,
+    now_local: datetime,
+) -> dict[str, Any]:
     end = start + timedelta(hours=1)
     success = sum(1 for action in actions if _is_success_in_bucket(task, action, start, end))
-    future_open = sum(1 for action in actions if _is_future_open_in_bucket(task, action, start, end, now_local))
-    overdue_open = sum(1 for action in actions if _is_overdue_open_in_bucket(task, action, start, end, now_local))
+    future_open, capacity_blocked = _effective_future_open_count(
+        session,
+        task,
+        actions,
+        start,
+        end,
+        now_local,
+    )
+    overdue_open = sum(
+        1
+        for action in actions
+        if _is_overdue_open_in_bucket(task, action, start, end, now_local)
+    )
     deficit = max(0, goal(task.type_config or {}) - success - future_open)
+    blockers = _bucket_blockers(deficit, overdue_open, capacity_blocked)
     return {
         "bucket": bucket_iso(task, start),
         "goal": goal(task.type_config or {}),
@@ -147,23 +173,91 @@ def _bucket_summary(task: Task, actions: list[Action], start: datetime, now_loca
         "overdue_open_count": overdue_open,
         "deficit": deficit,
         "status": _bucket_status(success, deficit, overdue_open, start, end, now_local),
-        "blockers": {"dispatcher_lag": overdue_open} if overdue_open and deficit else {},
+        "blockers": blockers,
     }
+
+
+def _effective_future_open_count(
+    session: Session,
+    task: Task,
+    actions: list[Action],
+    start: datetime,
+    end: datetime,
+    now_local: datetime,
+) -> tuple[int, int]:
+    future_actions = _future_open_actions(task, actions, start, end, now_local)
+    excluded_ids = {action.id for action in future_actions}
+    reservations: list[AccountCapacityReservation] = []
+    accepted = 0
+    blocked = 0
+    for action in future_actions:
+        if not action.account_id or not action.scheduled_at:
+            blocked += 1
+            continue
+        scheduled_at = _normalize_optional(task, action.scheduled_at)
+        decision = account_capacity_decision(
+            session,
+            tenant_id=task.tenant_id,
+            account_id=int(action.account_id),
+            scheduled_at=scheduled_at,
+            exclude_action_ids=excluded_ids,
+            reservations=reservations,
+        )
+        if decision.available:
+            accepted += 1
+            reservations.append(AccountCapacityReservation(int(action.account_id), scheduled_at))
+        else:
+            blocked += 1
+    return accepted, blocked
+
+
+def _future_open_actions(
+    task: Task,
+    actions: list[Action],
+    start: datetime,
+    end: datetime,
+    now_local: datetime,
+) -> list[Action]:
+    rows = [action for action in actions if _is_future_open_in_bucket(task, action, start, end, now_local)]
+    return sorted(rows, key=lambda action: _normalize_optional(task, action.scheduled_at) or end)
+
+
+def _bucket_blockers(deficit: int, overdue_open: int, capacity_blocked: int) -> dict[str, int]:
+    blockers: dict[str, int] = {}
+    if overdue_open and deficit:
+        blockers["dispatcher_lag"] = overdue_open
+    if capacity_blocked and deficit:
+        blockers["account_capacity"] = capacity_blocked
+    return blockers
 
 
 def _is_success_in_bucket(task: Task, action: Action, start: datetime, end: datetime) -> bool:
     executed_at = _normalize_optional(task, action.executed_at)
-    return action.status == "success" and executed_at is not None and start <= executed_at < end
+    return (
+        action.status == "success"
+        and executed_at is not None
+        and start <= executed_at < end
+    )
 
 
 def _is_future_open_in_bucket(task: Task, action: Action, start: datetime, end: datetime, now_local: datetime) -> bool:
     scheduled_at = _normalize_optional(task, action.scheduled_at)
-    return action.status in OPEN_STATUSES and scheduled_at is not None and start <= scheduled_at < end and scheduled_at >= now_local
+    return (
+        action.status in OPEN_STATUSES
+        and scheduled_at is not None
+        and start <= scheduled_at < end
+        and scheduled_at >= now_local
+    )
 
 
 def _is_overdue_open_in_bucket(task: Task, action: Action, start: datetime, end: datetime, now_local: datetime) -> bool:
     scheduled_at = _normalize_optional(task, action.scheduled_at)
-    return action.status in OPEN_STATUSES and scheduled_at is not None and start <= scheduled_at < end and scheduled_at < now_local
+    return (
+        action.status in OPEN_STATUSES
+        and scheduled_at is not None
+        and start <= scheduled_at < end
+        and scheduled_at < now_local
+    )
 
 
 def _bucket_status(success: int, deficit: int, overdue: int, start: datetime, end: datetime, now_local: datetime) -> str:
@@ -183,7 +277,7 @@ def _current_status(bucket: dict[str, Any], now_local: datetime, hour_end: datet
         return "missed"
     if int(bucket.get("overdue_open_count") or 0) and int(bucket.get("deficit") or 0):
         return "blocked"
-    if blockers and not int(bucket["future_open_count"]):
+    if blockers and int(bucket.get("deficit") or 0):
         return "blocked"
     return "catching_up"
 

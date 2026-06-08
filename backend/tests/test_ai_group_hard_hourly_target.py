@@ -10,7 +10,7 @@ from app.database import Base
 from app.models import Action, OperationTarget, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
-from app.services.task_center.hard_hourly import requires_planning as hard_hourly_requires_planning
+from app.services.task_center.hard_hourly import hard_schedule_times, requires_planning as hard_hourly_requires_planning
 from app.services.task_center.service import _wake_hard_hourly_tasks, create_group_ai_chat_task, precheck_task_creation
 from app.services.task_center.stats import next_run_after_task, refresh_task_stats
 from app.timezone import BEIJING_TZ
@@ -98,7 +98,7 @@ def test_refresh_task_stats_calculates_hard_hourly_target_progress(monkeypatch):
                 task,
                 _send_action("success-aware", task, "success", executed_at=hour_start + timedelta(minutes=5)),
                 _send_action("success-naive", task, "success", executed_at=datetime(2026, 6, 7, 20, 10)),
-                _send_action("future-open", task, "pending", scheduled_at=datetime(2026, 6, 7, 20, 45)),
+                _send_action("future-open", task, "pending", account_id=101, scheduled_at=datetime(2026, 6, 7, 20, 45)),
                 _send_action("overdue-open", task, "pending", scheduled_at=datetime(2026, 6, 7, 20, 15)),
                 _send_action("old-success", task, "success", executed_at=datetime(2026, 6, 7, 19, 15)),
             ]
@@ -250,6 +250,31 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
     assert all(action.payload["hard_hourly_deficit_at_plan"] == 300 for action in actions)
 
 
+def test_hard_hourly_schedule_uses_remaining_deficit_for_batch_spacing():
+    now_value = datetime(2026, 6, 7, 20, 10)
+    task = Task(
+        id="task-hard-hourly-schedule-deficit",
+        tenant_id=1,
+        name="硬目标排期按缺口分配",
+        type="group_ai_chat",
+        status="running",
+        timezone="Asia/Shanghai",
+        type_config={
+            "hard_hourly_target_enabled": True,
+            "hourly_min_messages": 300,
+            "hard_hourly_strategy": "force_planning",
+        },
+    )
+
+    times = hard_schedule_times(10, task, now_value, target_total=300)
+
+    assert len(times) == 10
+    assert times[0] == now_value
+    assert times[1] - times[0] <= timedelta(seconds=11)
+    assert times[-1] <= now_value + timedelta(seconds=100)
+    assert max(times) < datetime(2026, 6, 7, 21, 0)
+
+
 def test_group_ai_chat_hard_hourly_scans_goal_sized_pool_when_front_accounts_are_full(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -377,6 +402,64 @@ def test_group_ai_chat_hard_hourly_uses_accounts_available_later_in_hour(monkeyp
     assert max(action.scheduled_at for action in hard_actions) < datetime(2026, 6, 7, 21, 0)
     assert task.last_error == ""
     assert "hard_hourly_last_blockers" not in task.stats
+
+
+def test_group_ai_chat_hard_hourly_counts_prepared_actions_against_account_hour_limit(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        samples = [
+            "今晚安排先看群公告",
+            "报名入口有人再发下吗",
+            "后面变化等群里通知",
+            "新同学先看置顶",
+            "有问题群里直接问",
+        ]
+        return samples[:count], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        for account_id in [101, 102, 103]:
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        task = Task(
+            id="ai-hard-hourly-prepared-capacity",
+            tenant_id=1,
+            name="硬目标同轮容量",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_group_id": 7,
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "fact_anchor_required": False,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 5,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.account_id.asc())))
+
+    assert created == 3
+    assert [action.account_id for action in actions] == [101, 102, 103]
+    assert task.last_error == ""
+    assert task.stats["hard_hourly_last_planned_count"] == 3
+    assert task.stats["hard_hourly_last_blockers"] == {"account_capacity": 2}
 
 
 def test_group_ai_chat_hard_hourly_records_account_blocker_without_accounts(monkeypatch):
@@ -742,7 +825,7 @@ def test_hard_hourly_future_pending_covers_deficit_but_overdue_does_not(monkeypa
                 Tenant(id=1, name="默认运营空间"),
                 task,
                 _send_action("ok", task, "success", executed_at=datetime(2026, 6, 7, 20, 5)),
-                _send_action("future", task, "pending", scheduled_at=datetime(2026, 6, 7, 20, 50)),
+                _send_action("future", task, "pending", account_id=101, scheduled_at=datetime(2026, 6, 7, 20, 50)),
                 _send_action("overdue", task, "pending", scheduled_at=datetime(2026, 6, 7, 20, 10)),
             ]
         )
@@ -786,8 +869,8 @@ def test_hard_hourly_future_pending_can_fully_cover_deficit(monkeypatch):
                 Tenant(id=1, name="默认运营空间"),
                 task,
                 _send_action("ok", task, "success", executed_at=datetime(2026, 6, 7, 20, 5)),
-                _send_action("future-1", task, "pending", scheduled_at=datetime(2026, 6, 7, 20, 40)),
-                _send_action("future-2", task, "pending", scheduled_at=datetime(2026, 6, 7, 20, 50)),
+                _send_action("future-1", task, "pending", account_id=101, scheduled_at=datetime(2026, 6, 7, 20, 40)),
+                _send_action("future-2", task, "pending", account_id=102, scheduled_at=datetime(2026, 6, 7, 20, 50)),
             ]
         )
         session.commit()
@@ -799,6 +882,69 @@ def test_hard_hourly_future_pending_can_fully_cover_deficit(monkeypatch):
     assert stats["hard_hourly_overdue_open_count"] == 0
     assert stats["hard_hourly_deficit"] == 0
     assert needs_more is False
+
+
+def test_hard_hourly_future_open_over_account_capacity_does_not_cover_deficit(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+    monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-future-over-capacity",
+            tenant_id=1,
+            name="硬目标 future 容量透支",
+            type="group_ai_chat",
+            status="running",
+            type_config={
+                "target_group_id": 7,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 3,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                SchedulingSetting(tenant_id=1, default_account_hour_limit=1),
+                task,
+                _send_action(
+                    "future-over-capacity-1",
+                    task,
+                    "pending",
+                    account_id=101,
+                    scheduled_at=datetime(2026, 6, 7, 20, 40),
+                ),
+                _send_action(
+                    "future-over-capacity-2",
+                    task,
+                    "pending",
+                    account_id=101,
+                    scheduled_at=datetime(2026, 6, 7, 20, 45),
+                ),
+                _send_action(
+                    "future-over-capacity-3",
+                    task,
+                    "pending",
+                    account_id=101,
+                    scheduled_at=datetime(2026, 6, 7, 20, 50),
+                ),
+            ]
+        )
+        session.commit()
+
+        stats = refresh_task_stats(session, task)
+        needs_more = hard_hourly_requires_planning(session, task, now_value)
+
+    assert stats["hard_hourly_open_count"] == 1
+    assert stats["hard_hourly_overdue_open_count"] == 0
+    assert stats["hard_hourly_deficit"] == 2
+    assert stats["hard_hourly_status"] == "blocked"
+    assert stats["hard_hourly_last_blockers"] == {"account_capacity": 2}
+    assert needs_more is True
 
 
 def test_hard_hourly_deficit_wakes_future_next_run(monkeypatch):

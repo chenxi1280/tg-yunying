@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, OperationTarget, RuleSet, Task, TgGroup
 from app.services._common import _now
-from app.services.account_capacity import available_accounts_by_capacity, next_capacity_window
+from app.services.account_capacity import (
+    AccountCapacityReservation,
+    available_accounts_by_capacity,
+    next_capacity_window,
+)
 from app.services.content_filters import filter_outbound_content, looks_like_generated_template_noise, looks_like_operator_ui_content
 from app.services.group_listeners import collect_group_context, recent_context_messages
 from app.services.target_learning_audit import audit_learning_profile_use
@@ -227,6 +231,7 @@ def build_plan(session: Session, task: Task) -> int:
     allow_account_repeat = bool(round_config.get("allow_account_repeat", True))
     hard_blockers: dict[str, int] = {}
     prepared_actions: list[tuple[int, datetime, SendMessagePayload]] = []
+    capacity_reservations: list[AccountCapacityReservation] = []
     created = 0
     for index, quality_item in enumerate(quality_items):
         content = quality_item["content"]
@@ -238,26 +243,22 @@ def build_plan(session: Session, task: Task) -> int:
                 continue
             content = policy_result.content
         planned_at = times[index]
-        available = available_accounts_by_capacity(session, tenant_id=task.tenant_id, accounts=selected, scheduled_at=planned_at)
-        account = _choose_turn_account(available, selected, index, used_account_ids, allow_account_repeat)
+        account, planned_at = _choose_capacity_slot(
+            session,
+            task,
+            selected,
+            planned_at,
+            index,
+            used_account_ids,
+            allow_account_repeat,
+            hard_progress,
+            capacity_reservations,
+        )
         if not account:
             _hard_blocker_inc(hard_blockers, "account_capacity", hard_progress)
             stats_inc(task, "skipped_count")
             continue
         used_account_ids.add(account.id)
-        if not available:
-            decision = next_capacity_window(
-                session,
-                tenant_id=task.tenant_id,
-                account_ids=[item.id for item in selected],
-                scheduled_at=planned_at,
-            )
-            if decision.defer_until:
-                hour_end = hard_progress.get("hour_end") if hard_progress else None
-                if isinstance(hour_end, datetime) and decision.defer_until >= hour_end:
-                    _hard_blocker_inc(hard_blockers, "account_capacity", hard_progress)
-                    continue
-                planned_at = decision.defer_until
         has_native_reply = _reply_target_message_id(quality_item) is not None
         filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=group, content=content, reject_mentions=True, reject_replies=not has_native_reply)
         if not filtered.ok:
@@ -338,6 +339,9 @@ def build_plan(session: Session, task: Task) -> int:
                 ),
             )
         )
+        capacity_reservations.append(
+            AccountCapacityReservation(account_id=account.id, scheduled_at=planned_at)
+        )
     prepared_reply_count = sum(1 for _account_id, _planned_at, payload in prepared_actions if payload.reply_to_message_id)
     if prepared_reply_count < reply_min:
         stats_inc(task, "reply_candidate_shortfall_count")
@@ -381,6 +385,56 @@ def _hard_blocked_last_error(created: int, blockers: dict[str, int], progress: d
     if blockers.get("account_capacity"):
         return ACCOUNT_CAPACITY_BLOCKED_MESSAGE
     return ""
+
+
+def _choose_capacity_slot(
+    session: Session,
+    task: Task,
+    selected: list,
+    planned_at: datetime,
+    index: int,
+    used_account_ids: set[int],
+    allow_repeat: bool,
+    progress: dict[str, object],
+    reservations: list[AccountCapacityReservation],
+) -> tuple[object | None, datetime]:
+    available = _available_accounts_at(session, task, selected, planned_at, reservations)
+    account = _choose_turn_account(available, available, index, used_account_ids, allow_repeat)
+    if account:
+        return account, planned_at
+    decision = next_capacity_window(
+        session,
+        tenant_id=task.tenant_id,
+        account_ids=[item.id for item in selected],
+        scheduled_at=planned_at,
+        reservations=reservations,
+    )
+    if not decision.defer_until or _defer_crosses_hard_hour(progress, decision.defer_until):
+        return None, planned_at
+    deferred_available = _available_accounts_at(session, task, selected, decision.defer_until, reservations)
+    account = _choose_turn_account(deferred_available, deferred_available, index, used_account_ids, allow_repeat)
+    return (account, decision.defer_until) if account else (None, planned_at)
+
+
+def _available_accounts_at(
+    session: Session,
+    task: Task,
+    selected: list,
+    scheduled_at: datetime,
+    reservations: list[AccountCapacityReservation],
+) -> list:
+    return available_accounts_by_capacity(
+        session,
+        tenant_id=task.tenant_id,
+        accounts=selected,
+        scheduled_at=scheduled_at,
+        reservations=reservations,
+    )
+
+
+def _defer_crosses_hard_hour(progress: dict[str, object], defer_until: datetime) -> bool:
+    hour_end = progress.get("hour_end") if progress else None
+    return isinstance(hour_end, datetime) and defer_until >= hour_end
 
 
 def _select_accounts_for_plan(session: Session, task: Task, group: TgGroup, progress: dict[str, object]) -> list:
@@ -654,7 +708,12 @@ def _hard_hourly_round_config(config: dict, progress: dict[str, object]) -> dict
 def _hard_hourly_schedule(task: Task, progress: dict[str, object], total: int) -> list[datetime]:
     if not progress:
         return []
-    return hard_schedule_times(total, task, _now())
+    return hard_schedule_times(
+        total,
+        task,
+        _now(),
+        target_total=int(progress.get("deficit") or total),
+    )
 
 
 def _history_collect_account_ids(config: dict, accounts: list) -> list[int]:

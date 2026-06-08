@@ -24,6 +24,12 @@ class AccountCapacityDecision:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class AccountCapacityReservation:
+    account_id: int
+    scheduled_at: datetime
+
+
 def account_capacity_decision(
     session: Session,
     *,
@@ -31,10 +37,14 @@ def account_capacity_decision(
     account_id: int,
     scheduled_at: datetime | None = None,
     exclude_action_id: str | None = None,
+    exclude_action_ids: set[str] | None = None,
     exclude_message_task_id: int | None = None,
+    reservations: list[AccountCapacityReservation] | None = None,
 ) -> AccountCapacityDecision:
     setting = get_scheduling_setting(session, tenant_id)
     at = _naive(scheduled_at or _now())
+    reserved = reservations or []
+    excluded_actions = _excluded_action_ids(exclude_action_id, exclude_action_ids)
     candidates: list[tuple[datetime, str, str]] = []
 
     cooldown_until = _cooldown_until(
@@ -43,8 +53,9 @@ def account_capacity_decision(
         account_id=account_id,
         setting=setting,
         scheduled_at=at,
-        exclude_action_id=exclude_action_id,
+        exclude_action_ids=excluded_actions,
         exclude_message_task_id=exclude_message_task_id,
+        reservations=reserved,
     )
     if cooldown_until and cooldown_until > at:
         candidates.append((cooldown_until, "account_cooldown", f"账号全局冷却中，延后至 {cooldown_until:%Y-%m-%d %H:%M:%S}"))
@@ -53,14 +64,32 @@ def account_capacity_decision(
     if hour_limit > 0:
         hour_start = at.replace(minute=0, second=0, microsecond=0)
         hour_end = hour_start + timedelta(hours=1)
-        if _occupied_count(session, tenant_id, account_id, hour_start, hour_end, exclude_action_id, exclude_message_task_id) >= hour_limit:
+        occupied = _occupied_count(
+            session,
+            tenant_id,
+            account_id,
+            hour_start,
+            hour_end,
+            excluded_actions,
+            exclude_message_task_id,
+        )
+        if occupied + _reserved_count(reserved, account_id, hour_start, hour_end) >= hour_limit:
             candidates.append((hour_end, "account_hour_limit", f"账号每小时发送/互动已达上限 {hour_limit}"))
 
     day_limit = int(setting.default_account_day_limit or 0)
     if day_limit > 0:
         day_start = at.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = day_start + timedelta(days=1)
-        if _occupied_count(session, tenant_id, account_id, day_start, day_end, exclude_action_id, exclude_message_task_id) >= day_limit:
+        occupied = _occupied_count(
+            session,
+            tenant_id,
+            account_id,
+            day_start,
+            day_end,
+            excluded_actions,
+            exclude_message_task_id,
+        )
+        if occupied + _reserved_count(reserved, account_id, day_start, day_end) >= day_limit:
             candidates.append((day_end, "account_day_limit", f"账号每日发送/互动已达上限 {day_limit}"))
 
     if not candidates:
@@ -77,7 +106,9 @@ def available_accounts_by_capacity(
     scheduled_at: datetime | None = None,
     limit: int | None = None,
     exclude_action_id: str | None = None,
+    exclude_action_ids: set[str] | None = None,
     exclude_message_task_id: int | None = None,
+    reservations: list[AccountCapacityReservation] | None = None,
 ) -> list[TgAccount]:
     available: list[TgAccount] = []
     for account in accounts:
@@ -87,7 +118,9 @@ def available_accounts_by_capacity(
             account_id=account.id,
             scheduled_at=scheduled_at,
             exclude_action_id=exclude_action_id,
+            exclude_action_ids=exclude_action_ids,
             exclude_message_task_id=exclude_message_task_id,
+            reservations=reservations,
         )
         if decision.available:
             available.append(account)
@@ -103,7 +136,9 @@ def next_capacity_window(
     account_ids: list[int],
     scheduled_at: datetime | None = None,
     exclude_action_id: str | None = None,
+    exclude_action_ids: set[str] | None = None,
     exclude_message_task_id: int | None = None,
+    reservations: list[AccountCapacityReservation] | None = None,
 ) -> AccountCapacityDecision:
     decisions = [
         account_capacity_decision(
@@ -112,7 +147,9 @@ def next_capacity_window(
             account_id=account_id,
             scheduled_at=scheduled_at,
             exclude_action_id=exclude_action_id,
+            exclude_action_ids=exclude_action_ids,
             exclude_message_task_id=exclude_message_task_id,
+            reservations=reservations,
         )
         for account_id in account_ids
     ]
@@ -135,7 +172,7 @@ def _occupied_count(
     account_id: int,
     start: datetime,
     end: datetime,
-    exclude_action_id: str | None,
+    exclude_action_ids: set[str],
     exclude_message_task_id: int | None,
 ) -> int:
     action_occupied_at = func.coalesce(Action.executed_at, Action.scheduled_at)
@@ -146,8 +183,8 @@ def _occupied_count(
         action_occupied_at >= start,
         action_occupied_at < end,
     ]
-    if exclude_action_id:
-        action_filters.append(Action.id != exclude_action_id)
+    if exclude_action_ids:
+        action_filters.append(Action.id.not_in(exclude_action_ids))
     message_account_id = func.coalesce(MessageTask.account_id, MessageTask.preferred_account_id)
     message_occupied_at = func.coalesce(MessageTask.sent_at, MessageTask.scheduled_at)
     message_filters = [
@@ -171,8 +208,9 @@ def _cooldown_until(
     account_id: int,
     setting: SchedulingSetting,
     scheduled_at: datetime,
-    exclude_action_id: str | None,
+    exclude_action_ids: set[str],
     exclude_message_task_id: int | None,
+    reservations: list[AccountCapacityReservation],
 ) -> datetime | None:
     cooldown = int(setting.default_account_cooldown_seconds or 0)
     if cooldown <= 0:
@@ -182,9 +220,12 @@ def _cooldown_until(
         tenant_id=tenant_id,
         account_id=account_id,
         scheduled_at=scheduled_at,
-        exclude_action_id=exclude_action_id,
+        exclude_action_ids=exclude_action_ids,
         exclude_message_task_id=exclude_message_task_id,
     )
+    reserved_at = _last_reserved_at(reservations, account_id, scheduled_at)
+    if reserved_at and (last_at is None or reserved_at > last_at):
+        last_at = reserved_at
     if not last_at:
         return None
     return _naive(last_at) + timedelta(seconds=cooldown)
@@ -196,7 +237,7 @@ def _last_occupied_at(
     tenant_id: int,
     account_id: int,
     scheduled_at: datetime,
-    exclude_action_id: str | None,
+    exclude_action_ids: set[str],
     exclude_message_task_id: int | None,
 ) -> datetime | None:
     action_filters = [
@@ -205,8 +246,8 @@ def _last_occupied_at(
         Action.status.in_(ACTION_OCCUPIED_STATUSES),
         Action.scheduled_at <= scheduled_at,
     ]
-    if exclude_action_id:
-        action_filters.append(Action.id != exclude_action_id)
+    if exclude_action_ids:
+        action_filters.append(Action.id.not_in(exclude_action_ids))
     action_at = session.scalar(
         select(func.max(func.coalesce(Action.executed_at, Action.scheduled_at))).where(*action_filters)
     )
@@ -230,8 +271,42 @@ def _naive(value: datetime) -> datetime:
     return value.replace(tzinfo=None) if value.tzinfo is not None else value
 
 
+def _excluded_action_ids(exclude_action_id: str | None, exclude_action_ids: set[str] | None) -> set[str]:
+    excluded = set(exclude_action_ids or set())
+    if exclude_action_id:
+        excluded.add(exclude_action_id)
+    return excluded
+
+
+def _reserved_count(
+    reservations: list[AccountCapacityReservation],
+    account_id: int,
+    start: datetime,
+    end: datetime,
+) -> int:
+    return sum(
+        1
+        for reservation in reservations
+        if reservation.account_id == account_id and start <= _naive(reservation.scheduled_at) < end
+    )
+
+
+def _last_reserved_at(
+    reservations: list[AccountCapacityReservation],
+    account_id: int,
+    scheduled_at: datetime,
+) -> datetime | None:
+    values = [
+        _naive(reservation.scheduled_at)
+        for reservation in reservations
+        if reservation.account_id == account_id and _naive(reservation.scheduled_at) <= scheduled_at
+    ]
+    return max(values) if values else None
+
+
 __all__ = [
     "AccountCapacityDecision",
+    "AccountCapacityReservation",
     "account_capacity_decision",
     "available_accounts_by_capacity",
     "defer_until_with_jitter",
