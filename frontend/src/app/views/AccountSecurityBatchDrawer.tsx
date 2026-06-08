@@ -187,6 +187,7 @@ export function AccountSecurityBatchDrawer({
   const precheckButtonLabel = mode === 'standby_session' ? '预检备用 session 补齐' : isProfileMode ? '预检 / AI 生成预览' : '预检动作';
   const confirmButtonLabel = mode === 'standby_session' ? '确认补齐备用 session' : isProfileMode ? '确认执行资料初始化' : '确认创建批次';
   const batchResultTargetLabel = mode === 'standby_session' ? '备用 session 状态' : isProfileMode ? '资料变化' : '安全状态';
+  const standbyNoExecutable = mode === 'standby_session' && precheck && (precheck.summary.executable ?? 0) < 1;
   const autoSkippedCount = (precheck?.summary.skipped ?? 0) + (precheck?.summary.manual_required ?? 0);
   const avatarSourceHint = avatarStrategy.mode === 'random_from_material_pool'
     ? '系统会从素材中心已审核的头像包 / 上传图片中随机分配头像，不需要填写 material ID 或路径。'
@@ -482,7 +483,7 @@ export function AccountSecurityBatchDrawer({
   ];
   const accountColumns: ColumnsType<Account> = [
     {
-      title: '账号',
+      title: mode === 'standby_session' ? '账号（当前资料）' : '账号',
       dataIndex: 'display_name',
       width: 220,
       render: (_, account) => (
@@ -705,6 +706,14 @@ export function AccountSecurityBatchDrawer({
           />
         )}
         <Input.TextArea rows={2} value={reason} placeholder="操作原因" onChange={(event) => setReason(event.target.value)} />
+        {standbyNoExecutable && (
+          <Alert
+            type="warning"
+            showIcon
+            message="当前没有可自动补齐的备用 session"
+            description="预检已经把本次账号全部拦截为需人工处理或跳过。请先处理红色校验项；账号列展示的是当前 TG 昵称和 username，不是本次生成的新资料。"
+          />
+        )}
         <Space wrap>
           <Button icon={<RefreshCcw size={16} />} loading={loading} onClick={runPrecheck}>{precheckButtonLabel}</Button>
           {isProfileMode && <Button icon={<Activity size={16} />} loading={loading} onClick={runPrecheck}>重抽全部</Button>}

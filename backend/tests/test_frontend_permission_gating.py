@@ -589,6 +589,15 @@ def test_standby_session_batch_uses_dedicated_confirmation_flow_not_profile_prev
     assert "{isProfileMode && <Button icon={<Activity size={16} />} loading={loading} onClick={runPrecheck}>重抽全部</Button>}" in drawer
 
 
+def test_standby_session_batch_explains_zero_executable_and_current_profile_names():
+    drawer = (PROJECT_ROOT / "frontend/src/app/views/AccountSecurityBatchDrawer.tsx").read_text()
+
+    assert "standbyNoExecutable" in drawer
+    assert "当前没有可自动补齐的备用 session" in drawer
+    assert "账号列展示的是当前 TG 昵称和 username，不是本次生成的新资料。" in drawer
+    assert "mode === 'standby_session' ? '账号（当前资料）' : '账号'" in drawer
+
+
 def test_account_detail_has_authorization_assets_tab_with_slot_cards_and_recovery_action():
     modals = (PROJECT_ROOT / "frontend/src/app/views/AccountModals.tsx").read_text()
     assets_panel = (PROJECT_ROOT / "frontend/src/app/views/AccountAuthorizationAssetsPanel.tsx").read_text()
