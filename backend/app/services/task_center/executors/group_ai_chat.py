@@ -36,6 +36,13 @@ AI_QUALITY_ANCHOR_SKIP_MESSAGE = "AI 候选缺少事实锚点，已跳过本轮"
 AI_QUALITY_DUPLICATE_SKIP_MESSAGE = "AI 候选语义重复风险过高，已跳过本轮"
 DEFAULT_IDLE_CONTINUATION_SECONDS = 300
 GROUP_CHAT_SCENE = "group_chat"
+TARGET_HISTORY_PERMISSION_MARKERS = (
+    "channelprivateerror",
+    "lack permission",
+    "private",
+    "banned",
+    "gethistoryrequest",
+)
 
 CHAT_MODE_REPLY = "reply"
 CHAT_MODE_IDLE_WARMUP = "idle_warmup"
@@ -97,7 +104,15 @@ def build_plan(session: Session, task: Task) -> int:
     available_account_ids = {account.id for account in accounts}
     collect_account_id = history_fetch_account_id if history_fetch_account_id in available_account_ids else accounts[0].id
     if should_collect_listener("group", group.id, window_seconds=group.listener_interval_seconds):
-        collect_group_context(session, group, [collect_account_id], create_source_media=False, learning_scene=GROUP_CHAT_SCENE)
+        try:
+            collect_group_context(session, group, [collect_account_id], create_source_media=False, learning_scene=GROUP_CHAT_SCENE)
+        except Exception as exc:
+            if not _is_target_history_permission_error(exc):
+                raise
+            task.last_error = f"监听账号无法读取目标群历史：{exc}"
+            if hard_progress:
+                mark_plan_result(task, hard_progress, 0, {"target_permission": max(1, int(hard_progress.get("deficit") or 1))})
+            return 0
     fingerprint_source = f"{task.id}:group_ai_chat:{group.id}"
     history_depth = int(config.get("chat_history_depth") or 50)
     history_rows = recent_context_messages(session, group, history_depth)
@@ -586,6 +601,11 @@ def _hard_blocker_inc(blockers: dict[str, int], reason: str, progress: dict[str,
 
 def _mark_hard_blocked(task: Task, progress: dict[str, object], reason: str) -> None:
     mark_plan_result(task, progress, 0, {reason: max(1, int(progress.get("deficit") or 1))})
+
+
+def _is_target_history_permission_error(exc: Exception) -> bool:
+    text = f"{exc.__class__.__name__} {exc}".lower()
+    return any(marker in text for marker in TARGET_HISTORY_PERMISSION_MARKERS)
 
 
 def _mark_waiting_context(

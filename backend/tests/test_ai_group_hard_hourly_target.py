@@ -274,6 +274,48 @@ def test_group_ai_chat_hard_hourly_records_account_blocker_without_accounts(monk
     assert task.stats["hard_hourly_last_blockers"] == {"account_unavailable": 3}
 
 
+def test_group_ai_chat_hard_hourly_records_history_permission_blocker(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    def denied_history(*_args, **_kwargs):
+        raise RuntimeError("ChannelPrivateError lack permission caused by GetHistoryRequest")
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.collect_group_context", denied_history)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营", listener_interval_seconds=1))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+        task = Task(
+            id="ai-hard-hourly-history-permission",
+            tenant_id=1,
+            name="硬目标历史权限",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_group_id": 7,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 3,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+
+    assert created == 0
+    assert task.stats["hard_hourly_last_planned_count"] == 0
+    assert task.stats["hard_hourly_last_blockers"] == {"target_permission": 3}
+    assert "监听账号无法读取目标群历史" in task.last_error
+
+
 def test_hard_hourly_future_pending_covers_deficit_but_overdue_does_not(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
