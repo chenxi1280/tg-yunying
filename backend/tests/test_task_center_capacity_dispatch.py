@@ -504,6 +504,36 @@ def test_hard_hourly_plain_send_ignores_context_expiration(monkeypatch):
         assert action.result.get("error_code") != "context_expired"
 
 
+def test_hard_hourly_reply_send_keeps_context_expiration(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        old_context, _new_context = _add_cycle_contexts(session, now_value)
+        payload = {
+            **_expired_cycle_payload(old_context.id, text="hard target reply"),
+            "hard_hourly_target": True,
+            "reply_to_message_id": 1001,
+        }
+        session.add(_cycle_action("action-hard-hourly-reply", now_value, payload))
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("expired reply must not call TG")),
+        )
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert dispatcher.dispatch_action(session, claimed) is True
+        action = session.get(Action, "action-hard-hourly-reply")
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "context_expired"
+
+
 def test_context_expiration_ignores_backfilled_older_messages(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
