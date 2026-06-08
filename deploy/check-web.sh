@@ -10,12 +10,14 @@ ensure_runtime_env
 
 ATTEMPTS="${TGYUNYING_CHECK_ATTEMPTS:-12}"
 RETRY_DELAY="${TGYUNYING_CHECK_RETRY_DELAY_SECONDS:-5}"
+WORKER_READY_TIMEOUT="${TGYUNYING_WORKER_READY_TIMEOUT_SECONDS:-90}"
 BACKEND_URL="http://${TGYUNYING_BACKEND_BIND_HOST:-127.0.0.1}:${TGYUNYING_BACKEND_HOST_PORT:-18090}"
 STATIC_DIR="${TGYUNYING_FRONTEND_STATIC_BASE_DIR:-/data/infra/www/${TGYUNYING_WEB_HOST:-tgyunying}}/current"
 JS_ASSET_PATTERN='src="/assets/[^"]+\.js"'
 GZIP_HEADER_PATTERN='^content-encoding:[[:space:]]*gzip[[:space:]]*$'
 
 require_command curl
+require_command docker
 
 check_url() {
   local label="$1"
@@ -78,6 +80,39 @@ check_frontend_gzip() {
   return 1
 }
 
+wait_for_worker_ready() {
+  local container_name="$1"
+  local started_at status health elapsed
+  started_at="$(date +%s)"
+
+  while true; do
+    status="$(docker inspect "$container_name" --format '{{.State.Status}}' 2>/dev/null || true)"
+    health="$(docker inspect "$container_name" --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>/dev/null || true)"
+    if [[ "$status" == "running" && ( -z "$health" || "$health" == "healthy" ) ]]; then
+      echo "OK worker container ${container_name}: status=$status health=${health:-none}"
+      return 0
+    fi
+    if [[ "$status" == "exited" || "$status" == "dead" || "$health" == "unhealthy" ]]; then
+      echo "BAD worker container ${container_name}: status=${status:-missing} health=${health:-none}" >&2
+      docker logs --tail 200 "$container_name" >&2 || true
+      return 1
+    fi
+    elapsed=$(($(date +%s) - started_at))
+    if (( elapsed >= WORKER_READY_TIMEOUT )); then
+      echo "BAD worker container ${container_name}: timed out waiting for health, status=${status:-missing} health=${health:-none}" >&2
+      docker logs --tail 200 "$container_name" >&2 || true
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+run_planner_smoke_check() {
+  local limit="${TGYUNYING_PLANNER_SMOKE_LIMIT:-1}"
+  echo "==> Running planner smoke check"
+  docker exec tgyunying-worker-planner python -m app.worker --once --role planner --limit "$limit"
+}
+
 backend_status="$(docker inspect tgyunying-backend --format '{{.State.Status}}' 2>/dev/null || true)"
 backend_health="$(docker inspect tgyunying-backend --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' 2>/dev/null || true)"
 worker_containers=(
@@ -98,14 +133,9 @@ fi
 echo "OK backend container: status=$backend_status health=${backend_health:-none}"
 
 for worker_container in "${worker_containers[@]}"; do
-  worker_status="$(docker inspect "$worker_container" --format '{{.State.Status}}' 2>/dev/null || true)"
-  if [[ "$worker_status" != "running" ]]; then
-    echo "BAD worker container ${worker_container}: status=${worker_status:-missing}" >&2
-    docker logs --tail 200 "$worker_container" >&2 || true
-    exit 1
-  fi
-  echo "OK worker container ${worker_container}: status=$worker_status"
+  wait_for_worker_ready "$worker_container"
 done
+run_planner_smoke_check
 
 if [[ ! -f "${STATIC_DIR}/index.html" ]]; then
   echo "BAD frontend static index missing: ${STATIC_DIR}/index.html" >&2
