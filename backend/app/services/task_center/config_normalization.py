@@ -26,7 +26,7 @@ def normalize_operation_target_references(session: Session, tenant_id: int, task
             target, group = _group_for_operation_target(session, tenant_id, target_id, require_can_send=False, require_authorized=False)
             next_config["target_operation_target_id"] = target.id
             next_config["target_group_id"] = group.id
-            next_config["target_group_name"] = next_config.get("target_group_name") or target.title or group.title
+            next_config["target_group_name"] = target.title or group.title
     elif task_type == "group_relay":
         normalized_sources: list[dict[str, Any]] = []
         for item in next_config.get("source_groups") or []:

@@ -2383,7 +2383,7 @@ def test_task_settings_update_normalizes_operation_target_references():
                 TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群资产", auth_status="已授权运营", can_send=True),
                 OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="源群目标", can_send=True, auth_status="已授权运营"),
                 OperationTarget(id=22, tenant_id=1, target_type="group", tg_peer_id="-1009", title="目标群目标", can_send=True, auth_status="已授权运营"),
-                Task(id="ai-settings", tenant_id=1, name="待编辑 AI", type="group_ai_chat", status="running", type_config={"target_group_id": 7, "silent_start": "23:00", "ramp_up_minutes": 60}),
+                Task(id="ai-settings", tenant_id=1, name="待编辑 AI", type="group_ai_chat", status="running", type_config={"target_group_id": 7, "target_group_name": "旧的缓存群名", "silent_start": "23:00", "ramp_up_minutes": 60}),
                 Task(id="relay-settings", tenant_id=1, name="待编辑转发", type="group_relay", status="running", type_config={"source_groups": [{"group_id": 7}], "target_group_id": 7, "target_group_ids": [7]}),
             ]
         )
