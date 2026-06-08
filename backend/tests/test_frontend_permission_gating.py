@@ -206,6 +206,14 @@ def test_task_center_review_uses_task_specific_curve_units():
     assert "${profile.intensity} ${profileUnit}" in source
 
 
+def test_task_center_ai_group_rows_prefer_target_summary_title():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    assert "function taskListTitle(task: TaskCenterTask): string" in source
+    assert "return task.target_summary || task.type_config?.target_group_name || task.name;" in source
+    assert "<Typography.Text strong>{taskListTitle(task)}</Typography.Text>" in source
+
+
 def test_task_center_applies_ai_limit_recommendations_without_overwriting_manual_fields():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()

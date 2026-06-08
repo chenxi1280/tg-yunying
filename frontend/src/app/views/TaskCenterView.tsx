@@ -91,6 +91,11 @@ function hardHourlyEditValues(config: Record<string, any>): Record<string, any> 
   };
 }
 
+function taskListTitle(task: TaskCenterTask): string {
+  if (task.type !== 'group_ai_chat') return task.name;
+  return task.target_summary || task.type_config?.target_group_name || task.name;
+}
+
 function failureDiagnosis(action: TaskCenterAction) {
   const diagnosis = action.failure_diagnosis ?? {};
   if (!diagnosis.operator_summary && !diagnosis.suggested_action) return null;
@@ -1135,7 +1140,10 @@ export default function TaskCenterView({
       width: 340,
       render: (_, task) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text strong>{task.name}</Typography.Text>
+          <Typography.Text strong>{taskListTitle(task)}</Typography.Text>
+          {task.type === 'group_ai_chat' && task.name !== taskListTitle(task) && (
+            <Typography.Text type="secondary">{task.name}</Typography.Text>
+          )}
           <Typography.Text type="secondary">{TYPE_LABEL[task.type] ?? task.type}</Typography.Text>
         </Space>
       ),
