@@ -30,6 +30,7 @@ Object.assign(ROUTE_VIEWS, {
   '/group-management': 'targetManagement',
   '/operation-targets': 'targetManagement',
   '/material-center': 'materials',
+  '/tasks': 'taskManagement',
   '/group-archives': 'archives',
   '/rule-center': 'ruleCenter',
   '/listener-center': 'listenerCenter',

@@ -504,6 +504,7 @@ def test_target_profile_is_top_level_page_not_target_detail_governance():
     modals = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
 
     assert "targetProfile: '/target-profile'" in routes
+    assert "'/tasks': 'taskManagement'" in routes
     assert "targetProfile: 'target_profile.view'" in utils
     assert "TargetProfileView" in shell
     assert "['targetProfile', '目标画像'" in shell
