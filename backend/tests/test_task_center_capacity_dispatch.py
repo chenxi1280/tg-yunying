@@ -473,6 +473,37 @@ def test_context_expired_skip_clears_same_cycle_pending_actions(monkeypatch):
         assert task.next_run_at < now_value + timedelta(minutes=5)
 
 
+def test_hard_hourly_plain_send_ignores_context_expiration(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        old_context, _new_context = _add_cycle_contexts(session, now_value)
+        payload = {
+            **_expired_cycle_payload(old_context.id, text="hard target send"),
+            "hard_hourly_target": True,
+            "hard_hourly_bucket": now_value.replace(minute=0, second=0, microsecond=0).isoformat(),
+        }
+        session.add(_cycle_action("action-hard-hourly-due", now_value, payload))
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            lambda *args, **kwargs: SendResult(True, remote_message_id="tg-hard-hourly"),
+        )
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert dispatcher.dispatch_action(session, claimed) is True
+        action = session.get(Action, "action-hard-hourly-due")
+        assert action.status == "success"
+        assert action.result["telegram_msg_id"] == "tg-hard-hourly"
+        assert action.result.get("error_code") != "context_expired"
+
+
 def test_context_expiration_ignores_backfilled_older_messages(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

@@ -1568,6 +1568,8 @@ def _retry_after_seconds(detail: str) -> int:
 def _context_expired(session: Session, payload: SendMessagePayload) -> bool:
     if not payload.cycle_id or not payload.group_id or not payload.context_snapshot_message_id or payload.context_expire_after_messages <= 0:
         return False
+    if payload.hard_hourly_target and not payload.reply_to_message_id:
+        return False
     return _newer_context_count(session, payload) >= payload.context_expire_after_messages
 
 
