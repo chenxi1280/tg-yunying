@@ -515,6 +515,15 @@ def test_target_profile_is_top_level_page_not_target_detail_governance():
     assert "target_learning." not in modals
 
 
+def test_frontend_static_publish_preserves_previous_hashed_assets():
+    source = (PROJECT_ROOT / "deploy/compose-up.sh").read_text()
+
+    assert "preserve_frontend_assets" in source
+    assert "find \"$releases_dir\" -mindepth 2 -maxdepth 2 -type d -name assets" in source
+    assert "cp -a \"${asset_dir}/.\" \"${tmp_dir}/assets/\"" in source
+    assert "preserve_frontend_assets \"$releases_dir\" \"$tmp_dir\"" in source
+
+
 def test_api_error_message_supports_trace_id_in_structured_detail_objects():
     source = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 

@@ -85,6 +85,28 @@ prune_static_releases() {
   done
 }
 
+preserve_frontend_assets() {
+  local releases_dir="$1"
+  local tmp_dir="$2"
+  local preserved_assets=()
+
+  if [[ ! -d "$releases_dir" ]]; then
+    return 0
+  fi
+
+  mapfile -t preserved_assets < <(find "$releases_dir" -mindepth 2 -maxdepth 2 -type d -name assets ! -path "${tmp_dir}/assets" | sort)
+  if (( ${#preserved_assets[@]} == 0 )); then
+    return 0
+  fi
+
+  echo "==> Preserving frontend assets from ${#preserved_assets[@]} previous release(s)"
+  mkdir -p "${tmp_dir}/assets"
+  local asset_dir
+  for asset_dir in "${preserved_assets[@]}"; do
+    cp -a "${asset_dir}/." "${tmp_dir}/assets/"
+  done
+}
+
 publish_frontend_static() {
   local image="$1"
   local base_dir="${TGYUNYING_FRONTEND_STATIC_BASE_DIR:-/data/infra/www/${TGYUNYING_WEB_HOST:-tgyunying}}"
@@ -101,6 +123,7 @@ publish_frontend_static() {
   mkdir -p "$releases_dir"
   rm -rf "$tmp_dir"
   mkdir -p "$tmp_dir"
+  preserve_frontend_assets "$releases_dir" "$tmp_dir"
 
   container_id="$(docker create "$image")"
   cleanup_static_container() {
