@@ -107,10 +107,11 @@ def build_plan(session: Session, task: Task) -> int:
         except Exception as exc:
             if not _is_target_history_permission_error(exc):
                 raise
-            task.last_error = f"监听账号无法读取目标群历史：{exc}"
             if hard_progress:
-                mark_plan_result(task, hard_progress, 0, {"target_permission": max(1, int(hard_progress.get("deficit") or 1))})
-            return 0
+                _record_history_collect_degraded(task, exc)
+            else:
+                task.last_error = f"监听账号无法读取目标群历史：{exc}"
+                return 0
     fingerprint_source = f"{task.id}:group_ai_chat:{group.id}"
     history_depth = int(config.get("chat_history_depth") or 50)
     history_rows = recent_context_messages(session, group, history_depth)
@@ -620,14 +621,24 @@ def _collect_context_with_candidate_accounts(session: Session, task: Task, group
 
 
 def _record_history_collect_recovery(task: Task, failed_ids: list[int], success_id: int | None) -> None:
-    if not failed_ids:
-        return
     stats = dict(task.stats or {})
+    stats.pop("history_fetch_degraded", None)
+    stats.pop("history_fetch_degraded_reason", None)
+    if not failed_ids:
+        task.stats = stats
+        return
     stats["history_fetch_failed_account_ids"] = failed_ids
     if success_id is None:
         stats.pop("history_fetch_fallback_account_id", None)
     else:
         stats["history_fetch_fallback_account_id"] = success_id
+    task.stats = stats
+
+
+def _record_history_collect_degraded(task: Task, exc: Exception) -> None:
+    stats = dict(task.stats or {})
+    stats["history_fetch_degraded"] = True
+    stats["history_fetch_degraded_reason"] = str(exc)
     task.stats = stats
 
 
