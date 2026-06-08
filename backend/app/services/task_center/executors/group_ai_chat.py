@@ -34,6 +34,9 @@ WAITING_NEW_CONTEXT_MESSAGE = "暂无新的真人上下文，等待群内新消�
 WAITING_IDLE_CONTINUATION_MESSAGE = "持续监听中，等待新消息或空闲续聊间隔"
 AI_QUALITY_ANCHOR_SKIP_MESSAGE = "AI 候选缺少事实锚点，已跳过本轮"
 AI_QUALITY_DUPLICATE_SKIP_MESSAGE = "AI 候选语义重复风险过高，已跳过本轮"
+ACCOUNT_CAPACITY_BLOCKED_MESSAGE = "账号容量已排满，等待账号额度恢复后继续执行"
+ACCOUNT_COOLDOWN_BLOCKED_MESSAGE = "账号冷却中，等待冷却后继续执行"
+ACCOUNT_UNAVAILABLE_MESSAGE = "没有可用账号，等待账号恢复后继续执行"
 DEFAULT_IDLE_CONTINUATION_SECONDS = 300
 GROUP_CHAT_SCENE = "group_chat"
 TARGET_HISTORY_PERMISSION_MARKERS = (
@@ -85,20 +88,11 @@ def build_plan(session: Session, task: Task) -> int:
             mark_plan_result(task, hard_progress, 0, {"target_permission": max(1, int(hard_progress.get("deficit") or 1))})
         return 0
     target_label = target.title if target and target.tenant_id == task.tenant_id else group.title
-    accounts = select_task_accounts(session, task.tenant_id, task.account_config or {}, target_group_id=group.id)
+    accounts = _select_accounts_for_plan(session, task, group, hard_progress)
     if not accounts:
-        no_cooldown_config = dict(task.account_config or {})
-        no_cooldown_config["cooldown_per_account_minutes"] = 0
-        cooldown_candidates = select_task_accounts(
-            session,
-            task.tenant_id,
-            no_cooldown_config,
-            target_group_id=group.id,
-            limit=1,
-        )
-        task.last_error = "账号冷却中，等待冷却后继续执行" if cooldown_candidates else "没有可用账号，等待账号恢复后继续执行"
+        error_message, reason = _account_shortage_reason(session, task, group, hard_progress)
+        task.last_error = error_message
         if hard_progress:
-            reason = "account_capacity" if cooldown_candidates else "account_unavailable"
             mark_plan_result(task, hard_progress, 0, {reason: max(1, int(hard_progress.get("deficit") or 1))})
         return 0
     if should_collect_listener("group", group.id, window_seconds=group.listener_interval_seconds):
@@ -373,12 +367,83 @@ def build_plan(session: Session, task: Task) -> int:
     stats.pop("skip_reason", None)
     stats.pop("idle_continuation_next_run_at", None)
     stats.pop("force_bootstrap_once", None)
-    task.last_error = ""
+    task.last_error = _hard_blocked_last_error(created, hard_blockers, hard_progress)
     task.stats = stats
     if hard_progress:
         mark_plan_result(task, hard_progress, created, hard_blockers or None)
     stats_inc(task, "total_rounds")
     return created
+
+
+def _hard_blocked_last_error(created: int, blockers: dict[str, int], progress: dict[str, object]) -> str:
+    if created > 0 or not progress:
+        return ""
+    if blockers.get("account_capacity"):
+        return ACCOUNT_CAPACITY_BLOCKED_MESSAGE
+    return ""
+
+
+def _select_accounts_for_plan(session: Session, task: Task, group: TgGroup, progress: dict[str, object]) -> list:
+    options = _hard_hourly_account_options(progress)
+    if progress:
+        options["enforce_capacity"] = False
+    return select_task_accounts(
+        session,
+        task.tenant_id,
+        task.account_config or {},
+        target_group_id=group.id,
+        **options,
+    )
+
+
+def _account_shortage_reason(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    progress: dict[str, object],
+) -> tuple[str, str]:
+    options = _hard_hourly_account_options(progress)
+    if _has_account_candidate(session, task, group, task.account_config or {}, options):
+        return ACCOUNT_CAPACITY_BLOCKED_MESSAGE, "account_capacity"
+    no_cooldown_config = dict(task.account_config or {})
+    no_cooldown_config["cooldown_per_account_minutes"] = 0
+    if _has_account_candidate(session, task, group, no_cooldown_config, options):
+        return ACCOUNT_COOLDOWN_BLOCKED_MESSAGE, "account_cooldown"
+    return ACCOUNT_UNAVAILABLE_MESSAGE, "account_unavailable"
+
+
+def _has_account_candidate(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    account_config: dict,
+    options: dict[str, object],
+) -> bool:
+    return bool(
+        select_task_accounts(
+            session,
+            task.tenant_id,
+            account_config,
+            target_group_id=group.id,
+            enforce_capacity=False,
+            **options,
+        )
+    )
+
+
+def _hard_hourly_account_options(progress: dict[str, object]) -> dict[str, object]:
+    if not progress:
+        return {}
+    return {
+        "limit": _hard_hourly_account_scan_target(progress),
+        "enforce_max_concurrent": False,
+    }
+
+
+def _hard_hourly_account_scan_target(progress: dict[str, object]) -> int:
+    goal = max(0, int(progress.get("goal") or 0))
+    deficit = max(0, int(progress.get("deficit") or 0))
+    return max(HARD_HOURLY_MAX_BATCH_MESSAGES, goal, deficit)
 
 
 def _generate_group_planned_items(

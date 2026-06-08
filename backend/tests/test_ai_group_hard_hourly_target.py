@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
+from app.models import Action, OperationTarget, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.hard_hourly import requires_planning as hard_hourly_requires_planning
@@ -16,13 +16,22 @@ from app.services.task_center.stats import next_run_after_task, refresh_task_sta
 from app.timezone import BEIJING_TZ
 
 
-def _send_action(action_id: str, task: Task, status: str, *, scheduled_at: datetime | None = None, executed_at: datetime | None = None) -> Action:
+def _send_action(
+    action_id: str,
+    task: Task,
+    status: str,
+    *,
+    account_id: int | None = None,
+    scheduled_at: datetime | None = None,
+    executed_at: datetime | None = None,
+) -> Action:
     return Action(
         id=action_id,
         tenant_id=1,
         task_id=task.id,
         task_type="group_ai_chat",
         action_type="send_message",
+        account_id=account_id,
         status=status,
         scheduled_at=scheduled_at,
         executed_at=executed_at,
@@ -241,6 +250,135 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
     assert all(action.payload["hard_hourly_deficit_at_plan"] == 300 for action in actions)
 
 
+def test_group_ai_chat_hard_hourly_scans_goal_sized_pool_when_front_accounts_are_full(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        samples = [
+            "今晚安排我看群公告确认了",
+            "报名入口刚才有人发过吗",
+            "新来的同学先看下置顶",
+            "后续通知应该还会补充",
+            "这个时间大家都在线吗",
+            "我这边看到流程挺清楚",
+            "还有人需要报名链接吗",
+            "先按老师通知来就行",
+            "名单确认完再同步一下",
+            "等会儿有变化群里说",
+        ]
+        return samples[:count], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        for account_id in range(101, 201):
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        task = Task(
+            id="ai-hard-hourly-scan-beyond-front-accounts",
+            tenant_id=1,
+            name="硬目标扫过前排满额账号",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_group_id": 7,
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "fact_anchor_required": False,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 300,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add(task)
+        session.flush()
+        session.add_all(
+            _send_action(
+                f"front-account-full-{account_id}",
+                task,
+                "pending",
+                account_id=account_id,
+                scheduled_at=now_value + timedelta(minutes=5),
+            )
+            for account_id in range(101, 181)
+        )
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.account_id.asc())))
+
+    planned_account_ids = [int(action.account_id) for action in actions if (action.payload or {}).get("hard_hourly_target")]
+    assert created == 10
+    assert planned_account_ids == list(range(181, 191))
+    assert task.stats["hard_hourly_last_planned_count"] == 10
+    assert "hard_hourly_last_blockers" not in task.stats
+
+
+def test_group_ai_chat_hard_hourly_uses_accounts_available_later_in_hour(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        return ["今晚安排先看群公告", "报名入口有人再发下吗"][:count], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, jitter_min_seconds=0, jitter_max_seconds=0, default_account_cooldown_seconds=120))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+        task = Task(
+            id="ai-hard-hourly-later-capacity",
+            tenant_id=1,
+            name="硬目标稍后可用",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_group_id": 7,
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "fact_anchor_required": False,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 3,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add(task)
+        session.flush()
+        recent_at = now_value - timedelta(seconds=60)
+        session.add(_send_action("recent-success", task, "success", account_id=101, scheduled_at=recent_at, executed_at=recent_at))
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.scheduled_at.asc())))
+
+    hard_actions = [action for action in actions if (action.payload or {}).get("hard_hourly_target")]
+    assert created == 2
+    assert [action.account_id for action in hard_actions] == [101, 101]
+    assert hard_actions[0].scheduled_at == datetime(2026, 6, 7, 20, 11)
+    assert max(action.scheduled_at for action in hard_actions) < datetime(2026, 6, 7, 21, 0)
+    assert task.last_error == ""
+    assert "hard_hourly_last_blockers" not in task.stats
+
+
 def test_group_ai_chat_hard_hourly_records_account_blocker_without_accounts(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -273,6 +411,63 @@ def test_group_ai_chat_hard_hourly_records_account_blocker_without_accounts(monk
     assert created == 0
     assert task.stats["hard_hourly_last_planned_count"] == 0
     assert task.stats["hard_hourly_last_blockers"] == {"account_unavailable": 3}
+
+
+def test_group_ai_chat_hard_hourly_records_capacity_blocker_when_accounts_are_full(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        return ["今晚安排先看群公告", "报名入口有人再发下吗", "后面变化等群里通知"][:count], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.account_capacity._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        for account_id in range(101, 111):
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        task = Task(
+            id="ai-hard-hourly-accounts-full",
+            tenant_id=1,
+            name="硬目标账号容量满",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_group_id": 7,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 13,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add(task)
+        session.flush()
+        session.add_all(
+            _send_action(
+                f"account-full-{account_id}",
+                task,
+                "pending",
+                account_id=account_id,
+                scheduled_at=now_value + timedelta(minutes=5),
+            )
+            for account_id in range(101, 111)
+        )
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+
+    assert created == 0
+    assert task.last_error == "账号容量已排满，等待账号额度恢复后继续执行"
+    assert task.stats["hard_hourly_last_planned_count"] == 0
+    assert task.stats["hard_hourly_last_blockers"] == {"account_capacity": 3}
 
 
 def test_group_ai_chat_hard_hourly_degrades_history_permission_and_plans(monkeypatch):

@@ -33,6 +33,7 @@ def select_task_accounts(
     limit: int | None = None,
     scheduled_at=None,
     enforce_max_concurrent: bool = True,
+    enforce_capacity: bool = True,
 ) -> list[TgAccount]:
     max_concurrent = int(account_config.get("max_concurrent") or 20)
     requested = int(limit or max_concurrent)
@@ -52,11 +53,15 @@ def select_task_accounts(
         account_config,
         scan_limit,
     )
-    available = available_accounts_by_capacity(
-        session,
-        tenant_id=tenant_id,
-        accounts=accounts,
-        scheduled_at=scheduled_at,
+    available = (
+        available_accounts_by_capacity(
+            session,
+            tenant_id=tenant_id,
+            accounts=accounts,
+            scheduled_at=scheduled_at,
+        )
+        if enforce_capacity
+        else accounts
     )
     scores = _effective_health_scores(session, tenant_id, available)
     return _health_weighted_accounts(available, wanted, scores)
