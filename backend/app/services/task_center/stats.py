@@ -32,7 +32,7 @@ def next_run_after_task(task: Task):
     if task.type == "group_ai_chat":
         hard_next = _stats_datetime(task, "hard_hourly_next_check_at")
         if hard_hourly_enabled(task) and hard_next:
-            return hard_next
+            return max(hard_next, _now())
         waiting_until = _stats_datetime(task, "idle_continuation_next_run_at")
         if waiting_until:
             return waiting_until

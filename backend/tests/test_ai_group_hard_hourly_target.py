@@ -326,7 +326,9 @@ def test_hard_hourly_deficit_wakes_future_next_run(monkeypatch):
     assert task.next_run_at == now_value
 
 
-def test_next_run_after_task_uses_hard_hourly_next_check():
+def test_next_run_after_task_uses_hard_hourly_next_check(monkeypatch):
+    now_value = datetime(2026, 6, 7, 20, 30)
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
     task = Task(
         id="task-hard-hourly-next-check",
         tenant_id=1,
@@ -343,6 +345,66 @@ def test_next_run_after_task_uses_hard_hourly_next_check():
     )
 
     assert next_run_after_task(task) == datetime(2026, 6, 7, 20, 31)
+
+
+def test_next_run_after_task_clamps_stale_hard_hourly_next_check(monkeypatch):
+    now_value = datetime(2026, 6, 7, 20, 35)
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+    task = Task(
+        id="task-hard-hourly-stale-next-check",
+        tenant_id=1,
+        name="硬目标过期检查",
+        type="group_ai_chat",
+        status="running",
+        type_config={
+            "target_group_id": 7,
+            "hard_hourly_target_enabled": True,
+            "hourly_min_messages": 2,
+            "hard_hourly_strategy": "force_planning",
+        },
+        stats={"hard_hourly_next_check_at": "2026-06-07T20:26:00"},
+    )
+
+    assert next_run_after_task(task) == now_value
+
+
+def test_group_ai_chat_hard_hourly_reply_shortfall_records_blocker(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+        task = Task(
+            id="ai-hard-hourly-reply-shortfall",
+            tenant_id=1,
+            name="硬目标引用不足",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_group_id": 7,
+                "reply_min_per_round": 1,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 3,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+
+    assert created == 0
+    assert task.stats["hard_hourly_last_planned_count"] == 0
+    assert task.stats["hard_hourly_last_blockers"] == {"reply_target_shortfall": 3}
+    assert task.stats["hard_hourly_next_check_at"] == "2026-06-07T20:10:30"
 
 
 def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(monkeypatch):

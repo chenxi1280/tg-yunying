@@ -150,6 +150,8 @@ def build_plan(session: Session, task: Task) -> int:
         if not input_result.passed:
             task.last_error = f"规则输入过滤跳过：{input_result.reason}"
             stats_inc(task, "skipped_count")
+            if hard_progress:
+                _mark_hard_blocked(task, hard_progress, "input_filter")
             return 0
     topic_thread = _topic_thread_summary(config, group, usable_context_rows, previous_ai_messages)
     topic_plan = _topic_plan_summary(config, group, topic_thread, turn_count)
@@ -164,6 +166,8 @@ def build_plan(session: Session, task: Task) -> int:
     if reply_min > len(reply_target_pool):
         stats_inc(task, "reply_target_shortfall_count")
         task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
+        if hard_progress:
+            _mark_hard_blocked(task, hard_progress, "reply_target_shortfall")
         return 0
     reply_targets = reply_target_pool[:reply_min]
     normal_count = max(0, turn_count - len(reply_targets))
@@ -329,6 +333,8 @@ def build_plan(session: Session, task: Task) -> int:
     if prepared_reply_count < reply_min:
         stats_inc(task, "reply_candidate_shortfall_count")
         task.last_error = "AI 引用回复候选不足，已跳过本轮"
+        if hard_progress:
+            _mark_hard_blocked(task, hard_progress, "reply_target_shortfall")
         return 0
     for account_id, planned_at, payload in prepared_actions:
         create_send_action(session, task, account_id, planned_at, payload)
@@ -575,6 +581,10 @@ def _hard_blocker_inc(blockers: dict[str, int], reason: str, progress: dict[str,
     if not progress:
         return
     blockers[reason] = int(blockers.get(reason) or 0) + 1
+
+
+def _mark_hard_blocked(task: Task, progress: dict[str, object], reason: str) -> None:
+    mark_plan_result(task, progress, 0, {reason: max(1, int(progress.get("deficit") or 1))})
 
 
 def _mark_waiting_context(
