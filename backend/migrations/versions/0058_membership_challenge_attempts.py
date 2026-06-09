@@ -1,6 +1,6 @@
 """membership challenge attempts
 
-Revision ID: 0058_membership_challenge_attempts
+Revision ID: 0058_membership_challenge
 Revises: 0057_ai_group_hard_target_300
 Create Date: 2026-06-10
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0058_membership_challenge_attempts"
+revision = "0058_membership_challenge"
 down_revision = "0057_ai_group_hard_target_300"
 branch_labels = None
 depends_on = None
