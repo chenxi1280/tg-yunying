@@ -228,12 +228,6 @@ def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, s
         stmt = stmt.where(Task.status == status_filter)
     tasks = list(session.scalars(stmt.order_by(Task.priority.asc(), Task.created_at.desc())))
     summaries = _task_runtime_summaries(session, tenant_id)
-    missing_summary_tasks = [task for task in tasks if task.id not in summaries]
-    if missing_summary_tasks:
-        for task in missing_summary_tasks:
-            refresh_task_stats(session, task)
-        session.commit()
-        summaries = _task_runtime_summaries(session, tenant_id)
     task_rows = [_task_payload_with_runtime_summary(session, task, summaries.get(task.id)) for task in tasks]
     return [*task_rows, *list_profile_batch_tasks(session, tenant_id, type_filter, status_filter)]
 

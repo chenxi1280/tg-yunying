@@ -4977,19 +4977,14 @@ def test_refresh_task_stats_clears_recovered_backlog_marker(monkeypatch):
     assert "planner_backlog_global_pending" not in stats
 
 
-def test_list_tasks_returns_refreshed_backlog_stats(monkeypatch):
+def test_list_tasks_keeps_stored_stats_without_action_recount(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
-    monkeypatch.setattr(
-        "app.services.task_center.stats.get_settings",
-        lambda: SimpleNamespace(
-            max_pending_global=10_000,
-            max_pending_per_task=1_000,
-            oldest_pending_age_seconds=3_600,
-        ),
-        raising=False,
-    )
+    def fail_refresh(_session, _task):
+        raise AssertionError("task list should not refresh action stats")
+
+    monkeypatch.setattr("app.services.task_center.service.refresh_task_stats", fail_refresh)
 
     with Session(engine) as session:
         task = Task(
@@ -5009,8 +5004,8 @@ def test_list_tasks_returns_refreshed_backlog_stats(monkeypatch):
         listed = list_tasks(session, 1, "group_ai_chat", "running")
 
     stats = listed[0]["stats"]
-    assert "planner_backlog_blocked" not in stats
-    assert "planner_backlog_global_pending" not in stats
+    assert stats["planner_backlog_blocked"] is True
+    assert stats["planner_backlog_global_pending"] == 1887
 
 
 def test_list_tasks_uses_runtime_summary_without_recounting_actions(monkeypatch):
@@ -5056,6 +5051,34 @@ def test_list_tasks_uses_runtime_summary_without_recounting_actions(monkeypatch)
     assert listed["stats"]["pending_count"] == 154
     assert listed["stats"]["hard_hourly_goal"] == 300
     assert listed["stats"]["hard_hourly_deficit"] == 284
+
+
+def test_list_tasks_without_runtime_summary_does_not_recount_actions(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    def fail_refresh(_session, _task):
+        raise AssertionError("missing runtime summary must not block task list")
+
+    monkeypatch.setattr("app.services.task_center.service.refresh_task_stats", fail_refresh)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-list-no-summary",
+            tenant_id=1,
+            name="AI 活跃群",
+            type="group_ai_chat",
+            status="running",
+            stats={"success_count": 8, "hard_hourly_goal": 300, "hard_hourly_deficit": 292},
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+        [listed] = list_tasks(session, 1, "group_ai_chat", "running")
+
+    assert listed["stats"]["success_count"] == 8
+    assert listed["stats"]["hard_hourly_goal"] == 300
+    assert listed["stats"]["hard_hourly_deficit"] == 292
 
 
 def test_operation_targets_expose_linked_group_capability_summary():

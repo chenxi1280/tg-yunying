@@ -254,7 +254,9 @@ function AppShell() {
     }
     try {
       const targets = await api<OperationTarget[]>('/operation-targets?target_type=group');
-      const target = targets.find((item) => item.linked_group_id === groupId);
+      const group = groups.find((item) => item.id === groupId);
+      const target = targets.find((item) => item.linked_group_id === groupId)
+        ?? targets.find((item) => group?.tg_peer_id && item.tg_peer_id === group.tg_peer_id);
       if (target) {
         openTaskFromTarget('group_ai_chat', target);
         return;
