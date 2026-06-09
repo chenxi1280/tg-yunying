@@ -37,6 +37,51 @@ from .telethon_utils import resolve_telethon_target, telethon_send_target
 from app.timezone import BEIJING_TZ
 
 _resolve_telethon_target = resolve_telethon_target
+
+VERIFICATION_CONTEXT_DEFAULT_LIMIT = 30
+VERIFICATION_CONTEXT_PREVIEW_LIMIT = 500
+
+
+def _button_labels(message: Any) -> list[str]:
+    labels: list[str] = []
+    for row in getattr(message, "buttons", None) or []:
+        for button in row:
+            label = (getattr(button, "text", "") or "").strip()
+            if label:
+                labels.append(label)
+    return labels
+
+
+def _verification_message_text(message: Any) -> str:
+    parts: list[str] = []
+    text = (getattr(message, "message", "") or "").strip()
+    if text:
+        parts.append(text)
+    if getattr(message, "media", None):
+        parts.append("[媒体消息]")
+    labels = _button_labels(message)
+    if labels:
+        parts.append(f"[按钮：{' / '.join(labels)}]")
+    return " ".join(parts).strip()
+
+
+async def _verification_context_row(message: Any) -> dict[str, Any] | None:
+    text = _verification_message_text(message)
+    if not text:
+        return None
+    sender = await message.get_sender()
+    sender_name = (
+        getattr(sender, "first_name", None)
+        or getattr(sender, "username", None)
+        or getattr(sender, "title", None)
+        or "未知来源"
+    )
+    return {
+        "message_id": getattr(message, "id", ""),
+        "sender": sender_name,
+        "text": text[:VERIFICATION_CONTEXT_PREVIEW_LIMIT],
+        "sent_at": getattr(message, "date", None),
+    }
 _telethon_send_target = telethon_send_target
 
 GROUP_ADMIN_APPROVE_LABEL = "通过（管理员）"
@@ -1252,16 +1297,9 @@ class TelethonTelegramGateway(TelegramGateway):
         messages = await client.get_messages(target, limit=limit)
         rows: list[dict[str, Any]] = []
         for message in messages:
-            text = (getattr(message, "message", "") or "").strip()
-            if not text:
-                continue
-            sender = await message.get_sender()
-            rows.append({
-                "message_id": getattr(message, "id", ""),
-                "sender": getattr(sender, "first_name", None) or getattr(sender, "username", None) or getattr(sender, "title", None) or "未知来源",
-                "text": text[:500],
-                "sent_at": getattr(message, "date", None),
-            })
+            row = await _verification_context_row(message)
+            if row:
+                rows.append(row)
         return rows
 
     def fetch_verification_context(
@@ -1271,7 +1309,7 @@ class TelethonTelegramGateway(TelegramGateway):
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
         *,
-        limit: int = 8,
+        limit: int = VERIFICATION_CONTEXT_DEFAULT_LIMIT,
     ) -> list[dict[str, Any]]:
         return self._run(
             self._fetch_verification_context_async(target_peer_id, session_ciphertext, self._usable_credentials(credentials), limit=limit)
