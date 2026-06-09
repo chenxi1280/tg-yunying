@@ -553,6 +553,63 @@ def test_resolve_group_restriction_rechecks_target_before_restoring_sendability(
             assert target.auth_status == "已授权运营"
 
 
+def test_group_verification_response_sends_answer_and_rechecks(monkeypatch):
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            db_group = session.get(TgGroup, group["id"])
+            db_group.can_send = False
+            db_group.auth_status = "只读"
+            link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=account["id"]).first()
+            link.can_send = False
+            link.permission_label = "等待验证码"
+            manual_task = VerificationTask(
+                tenant_id=1,
+                account_id=account["id"],
+                group_id=group["id"],
+                message_task_id=None,
+                verification_type="群发言权限",
+                detected_reason="验证码：请输入 1234",
+                suggested_action="人工处理",
+                status="需人工处理",
+            )
+            session.add(manual_task)
+            session.commit()
+            task_id = manual_task.id
+
+        def fake_context(account_id, target_peer_id, *_args, **_kwargs):
+            assert account_id == account["id"]
+            assert target_peer_id == group["tg_peer_id"]
+            return [{"message_id": 7, "sender": "验证机器人", "text": "请输入验证码 1234", "sent_at": None}]
+
+        sent = {}
+
+        def fake_submit(account_id, target_peer_id, response_text, *_args, **_kwargs):
+            sent.update({"account_id": account_id, "target_peer_id": target_peer_id, "response_text": response_text})
+            return OperationResult(True, "已处理", detail="验证回复已发送")
+
+        def fake_probe(account_id, target_peer_id, target_type, *_args, **_kwargs):
+            assert target_type == "group"
+            return OperationResult(True, detail="group:target:可访问")
+
+        monkeypatch.setattr("app.services.verification.gateway.fetch_verification_context", fake_context)
+        monkeypatch.setattr("app.services.verification.gateway.submit_verification_response", fake_submit)
+        monkeypatch.setattr("app.services.verification.gateway.probe_target_capabilities", fake_probe)
+
+        context = client.get(f"/api/verification-tasks/{task_id}/challenge-context", headers=headers).json()
+        assert context["messages"][0]["text"] == "请输入验证码 1234"
+
+        resolved = client.post(
+            f"/api/verification-tasks/{task_id}/submit-response",
+            headers=headers,
+            json={"actor": "pytest", "response_text": "1234"},
+        ).json()
+        assert sent == {"account_id": account["id"], "target_peer_id": group["tg_peer_id"], "response_text": "1234"}
+        assert resolved["status"] == "已处理"
+        assert "重查通过" in resolved["failure_detail"]
+
+
 def test_campaign_draft_approval_and_dispatch_flow():
     skip_legacy_task_center_flow()
     with TestClient(app) as client:

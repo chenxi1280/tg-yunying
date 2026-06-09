@@ -3,7 +3,7 @@ import { Alert, Button, Card, Descriptions, Empty, Input, List, Modal, Select, S
 import type { ColumnsType } from 'antd/es/table';
 import type {
   Account, AccountAvailabilitySummary, AccountPool, AccountDetail, AccountPoolDetail,
-  AccountClonePlan, AccountCloneItem, VerificationTask, Contact,
+  AccountClonePlan, AccountCloneItem, VerificationTask, VerificationChallengeContext, Contact,
   RuntimeConfig, CurrentUser, AccountGroup, MessageTask, AccountSecurityDetail, AccountAuthorizationSnapshot,
 } from '../types';
 import { FormActions, StatusBadge, useAntdTableControls } from '../components/shared';
@@ -185,8 +185,10 @@ interface AccountDetailModalProps {
   onRetryAccountProfileSync: () => Promise<void>;
   onDismissVerificationTask: (task: VerificationTask) => Promise<void>;
   onConfirmVerificationTask: (task: VerificationTask) => Promise<void>;
+  onLoadVerificationChallengeContext: (task: VerificationTask) => Promise<VerificationChallengeContext>;
   onResolveGroupRestrictionTask: (task: VerificationTask) => Promise<void>;
   onResolveGroupRestrictionBatch: (task: VerificationTask) => Promise<void>;
+  onSubmitVerificationTaskResponse: (task: VerificationTask, responseText: string) => Promise<void>;
   onOpenConfirm: (payload: {
     title: string;
     message: string;
@@ -220,8 +222,8 @@ export function AccountDetailModal({
   onStartDirectMessageToContact, onCreateDirectMessageTask,
   onConfirmClonePlan, onRetryCloneItem,
   onRetryAccountProfileSync,
-  onDismissVerificationTask, onConfirmVerificationTask, onResolveGroupRestrictionTask,
-  onResolveGroupRestrictionBatch,
+  onDismissVerificationTask, onConfirmVerificationTask, onLoadVerificationChallengeContext,
+  onResolveGroupRestrictionTask, onResolveGroupRestrictionBatch, onSubmitVerificationTaskResponse,
   onOpenConfirm, onSetReturnAfterVerification, onSetModal,
   onSetCloneForm, onReturnToRiskControl, accountName, isActionPending,
   canSyncAccount = true, canViewCodes = true, canSecurityRead = true, canSecurityBatch = true, canManageAuthorizations = true, canManageCredentials = true, canProfileBatchUpdate = true,
@@ -238,6 +240,8 @@ export function AccountDetailModal({
   const [securityReason, setSecurityReason] = React.useState('');
   const [availabilitySummary, setAvailabilitySummary] = React.useState<AccountAvailabilitySummary | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = React.useState(false);
+  const [verificationContexts, setVerificationContexts] = React.useState<Record<number, VerificationChallengeContext>>({});
+  const [verificationReplies, setVerificationReplies] = React.useState<Record<number, string>>({});
 
   React.useEffect(() => {
     setManualTargetId((current) => current ?? accountDetail.operation_targets[0]?.id ?? null);
@@ -271,6 +275,18 @@ export function AccountDetailModal({
     } finally {
       setAvailabilityLoading(false);
     }
+  }
+
+  async function loadVerificationContext(task: VerificationTask) {
+    const context = await onLoadVerificationChallengeContext(task);
+    setVerificationContexts((current) => ({ ...current, [task.id]: context }));
+  }
+
+  async function submitVerificationReply(task: VerificationTask) {
+    const responseText = (verificationReplies[task.id] || '').trim();
+    if (!responseText) return;
+    await onSubmitVerificationTaskResponse(task, responseText);
+    setVerificationReplies((current) => ({ ...current, [task.id]: '' }));
   }
 
   async function loadSecurityDetail() {
@@ -881,9 +897,31 @@ export function AccountDetailModal({
                 <span>目标：{verificationTargetLabel(task)}</span>
                 <span>{task.detected_reason || '等待处理'}</span>
                 <span>处理入口：{verificationActionLabel(task)} / {task.issue_category === 'group_restriction' ? '群内管理员解除后重查' : task.suggested_action}</span>
+                {task.issue_category === 'group_restriction' && verificationContexts[task.id] && (
+                  <div className="inline-detail-list">
+                    {verificationContexts[task.id].messages.map((message) => (
+                      <Typography.Text key={message.message_id} type="secondary">
+                        {message.sender || '未知来源'}：{message.text}
+                      </Typography.Text>
+                    ))}
+                    {!verificationContexts[task.id].messages.length && <Typography.Text type="secondary">没有读取到最近验证聊天信息。</Typography.Text>}
+                  </div>
+                )}
                 <div className="row-actions">
                   {task.issue_category === 'group_restriction' ? (
                     <>
+                      <Button size="small" loading={isActionPending(`verification:${task.id}:context`)} disabled={!verificationActionable(task)} onClick={() => loadVerificationContext(task)}>查看验证聊天</Button>
+                      <Input.Search
+                        size="small"
+                        style={{ width: 240 }}
+                        placeholder="输入验证码或验证回复"
+                        enterButton="提交验证回复"
+                        value={verificationReplies[task.id] || ''}
+                        onChange={(event) => setVerificationReplies((current) => ({ ...current, [task.id]: event.target.value }))}
+                        onSearch={() => submitVerificationReply(task)}
+                        loading={isActionPending(`verification:${task.id}:submit-response`)}
+                        disabled={!verificationActionable(task)}
+                      />
                       <Button size="small" loading={isActionPending(`verification:${task.id}:resolve-group`)} disabled={!verificationActionable(task)} onClick={() => onResolveGroupRestrictionTask(task)}>解除群限制</Button>
                       <Button size="small" loading={isActionPending(`verification:${task.id}:resolve-group-batch`)} disabled={!verificationActionable(task)} onClick={() => onResolveGroupRestrictionBatch(task)}>重查该目标全部账号</Button>
                     </>

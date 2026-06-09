@@ -263,6 +263,29 @@ class TelegramGateway:
             return OperationResult(True, "已处理", detail=f"mock 已执行：{action}")
         return OperationResult(False, "需人工处理", "复杂验证", "当前验证需要人工在 Telegram 内处理")
 
+    def fetch_verification_context(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        *,
+        limit: int = 8,
+    ) -> list[dict]:
+        return [{"message_id": 1, "sender": "验证机器人", "text": "请输入验证码 1234", "sent_at": beijing_now()}]
+
+    def submit_verification_response(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        response_text: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        if not response_text.strip():
+            return OperationResult(False, "失败", "空验证回复", "请输入验证码或验证回复")
+        return OperationResult(True, "已处理", detail="mock 验证回复已发送")
+
     def approve_group_verification_messages(
         self,
         account_id: int,

@@ -6,7 +6,7 @@ import type {
   UsageLedger, UsageSummary, LoginFlow, Account, AccountPool, AccountLoginForm,
   DeveloperApp, AiProvider, PromptTemplate, TenantAiSetting,
   Material, MaterialCacheConfig, MaterialCacheHealth, MaterialImportResult, ContentKeywordRule, Contact, Group, MessageTask, ArchiveItem, ArchiveDetail,
-  ArchiveExport, AuditFilters, AuditLog, VerificationCode, AccountSyncRecord, VerificationTask,
+  ArchiveExport, AuditFilters, AuditLog, VerificationCode, AccountSyncRecord, VerificationTask, VerificationChallengeContext,
   AccountCloneItem, AccountClonePlan, AccountGroup, ProfileSyncRecord,
   AccountDetail, AccountPoolDetail, GroupDetail, Tenant,
   ConfirmPayload, MessageSendBatchCreate, MessageSendTaskCreate, ModalState,
@@ -263,8 +263,10 @@ export interface AppState {
   confirmClonePlan: (plan: AccountClonePlan) => Promise<void>;
   retryCloneItem: (item: AccountCloneItem) => Promise<void>;
   confirmVerificationTask: (task: VerificationTask) => Promise<void>;
+  loadVerificationChallengeContext: (task: VerificationTask) => Promise<VerificationChallengeContext>;
   resolveGroupRestrictionTask: (task: VerificationTask) => Promise<void>;
   resolveGroupRestrictionBatch: (task: VerificationTask) => Promise<void>;
+  submitVerificationTaskResponse: (task: VerificationTask, responseText: string) => Promise<void>;
   dismissVerificationTask: (task: VerificationTask) => Promise<void>;
   refreshAccountDetail: () => Promise<void>;
   syncAccountContacts: () => Promise<void>;

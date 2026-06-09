@@ -16,9 +16,11 @@ __all__ = [
     "confirm_verification_task",
     "create_verification_task",
     "dismiss_verification_task",
+    "get_verification_challenge_context",
     "list_verification_tasks",
     "resolve_group_restriction_batch",
     "resolve_group_restriction_task",
+    "submit_verification_response",
 ]
 
 MANUAL_VERIFICATION_ACTIONS = {"人工处理", "手动处理", "线下处理"}
@@ -275,6 +277,63 @@ def resolve_group_restriction_task(session: Session, task_id: int, actor: str) -
     session.commit()
     session.refresh(task)
     return task
+
+
+def get_verification_challenge_context(session: Session, task_id: int) -> dict:
+    task, account, _group = _verification_task_account_group(session, task_id)
+    credentials = credentials_for_account(session, account)
+    messages = gateway.fetch_verification_context(
+        account.id,
+        task.target_peer_id,
+        account.session_ciphertext,
+        credentials,
+    )
+    return {"task_id": task.id, "target_display": task.target_display, "messages": messages}
+
+
+def submit_verification_response(session: Session, task_id: int, response_text: str, actor: str) -> VerificationTask:
+    task, account, group = _verification_task_account_group(session, task_id)
+    credentials = credentials_for_account(session, account)
+    result = gateway.submit_verification_response(
+        account.id,
+        task.target_peer_id,
+        response_text.strip(),
+        account.session_ciphertext,
+        credentials,
+    )
+    if not result.ok:
+        task.status = result.status or "失败"
+        task.failure_detail = result.detail or result.failure_type or "验证回复发送失败"
+        task.handled_at = None
+    elif group:
+        probe = gateway.probe_target_capabilities(account.id, task.target_peer_id, "group", account.session_ciphertext, credentials)
+        _apply_group_probe_result(session, task, account, group, probe)
+        if task.status != "已处理":
+            task.failure_detail = f"验证回复已发送；{task.failure_detail}"
+    else:
+        task.status = "已处理"
+        task.failure_detail = result.detail or "验证回复已发送"
+        task.handled_at = _now()
+    audit(session, tenant_id=task.tenant_id, actor=actor, action="提交验证回复", target_type="verification_task", target_id=str(task.id), detail=f"{task.status}:{task.failure_detail}")
+    session.commit()
+    session.refresh(task)
+    return task
+
+
+def _verification_task_account_group(session: Session, task_id: int) -> tuple[VerificationTask, TgAccount, TgGroup | None]:
+    task = session.get(VerificationTask, task_id)
+    if not task:
+        raise ValueError("verification task not found")
+    _fill_verification_target(session, task)
+    account = session.get(TgAccount, task.account_id) if task.account_id else None
+    if not account:
+        raise ValueError("verification task is not linked to an account")
+    if account.status != AccountStatus.ACTIVE.value:
+        raise ValueError("账号不可用，请先完成登录或健康检查")
+    if not task.target_peer_id:
+        raise ValueError("verification task has no target peer")
+    group = session.get(TgGroup, task.group_id) if task.group_id else None
+    return task, account, group
 
 
 def resolve_group_restriction_batch(session: Session, task_id: int, actor: str) -> GroupRestrictionBatchResult:

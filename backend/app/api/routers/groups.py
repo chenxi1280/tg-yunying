@@ -14,12 +14,14 @@ from app.models import TgAccount, TgGroup, VerificationTask
 from app.repositories.tenant import require_resource_tenant
 from app.schemas import (
     AuthorizeGroupRequest, GroupDetailOut, GroupOut, GroupPolicyUpdate,
-    VerificationTaskBatchResolveOut, VerificationTaskConfirmRequest, VerificationTaskOut,
+    VerificationChallengeContextOut, VerificationTaskBatchResolveOut, VerificationTaskConfirmRequest,
+    VerificationTaskOut, VerificationTaskResponseRequest,
 )
 from app.services import (
     authorize_group, confirm_verification_task, dismiss_verification_task,
-    filter_groups, group_detail, list_verification_tasks, resolve_group_restriction_batch,
-    resolve_group_restriction_task, update_group_policy,
+    filter_groups, get_verification_challenge_context, group_detail, list_verification_tasks,
+    resolve_group_restriction_batch, resolve_group_restriction_task, submit_verification_response,
+    update_group_policy,
 )
 
 router = APIRouter()
@@ -149,6 +151,35 @@ def post_verification_task_resolve_group_restriction_batch(
     require_resource_tenant(session, current_user, VerificationTask, task_id)
     try:
         return resolve_group_restriction_batch(session, task_id, payload.actor if payload else current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/verification-tasks/{task_id}/challenge-context", response_model=VerificationChallengeContextOut)
+def get_verification_task_challenge_context(
+    task_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    require_resource_tenant(session, current_user, VerificationTask, task_id)
+    try:
+        return get_verification_challenge_context(session, task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/verification-tasks/{task_id}/submit-response", response_model=VerificationTaskOut)
+def post_verification_task_response(
+    task_id: int,
+    payload: VerificationTaskResponseRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    require_resource_tenant(session, current_user, VerificationTask, task_id)
+    try:
+        return submit_verification_response(session, task_id, payload.response_text, payload.actor or current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

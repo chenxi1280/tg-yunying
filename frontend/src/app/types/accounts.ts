@@ -322,6 +322,19 @@ export type VerificationTask = {
   resolution_entry_label: string;
 };
 
+export type VerificationChallengeMessage = {
+  message_id: number | string;
+  sender: string;
+  text: string;
+  sent_at: string | null;
+};
+
+export type VerificationChallengeContext = {
+  task_id: number;
+  target_display: string;
+  messages: VerificationChallengeMessage[];
+};
+
 export type GroupRestrictionBatchResult = {
   group_id: number;
   target_peer_id: string;

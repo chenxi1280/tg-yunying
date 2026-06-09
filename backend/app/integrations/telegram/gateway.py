@@ -1234,6 +1234,59 @@ class TelethonTelegramGateway(TelegramGateway):
             self._resolve_verification_async(action, target_peer_id, session_ciphertext, self._usable_credentials(credentials))
         )
 
+    async def _fetch_verification_context_async(
+        self,
+        target_peer_id: str,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            raise RuntimeError("账号没有可用 session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            raise RuntimeError("session 已失效")
+        target = await resolve_telethon_target(client, target_peer_id, group_id=0)
+        messages = await client.get_messages(target, limit=limit)
+        rows: list[dict[str, Any]] = []
+        for message in messages:
+            text = (getattr(message, "message", "") or "").strip()
+            if not text:
+                continue
+            sender = await message.get_sender()
+            rows.append({
+                "message_id": getattr(message, "id", ""),
+                "sender": getattr(sender, "first_name", None) or getattr(sender, "username", None) or getattr(sender, "title", None) or "未知来源",
+                "text": text[:500],
+                "sent_at": getattr(message, "date", None),
+            })
+        return rows
+
+    def fetch_verification_context(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        *,
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        return self._run(
+            self._fetch_verification_context_async(target_peer_id, session_ciphertext, self._usable_credentials(credentials), limit=limit)
+        )
+
+    def submit_verification_response(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        response_text: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        return self.send_message_to_target(account_id, target_peer_id, response_text, "group", None, session_ciphertext, credentials)
+
     async def _approve_group_verification_messages_async(
         self,
         target_peer_id: str,

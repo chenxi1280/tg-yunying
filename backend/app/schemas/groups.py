@@ -33,6 +33,24 @@ class VerificationTaskConfirmRequest(BaseModel):
     actor: str = "普通用户"
 
 
+class VerificationTaskResponseRequest(BaseModel):
+    actor: str = "普通用户"
+    response_text: str = Field(min_length=1, max_length=500)
+
+
+class VerificationChallengeMessageOut(ApiModel):
+    message_id: int | str
+    sender: str = ""
+    text: str
+    sent_at: datetime | None = None
+
+
+class VerificationChallengeContextOut(ApiModel):
+    task_id: int
+    target_display: str
+    messages: list[VerificationChallengeMessageOut]
+
+
 class GroupOut(ApiModel):
     id: int
     tenant_id: int
@@ -112,6 +130,7 @@ class GroupDetailOut(BaseModel):
 
 
 __all__ = [
-    "GroupPolicyUpdate", "AuthorizeGroupRequest", "VerificationTaskConfirmRequest",
+    "GroupPolicyUpdate", "AuthorizeGroupRequest", "VerificationChallengeContextOut",
+    "VerificationChallengeMessageOut", "VerificationTaskConfirmRequest", "VerificationTaskResponseRequest",
     "GroupOut", "VerificationTaskOut", "VerificationTaskBatchResolveOut", "GroupDetailOut",
 ]

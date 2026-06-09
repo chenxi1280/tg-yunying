@@ -23,6 +23,7 @@ import type {
   ModalState,
   ProfileSyncRecord,
   RuntimeConfig,
+  VerificationChallengeContext,
   VerificationCode,
   VerificationTask,
 } from '../types';
@@ -371,6 +372,31 @@ export function createAccountActions(params: AccountActionParams) {
     }
   }
 
+  async function loadVerificationChallengeContext(task: VerificationTask) {
+    return api<VerificationChallengeContext>(`/verification-tasks/${task.id}/challenge-context`);
+  }
+
+  async function submitVerificationTaskResponse(task: VerificationTask, responseText: string) {
+    params.setBusy('提交验证回复');
+    try {
+      const updated = await api<VerificationTask>(`/verification-tasks/${task.id}/submit-response`, {
+        method: 'POST',
+        body: JSON.stringify({ actor: '普通用户', response_text: responseText }),
+        timeoutMs: 15_000,
+      });
+      if (updated.status === '已处理') {
+        params.showResult('验证回复已提交', updated.failure_detail || '已恢复目标发言能力。');
+      } else {
+        params.showResult('仍需处理', updated.failure_detail || updated.detected_reason || '验证回复已提交，但目标仍不可发言。');
+      }
+      await refreshRelatedDetails();
+    } catch (error) {
+      params.handleActionError(error);
+    } finally {
+      params.setBusy('');
+    }
+  }
+
   async function resolveGroupRestrictionBatch(task: VerificationTask) {
     params.setBusy('批量重查群限制');
     try {
@@ -611,8 +637,10 @@ export function createAccountActions(params: AccountActionParams) {
     confirmClonePlan,
     retryCloneItem,
     confirmVerificationTask,
+    loadVerificationChallengeContext,
     resolveGroupRestrictionTask,
     resolveGroupRestrictionBatch,
+    submitVerificationTaskResponse,
     dismissVerificationTask,
     refreshAccountDetail,
     syncAccountContacts,

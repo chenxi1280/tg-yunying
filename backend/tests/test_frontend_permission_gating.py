@@ -348,6 +348,22 @@ def test_task_detail_membership_manual_rows_link_to_account_verification():
     assert "先在 Telegram 内完成人工动作" in panel
 
 
+def test_account_verification_tab_supports_challenge_reply_flow():
+    account_modals = (PROJECT_ROOT / "frontend/src/app/views/AccountModals.tsx").read_text()
+    account_actions = (PROJECT_ROOT / "frontend/src/app/context/accountActions.ts").read_text()
+    groups_schema = (PROJECT_ROOT / "backend/app/schemas/groups.py").read_text()
+    groups_router = (PROJECT_ROOT / "backend/app/api/routers/groups.py").read_text()
+
+    assert "查看验证聊天" in account_modals
+    assert "输入验证码或验证回复" in account_modals
+    assert "提交验证回复" in account_modals
+    assert "loadVerificationChallengeContext" in account_actions
+    assert "submitVerificationTaskResponse" in account_actions
+    assert "VerificationChallengeContextOut" in groups_schema
+    assert '"/api/verification-tasks/{task_id}/challenge-context"' in groups_router
+    assert '"/api/verification-tasks/{task_id}/submit-response"' in groups_router
+
+
 def test_task_center_uses_runtime_stage_for_paused_and_waiting_states():
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
     runtime_stage = (PROJECT_ROOT / "frontend/src/app/views/taskRuntimeStage.ts").read_text()
