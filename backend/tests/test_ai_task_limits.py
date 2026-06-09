@@ -554,6 +554,51 @@ def test_group_ai_does_not_fill_reply_candidate_shortage_with_normal_turns(monke
     assert "AI 引用回复候选不足" in task.last_error
 
 
+def test_group_ai_hard_hourly_fills_reply_candidate_shortage_with_normal_turns(monkeypatch):
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        samples = [
+            "今晚活动几点开始",
+            "报名入口谁再发一下",
+            "新来的可以先看群公告",
+        ]
+        return samples[:count], 0
+
+    def fake_generate_group_reply_messages(_session, _tenant_id, _config, *, reply_targets: list[dict], target_label: str, history: str):
+        return ["只生成一条引用回复"], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_reply_messages", fake_generate_group_reply_messages, raising=False)
+    with _session() as session:
+        _add_tenant(session)
+        _add_group(session, account_count=3)
+        task = _add_group_task(
+            session,
+            {
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 3,
+                "reply_min_per_round": 2,
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 3,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        actions = session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.created_at.asc())).all()
+
+    assert created == 3
+    assert [action.payload.get("reply_to_message_id") for action in actions].count(None) == 2
+    assert sum(1 for action in actions if action.payload.get("reply_to_message_id")) == 1
+    assert task.stats["hard_hourly_last_planned_count"] == 3
+    assert task.stats["reply_candidate_shortfall_count"] >= 1
+    assert not task.last_error
+
+
 def test_group_ai_does_not_fill_filtered_reply_shortage_with_normal_turns(monkeypatch):
     def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
         return [f"普通发言 {index}" for index in range(count)], 0

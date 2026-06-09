@@ -178,10 +178,10 @@ def build_plan(session: Session, task: Task) -> int:
     reply_target_pool = _group_reply_target_pool(session, task, group, usable_context_rows)
     if reply_min > len(reply_target_pool):
         stats_inc(task, "reply_target_shortfall_count")
-        task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
-        if hard_progress:
-            _mark_hard_blocked(task, hard_progress, "reply_target_shortfall")
-        return 0
+        if not hard_progress:
+            task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
+            return 0
+        reply_min = len(reply_target_pool)
     reply_targets = reply_target_pool[:reply_min]
     normal_count = max(0, turn_count - len(reply_targets))
     try:
@@ -193,6 +193,7 @@ def build_plan(session: Session, task: Task) -> int:
             normal_count=normal_count,
             target_label=target_label,
             history=history,
+            fill_reply_shortfall_with_normal=bool(hard_progress),
         )
     except AiGenerationUnavailable as exc:
         task.last_error = str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE
@@ -345,10 +346,9 @@ def build_plan(session: Session, task: Task) -> int:
     prepared_reply_count = sum(1 for _account_id, _planned_at, payload in prepared_actions if payload.reply_to_message_id)
     if prepared_reply_count < reply_min:
         stats_inc(task, "reply_candidate_shortfall_count")
-        task.last_error = "AI 引用回复候选不足，已跳过本轮"
-        if hard_progress:
-            _mark_hard_blocked(task, hard_progress, "reply_target_shortfall")
-        return 0
+        if not hard_progress:
+            task.last_error = "AI 引用回复候选不足，已跳过本轮"
+            return 0
     for account_id, planned_at, payload in prepared_actions:
         create_send_action(session, task, account_id, planned_at, payload)
         created += 1
@@ -509,6 +509,7 @@ def _generate_group_planned_items(
     normal_count: int,
     target_label: str,
     history: str,
+    fill_reply_shortfall_with_normal: bool = False,
 ) -> tuple[list[dict], int]:
     items: list[dict] = []
     tokens = 0
@@ -523,7 +524,10 @@ def _generate_group_planned_items(
         )
         if len(contents) < len(reply_targets):
             stats_inc(task, "reply_candidate_shortfall_count")
-            raise AiGenerationUnavailable("AI 引用回复候选不足，已跳过本轮")
+            shortfall = len(reply_targets) - len(contents)
+            if not fill_reply_shortfall_with_normal:
+                raise AiGenerationUnavailable("AI 引用回复候选不足，已跳过本轮")
+            normal_count += shortfall
         tokens += used_tokens
         items.extend({"content": content, "reply_target": target} for content, target in zip(contents, reply_targets, strict=False))
     if normal_count > 0:
