@@ -12,7 +12,7 @@ from app.config import Settings
 from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult, _resolve_telethon_target, _telethon_send_target
 from app.integrations.telegram.gateway import TelethonTelegramGateway
-from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, WorkerHeartbeat
+from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
@@ -5011,6 +5011,51 @@ def test_list_tasks_returns_refreshed_backlog_stats(monkeypatch):
     stats = listed[0]["stats"]
     assert "planner_backlog_blocked" not in stats
     assert "planner_backlog_global_pending" not in stats
+
+
+def test_list_tasks_uses_runtime_summary_without_recounting_actions(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    def fail_refresh(_session, _task):
+        raise AssertionError("task list should use runtime summaries for list counters")
+
+    monkeypatch.setattr("app.services.task_center.service.refresh_task_stats", fail_refresh)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-list-summary",
+            tenant_id=1,
+            name="AI 活跃群",
+            type="group_ai_chat",
+            status="running",
+            stats={
+                "hard_hourly_target_enabled": True,
+                "hard_hourly_goal": 300,
+                "hard_hourly_success_count": 16,
+                "hard_hourly_deficit": 284,
+            },
+        )
+        summary = TaskRuntimeSummary(
+            tenant_id=1,
+            task_id=task.id,
+            task_status="running",
+            planned_count=3755,
+            success_count=2202,
+            failed_count=171,
+            pending_count=154,
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task, summary])
+        session.commit()
+
+        [listed] = list_tasks(session, 1, "group_ai_chat", "running")
+
+    assert listed["stats"]["total_actions"] == 3755
+    assert listed["stats"]["success_count"] == 2202
+    assert listed["stats"]["failure_count"] == 171
+    assert listed["stats"]["pending_count"] == 154
+    assert listed["stats"]["hard_hourly_goal"] == 300
+    assert listed["stats"]["hard_hourly_deficit"] == 284
 
 
 def test_operation_targets_expose_linked_group_capability_summary():

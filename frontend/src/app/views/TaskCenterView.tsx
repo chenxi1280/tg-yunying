@@ -224,7 +224,7 @@ export default function TaskCenterView({
   const messageScope = Form.useWatch('message_scope', form) ?? 'latest_n';
   const targetChannelId = Form.useWatch('target_channel_id', form);
   const channelTargets = targets.filter((target) => target.target_type === 'channel');
-  const groupTargets = targets.filter((target) => target.target_type === 'group' && target.linked_group_id);
+  const groupTargets = targets.filter((target) => target.target_type === 'group');
   const slangTemplates = promptTemplates.filter((template) => normalizePromptTemplateType(template.template_type) === 'AI黑话词表' && template.is_active);
   const defaultSlangTemplateId = slangTemplates[0]?.id ?? null;
 

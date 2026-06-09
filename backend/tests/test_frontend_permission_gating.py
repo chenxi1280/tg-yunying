@@ -199,6 +199,19 @@ def test_task_center_ai_chat_account_distribution_controls_are_visible():
     assert 'label="账号并发上限（账号数）"' in source
 
 
+def test_task_center_target_selects_support_searching():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    assert "targetSelectProps" in source
+    assert "showSearch: true" in source
+    assert 'optionFilterProp: "label"' in source
+    assert "<Select allowClear options={groupTargetOptions} {...targetSelectProps}" in source
+    assert '<Select mode="multiple" allowClear options={groupTargetOptions} {...targetSelectProps}' in source
+    assert "<Select allowClear options={channelTargetOptions} onChange={onTargetChannelChange} {...targetSelectProps}" in source
+    assert "const groupTargets = targets.filter((target) => target.target_type === 'group');" in view
+
+
 def test_task_center_review_uses_task_specific_curve_units():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
 
