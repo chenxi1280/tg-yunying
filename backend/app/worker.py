@@ -178,6 +178,26 @@ def _record_loop_heartbeat(role: str, limit: int) -> None:
         session.commit()
 
 
+def _start_periodic_heartbeat(role: str, limit: int) -> tuple[threading.Event, threading.Thread]:
+    stop_event = threading.Event()
+    thread = threading.Thread(
+        target=_periodic_heartbeat_loop,
+        args=(role, limit, stop_event),
+        name=f"{role}-heartbeat",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
+
+
+def _periodic_heartbeat_loop(role: str, limit: int, stop_event: threading.Event) -> None:
+    while not stop_event.wait(30):
+        try:
+            _record_loop_heartbeat(role, limit)
+        except Exception:
+            logger.warning("worker heartbeat refresh failed role=%s:\n%s", role, traceback.format_exc())
+
+
 def run_worker(
     *,
     limit: int = 100,
@@ -187,24 +207,29 @@ def run_worker(
     role: str | None = None,
 ) -> None:
     selected_role = _normalize_role(role)
+    heartbeat_stop, heartbeat_thread = _start_periodic_heartbeat(selected_role, limit)
     iterations = 0
-    while (max_iterations is None or iterations < max_iterations) and not (stop_event and stop_event.is_set()):
-        try:
-            _record_loop_heartbeat(selected_role, limit)
-            processed = drain_once(limit, role=selected_role)
-            if processed:
-                logger.info("worker drained role=%s processed=%d", selected_role, processed)
-        except Exception:
-            logger.error("worker drain failed:\n%s", traceback.format_exc())
-        iterations += 1
-        if max_iterations is not None and iterations >= max_iterations:
-            break
-        wait_seconds = max(0.1, interval_seconds)
-        if stop_event:
-            if stop_event.wait(wait_seconds):
+    try:
+        while (max_iterations is None or iterations < max_iterations) and not (stop_event and stop_event.is_set()):
+            try:
+                _record_loop_heartbeat(selected_role, limit)
+                processed = drain_once(limit, role=selected_role)
+                if processed:
+                    logger.info("worker drained role=%s processed=%d", selected_role, processed)
+            except Exception:
+                logger.error("worker drain failed:\n%s", traceback.format_exc())
+            iterations += 1
+            if max_iterations is not None and iterations >= max_iterations:
                 break
-        else:
-            time.sleep(wait_seconds)
+            wait_seconds = max(0.1, interval_seconds)
+            if stop_event:
+                if stop_event.wait(wait_seconds):
+                    break
+            else:
+                time.sleep(wait_seconds)
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1)
 
 
 def main(argv: list[str] | None = None) -> int:
