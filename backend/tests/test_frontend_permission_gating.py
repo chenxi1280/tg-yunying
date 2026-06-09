@@ -109,6 +109,8 @@ def test_risk_control_overview_cards_and_account_actions_are_deep_linked():
     assert "type AccountDeepLinkContext" in app_shell
     assert "function accountDetailTabSlug(tab: string)" in app_shell
     assert "function accountDetailSearch(accountId: number, tab: string, context: AccountDeepLinkContext)" in app_shell
+    assert "if (/验证待处理|待处理/.test(tab)) return 'verification';" in app_shell
+    assert "if (tab === 'verification') return '验证待处理';" in app_shell
     assert "params.set('account_id', String(accountId))" in app_shell
     assert "params.set('return_to', 'risk-control')" in app_shell
     assert "params.set('tab', accountDetailTabSlug(tab))" in app_shell

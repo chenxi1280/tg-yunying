@@ -74,6 +74,7 @@ function noticeMessageType(notice: string): 'success' | 'error' | 'warning' | 'i
 }
 
 function accountDetailTabSlug(tab: string) {
+  if (/验证待处理|待处理/.test(tab)) return 'verification';
   if (/登录|验证|验证码|扫码/.test(tab)) return 'login';
   if (/授权|备用|standby|session/.test(tab)) return 'authorizations';
   if (/安全|二步|可信|设备|资料/.test(tab)) return 'security';
@@ -83,6 +84,7 @@ function accountDetailTabSlug(tab: string) {
 
 function accountDetailTabLabel(tab: string) {
   if (tab === 'login') return 'TG 官方验证码';
+  if (tab === 'verification') return '验证待处理';
   if (tab === 'authorizations') return '授权资产';
   if (tab === 'security') return '账号安全';
   return '可用性';
