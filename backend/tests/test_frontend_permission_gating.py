@@ -558,6 +558,17 @@ def test_frontend_static_publish_preserves_previous_hashed_assets():
     assert "preserve_frontend_assets \"$releases_dir\" \"$tmp_dir\"" in source
 
 
+def test_deploy_scripts_timeout_planner_smoke_and_remote_install():
+    release = (PROJECT_ROOT / "deploy/release.sh").read_text()
+    check_web = (PROJECT_ROOT / "deploy/check-web.sh").read_text()
+
+    assert 'REMOTE_INSTALL_TIMEOUT_SECONDS="${REMOTE_INSTALL_TIMEOUT_SECONDS:-900}"' in release
+    assert 'require_positive_integer REMOTE_INSTALL_TIMEOUT_SECONDS "$REMOTE_INSTALL_TIMEOUT_SECONDS"' in release
+    assert 'timeout "$REMOTE_INSTALL_TIMEOUT_SECONDS" ssh "${SSH_OPTS[@]}"' in release
+    assert 'local timeout_seconds="${TGYUNYING_PLANNER_SMOKE_TIMEOUT_SECONDS:-120}"' in check_web
+    assert 'timeout "$timeout_seconds" docker exec tgyunying-worker-planner' in check_web
+
+
 def test_api_error_message_supports_trace_id_in_structured_detail_objects():
     source = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 

@@ -109,8 +109,9 @@ wait_for_worker_ready() {
 
 run_planner_smoke_check() {
   local limit="${TGYUNYING_PLANNER_SMOKE_LIMIT:-1}"
+  local timeout_seconds="${TGYUNYING_PLANNER_SMOKE_TIMEOUT_SECONDS:-120}"
   echo "==> Running planner smoke check"
-  docker exec tgyunying-worker-planner python -m app.worker --once --role planner --limit "$limit"
+  timeout "$timeout_seconds" docker exec tgyunying-worker-planner python -m app.worker --once --role planner --limit "$limit"
 }
 
 backend_status="$(docker inspect tgyunying-backend --format '{{.State.Status}}' 2>/dev/null || true)"

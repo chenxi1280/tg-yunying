@@ -12,6 +12,7 @@ EXPECTED_BRANCHES="${EXPECTED_BRANCHES:-release}"
 RELEASE_SSH_ATTEMPTS="${RELEASE_SSH_ATTEMPTS:-3}"
 RELEASE_SSH_RETRY_DELAY="${RELEASE_SSH_RETRY_DELAY:-10}"
 SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-60}"
+REMOTE_INSTALL_TIMEOUT_SECONDS="${REMOTE_INSTALL_TIMEOUT_SECONDS:-900}"
 IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-ghcr.io/chenxi1280}"
 STATIC_KEEP_RELEASES="${STATIC_KEEP_RELEASES:-5}"
 SSH_OPTS=(
@@ -138,6 +139,7 @@ require_command tar
 require_positive_integer RELEASE_SSH_ATTEMPTS "$RELEASE_SSH_ATTEMPTS"
 require_positive_integer RELEASE_SSH_RETRY_DELAY "$RELEASE_SSH_RETRY_DELAY"
 require_positive_integer SSH_CONNECT_TIMEOUT "$SSH_CONNECT_TIMEOUT"
+require_positive_integer REMOTE_INSTALL_TIMEOUT_SECONDS "$REMOTE_INSTALL_TIMEOUT_SECONDS"
 
 current_branch="$(git branch --show-current)"
 if [[ -z "$current_branch" ]]; then
@@ -232,7 +234,7 @@ run_with_retries "Uploading image env" \
 
 echo "==> Installing release ${release_id} on ${HOST}"
 run_with_retries "Installing remote release" \
-  ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "\
+  timeout "$REMOTE_INSTALL_TIMEOUT_SECONDS" ssh "${SSH_OPTS[@]}" "${USER_NAME}@${HOST}" "\
 set -euo pipefail && \
 mkdir -p '${BASE_DIR}/incoming' '${BASE_DIR}/releases' && \
 existing_image_env='' && \
