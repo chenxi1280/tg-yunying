@@ -356,18 +356,67 @@ def _verification_task_account_group(session: Session, task_id: int) -> tuple[Ve
 
 
 def resolve_group_restriction_batch(session: Session, task_id: int, actor: str) -> GroupRestrictionBatchResult:
+    from app.schemas import OperationTargetAdmissionRetryRequest
+    from .operations import retry_operation_target_admission
+
     base_task = _group_restriction_task(session, task_id)
     group = session.get(TgGroup, base_task.group_id)
     if not group:
         raise ValueError("group not found")
-    approval = _attempt_group_verification_admin_approval(session, base_task, group)
-    task_ids = _ensure_group_restriction_batch_tasks(session, base_task, group)
-    resolved_tasks = []
-    for item_id in task_ids:
-        resolved_tasks.append(resolve_group_restriction_task(session, item_id, actor))
-    _apply_batch_approval_detail(resolved_tasks, approval)
-    session.commit()
-    return _group_restriction_batch_result(base_task, group, resolved_tasks, approval)
+    target = _group_operation_target(session, base_task, group)
+    accounts = _group_restricted_accounts(session, base_task, group)
+    if not accounts:
+        approval = ("未执行", "当前目标没有待重查的受限账号", None)
+        return _group_restriction_batch_result(base_task, group, [base_task], approval)
+    detail = retry_operation_target_admission(
+        session,
+        base_task.tenant_id,
+        target.id,
+        OperationTargetAdmissionRetryRequest(reason="验证待处理页批量重查群限制", account_ids=[account.id for account in accounts]),
+        actor,
+    )
+    retry = detail.get("admission_retry") or {}
+    queued = int(retry.get("queued_action_count") or 0)
+    retried = int(retry.get("retried_account_count") or len(accounts))
+    return _queued_group_restriction_batch_result(base_task, group, queued=queued, retried=retried)
+
+
+def _group_operation_target(session: Session, task: VerificationTask, group: TgGroup) -> OperationTarget:
+    target = session.scalar(
+        select(OperationTarget).where(
+            OperationTarget.tenant_id == task.tenant_id,
+            OperationTarget.target_type == "group",
+            OperationTarget.tg_peer_id == group.tg_peer_id,
+        )
+    )
+    if not target:
+        raise ValueError("operation target not found")
+    return target
+
+
+def _queued_group_restriction_batch_result(
+    base_task: VerificationTask,
+    group: TgGroup,
+    *,
+    queued: int,
+    retried: int,
+) -> GroupRestrictionBatchResult:
+    target_display = base_task.target_display or group.title or f"群聊 #{group.id}"
+    detail = f"已提交后台目标准入重查 {queued} 个动作，覆盖 {retried} 个账号"
+    return GroupRestrictionBatchResult(
+        group_id=group.id,
+        target_peer_id=base_task.target_peer_id or group.tg_peer_id or "",
+        target_display=target_display,
+        checked_count=retried,
+        restored_count=0,
+        blocked_count=retried,
+        failed_count=0,
+        approval_status="已转后台重查",
+        approval_detail=detail,
+        approval_account_id=None,
+        message=f"{target_display} {detail}；后台会逐个重查账号准入并写入审计记录。",
+        tasks=[base_task],
+    )
 
 
 def _group_restriction_task(session: Session, task_id: int) -> VerificationTask:

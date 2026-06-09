@@ -12,7 +12,7 @@ from app.config import Settings
 from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult, _resolve_telethon_target, _telethon_send_target
 from app.integrations.telegram.gateway import TelethonTelegramGateway
-from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, WorkerHeartbeat
+from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, VerificationTask, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
@@ -26,6 +26,7 @@ from app.services.risk_control import update_global_policy
 from app.services.account_capacity import AccountCapacityReservation, account_capacity_decision
 from app.services.messages import create_message_send_task, dispatch_task, filter_tasks, retry_task, validate_group_task_policy
 from app.services.operations import filter_operation_targets, operation_target_detail, retry_operation_target_admission, sync_all_operation_targets, update_operation_target, update_operation_target_account_policy
+from app.services.verification import resolve_group_restriction_batch
 from app.services.task_center.executors.group_ai_chat import _choose_turn_account, _topic_relevant_context_rows, ai_cycle_mode, build_plan as build_group_ai_chat_plan
 from app.services.task_center.ai_generator import _humanize_group_chat_punctuation
 from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_listener_errors, list_listener_events, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, reset_listener_watermark, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
@@ -5242,6 +5243,42 @@ def test_operation_target_bulk_admission_retry_queues_membership_actions_without
     assert {action.status for action in queued_actions} == {"pending"}
     assert {action.payload["channel_target_id"] for action in queued_actions} == {21}
     assert {action.payload["require_send"] for action in queued_actions} == {True}
+    assert audit_row is not None
+    assert "queued=319" in audit_row.detail
+
+
+def test_verification_group_restriction_batch_queues_target_admission_retry(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("verification batch retry must not call Telegram in the HTTP request")
+
+    monkeypatch.setattr("app.services.verification.gateway.approve_group_verification_messages", fail_if_called)
+    monkeypatch.setattr("app.services.operations.gateway.list_groups", fail_if_called)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1001", title="运营群", can_send=False, auth_status="只读"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="只读", can_send=False))
+        session.add(VerificationTask(id=693, tenant_id=1, account_id=1, group_id=7, verification_type="群发言权限", target_peer_id="-1001", target_display="运营群", status="需人工处理"))
+        for account_id in range(1, 320):
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, session_ciphertext=f"session-{account_id}"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=False, permission_label="账号无权限"))
+        session.commit()
+
+        result = resolve_group_restriction_batch(session, 693, "pytest")
+        queued_actions = list(session.scalars(select(Action).where(Action.action_type == "ensure_target_membership")))
+        audit_row = session.scalar(select(AuditLog).where(AuditLog.action == "重试目标准入"))
+
+    assert result.approval_status == "已转后台重查"
+    assert result.checked_count == 319
+    assert result.blocked_count == 319
+    assert result.restored_count == 0
+    assert "已提交后台目标准入重查 319 个动作" in result.message
+    assert len(queued_actions) == 319
+    assert {action.status for action in queued_actions} == {"pending"}
+    assert {action.payload["channel_target_id"] for action in queued_actions} == {21}
     assert audit_row is not None
     assert "queued=319" in audit_row.detail
 
