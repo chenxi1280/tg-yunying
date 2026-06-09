@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, VerificationTask
 from app.services._common import _now
+from app.services.task_center.dispatcher import _group_send_verification_action
 from app.services.task_center.service import get_task_detail, list_membership_items_page
 
 
@@ -24,6 +25,7 @@ def test_membership_items_page_projects_action_and_verification_state() -> None:
                 TgAccount(id=11, tenant_id=1, display_name="按钮账号", phone_masked="+861***0011", status="在线", session_ciphertext="cipher-11"),
                 TgAccount(id=12, tenant_id=1, display_name="人工账号", phone_masked="+861***0012", status="在线", session_ciphertext="cipher-12"),
                 TgAccount(id=13, tenant_id=1, display_name="就绪账号", phone_masked="+861***0013", status="在线", session_ciphertext="cipher-13"),
+                TgAccount(id=14, tenant_id=1, display_name="图形验证码账号", phone_masked="+861***0014", status="在线", session_ciphertext="cipher-14"),
             ]
         )
         session.add_all(
@@ -53,6 +55,18 @@ def test_membership_items_page_projects_action_and_verification_state() -> None:
                     payload={"channel_id": "-1007", "channel_target_id": 21, "target_type": "group", "target_display": "目标群", "require_send": True},
                 ),
                 Action(
+                    id="membership-captcha",
+                    tenant_id=1,
+                    task_id="task-membership-items",
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    account_id=14,
+                    status="executing",
+                    scheduled_at=now_value,
+                    result={"membership_status": "permission_denied", "error_message": "需要群管理 bot 的验证码"},
+                    payload={"channel_id": "-1007", "channel_target_id": 21, "target_type": "group", "target_display": "目标群", "require_send": True},
+                ),
+                Action(
                     id="membership-ready",
                     tenant_id=1,
                     task_id="task-membership-items",
@@ -69,6 +83,17 @@ def test_membership_items_page_projects_action_and_verification_state() -> None:
         )
         session.add_all(
             [
+                VerificationTask(
+                    tenant_id=1,
+                    account_id=14,
+                    group_id=7,
+                    verification_type="群发言权限",
+                    detected_reason="需要群管理 bot 的验证码",
+                    suggested_action="识别图形验证码",
+                    target_peer_id="-1007",
+                    target_display="目标群",
+                    status="待处理",
+                ),
                 VerificationTask(
                     tenant_id=1,
                     account_id=11,
@@ -96,7 +121,7 @@ def test_membership_items_page_projects_action_and_verification_state() -> None:
         session.commit()
 
         rows, total = list_membership_items_page(session, 1, "task-membership-items", page=1, page_size=10)
-        assert total == 3
+        assert total == 4
         by_account = {row["account_id"]: row for row in rows}
         assert by_account[11]["phase"] == "challenge_required"
         assert by_account[11]["verification_action"] == "点击按钮"
@@ -105,6 +130,9 @@ def test_membership_items_page_projects_action_and_verification_state() -> None:
         assert by_account[12]["manual_required"] is True
         assert by_account[13]["phase"] == "ready"
         assert by_account[13]["can_send"] is True
+        assert by_account[14]["phase"] == "captcha_solving"
+        assert by_account[14]["verification_action"] == "识别图形验证码"
+        assert by_account[14]["can_auto_resolve"] is True
 
         manual_rows, manual_total = list_membership_items_page(session, 1, "task-membership-items", manual_required=True, page=1, page_size=10)
         assert manual_total == 1
@@ -113,6 +141,13 @@ def test_membership_items_page_projects_action_and_verification_state() -> None:
         challenge_rows, challenge_total = list_membership_items_page(session, 1, "task-membership-items", phase="challenge_required", page=1, page_size=10)
         assert challenge_total == 1
         assert challenge_rows[0]["account_id"] == 11
+
+
+def test_group_send_verification_action_detects_captcha_text() -> None:
+    action = _group_send_verification_action("加入时提示需要群管理 bot 的验证码")
+
+    assert action == "识别图形验证码"
+    assert _group_send_verification_action("验证码：请输入 1234") == "人工处理"
 
 
 def test_membership_items_page_is_not_capped_by_detail_action_limit() -> None:

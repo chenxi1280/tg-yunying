@@ -1,15 +1,22 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.integrations.telegram import OperationResult
-from app.models import AccountStatus, GroupAuthStatus, OperationTarget, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import (
+    AccountStatus,
+    GroupAuthStatus,
+    OperationTarget,
+    TgAccount,
+    TgGroup,
+    TgGroupAccount,
+    VerificationTask,
+)
 
 from ._common import _now, audit, gateway
 from .developer_apps import credentials_for_account
+from .membership_challenges import read_challenge_context
 
 
 __all__ = [
@@ -282,21 +289,9 @@ def resolve_group_restriction_task(session: Session, task_id: int, actor: str) -
 def get_verification_challenge_context(session: Session, task_id: int) -> dict:
     task, account, _group = _group_restriction_task_account_group(session, task_id)
     credentials = credentials_for_account(session, account)
-    messages = gateway.fetch_verification_context(
-        account.id,
-        task.target_peer_id,
-        account.session_ciphertext,
-        credentials,
-    )
-    return {
-        "task_id": task.id,
-        "target_display": task.target_display,
-        "target_peer_id": task.target_peer_id,
-        "detected_reason": task.detected_reason,
-        "failure_detail": task.failure_detail,
-        "suggested_action": task.suggested_action,
-        "messages": messages,
-    }
+    result = read_challenge_context(session, task, account, credentials)
+    session.commit()
+    return result
 
 
 def submit_verification_response(session: Session, task_id: int, response_text: str, actor: str) -> VerificationTask:

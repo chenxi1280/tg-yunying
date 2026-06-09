@@ -607,6 +607,23 @@ def test_frontend_static_publish_preserves_previous_hashed_assets():
     assert "preserve_frontend_assets \"$releases_dir\" \"$tmp_dir\"" in source
 
 
+def test_group_verification_challenge_context_empty_is_rendered():
+    modals = (PROJECT_ROOT / "frontend/src/app/views/AccountModals.tsx").read_text()
+    types = (PROJECT_ROOT / "frontend/src/app/types/accounts.ts").read_text()
+    panel = (PROJECT_ROOT / "frontend/src/app/views/TaskMembershipPanel.tsx").read_text()
+
+    assert "context_status" in types
+    assert "read_failure_detail" in types
+    assert "media_fingerprint" in types
+    assert "读取状态" in modals
+    assert "读取消息数" in modals
+    assert "read_failure_detail" in modals
+    assert "verificationContextAllowsReply" in modals
+    assert "媒体：" in modals
+    assert "challenge_context_empty" in panel
+    assert "captcha_solving" in panel
+
+
 def test_deploy_scripts_timeout_planner_smoke_and_remote_install():
     release = (PROJECT_ROOT / "deploy/release.sh").read_text()
     check_web = (PROJECT_ROOT / "deploy/check-web.sh").read_text()

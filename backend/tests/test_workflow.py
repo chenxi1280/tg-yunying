@@ -598,6 +598,8 @@ def test_group_verification_response_sends_answer_and_rechecks(monkeypatch):
         monkeypatch.setattr("app.services.verification.gateway.probe_target_capabilities", fake_probe)
 
         context = client.get(f"/api/verification-tasks/{task_id}/challenge-context", headers=headers).json()
+        assert context["context_status"] == "ok"
+        assert context["message_count"] == 1
         assert context["messages"][0]["text"] == "请输入验证码 1234"
 
         resolved = client.post(
@@ -635,8 +637,42 @@ def test_group_verification_context_gateway_error_is_explicit(monkeypatch):
         monkeypatch.setattr("app.services.verification.gateway.fetch_verification_context", unavailable_context)
 
         response = client.get(f"/api/verification-tasks/{task_id}/challenge-context", headers=headers)
-        assert response.status_code == 502
-        assert response.json()["detail"] == "读取验证聊天失败：The channel specified is private"
+        assert response.status_code == 200
+        body = response.json()
+        assert body["context_status"] == "read_failed"
+        assert body["message_count"] == 0
+        assert body["read_failure_detail"] == "读取验证聊天失败：The channel specified is private"
+
+
+def test_group_verification_context_empty_is_explicit(monkeypatch):
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            manual_task = VerificationTask(
+                tenant_id=1,
+                account_id=account["id"],
+                group_id=group["id"],
+                message_task_id=None,
+                verification_type="群发言权限",
+                detected_reason="需要群管理 bot 验证",
+                suggested_action="人工处理",
+                target_peer_id=group["tg_peer_id"],
+                target_display=group["title"],
+                status="需人工处理",
+            )
+            session.add(manual_task)
+            session.commit()
+            task_id = manual_task.id
+
+        monkeypatch.setattr("app.services.verification.gateway.fetch_verification_context", lambda *_args, **_kwargs: [])
+
+        response = client.get(f"/api/verification-tasks/{task_id}/challenge-context", headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["context_status"] == "empty"
+        assert body["message_count"] == 0
+        assert "没有读取到最近验证聊天信息" in body["read_failure_detail"]
 
 
 def test_campaign_draft_approval_and_dispatch_flow():

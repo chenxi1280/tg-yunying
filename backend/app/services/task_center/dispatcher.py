@@ -20,6 +20,7 @@ from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
 from app.services.developer_apps import credentials_for_account
 from app.services.ai_config import get_scheduling_setting
+from app.services.membership_challenges import auto_resolve_image_verification, record_challenge_attempt
 from app.services.verification import create_verification_task
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
@@ -55,6 +56,15 @@ _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS = (
 )
 _GROUP_SEND_BUTTON_VERIFICATION_MARKERS = ("按钮", "button", "click", "点击")
 _GROUP_SEND_REPLY_VERIFICATION_MARKERS = ("/start", "发送验证回复", "send reply")
+_GROUP_SEND_IMAGE_VERIFICATION_MARKERS = (
+    "图片验证码",
+    "图形验证码",
+    "验证码图片",
+    "captcha image",
+    "image captcha",
+    "机器人验证码",
+    "bot 的验证码",
+)
 _ACCOUNT_SESSION_FAILURE_MARKERS = (
     "session",
     "auth key",
@@ -675,6 +685,12 @@ def _auto_verification_enabled(session: Session, action: Action) -> bool:
     return bool((config or {}).get("auto_resolve_verification", True))
 
 
+def _ai_assisted_verification_enabled(session: Session, action: Action) -> bool:
+    task = session.get(Task, action.task_id) if action.task_id else None
+    config = task.type_config if task else {}
+    return bool((config or {}).get("ai_assisted_verification", True))
+
+
 def _auto_follow_required_channel_enabled(session: Session, action: Action) -> bool:
     task = session.get(Task, action.task_id) if action.task_id else None
     config = task.type_config if task else {}
@@ -686,6 +702,14 @@ def _try_auto_group_send_verification(ctx: MembershipDispatchContext, verificati
         return OperationResult(False, "需人工处理", FailureType.GROUP_PERMISSION_DENIED.value, "未生成验证辅助任务")
     if not getattr(verification_task, "can_auto_resolve", False):
         return OperationResult(False, "需人工处理", FailureType.GROUP_PERMISSION_DENIED.value, verification_task.detected_reason)
+    if verification_task.suggested_action == "识别图形验证码":
+        if not _ai_assisted_verification_enabled(ctx.session, ctx.action):
+            detail = "任务未启用 AI 辅助验证，图形验证码转人工处理"
+            verification_task.status = "需人工处理"
+            verification_task.failure_detail = detail
+            audit(ctx.session, tenant_id=ctx.action.tenant_id, actor="system", action="图形验证码转人工", target_type="verification_task", target_id=str(verification_task.id), detail=detail)
+            return OperationResult(False, "需人工处理", FailureType.GROUP_PERMISSION_DENIED.value, detail)
+        return _try_auto_image_verification(ctx, verification_task)
     result = gateway.resolve_verification_task(
         ctx.account.id,
         verification_task.suggested_action,
@@ -709,10 +733,47 @@ def _try_auto_group_send_verification(ctx: MembershipDispatchContext, verificati
     return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, verification_task.failure_detail)
 
 
+def _try_auto_image_verification(ctx: MembershipDispatchContext, verification_task):
+    result = auto_resolve_image_verification(ctx.session, verification_task, ctx.account, ctx.credentials)
+    verification_task.status = result.status
+    verification_task.failure_detail = result.detail or result.failure_type
+    if result.status != "需人工处理":
+        verification_task.handled_at = _now()
+    audit(ctx.session, tenant_id=ctx.action.tenant_id, actor="system", action="自动处理图形验证码", target_type="verification_task", target_id=str(verification_task.id), detail=f"{result.status}:{verification_task.failure_detail}")
+    if not result.ok:
+        return OperationResult(False, result.status, FailureType.GROUP_PERMISSION_DENIED.value, verification_task.failure_detail)
+    reprobe = gateway.probe_target_capabilities(ctx.account.id, ctx.payload.channel_id, ctx.payload.target_type, ctx.account.session_ciphertext, ctx.credentials)
+    if reprobe.ok:
+        _record_group_send_permission_allowed(ctx.session, ctx.action, ctx.account, ctx.payload)
+        _record_image_reprobe_attempt(ctx, verification_task, result, "reprobe_ok", reprobe.detail or "复检可发言")
+        return OperationResult(True, "已完成", detail=result.detail or reprobe.detail or "image_verification_resolved")
+    verification_task.status = "失败"
+    verification_task.failure_detail = reprobe.detail or reprobe.failure_type
+    _record_image_reprobe_attempt(ctx, verification_task, result, "reprobe_failed", verification_task.failure_detail)
+    return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, verification_task.failure_detail)
+
+
+def _record_image_reprobe_attempt(ctx: MembershipDispatchContext, verification_task, image_result, status: str, detail: str) -> None:
+    record_challenge_attempt(
+        ctx.session,
+        verification_task,
+        ctx.account,
+        getattr(image_result, "attempt_context", None) or {},
+        image_message=getattr(image_result, "image_message", None),
+        answer_text=getattr(image_result, "answer_text", ""),
+        confidence=float(getattr(image_result, "confidence", 0.0) or 0.0),
+        model_name=getattr(image_result, "model_name", ""),
+        status=status,
+        result_detail=detail,
+    )
+
+
 def _group_send_verification_action(detail: str) -> str:
     normalized = str(detail or "").lower()
     if any(marker.lower() in normalized for marker in _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS):
         return "关注频道"
+    if any(marker.lower() in normalized for marker in _GROUP_SEND_IMAGE_VERIFICATION_MARKERS):
+        return "识别图形验证码"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_BUTTON_VERIFICATION_MARKERS):
         return "点击按钮"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_REPLY_VERIFICATION_MARKERS):

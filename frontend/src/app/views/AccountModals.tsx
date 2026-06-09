@@ -18,6 +18,7 @@ const contactPhone = (contact: Contact) => contact.phone_number || contact.phone
 const verificationTargetLabel = (task: VerificationTask) => task.target_display || task.target_peer_id || (task.group_id ? `群聊 #${task.group_id}` : '未识别目标');
 const verificationActionLabel = (task: VerificationTask) => task.resolution_entry_label || (task.issue_category === 'group_restriction' ? '解除群限制' : '处理');
 const verificationActionable = (task: VerificationTask) => ['待处理', '失败', '需人工处理'].includes(task.status);
+const verificationContextAllowsReply = (context: VerificationChallengeContext | null) => !context || context.context_status === 'ok';
 
 // ===== Account Pool Detail Modal =====
 
@@ -492,7 +493,12 @@ export function AccountDetailModal({
   const availabilityTrendItems = Object.entries(availabilitySummary?.failure_trend ?? {});
   const verificationChallengeContext = verificationChallengeTask ? verificationContexts[verificationChallengeTask.id] : null;
   const verificationContextDiagnostic = verificationChallengeContext ? [
+    ['读取状态', verificationChallengeContext.context_status],
+    ['读取消息数', String(verificationChallengeContext.message_count ?? verificationChallengeContext.messages.length)],
+    ['最近读取时间', verificationChallengeContext.last_read_at ? formatBeijingDateTime(verificationChallengeContext.last_read_at) : '未记录'],
+    ['账号 ID', verificationChallengeContext.account_id ? String(verificationChallengeContext.account_id) : '未记录'],
     ['目标 peer', verificationChallengeContext.target_peer_id],
+    ['读取原因', verificationChallengeContext.read_failure_detail],
     ['探测原因', verificationChallengeContext.detected_reason],
     ['失败细节', verificationChallengeContext.failure_detail],
     ['建议动作', verificationChallengeContext.suggested_action],
@@ -998,6 +1004,11 @@ export function AccountDetailModal({
                     <Space direction="vertical" size={0}>
                       <Typography.Text strong>{message.sender || '未知来源'}</Typography.Text>
                       <Typography.Text>{message.text}</Typography.Text>
+                      {message.has_media && (
+                        <Typography.Text type="secondary">
+                          媒体：{message.media_mime_type || '未知类型'} {message.media_fingerprint ? `#${message.media_fingerprint.slice(0, 12)}` : ''}
+                        </Typography.Text>
+                      )}
                       {message.sent_at && <Typography.Text type="secondary">{formatBeijingDateTime(message.sent_at)}</Typography.Text>}
                     </Space>
                   </List.Item>
@@ -1023,7 +1034,7 @@ export function AccountDetailModal({
             onChange={(event) => setVerificationReplies((current) => ({ ...current, [verificationChallengeTask.id]: event.target.value }))}
             onSearch={() => submitVerificationReply(verificationChallengeTask)}
             loading={isActionPending(`verification:${verificationChallengeTask.id}:submit-response`)}
-            disabled={!verificationActionable(verificationChallengeTask)}
+            disabled={!verificationActionable(verificationChallengeTask) || !verificationContextAllowsReply(verificationChallengeContext)}
           />
           <Space wrap>
             <Button loading={isActionPending(`verification:${verificationChallengeTask.id}:resolve-group`)} disabled={!verificationActionable(verificationChallengeTask)} onClick={() => onResolveGroupRestrictionTask(verificationChallengeTask)}>解除群限制</Button>

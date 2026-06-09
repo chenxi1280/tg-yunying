@@ -327,15 +327,24 @@ export type VerificationChallengeMessage = {
   sender: string;
   text: string;
   sent_at: string | null;
+  has_media: boolean;
+  media_message_id: number | string | null;
+  media_mime_type: string;
+  media_fingerprint: string;
 };
 
 export type VerificationChallengeContext = {
   task_id: number;
+  account_id: number | null;
   target_display: string;
   target_peer_id: string;
   detected_reason: string;
   failure_detail: string;
   suggested_action: string;
+  context_status: 'ok' | 'empty' | 'read_failed' | 'stale' | 'target_inaccessible' | string;
+  last_read_at: string | null;
+  message_count: number;
+  read_failure_detail: string;
   messages: VerificationChallengeMessage[];
 };
 

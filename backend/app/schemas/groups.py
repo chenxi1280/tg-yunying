@@ -43,15 +43,24 @@ class VerificationChallengeMessageOut(ApiModel):
     sender: str = ""
     text: str
     sent_at: datetime | None = None
+    has_media: bool = False
+    media_message_id: int | str | None = None
+    media_mime_type: str = ""
+    media_fingerprint: str = ""
 
 
 class VerificationChallengeContextOut(ApiModel):
     task_id: int
+    account_id: int | None = None
     target_display: str
     target_peer_id: str = ""
     detected_reason: str = ""
     failure_detail: str = ""
     suggested_action: str = ""
+    context_status: str = "ok"
+    last_read_at: datetime | None = None
+    message_count: int = 0
+    read_failure_detail: str = ""
     messages: list[VerificationChallengeMessageOut]
 
 

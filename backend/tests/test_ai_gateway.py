@@ -333,6 +333,59 @@ def test_deepseek_health_check_also_disables_thinking(monkeypatch):
     assert requests[1]["response_format"] == {"type": "json_object"}
 
 
+def test_mimo_image_verification_uses_openai_compatible_image_payload(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {"content": '{"answer":"A7K2","confidence":0.93}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = AiGateway().solve_image_verification(
+        credentials(),
+        b"\x89PNG\r\n",
+        "image/png",
+        prompt="只识别验证码",
+    )
+
+    user_content = captured["payload"]["messages"][1]["content"]
+    assert captured["payload"]["model"] == "mimo-v2.5"
+    assert user_content[0] == {"type": "text", "text": "只识别验证码"}
+    assert user_content[1]["type"] == "image_url"
+    assert user_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert result.answer == "A7K2"
+    assert result.confidence == 0.93
+    assert result.usage.total_tokens == 14
+
+
+def test_deepseek_image_verification_is_rejected_before_network(monkeypatch):
+    def should_not_call(*_args, **_kwargs):
+        raise AssertionError("DeepSeek must not receive image verification requests")
+
+    monkeypatch.setattr("urllib.request.urlopen", should_not_call)
+    deepseek_credentials = AiProviderCredentials(
+        provider_name="DeepSeek",
+        provider_type="openai_compatible",
+        base_url="https://api.deepseek.com",
+        model_name="deepseek-v4-flash",
+        api_key="test-key",
+    )
+
+    with pytest.raises(RuntimeError, match="MiMo"):
+        AiGateway().solve_image_verification(deepseek_credentials, b"img", "image/png")
+
+
 def test_generate_drafts_uses_custom_timeout(monkeypatch):
     timeouts: list[int] = []
 

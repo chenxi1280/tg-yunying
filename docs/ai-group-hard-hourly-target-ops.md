@@ -222,12 +222,17 @@ GET /api/tasks/{task_id}/stats
 
 - pending 中存在 `ensure_target_membership`。
 - `membership_stage` 是 `membership_running` 或 `membership_partial`。
+- membership item 的失败原因包含群管理 bot、图形验证码、`captcha`、`challenge_required`、`manual_required` 或“需要验证”。
 
 处理：
 
 - 查看 membership-items。
 - 确认可入群账号数量。
-- 处理验证码、关注频道、邀请链接失效或目标权限问题。
+- 先把失败拆成关注频道、邀请链接失效、目标权限、群管理 bot 图片验证码、人工审批、账号限制和 Telegram API 失败，不得统一写成普通“加入失败”。
+- 如果页面显示“没有读取到最近验证聊天信息”，先按验证聊天读取空态处理：核对目标 peer、账号是否仍能读取群历史、验证消息是否已过期 / 被删除、账号 session 是否有效，以及是否出现 `GetHistoryRequest` 权限错误。
+- 图片验证码分支必须确认系统设置里存在健康的 MiMo 视觉供应商，且任务启用了 `ai_assisted_verification`。DeepSeek 等纯文本供应商不能处理图片验证码。
+- 对图片验证码账号，检查准入明细中的验证消息、图片摘要、MiMo 答案、置信度、发送结果和复检结果；缺少任一环节时按该环节记录失败原因。
+- MiMo 未配置、图片不可下载、识别低置信、答案发送失败或复检仍不可发言时，标记人工处理，不再自动反复尝试同一张验证码。
 - 主发送不足时记录 `target_membership_pending`，不应写成普通发送失败。
 
 ### 7.4 AI 生成不足

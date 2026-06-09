@@ -259,7 +259,7 @@ class TelegramGateway:
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
     ) -> OperationResult:
-        if action in {"关注频道", "点击按钮", "发送验证回复"}:
+        if action in {"关注频道", "点击按钮", "发送验证回复", "识别图形验证码"}:
             return OperationResult(True, "已处理", detail=f"mock 已执行：{action}")
         return OperationResult(False, "需人工处理", "复杂验证", "当前验证需要人工在 Telegram 内处理")
 
@@ -272,7 +272,26 @@ class TelegramGateway:
         *,
         limit: int = 8,
     ) -> list[dict]:
-        return [{"message_id": 1, "sender": "验证机器人", "text": "请输入验证码 1234", "sent_at": beijing_now()}]
+        return [{
+            "message_id": 1,
+            "sender": "验证机器人",
+            "text": "请输入验证码 1234",
+            "sent_at": beijing_now(),
+            "has_media": False,
+            "media_message_id": None,
+            "media_mime_type": "",
+            "media_fingerprint": "",
+        }]
+
+    def fetch_verification_media(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        message_id: int,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> CachedMediaResult:
+        return CachedMediaResult(True, data=b"mock-verification-image", detail="image/png")
 
     def submit_verification_response(
         self,

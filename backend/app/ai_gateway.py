@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
+import base64
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
-
 
 @dataclass(frozen=True)
 class AiProviderCredentials:
@@ -15,7 +15,6 @@ class AiProviderCredentials:
     model_name: str
     api_key: str
     api_key_header: str = "Authorization"
-
 
 @dataclass(frozen=True)
 class AiDraftCandidate:
@@ -27,7 +26,6 @@ class AiDraftCandidate:
     sequence_index: int = 0
     reply_to_sequence_index: int | None = None
 
-
 @dataclass(frozen=True)
 class AiUsage:
     prompt_tokens: int = 0
@@ -35,18 +33,21 @@ class AiUsage:
     total_tokens: int = 0
     billable: bool = False
 
-
 @dataclass(frozen=True)
 class AiGenerationResult:
     candidates: list[AiDraftCandidate]
     usage: AiUsage
 
+@dataclass(frozen=True)
+class AiImageVerificationResult:
+    answer: str
+    confidence: float
+    usage: AiUsage
 
 class AiEmptyFinalContentError(RuntimeError):
     def __init__(self, detail: str, *, retryable_reasoning_length: bool) -> None:
         super().__init__(detail)
         self.retryable_reasoning_length = retryable_reasoning_length
-
 
 MODEL_ALIASES = {
     "deepseek v4 flash": "deepseek-v4-flash",
@@ -181,6 +182,32 @@ class AiGateway:
             return True, warning
         return True, "provider ready; chat capability ready"
 
+    def solve_image_verification(
+        self,
+        credentials: AiProviderCredentials,
+        image_bytes: bytes,
+        mime_type: str,
+        *,
+        prompt: str = "请只识别图片里的验证码，输出 JSON：{\"answer\":\"验证码\",\"confidence\":0到1的小数}。",
+        timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+    ) -> AiImageVerificationResult:
+        if not self._is_mimo(credentials):
+            raise RuntimeError("图片验证码只能使用 MiMo 视觉供应商")
+        if not image_bytes:
+            raise RuntimeError("verification image is empty")
+        raw, usage = self._post_openai_compatible(
+            credentials,
+            prompt,
+            0.1,
+            256,
+            system_prompt="你是验证码识别助手。只输出紧凑 JSON，不要解释。",
+            response_format_json=False,
+            image_data_url=_image_data_url(image_bytes, mime_type),
+            timeout=timeout,
+        )
+        parsed = _parse_image_verification_json(raw)
+        return AiImageVerificationResult(parsed["answer"], parsed["confidence"], usage)
+
     def _check_chat_capability(self, credentials: AiProviderCredentials) -> str:
         try:
             raw, _ = self._post_openai_compatible(
@@ -210,6 +237,7 @@ class AiGateway:
         response_format_json: bool = False,
         reasoning_retry_max_tokens: int | None = None,
         timeout: int = DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+        image_data_url: str | None = None,
     ) -> tuple[str, AiUsage]:
         url = self._chat_completions_url(credentials.base_url)
         headers = {"Content-Type": "application/json"}
@@ -222,7 +250,15 @@ class AiGateway:
             attempt_tokens.append(reasoning_retry_max_tokens)
         last_empty_error: AiEmptyFinalContentError | None = None
         for token_budget in attempt_tokens:
-            payload = self._chat_payload(credentials, prompt, system_prompt, temperature, token_budget, response_format_json)
+            payload = self._chat_payload(
+                credentials,
+                prompt,
+                system_prompt,
+                temperature,
+                token_budget,
+                response_format_json,
+                image_data_url=image_data_url,
+            )
             request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -251,12 +287,20 @@ class AiGateway:
         temperature: float,
         max_tokens: int,
         response_format_json: bool,
+        *,
+        image_data_url: str | None = None,
     ) -> dict[str, Any]:
+        user_content: str | list[dict[str, Any]] = prompt
+        if image_data_url:
+            user_content = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ]
         payload: dict[str, Any] = {
             "model": credentials.model_name,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": user_content},
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -432,6 +476,24 @@ def _looks_like_json_drafts_fragment(value: str) -> bool:
         or "risk_level" in clean
         or "sequence_index" in clean
     )
+
+
+def _image_data_url(image_bytes: bytes, mime_type: str) -> str:
+    mime = (mime_type or "image/png").strip() or "image/png"
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def _parse_image_verification_json(raw: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw.strip())
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("MiMo returned malformed verification JSON") from exc
+    answer = str(payload.get("answer") or "").strip()
+    if not answer:
+        raise RuntimeError("MiMo returned empty verification answer")
+    confidence = float(payload.get("confidence") or 0)
+    return {"answer": answer[:80], "confidence": max(0.0, min(1.0, confidence))}
 
 
 def create_ai_gateway() -> AiGateway:

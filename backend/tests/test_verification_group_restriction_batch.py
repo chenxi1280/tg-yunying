@@ -59,9 +59,15 @@ def test_verification_context_keeps_button_and_media_challenges():
 
     row = asyncio.run(_verification_context_row(message))
 
+    assert row is not None
+    media_fingerprint = row.pop("media_fingerprint")
+    assert media_fingerprint
     assert row == {
         "message_id": 88,
         "sender": "验证机器人",
         "text": "[媒体消息] [按钮：点击验证]",
         "sent_at": sent_at,
+        "has_media": True,
+        "media_message_id": 88,
+        "media_mime_type": "",
     }

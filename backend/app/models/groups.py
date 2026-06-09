@@ -122,7 +122,7 @@ class VerificationTask(Base):
 
     @property
     def can_auto_resolve(self) -> bool:
-        return self.suggested_action in {"关注频道", "点击按钮", "发送验证回复"}
+        return self.suggested_action in {"关注频道", "点击按钮", "发送验证回复", "识别图形验证码"}
 
     @property
     def requires_target_recheck(self) -> bool:

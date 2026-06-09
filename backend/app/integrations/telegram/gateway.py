@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -81,7 +82,45 @@ async def _verification_context_row(message: Any) -> dict[str, Any] | None:
         "sender": sender_name,
         "text": text[:VERIFICATION_CONTEXT_PREVIEW_LIMIT],
         "sent_at": getattr(message, "date", None),
+        **_verification_media_summary(message),
     }
+
+
+def _verification_media_summary(message: Any) -> dict[str, Any]:
+    media = getattr(message, "media", None)
+    if not media:
+        return {
+            "has_media": False,
+            "media_message_id": None,
+            "media_mime_type": "",
+            "media_fingerprint": "",
+        }
+    mime_type = _message_media_mime_type(message)
+    fingerprint_source = "|".join(
+        str(part or "")
+        for part in [
+            getattr(message, "id", ""),
+            type(media).__name__,
+            mime_type,
+            getattr(getattr(media, "document", None), "id", ""),
+            getattr(getattr(media, "photo", None), "id", ""),
+        ]
+    )
+    return {
+        "has_media": True,
+        "media_message_id": getattr(message, "id", ""),
+        "media_mime_type": mime_type,
+        "media_fingerprint": hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest() if fingerprint_source.strip("|") else "",
+    }
+
+
+def _message_media_mime_type(message: Any) -> str:
+    media = getattr(message, "media", None)
+    for candidate in [media, getattr(media, "document", None), getattr(media, "photo", None)]:
+        mime_type = getattr(candidate, "mime_type", None)
+        if mime_type:
+            return str(mime_type)
+    return ""
 _telethon_send_target = telethon_send_target
 
 GROUP_ADMIN_APPROVE_LABEL = "通过（管理员）"
@@ -1317,6 +1356,45 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> list[dict[str, Any]]:
         return self._run(
             self._fetch_verification_context_async(target_peer_id, session_ciphertext, self._usable_credentials(credentials), limit=limit)
+        )
+
+    async def _fetch_verification_media_async(
+        self,
+        target_peer_id: str,
+        message_id: int,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+    ) -> CachedMediaResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return CachedMediaResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="账号没有可用 session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return CachedMediaResult(False, failure_type=FailureType.ACCOUNT_UNAVAILABLE.value, detail="session 已失效")
+        try:
+            target = await resolve_telethon_target(client, target_peer_id, group_id=0)
+            messages = await client.get_messages(target, ids=[message_id])
+            message = messages[0] if isinstance(messages, list) else messages
+            if not message or not getattr(message, "media", None):
+                return CachedMediaResult(False, failure_type="verification_media_missing", detail="未找到验证码图片消息")
+            data = await client.download_media(message, bytes)
+            if not data:
+                return CachedMediaResult(False, failure_type="verification_media_empty", detail="验证码图片下载为空")
+            return CachedMediaResult(True, data=bytes(data), detail=_message_media_mime_type(message) or "image/png")
+        except Exception as exc:  # noqa: BLE001
+            mapped = self._map_send_error(exc)
+            return CachedMediaResult(False, failure_type=mapped.failure_type or FailureType.UNKNOWN.value, detail=mapped.detail or str(exc))
+
+    def fetch_verification_media(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        message_id: int,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> CachedMediaResult:
+        return self._run(
+            self._fetch_verification_media_async(target_peer_id, message_id, session_ciphertext, self._usable_credentials(credentials))
         )
 
     def submit_verification_response(

@@ -467,9 +467,13 @@ def _membership_item_payload(
 def _membership_item_phase(action: Action, verification: VerificationTask | None) -> str:
     if _membership_item_ready(action):
         return "ready"
+    if verification and "没有读取到最近验证聊天信息" in (verification.failure_detail or ""):
+        return "challenge_context_empty"
     if verification and not verification.can_auto_resolve:
         return "manual_required"
     if verification and verification.can_auto_resolve:
+        if verification.suggested_action == "识别图形验证码" and action.status in {"claiming", "executing"}:
+            return "captcha_solving"
         return "challenge_solving" if action.status in {"claiming", "executing"} else "challenge_required"
     if action.status in {"claiming", "executing"}:
         return "joining"
