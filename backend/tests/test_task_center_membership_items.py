@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, VerificationTask
 from app.services._common import _now
-from app.services.task_center.service import list_membership_items_page
+from app.services.task_center.service import get_task_detail, list_membership_items_page
 
 
 def test_membership_items_page_projects_action_and_verification_state() -> None:
@@ -159,6 +159,59 @@ def test_membership_items_page_is_not_capped_by_detail_action_limit() -> None:
 
         assert total == 505
         assert len(rows) == 5
+
+
+def test_target_admission_retry_detail_defers_membership_rows_to_page_api() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            Task(
+                id="task-admission-retry",
+                tenant_id=1,
+                name="重试目标准入",
+                type="target_admission_retry",
+                status="running",
+            )
+        )
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群"))
+        session.add_all(
+            [
+                TgAccount(
+                    id=account_id,
+                    tenant_id=1,
+                    display_name=f"账号{account_id}",
+                    phone_masked=f"+861***{account_id:04d}",
+                    status="在线",
+                )
+                for account_id in range(1, 4)
+            ]
+        )
+        session.add_all(
+            [
+                Action(
+                    id=f"retry-membership-{account_id}",
+                    tenant_id=1,
+                    task_id="task-admission-retry",
+                    task_type="target_admission_retry",
+                    action_type="ensure_target_membership",
+                    account_id=account_id,
+                    status="pending",
+                    scheduled_at=now_value,
+                    payload={"channel_target_id": 21, "target_type": "group", "target_display": "目标群"},
+                )
+                for account_id in range(1, 4)
+            ]
+        )
+        session.commit()
+
+        detail = get_task_detail(session, 1, "task-admission-retry")
+
+        assert detail["membership_phase"]["pending_account_count"] == 3
+        assert detail["membership_accounts"] == []
 
 
 def test_membership_items_page_tolerates_legacy_bad_target_id() -> None:

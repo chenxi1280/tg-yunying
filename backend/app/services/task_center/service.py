@@ -68,6 +68,7 @@ _retry_failed_actions = retry_failed_actions
 CHANNEL_COMMENT_SCENE = "channel_comment"
 GROUP_CHAT_SCENE = "group_chat"
 OPEN_PLAN_ACTION_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
+DEFERRED_MEMBERSHIP_DETAIL_TYPES = {"target_admission_retry"}
 TARGET_PERMISSION_MARKERS = (
     "lack permission",
     "banned",
@@ -247,6 +248,7 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
     task_summary = session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id, TaskRuntimeSummary.task_id == task.id))
     operation_plan_links = list(session.scalars(select(OperationPlanTaskLink).where(OperationPlanTaskLink.tenant_id == tenant_id, OperationPlanTaskLink.task_id == task.id)))
     membership_phase = _membership_phase(task, actions)
+    membership_accounts = [] if _defer_membership_detail_rows(task) else _membership_accounts(session, actions)
     task_payload = _task_payload(session, task, actions=business_actions)
     task_payload["runtime_stage"] = derive_task_runtime_stage(task, actions=actions, membership_phase=membership_phase, summary=task_summary)
     return {
@@ -257,7 +259,7 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
         "operation_plan_links": operation_plan_links,
         "accounts": _detail_accounts(session, business_actions),
         "membership_phase": membership_phase,
-        "membership_accounts": _membership_accounts(session, actions),
+        "membership_accounts": membership_accounts,
         "message_groups": _message_groups(session, task, business_actions),
         "ai_cycles": _ai_cycles(business_actions),
         "ai_generation_records": _ai_generation_records(business_actions),
@@ -266,6 +268,10 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
         "recent_relay_sources": _relay_recent_sources(session, task),
         "learning_profile_preview": _task_learning_profile_preview(session, task),
     }
+
+
+def _defer_membership_detail_rows(task: Task) -> bool:
+    return task.type in DEFERRED_MEMBERSHIP_DETAIL_TYPES
 
 
 def _task_learning_profile_preview(session: Session, task: Task) -> dict[str, Any]:
