@@ -167,11 +167,13 @@ def test_group_learning_rejects_coarse_language_sample():
         session.flush()
 
         sample = record_group_learning_sample(session, session.get(TgGroup, 7), snapshot)
+        assert sample is not None
+        learning_status = sample.learning_status
+        reject_reason = sample.reject_reason
         session.commit()
 
-    assert sample is not None
-    assert sample.learning_status == "rejected"
-    assert sample.reject_reason == "coarse_language"
+    assert learning_status == "rejected"
+    assert reject_reason == "coarse_language"
 
 
 def test_learning_profile_version_restore_creates_new_current_version():

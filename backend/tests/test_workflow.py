@@ -16,7 +16,7 @@ from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import inspect, select
 
 
 _workspace_phone_suffix = 1000
