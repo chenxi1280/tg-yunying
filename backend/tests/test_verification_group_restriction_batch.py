@@ -1,7 +1,6 @@
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
-
-import pytest
 
 from app.models import VerificationTask
 from app.integrations.telegram import SendResult
@@ -42,8 +41,7 @@ def test_verification_send_failure_status_supports_send_result():
     assert _verification_send_failure_status(result) == "失败"
 
 
-@pytest.mark.asyncio
-async def test_verification_context_keeps_button_and_media_challenges():
+def test_verification_context_keeps_button_and_media_challenges():
     sender = SimpleNamespace(first_name="验证机器人", username="verify_bot", title="")
     sent_at = datetime(2026, 6, 9, 12, 30)
 
@@ -59,7 +57,7 @@ async def test_verification_context_keeps_button_and_media_challenges():
         get_sender=get_sender,
     )
 
-    row = await _verification_context_row(message)
+    row = asyncio.run(_verification_context_row(message))
 
     assert row == {
         "message_id": 88,
