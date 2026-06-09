@@ -210,6 +210,8 @@ def test_target_admission_retry_detail_defers_membership_rows_to_page_api() -> N
 
         detail = get_task_detail(session, 1, "task-admission-retry")
 
+        assert detail["stats"]["total_actions"] == 3
+        assert detail["stats"]["pending_count"] == 3
         assert detail["membership_phase"]["pending_account_count"] == 3
         assert detail["membership_accounts"] == []
 

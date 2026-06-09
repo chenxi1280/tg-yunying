@@ -69,6 +69,9 @@ CHANNEL_COMMENT_SCENE = "channel_comment"
 GROUP_CHAT_SCENE = "group_chat"
 OPEN_PLAN_ACTION_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
 DEFERRED_MEMBERSHIP_DETAIL_TYPES = {"target_admission_retry"}
+MEMBERSHIP_SUCCESS_STATUSES = {"success", "skipped"}
+MEMBERSHIP_PENDING_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
+MEMBERSHIP_FAILURE_STATUSES = {"failed", "unknown_after_send"}
 TARGET_PERMISSION_MARKERS = (
     "lack permission",
     "banned",
@@ -242,6 +245,8 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
     if is_profile_batch_task_id(task_id):
         return get_profile_batch_task_detail(session, tenant_id, task_id)
     task = _get_task(session, tenant_id, task_id)
+    if _defer_membership_detail_rows(task):
+        return _lightweight_membership_task_detail(session, tenant_id, task)
     actions = list_actions(session, tenant_id, task_id)
     business_actions = [action for action in actions if action.action_type not in {"ensure_channel_membership", "ensure_target_membership"}]
     stats = refresh_task_stats(session, task)
@@ -272,6 +277,82 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
 
 def _defer_membership_detail_rows(task: Task) -> bool:
     return task.type in DEFERRED_MEMBERSHIP_DETAIL_TYPES
+
+
+def _lightweight_membership_task_detail(session: Session, tenant_id: int, task: Task) -> dict[str, Any]:
+    task_summary = session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id, TaskRuntimeSummary.task_id == task.id))
+    operation_plan_links = list(session.scalars(select(OperationPlanTaskLink).where(OperationPlanTaskLink.tenant_id == tenant_id, OperationPlanTaskLink.task_id == task.id)))
+    membership_phase = _lightweight_membership_phase(session, task)
+    task_payload = _task_payload(session, task, actions=[])
+    task_payload["runtime_stage"] = derive_task_runtime_stage(task, actions=[], membership_phase=membership_phase, summary=task_summary)
+    return {
+        "task": task_payload,
+        "actions": [],
+        "stats": _lightweight_membership_stats(task, membership_phase),
+        "task_runtime_summary": task_summary,
+        "operation_plan_links": operation_plan_links,
+        "accounts": [],
+        "membership_phase": membership_phase,
+        "membership_accounts": [],
+        "message_groups": [],
+        "ai_cycles": [],
+        "ai_generation_records": [],
+        "ai_account_profiles": [],
+        "relay_batches": [],
+        "recent_relay_sources": [],
+        "learning_profile_preview": _task_learning_profile_preview(session, task),
+    }
+
+
+def _lightweight_membership_phase(session: Session, task: Task) -> dict[str, Any]:
+    rows = session.execute(
+        select(Action.status, func.count(Action.id))
+        .where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_id == task.id,
+            Action.action_type.in_([TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]),
+        )
+        .group_by(Action.status)
+    ).all()
+    counts = {str(status): int(count) for status, count in rows}
+    success = sum(counts.get(status, 0) for status in MEMBERSHIP_SUCCESS_STATUSES)
+    pending = sum(counts.get(status, 0) for status in MEMBERSHIP_PENDING_STATUSES)
+    failed = sum(counts.get(status, 0) for status in MEMBERSHIP_FAILURE_STATUSES)
+    total = sum(counts.values())
+    running = sum(counts.get(status, 0) for status in {"claiming", "executing"})
+    stage = "membership_running" if pending else "membership_blocked" if failed else "membership_ready"
+    return {
+        "stage": stage,
+        "status": "partial_success" if success and (pending or failed) else "pending" if pending else "failed" if failed else "completed",
+        "progress_percent": round((success + failed) * 100 / total) if total else 100,
+        "current_phase": "排队中" if pending else "等待人工处理" if failed else "已完成",
+        "warnings": [],
+        "summary": {"action_count": total, "success_account_count": success},
+        "ready_account_count": success,
+        "pending_account_count": pending,
+        "running_account_count": running,
+        "success_account_count": success,
+        "failed_account_count": failed,
+        "blocked_account_count": failed,
+        "failed_count": failed,
+        "running_count": running,
+        "success_count": success,
+    }
+
+
+def _lightweight_membership_stats(task: Task, membership_phase: dict[str, Any]) -> dict[str, Any]:
+    stats = dict(task.stats or empty_stats())
+    total = int((membership_phase.get("summary") or {}).get("action_count") or 0)
+    stats.update(
+        {
+            "total_actions": total,
+            "success_count": int(membership_phase.get("success_count") or 0),
+            "failure_count": int(membership_phase.get("failed_count") or 0),
+            "pending_count": int(membership_phase.get("pending_account_count") or 0),
+            "executing_count": int(membership_phase.get("running_count") or 0),
+        }
+    )
+    return stats
 
 
 def _task_learning_profile_preview(session: Session, task: Task) -> dict[str, Any]:
