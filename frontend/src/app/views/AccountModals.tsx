@@ -242,6 +242,7 @@ export function AccountDetailModal({
   const [availabilityLoading, setAvailabilityLoading] = React.useState(false);
   const [verificationContexts, setVerificationContexts] = React.useState<Record<number, VerificationChallengeContext>>({});
   const [verificationReplies, setVerificationReplies] = React.useState<Record<number, string>>({});
+  const [verificationChallengeTask, setVerificationChallengeTask] = React.useState<VerificationTask | null>(null);
 
   React.useEffect(() => {
     setManualTargetId((current) => current ?? accountDetail.operation_targets[0]?.id ?? null);
@@ -282,11 +283,17 @@ export function AccountDetailModal({
     setVerificationContexts((current) => ({ ...current, [task.id]: context }));
   }
 
+  async function openVerificationChallenge(task: VerificationTask) {
+    setVerificationChallengeTask(task);
+    await loadVerificationContext(task);
+  }
+
   async function submitVerificationReply(task: VerificationTask) {
     const responseText = (verificationReplies[task.id] || '').trim();
     if (!responseText) return;
     await onSubmitVerificationTaskResponse(task, responseText);
     setVerificationReplies((current) => ({ ...current, [task.id]: '' }));
+    setVerificationChallengeTask(null);
   }
 
   async function loadSecurityDetail() {
@@ -483,6 +490,7 @@ export function AccountDetailModal({
   const availabilityUpdatedAt = availabilitySummary ? parseBeijingDate(availabilitySummary.updated_at) : null;
   const availabilityStale = availabilityUpdatedAt ? Date.now() - availabilityUpdatedAt.getTime() > 15 * 60 * 1000 : false;
   const availabilityTrendItems = Object.entries(availabilitySummary?.failure_trend ?? {});
+  const verificationChallengeContext = verificationChallengeTask ? verificationContexts[verificationChallengeTask.id] : null;
 
   return (
     <>
@@ -897,31 +905,10 @@ export function AccountDetailModal({
                 <span>目标：{verificationTargetLabel(task)}</span>
                 <span>{task.detected_reason || '等待处理'}</span>
                 <span>处理入口：{verificationActionLabel(task)} / {task.issue_category === 'group_restriction' ? '群内管理员解除后重查' : task.suggested_action}</span>
-                {task.issue_category === 'group_restriction' && verificationContexts[task.id] && (
-                  <div className="inline-detail-list">
-                    {verificationContexts[task.id].messages.map((message) => (
-                      <Typography.Text key={message.message_id} type="secondary">
-                        {message.sender || '未知来源'}：{message.text}
-                      </Typography.Text>
-                    ))}
-                    {!verificationContexts[task.id].messages.length && <Typography.Text type="secondary">没有读取到最近验证聊天信息。</Typography.Text>}
-                  </div>
-                )}
                 <div className="row-actions">
                   {task.issue_category === 'group_restriction' ? (
                     <>
-                      <Button size="small" loading={isActionPending(`verification:${task.id}:context`)} disabled={!verificationActionable(task)} onClick={() => loadVerificationContext(task)}>查看验证聊天</Button>
-                      <Input.Search
-                        size="small"
-                        style={{ width: 240 }}
-                        placeholder="输入验证码或验证回复"
-                        enterButton="提交验证回复"
-                        value={verificationReplies[task.id] || ''}
-                        onChange={(event) => setVerificationReplies((current) => ({ ...current, [task.id]: event.target.value }))}
-                        onSearch={() => submitVerificationReply(task)}
-                        loading={isActionPending(`verification:${task.id}:submit-response`)}
-                        disabled={!verificationActionable(task)}
-                      />
+                      <Button size="small" loading={isActionPending(`verification:${task.id}:context`)} disabled={!verificationActionable(task)} onClick={() => openVerificationChallenge(task)}>查看验证聊天</Button>
                       <Button size="small" loading={isActionPending(`verification:${task.id}:resolve-group`)} disabled={!verificationActionable(task)} onClick={() => onResolveGroupRestrictionTask(task)}>解除群限制</Button>
                       <Button size="small" loading={isActionPending(`verification:${task.id}:resolve-group-batch`)} disabled={!verificationActionable(task)} onClick={() => onResolveGroupRestrictionBatch(task)}>重查该目标全部账号</Button>
                     </>
@@ -971,6 +958,64 @@ export function AccountDetailModal({
         </>
       )}
       </div>
+    </Modal>
+    <Modal
+      title="验证聊天与回复"
+      open={Boolean(verificationChallengeTask)}
+      width={720}
+      footer={null}
+      onCancel={() => setVerificationChallengeTask(null)}
+      destroyOnHidden
+      centered
+    >
+      {verificationChallengeTask && (
+        <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <Alert
+            type="warning"
+            showIcon
+            message={`目标：${verificationTargetLabel(verificationChallengeTask)}`}
+            description="先查看群内机器人或管理员发出的验证消息，再把验证码或验证回复填到下方。提交后系统会用该账号发送，并自动重查发言能力。"
+          />
+          <Card
+            size="small"
+            title="最近验证聊天"
+            extra={<Button size="small" loading={isActionPending(`verification:${verificationChallengeTask.id}:context`)} onClick={() => loadVerificationContext(verificationChallengeTask)}>重新读取</Button>}
+          >
+            {isActionPending(`verification:${verificationChallengeTask.id}:context`) && !verificationChallengeContext ? (
+              <Typography.Text type="secondary">正在读取群内最近消息...</Typography.Text>
+            ) : verificationChallengeContext?.messages.length ? (
+              <List
+                size="small"
+                dataSource={verificationChallengeContext.messages}
+                renderItem={(message) => (
+                  <List.Item>
+                    <Space direction="vertical" size={0}>
+                      <Typography.Text strong>{message.sender || '未知来源'}</Typography.Text>
+                      <Typography.Text>{message.text}</Typography.Text>
+                      {message.sent_at && <Typography.Text type="secondary">{formatBeijingDateTime(message.sent_at)}</Typography.Text>}
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            ) : (
+              <Empty description="没有读取到最近验证聊天信息，可以先重新读取；如果仍为空，需要在 Telegram 群里确认是否真的有机器人验证码消息。" />
+            )}
+          </Card>
+          <Input.Search
+            placeholder="输入验证码或验证回复"
+            enterButton="提交验证回复"
+            value={verificationReplies[verificationChallengeTask.id] || ''}
+            onChange={(event) => setVerificationReplies((current) => ({ ...current, [verificationChallengeTask.id]: event.target.value }))}
+            onSearch={() => submitVerificationReply(verificationChallengeTask)}
+            loading={isActionPending(`verification:${verificationChallengeTask.id}:submit-response`)}
+            disabled={!verificationActionable(verificationChallengeTask)}
+          />
+          <Space wrap>
+            <Button loading={isActionPending(`verification:${verificationChallengeTask.id}:resolve-group`)} disabled={!verificationActionable(verificationChallengeTask)} onClick={() => onResolveGroupRestrictionTask(verificationChallengeTask)}>解除群限制</Button>
+            <Button loading={isActionPending(`verification:${verificationChallengeTask.id}:resolve-group-batch`)} disabled={!verificationActionable(verificationChallengeTask)} onClick={() => onResolveGroupRestrictionBatch(verificationChallengeTask)}>重查该目标全部账号</Button>
+          </Space>
+        </Space>
+      )}
     </Modal>
     <Modal
       title="提取 TG 官方验证码"

@@ -355,6 +355,8 @@ def test_account_verification_tab_supports_challenge_reply_flow():
     groups_router = (PROJECT_ROOT / "backend/app/api/routers/groups.py").read_text()
 
     assert "查看验证聊天" in account_modals
+    assert "验证聊天与回复" in account_modals
+    assert "verificationChallengeTask" in account_modals
     assert "输入验证码或验证回复" in account_modals
     assert "提交验证回复" in account_modals
     assert "loadVerificationChallengeContext" in account_actions
