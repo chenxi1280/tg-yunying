@@ -1,5 +1,5 @@
 import React from 'react';
-import { Descriptions, Drawer, Select, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Descriptions, Drawer, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { TaskCenterDetail, TaskMembershipItem } from '../types';
 import { StatusBadge } from '../components/shared';
@@ -15,6 +15,7 @@ interface TaskMembershipPanelProps {
   membershipFilters: MembershipFilters;
   onMembershipPageChange: (page: number, pageSize: number) => void;
   onMembershipFiltersChange: (filters: MembershipFilters) => void;
+  onOpenAccountDetail?: (accountId: number, tab?: string) => void | Promise<void>;
 }
 
 function DetailStatusBadge({ status }: { status?: string | null }) {
@@ -40,6 +41,10 @@ function membershipPhaseLabel(phase?: string) {
   return labels[phase || ''] || phase || '-';
 }
 
+function needsOperatorAction(item: TaskMembershipItem) {
+  return item.manual_required || item.phase === 'manual_required' || Boolean(item.verification_task_id);
+}
+
 export function TaskMembershipPanel({
   membershipPhase,
   membershipAccounts,
@@ -48,8 +53,12 @@ export function TaskMembershipPanel({
   membershipFilters,
   onMembershipPageChange,
   onMembershipFiltersChange,
+  onOpenAccountDetail,
 }: TaskMembershipPanelProps) {
   const [selectedItem, setSelectedItem] = React.useState<TaskMembershipItem | null>(null);
+  const openAccountVerification = (item: TaskMembershipItem) => {
+    void onOpenAccountDetail?.(item.account_id, '验证待处理');
+  };
   const columns: ColumnsType<TaskMembershipItem> = [
     { title: '账号', key: 'account', width: 180, render: (_, item) => <Space direction="vertical" size={0}><Typography.Text strong>{item.display_name || `账号 #${item.account_id}`}</Typography.Text><Typography.Text type="secondary">{item.username ? `@${item.username}` : '-'}</Typography.Text></Space> },
     { title: '阶段', dataIndex: 'phase', width: 130, render: (value) => <Tag color={value === 'ready' ? 'green' : value === 'manual_required' ? 'gold' : value === 'failed' ? 'red' : undefined}>{membershipPhaseLabel(value)}</Tag> },
@@ -59,6 +68,25 @@ export function TaskMembershipPanel({
     { title: '失败原因', key: 'failure_reason', ellipsis: true, render: (_, item) => membershipFailureSummary(item) },
     { title: '计划时间', dataIndex: 'scheduled_at', width: 170, render: (value) => formatDateTime(value) },
     { title: '完成时间', dataIndex: 'completed_at', width: 170, render: (value) => formatDateTime(value) },
+    {
+      title: '操作',
+      key: 'actions',
+      fixed: 'right',
+      width: 130,
+      render: (_, item) => needsOperatorAction(item) ? (
+        <Button
+          size="small"
+          type="primary"
+          disabled={!onOpenAccountDetail}
+          onClick={(event) => {
+            event.stopPropagation();
+            openAccountVerification(item);
+          }}
+        >
+          打开账号处理
+        </Button>
+      ) : <Typography.Text type="secondary">无需处理</Typography.Text>,
+    },
   ];
 
   return (
@@ -132,15 +160,24 @@ export function TaskMembershipPanel({
             onChange: onMembershipPageChange,
           }}
           size="small"
-          scroll={{ x: 1220 }}
+          scroll={{ x: 1370 }}
         />
       </Space>
-      <MembershipDetailDrawer item={selectedItem} onClose={() => setSelectedItem(null)} />
+      <MembershipDetailDrawer item={selectedItem} onClose={() => setSelectedItem(null)} onOpenAccountVerification={openAccountVerification} />
     </>
   );
 }
 
-function MembershipDetailDrawer({ item, onClose }: { item: TaskMembershipItem | null; onClose: () => void }) {
+function MembershipDetailDrawer({
+  item,
+  onClose,
+  onOpenAccountVerification,
+}: {
+  item: TaskMembershipItem | null;
+  onClose: () => void;
+  onOpenAccountVerification: (item: TaskMembershipItem) => void;
+}) {
+  const shouldHandle = item ? needsOperatorAction(item) : false;
   return (
     <Drawer
       title={item ? `${item.display_name || `账号 #${item.account_id}`} 准入详情` : '准入详情'}
@@ -151,6 +188,15 @@ function MembershipDetailDrawer({ item, onClose }: { item: TaskMembershipItem | 
     >
       {item && (
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          {shouldHandle && (
+            <Alert
+              type="warning"
+              showIcon
+              message="需要到账号验证待处理完成处置"
+              description="先在 Telegram 内完成人工动作，再回到账号详情的验证待处理中标记已人工处理或重查群限制。"
+              action={<Button size="small" type="primary" onClick={() => onOpenAccountVerification(item)}>打开账号处理</Button>}
+            />
+          )}
           <Descriptions
             bordered
             size="small"

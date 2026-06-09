@@ -332,6 +332,20 @@ def test_task_detail_membership_completion_uses_completed_at():
     assert "pending_account_count" in source
 
 
+def test_task_detail_membership_manual_rows_link_to_account_verification():
+    app_shell = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    modal = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+    panel = (PROJECT_ROOT / "frontend/src/app/views/TaskMembershipPanel.tsx").read_text()
+
+    assert "onOpenAccountDetail={openAccountDetailFromOperation}" in app_shell
+    assert "onOpenAccountDetail?: (accountId: number, tab?: string) => void | Promise<void>" in view
+    assert "onOpenAccountDetail={onOpenAccountDetail}" in modal
+    assert "打开账号处理" in panel
+    assert "onOpenAccountDetail?.(item.account_id, '验证待处理')" in panel
+    assert "先在 Telegram 内完成人工动作" in panel
+
+
 def test_task_center_uses_runtime_stage_for_paused_and_waiting_states():
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
     runtime_stage = (PROJECT_ROOT / "frontend/src/app/views/taskRuntimeStage.ts").read_text()

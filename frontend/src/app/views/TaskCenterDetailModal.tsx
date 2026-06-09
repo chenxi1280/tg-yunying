@@ -39,6 +39,7 @@ interface TaskCenterDetailModalProps {
   onRefreshTask: (task: TaskCenterTask) => void;
   onMembershipPageChange: (page: number, pageSize: number) => void;
   onMembershipFiltersChange: (filters: { phase: string; manualRequired: string }) => void;
+  onOpenAccountDetail?: (accountId: number, tab?: string) => void | Promise<void>;
   onResumeTask: (task: TaskCenterTask) => void;
   onClose: () => void;
 }
@@ -135,6 +136,7 @@ export function TaskCenterDetailModal({
   onRefreshTask,
   onMembershipPageChange,
   onMembershipFiltersChange,
+  onOpenAccountDetail,
   onResumeTask,
   onClose,
 }: TaskCenterDetailModalProps) {
@@ -241,6 +243,7 @@ export function TaskCenterDetailModal({
           membershipFilters={membershipFilters}
           onMembershipPageChange={onMembershipPageChange}
           onMembershipFiltersChange={onMembershipFiltersChange}
+          onOpenAccountDetail={onOpenAccountDetail}
         />
       ),
     } : null,

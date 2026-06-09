@@ -546,6 +546,7 @@ function AppShell() {
               onFocusTaskConsumed={() => setTaskCenterFocus(null)}
               canManageTasks={hasPermission(currentUser, 'tasks.manage')}
               canDispatchControl={hasPermission(currentUser, 'tasks.dispatch_control')}
+              onOpenAccountDetail={openAccountDetailFromOperation}
             />
           )}
           {activeView === 'listenerCenter' && (

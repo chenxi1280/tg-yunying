@@ -173,6 +173,7 @@ export default function TaskCenterView({
   onFocusTaskConsumed,
   canManageTasks = false,
   canDispatchControl = false,
+  onOpenAccountDetail,
 }: {
   accounts: Account[];
   accountPools: AccountPool[];
@@ -182,6 +183,7 @@ export default function TaskCenterView({
   onFocusTaskConsumed?: () => void;
   canManageTasks?: boolean;
   canDispatchControl?: boolean;
+  onOpenAccountDetail?: (accountId: number, tab?: string) => void | Promise<void>;
 }) {
   const [tasks, setTasks] = React.useState<TaskCenterTask[]>([]);
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
@@ -1510,6 +1512,7 @@ export default function TaskCenterView({
         onRefreshTask={(task) => void loadDetail(task)}
         onMembershipPageChange={(page, pageSize) => void loadMembershipPage(page, pageSize)}
         onMembershipFiltersChange={updateMembershipFilters}
+        onOpenAccountDetail={onOpenAccountDetail}
         onResumeTask={(task) => void taskAction(task, 'resume')}
         onClose={() => {
           setDetail(null);
