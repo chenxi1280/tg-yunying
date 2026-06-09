@@ -280,7 +280,7 @@ def resolve_group_restriction_task(session: Session, task_id: int, actor: str) -
 
 
 def get_verification_challenge_context(session: Session, task_id: int) -> dict:
-    task, account, _group = _verification_task_account_group(session, task_id)
+    task, account, _group = _group_restriction_task_account_group(session, task_id)
     credentials = credentials_for_account(session, account)
     messages = gateway.fetch_verification_context(
         account.id,
@@ -292,7 +292,7 @@ def get_verification_challenge_context(session: Session, task_id: int) -> dict:
 
 
 def submit_verification_response(session: Session, task_id: int, response_text: str, actor: str) -> VerificationTask:
-    task, account, group = _verification_task_account_group(session, task_id)
+    task, account, group = _group_restriction_task_account_group(session, task_id)
     credentials = credentials_for_account(session, account)
     result = gateway.submit_verification_response(
         account.id,
@@ -302,8 +302,8 @@ def submit_verification_response(session: Session, task_id: int, response_text: 
         credentials,
     )
     if not result.ok:
-        task.status = result.status or "失败"
-        task.failure_detail = result.detail or result.failure_type or "验证回复发送失败"
+        task.status = _verification_send_failure_status(result)
+        task.failure_detail = getattr(result, "detail", None) or getattr(result, "failure_type", None) or "验证回复发送失败"
         task.handled_at = None
     elif group:
         probe = gateway.probe_target_capabilities(account.id, task.target_peer_id, "group", account.session_ciphertext, credentials)
@@ -318,6 +318,17 @@ def submit_verification_response(session: Session, task_id: int, response_text: 
     session.commit()
     session.refresh(task)
     return task
+
+
+def _verification_send_failure_status(result) -> str:
+    return getattr(result, "status", None) or "失败"
+
+
+def _group_restriction_task_account_group(session: Session, task_id: int) -> tuple[VerificationTask, TgAccount, TgGroup]:
+    task, account, group = _verification_task_account_group(session, task_id)
+    if not group or task.issue_category != "group_restriction":
+        raise ValueError("verification task is not a group restriction")
+    return task, account, group
 
 
 def _verification_task_account_group(session: Session, task_id: int) -> tuple[VerificationTask, TgAccount, TgGroup | None]:

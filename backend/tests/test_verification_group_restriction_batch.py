@@ -1,5 +1,6 @@
 from app.models import VerificationTask
-from app.services.verification import _apply_batch_approval_detail
+from app.integrations.telegram import SendResult
+from app.services.verification import _apply_batch_approval_detail, _verification_send_failure_status
 
 
 def test_batch_approval_detail_marks_blocked_tasks_once():
@@ -27,3 +28,9 @@ def test_batch_approval_detail_skips_restored_tasks():
     _apply_batch_approval_detail([task], ("已执行", "已点击 1 条通过（管理员）验证", 8))
 
     assert task.failure_detail == "目标能力重查通过：可发言。"
+
+
+def test_verification_send_failure_status_supports_send_result():
+    result = SendResult(False, failure_type="群无权限", detail="账号不可发言")
+
+    assert _verification_send_failure_status(result) == "失败"
