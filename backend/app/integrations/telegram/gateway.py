@@ -1293,8 +1293,12 @@ class TelethonTelegramGateway(TelegramGateway):
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
             raise RuntimeError("session 已失效")
-        target = await resolve_telethon_target(client, target_peer_id, group_id=0)
-        messages = await client.get_messages(target, limit=limit)
+        try:
+            target = await resolve_telethon_target(client, target_peer_id, group_id=0)
+            messages = await client.get_messages(target, limit=limit)
+        except Exception as exc:  # noqa: BLE001 - Telegram access failures are runtime API errors.
+            detail = str(exc) or exc.__class__.__name__
+            raise RuntimeError(f"读取验证聊天失败：{detail}") from exc
         rows: list[dict[str, Any]] = []
         for message in messages:
             row = await _verification_context_row(message)

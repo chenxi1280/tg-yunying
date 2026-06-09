@@ -610,6 +610,35 @@ def test_group_verification_response_sends_answer_and_rechecks(monkeypatch):
         assert "重查通过" in resolved["failure_detail"]
 
 
+def test_group_verification_context_gateway_error_is_explicit(monkeypatch):
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        account, group = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            manual_task = VerificationTask(
+                tenant_id=1,
+                account_id=account["id"],
+                group_id=group["id"],
+                message_task_id=None,
+                verification_type="群发言权限",
+                detected_reason="验证码：请输入 1234",
+                suggested_action="人工处理",
+                status="需人工处理",
+            )
+            session.add(manual_task)
+            session.commit()
+            task_id = manual_task.id
+
+        def unavailable_context(*_args, **_kwargs):
+            raise RuntimeError("读取验证聊天失败：The channel specified is private")
+
+        monkeypatch.setattr("app.services.verification.gateway.fetch_verification_context", unavailable_context)
+
+        response = client.get(f"/api/verification-tasks/{task_id}/challenge-context", headers=headers)
+        assert response.status_code == 502
+        assert response.json()["detail"] == "读取验证聊天失败：The channel specified is private"
+
+
 def test_campaign_draft_approval_and_dispatch_flow():
     skip_legacy_task_center_flow()
     with TestClient(app) as client:

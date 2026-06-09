@@ -167,6 +167,8 @@ def get_verification_task_challenge_context(
         return get_verification_challenge_context(session, task_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/api/verification-tasks/{task_id}/submit-response", response_model=VerificationTaskOut)
