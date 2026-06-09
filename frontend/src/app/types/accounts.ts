@@ -332,6 +332,10 @@ export type VerificationChallengeMessage = {
 export type VerificationChallengeContext = {
   task_id: number;
   target_display: string;
+  target_peer_id: string;
+  detected_reason: string;
+  failure_detail: string;
+  suggested_action: string;
   messages: VerificationChallengeMessage[];
 };
 

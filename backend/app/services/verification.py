@@ -288,7 +288,15 @@ def get_verification_challenge_context(session: Session, task_id: int) -> dict:
         account.session_ciphertext,
         credentials,
     )
-    return {"task_id": task.id, "target_display": task.target_display, "messages": messages}
+    return {
+        "task_id": task.id,
+        "target_display": task.target_display,
+        "target_peer_id": task.target_peer_id,
+        "detected_reason": task.detected_reason,
+        "failure_detail": task.failure_detail,
+        "suggested_action": task.suggested_action,
+        "messages": messages,
+    }
 
 
 def submit_verification_response(session: Session, task_id: int, response_text: str, actor: str) -> VerificationTask:

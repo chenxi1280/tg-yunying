@@ -48,6 +48,10 @@ class VerificationChallengeMessageOut(ApiModel):
 class VerificationChallengeContextOut(ApiModel):
     task_id: int
     target_display: str
+    target_peer_id: str = ""
+    detected_reason: str = ""
+    failure_detail: str = ""
+    suggested_action: str = ""
     messages: list[VerificationChallengeMessageOut]
 
 

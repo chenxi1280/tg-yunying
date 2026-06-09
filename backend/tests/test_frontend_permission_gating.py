@@ -362,6 +362,12 @@ def test_account_verification_tab_supports_challenge_reply_flow():
     assert "loadVerificationChallengeContext" in account_actions
     assert "submitVerificationTaskResponse" in account_actions
     assert "VerificationChallengeContextOut" in groups_schema
+    assert "target_peer_id: str" in groups_schema
+    assert "detected_reason: str" in groups_schema
+    assert "failure_detail: str" in groups_schema
+    assert "suggested_action: str" in groups_schema
+    assert "target_peer_id: string" in account_modals
+    assert "verificationContextDiagnostic" in account_modals
     assert '"/api/verification-tasks/{task_id}/challenge-context"' in groups_router
     assert '"/api/verification-tasks/{task_id}/submit-response"' in groups_router
 

@@ -491,6 +491,12 @@ export function AccountDetailModal({
   const availabilityStale = availabilityUpdatedAt ? Date.now() - availabilityUpdatedAt.getTime() > 15 * 60 * 1000 : false;
   const availabilityTrendItems = Object.entries(availabilitySummary?.failure_trend ?? {});
   const verificationChallengeContext = verificationChallengeTask ? verificationContexts[verificationChallengeTask.id] : null;
+  const verificationContextDiagnostic = verificationChallengeContext ? [
+    ['目标 peer', verificationChallengeContext.target_peer_id],
+    ['探测原因', verificationChallengeContext.detected_reason],
+    ['失败细节', verificationChallengeContext.failure_detail],
+    ['建议动作', verificationChallengeContext.suggested_action],
+  ].filter((item): item is [string, string] => Boolean(item[1])) : [];
 
   return (
     <>
@@ -998,7 +1004,16 @@ export function AccountDetailModal({
                 )}
               />
             ) : (
-              <Empty description="没有读取到最近验证聊天信息，可以先重新读取；如果仍为空，需要在 Telegram 群里确认是否真的有机器人验证码消息。" />
+              <Empty
+                description={(
+                  <Space direction="vertical" size={4}>
+                    <span>没有读取到最近验证聊天信息。</span>
+                    {verificationContextDiagnostic.map(([label, value]) => (
+                      <Typography.Text key={label} type="secondary">{label}：{value}</Typography.Text>
+                    ))}
+                  </Space>
+                )}
+              />
             )}
           </Card>
           <Input.Search
