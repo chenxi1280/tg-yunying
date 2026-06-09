@@ -43,6 +43,24 @@ OPERATOR_UI_MARKERS = (
     "口令现金",
 )
 
+COARSE_LANGUAGE_MARKERS = (
+    "傻逼",
+    "傻b",
+    "煞笔",
+    "沙币",
+    "妈的",
+    "他妈的",
+    "妈了个",
+    "卧槽",
+    "我操",
+    "操你",
+    "草你",
+    "艹你",
+)
+COARSE_LANGUAGE_PATTERNS = (
+    re.compile(r"\b(?:cnm|nmsl|fuck|shit)\b", re.IGNORECASE),
+)
+
 
 @dataclass(frozen=True)
 class ContentFilterResult:
@@ -122,6 +140,14 @@ def looks_like_operator_ui_content(text: str) -> bool:
     return any(marker in cleaned for marker in OPERATOR_UI_MARKERS)
 
 
+def contains_coarse_language(text: str) -> bool:
+    cleaned = str(text or "")
+    lowered = cleaned.lower()
+    marker_hit = any(marker in lowered for marker in COARSE_LANGUAGE_MARKERS)
+    pattern_hit = any(pattern.search(cleaned) for pattern in COARSE_LANGUAGE_PATTERNS)
+    return marker_hit or pattern_hit
+
+
 def filter_outbound_content(
     session: Session,
     *,
@@ -140,6 +166,8 @@ def filter_outbound_content(
         return ContentFilterResult(False, "", "拦截模板化生成内容")
     if looks_like_operator_ui_content(cleaned):
         return ContentFilterResult(False, "", "拦截后台/按钮说明内容")
+    if contains_coarse_language(cleaned):
+        return ContentFilterResult(False, "", "命中粗俗表达")
     if reject_replies and _looks_like_reply(cleaned):
         return ContentFilterResult(False, "", "过滤回复消息")
     if reject_mentions and "@" in cleaned:
@@ -187,6 +215,7 @@ def rewrite_rejected_content(session: Session, *, tenant_id: int, group: TgGroup
 
 __all__ = [
     "ContentFilterResult",
+    "contains_coarse_language",
     "extract_links",
     "filter_outbound_content",
     "looks_like_generated_template_noise",

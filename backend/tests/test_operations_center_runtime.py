@@ -5142,22 +5142,14 @@ def test_operation_targets_expose_linked_group_capability_summary():
     assert account_row["permission_label"] == "风控观察"
 
 
-def test_operation_target_admission_retry_rechecks_failed_accounts_and_audits(monkeypatch):
+def test_operation_target_admission_retry_queues_failed_accounts_and_audits(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    snapshots_by_account = {
-        11: [SimpleNamespace(tg_peer_id="-1001", title="运营群", group_type="supergroup", member_count=120, permission_label="可发言", can_send=True, username="ops_group")],
-        12: [],
-        13: [SimpleNamespace(tg_peer_id="-1001", title="运营群", group_type="supergroup", member_count=120, permission_label="仍被禁言", can_send=False, username="ops_group")],
-    }
-    seen_accounts: list[int] = []
 
-    def fake_list_groups(account_id: int, *_args, **_kwargs):
-        seen_accounts.append(account_id)
-        return snapshots_by_account[account_id]
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("admission retry must queue membership actions")
 
-    monkeypatch.setattr("app.services.operations.credentials_for_account", lambda *_args, **_kwargs: SimpleNamespace(api_id=1, api_hash="hash"))
-    monkeypatch.setattr("app.services.operations.gateway.list_groups", fake_list_groups)
+    monkeypatch.setattr("app.services.operations.gateway.list_groups", fail_if_called)
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -5185,29 +5177,73 @@ def test_operation_target_admission_retry_rechecks_failed_accounts_and_audits(mo
         )
         audit_row = session.scalar(select(AuditLog).where(AuditLog.action == "重试目标准入"))
         refreshed_target = session.get(OperationTarget, 21)
+        queued_actions = list(session.scalars(select(Action).where(Action.action_type == "ensure_target_membership")))
 
     before_failed = {item["id"]: item for item in before_detail["accounts"]}
     assert before_failed[11]["admission_status"] == "failed"
     assert before_failed[11]["admission_failure_reason"] == "禁言"
-    assert seen_accounts == [11, 12, 13]
+    assert result["admission_retry"]["mode"] == "queued"
     assert result["admission_retry"]["retried_account_count"] == 3
-    assert result["admission_retry"]["recovered_account_count"] == 1
-    assert result["admission_retry"]["failed_account_count"] == 2
-    assert result["stats"]["admission_failed_accounts"] == 2
+    assert result["admission_retry"]["queued_action_count"] == 3
+    assert result["admission_retry"]["recovered_account_count"] == 0
+    assert result["admission_retry"]["failed_account_count"] == 0
+    assert result["stats"]["admission_failed_accounts"] == 3
+    assert len(queued_actions) == 3
+    assert {action.status for action in queued_actions} == {"pending"}
     rows = {item["id"]: item for item in result["accounts"]}
-    assert rows[11]["can_send"] is True
-    assert rows[11]["admission_status"] == "ready"
+    assert rows[11]["can_send"] is False
+    assert rows[11]["admission_status"] == "failed"
     assert rows[12]["can_send"] is False
     assert rows[12]["admission_status"] == "failed"
-    assert "未加入" in rows[12]["admission_failure_reason"]
+    assert rows[12]["admission_failure_reason"] == "未加入或不可见"
     assert rows[13]["can_send"] is False
     assert rows[13]["admission_status"] == "failed"
-    assert rows[13]["admission_failure_reason"] == "仍被禁言"
-    assert refreshed_target and refreshed_target.can_send is True
+    assert rows[13]["admission_failure_reason"] == "禁言"
+    assert refreshed_target and refreshed_target.can_send is False
     assert audit_row is not None
     assert "reason=管理员已解除限制" in audit_row.detail
-    assert "recovered=1" in audit_row.detail
-    assert "failed=2" in audit_row.detail
+    assert "queued=3" in audit_row.detail
+    assert "failed=0" in audit_row.detail
+
+
+def test_operation_target_bulk_admission_retry_queues_membership_actions_without_gateway_calls(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("bulk retry must not call Telegram in the HTTP request")
+
+    monkeypatch.setattr("app.services.operations.gateway.list_groups", fail_if_called)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1001", title="运营群", can_send=False, auth_status="只读"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="只读", can_send=False))
+        for account_id in range(1, 320):
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, session_ciphertext=f"session-{account_id}"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=False, permission_label="账号无权限"))
+        session.commit()
+
+        result = retry_operation_target_admission(
+            session,
+            1,
+            21,
+            OperationTargetAdmissionRetryRequest(reason="批量重查准入", account_ids=list(range(1, 320))),
+            "pytest",
+        )
+        queued_actions = list(session.scalars(select(Action).where(Action.action_type == "ensure_target_membership")))
+        audit_row = session.scalar(select(AuditLog).where(AuditLog.action == "重试目标准入"))
+
+    assert result["admission_retry"]["mode"] == "queued"
+    assert result["admission_retry"]["queued_action_count"] == 319
+    assert result["admission_retry"]["retried_account_count"] == 319
+    assert result["admission_retry"]["recovered_account_count"] == 0
+    assert len(queued_actions) == 319
+    assert {action.status for action in queued_actions} == {"pending"}
+    assert {action.payload["channel_target_id"] for action in queued_actions} == {21}
+    assert {action.payload["require_send"] for action in queued_actions} == {True}
+    assert audit_row is not None
+    assert "queued=319" in audit_row.detail
 
 
 def test_message_send_group_operation_target_checks_account_permission():

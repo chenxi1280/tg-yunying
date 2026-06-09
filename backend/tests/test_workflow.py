@@ -2784,25 +2784,11 @@ def test_operation_target_detail_returns_group_context_messages():
         assert patched_account["permission_label"] == "风控观察"
 
 
-def test_operation_target_admission_retry_endpoint_updates_detail_and_audit(monkeypatch):
-    seen_accounts: list[int] = []
+def test_operation_target_admission_retry_endpoint_queues_actions_and_audit(monkeypatch):
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("admission retry endpoint must not call Telegram directly")
 
-    def fake_list_groups(account_id: int, *_args, **_kwargs):
-        seen_accounts.append(account_id)
-        return [
-            GroupSnapshot(
-                tg_peer_id=f"pytest-admission-group-{suffix}",
-                title="pytest 准入群",
-                group_type="supergroup",
-                member_count=18,
-                permission_label="可发言",
-                can_send=True,
-                username="pytest_admission",
-            )
-        ]
-
-    monkeypatch.setattr("app.services.operations.credentials_for_account", lambda *_args, **_kwargs: DeveloperAppCredentials(app_id=1, api_id=1, api_hash="hash", credentials_version=1))
-    monkeypatch.setattr("app.services.operations.gateway.list_groups", fake_list_groups)
+    monkeypatch.setattr("app.services.operations.gateway.list_groups", fail_if_called)
 
     with TestClient(app) as client:
         headers = auth_headers(client)
@@ -2867,13 +2853,18 @@ def test_operation_target_admission_retry_endpoint_updates_detail_and_audit(monk
 
         with SessionLocal() as session:
             audit_row = session.query(AuditLog).filter(AuditLog.action == "重试目标准入", AuditLog.target_id == str(target_id)).order_by(AuditLog.id.desc()).first()
+            queued_action = session.scalar(select(Action).where(Action.action_type == "ensure_target_membership", Action.account_id == account_id))
 
-    assert seen_accounts == [account_id]
-    assert body["admission_retry"]["recovered_account_count"] == 1
-    assert body["target"]["can_send"] is True
-    assert retried_account["admission_status"] == "ready"
+    assert body["admission_retry"]["mode"] == "queued"
+    assert body["admission_retry"]["queued_action_count"] == 1
+    assert body["admission_retry"]["recovered_account_count"] == 0
+    assert body["target"]["can_send"] is False
+    assert retried_account["admission_status"] == "failed"
+    assert queued_action is not None
+    assert queued_action.status == "pending"
     assert audit_row is not None
     assert "reason=管理员已解除限制" in audit_row.detail
+    assert "queued=1" in audit_row.detail
 
 
 def test_operation_target_sync_messages_collects_channel_messages(monkeypatch):

@@ -15,7 +15,7 @@ from app.services.account_capacity import (
     available_accounts_by_capacity,
     next_capacity_window,
 )
-from app.services.content_filters import filter_outbound_content, looks_like_generated_template_noise, looks_like_operator_ui_content
+from app.services.content_filters import contains_coarse_language, filter_outbound_content, looks_like_generated_template_noise, looks_like_operator_ui_content
 from app.services.group_listeners import collect_group_context, recent_context_messages
 from app.services.target_learning_audit import audit_learning_profile_use
 from app.services.tenant_target_profile import tenant_learning_profile_preview
@@ -1317,6 +1317,8 @@ def _is_usable_context_message(content: str) -> bool:
     text = re.sub(r"\s+", " ", str(content or "")).strip()
     compact = re.sub(r"\s+", "", text)
     if _looks_like_internal_prompt(text):
+        return False
+    if contains_coarse_language(text):
         return False
     if compact.isdigit():
         return False

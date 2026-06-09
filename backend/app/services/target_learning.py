@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AuditLog, ChannelMessageComment, OperationTarget, TargetLearningProfile, TargetLearningProfileVersion, TargetLearningSample, TgAccount, TgGroup, TgGroupAccount
 from app.services._common import _now, audit
+from app.services.content_filters import contains_coarse_language
 from app.services.target_learning_query import page_number, page_size, sample_time_filter
 from app.services.target_learning_samples import refresh_comment_sample
 from app.services.target_learning_versions import record_profile_version_snapshot
@@ -211,6 +212,8 @@ def _classify_group_snapshot(session: Session, group: TgGroup, snapshot: Any) ->
     if _is_managed_sender(session, group, snapshot):
         return "rejected", "managed_account", "", 0
     text = _snapshot_text(snapshot)
+    if contains_coarse_language(text):
+        return "rejected", "coarse_language", "", 0
     if _looks_like_system_or_button(text):
         return "rejected", "system_or_button_prompt", "", 0
     if str(getattr(snapshot, "message_type", "") or "text") != "text" and _looks_like_repeated_ad(text):
@@ -228,6 +231,8 @@ def _classify_comment(session: Session, comment: ChannelMessageComment) -> tuple
     text = str(comment.content_preview or "").strip()
     if not text:
         return "rejected", "empty_comment", "", 0
+    if contains_coarse_language(text):
+        return "rejected", "coarse_language", "", 0
     if _looks_like_system_or_button(text):
         return "rejected", "system_or_button_prompt", "", 0
     if _looks_like_repeated_ad(text):

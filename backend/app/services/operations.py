@@ -48,6 +48,10 @@ from .target_learning import (
     learning_profile_preview,
 )
 from .tenant_learning_samples import GROUP_CHAT_SCENE, record_channel_comment_sample
+from .task_center.payloads import EnsureChannelMembershipPayload, create_membership_action
+
+
+ADMISSION_RETRY_TASK_TYPE = "target_admission_retry"
 
 
 def _account_id_csv(values: list[int] | str | None) -> str:
@@ -918,6 +922,77 @@ def _ensure_target_group_link(session: Session, target: OperationTarget) -> TgGr
     return group
 
 
+def _admission_retry_requested_ids(session: Session, tenant_id: int, group: TgGroup, requested_ids: list[int]) -> list[int]:
+    normalized = list(dict.fromkeys(int(item) for item in requested_ids if int(item) > 0))
+    if normalized:
+        return normalized
+    return list(
+        session.scalars(
+            select(TgGroupAccount.account_id)
+            .join(TgAccount, TgAccount.id == TgGroupAccount.account_id)
+            .where(
+                TgGroupAccount.tenant_id == tenant_id,
+                TgGroupAccount.group_id == group.id,
+                TgGroupAccount.can_send.is_(False),
+                TgAccount.status == AccountStatus.ACTIVE.value,
+                TgAccount.deleted_at.is_(None),
+            )
+            .order_by(TgGroupAccount.account_id.asc())
+        )
+    )
+
+
+def _admission_retry_accounts(session: Session, tenant_id: int, account_ids: list[int]) -> tuple[list[TgAccount], list[str]]:
+    accounts: list[TgAccount] = []
+    failures: list[str] = []
+    for account_id in account_ids:
+        account = session.get(TgAccount, account_id)
+        if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
+            failures.append(f"{account_id}:账号不存在")
+            continue
+        if account.status != AccountStatus.ACTIVE.value:
+            failures.append(f"{account.id}:账号状态为 {account.status}")
+            continue
+        accounts.append(account)
+    return accounts, failures
+
+
+def _admission_retry_payload(target: OperationTarget) -> EnsureChannelMembershipPayload:
+    return EnsureChannelMembershipPayload(
+        channel_id=target.tg_peer_id,
+        channel_target_id=target.id,
+        target_type=target.target_type,
+        target_display=target.title,
+        target_username=target.username or "",
+        require_send=target.target_type == "group",
+    )
+
+
+def _create_admission_retry_task(session: Session, tenant_id: int, target: OperationTarget, accounts: list[TgAccount], actor: str, reason: str) -> Task:
+    task = Task(
+        id=str(uuid4()),
+        tenant_id=tenant_id,
+        name=f"重试目标准入：{target.title}",
+        type=ADMISSION_RETRY_TASK_TYPE,
+        status="running",
+        account_config={"account_ids": [account.id for account in accounts]},
+        type_config={"target_operation_target_id": target.id, "target_type": target.target_type},
+        stats={"admission_retry_reason": reason, "created_by": actor, "queued_account_count": len(accounts)},
+    )
+    session.add(task)
+    session.flush()
+    return task
+
+
+def _queue_admission_retry_actions(session: Session, task: Task, target: OperationTarget, accounts: list[TgAccount]) -> int:
+    payload = _admission_retry_payload(target)
+    action_ids: set[str] = set()
+    for account in accounts:
+        action = create_membership_action(session, task, account.id, _now(), payload)
+        action_ids.add(action.id)
+    return len(action_ids)
+
+
 def retry_operation_target_admission(
     session: Session,
     tenant_id: int,
@@ -930,87 +1005,19 @@ def retry_operation_target_admission(
     if not operator_reason:
         raise ValueError("重试原因不能为空")
     group = _ensure_target_group_link(session, target)
-    requested_ids = [int(item) for item in payload.account_ids if int(item) > 0]
-    if not requested_ids:
-        requested_ids = list(
-            session.scalars(
-                select(TgGroupAccount.account_id)
-                .join(TgAccount, TgAccount.id == TgGroupAccount.account_id)
-                .where(
-                    TgGroupAccount.tenant_id == tenant_id,
-                    TgGroupAccount.group_id == group.id,
-                    TgGroupAccount.can_send.is_(False),
-                    TgAccount.status == AccountStatus.ACTIVE.value,
-                    TgAccount.deleted_at.is_(None),
-                )
-                .order_by(TgGroupAccount.account_id.asc())
-            )
-        )
+    requested_ids = _admission_retry_requested_ids(session, tenant_id, group, payload.account_ids)
     if not requested_ids:
         raise ValueError("no failed admission accounts")
-
-    retried = 0
-    recovered = 0
-    failed = 0
-    failure_details: list[str] = []
-    for account_id in requested_ids:
-        account = session.get(TgAccount, account_id)
-        if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
-            failed += 1
-            failure_details.append(f"{account_id}:账号不存在")
-            continue
-        if account.status != AccountStatus.ACTIVE.value:
-            failed += 1
-            failure_details.append(f"{account.id}:账号状态为 {account.status}")
-            continue
-        retried += 1
-        link = session.scalar(
-            select(TgGroupAccount).where(
-                TgGroupAccount.tenant_id == tenant_id,
-                TgGroupAccount.group_id == group.id,
-                TgGroupAccount.account_id == account.id,
-            )
-        )
-        if not link:
-            link = TgGroupAccount(tenant_id=tenant_id, group_id=group.id, account_id=account.id)
-            session.add(link)
-            session.flush()
-        try:
-            credentials = credentials_for_account(session, account)
-            snapshots = gateway.list_groups(account.id, account.session_ciphertext, credentials)
-            snapshot = next((item for item in snapshots if item.tg_peer_id == target.tg_peer_id), None)
-        except Exception as exc:  # noqa: BLE001 - return per-account reason to the operator.
-            link.can_send = False
-            link.permission_label = str(exc)
-            failed += 1
-            failure_details.append(f"{account.id}:{link.permission_label}")
-            continue
-        if not snapshot:
-            link.can_send = False
-            link.permission_label = "未加入或不可见"
-            failed += 1
-            failure_details.append(f"{account.id}:{link.permission_label}")
-            continue
-        _upsert_group_target_from_snapshot(session, account, snapshot)
-        refreshed_link = session.scalar(
-            select(TgGroupAccount).where(
-                TgGroupAccount.tenant_id == tenant_id,
-                TgGroupAccount.group_id == group.id,
-                TgGroupAccount.account_id == account.id,
-            )
-        )
-        if refreshed_link and refreshed_link.can_send:
-            recovered += 1
-        else:
-            failed += 1
-            failure_reason = refreshed_link.permission_label if refreshed_link else "未满足发送准入"
-            failure_details.append(f"{account.id}:{failure_reason}")
-
-    _refresh_target_capability_from_group(session, target, group)
+    accounts, failure_details = _admission_retry_accounts(session, tenant_id, requested_ids)
+    retry_task = _create_admission_retry_task(session, tenant_id, target, accounts, actor, operator_reason)
+    queued = _queue_admission_retry_actions(session, retry_task, target, accounts)
     summary = {
-        "retried_account_count": retried,
-        "recovered_account_count": recovered,
-        "failed_account_count": failed,
+        "mode": "queued",
+        "task_id": retry_task.id,
+        "retried_account_count": len(accounts),
+        "queued_action_count": queued,
+        "recovered_account_count": 0,
+        "failed_account_count": len(failure_details),
         "failure_details": failure_details,
     }
     audit(
@@ -1022,7 +1029,7 @@ def retry_operation_target_admission(
         target_id=str(target.id),
         detail=(
             f"reason={operator_reason}; retried={summary['retried_account_count']}; "
-            f"recovered={summary['recovered_account_count']}; failed={summary['failed_account_count']}"
+            f"queued={summary['queued_action_count']}; failed={summary['failed_account_count']}"
         ),
     )
     session.commit()

@@ -589,6 +589,15 @@ def test_target_profile_is_top_level_page_not_target_detail_governance():
     assert "target_learning." not in modals
 
 
+def test_operation_target_admission_retry_reports_queued_mode():
+    targets = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
+    retry_block = targets[targets.index("async function retryAdmission"):targets.index("\n  function startEdit", targets.index("async function retryAdmission"))]
+
+    assert "retry.mode === 'queued'" in retry_block
+    assert "已提交后台重查" in retry_block
+    assert "queued_action_count" in retry_block
+
+
 def test_frontend_static_publish_preserves_previous_hashed_assets():
     source = (PROJECT_ROOT / "deploy/compose-up.sh").read_text()
 

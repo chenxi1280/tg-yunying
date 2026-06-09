@@ -263,7 +263,11 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
       setTargetDetail(detail);
       setAdmissionRetryOpen(false);
       const retry = detail.admission_retry || {};
-      void message.success(`已重查 ${retry.retried_account_count ?? admissionRetryAccountIds.length} 个账号，恢复 ${retry.recovered_account_count ?? 0} 个`);
+      if (retry.mode === 'queued') {
+        void message.success(`已提交后台重查 ${retry.queued_action_count ?? retry.retried_account_count ?? admissionRetryAccountIds.length} 个账号`);
+      } else {
+        void message.success(`已重查 ${retry.retried_account_count ?? admissionRetryAccountIds.length} 个账号，恢复 ${retry.recovered_account_count ?? 0} 个`);
+      }
       await load();
     } catch (error) {
       setFormError(errorMessage(error));

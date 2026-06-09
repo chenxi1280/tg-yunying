@@ -149,6 +149,32 @@ def test_quality_rule_update_requires_reason_and_records_recompute_run() -> None
     assert run.quality_rule_version == 1
 
 
+def test_tenant_learning_rejects_coarse_language_sample_by_default() -> None:
+    snapshot = SimpleNamespace(
+        remote_message_id="coarse-tenant-1001",
+        sender_peer_id="real-user",
+        sender_username="real_user",
+        sender_name="真人用户",
+        is_bot=False,
+        content="别把这种傻逼话术同步进去",
+        sent_at=None,
+    )
+
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=31, tenant_id=1, target_type="group", tg_peer_id="-10031", title="活群"))
+        session.add(TgGroup(id=41, tenant_id=1, tg_peer_id="-10031", title="活群", listener_enabled=True))
+        session.add(TenantLearningSource(tenant_id=1, target_id=31, source_kind="group", is_enabled=True))
+        session.flush()
+
+        sample = record_group_learning_sample(session, session.get(TgGroup, 41), snapshot)
+        session.commit()
+
+    assert sample is not None
+    assert sample.learning_status == "rejected"
+    assert sample.reject_reason == "coarse_language"
+
+
 def test_rebuild_profile_uses_accepted_samples_and_records_version_run() -> None:
     with _session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))

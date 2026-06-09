@@ -19,6 +19,7 @@ from app.models import (
     TgGroup,
 )
 from app.services._common import _now
+from app.services.content_filters import contains_coarse_language
 from app.services.tenant_target_profile import ensure_quality_rule
 
 
@@ -237,6 +238,8 @@ def _text_reject_reason(text: str, text_filters: dict[str, Any], forbidden: dict
     forbidden_keywords = [str(item).strip() for item in forbidden.get("keywords") or [] if str(item).strip()]
     if any(keyword in text for keyword in forbidden_keywords):
         return "forbidden_keyword"
+    if contains_coarse_language(text):
+        return "coarse_language"
     if forbidden.get("links", True) and re.search(r"https?://|t\.me/|www\.", text, re.I):
         return "contains_link"
     if forbidden.get("contacts", True) and re.search(r"\b1[3-9]\d{9}\b|@\w{4,}", text):
