@@ -186,6 +186,8 @@ def _effective_future_open_count(
     now_local: datetime,
 ) -> tuple[int, int]:
     future_actions = _future_open_actions(task, actions, start, end, now_local)
+    if enabled(task):
+        return len(future_actions), 0
     excluded_ids = {action.id for action in future_actions}
     reservations: list[AccountCapacityReservation] = []
     accepted = 0
