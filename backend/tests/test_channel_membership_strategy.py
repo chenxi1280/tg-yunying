@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Action, OperationTarget, Task, Tenant, TgAccount
+from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center.channel_membership import channel_membership_summary, gate_channel_membership
 
@@ -100,3 +103,61 @@ def test_membership_permission_denied_skip_counts_as_failed() -> None:
     assert summary["failed_account_ids"] == [12]
     assert summary["failed_account_count"] == 1
     assert summary["need_join_account_count"] == 0
+
+
+def test_hard_hourly_group_ai_fast_tracks_future_membership_actions() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        target = OperationTarget(id=903, tenant_id=1, target_type="group", tg_peer_id="-100903", title="硬目标群", auth_status="已授权运营", can_send=True)
+        task = Task(
+            id="task-hard-hourly-membership",
+            tenant_id=1,
+            name="硬目标 AI 群",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"target_operation_target_id": 903, "hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+        )
+        session.add_all(
+            [
+                target,
+                TgAccount(id=21, tenant_id=1, display_name="账号21", phone_masked="21", status="在线", session_ciphertext="session"),
+                TgAccount(id=22, tenant_id=1, display_name="账号22", phone_masked="22", status="在线", session_ciphertext="session"),
+                task,
+                Action(
+                    id="membership-future-21",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    account_id=21,
+                    status="pending",
+                    scheduled_at=now_value + timedelta(hours=8),
+                    payload={"channel_target_id": target.id},
+                ),
+                Action(
+                    id="membership-future-22",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    account_id=22,
+                    status="pending",
+                    scheduled_at=now_value + timedelta(hours=9),
+                    payload={"channel_target_id": target.id},
+                ),
+            ]
+        )
+        session.commit()
+
+        result = gate_channel_membership(session, task, target, require_send=True)
+        rows = session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").order_by(Action.scheduled_at.asc()).all()
+
+    assert result.waiting is True
+    assert [row.account_id for row in rows] == [21, 22]
+    assert rows[0].scheduled_at <= now_value + timedelta(seconds=5)
+    assert rows[1].scheduled_at <= now_value + timedelta(seconds=10)

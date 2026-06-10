@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import case, func, select
@@ -18,6 +19,7 @@ from .payloads import EnsureChannelMembershipPayload, create_membership_action
 ACTION_TYPE = "ensure_target_membership"
 LEGACY_ACTION_TYPE = "ensure_channel_membership"
 OPEN_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
+HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS = 2
 
 
 @dataclass(frozen=True)
@@ -58,9 +60,11 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
         task.last_error = disabled_reason
         return MembershipGateResult(False, blocked=True, blocker_reason="target_membership_disabled")
     created = _create_missing_membership_actions(session, task, channel, candidates, require_send=require_send)
+    fast_tracked = _fast_track_hard_hourly_membership_actions(session, task, channel)
     if created:
         stats["membership_stage"] = "membership_running"
         stats["membership_created_actions"] = int(stats.get("membership_created_actions") or 0) + created
+        _record_fast_tracked_memberships(stats, fast_tracked)
         task.stats = stats
         if ready_count > 0:
             if task.last_error in {"正在执行关注频道前置阶段", "没有账号成功关注目标频道", "正在执行目标准入前置阶段", "没有账号成功准备目标"}:
@@ -70,6 +74,7 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
         return MembershipGateResult(False, created=created, waiting=True)
     if open_count:
         stats["membership_stage"] = "membership_running"
+        _record_fast_tracked_memberships(stats, fast_tracked)
         task.stats = stats
         if ready_count > 0:
             if task.last_error in {"正在执行频道关注前置阶段", "正在执行关注频道前置阶段", "正在执行目标准入前置阶段"}:
@@ -336,6 +341,39 @@ def _membership_pacing_config(task: Task) -> dict[str, Any]:
     if (config.get("mode") or "template") == "fixed":
         return config
     return {**config, "template": config.get("template") or "moderate_6h"}
+
+
+def _fast_track_hard_hourly_membership_actions(session: Session, task: Task, channel: OperationTarget) -> int:
+    if not _hard_hourly_membership_fast_track_enabled(task):
+        return 0
+    now_value = _now()
+    rows = list(
+        session.scalars(
+            select(Action)
+            .where(
+                Action.task_id == task.id,
+                Action.action_type.in_([ACTION_TYPE, LEGACY_ACTION_TYPE]),
+                Action.status == "pending",
+                Action.scheduled_at > now_value,
+                Action.payload["channel_target_id"].as_integer() == channel.id,
+            )
+            .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
+        )
+    )
+    for index, action in enumerate(rows):
+        action.scheduled_at = now_value + timedelta(seconds=HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * index)
+        action.result = {**(action.result or {}), "fast_tracked_reason": "hard_hourly_membership"}
+    return len(rows)
+
+
+def _hard_hourly_membership_fast_track_enabled(task: Task) -> bool:
+    config = task.type_config or {}
+    return task.type == "group_ai_chat" and bool(config.get("hard_hourly_target_enabled")) and int(config.get("hourly_min_messages") or 0) > 0
+
+
+def _record_fast_tracked_memberships(stats: dict[str, Any], count: int) -> None:
+    if count:
+        stats["membership_fast_tracked_actions"] = int(stats.get("membership_fast_tracked_actions") or 0) + count
 
 
 def _joinable_channel_reference(channel: OperationTarget) -> str:
