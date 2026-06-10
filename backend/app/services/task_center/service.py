@@ -1157,6 +1157,41 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
         stats["last_recovery_stage"] = "execution_recovery"
         task.stats = stats
         recovered += 1
+    recovered += _recover_existing_unknown_membership_actions(session, now)
+    return recovered
+
+
+def _recover_existing_unknown_membership_actions(session: Session, now: datetime) -> int:
+    recovered = 0
+    rows = session.execute(
+        select(Action, Task)
+        .join(Task, Task.id == Action.task_id)
+        .where(
+            Action.status == "unknown_after_send",
+            Action.action_type.in_(MEMBERSHIP_ACTION_TYPES),
+            Task.status == "running",
+            Task.deleted_at.is_(None),
+        )
+        .order_by(Action.executed_at.asc().nullsfirst(), Action.scheduled_at.asc())
+    ).all()
+    for action, task in rows:
+        result = dict(action.result or {})
+        if result.get("unknown_membership_reprobe_status") == "failed":
+            continue
+        latest_attempt = session.scalar(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.action_id == action.id)
+            .order_by(ExecutionAttempt.attempt_no.desc())
+            .limit(1)
+        )
+        if _recover_unknown_membership_action(session, action, task, latest_attempt, now):
+            recovered += 1
+            continue
+        action.result = {
+            **result,
+            "unknown_membership_reprobe_status": "failed",
+            "unknown_membership_reprobe_at": now.isoformat(),
+        }
     return recovered
 
 

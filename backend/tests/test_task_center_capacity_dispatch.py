@@ -1333,6 +1333,45 @@ def test_recovery_reprobes_unknown_target_membership_action(monkeypatch):
         assert link.permission_label == "可发言"
 
 
+def test_recovery_reprobes_existing_unknown_target_membership_action(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=7, tenant_id=1, title="青岛师范学院", target_type="group", tg_peer_id="@qdsfxy"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
+        session.add(Task(id="task-membership", tenant_id=1, name="retry", type="target_admission_retry", status="running", stats={}))
+        session.add(
+            Action(
+                id="action-membership",
+                tenant_id=1,
+                task_id="task-membership",
+                task_type="target_admission_retry",
+                action_type="ensure_target_membership",
+                account_id=11,
+                status="unknown_after_send",
+                scheduled_at=now_value - timedelta(hours=1),
+                executed_at=now_value - timedelta(minutes=5),
+                payload={"channel_id": "@qdsfxy", "channel_target_id": 7, "target_type": "group", "require_send": True},
+                result={"error_code": "unknown_after_send"},
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(task_service, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(task_service.gateway, "probe_target_capabilities", lambda *args, **kwargs: OperationResult(True, detail="可发言"))
+
+        assert _recover_stale_executing_actions(session, timeout_minutes=30) == 1
+
+        action = session.get(Action, "action-membership")
+        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.account_id == 11))
+        assert action.status == "success"
+        assert action.result["membership_status"] == "recovered_after_unknown"
+        assert link.can_send is True
+
+
 def test_runtime_cleanup_summarizes_then_deletes_all_window_out_details():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
