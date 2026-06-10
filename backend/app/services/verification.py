@@ -490,9 +490,18 @@ def _verification_send_failure_status(result) -> str:
 
 def _group_restriction_task_account_group(session: Session, task_id: int) -> tuple[VerificationTask, TgAccount, TgGroup]:
     task, account, group = _verification_task_account_group(session, task_id)
-    if not group or task.issue_category != "group_restriction":
+    if not group or not _is_group_restriction_verification(task):
         raise ValueError("verification task is not a group restriction")
     return task, account, group
+
+
+def _is_group_restriction_verification(task: VerificationTask) -> bool:
+    if not task.group_id:
+        return False
+    if task.issue_category == "group_restriction":
+        return True
+    text = f"{task.verification_type} {task.detected_reason} {task.suggested_action}"
+    return task.verification_type in GROUP_RESTRICTION_VERIFICATION_TYPES or "群" in text or "发言" in text
 
 
 def _verification_task_account_group(session: Session, task_id: int) -> tuple[VerificationTask, TgAccount, TgGroup | None]:
