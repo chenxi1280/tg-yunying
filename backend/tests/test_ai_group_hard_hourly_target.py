@@ -1378,11 +1378,11 @@ def test_hard_hourly_wake_filters_non_hard_tasks_before_due_check(monkeypatch):
 
     monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
 
-    def fake_due(_session, task: Task, _now_value: datetime) -> bool:
+    def fake_progress(_session, task: Task, _now_value: datetime) -> dict[str, object]:
         checked_task_ids.append(task.id)
-        return task.id == "task-hard-hourly-only-candidate"
+        return {"deficit": 2}
 
-    monkeypatch.setattr("app.services.task_center.service._hard_hourly_due_for_planner", fake_due)
+    monkeypatch.setattr("app.services.task_center.service.hard_hourly_current_progress", fake_progress)
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
