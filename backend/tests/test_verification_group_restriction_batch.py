@@ -4,7 +4,12 @@ from types import SimpleNamespace
 
 from app.models import VerificationTask
 from app.integrations.telegram import SendResult
-from app.services.verification import _apply_batch_approval_detail, _verification_send_failure_status
+from app.services.verification import (
+    _apply_batch_approval_detail,
+    _mark_image_verification_if_needed,
+    _verification_action_for_group_restriction,
+    _verification_send_failure_status,
+)
 from app.integrations.telegram.gateway import _verification_context_row
 
 
@@ -39,6 +44,23 @@ def test_verification_send_failure_status_supports_send_result():
     result = SendResult(False, failure_type="群无权限", detail="账号不可发言")
 
     assert _verification_send_failure_status(result) == "失败"
+
+
+def test_group_restriction_recheck_uses_image_verification_for_retryable_reasons():
+    assert _verification_action_for_group_restriction("批量重查发现账号仍未获群发言权限") == "识别图形验证码"
+    assert _verification_action_for_group_restriction("未解析到群关联频道") == "识别图形验证码"
+    assert _verification_action_for_group_restriction("群无权限或账号不可发言") == "识别图形验证码"
+
+
+def test_mark_image_verification_if_needed_supports_group_permission_reasons():
+    task = VerificationTask(
+        detected_reason="批量重查发现账号仍未获群发言权限",
+        suggested_action="人工处理",
+    )
+
+    _mark_image_verification_if_needed(task, "未解析到群关联频道")
+
+    assert task.suggested_action == "识别图形验证码"
 
 
 def test_verification_context_keeps_button_and_media_challenges():

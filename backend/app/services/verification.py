@@ -42,6 +42,13 @@ OPEN_VERIFICATION_STATUSES = ("待处理", "失败", "需人工处理")
 ADMIN_APPROVAL_CANDIDATE_LIMIT = 10
 VERIFICATION_READER_CANDIDATE_LIMIT = 5
 IMAGE_VERIFICATION_MARKERS = ("图片", "图形", "验证码", "captcha", "bot", "机器人")
+GROUP_PERMISSION_IMAGE_VERIFICATION_MARKERS = (
+    "未解析到群关联频道",
+    "未获群发言权限",
+    "没有群发言权限",
+    "群无权限或账号不可发言",
+    "不可发言",
+)
 
 
 @dataclass(frozen=True)
@@ -362,8 +369,14 @@ def _retry_membership_before_context(
 
 def _mark_image_verification_if_needed(task: VerificationTask, detail: str | None) -> None:
     text = f"{task.detected_reason or ''} {detail or ''}".lower()
-    if any(marker.lower() in text for marker in IMAGE_VERIFICATION_MARKERS):
+    if _should_mark_image_verification(text):
         task.suggested_action = "识别图形验证码"
+
+
+def _should_mark_image_verification(text: str) -> bool:
+    normalized = text.lower()
+    markers = (*IMAGE_VERIFICATION_MARKERS, *GROUP_PERMISSION_IMAGE_VERIFICATION_MARKERS)
+    return any(marker.lower() in normalized for marker in markers)
 
 
 def _should_auto_image_verify(task: VerificationTask) -> bool:
@@ -694,13 +707,14 @@ def _create_group_restriction_recheck_task(
     base_task: VerificationTask,
     account_id: int,
 ) -> VerificationTask:
+    detected_reason = "批量重查发现账号仍未获群发言权限"
     task = VerificationTask(
         tenant_id=base_task.tenant_id,
         account_id=account_id,
         group_id=base_task.group_id,
         verification_type="群发言权限",
-        detected_reason="批量重查发现账号仍未获群发言权限",
-        suggested_action="人工处理",
+        detected_reason=detected_reason,
+        suggested_action=_verification_action_for_group_restriction(detected_reason),
         target_peer_id=base_task.target_peer_id,
         target_display=base_task.target_display,
         requires_user_confirm=True,
@@ -709,6 +723,10 @@ def _create_group_restriction_recheck_task(
     session.add(task)
     session.flush()
     return task
+
+
+def _verification_action_for_group_restriction(detail: str) -> str:
+    return "识别图形验证码" if _should_mark_image_verification(detail) else "人工处理"
 
 
 def _group_restriction_batch_result(
