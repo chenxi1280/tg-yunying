@@ -571,7 +571,7 @@ def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetr
     task = _get_task(session, tenant_id, task_id)
     stmt = select(Action).where(Action.task_id == task.id)
     if payload.failed_only:
-        stmt = stmt.where(Action.status == "failed")
+        stmt = stmt.where(Action.status.in_(["failed", "unknown_after_send"]))
     for action in session.scalars(stmt):
         action.status = "pending"
         action.retry_count = 0

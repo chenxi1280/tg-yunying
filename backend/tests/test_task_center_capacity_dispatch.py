@@ -16,8 +16,9 @@ from app.services.task_center import service as task_service
 from app.services.task_center import account_pool
 from app.services.task_center.dispatcher import claim_actions
 from app.services.task_center.runtime_retention import cleanup_runtime_details
-from app.services.task_center.service import _recover_stale_executing_actions
+from app.services.task_center.service import _recover_stale_executing_actions, retry_task
 from app.services.task_center.stats import refresh_task_stats
+from app.schemas.task_center import TaskRetryRequest
 
 
 @pytest.fixture(autouse=True)
@@ -1370,6 +1371,30 @@ def test_recovery_reprobes_existing_unknown_target_membership_action(monkeypatch
         assert action.status == "success"
         assert action.result["membership_status"] == "recovered_after_unknown"
         assert link.can_send is True
+
+
+def test_retry_failed_only_requeues_unknown_after_send_actions():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-retry", tenant_id=1, name="retry", type="target_admission_retry", status="running"))
+        session.add_all(
+            [
+                Action(id="action-success", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="success", scheduled_at=now_value),
+                Action(id="action-unknown", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="unknown_after_send", scheduled_at=now_value, result={"error_code": "unknown_after_send"}),
+                Action(id="action-failed", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="failed", scheduled_at=now_value, result={"error_code": "failed"}),
+            ]
+        )
+        session.commit()
+
+        retry_task(session, 1, "task-retry", TaskRetryRequest(failed_only=True), "tester")
+
+        assert session.get(Action, "action-success").status == "success"
+        assert session.get(Action, "action-unknown").status == "pending"
+        assert session.get(Action, "action-failed").status == "pending"
 
 
 def test_runtime_cleanup_summarizes_then_deletes_all_window_out_details():
