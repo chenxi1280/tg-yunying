@@ -35,7 +35,8 @@ from app.schemas.task_center import (
     TaskSourceFilterOverrideRequest,
     TaskUpdate,
 )
-from app.services._common import _now, audit, normalize_list_filter
+from app.services._common import _now, audit, gateway, normalize_list_filter
+from app.services.developer_apps import credentials_for_account
 from app.timezone import as_beijing
 
 from .account_pool import select_task_accounts
@@ -44,6 +45,7 @@ from .channel_membership import (
     ACTION_TYPE as TARGET_MEMBERSHIP_ACTION_TYPE,
     LEGACY_ACTION_TYPE as LEGACY_MEMBERSHIP_ACTION_TYPE,
     channel_membership_summary,
+    mark_channel_membership_joined,
 )
 from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims
 from .executors import build_task_plan
@@ -72,6 +74,7 @@ DEFERRED_MEMBERSHIP_DETAIL_TYPES = {"target_admission_retry"}
 MEMBERSHIP_SUCCESS_STATUSES = {"success", "skipped"}
 MEMBERSHIP_PENDING_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
 MEMBERSHIP_FAILURE_STATUSES = {"failed", "unknown_after_send"}
+MEMBERSHIP_ACTION_TYPES = {TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE}
 TARGET_PERMISSION_MARKERS = (
     "lack permission",
     "banned",
@@ -1114,6 +1117,9 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
             .limit(1)
         )
         gateway_started = bool(latest_attempt and latest_attempt.gateway_call_started_at and latest_attempt.status not in {"success", "failed", "call_not_started"})
+        if gateway_started and _recover_unknown_membership_action(session, action, task, latest_attempt, now):
+            recovered += 1
+            continue
         action.status = "unknown_after_send" if gateway_started else "failed"
         action.executed_at = now
         action.lease_owner = ""
@@ -1152,6 +1158,66 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
         task.stats = stats
         recovered += 1
     return recovered
+
+
+def _recover_unknown_membership_action(
+    session: Session,
+    action: Action,
+    task: Task,
+    latest_attempt: ExecutionAttempt | None,
+    now: datetime,
+) -> bool:
+    if action.action_type not in MEMBERSHIP_ACTION_TYPES or not action.account_id:
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    channel_target_id = _as_int(payload.get("channel_target_id"))
+    channel_id = str(payload.get("channel_id") or "")
+    if not channel_target_id or not channel_id:
+        return False
+    account = session.get(TgAccount, action.account_id)
+    if account is None or account.deleted_at is not None:
+        return False
+    credentials = credentials_for_account(session, account)
+    result = gateway.probe_target_capabilities(
+        account.id,
+        channel_id,
+        str(payload.get("target_type") or "channel"),
+        account.session_ciphertext,
+        credentials,
+    )
+    if not result.ok:
+        return False
+    label = "可发言" if payload.get("require_send") else "已关注"
+    mark_channel_membership_joined(session, action.tenant_id, channel_target_id, account.id, permission_label=label)
+    _mark_membership_action_recovered(action, task, latest_attempt, now, result.detail or "补偿复检已满足目标准入")
+    return True
+
+
+def _mark_membership_action_recovered(
+    action: Action,
+    task: Task,
+    latest_attempt: ExecutionAttempt | None,
+    now: datetime,
+    detail: str,
+) -> None:
+    action.status = "success"
+    action.executed_at = now
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    action.result = {
+        "success": True,
+        "error_code": "",
+        "error_message": "",
+        "auto_check": "补偿复检成功",
+        "validation_stage": "execution_recovery_reprobe",
+        "membership_status": "recovered_after_unknown",
+        "detail": detail,
+    }
+    if latest_attempt:
+        latest_attempt.status = "success"
+        latest_attempt.after_call_at = now
+        latest_attempt.result_snapshot = dict(action.result)
+    task.last_error = ""
 
 
 def _activate_pending_tasks(session: Session) -> None:

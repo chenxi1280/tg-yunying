@@ -12,6 +12,7 @@ from app.integrations.telegram import OperationResult, SendResult
 from app.models import Action, DailyRuntimeStat, ExecutionAttempt, GroupContextMessage, OperationTarget, ReviewQueue, RuntimeCleanupAudit, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
 from app.services.task_center import dispatcher
+from app.services.task_center import service as task_service
 from app.services.task_center import account_pool
 from app.services.task_center.dispatcher import claim_actions
 from app.services.task_center.runtime_retention import cleanup_runtime_details
@@ -1277,6 +1278,59 @@ def test_recovery_marks_gateway_started_attempt_unknown_after_send():
         assert action.status == "unknown_after_send"
         assert action.result["error_code"] == "unknown_after_send"
         assert attempt.status == "result_unknown"
+
+
+def test_recovery_reprobes_unknown_target_membership_action(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=7, tenant_id=1, title="青岛师范学院", target_type="group", tg_peer_id="@qdsfxy"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
+        session.add(Task(id="task-membership", tenant_id=1, name="retry", type="target_admission_retry", status="running", stats={}))
+        session.add(
+            Action(
+                id="action-membership",
+                tenant_id=1,
+                task_id="task-membership",
+                task_type="target_admission_retry",
+                action_type="ensure_target_membership",
+                account_id=11,
+                status="executing",
+                scheduled_at=now_value - timedelta(hours=1),
+                lease_owner="worker-a",
+                lease_expires_at=now_value - timedelta(minutes=1),
+                payload={"channel_id": "@qdsfxy", "channel_target_id": 7, "target_type": "group", "require_send": True},
+            )
+        )
+        session.add(
+            ExecutionAttempt(
+                id="attempt-membership",
+                tenant_id=1,
+                action_id="action-membership",
+                worker_id="worker-a",
+                attempt_no=1,
+                status="gateway_call_started",
+                gateway_call_started_at=now_value - timedelta(minutes=5),
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(task_service, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(task_service.gateway, "probe_target_capabilities", lambda *args, **kwargs: OperationResult(True, detail="可发言"))
+
+        assert _recover_stale_executing_actions(session, timeout_minutes=30) == 1
+
+        action = session.get(Action, "action-membership")
+        attempt = session.get(ExecutionAttempt, "attempt-membership")
+        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.account_id == 11))
+        assert action.status == "success"
+        assert action.result["membership_status"] == "recovered_after_unknown"
+        assert attempt.status == "success"
+        assert link.can_send is True
+        assert link.permission_label == "可发言"
 
 
 def test_runtime_cleanup_summarizes_then_deletes_all_window_out_details():
