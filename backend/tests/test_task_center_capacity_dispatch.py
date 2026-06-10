@@ -1344,6 +1344,7 @@ def test_claim_actions_reassignment_respects_future_cooldown_after_release(monke
                     status="pending",
                     scheduled_at=overdue_at,
                     payload={"chat_id": "-1001", "message_text": "a"},
+                    result={"claim_released_reason": "redis_token_bucket_limited"},
                 ),
                 Action(
                     id="action-overdue-b",
@@ -1355,6 +1356,7 @@ def test_claim_actions_reassignment_respects_future_cooldown_after_release(monke
                     status="pending",
                     scheduled_at=overdue_at,
                     payload={"chat_id": "-1001", "message_text": "b"},
+                    result={"claim_released_reason": "redis_token_bucket_limited"},
                 ),
             ]
         )

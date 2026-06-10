@@ -1501,9 +1501,22 @@ def _replacement_account_for_action(session: Session, action: Action, account: T
 
 
 def _capacity_check_at(action: Action) -> datetime:
-    scheduled_at = action.scheduled_at
+    scheduled_at = _naive_datetime(action.scheduled_at)
     now_value = _now()
-    return scheduled_at if scheduled_at and scheduled_at > now_value else now_value
+    if scheduled_at is None:
+        return now_value
+    if _released_before(action) and scheduled_at < now_value - timedelta(seconds=1):
+        return now_value
+    return scheduled_at
+
+
+def _naive_datetime(value: datetime | None) -> datetime | None:
+    return value.replace(tzinfo=None) if value and value.tzinfo is not None else value
+
+
+def _released_before(action: Action) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    return bool(result.get("claim_released_reason") or result.get("claim_released_at"))
 
 
 def _mark_executing(action: Action, *, lease_seconds: int = 1800) -> None:
