@@ -675,6 +675,106 @@ def test_group_verification_context_empty_is_explicit(monkeypatch):
         assert "没有读取到最近验证聊天信息" in body["read_failure_detail"]
 
 
+def test_refresh_group_verification_rejoins_reads_with_helper_and_submits_mimo(monkeypatch):
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        join_account, group = ensure_test_workspace(client, headers)
+        reader_account, _ = ensure_test_workspace(client, headers)
+        with SessionLocal() as session:
+            join = session.get(TgAccount, join_account["id"])
+            reader = session.get(TgAccount, reader_account["id"])
+            db_group = session.get(TgGroup, group["id"])
+            join.status = AccountStatus.ACTIVE.value
+            reader.status = AccountStatus.ACTIVE.value
+            join.session_ciphertext = join.session_ciphertext or "join-session"
+            reader.session_ciphertext = reader.session_ciphertext or "reader-session"
+            db_group.can_send = False
+            join_link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=join.id).first()
+            join_link.can_send = False
+            reader_link = session.query(TgGroupAccount).filter_by(group_id=group["id"], account_id=reader.id).first()
+            if not reader_link:
+                reader_link = TgGroupAccount(tenant_id=1, group_id=group["id"], account_id=reader.id)
+                session.add(reader_link)
+            reader_link.can_send = True
+            reader_link.permission_label = "可发言"
+            manual_task = VerificationTask(
+                tenant_id=1,
+                account_id=join.id,
+                group_id=group["id"],
+                message_task_id=None,
+                verification_type="群发言权限",
+                detected_reason="加入时提示需要群管理 bot 的验证码",
+                suggested_action="识别图形验证码",
+                target_peer_id=group["tg_peer_id"],
+                target_display=group["title"],
+                status="需人工处理",
+            )
+            session.add(manual_task)
+            session.commit()
+            task_id = manual_task.id
+
+        calls: dict[str, list] = {"join": [], "read": [], "media": [], "submit": [], "probe": []}
+
+        def fake_join(account_id, target_peer_id, *_args, **_kwargs):
+            calls["join"].append((account_id, target_peer_id))
+            return OperationResult(True, "已处理", detail="已重新加入并触发验证码")
+
+        def fake_probe(account_id, target_peer_id, target_type, *_args, **_kwargs):
+            calls["probe"].append((account_id, target_peer_id, target_type))
+            if len(calls["probe"]) == 1:
+                return OperationResult(False, "需人工处理", FailureType.GROUP_PERMISSION_DENIED.value, "加入时提示需要群管理 bot 的验证码")
+            return OperationResult(True, detail="group:target:可访问")
+
+        def fake_context(account_id, *_args, **_kwargs):
+            calls["read"].append(account_id)
+            if account_id == join_account["id"]:
+                raise RuntimeError("读取验证聊天失败：GetHistoryRequest")
+            return [{
+                "message_id": 9,
+                "sender": "群管理 bot",
+                "text": "请识别图片验证码",
+                "sent_at": None,
+                "has_media": True,
+                "media_message_id": 9,
+                "media_mime_type": "image/png",
+                "media_fingerprint": "pytest-image",
+            }]
+
+        def fake_media(account_id, _peer, message_id, *_args, **_kwargs):
+            calls["media"].append((account_id, message_id))
+            from app.integrations.telegram.contracts import CachedMediaResult
+            return CachedMediaResult(True, data=b"captcha-image", detail="image/png")
+
+        def fake_submit(account_id, _peer, response_text, *_args, **_kwargs):
+            calls["submit"].append((account_id, response_text))
+            return OperationResult(True, "已处理", detail="验证码已提交")
+
+        class FakeAnswer:
+            answer = "8274"
+            confidence = 0.93
+            usage = AiUsage()
+
+        monkeypatch.setattr("app.services.verification.gateway.ensure_channel_membership", fake_join)
+        monkeypatch.setattr("app.services.verification.gateway.probe_target_capabilities", fake_probe)
+        monkeypatch.setattr("app.services.membership_challenges.gateway.fetch_verification_context", fake_context)
+        monkeypatch.setattr("app.services.membership_challenges.gateway.fetch_verification_media", fake_media)
+        monkeypatch.setattr("app.services.membership_challenges.ai_gateway.solve_image_verification", lambda *_args, **_kwargs: FakeAnswer())
+        monkeypatch.setattr("app.services.membership_challenges._mimo_vision_provider", lambda session: type("Provider", (), {"model_name": "mimo-v2.5", "provider_name": "MiMo", "provider_type": "openai_compatible", "base_url": "mock://mimo", "api_key_ciphertext": "", "api_key_header": "Authorization"})())
+        monkeypatch.setattr("app.services.verification.credentials_for_account", lambda session, account: DeveloperAppCredentials(1, 12345, "hash", 1))
+        monkeypatch.setattr("app.services.membership_challenges.ai_provider_credentials", lambda provider: provider)
+
+        response = client.post(f"/api/verification-tasks/{task_id}/refresh-challenge-context", headers=headers, json={"actor": "pytest"})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["context_status"] == "ok"
+        assert body["submit_account_id"] == join_account["id"]
+        assert body["reader_account_id"] == reader_account["id"]
+        assert calls["join"] == [(join_account["id"], group["tg_peer_id"])]
+        assert calls["read"][:2] == [join_account["id"], reader_account["id"]]
+        assert calls["media"] == [(reader_account["id"], 9)]
+        assert calls["submit"] == [(join_account["id"], "8274")]
+
+
 def test_campaign_draft_approval_and_dispatch_flow():
     skip_legacy_task_center_flow()
     with TestClient(app) as client:

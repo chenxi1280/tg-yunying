@@ -20,7 +20,8 @@ from app.schemas import (
 from app.services import (
     authorize_group, confirm_verification_task, dismiss_verification_task,
     filter_groups, get_verification_challenge_context, group_detail, list_verification_tasks,
-    resolve_group_restriction_batch, resolve_group_restriction_task, submit_verification_response,
+    refresh_verification_challenge_context, resolve_group_restriction_batch,
+    resolve_group_restriction_task, submit_verification_response,
     update_group_policy,
 )
 
@@ -165,6 +166,23 @@ def get_verification_task_challenge_context(
     require_resource_tenant(session, current_user, VerificationTask, task_id)
     try:
         return get_verification_challenge_context(session, task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/api/verification-tasks/{task_id}/refresh-challenge-context", response_model=VerificationChallengeContextOut)
+def post_verification_task_refresh_challenge_context(
+    task_id: int,
+    payload: VerificationTaskConfirmRequest | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    require_resource_tenant(session, current_user, VerificationTask, task_id)
+    try:
+        return refresh_verification_challenge_context(session, task_id, payload.actor if payload else current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:

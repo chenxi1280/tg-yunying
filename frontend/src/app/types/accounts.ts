@@ -336,6 +336,8 @@ export type VerificationChallengeMessage = {
 export type VerificationChallengeContext = {
   task_id: number;
   account_id: number | null;
+  submit_account_id: number | null;
+  reader_account_id: number | null;
   target_display: string;
   target_peer_id: string;
   detected_reason: string;

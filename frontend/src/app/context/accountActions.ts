@@ -376,6 +376,14 @@ export function createAccountActions(params: AccountActionParams) {
     return api<VerificationChallengeContext>(`/verification-tasks/${task.id}/challenge-context`);
   }
 
+  async function refreshVerificationChallengeContext(task: VerificationTask) {
+    return api<VerificationChallengeContext>(`/verification-tasks/${task.id}/refresh-challenge-context`, {
+      method: 'POST',
+      body: JSON.stringify({ actor: '普通用户' }),
+      timeoutMs: 30_000,
+    });
+  }
+
   async function submitVerificationTaskResponse(task: VerificationTask, responseText: string) {
     params.setBusy('提交验证回复');
     try {
@@ -638,6 +646,7 @@ export function createAccountActions(params: AccountActionParams) {
     retryCloneItem,
     confirmVerificationTask,
     loadVerificationChallengeContext,
+    refreshVerificationChallengeContext,
     resolveGroupRestrictionTask,
     resolveGroupRestrictionBatch,
     submitVerificationTaskResponse,

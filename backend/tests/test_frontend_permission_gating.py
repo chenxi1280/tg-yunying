@@ -360,15 +360,21 @@ def test_account_verification_tab_supports_challenge_reply_flow():
     assert "输入验证码或验证回复" in account_modals
     assert "提交验证回复" in account_modals
     assert "loadVerificationChallengeContext" in account_actions
+    assert "refreshVerificationChallengeContext" in account_actions
     assert "submitVerificationTaskResponse" in account_actions
     assert "VerificationChallengeContextOut" in groups_schema
+    assert "submit_account_id: int | None" in groups_schema
+    assert "reader_account_id: int | None" in groups_schema
     assert "target_peer_id: str" in groups_schema
     assert "detected_reason: str" in groups_schema
     assert "failure_detail: str" in groups_schema
     assert "suggested_action: str" in groups_schema
     assert "target_peer_id: string" in account_modals
     assert "verificationContextDiagnostic" in account_modals
+    assert "加入账号 ID" in account_modals
+    assert "读取账号 ID" in account_modals
     assert '"/api/verification-tasks/{task_id}/challenge-context"' in groups_router
+    assert '"/api/verification-tasks/{task_id}/refresh-challenge-context"' in groups_router
     assert '"/api/verification-tasks/{task_id}/submit-response"' in groups_router
 
 

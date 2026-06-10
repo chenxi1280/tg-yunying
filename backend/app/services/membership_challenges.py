@@ -32,11 +32,20 @@ class ImageVerificationOperationResult(OperationResult):
     model_name: str = ""
 
 
+@dataclass(frozen=True)
+class ChallengeContextReadResult:
+    context: dict[str, Any]
+    reader_account: TgAccount
+    reader_credentials: Any
+
+
 def read_challenge_context(
     session: Session,
     task: VerificationTask,
     account: TgAccount,
     credentials: Any,
+    *,
+    submit_account: TgAccount | None = None,
 ) -> dict[str, Any]:
     try:
         messages = gateway.fetch_verification_context(
@@ -50,7 +59,7 @@ def read_challenge_context(
         messages = []
         status = "read_failed"
         detail = str(exc) or exc.__class__.__name__
-    context = _context_payload(task, account, messages, status, detail)
+    context = _context_payload(task, account, messages, status, detail, submit_account=submit_account)
     record_challenge_attempt(session, task, account, context, status="context_read")
     if status in {"empty", "read_failed", "target_inaccessible"}:
         task.status = "需人工处理"
@@ -58,16 +67,48 @@ def read_challenge_context(
     return context
 
 
+def read_challenge_context_with_fallback(
+    session: Session,
+    task: VerificationTask,
+    submit_account: TgAccount,
+    submit_credentials: Any,
+    reader_candidates: list[tuple[TgAccount, Any]] | None = None,
+) -> ChallengeContextReadResult:
+    primary = read_challenge_context(session, task, submit_account, submit_credentials, submit_account=submit_account)
+    if primary["context_status"] == "ok":
+        return ChallengeContextReadResult(primary, submit_account, submit_credentials)
+    last = ChallengeContextReadResult(primary, submit_account, submit_credentials)
+    for reader, reader_credentials in reader_candidates or []:
+        if reader.id == submit_account.id:
+            continue
+        context = read_challenge_context(session, task, reader, reader_credentials, submit_account=submit_account)
+        last = ChallengeContextReadResult(context, reader, reader_credentials)
+        if context["context_status"] == "ok":
+            task.status = "需人工处理"
+            task.failure_detail = f"已由读取账号 #{reader.id} 读取验证上下文，等待加入账号提交验证。"
+            return last
+    return last
+
+
 def auto_resolve_image_verification(
     session: Session,
     task: VerificationTask,
     account: TgAccount,
     credentials: Any,
+    *,
+    reader_candidates: list[tuple[TgAccount, Any]] | None = None,
 ) -> OperationResult:
     provider = _mimo_vision_provider(session)
     if provider is None:
         return _image_verification_failure(session, task, account, "未配置可用 MiMo 视觉供应商")
-    context = read_challenge_context(session, task, account, credentials)
+    read_result = read_challenge_context_with_fallback(
+        session,
+        task,
+        account,
+        credentials,
+        reader_candidates=reader_candidates,
+    )
+    context = read_result.context
     image_message = _latest_context_image(context["messages"])
     if not image_message:
         detail = context.get("read_failure_detail") or "未读取到验证码图片"
@@ -75,11 +116,11 @@ def auto_resolve_image_verification(
     if _already_tried_image(session, task, image_message):
         return _image_verification_failure(session, task, account, "同一图片验证码已自动尝试过，需人工确认或等待新验证码", image_message, context)
     media = gateway.fetch_verification_media(
-        account.id,
+        read_result.reader_account.id,
         task.target_peer_id,
         int(image_message["media_message_id"]),
-        account.session_ciphertext,
-        credentials,
+        read_result.reader_account.session_ciphertext,
+        read_result.reader_credentials,
     )
     if not media.ok:
         detail = media.detail or media.failure_type or "验证码图片下载失败"
@@ -168,14 +209,19 @@ def record_challenge_attempt(
 
 def _context_payload(
     task: VerificationTask,
-    account: TgAccount,
+    reader_account: TgAccount,
     messages: list[dict[str, Any]],
     context_status: str,
     detail: str,
+    *,
+    submit_account: TgAccount | None = None,
 ) -> dict[str, Any]:
+    submitter = submit_account or reader_account
     return {
         "task_id": task.id,
-        "account_id": account.id,
+        "account_id": reader_account.id,
+        "submit_account_id": submitter.id,
+        "reader_account_id": reader_account.id,
         "target_display": task.target_display,
         "target_peer_id": task.target_peer_id,
         "detected_reason": task.detected_reason,

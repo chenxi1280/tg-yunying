@@ -187,6 +187,7 @@ interface AccountDetailModalProps {
   onDismissVerificationTask: (task: VerificationTask) => Promise<void>;
   onConfirmVerificationTask: (task: VerificationTask) => Promise<void>;
   onLoadVerificationChallengeContext: (task: VerificationTask) => Promise<VerificationChallengeContext>;
+  onRefreshVerificationChallengeContext: (task: VerificationTask) => Promise<VerificationChallengeContext>;
   onResolveGroupRestrictionTask: (task: VerificationTask) => Promise<void>;
   onResolveGroupRestrictionBatch: (task: VerificationTask) => Promise<void>;
   onSubmitVerificationTaskResponse: (task: VerificationTask, responseText: string) => Promise<void>;
@@ -224,6 +225,7 @@ export function AccountDetailModal({
   onConfirmClonePlan, onRetryCloneItem,
   onRetryAccountProfileSync,
   onDismissVerificationTask, onConfirmVerificationTask, onLoadVerificationChallengeContext,
+  onRefreshVerificationChallengeContext,
   onResolveGroupRestrictionTask, onResolveGroupRestrictionBatch, onSubmitVerificationTaskResponse,
   onOpenConfirm, onSetReturnAfterVerification, onSetModal,
   onSetCloneForm, onReturnToRiskControl, accountName, isActionPending,
@@ -281,6 +283,11 @@ export function AccountDetailModal({
 
   async function loadVerificationContext(task: VerificationTask) {
     const context = await onLoadVerificationChallengeContext(task);
+    setVerificationContexts((current) => ({ ...current, [task.id]: context }));
+  }
+
+  async function refreshVerificationContext(task: VerificationTask) {
+    const context = await onRefreshVerificationChallengeContext(task);
     setVerificationContexts((current) => ({ ...current, [task.id]: context }));
   }
 
@@ -496,7 +503,8 @@ export function AccountDetailModal({
     ['读取状态', verificationChallengeContext.context_status],
     ['读取消息数', String(verificationChallengeContext.message_count ?? verificationChallengeContext.messages.length)],
     ['最近读取时间', verificationChallengeContext.last_read_at ? formatBeijingDateTime(verificationChallengeContext.last_read_at) : '未记录'],
-    ['账号 ID', verificationChallengeContext.account_id ? String(verificationChallengeContext.account_id) : '未记录'],
+    ['加入账号 ID', verificationChallengeContext.submit_account_id ? String(verificationChallengeContext.submit_account_id) : String(verificationChallengeContext.account_id ?? '未记录')],
+    ['读取账号 ID', verificationChallengeContext.reader_account_id ? String(verificationChallengeContext.reader_account_id) : String(verificationChallengeContext.account_id ?? '未记录')],
     ['目标 peer', verificationChallengeContext.target_peer_id],
     ['读取原因', verificationChallengeContext.read_failure_detail],
     ['探测原因', verificationChallengeContext.detected_reason],
@@ -991,7 +999,7 @@ export function AccountDetailModal({
           <Card
             size="small"
             title="最近验证聊天"
-            extra={<Button size="small" loading={isActionPending(`verification:${verificationChallengeTask.id}:context`)} onClick={() => loadVerificationContext(verificationChallengeTask)}>重新读取</Button>}
+            extra={<Button size="small" loading={isActionPending(`verification:${verificationChallengeTask.id}:context-refresh`)} onClick={() => refreshVerificationContext(verificationChallengeTask)}>重新读取</Button>}
           >
             {isActionPending(`verification:${verificationChallengeTask.id}:context`) && !verificationChallengeContext ? (
               <Typography.Text type="secondary">正在读取群内最近消息...</Typography.Text>

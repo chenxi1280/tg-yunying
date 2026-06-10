@@ -52,6 +52,8 @@ class VerificationChallengeMessageOut(ApiModel):
 class VerificationChallengeContextOut(ApiModel):
     task_id: int
     account_id: int | None = None
+    submit_account_id: int | None = None
+    reader_account_id: int | None = None
     target_display: str
     target_peer_id: str = ""
     detected_reason: str = ""

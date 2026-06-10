@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.integrations.telegram import OperationResult
 from app.models import (
     AccountStatus,
     GroupAuthStatus,
@@ -16,7 +17,11 @@ from app.models import (
 
 from ._common import _now, audit, gateway
 from .developer_apps import credentials_for_account
-from .membership_challenges import read_challenge_context
+from .membership_challenges import (
+    auto_resolve_image_verification,
+    read_challenge_context,
+    read_challenge_context_with_fallback,
+)
 
 
 __all__ = [
@@ -25,6 +30,7 @@ __all__ = [
     "dismiss_verification_task",
     "get_verification_challenge_context",
     "list_verification_tasks",
+    "refresh_verification_challenge_context",
     "resolve_group_restriction_batch",
     "resolve_group_restriction_task",
     "submit_verification_response",
@@ -34,6 +40,8 @@ MANUAL_VERIFICATION_ACTIONS = {"人工处理", "手动处理", "线下处理"}
 GROUP_RESTRICTION_VERIFICATION_TYPES = ("群发言权限", "群发言不可用")
 OPEN_VERIFICATION_STATUSES = ("待处理", "失败", "需人工处理")
 ADMIN_APPROVAL_CANDIDATE_LIMIT = 10
+VERIFICATION_READER_CANDIDATE_LIMIT = 5
+IMAGE_VERIFICATION_MARKERS = ("图片", "图形", "验证码", "captcha", "bot", "机器人")
 
 
 @dataclass(frozen=True)
@@ -292,6 +300,159 @@ def get_verification_challenge_context(session: Session, task_id: int) -> dict:
     result = read_challenge_context(session, task, account, credentials)
     session.commit()
     return result
+
+
+def refresh_verification_challenge_context(session: Session, task_id: int, actor: str) -> dict:
+    task, account, group = _group_restriction_task_account_group(session, task_id)
+    credentials = credentials_for_account(session, account)
+    _retry_membership_before_context(session, task, account, group, credentials)
+    if task.status == "已处理":
+        context = _sendable_context_payload(task, account)
+    elif _should_auto_image_verify(task):
+        result = auto_resolve_image_verification(
+            session,
+            task,
+            account,
+            credentials,
+            reader_candidates=_verification_reader_candidates(session, task, account, group),
+        )
+        context = _context_from_image_result(session, task, account, group, credentials, result)
+    else:
+        context = read_challenge_context_with_fallback(
+            session,
+            task,
+            account,
+            credentials,
+            reader_candidates=_verification_reader_candidates(session, task, account, group),
+        ).context
+    audit(session, tenant_id=task.tenant_id, actor=actor, action="重新读取验证聊天", target_type="verification_task", target_id=str(task.id), detail=f"{task.status}:{task.failure_detail}")
+    session.commit()
+    return context
+
+
+def _retry_membership_before_context(
+    session: Session,
+    task: VerificationTask,
+    account: TgAccount,
+    group: TgGroup,
+    credentials,
+) -> None:
+    join = gateway.ensure_channel_membership(
+        account.id,
+        task.target_peer_id,
+        account.session_ciphertext,
+        credentials,
+    )
+    if not join.ok:
+        task.status = "需人工处理"
+        task.failure_detail = join.detail or join.failure_type or "重新加入失败"
+        _mark_image_verification_if_needed(task, task.failure_detail)
+        return
+    probe = gateway.probe_target_capabilities(
+        account.id,
+        task.target_peer_id,
+        "group",
+        account.session_ciphertext,
+        credentials,
+    )
+    _apply_group_probe_result(session, task, account, group, probe)
+    if not probe.ok:
+        _mark_image_verification_if_needed(task, task.failure_detail)
+
+
+def _mark_image_verification_if_needed(task: VerificationTask, detail: str | None) -> None:
+    text = f"{task.detected_reason or ''} {detail or ''}".lower()
+    if any(marker.lower() in text for marker in IMAGE_VERIFICATION_MARKERS):
+        task.suggested_action = "识别图形验证码"
+
+
+def _should_auto_image_verify(task: VerificationTask) -> bool:
+    return task.suggested_action == "识别图形验证码"
+
+
+def _verification_reader_candidates(
+    session: Session,
+    task: VerificationTask,
+    submit_account: TgAccount,
+    group: TgGroup,
+) -> list[tuple[TgAccount, object]]:
+    candidates = _verification_reader_accounts(session, task, submit_account, group)
+    readable: list[tuple[TgAccount, object]] = []
+    for account in candidates:
+        readable.append((account, credentials_for_account(session, account)))
+    return readable
+
+
+def _verification_reader_accounts(
+    session: Session,
+    task: VerificationTask,
+    submit_account: TgAccount,
+    group: TgGroup,
+) -> list[TgAccount]:
+    stmt = (
+        select(TgAccount)
+        .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
+        .where(
+            TgAccount.tenant_id == task.tenant_id,
+            TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.id != submit_account.id,
+            TgGroupAccount.group_id == group.id,
+            TgGroupAccount.can_send.is_(True),
+        )
+        .order_by(TgAccount.id.asc())
+        .limit(VERIFICATION_READER_CANDIDATE_LIMIT)
+    )
+    return list(session.scalars(stmt))
+
+
+def _context_from_image_result(
+    session: Session,
+    task: VerificationTask,
+    account: TgAccount,
+    group: TgGroup,
+    credentials,
+    result: OperationResult,
+) -> dict:
+    context = getattr(result, "attempt_context", None) or {}
+    if result.ok:
+        probe = gateway.probe_target_capabilities(account.id, task.target_peer_id, "group", account.session_ciphertext, credentials)
+        _apply_group_probe_result(session, task, account, group, probe)
+    else:
+        task.status = "需人工处理"
+        task.failure_detail = result.detail or result.failure_type or "MiMo 验证处理失败"
+        task.handled_at = None
+    if context:
+        context["failure_detail"] = task.failure_detail
+        context["suggested_action"] = task.suggested_action
+        return context
+    return _manual_context_payload(task, account, task.failure_detail)
+
+
+def _sendable_context_payload(task: VerificationTask, account: TgAccount) -> dict:
+    return _refresh_context_payload(task, account, "sendable", "重新加入后已可发言，无需验证码。")
+
+
+def _manual_context_payload(task: VerificationTask, account: TgAccount, detail: str) -> dict:
+    return _refresh_context_payload(task, account, "manual_required", detail)
+
+
+def _refresh_context_payload(task: VerificationTask, account: TgAccount, status: str, detail: str) -> dict:
+    return {
+        "task_id": task.id,
+        "account_id": account.id,
+        "submit_account_id": account.id,
+        "reader_account_id": account.id,
+        "target_display": task.target_display,
+        "target_peer_id": task.target_peer_id,
+        "detected_reason": task.detected_reason,
+        "failure_detail": task.failure_detail,
+        "suggested_action": task.suggested_action,
+        "context_status": status,
+        "last_read_at": _now(),
+        "message_count": 0,
+        "read_failure_detail": detail,
+        "messages": [],
+    }
 
 
 def submit_verification_response(session: Session, task_id: int, response_text: str, actor: str) -> VerificationTask:
