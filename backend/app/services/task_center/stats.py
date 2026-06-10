@@ -86,7 +86,7 @@ def planner_backlog_snapshot(session: Session, task: Task) -> dict[str, int | bo
         Action.task_id == task.id,
         Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES),
     ]
-    if task.type == "group_ai_chat" and hard_hourly_enabled(task):
+    if _can_plan_with_partial_membership(task):
         task_filters.append(Action.action_type.notin_(BUSINESS_MEMBERSHIP_ACTION_TYPES))
     global_pending = session.scalar(select(func.count(Action.id)).where(Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES))) or 0
     task_pending = session.scalar(
@@ -108,6 +108,15 @@ def planner_backlog_snapshot(session: Session, task: Task) -> dict[str, int | bo
         "task_pending": int(task_pending or 0),
         "oldest_age_seconds": int(oldest_age),
     }
+
+
+def _can_plan_with_partial_membership(task: Task) -> bool:
+    stats = task.stats if isinstance(task.stats, dict) else {}
+    return (
+        task.type == "group_ai_chat"
+        and hard_hourly_enabled(task)
+        and int(stats.get("membership_joined_count") or 0) > 0
+    )
 
 
 def clear_planner_backlog_stats(stats: dict[str, Any]) -> dict[str, Any]:

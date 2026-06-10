@@ -4966,6 +4966,7 @@ def test_planning_backlog_ignores_unrelated_old_pending_actions(monkeypatch):
             type="group_ai_chat",
             status="running",
             type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+            stats={"membership_joined_count": 12},
         )
         retry_task = Task(
             id="task-admission-retry",
@@ -5021,6 +5022,7 @@ def test_planning_backlog_ignores_same_task_old_membership_actions(monkeypatch):
             type="group_ai_chat",
             status="running",
             type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+            stats={"membership_joined_count": 12},
         )
         old_membership = Action(
             id="action-old-membership",
