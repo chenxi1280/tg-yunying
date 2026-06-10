@@ -147,6 +147,8 @@ def test_group_send_verification_action_detects_captcha_text() -> None:
     action = _group_send_verification_action("加入时提示需要群管理 bot 的验证码")
 
     assert action == "识别图形验证码"
+    assert _group_send_verification_action("未解析到群关联频道") == "识别图形验证码"
+    assert _group_send_verification_action("批量重查发现账号仍未获群发言权限") == "识别图形验证码"
     assert _group_send_verification_action("验证码：请输入 1234") == "人工处理"
 
 

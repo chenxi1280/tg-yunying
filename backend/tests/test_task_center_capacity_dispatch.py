@@ -901,6 +901,65 @@ def test_group_send_permission_denied_classifies_button_verification(monkeypatch
         assert verification.suggested_action == "点击按钮"
 
 
+def test_target_membership_image_verification_uses_reader_candidates(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    probe_calls = {"count": 0}
+    captured_reader_ids: list[int] = []
+
+    def fake_probe(*_args, **_kwargs):
+        probe_calls["count"] += 1
+        if probe_calls["count"] == 1:
+            return OperationResult(False, "失败", "群无权限", "未解析到群关联频道")
+        return OperationResult(True, "已完成", detail="验证码后可发言")
+
+    def fake_auto_resolve(_session, _task, _account, _credentials, *, reader_candidates=None):
+        captured_reader_ids.extend(account.id for account, _cred in reader_candidates or [])
+        return OperationResult(True, "已处理", detail="MiMo 已识别并提交验证码")
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="目标群", auth_status="已授权运营", can_send=True))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群", auth_status="已授权运营", can_send=True))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="加入账号", phone_masked="+861***0011", status="在线", session_ciphertext="cipher-11"),
+                TgAccount(id=12, tenant_id=1, display_name="可读账号", phone_masked="+861***0012", status="在线", session_ciphertext="cipher-12"),
+            ]
+        )
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True))
+        session.add(Task(id="task-image-reader", tenant_id=1, name="图形验证", type="target_admission_retry", status="running"))
+        session.add(
+            Action(
+                id="action-image-reader",
+                tenant_id=1,
+                task_id="task-image-reader",
+                task_type="target_admission_retry",
+                action_type="ensure_target_membership",
+                account_id=11,
+                scheduled_at=now_value,
+                payload={"channel_id": "-1007", "channel_target_id": 21, "target_type": "group", "target_display": "目标群", "require_send": True},
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *_args, **_kwargs: OperationResult(True, detail="joined"))
+        monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", fake_probe)
+        monkeypatch.setattr(dispatcher, "auto_resolve_image_verification", fake_auto_resolve)
+
+        action = session.get(Action, "action-image-reader")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        verification = session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7, VerificationTask.account_id == 11))
+        assert verification is not None
+        assert verification.suggested_action == "识别图形验证码"
+        assert captured_reader_ids == [12]
+        assert action.status == "success"
+        assert action.result["membership_status"] == "joined"
+
+
 def test_target_membership_auto_verification_rechecks_send_permission(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

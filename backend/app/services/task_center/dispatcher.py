@@ -65,6 +65,14 @@ _GROUP_SEND_IMAGE_VERIFICATION_MARKERS = (
     "机器人验证码",
     "bot 的验证码",
 )
+_GROUP_SEND_RETRYABLE_VERIFICATION_MARKERS = (
+    "未解析到群关联频道",
+    "未获群发言权限",
+    "没有群发言权限",
+    "群无权限或账号不可发言",
+    "不可发言",
+)
+VERIFICATION_READER_CANDIDATE_LIMIT = 5
 _ACCOUNT_SESSION_FAILURE_MARKERS = (
     "session",
     "auth key",
@@ -734,7 +742,14 @@ def _try_auto_group_send_verification(ctx: MembershipDispatchContext, verificati
 
 
 def _try_auto_image_verification(ctx: MembershipDispatchContext, verification_task):
-    result = auto_resolve_image_verification(ctx.session, verification_task, ctx.account, ctx.credentials)
+    readers = _image_verification_reader_candidates(ctx.session, verification_task, ctx.account)
+    result = auto_resolve_image_verification(
+        ctx.session,
+        verification_task,
+        ctx.account,
+        ctx.credentials,
+        reader_candidates=readers,
+    )
     verification_task.status = result.status
     verification_task.failure_detail = result.detail or result.failure_type
     if result.status != "需人工处理":
@@ -774,11 +789,52 @@ def _group_send_verification_action(detail: str) -> str:
         return "关注频道"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_IMAGE_VERIFICATION_MARKERS):
         return "识别图形验证码"
+    if any(marker.lower() in normalized for marker in _GROUP_SEND_RETRYABLE_VERIFICATION_MARKERS):
+        return "识别图形验证码"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_BUTTON_VERIFICATION_MARKERS):
         return "点击按钮"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_REPLY_VERIFICATION_MARKERS):
         return "发送验证回复"
     return "人工处理"
+
+
+def _image_verification_reader_candidates(session: Session, verification_task, submit_account: TgAccount) -> list[tuple[TgAccount, object]]:
+    if not verification_task or not getattr(verification_task, "group_id", None):
+        return []
+    links = list(
+        session.scalars(
+            select(TgGroupAccount)
+            .where(
+                TgGroupAccount.tenant_id == submit_account.tenant_id,
+                TgGroupAccount.group_id == verification_task.group_id,
+                TgGroupAccount.account_id != submit_account.id,
+                TgGroupAccount.can_send.is_(True),
+            )
+            .limit(VERIFICATION_READER_CANDIDATE_LIMIT)
+        )
+    )
+    account_ids = [link.account_id for link in links]
+    if not account_ids:
+        return []
+    accounts = list(
+        session.scalars(
+            select(TgAccount).where(
+                TgAccount.tenant_id == submit_account.tenant_id,
+                TgAccount.id.in_(account_ids),
+                TgAccount.status == AccountStatus.ACTIVE.value,
+                TgAccount.deleted_at.is_(None),
+            )
+        )
+    )
+    by_id = {account.id: account for account in accounts}
+    candidates: list[tuple[TgAccount, object]] = []
+    for account_id in account_ids:
+        account = by_id.get(account_id)
+        if not account:
+            continue
+        credentials = credentials_for_account(session, account)
+        candidates.append((account, credentials))
+    return candidates
 
 
 def _group_account_link(session: Session, tenant_id: int, group_id: int, account_id: int, *, create: bool) -> TgGroupAccount:
