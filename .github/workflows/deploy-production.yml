@@ -226,9 +226,102 @@ jobs:
             set -euo pipefail
             echo "==> planner logs before once"
             docker logs --tail 120 tgyunying-worker-planner || true
-            echo "==> planner once"
-            timeout 180 docker exec tgyunying-worker-planner python -m app.worker --once --role planner --limit 100
-            echo "==> planner logs after once"
+            echo "==> planner profiled once"
+            set +e
+            timeout 240 docker exec -i tgyunying-worker-planner python - <<'"'"'PY'"'"'
+          import faulthandler
+          import sys
+          import time
+
+          from sqlalchemy import select
+
+          from app.database import SessionLocal
+          from app.models import Task
+          from app.services._common import _now
+          from app.services.task_center import service as svc
+
+          LIMIT = 100
+          started = time.monotonic()
+
+          faulthandler.enable(file=sys.stderr)
+          faulthandler.dump_traceback_later(60, repeat=True, file=sys.stderr)
+
+          def mark(label):
+              elapsed = time.monotonic() - started
+              print(f"PLANNER_PROFILE {elapsed:0.3f}s {label}", flush=True)
+
+          processed = 0
+          future_open_action_task_ids = set()
+          with SessionLocal() as session:
+              mark("session-open")
+              svc.record_worker_heartbeat(session, process_type="planner", metadata={"limit": LIMIT, "source": "profile"})
+              mark("heartbeat-recorded")
+              svc._activate_pending_tasks(session)
+              mark("pending-activated")
+              hard_hourly_task_ids = svc._wake_hard_hourly_tasks(session, limit=LIMIT)
+              mark(f"hard-wake count={len(hard_hourly_task_ids)} ids={hard_hourly_task_ids[:10]}")
+              task_ids = list(
+                  session.scalars(
+                      select(Task.id)
+                      .where(Task.status == "running", (Task.next_run_at.is_(None)) | (Task.next_run_at <= _now()))
+                      .order_by(Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
+                      .limit(max(1, LIMIT))
+                  )
+              )
+              mark(f"due-query count={len(task_ids)}")
+              task_ids = svc._merge_planner_task_ids(hard_hourly_task_ids, task_ids, LIMIT)
+              mark(f"merged count={len(task_ids)} ids={task_ids[:10]}")
+              session.commit()
+              mark("initial-commit")
+
+          for task_id in task_ids:
+              with SessionLocal() as session:
+                  svc._refresh_planner_heartbeat(session, "planner", LIMIT, task_id=task_id)
+                  task = session.get(Task, task_id)
+                  if not task or task.status != "running":
+                      mark(f"task-skip task_id={task_id} missing-or-not-running")
+                      continue
+                  mark(f"task-start task_id={task.id} name={task.name!r} type={task.type}")
+                  if svc._check_stop_conditions(session, task):
+                      session.commit()
+                      mark(f"task-stop-conditions task_id={task.id}")
+                      continue
+                  processed += svc.retry_failed_actions(session, task)
+                  mark(f"task-after-retry task_id={task.id}")
+                  has_open_actions, open_actions_are_future = svc._open_actions_state(session, task)
+                  mark(
+                      "task-open-state "
+                      f"task_id={task.id} has_open={has_open_actions} future={open_actions_are_future}"
+                  )
+                  if task.type == "group_ai_chat" and has_open_actions and not svc.hard_hourly_requires_planning(session, task, _now()):
+                      if open_actions_are_future:
+                          future_open_action_task_ids.add(task.id)
+                      svc.refresh_task_stats(session, task)
+                      session.commit()
+                      mark(f"task-skip-open task_id={task.id}")
+                      continue
+                  if svc._planning_backlog_blocked(session, task):
+                      svc.refresh_task_stats(session, task)
+                      session.commit()
+                      mark(f"task-backlog-blocked task_id={task.id}")
+                      continue
+                  mark(f"task-build-start task_id={task.id}")
+                  created = svc.build_task_plan(session, task)
+                  mark(f"task-build-end task_id={task.id} created={created}")
+                  svc.refresh_task_stats(session, task)
+                  task.next_run_at = svc.next_run_after_task(task)
+                  session.commit()
+                  processed += created
+                  mark(f"task-commit task_id={task.id} processed={processed}")
+          mark(f"done processed={processed} future_open={sorted(future_open_action_task_ids)}")
+          PY
+            status=$?
+            set -e
+            echo "PLANNER_PROFILE_EXIT=${status}"
+            if [[ "${status}" -ne 0 ]]; then
+              echo "planner profile exited non-zero; inspect will still run for state capture"
+            fi
+            echo "==> planner logs after profile"
             docker logs --tail 120 tgyunying-worker-planner || true
           '
 
