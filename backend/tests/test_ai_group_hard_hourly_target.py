@@ -383,6 +383,11 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._quality_filter_ai_messages",
+        lambda contents, _previous, **_kwargs: ([{"content": content} for content in contents], {}),
+    )
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -433,23 +438,16 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
 
     def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
         captured["count"] = count
-        samples = [
-            "今晚活动几点开始",
-            "报名入口谁再发下",
-            "新来的先看置顶哈",
-            "这个群公告挺清楚",
-            "有问题直接群里问",
-            "我刚看到老师通知",
-            "名单确认完了吗",
-            "后面还有补充安排吗",
-            "先按公告来就行",
-            "等会儿有人统一说",
-        ]
-        return samples[:count], 0
+        return [f"硬目标缺口补量{index}" for index in range(count)], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._quality_filter_ai_messages",
+        lambda contents, _previous, **_kwargs: ([{"content": content} for content in contents], {}),
+    )
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -480,15 +478,15 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
         created = build_group_ai_chat_plan(session, task)
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
-    assert created == 10
-    assert captured["count"] == 10
-    assert len(actions) == 10
-    assert task.stats["hard_hourly_last_planned_count"] == 10
+    assert created == 300
+    assert captured["count"] == 300
+    assert len(actions) == 300
+    assert task.stats["hard_hourly_last_planned_count"] == 300
     assert task.stats["hard_hourly_next_check_at"] == "2026-06-07T20:10:30"
     assert all(action.payload["hard_hourly_deficit_at_plan"] == 300 for action in actions)
 
 
-def test_group_ai_chat_hard_hourly_respects_configured_round_size(monkeypatch):
+def test_group_ai_chat_hard_hourly_ignores_configured_round_size_for_deficit(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
@@ -538,10 +536,10 @@ def test_group_ai_chat_hard_hourly_respects_configured_round_size(monkeypatch):
         created = build_group_ai_chat_plan(session, task)
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
-    assert created == 60
-    assert captured["count"] == 60
-    assert len(actions) == 60
-    assert task.stats["hard_hourly_last_planned_count"] == 60
+    assert created == 300
+    assert captured["count"] == 300
+    assert len(actions) == 300
+    assert task.stats["hard_hourly_last_planned_count"] == 300
     assert all(action.payload["hard_hourly_target"] is True for action in actions)
 
 

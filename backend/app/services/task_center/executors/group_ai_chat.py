@@ -711,10 +711,7 @@ def _hard_hourly_round_config(config: dict, progress: dict[str, object]) -> dict
 
 
 def _hard_hourly_batch_size(config: dict, progress: dict[str, object]) -> int:
-    deficit = max(1, int(progress.get("deficit") or 1))
-    configured = int(config.get("messages_per_round") or 0)
-    target = max(HARD_HOURLY_MIN_BATCH_MESSAGES, configured)
-    return min(deficit, target)
+    return max(1, int(progress.get("deficit") or 1))
 
 
 def _hard_hourly_schedule(task: Task, progress: dict[str, object], total: int) -> list[datetime]:
