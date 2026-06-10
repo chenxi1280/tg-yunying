@@ -173,6 +173,37 @@ def test_group_ai_chat_create_defaults_to_hard_hourly_target_300():
     assert task.type_config["hard_hourly_strategy"] == "force_planning"
 
 
+def test_hard_hourly_wake_includes_legacy_string_enabled(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-string-enabled",
+            tenant_id=1,
+            name="硬目标历史字符串配置",
+            type="group_ai_chat",
+            status="running",
+            priority=3,
+            next_run_at=now_value + timedelta(hours=1),
+            type_config={
+                "hard_hourly_target_enabled": "true",
+                "hourly_min_messages": 300,
+                "hard_hourly_strategy": "force_planning",
+            },
+            stats={"hard_hourly_next_check_at": (now_value - timedelta(minutes=1)).isoformat()},
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+        task_ids = _wake_hard_hourly_tasks(session, limit=10)
+
+    assert task_ids == ["task-hard-hourly-string-enabled"]
+
+
 def test_refresh_task_stats_calculates_hard_hourly_target_progress(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
