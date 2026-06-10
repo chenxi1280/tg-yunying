@@ -1277,6 +1277,100 @@ def test_claim_actions_keeps_pending_and_delays_when_redis_token_bucket_is_limit
         assert fake_redis.released_keys == fake_redis.reservation_keys
 
 
+def test_claim_actions_reassignment_respects_future_cooldown_after_release(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    overdue_at = now_value - timedelta(minutes=5)
+    fake_redis = FakeRedisTokenBucket(blocked_key="rate:global:tg_api", wait_seconds=9)
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: _redis_bucket_settings())
+    monkeypatch.setattr(dispatcher, "_redis_client", lambda _redis_url: fake_redis)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_cooldown_seconds=180, jitter_min_seconds=0, jitter_max_seconds=0))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="原账号A", phone_masked="+861***0011", status="在线"),
+                TgAccount(id=12, tenant_id=1, display_name="原账号B", phone_masked="+861***0012", status="在线"),
+                TgAccount(id=13, tenant_id=1, display_name="候选账号A", phone_masked="+861***0013", status="在线"),
+                TgAccount(id=14, tenant_id=1, display_name="候选账号B", phone_masked="+861***0014", status="在线"),
+            ]
+        )
+        session.add(
+            Task(
+                id="task-overdue-reassign",
+                tenant_id=1,
+                name="overdue reassign",
+                type="group_ai_chat",
+                status="running",
+                priority=1,
+                account_config={"selection_mode": "manual", "account_ids": [11, 12, 13, 14], "max_concurrent": 4},
+            )
+        )
+        session.add_all(
+            [
+                Action(
+                    id="old-11",
+                    tenant_id=1,
+                    task_id="task-overdue-reassign",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=11,
+                    status="success",
+                    scheduled_at=now_value - timedelta(minutes=1),
+                    executed_at=now_value - timedelta(minutes=1),
+                    payload={"chat_id": "-1001", "message_text": "old"},
+                ),
+                Action(
+                    id="old-12",
+                    tenant_id=1,
+                    task_id="task-overdue-reassign",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=12,
+                    status="success",
+                    scheduled_at=now_value - timedelta(minutes=1),
+                    executed_at=now_value - timedelta(minutes=1),
+                    payload={"chat_id": "-1001", "message_text": "old"},
+                ),
+                Action(
+                    id="action-overdue-a",
+                    tenant_id=1,
+                    task_id="task-overdue-reassign",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=11,
+                    status="pending",
+                    scheduled_at=overdue_at,
+                    payload={"chat_id": "-1001", "message_text": "a"},
+                ),
+                Action(
+                    id="action-overdue-b",
+                    tenant_id=1,
+                    task_id="task-overdue-reassign",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=12,
+                    status="pending",
+                    scheduled_at=overdue_at,
+                    payload={"chat_id": "-1001", "message_text": "b"},
+                ),
+            ]
+        )
+        session.commit()
+
+        claimed = claim_actions(session, limit=2, worker_id="worker-test")
+
+        first = session.get(Action, "action-overdue-a")
+        second = session.get(Action, "action-overdue-b")
+        assert claimed == []
+        assert first.account_id == 13
+        assert second.account_id == 14
+        assert first.result["claim_released_reason"] == "redis_token_bucket_limited"
+        assert second.result["claim_released_reason"] == "redis_token_bucket_limited"
+
+
 def test_recovery_marks_gateway_started_attempt_unknown_after_send():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

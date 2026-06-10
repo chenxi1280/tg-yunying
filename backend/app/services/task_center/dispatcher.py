@@ -326,7 +326,7 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
         session,
         tenant_id=action.tenant_id,
         account_id=account.id,
-        scheduled_at=action.scheduled_at,
+        scheduled_at=_capacity_check_at(action),
         exclude_action_id=action.id,
     )
     if decision.available:
@@ -1425,7 +1425,7 @@ def _account_after_global_policy(session: Session, action: Action, account: TgAc
         session,
         tenant_id=action.tenant_id,
         account_id=account.id,
-        scheduled_at=action.scheduled_at,
+        scheduled_at=_capacity_check_at(action),
         exclude_action_id=action.id,
     )
     if decision.available:
@@ -1457,6 +1457,7 @@ def _replacement_account_for_action(session: Session, action: Action, account: T
     if not task:
         return None
     payload = action.payload if isinstance(action.payload, dict) else {}
+    scheduled_at = _capacity_check_at(action)
     channel_target_id = int(payload.get("channel_target_id") or 0)
     if channel_target_id:
         channel = session.get(OperationTarget, channel_target_id)
@@ -1481,7 +1482,7 @@ def _replacement_account_for_action(session: Session, action: Action, account: T
             session,
             action.tenant_id,
             task.account_config or {},
-            scheduled_at=action.scheduled_at,
+            scheduled_at=scheduled_at,
             limit=10,
             enforce_shard=True,
         )
@@ -1492,11 +1493,17 @@ def _replacement_account_for_action(session: Session, action: Action, account: T
         action.tenant_id,
         task.account_config or {},
         target_group_id=group_id,
-        scheduled_at=action.scheduled_at,
+        scheduled_at=scheduled_at,
         limit=10,
         enforce_shard=True,
     )
     return next((candidate for candidate in candidates if candidate.id != account.id), None)
+
+
+def _capacity_check_at(action: Action) -> datetime:
+    scheduled_at = action.scheduled_at
+    now_value = _now()
+    return scheduled_at if scheduled_at and scheduled_at > now_value else now_value
 
 
 def _mark_executing(action: Action, *, lease_seconds: int = 1800) -> None:

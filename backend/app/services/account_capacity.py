@@ -227,9 +227,24 @@ def _cooldown_until(
     last_at = _naive(last_at) if last_at else None
     if reserved_at and (last_at is None or reserved_at > last_at):
         last_at = reserved_at
-    if not last_at:
-        return None
-    return _naive(last_at) + timedelta(seconds=cooldown)
+    candidates: list[datetime] = []
+    if last_at:
+        candidates.append(_naive(last_at) + timedelta(seconds=cooldown))
+    future_at = _next_occupied_at(
+        session,
+        tenant_id=tenant_id,
+        account_id=account_id,
+        scheduled_at=scheduled_at,
+        cooldown_seconds=cooldown,
+        exclude_action_ids=exclude_action_ids,
+        exclude_message_task_id=exclude_message_task_id,
+    )
+    reserved_future_at = _next_reserved_at(reservations, account_id, scheduled_at, cooldown)
+    if reserved_future_at and (future_at is None or reserved_future_at < future_at):
+        future_at = reserved_future_at
+    if future_at:
+        candidates.append(_naive(future_at) + timedelta(seconds=cooldown))
+    return max(candidates) if candidates else None
 
 
 def _last_occupied_at(
@@ -268,6 +283,44 @@ def _last_occupied_at(
     return max(values) if values else None
 
 
+def _next_occupied_at(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_id: int,
+    scheduled_at: datetime,
+    cooldown_seconds: int,
+    exclude_action_ids: set[str],
+    exclude_message_task_id: int | None,
+) -> datetime | None:
+    window_end = scheduled_at + timedelta(seconds=cooldown_seconds)
+    action_occupied_at = func.coalesce(Action.executed_at, Action.scheduled_at)
+    action_filters = [
+        Action.tenant_id == tenant_id,
+        Action.account_id == account_id,
+        Action.status.in_(ACTION_OCCUPIED_STATUSES),
+        action_occupied_at > scheduled_at,
+        action_occupied_at < window_end,
+    ]
+    if exclude_action_ids:
+        action_filters.append(Action.id.not_in(exclude_action_ids))
+    action_at = session.scalar(select(func.min(action_occupied_at)).where(*action_filters))
+    message_account_id = func.coalesce(MessageTask.account_id, MessageTask.preferred_account_id)
+    message_occupied_at = func.coalesce(MessageTask.sent_at, MessageTask.scheduled_at)
+    message_filters = [
+        MessageTask.tenant_id == tenant_id,
+        message_account_id == account_id,
+        MessageTask.status.in_(MESSAGE_TASK_OCCUPIED_STATUSES),
+        message_occupied_at > scheduled_at,
+        message_occupied_at < window_end,
+    ]
+    if exclude_message_task_id:
+        message_filters.append(MessageTask.id != exclude_message_task_id)
+    message_at = session.scalar(select(func.min(message_occupied_at)).where(*message_filters))
+    values = [_naive(value) for value in [action_at, message_at] if value is not None]
+    return min(values) if values else None
+
+
 def _naive(value: datetime) -> datetime:
     return value.replace(tzinfo=None) if value.tzinfo is not None else value
 
@@ -303,6 +356,21 @@ def _last_reserved_at(
         if reservation.account_id == account_id and _naive(reservation.scheduled_at) <= scheduled_at
     ]
     return max(values) if values else None
+
+
+def _next_reserved_at(
+    reservations: list[AccountCapacityReservation],
+    account_id: int,
+    scheduled_at: datetime,
+    cooldown_seconds: int,
+) -> datetime | None:
+    window_end = scheduled_at + timedelta(seconds=cooldown_seconds)
+    values = [
+        _naive(reservation.scheduled_at)
+        for reservation in reservations
+        if reservation.account_id == account_id and scheduled_at < _naive(reservation.scheduled_at) < window_end
+    ]
+    return min(values) if values else None
 
 
 __all__ = [
