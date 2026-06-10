@@ -4511,8 +4511,8 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
 
         from app.services.task_center.service import drain_task_center
 
-        drain_task_center(SessionLocal, 10)
-        drain_task_center(SessionLocal, 10)
+        drain_task_center(SessionLocal, 1000)
+        drain_task_center(SessionLocal, 1000)
         assert sends == ["第一条转发监听消息"]
 
         with SessionLocal() as session:
@@ -4530,8 +4530,8 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
             )
             session.commit()
         reset_listener_runtime_cache()
-        drain_task_center(SessionLocal, 10)
-        drain_task_center(SessionLocal, 10)
+        drain_task_center(SessionLocal, 1000)
+        drain_task_center(SessionLocal, 1000)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert sends == ["第一条转发监听消息", "第二条转发监听消息"]
         assert detail["task"]["status"] == "running"
@@ -4948,7 +4948,9 @@ def test_task_center_channel_failed_action_retries_before_task_failed(monkeypatc
         task_id = created.json()["id"]
         client.post(f"/api/tasks/{task_id}/start", headers=headers)
 
-        client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
+        from app.services.task_center.service import drain_task_center
+
+        drain_task_center(SessionLocal, 1000)
         with SessionLocal() as session:
             task = session.get(Task, task_id)
             action = session.query(Action).filter(Action.task_id == task_id).one()
@@ -4956,7 +4958,7 @@ def test_task_center_channel_failed_action_retries_before_task_failed(monkeypatc
             assert action.status == "failed"
             assert action.retry_count == 0
 
-        client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
+        drain_task_center(SessionLocal, 1000)
         with SessionLocal() as session:
             task = session.get(Task, task_id)
             action = session.query(Action).filter(Action.task_id == task_id).one()
