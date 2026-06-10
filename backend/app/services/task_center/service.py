@@ -1299,6 +1299,8 @@ def _wake_hard_hourly_tasks(session: Session, *, limit: int) -> list[str]:
         if not tasks:
             break
         for task in tasks:
+            if not hard_hourly_enabled(task):
+                continue
             if _hard_hourly_due_for_planner(session, task, now):
                 task.next_run_at = now
                 task_ids.append(task.id)
