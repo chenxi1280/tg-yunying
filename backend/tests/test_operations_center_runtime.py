@@ -41,7 +41,7 @@ from app.services.task_center.policies import validate_group_send_policy
 from app.services.task_center.service import _action_payload, _channel_subtask_status, _planning_backlog_blocked, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.payloads import ViewMessagePayload, create_view_action
-from app.services.task_center.stats import refresh_task_stats
+from app.services.task_center.stats import planner_backlog_snapshot, refresh_task_stats
 from app.services.runtime_summary import get_operation_issue_detail, refresh_task_summary, upsert_operation_issue
 from app.timezone import BEIJING_TZ, beijing_day_bounds
 
@@ -4939,6 +4939,61 @@ def test_planning_backlog_blocked_clears_stale_stats_when_queue_recovers(monkeyp
 
     assert blocked is False
     assert task.stats == {"success_count": 12}
+
+
+def test_planning_backlog_ignores_unrelated_old_pending_actions(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "app.services.task_center.stats.get_settings",
+        lambda: SimpleNamespace(
+            max_pending_global=10_000,
+            max_pending_per_task=1_000,
+            oldest_pending_age_seconds=3_600,
+        ),
+        raising=False,
+    )
+
+    now_value = datetime(2026, 6, 10, 23, 0, 0)
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+
+    with Session(engine) as session:
+        ai_task = Task(
+            id="task-ai-hard-target",
+            tenant_id=1,
+            name="AI 活跃群",
+            type="group_ai_chat",
+            status="running",
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+        )
+        retry_task = Task(
+            id="task-admission-retry",
+            tenant_id=1,
+            name="重试目标准入",
+            type="target_admission_retry",
+            status="running",
+        )
+        old_pending = Action(
+            id="action-old-unrelated",
+            tenant_id=1,
+            task_id=retry_task.id,
+            task_type=retry_task.type,
+            action_type="ensure_target_membership",
+            status="pending",
+            scheduled_at=now_value - timedelta(hours=2),
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), ai_task, retry_task, old_pending])
+        session.commit()
+
+        snapshot = planner_backlog_snapshot(session, ai_task)
+        blocked = _planning_backlog_blocked(session, ai_task)
+
+    assert snapshot["blocked"] is False
+    assert snapshot["global_pending"] == 1
+    assert snapshot["task_pending"] == 0
+    assert snapshot["oldest_age_seconds"] == 0
+    assert blocked is False
 
 
 def test_refresh_task_stats_clears_recovered_backlog_marker(monkeypatch):

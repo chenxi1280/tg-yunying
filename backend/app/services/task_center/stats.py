@@ -84,7 +84,12 @@ def planner_backlog_snapshot(session: Session, task: Task) -> dict[str, int | bo
     settings = get_settings()
     global_pending = session.scalar(select(func.count(Action.id)).where(Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES))) or 0
     task_pending = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id, Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES))) or 0
-    oldest_pending = session.scalar(select(func.min(Action.scheduled_at)).where(Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES)))
+    oldest_pending = session.scalar(
+        select(func.min(Action.scheduled_at)).where(
+            Action.task_id == task.id,
+            Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES),
+        )
+    )
     oldest_at = as_beijing(oldest_pending)
     oldest_age = int((_now() - oldest_at).total_seconds()) if oldest_at else 0
     blocked = (
