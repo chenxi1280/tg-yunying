@@ -1477,7 +1477,14 @@ def _replacement_account_for_action(session: Session, action: Action, account: T
         )
         if not member_ids:
             return None
-        candidates = select_task_accounts(session, action.tenant_id, task.account_config or {}, scheduled_at=action.scheduled_at, limit=10)
+        candidates = select_task_accounts(
+            session,
+            action.tenant_id,
+            task.account_config or {},
+            scheduled_at=action.scheduled_at,
+            limit=10,
+            enforce_shard=True,
+        )
         return next((candidate for candidate in candidates if candidate.id != account.id and candidate.id in member_ids), None)
     group_id = int(payload.get("group_id") or 0) or None
     candidates = select_task_accounts(
@@ -1487,6 +1494,7 @@ def _replacement_account_for_action(session: Session, action: Action, account: T
         target_group_id=group_id,
         scheduled_at=action.scheduled_at,
         limit=10,
+        enforce_shard=True,
     )
     return next((candidate for candidate in candidates if candidate.id != account.id), None)
 

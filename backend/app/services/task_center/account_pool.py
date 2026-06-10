@@ -34,11 +34,12 @@ def select_task_accounts(
     scheduled_at=None,
     enforce_max_concurrent: bool = True,
     enforce_capacity: bool = True,
+    enforce_shard: bool = False,
 ) -> list[TgAccount]:
     max_concurrent = int(account_config.get("max_concurrent") or 20)
     requested = int(limit or max_concurrent)
     wanted = min(requested, max_concurrent) if enforce_max_concurrent else requested
-    stmt = _account_query(session, tenant_id, account_config)
+    stmt = _account_query(session, tenant_id, account_config, enforce_shard=enforce_shard)
     if stmt is None:
         return []
     if target_group_id:
@@ -67,7 +68,7 @@ def select_task_accounts(
     return _health_weighted_accounts(available, wanted, scores)
 
 
-def _account_query(session: Session, tenant_id: int, account_config: dict):
+def _account_query(session: Session, tenant_id: int, account_config: dict, *, enforce_shard: bool):
     stmt = (
         select(TgAccount)
         .outerjoin(
@@ -87,7 +88,8 @@ def _account_query(session: Session, tenant_id: int, account_config: dict):
             TgAccount.id.asc(),
         )
     )
-    stmt = apply_account_shard_filter(stmt)
+    if enforce_shard:
+        stmt = apply_account_shard_filter(stmt)
     mode = account_config.get("selection_mode") or "all"
     if mode == "manual":
         account_ids = [int(item) for item in account_config.get("account_ids") or []]

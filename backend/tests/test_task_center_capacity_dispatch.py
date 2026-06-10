@@ -1181,6 +1181,48 @@ def test_claim_actions_filters_accounts_by_current_shard(monkeypatch):
         dispatcher._IN_FLIGHT_ACCOUNTS.clear()
 
 
+def test_select_task_accounts_is_unsharded_by_default(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _redis_bucket_settings(account_shard_total=2, account_shard_index=1)
+    monkeypatch.setattr(account_pool, "get_settings", lambda: settings)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=10, tenant_id=1, display_name="账号A", phone_masked="+861***0010", status="在线"),
+                TgAccount(id=11, tenant_id=1, display_name="账号B", phone_masked="+861***0011", status="在线"),
+            ]
+        )
+        session.commit()
+
+        accounts = account_pool.select_task_accounts(session, 1, {}, limit=10)
+
+        assert [account.id for account in accounts] == [10, 11]
+
+
+def test_select_task_accounts_can_enforce_current_shard(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    settings = _redis_bucket_settings(account_shard_total=2, account_shard_index=1)
+    monkeypatch.setattr(account_pool, "get_settings", lambda: settings)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=10, tenant_id=1, display_name="账号A", phone_masked="+861***0010", status="在线"),
+                TgAccount(id=11, tenant_id=1, display_name="账号B", phone_masked="+861***0011", status="在线"),
+            ]
+        )
+        session.commit()
+
+        accounts = account_pool.select_task_accounts(session, 1, {}, limit=10, enforce_shard=True)
+
+        assert [account.id for account in accounts] == [11]
+
+
 def test_claim_actions_uses_redis_account_inflight_lock(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

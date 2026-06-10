@@ -30,7 +30,7 @@ x-backend-env: &backend-env
   WORKER_DRAIN_LIMIT: ${WORKER_DRAIN_LIMIT:-100}
   WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-2.0}
   DISPATCHER_CONCURRENCY: ${DISPATCHER_CONCURRENCY:-20}
-  ACCOUNT_SHARD_TOTAL: ${ACCOUNT_SHARD_TOTAL:-2}
+  ACCOUNT_SHARD_TOTAL: ${ACCOUNT_SHARD_TOTAL:-1}
   ACCOUNT_SHARD_INDEX: ${ACCOUNT_SHARD_INDEX:-0}
   DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
   DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
@@ -98,7 +98,8 @@ services:
     environment:
       <<: *backend-env
       WORKER_ROLE: dispatcher
-      ACCOUNT_SHARD_INDEX: ${ACCOUNT_SHARD_INDEX_1:-0}
+      ACCOUNT_SHARD_TOTAL: "2"
+      ACCOUNT_SHARD_INDEX: "0"
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
     depends_on:
@@ -116,7 +117,8 @@ services:
     environment:
       <<: *backend-env
       WORKER_ROLE: dispatcher
-      ACCOUNT_SHARD_INDEX: ${ACCOUNT_SHARD_INDEX_2:-1}
+      ACCOUNT_SHARD_TOTAL: "2"
+      ACCOUNT_SHARD_INDEX: "1"
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
     depends_on:
