@@ -899,7 +899,7 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
     future_open_action_task_ids: set[str] = set()
     for task_id in task_ids:
         with session_factory() as session:
-            _refresh_planner_heartbeat(session, process_type, limit)
+            _refresh_planner_heartbeat(session, process_type, limit, task_id=task_id)
             task = session.get(Task, task_id)
             if not task or task.status != "running":
                 continue
@@ -926,10 +926,13 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
     return processed, future_open_action_task_ids
 
 
-def _refresh_planner_heartbeat(session: Session, process_type: str | None, limit: int) -> None:
+def _refresh_planner_heartbeat(session: Session, process_type: str | None, limit: int, *, task_id: str | None = None) -> None:
     if not process_type:
         return
-    record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit, "phase": "task"})
+    metadata = {"limit": limit, "phase": "task"}
+    if task_id:
+        metadata["task_id"] = task_id
+    record_worker_heartbeat(session, process_type=process_type, metadata=metadata)
     session.commit()
 
 

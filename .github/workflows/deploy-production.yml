@@ -273,6 +273,19 @@ jobs:
                       .group_by(WorkerHeartbeat.process_type)
                   ).all()
               )
+              worker_heartbeats = [
+                  {
+                      'worker_id': row.worker_id,
+                      'process_type': row.process_type,
+                      'last_seen_at': iso(row.last_seen_at),
+                      'metadata': row.heartbeat_metadata or {},
+                  }
+                  for row in session.scalars(
+                      select(WorkerHeartbeat)
+                      .where(WorkerHeartbeat.last_seen_at >= now.replace(tzinfo=None) - timedelta(minutes=5))
+                      .order_by(WorkerHeartbeat.process_type.asc(), WorkerHeartbeat.last_seen_at.desc())
+                  )
+              ]
               due_candidates = sorted(
                   (
                       candidate
@@ -378,6 +391,7 @@ jobs:
               'captured_at': now.isoformat(timespec='seconds'),
               'active_workers_2m': int(active_workers or 0),
               'worker_counts_2m': {str(key): int(value) for key, value in worker_counts.items()},
+              'worker_heartbeats_5m': worker_heartbeats,
               'planner_backlog_thresholds': {
                   'max_pending_global': int(settings.max_pending_global or 0),
                   'max_pending_per_task': int(settings.max_pending_per_task or 0),
