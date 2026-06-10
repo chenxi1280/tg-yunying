@@ -112,10 +112,13 @@ def planner_backlog_snapshot(session: Session, task: Task) -> dict[str, int | bo
 
 def _can_plan_with_partial_membership(task: Task) -> bool:
     stats = task.stats if isinstance(task.stats, dict) else {}
+    raw_blockers = stats.get("hard_hourly_last_blockers")
+    blockers = raw_blockers if isinstance(raw_blockers, dict) else {}
     return (
         task.type == "group_ai_chat"
         and hard_hourly_enabled(task)
         and int(stats.get("membership_joined_count") or 0) > 0
+        and int(blockers.get("target_membership_pending") or 0) > 0
     )
 
 
