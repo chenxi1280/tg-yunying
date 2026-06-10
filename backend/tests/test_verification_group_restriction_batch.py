@@ -7,6 +7,7 @@ from app.integrations.telegram import SendResult
 from app.services.verification import (
     _apply_batch_approval_detail,
     _mark_image_verification_if_needed,
+    _upgrade_existing_verification_task,
     _verification_action_for_group_restriction,
     _verification_send_failure_status,
 )
@@ -61,6 +62,28 @@ def test_mark_image_verification_if_needed_supports_group_permission_reasons():
     _mark_image_verification_if_needed(task, "未解析到群关联频道")
 
     assert task.suggested_action == "识别图形验证码"
+
+
+def test_existing_manual_verification_task_upgrades_to_auto_action():
+    task = VerificationTask(
+        detected_reason="旧人工原因",
+        suggested_action="人工处理",
+        target_peer_id="@old",
+        target_display="旧目标",
+    )
+
+    _upgrade_existing_verification_task(
+        task,
+        "未解析到群关联频道",
+        "识别图形验证码",
+        "@qdsfxy",
+        "青岛师范学院",
+    )
+
+    assert task.detected_reason == "未解析到群关联频道"
+    assert task.suggested_action == "识别图形验证码"
+    assert task.target_peer_id == "@qdsfxy"
+    assert task.target_display == "青岛师范学院"
 
 
 def test_verification_context_keeps_button_and_media_challenges():

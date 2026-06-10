@@ -202,6 +202,7 @@ def create_verification_task(
         .order_by(VerificationTask.id.desc())
     )
     if existing:
+        _upgrade_existing_verification_task(existing, detected_reason, suggested_action, target_peer_id, target_display)
         _fill_verification_target(session, existing)
         return existing
     task = VerificationTask(
@@ -723,6 +724,23 @@ def _create_group_restriction_recheck_task(
     session.add(task)
     session.flush()
     return task
+
+
+def _upgrade_existing_verification_task(
+    task: VerificationTask,
+    detected_reason: str,
+    suggested_action: str,
+    target_peer_id: str,
+    target_display: str,
+) -> None:
+    if task.can_auto_resolve:
+        return
+    if suggested_action in MANUAL_VERIFICATION_ACTIONS:
+        return
+    task.detected_reason = detected_reason or task.detected_reason
+    task.suggested_action = suggested_action
+    task.target_peer_id = target_peer_id or task.target_peer_id
+    task.target_display = target_display or task.target_display
 
 
 def _verification_action_for_group_restriction(detail: str) -> str:
