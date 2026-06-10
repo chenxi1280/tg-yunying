@@ -4528,6 +4528,9 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
                     sent_at=datetime.now(UTC),
                 )
             )
+            task = session.get(Task, task_id)
+            assert task is not None
+            task.next_run_at = _now()
             session.commit()
         reset_listener_runtime_cache()
         drain_task_center(SessionLocal, 1000)
@@ -4957,6 +4960,8 @@ def test_task_center_channel_failed_action_retries_before_task_failed(monkeypatc
             assert task.status == "running"
             assert action.status == "failed"
             assert action.retry_count == 0
+            task.next_run_at = _now()
+            session.commit()
 
         drain_task_center(SessionLocal, 1000)
         with SessionLocal() as session:
