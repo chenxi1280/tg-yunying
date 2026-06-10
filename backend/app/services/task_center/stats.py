@@ -82,12 +82,20 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
 
 def planner_backlog_snapshot(session: Session, task: Task) -> dict[str, int | bool]:
     settings = get_settings()
+    task_business_filter = Action.action_type.notin_(BUSINESS_MEMBERSHIP_ACTION_TYPES)
     global_pending = session.scalar(select(func.count(Action.id)).where(Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES))) or 0
-    task_pending = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id, Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES))) or 0
+    task_pending = session.scalar(
+        select(func.count(Action.id)).where(
+            Action.task_id == task.id,
+            Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES),
+            task_business_filter,
+        )
+    ) or 0
     oldest_pending = session.scalar(
         select(func.min(Action.scheduled_at)).where(
             Action.task_id == task.id,
             Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES),
+            task_business_filter,
         )
     )
     oldest_at = as_beijing(oldest_pending)
