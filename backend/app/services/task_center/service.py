@@ -1370,7 +1370,9 @@ def _update_type_config(session: Session, tenant_id: int, task_id: str, expected
     task = _get_task(session, tenant_id, task_id)
     if task.type != expected_type:
         raise ValueError(f"任务类型不匹配，当前任务是 {task.type}")
-    next_config = normalize_operation_target_references(session, tenant_id, expected_type, payload.model_dump(mode="json"))
+    update_data = payload.model_dump(mode="json", exclude_unset=True)
+    next_config = {**(task.type_config or {}), **update_data}
+    next_config = normalize_operation_target_references(session, tenant_id, expected_type, next_config)
     next_config = validated_type_config(expected_type, next_config)
     validate_rule_binding(session, tenant_id, next_config)
     task.type_config = next_config

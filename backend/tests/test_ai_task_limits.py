@@ -20,13 +20,20 @@ from app.models import (
     TgGroup,
     TgGroupAccount,
 )
-from app.schemas import ChannelCommentTaskCreate, GroupAIChatTaskCreate, TaskDetailOut, TaskPrecheckRequest, TaskSettingsUpdate
+from app.schemas import (
+    ChannelCommentTaskCreate,
+    GroupAIChatTaskConfigUpdate,
+    GroupAIChatTaskCreate,
+    TaskDetailOut,
+    TaskPrecheckRequest,
+    TaskSettingsUpdate,
+)
 from app.services.content_filters import ContentFilterResult
 from app.services.task_center.ai_generator import AiGenerationUnavailable, generate_group_reply_messages
 from app.services.task_center.dispatcher import dispatch_action
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
-from app.services.task_center.service import precheck_task_creation, reset_task
+from app.services.task_center.service import precheck_task_creation, reset_task, update_group_ai_chat_config
 
 
 NOW = datetime(2026, 5, 30, 10, 0, 0)
@@ -87,6 +94,54 @@ def _add_group_task(session: Session, type_config: dict) -> Task:
     )
     session.add(task)
     return task
+
+
+def test_group_ai_config_update_preserves_unspecified_round_size() -> None:
+    with _session() as session:
+        _add_tenant(session)
+        session.add(
+            OperationTarget(
+                id=7,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id="-1007",
+                title="测试群目标",
+                can_send=True,
+                auth_status="已授权运营",
+            )
+        )
+        _add_group(session, account_count=3)
+        task = _add_group_task(
+            session,
+            {
+                "target_operation_target_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 60,
+                "reply_min_per_round": 5,
+                "membership_max_concurrent": 5,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 300,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.commit()
+
+        updated = update_group_ai_chat_config(
+            session,
+            1,
+            task.id,
+            GroupAIChatTaskConfigUpdate(
+                target_group_id=7,
+                target_operation_target_id=7,
+                membership_max_concurrent=50,
+            ),
+            "tester",
+        )
+
+    assert updated.type_config["membership_max_concurrent"] == 50
+    assert updated.type_config["messages_per_round_mode"] == "manual"
+    assert updated.type_config["messages_per_round"] == 60
+    assert updated.type_config["reply_min_per_round"] == 5
 
 
 def _add_channel(session: Session, message_count: int, account_count: int, comment_flags: list[bool] | None = None) -> OperationTarget:
