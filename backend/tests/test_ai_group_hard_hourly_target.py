@@ -13,7 +13,13 @@ from app.models import Action, OperationTarget, SchedulingSetting, Task, Tenant,
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.hard_hourly import hard_schedule_times, requires_planning as hard_hourly_requires_planning
-from app.services.task_center.service import _wake_hard_hourly_tasks, create_group_ai_chat_task, list_tasks, precheck_task_creation
+from app.services.task_center.service import (
+    _merge_planner_task_ids,
+    _wake_hard_hourly_tasks,
+    create_group_ai_chat_task,
+    list_tasks,
+    precheck_task_creation,
+)
 from app.services.task_center.stats import next_run_after_task, refresh_task_stats
 from app.timezone import BEIJING_TZ
 
@@ -202,6 +208,46 @@ def test_hard_hourly_wake_includes_legacy_string_enabled(monkeypatch):
         task_ids = _wake_hard_hourly_tasks(session, limit=10)
 
     assert task_ids == ["task-hard-hourly-string-enabled"]
+
+
+def test_hard_hourly_wake_returns_due_batch_when_worker_limit_is_low(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+
+    with Session(engine) as session:
+        tasks = [
+            Task(
+                id=f"task-hard-hourly-due-{index}",
+                tenant_id=1,
+                name=f"硬目标待唤醒{index}",
+                type="group_ai_chat",
+                status="running",
+                priority=3,
+                next_run_at=now_value + timedelta(hours=1),
+                type_config={
+                    "hard_hourly_target_enabled": True,
+                    "hourly_min_messages": 300,
+                    "hard_hourly_strategy": "force_planning",
+                },
+                stats={"hard_hourly_next_check_at": (now_value - timedelta(minutes=1)).isoformat()},
+            )
+            for index in range(3)
+        ]
+        session.add_all([Tenant(id=1, name="默认运营空间"), *tasks])
+        session.commit()
+
+        task_ids = _wake_hard_hourly_tasks(session, limit=1)
+
+    assert task_ids == ["task-hard-hourly-due-0", "task-hard-hourly-due-1", "task-hard-hourly-due-2"]
+
+
+def test_merge_planner_task_ids_preserves_hard_hourly_primary_over_limit():
+    task_ids = _merge_planner_task_ids(["hard-1", "hard-2", "hard-3"], ["hard-2", "normal-1"], limit=1)
+
+    assert task_ids == ["hard-1", "hard-2", "hard-3"]
 
 
 def test_refresh_task_stats_calculates_hard_hourly_target_progress(monkeypatch):

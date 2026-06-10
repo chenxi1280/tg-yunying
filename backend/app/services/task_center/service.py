@@ -1279,22 +1279,24 @@ def _activate_pending_tasks(session: Session) -> None:
 def _merge_planner_task_ids(primary: list[str], secondary: list[str], limit: int) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
+    target_count = max(max(1, limit), len(primary))
     for task_id in [*primary, *secondary]:
         if task_id in seen:
             continue
         merged.append(task_id)
         seen.add(task_id)
-        if len(merged) >= max(1, limit):
+        if len(merged) >= target_count:
             break
     return merged
 
 
 def _wake_hard_hourly_tasks(session: Session, *, limit: int) -> list[str]:
     now = _now()
-    scan_limit = max(HARD_HOURLY_WAKE_MIN_SCAN, max(1, limit) * HARD_HOURLY_WAKE_SCAN_MULTIPLIER)
+    target_count = max(HARD_HOURLY_WAKE_MIN_SCAN, max(1, limit))
+    scan_limit = max(HARD_HOURLY_WAKE_MIN_SCAN, target_count * HARD_HOURLY_WAKE_SCAN_MULTIPLIER)
     task_ids: list[str] = []
     offset = 0
-    while len(task_ids) < max(1, limit):
+    while len(task_ids) < target_count:
         tasks = list(session.scalars(_hard_hourly_wake_query(scan_limit, offset)))
         if not tasks:
             break
@@ -1304,7 +1306,7 @@ def _wake_hard_hourly_tasks(session: Session, *, limit: int) -> list[str]:
             if _hard_hourly_due_for_planner(session, task, now):
                 task.next_run_at = now
                 task_ids.append(task.id)
-            if len(task_ids) >= max(1, limit):
+            if len(task_ids) >= target_count:
                 break
         offset += len(tasks)
     return task_ids
