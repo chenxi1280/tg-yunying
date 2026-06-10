@@ -11,6 +11,7 @@ ensure_runtime_env
 ATTEMPTS="${TGYUNYING_CHECK_ATTEMPTS:-12}"
 RETRY_DELAY="${TGYUNYING_CHECK_RETRY_DELAY_SECONDS:-5}"
 WORKER_READY_TIMEOUT="${TGYUNYING_WORKER_READY_TIMEOUT_SECONDS:-360}"
+PLANNER_SMOKE_MODE="${TGYUNYING_PLANNER_SMOKE_MODE:-healthcheck}"
 BACKEND_URL="http://${TGYUNYING_BACKEND_BIND_HOST:-127.0.0.1}:${TGYUNYING_BACKEND_HOST_PORT:-18090}"
 STATIC_DIR="${TGYUNYING_FRONTEND_STATIC_BASE_DIR:-/data/infra/www/${TGYUNYING_WEB_HOST:-tgyunying}}/current"
 JS_ASSET_PATTERN='src="/assets/[^"]+\.js"'
@@ -110,8 +111,17 @@ wait_for_worker_ready() {
 run_planner_smoke_check() {
   local limit="${TGYUNYING_PLANNER_SMOKE_LIMIT:-1}"
   local timeout_seconds="${TGYUNYING_PLANNER_SMOKE_TIMEOUT_SECONDS:-120}"
-  echo "==> Running planner smoke check"
-  timeout "$timeout_seconds" docker exec tgyunying-worker-planner python -m app.worker --once --role planner --limit "$limit"
+  echo "==> Running planner smoke check (${PLANNER_SMOKE_MODE})"
+  if [[ "$PLANNER_SMOKE_MODE" == "healthcheck" ]]; then
+    timeout "$timeout_seconds" docker exec tgyunying-worker-planner python -m app.worker --healthcheck --role planner
+    return
+  fi
+  if [[ "$PLANNER_SMOKE_MODE" == "once" ]]; then
+    timeout "$timeout_seconds" docker exec tgyunying-worker-planner python -m app.worker --once --role planner --limit "$limit"
+    return
+  fi
+  echo "BAD planner smoke mode: ${PLANNER_SMOKE_MODE}" >&2
+  return 1
 }
 
 backend_status="$(docker inspect tgyunying-backend --format '{{.State.Status}}' 2>/dev/null || true)"
