@@ -231,6 +231,7 @@ jobs:
           from app.config import get_settings
           from app.database import SessionLocal
           from app.models import Action, Task, WorkerHeartbeat
+          from app.services.task_center.service import _hard_hourly_due_candidate, _hard_hourly_wake_query
           from app.services.task_center.stats import planner_backlog_snapshot, refresh_task_stats
 
           TASKS = {
@@ -240,8 +241,22 @@ jobs:
           }
 
           now = datetime.now(timezone(timedelta(hours=8)))
+          now_local = now.replace(tzinfo=None)
           def iso(value):
               return value.isoformat() if value else None
+
+          def due_entry(rank, sort_key, task):
+              next_check = sort_key[0]
+              next_check = None if next_check == datetime.min else next_check
+              return {
+                  'rank': rank,
+                  'task_id': task.id,
+                  'name': task.name,
+                  'priority': int(task.priority or 0),
+                  'next_check': iso(next_check),
+                  'deficit': int(-sort_key[1]),
+                  'next_run_at': iso(task.next_run_at),
+              }
 
           rows = []
           with SessionLocal() as session:
@@ -258,6 +273,19 @@ jobs:
                       .group_by(WorkerHeartbeat.process_type)
                   ).all()
               )
+              due_candidates = sorted(
+                  (
+                      candidate
+                      for task in session.scalars(_hard_hourly_wake_query())
+                      if (candidate := _hard_hourly_due_candidate(session, task, now_local)) is not None
+                  ),
+                  key=lambda candidate: candidate[0],
+              )
+              due_rank = {task.id: index + 1 for index, (_sort_key, task) in enumerate(due_candidates)}
+              due_sample = [
+                  due_entry(index, sort_key, task)
+                  for index, (sort_key, task) in enumerate(due_candidates[:10], start=1)
+              ]
               for name, task_id in TASKS.items():
                   task = session.get(Task, task_id)
                   if not task:
@@ -324,6 +352,8 @@ jobs:
                       'last_check': stats.get('hard_hourly_last_check_at'),
                       'last_planned': stats.get('hard_hourly_last_planned_count'),
                       'next_check': stats.get('hard_hourly_next_check_at'),
+                      'hard_due_rank': due_rank.get(task.id),
+                      'hard_due_total': len(due_candidates),
                       'planner_backlog': backlog,
                       'planner_backlog_stats': {
                           'blocked': stats.get('planner_backlog_blocked'),
@@ -353,6 +383,7 @@ jobs:
                   'max_pending_per_task': int(settings.max_pending_per_task or 0),
                   'oldest_pending_age_seconds': int(settings.oldest_pending_age_seconds or 0),
               },
+              'hard_due_sample': due_sample,
               'tasks': rows,
           }, ensure_ascii=False, sort_keys=True))
           PY
