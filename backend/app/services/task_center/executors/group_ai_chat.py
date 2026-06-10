@@ -62,7 +62,7 @@ AI_CHAT_ROUND_INTERVALS_SECONDS = {
     "休眠期": (600, 1200),
     "静默期": (300, 900),
 }
-HARD_HOURLY_MAX_BATCH_MESSAGES = 10
+HARD_HOURLY_MIN_BATCH_MESSAGES = 10
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -497,7 +497,7 @@ def _hard_hourly_account_options(progress: dict[str, object]) -> dict[str, objec
 def _hard_hourly_account_scan_target(progress: dict[str, object]) -> int:
     goal = max(0, int(progress.get("goal") or 0))
     deficit = max(0, int(progress.get("deficit") or 0))
-    return max(HARD_HOURLY_MAX_BATCH_MESSAGES, goal, deficit)
+    return max(HARD_HOURLY_MIN_BATCH_MESSAGES, goal, deficit)
 
 
 def _generate_group_planned_items(
@@ -701,12 +701,18 @@ def _round_schedule_times(total: int, pacing_config: dict, mode: str) -> list[da
 def _hard_hourly_round_config(config: dict, progress: dict[str, object]) -> dict:
     if not progress:
         return config
-    deficit = max(1, int(progress.get("deficit") or 1))
     updated = dict(config)
     updated["messages_per_round_mode"] = "manual"
-    updated["messages_per_round"] = min(deficit, HARD_HOURLY_MAX_BATCH_MESSAGES)
+    updated["messages_per_round"] = _hard_hourly_batch_size(config, progress)
     updated["allow_account_repeat"] = True
     return updated
+
+
+def _hard_hourly_batch_size(config: dict, progress: dict[str, object]) -> int:
+    deficit = max(1, int(progress.get("deficit") or 1))
+    configured = int(config.get("messages_per_round") or 0)
+    target = max(HARD_HOURLY_MIN_BATCH_MESSAGES, configured)
+    return min(deficit, target)
 
 
 def _hard_hourly_schedule(task: Task, progress: dict[str, object], total: int) -> list[datetime]:
