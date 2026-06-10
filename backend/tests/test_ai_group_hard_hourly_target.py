@@ -244,6 +244,58 @@ def test_hard_hourly_wake_returns_due_batch_when_worker_limit_is_low(monkeypatch
     assert task_ids == ["task-hard-hourly-due-0", "task-hard-hourly-due-1", "task-hard-hourly-due-2"]
 
 
+def test_hard_hourly_wake_prioritizes_stale_due_tasks_over_fixed_order(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+
+    with Session(engine) as session:
+        recent_due_at = (now_value - timedelta(minutes=1)).isoformat()
+        stale_due_at = (now_value - timedelta(minutes=30)).isoformat()
+        filler_tasks = [
+            Task(
+                id=f"task-hard-hourly-filler-{index:03d}",
+                tenant_id=1,
+                name=f"硬目标固定顺序{index}",
+                type="group_ai_chat",
+                status="running",
+                priority=1,
+                next_run_at=now_value + timedelta(hours=1),
+                type_config={
+                    "hard_hourly_target_enabled": True,
+                    "hourly_min_messages": 300,
+                    "hard_hourly_strategy": "force_planning",
+                },
+                stats={"hard_hourly_next_check_at": recent_due_at},
+            )
+            for index in range(120)
+        ]
+        stale_task = Task(
+            id="task-hard-hourly-stale-critical",
+            tenant_id=1,
+            name="硬目标过期关键任务",
+            type="group_ai_chat",
+            status="running",
+            priority=9,
+            next_run_at=now_value + timedelta(hours=1),
+            type_config={
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 300,
+                "hard_hourly_strategy": "force_planning",
+            },
+            stats={"hard_hourly_next_check_at": stale_due_at},
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), *filler_tasks, stale_task])
+        session.commit()
+
+        task_ids = _wake_hard_hourly_tasks(session, limit=100)
+
+    assert len(task_ids) == 100
+    assert task_ids[0] == "task-hard-hourly-stale-critical"
+
+
 def test_merge_planner_task_ids_preserves_hard_hourly_primary_over_limit():
     task_ids = _merge_planner_task_ids(["hard-1", "hard-2", "hard-3"], ["hard-2", "normal-1"], limit=1)
 

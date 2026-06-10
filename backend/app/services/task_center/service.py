@@ -97,7 +97,6 @@ COMMENT_UNAVAILABLE_MARKERS = (
 ACCOUNT_AUTH_MARKERS = ("session", "auth key", "auth_key", "unauthorized", "重新登录", "账号没有可用 session", "session 已失效")
 RATE_LIMIT_MARKERS = ("floodwait", "too many requests", "slowmode", "慢速模式", "冷却")
 HARD_HOURLY_WAKE_MIN_SCAN = 20
-HARD_HOURLY_WAKE_SCAN_MULTIPLIER = 5
 
 
 from .config_fields import (
@@ -1293,26 +1292,21 @@ def _merge_planner_task_ids(primary: list[str], secondary: list[str], limit: int
 def _wake_hard_hourly_tasks(session: Session, *, limit: int) -> list[str]:
     now = _now()
     target_count = max(HARD_HOURLY_WAKE_MIN_SCAN, max(1, limit))
-    scan_limit = max(HARD_HOURLY_WAKE_MIN_SCAN, target_count * HARD_HOURLY_WAKE_SCAN_MULTIPLIER)
-    task_ids: list[str] = []
-    offset = 0
-    while len(task_ids) < target_count:
-        tasks = list(session.scalars(_hard_hourly_wake_query(scan_limit, offset)))
-        if not tasks:
-            break
-        for task in tasks:
-            if not hard_hourly_enabled(task):
-                continue
-            if _hard_hourly_due_for_planner(session, task, now):
-                task.next_run_at = now
-                task_ids.append(task.id)
-            if len(task_ids) >= target_count:
-                break
-        offset += len(tasks)
-    return task_ids
+    candidates = sorted(
+        (
+            candidate
+            for task in session.scalars(_hard_hourly_wake_query())
+            if (candidate := _hard_hourly_due_candidate(session, task, now)) is not None
+        ),
+        key=lambda candidate: candidate[0],
+    )
+    selected = [task for _sort_key, task in candidates[:target_count]]
+    for task in selected:
+        task.next_run_at = now
+    return [task.id for task in selected]
 
 
-def _hard_hourly_wake_query(scan_limit: int, offset: int):
+def _hard_hourly_wake_query():
     return (
         select(Task)
         .where(
@@ -1321,19 +1315,35 @@ def _hard_hourly_wake_query(scan_limit: int, offset: int):
             Task.deleted_at.is_(None),
         )
         .order_by(Task.priority.asc(), Task.next_run_at.asc().nullsfirst(), Task.created_at.asc())
-        .offset(offset)
-        .limit(scan_limit)
     )
 
 
 def _hard_hourly_due_for_planner(session: Session, task: Task, now: datetime) -> bool:
+    return _hard_hourly_due_candidate(session, task, now) is not None
+
+
+def _hard_hourly_due_candidate(session: Session, task: Task, now: datetime):
     if not hard_hourly_enabled(task):
-        return False
+        return None
     progress = hard_hourly_current_progress(session, task, now)
     if int(progress.get("deficit") or 0) <= 0:
-        return False
+        return None
     next_check_at = _hard_hourly_next_check_at(task)
-    return next_check_at is None or next_check_at <= now
+    if next_check_at is not None and next_check_at > now:
+        return None
+    return (_hard_hourly_due_sort_key(task, progress, next_check_at), task)
+
+
+def _hard_hourly_due_sort_key(task: Task, progress: dict[str, Any], next_check_at: datetime | None):
+    next_run_at = _naive_datetime(task.next_run_at) or datetime.min
+    created_at = _naive_datetime(task.created_at) or datetime.min
+    return (
+        next_check_at or datetime.min,
+        -int(progress.get("deficit") or 0),
+        int(task.priority or 0),
+        next_run_at,
+        created_at,
+    )
 
 
 def _hard_hourly_next_check_at(task: Task) -> datetime | None:
