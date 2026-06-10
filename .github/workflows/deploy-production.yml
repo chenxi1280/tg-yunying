@@ -218,3 +218,78 @@ jobs:
             --user "${DEPLOY_USER}" \
             --base-dir "${BASE_DIR}" \
             --branch-list "${BRANCHES}"
+
+      - name: Inspect AI hourly task volume
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server 'docker exec -i tgyunying-backend python -' <<'PY'
+          import json
+          from datetime import datetime, timedelta, timezone
+
+          from sqlalchemy import func, select
+
+          from app.database import SessionLocal
+          from app.models import Action, Task, WorkerHeartbeat
+          from app.services.task_center.stats import refresh_task_stats
+
+          TASKS = {
+              '天津': '8ab323c9-c569-4253-8fe1-9b7bbd695640',
+              '青岛师范学院': '8c3edc4f-f8aa-40d1-ad8b-1c1809c7c576',
+              '石家庄': '76a996b7-3cc3-4a9a-ace2-cba3f12578d6',
+          }
+
+          now = datetime.now(timezone(timedelta(hours=8)))
+          rows = []
+          with SessionLocal() as session:
+              active_workers = session.scalar(
+                  select(func.count(WorkerHeartbeat.worker_id)).where(
+                      WorkerHeartbeat.last_seen_at >= now.replace(tzinfo=None) - timedelta(minutes=2),
+                  )
+              )
+              for name, task_id in TASKS.items():
+                  task = session.get(Task, task_id)
+                  if not task:
+                      rows.append({'name': name, 'task_id': task_id, 'missing': True})
+                      continue
+                  stats = refresh_task_stats(session, task)
+                  action_counts = dict(
+                      session.execute(
+                          select(Action.status, func.count(Action.id))
+                          .where(Action.task_id == task.id)
+                          .group_by(Action.status)
+                      ).all()
+                  )
+                  config = task.type_config or {}
+                  rows.append({
+                      'name': name,
+                      'task_id': task.id,
+                      'status': task.status,
+                      'next_run_at': task.next_run_at.isoformat() if task.next_run_at else None,
+                      'last_error': task.last_error,
+                      'bucket': stats.get('hard_hourly_bucket'),
+                      'goal': stats.get('hard_hourly_goal'),
+                      'success': stats.get('hard_hourly_success_count'),
+                      'deficit': stats.get('hard_hourly_deficit'),
+                      'hard_status': stats.get('hard_hourly_status'),
+                      'open': stats.get('hard_hourly_open_count'),
+                      'overdue': stats.get('hard_hourly_overdue_open_count'),
+                      'last_check': stats.get('hard_hourly_last_check_at'),
+                      'last_planned': stats.get('hard_hourly_last_planned_count'),
+                      'next_check': stats.get('hard_hourly_next_check_at'),
+                      'membership_stage': stats.get('membership_stage'),
+                      'joined': stats.get('membership_joined_count'),
+                      'need_join': stats.get('membership_need_join_count'),
+                      'failed_join': stats.get('membership_failed_count'),
+                      'action_counts': {str(key): int(value) for key, value in action_counts.items()},
+                      'messages_per_round_mode': config.get('messages_per_round_mode'),
+                      'messages_per_round': config.get('messages_per_round'),
+                      'reply_min_per_round': config.get('reply_min_per_round'),
+                      'slang_prompt_template_id': config.get('slang_prompt_template_id'),
+                  })
+              session.rollback()
+          print('AI_HOURLY_TASK_VOLUME=' + json.dumps({
+              'captured_at': now.isoformat(timespec='seconds'),
+              'active_workers_2m': int(active_workers or 0),
+              'tasks': rows,
+          }, ensure_ascii=False, sort_keys=True))
+          PY
