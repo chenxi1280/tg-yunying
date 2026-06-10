@@ -1386,6 +1386,8 @@ def test_retry_failed_only_requeues_unknown_after_send_actions():
                 Action(id="action-success", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="success", scheduled_at=now_value),
                 Action(id="action-unknown", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="unknown_after_send", scheduled_at=now_value, result={"error_code": "unknown_after_send"}),
                 Action(id="action-failed", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="failed", scheduled_at=now_value, result={"error_code": "failed"}),
+                Action(id="action-membership-denied", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="skipped", scheduled_at=now_value, result={"error_code": "membership_permission_denied", "membership_status": "permission_denied"}),
+                Action(id="action-skipped", tenant_id=1, task_id="task-retry", task_type="target_admission_retry", action_type="ensure_target_membership", status="skipped", scheduled_at=now_value, result={"error_code": "already_joined"}),
             ]
         )
         session.commit()
@@ -1395,6 +1397,8 @@ def test_retry_failed_only_requeues_unknown_after_send_actions():
         assert session.get(Action, "action-success").status == "success"
         assert session.get(Action, "action-unknown").status == "pending"
         assert session.get(Action, "action-failed").status == "pending"
+        assert session.get(Action, "action-membership-denied").status == "pending"
+        assert session.get(Action, "action-skipped").status == "skipped"
 
 
 def test_runtime_cleanup_summarizes_then_deletes_all_window_out_details():

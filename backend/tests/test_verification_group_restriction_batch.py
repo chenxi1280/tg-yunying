@@ -68,6 +68,9 @@ def test_existing_manual_verification_task_upgrades_to_auto_action():
     task = VerificationTask(
         detected_reason="旧人工原因",
         suggested_action="人工处理",
+        status="需人工处理",
+        failure_detail="旧失败详情",
+        handled_at=datetime(2026, 6, 9, 12, 0),
         target_peer_id="@old",
         target_display="旧目标",
     )
@@ -82,6 +85,9 @@ def test_existing_manual_verification_task_upgrades_to_auto_action():
 
     assert task.detected_reason == "未解析到群关联频道"
     assert task.suggested_action == "识别图形验证码"
+    assert task.status == "待处理"
+    assert task.failure_detail == ""
+    assert task.handled_at is None
     assert task.target_peer_id == "@qdsfxy"
     assert task.target_display == "青岛师范学院"
 

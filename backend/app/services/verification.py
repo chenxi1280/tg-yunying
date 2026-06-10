@@ -741,6 +741,9 @@ def _upgrade_existing_verification_task(
     task.suggested_action = suggested_action
     task.target_peer_id = target_peer_id or task.target_peer_id
     task.target_display = target_display or task.target_display
+    task.status = "待处理"
+    task.failure_detail = ""
+    task.handled_at = None
 
 
 def _verification_action_for_group_restriction(detail: str) -> str:

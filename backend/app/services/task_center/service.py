@@ -571,8 +571,10 @@ def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetr
     task = _get_task(session, tenant_id, task_id)
     stmt = select(Action).where(Action.task_id == task.id)
     if payload.failed_only:
-        stmt = stmt.where(Action.status.in_(["failed", "unknown_after_send"]))
+        stmt = stmt.where(Action.status.in_(["failed", "unknown_after_send", "skipped"]))
     for action in session.scalars(stmt):
+        if payload.failed_only and not _action_should_retry(task, action):
+            continue
         action.status = "pending"
         action.retry_count = 0
         action.scheduled_at = _now()
@@ -585,6 +587,19 @@ def retry_task(session: Session, tenant_id: int, task_id: str, payload: TaskRetr
     session.commit()
     session.refresh(task)
     return task
+
+
+def _action_should_retry(task: Task, action: Action) -> bool:
+    if action.status in {"failed", "unknown_after_send"}:
+        return True
+    if task.type != "target_admission_retry":
+        return False
+    result = action.result or {}
+    return (
+        action.action_type in MEMBERSHIP_ACTION_TYPES
+        and result.get("error_code") == "membership_permission_denied"
+        and result.get("membership_status") == "permission_denied"
+    )
 
 
 def reset_task(session: Session, tenant_id: int, task_id: str, actor: str, reason: str = "") -> Task:
