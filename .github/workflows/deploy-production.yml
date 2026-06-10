@@ -219,6 +219,19 @@ jobs:
             --base-dir "${BASE_DIR}" \
             --branch-list "${BRANCHES}"
 
+      - name: Probe production planner drain
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server '
+            set -euo pipefail
+            echo "==> planner logs before once"
+            docker logs --tail 120 tgyunying-worker-planner || true
+            echo "==> planner once"
+            timeout 180 docker exec tgyunying-worker-planner python -m app.worker --once --role planner --limit 100
+            echo "==> planner logs after once"
+            docker logs --tail 120 tgyunying-worker-planner || true
+          '
+
       - name: Inspect AI hourly task volume
         run: |
           set -euo pipefail
