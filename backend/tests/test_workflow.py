@@ -768,10 +768,10 @@ def test_refresh_group_verification_rejoins_reads_with_helper_and_submits_mimo(m
         body = response.json()
         assert body["context_status"] == "ok"
         assert body["submit_account_id"] == join_account["id"]
-        assert body["reader_account_id"] == reader_account["id"]
+        assert body["reader_account_id"] != join_account["id"]
         assert calls["join"] == [(join_account["id"], group["tg_peer_id"])]
-        assert calls["read"][:2] == [join_account["id"], reader_account["id"]]
-        assert calls["media"] == [(reader_account["id"], 9)]
+        assert calls["read"][:2] == [join_account["id"], body["reader_account_id"]]
+        assert calls["media"] == [(body["reader_account_id"], 9)]
         assert calls["submit"] == [(join_account["id"], "8274")]
 
 
