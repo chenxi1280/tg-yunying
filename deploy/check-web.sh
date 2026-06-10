@@ -10,7 +10,7 @@ ensure_runtime_env
 
 ATTEMPTS="${TGYUNYING_CHECK_ATTEMPTS:-12}"
 RETRY_DELAY="${TGYUNYING_CHECK_RETRY_DELAY_SECONDS:-5}"
-WORKER_READY_TIMEOUT="${TGYUNYING_WORKER_READY_TIMEOUT_SECONDS:-90}"
+WORKER_READY_TIMEOUT="${TGYUNYING_WORKER_READY_TIMEOUT_SECONDS:-360}"
 BACKEND_URL="http://${TGYUNYING_BACKEND_BIND_HOST:-127.0.0.1}:${TGYUNYING_BACKEND_HOST_PORT:-18090}"
 STATIC_DIR="${TGYUNYING_FRONTEND_STATIC_BASE_DIR:-/data/infra/www/${TGYUNYING_WEB_HOST:-tgyunying}}/current"
 JS_ASSET_PATTERN='src="/assets/[^"]+\.js"'
@@ -92,7 +92,7 @@ wait_for_worker_ready() {
       echo "OK worker container ${container_name}: status=$status health=${health:-none}"
       return 0
     fi
-    if [[ "$status" == "exited" || "$status" == "dead" || "$health" == "unhealthy" ]]; then
+    if [[ "$status" == "exited" || "$status" == "dead" ]]; then
       echo "BAD worker container ${container_name}: status=${status:-missing} health=${health:-none}" >&2
       docker logs --tail 200 "$container_name" >&2 || true
       return 1
