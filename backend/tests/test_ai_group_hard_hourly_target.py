@@ -916,6 +916,11 @@ def test_group_ai_chat_hard_hourly_reuses_existing_context_without_refresh(monke
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: True)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.collect_group_context", broken_history)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._quality_filter_ai_messages",
+        lambda contents, _previous, **_kwargs: ([{"content": content} for content in contents], {}),
+    )
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
