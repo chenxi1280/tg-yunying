@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, OperationTarget, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
+from app.models import Action, GroupContextMessage, OperationTarget, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.hard_hourly import hard_schedule_times, requires_planning as hard_hourly_requires_planning
@@ -896,6 +896,71 @@ def test_group_ai_chat_hard_hourly_degrades_history_permission_and_plans(monkeyp
     assert task.last_error == ""
     assert task.stats["history_fetch_degraded"] is True
     assert "GetHistoryRequest" in task.stats["history_fetch_degraded_reason"]
+    assert task.stats["hard_hourly_last_planned_count"] == 3
+    assert "hard_hourly_last_blockers" not in task.stats
+
+
+def test_group_ai_chat_hard_hourly_reuses_existing_context_without_refresh(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    def broken_history(*_args, **_kwargs):
+        raise AssertionError("hard hourly should reuse stored context")
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        assert "已有真人上下文" in history
+        return ["先接这个话题", "这句能继续聊", "我也想问下"][:count], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.collect_group_context", broken_history)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营", listener_interval_seconds=1))
+        for account_id in [101, 102, 103]:
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        session.add(
+            GroupContextMessage(
+                id=41,
+                tenant_id=1,
+                group_id=7,
+                listener_account_id=101,
+                sender_name="真人用户",
+                content="已有真人上下文",
+                remote_message_id="real-context",
+                sent_at=now_value - timedelta(minutes=5),
+            )
+        )
+        task = Task(
+            id="ai-hard-hourly-existing-context",
+            tenant_id=1,
+            name="硬目标复用上下文",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 3,
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "fact_anchor_required": False,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 3,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+
+    assert created == 3
+    assert task.last_error == ""
     assert task.stats["hard_hourly_last_planned_count"] == 3
     assert "hard_hourly_last_blockers" not in task.stats
 

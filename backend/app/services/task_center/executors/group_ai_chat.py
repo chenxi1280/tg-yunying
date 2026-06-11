@@ -99,7 +99,9 @@ def build_plan(session: Session, task: Task) -> int:
         if hard_progress:
             mark_plan_result(task, hard_progress, 0, {reason: max(1, int(hard_progress.get("deficit") or 1))})
         return 0
-    if should_collect_listener("group", group.id, window_seconds=group.listener_interval_seconds):
+    history_depth = int(config.get("chat_history_depth") or 50)
+    needs_context_refresh = _should_refresh_context_for_plan(session, group, history_depth, hard_progress)
+    if should_collect_listener("group", group.id, window_seconds=group.listener_interval_seconds) and needs_context_refresh:
         try:
             _collect_context_with_candidate_accounts(session, task, group, _history_collect_account_ids(config, accounts))
         except Exception as exc:
@@ -111,7 +113,6 @@ def build_plan(session: Session, task: Task) -> int:
                 task.last_error = f"监听账号无法读取目标群历史：{exc}"
                 return 0
     fingerprint_source = f"{task.id}:group_ai_chat:{group.id}"
-    history_depth = int(config.get("chat_history_depth") or 50)
     history_rows = recent_context_messages(session, group, history_depth)
     context_rows = list(reversed(history_rows[-history_depth:]))
     usable_context_rows = _topic_relevant_context_rows(
@@ -731,6 +732,14 @@ def _history_collect_account_ids(config: dict, accounts: list) -> list[int]:
     if preferred not in account_ids:
         return account_ids
     return [preferred, *[account_id for account_id in account_ids if account_id != preferred]]
+
+
+def _should_refresh_context_for_plan(session: Session, group: TgGroup, history_depth: int, progress: dict[str, object]) -> bool:
+    if not progress:
+        return True
+    probe_depth = max(1, min(int(history_depth or 1), 10))
+    rows = recent_context_messages(session, group, probe_depth)
+    return not any(_is_human_context_row(row) and _is_usable_context_message(row.content) for row in rows)
 
 
 def _collect_context_with_candidate_accounts(session: Session, task: Task, group: TgGroup, account_ids: list[int]) -> int:

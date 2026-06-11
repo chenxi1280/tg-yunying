@@ -269,7 +269,7 @@ def _content_max_tokens(setting_max_tokens: int, count: int, purpose: str) -> in
     base = max(int(setting_max_tokens or 0), 1024)
     if purpose not in LONG_RUNNING_AI_PURPOSES:
         return base
-    per_candidate = 512 if purpose == CHANNEL_COMMENT_PURPOSE else 384
+    per_candidate = 96 if purpose in {GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE} else 512
     return max(base, max(1, int(count or 1)) * per_candidate)
 
 
