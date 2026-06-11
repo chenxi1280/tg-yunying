@@ -910,7 +910,7 @@ def test_group_ai_chat_hard_hourly_reuses_existing_context_without_refresh(monke
 
     def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
         assert "已有真人上下文" in history
-        return ["先接这个话题", "这句能继续聊", "我也想问下"][:count], 0
+        return ["今晚活动几点开始", "报名入口有人发下吗", "我看群公告写得挺清楚"][:count], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: True)
