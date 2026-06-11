@@ -63,6 +63,7 @@ AI_CHAT_ROUND_INTERVALS_SECONDS = {
     "静默期": (300, 900),
 }
 HARD_HOURLY_MIN_BATCH_MESSAGES = 10
+AI_GENERATION_REQUEST_BATCH_SIZE = 60
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -534,10 +535,28 @@ def _generate_group_planned_items(
         tokens += used_tokens
         items.extend({"content": content, "reply_target": target} for content, target in zip(contents, reply_targets, strict=False))
     if normal_count > 0:
-        contents, used_tokens = generate_group_messages(session, task.tenant_id, config, count=normal_count, target_label=target_label, history=history)
-        tokens += used_tokens
-        items.extend({"content": content, "reply_target": None} for content in contents)
+        for batch_count in _normal_generation_batches(normal_count):
+            contents, used_tokens = generate_group_messages(
+                session,
+                task.tenant_id,
+                config,
+                count=batch_count,
+                target_label=target_label,
+                history=history,
+            )
+            tokens += used_tokens
+            items.extend({"content": content, "reply_target": None} for content in contents)
     return items, tokens
+
+
+def _normal_generation_batches(total: int) -> list[int]:
+    remaining = max(0, int(total or 0))
+    batches: list[int] = []
+    while remaining > 0:
+        batch_count = min(remaining, AI_GENERATION_REQUEST_BATCH_SIZE)
+        batches.append(batch_count)
+        remaining -= batch_count
+    return batches
 
 
 def _group_reply_target_pool(session: Session, task: Task, group: TgGroup, rows: list) -> list[dict]:
