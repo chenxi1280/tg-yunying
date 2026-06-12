@@ -1181,6 +1181,44 @@ def test_claim_actions_filters_accounts_by_current_shard(monkeypatch):
         dispatcher._IN_FLIGHT_ACCOUNTS.clear()
 
 
+def test_claim_actions_prioritizes_due_hard_hourly_send_actions(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: _redis_bucket_settings(enable_redis_token_bucket=False))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线"),
+                TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线"),
+            ]
+        )
+        session.add(Task(id="task-normal", tenant_id=1, name="普通任务", type="group_relay", status="running", priority=1))
+        session.add(Task(id="task-hard", tenant_id=1, name="硬目标", type="group_ai_chat", status="running", priority=9))
+        session.add_all(
+            [
+                Action(id="action-normal", tenant_id=1, task_id="task-normal", task_type="group_relay", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value - timedelta(minutes=10), payload={"message_text": "normal"}),
+                Action(id="action-hard", tenant_id=1, task_id="task-hard", task_type="group_ai_chat", action_type="send_message", account_id=12, status="pending", scheduled_at=now_value, payload={"message_text": "hard", "hard_hourly_target": True}),
+            ]
+        )
+        session.commit()
+
+        claimed = claim_actions(session, limit=1, worker_id="worker-hard-hourly")
+
+        assert [action.id for action in claimed] == ["action-hard"]
+        assert session.get(Action, "action-normal").status == "pending"
+
+
+def test_hard_hourly_replacement_scan_uses_planned_deficit():
+    action = Action(payload={"hard_hourly_target": True, "hard_hourly_deficit_at_plan": 300})
+    task = Task(type_config={"hourly_min_messages": 120})
+
+    assert dispatcher._replacement_scan_limit(action, task) == 300
+    assert dispatcher._replacement_scan_limit(Action(payload={}), task) == 10
+
+
 def test_select_task_accounts_is_unsharded_by_default(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

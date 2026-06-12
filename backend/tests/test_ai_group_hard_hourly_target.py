@@ -480,7 +480,7 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
     assert created == 300
-    assert captured["counts"] == [60, 60, 60, 60, 60]
+    assert captured["counts"] == [20] * 15
     assert len(actions) == 300
     assert task.stats["hard_hourly_last_planned_count"] == 300
     assert task.stats["hard_hourly_next_check_at"] == "2026-06-07T20:10:30"
@@ -539,7 +539,7 @@ def test_group_ai_chat_hard_hourly_ignores_configured_round_size_for_deficit(mon
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
     assert created == 300
-    assert captured["counts"] == [60, 60, 60, 60, 60]
+    assert captured["counts"] == [20] * 15
     assert len(actions) == 300
     assert task.stats["hard_hourly_last_planned_count"] == 300
     assert all(action.payload["hard_hourly_target"] is True for action in actions)

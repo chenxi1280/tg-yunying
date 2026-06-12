@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 from datetime import timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
@@ -177,7 +177,7 @@ def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str
             select(Action)
             .join(Task, Task.id == Action.task_id)
             .where(*filters)
-            .order_by(Task.priority.asc(), Action.scheduled_at.asc(), Action.created_at.asc())
+            .order_by(_hard_hourly_claim_rank(), Task.priority.asc(), Action.scheduled_at.asc(), Action.created_at.asc())
             .limit(limit)
         )
     )
@@ -221,7 +221,7 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
         select(Action)
         .join(Task, Task.id == Action.task_id)
         .where(*filters)
-        .order_by(Task.priority.asc(), Action.scheduled_at.asc(), Action.created_at.asc())
+        .order_by(_hard_hourly_claim_rank(), Task.priority.asc(), Action.scheduled_at.asc(), Action.created_at.asc())
         .limit(claim_limit)
     )
     if session.bind and session.bind.dialect.name != "sqlite":
@@ -266,6 +266,10 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
                 _release_claim(action, delay_seconds=1, reason="account_inflight_conflict")
                 session.commit()
     return [action for action in (session.get(Action, action_id) for action_id in confirmed_ids) if action]
+
+
+def _hard_hourly_claim_rank():
+    return case((Action.payload["hard_hourly_target"].as_boolean().is_(True), 0), else_=1)
 
 
 def recover_expired_claims(session: Session) -> int:
@@ -1483,7 +1487,7 @@ def _replacement_account_for_action(session: Session, action: Action, account: T
             action.tenant_id,
             task.account_config or {},
             scheduled_at=scheduled_at,
-            limit=10,
+            limit=_replacement_scan_limit(action, task),
             enforce_shard=True,
         )
         return next((candidate for candidate in candidates if candidate.id != account.id and candidate.id in member_ids), None)
@@ -1494,10 +1498,19 @@ def _replacement_account_for_action(session: Session, action: Action, account: T
         task.account_config or {},
         target_group_id=group_id,
         scheduled_at=scheduled_at,
-        limit=10,
+        limit=_replacement_scan_limit(action, task),
         enforce_shard=True,
     )
     return next((candidate for candidate in candidates if candidate.id != account.id), None)
+
+
+def _replacement_scan_limit(action: Action, task: Task) -> int:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if not bool(payload.get("hard_hourly_target")):
+        return 10
+    goal = int((task.type_config or {}).get("hourly_min_messages") or 0)
+    planned_deficit = int(payload.get("hard_hourly_deficit_at_plan") or 0)
+    return max(10, goal, planned_deficit)
 
 
 def _capacity_check_at(action: Action) -> datetime:

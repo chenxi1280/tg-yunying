@@ -5052,6 +5052,54 @@ def test_planning_backlog_ignores_same_task_old_membership_actions(monkeypatch):
     assert blocked is False
 
 
+def test_planning_backlog_allows_due_hard_hourly_deficit(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "app.services.task_center.stats.get_settings",
+        lambda: SimpleNamespace(
+            max_pending_global=1,
+            max_pending_per_task=1,
+            oldest_pending_age_seconds=1,
+        ),
+        raising=False,
+    )
+
+    now_value = datetime(2026, 6, 10, 23, 20, 0)
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-backlog",
+            tenant_id=1,
+            name="AI 活跃群",
+            type="group_ai_chat",
+            status="running",
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+            stats={"planner_backlog_blocked": True},
+        )
+        pending = Action(
+            id="action-hard-hourly-old",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="send_message",
+            status="pending",
+            scheduled_at=now_value - timedelta(minutes=5),
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task, pending])
+        session.commit()
+
+        snapshot = planner_backlog_snapshot(session, task)
+        blocked = _planning_backlog_blocked(session, task)
+
+    assert snapshot["blocked"] is True
+    assert blocked is False
+    assert "planner_backlog_blocked" not in task.stats
+
+
 def test_refresh_task_stats_clears_recovered_backlog_marker(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

@@ -1038,6 +1038,9 @@ def drain_task_metrics(session_factory, limit: int = 100) -> int:
 def _planning_backlog_blocked(session: Session, task: Task) -> bool:
     snapshot = planner_backlog_snapshot(session, task)
     now_value = _now()
+    if hard_hourly_requires_planning(session, task, now_value):
+        task.stats = clear_planner_backlog_stats(dict(task.stats or {}))
+        return False
     if not snapshot["blocked"]:
         task.stats = clear_planner_backlog_stats(dict(task.stats or {}))
         return False
