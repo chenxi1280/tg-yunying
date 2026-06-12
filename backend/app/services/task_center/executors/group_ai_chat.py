@@ -63,6 +63,7 @@ AI_CHAT_ROUND_INTERVALS_SECONDS = {
     "静默期": (300, 900),
 }
 HARD_HOURLY_MIN_BATCH_MESSAGES = 10
+HARD_HOURLY_PLAN_BATCH_MESSAGES = 10
 AI_GENERATION_REQUEST_BATCH_SIZE = 20
 
 
@@ -731,7 +732,8 @@ def _hard_hourly_round_config(config: dict, progress: dict[str, object]) -> dict
 
 
 def _hard_hourly_batch_size(config: dict, progress: dict[str, object]) -> int:
-    return max(1, int(progress.get("deficit") or 1))
+    deficit = max(1, int(progress.get("deficit") or 1))
+    return min(deficit, HARD_HOURLY_PLAN_BATCH_MESSAGES)
 
 
 def _hard_hourly_schedule(task: Task, progress: dict[str, object], total: int) -> list[datetime]:
