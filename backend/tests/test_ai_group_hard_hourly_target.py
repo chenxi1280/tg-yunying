@@ -491,11 +491,12 @@ def test_group_ai_chat_hard_hourly_ignores_configured_round_size_for_deficit(mon
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"counts": []}
 
     def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        captured["count"] = count
-        return [f"硬目标补量消息{index}" for index in range(count)], 0
+        captured["counts"].append(count)
+        batch_index = len(captured["counts"])
+        return [f"硬目标补量消息{batch_index}-{index}" for index in range(count)], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
@@ -538,7 +539,7 @@ def test_group_ai_chat_hard_hourly_ignores_configured_round_size_for_deficit(mon
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
     assert created == 300
-    assert captured["count"] == 300
+    assert captured["counts"] == [60, 60, 60, 60, 60]
     assert len(actions) == 300
     assert task.stats["hard_hourly_last_planned_count"] == 300
     assert all(action.payload["hard_hourly_target"] is True for action in actions)
