@@ -340,7 +340,7 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
         tenant_id=action.tenant_id,
         account_id=account.id,
         scheduled_at=_capacity_check_at(action),
-        exclude_action_id=action.id,
+        exclude_action_ids=_capacity_excluded_action_ids(session, action, account.id),
     )
     if decision.available:
         return True
@@ -1439,7 +1439,7 @@ def _account_after_global_policy(session: Session, action: Action, account: TgAc
         tenant_id=action.tenant_id,
         account_id=account.id,
         scheduled_at=_capacity_check_at(action),
-        exclude_action_id=action.id,
+        exclude_action_ids=_capacity_excluded_action_ids(session, action, account.id),
     )
     if decision.available:
         return account
@@ -1463,6 +1463,31 @@ def _account_after_global_policy(session: Session, action: Action, account: TgAc
         decision.reason or "账号全局限额或冷却中，已延后执行",
     )
     return None
+
+
+def _capacity_excluded_action_ids(session: Session, action: Action, account_id: int) -> set[str]:
+    excluded = {action.id}
+    if not _is_hard_hourly_send_action(action):
+        return excluded
+    rows = session.scalars(
+        select(Action.id).where(
+            Action.tenant_id == action.tenant_id,
+            Action.task_id == action.task_id,
+            Action.action_type == "send_message",
+            Action.account_id == account_id,
+            Action.status == "pending",
+            Action.scheduled_at <= _now(),
+            Action.payload["hard_hourly_target"].as_boolean().is_(True),
+            Action.id != action.id,
+        )
+    )
+    excluded.update(str(action_id) for action_id in rows)
+    return excluded
+
+
+def _is_hard_hourly_send_action(action: Action) -> bool:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return action.action_type == "send_message" and bool(payload.get("hard_hourly_target"))
 
 
 def _replacement_account_for_action(session: Session, action: Action, account: TgAccount) -> TgAccount | None:

@@ -1270,6 +1270,61 @@ def test_claim_actions_prioritizes_hard_hourly_membership_before_send(monkeypatc
         assert session.get(Action, "action-hard-send").status == "pending"
 
 
+def test_claim_actions_ignores_overdue_hard_hourly_siblings_for_capacity(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: _redis_bucket_settings(enable_redis_token_bucket=False))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1, jitter_min_seconds=0, jitter_max_seconds=0))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线"))
+        session.add(
+            Task(
+                id="task-hard",
+                tenant_id=1,
+                name="硬目标",
+                type="group_ai_chat",
+                status="running",
+                priority=9,
+                type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+            )
+        )
+        session.add_all(
+            [
+                Action(
+                    id="action-hard-a",
+                    tenant_id=1,
+                    task_id="task-hard",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=11,
+                    status="pending",
+                    scheduled_at=now_value - timedelta(minutes=5),
+                    payload={"message_text": "hard-a", "hard_hourly_target": True},
+                ),
+                Action(
+                    id="action-hard-b",
+                    tenant_id=1,
+                    task_id="task-hard",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=11,
+                    status="pending",
+                    scheduled_at=now_value - timedelta(minutes=4),
+                    payload={"message_text": "hard-b", "hard_hourly_target": True},
+                ),
+            ]
+        )
+        session.commit()
+
+        claimed = claim_actions(session, limit=1, worker_id="worker-hard-hourly")
+
+        assert [action.id for action in claimed] == ["action-hard-a"]
+        assert session.get(Action, "action-hard-b").status == "pending"
+
+
 def test_hard_hourly_replacement_scan_uses_planned_deficit():
     action = Action(payload={"hard_hourly_target": True, "hard_hourly_deficit_at_plan": 300})
     task = Task(type_config={"hourly_min_messages": 120})
