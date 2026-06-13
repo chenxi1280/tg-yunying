@@ -154,6 +154,8 @@ BACKEND_SERVICES=(
   worker-planner
   worker-dispatcher-1
   worker-dispatcher-2
+  worker-dispatcher-3
+  worker-dispatcher-4
   worker-listener
   worker-recovery
   worker-account-security

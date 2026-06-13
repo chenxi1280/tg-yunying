@@ -641,6 +641,22 @@ def test_deploy_scripts_timeout_planner_smoke_and_remote_install():
     assert 'timeout "$timeout_seconds" docker exec tgyunying-worker-planner' in check_web
 
 
+def test_production_deploy_starts_four_dispatcher_workers():
+    compose = (PROJECT_ROOT / "docker-compose.server.yml").read_text()
+    compose_up = (PROJECT_ROOT / "deploy/compose-up.sh").read_text()
+    check_web = (PROJECT_ROOT / "deploy/check-web.sh").read_text()
+
+    for index in range(1, 5):
+        service_name = f"worker-dispatcher-{index}"
+        container_name = f"tgyunying-worker-dispatcher-{index}"
+        assert f"  {service_name}:" in compose
+        assert f"container_name: {container_name}" in compose
+        assert f"ACCOUNT_SHARD_INDEX: \"{index - 1}\"" in compose
+        assert f"  {service_name}" in compose_up
+        assert f"  {container_name}" in check_web
+    assert compose.count('ACCOUNT_SHARD_TOTAL: "4"') == 4
+
+
 def test_api_error_message_supports_trace_id_in_structured_detail_objects():
     source = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 

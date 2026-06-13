@@ -98,7 +98,7 @@ services:
     environment:
       <<: *backend-env
       WORKER_ROLE: dispatcher
-      ACCOUNT_SHARD_TOTAL: "2"
+      ACCOUNT_SHARD_TOTAL: "4"
       ACCOUNT_SHARD_INDEX: "0"
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
@@ -117,8 +117,46 @@ services:
     environment:
       <<: *backend-env
       WORKER_ROLE: dispatcher
-      ACCOUNT_SHARD_TOTAL: "2"
+      ACCOUNT_SHARD_TOTAL: "4"
       ACCOUNT_SHARD_INDEX: "1"
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck: *worker-healthcheck
+    networks:
+      - infra_default
+
+  worker-dispatcher-3:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-dispatcher-3
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "dispatcher", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: dispatcher
+      ACCOUNT_SHARD_TOTAL: "4"
+      ACCOUNT_SHARD_INDEX: "2"
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck: *worker-healthcheck
+    networks:
+      - infra_default
+
+  worker-dispatcher-4:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-dispatcher-4
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "dispatcher", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-2.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: dispatcher
+      ACCOUNT_SHARD_TOTAL: "4"
+      ACCOUNT_SHARD_INDEX: "3"
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
     depends_on:
