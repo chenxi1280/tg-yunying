@@ -430,24 +430,28 @@ def _reactivate_auto_verification_memberships(
     verification_by_account = _auto_verification_tasks_by_account(session, task, group.id, [int(action.account_id) for action in failed_actions])
     now_value = _now()
     created = 0
-    for action in failed_actions:
-        verification = verification_by_account.get(int(action.account_id or 0))
-        if not verification or not _auto_verification_retry_due(action, verification, now_value):
-            continue
-        payload = EnsureChannelMembershipPayload.model_validate(action.payload or {})
-        reactivated = create_membership_action(
-            session,
-            task,
-            int(action.account_id),
-            now_value + timedelta(seconds=HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * created),
-            payload,
-        )
-        reactivated.result = {
-            **(reactivated.result or {}),
-            "reactivated_reason": "hard_hourly_auto_verification_retry",
-            "verification_task_id": verification.id,
-        }
-        created += 1
+    with session.no_autoflush:
+        for action in failed_actions:
+            verification = verification_by_account.get(int(action.account_id or 0))
+            if not verification or not _auto_verification_retry_due(action, verification, now_value):
+                continue
+            payload = EnsureChannelMembershipPayload.model_validate(action.payload or {})
+            reactivated = create_membership_action(
+                session,
+                task,
+                int(action.account_id),
+                now_value + timedelta(seconds=HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * created),
+                payload,
+                flush=False,
+            )
+            reactivated.result = {
+                **(reactivated.result or {}),
+                "reactivated_reason": "hard_hourly_auto_verification_retry",
+                "verification_task_id": verification.id,
+            }
+            created += 1
+    if created:
+        session.flush()
     return created
 
 

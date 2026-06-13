@@ -173,7 +173,16 @@ def validate_action_payload(action_type: str, payload: dict[str, Any]) -> BaseMo
     return model(**(payload or {}))
 
 
-def _create_action(session: Session, task: Task, action_type: str, account_id: int | None, scheduled_at: datetime, payload: BaseModel) -> Action:
+def _create_action(
+    session: Session,
+    task: Task,
+    action_type: str,
+    account_id: int | None,
+    scheduled_at: datetime,
+    payload: BaseModel,
+    *,
+    flush: bool = True,
+) -> Action:
     payload_data = payload.model_dump(mode="json")
     plan_batch_key = _plan_batch_key(task, scheduled_at)
     action_dedupe_key = _action_dedupe_key(task, plan_batch_key, action_type, account_id, payload_data)
@@ -194,7 +203,8 @@ def _create_action(session: Session, task: Task, action_type: str, account_id: i
         result={},
     )
     session.add(action)
-    session.flush()
+    if flush:
+        session.flush()
     return action
 
 
@@ -232,8 +242,16 @@ def create_send_action(session: Session, task: Task, account_id: int | None, sch
     return _create_action(session, task, "send_message", account_id, scheduled_at, payload)
 
 
-def create_membership_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: EnsureChannelMembershipPayload) -> Action:
-    return _create_action(session, task, "ensure_target_membership", account_id, scheduled_at, payload)
+def create_membership_action(
+    session: Session,
+    task: Task,
+    account_id: int | None,
+    scheduled_at: datetime,
+    payload: EnsureChannelMembershipPayload,
+    *,
+    flush: bool = True,
+) -> Action:
+    return _create_action(session, task, "ensure_target_membership", account_id, scheduled_at, payload, flush=flush)
 
 
 def create_view_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: ViewMessagePayload) -> Action:

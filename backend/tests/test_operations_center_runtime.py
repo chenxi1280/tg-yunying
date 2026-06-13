@@ -23,7 +23,7 @@ from app.services.audit import audit_logs_csv, filter_audit_logs
 from app.services.archives import create_archive
 from app.services.ai_config import create_material, create_prompt_template, get_scheduling_setting, update_material, update_prompt_template, update_scheduling_setting
 from app.services.risk_control import update_global_policy
-from app.services.account_capacity import AccountCapacityReservation, account_capacity_decision
+from app.services.account_capacity import AccountCapacityCache, AccountCapacityReservation, account_capacity_decision
 from app.services.messages import create_message_send_task, dispatch_task, filter_tasks, retry_task, validate_group_task_policy
 from app.services.operations import filter_operation_targets, operation_target_detail, retry_operation_target_admission, sync_all_operation_targets, update_operation_target, update_operation_target_account_policy
 from app.services.verification import resolve_group_restriction_batch
@@ -813,6 +813,41 @@ def test_account_capacity_normalizes_aware_last_occupied_for_reservation_cooldow
     assert decision.available is False
     assert decision.reason_code == "account_cooldown"
     assert decision.defer_until == datetime(2026, 6, 8, 20, 12)
+
+
+def test_account_capacity_cache_reuses_cooldown_lookups(monkeypatch):
+    from app.services import account_capacity as capacity_service
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    scheduled_at = datetime(2026, 6, 8, 20, 10)
+    calls = {"last": 0, "next": 0}
+    original_last = capacity_service._last_occupied_at
+    original_next = capacity_service._next_occupied_at
+
+    def counted_last(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["last"] += 1
+        return original_last(*args, **kwargs)
+
+    def counted_next(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["next"] += 1
+        return original_next(*args, **kwargs)
+
+    monkeypatch.setattr(capacity_service, "_last_occupied_at", counted_last)
+    monkeypatch.setattr(capacity_service, "_next_occupied_at", counted_next)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_cooldown_seconds=120, jitter_min_seconds=0, jitter_max_seconds=0))
+        session.commit()
+
+        cache = AccountCapacityCache()
+        first = account_capacity_decision(session, tenant_id=1, account_id=11, scheduled_at=scheduled_at, cache=cache)
+        second = account_capacity_decision(session, tenant_id=1, account_id=11, scheduled_at=scheduled_at, cache=cache)
+
+    assert first.available is True
+    assert second.available is True
+    assert calls == {"last": 1, "next": 1}
 
 
 def test_task_center_dispatch_reassigns_when_account_limit_reached(monkeypatch):
