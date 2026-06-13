@@ -33,6 +33,7 @@ from . import runtime_resources as _runtime_resources
 _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
 _IN_FLIGHT_ACCOUNTS = _runtime_resources._IN_FLIGHT_ACCOUNTS
 _redis_client = _runtime_resources._redis_client
+MEMBERSHIP_ACTION_TYPES = ("ensure_channel_membership", "ensure_target_membership")
 _COMMENT_THREAD_UNAVAILABLE_FAILURES = {FailureType.COMMENT_UNAVAILABLE.value}
 _COMMENT_THREAD_SKIP_CODES = {
     FailureType.COMMENT_UNAVAILABLE.value: "comment_unavailable_sibling",
@@ -269,7 +270,15 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
 
 
 def _hard_hourly_claim_rank():
-    return case((Action.payload["hard_hourly_target"].as_boolean().is_(True), 0), else_=1)
+    return case(
+        (
+            Task.type_config["hard_hourly_target_enabled"].as_boolean().is_(True)
+            & Action.action_type.in_(MEMBERSHIP_ACTION_TYPES),
+            0,
+        ),
+        (Action.payload["hard_hourly_target"].as_boolean().is_(True), 1),
+        else_=2,
+    )
 
 
 def recover_expired_claims(session: Session) -> int:
@@ -358,7 +367,7 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
 
 
 def _is_membership_action(action: Action) -> bool:
-    return action.action_type in {"ensure_channel_membership", "ensure_target_membership"}
+    return action.action_type in MEMBERSHIP_ACTION_TYPES
 
 
 def _replacement_for_lost_group_send_permission(session: Session, action: Action, account: TgAccount) -> TgAccount | None:
