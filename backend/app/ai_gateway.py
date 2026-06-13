@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
+import ast
 import base64
+import json
 import re
 import urllib.error
 import urllib.request
@@ -417,14 +418,16 @@ class AiGateway:
         try:
             parsed: Any = json.loads(clean)
         except json.JSONDecodeError:
-            if _looks_like_json_drafts_fragment(clean):
+            parsed = _loads_jsonish_payload(clean)
+            if parsed is None and _looks_like_json_drafts_fragment(clean):
                 raise RuntimeError("AI provider returned malformed JSON drafts")
-            lines = [line.strip(" -\t") for line in clean.splitlines() if line.strip()]
-            return [
-                AiDraftCandidate(persona=persona_set[index % len(persona_set)], content=line[:1000], risk_level="低")
-                for index, line in enumerate(lines[:count])
-            ]
-        items = parsed.get("drafts", parsed) if isinstance(parsed, dict) else parsed
+            if parsed is None:
+                lines = [line.strip(" -\t") for line in clean.splitlines() if line.strip()]
+                return [
+                    AiDraftCandidate(persona=persona_set[index % len(persona_set)], content=line[:1000], risk_level="低")
+                    for index, line in enumerate(lines[:count])
+                ]
+        items = _draft_items_from_payload(parsed)
         if not isinstance(items, list):
             raise RuntimeError("AI provider JSON must be a list or {drafts: [...]}")
         candidates: list[AiDraftCandidate] = []
@@ -475,6 +478,36 @@ def _extract_json_payload(raw: str) -> str:
         return clean
     balanced = _first_balanced_json(clean)
     return balanced or clean
+
+
+def _loads_jsonish_payload(value: str) -> Any | None:
+    try:
+        parsed = ast.literal_eval(value)
+    except (SyntaxError, ValueError):
+        return None
+    if isinstance(_draft_items_from_payload(parsed), list):
+        return parsed
+    return None
+
+
+def _draft_items_from_payload(parsed: Any) -> Any:
+    if isinstance(parsed, list):
+        return parsed
+    if not isinstance(parsed, dict):
+        return parsed
+    for key in ("drafts", "items", "data", "results", "messages"):
+        value = parsed.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict) and _looks_like_draft_item(value):
+            return [value]
+    if _looks_like_draft_item(parsed):
+        return [parsed]
+    return parsed.get("drafts", parsed)
+
+
+def _looks_like_draft_item(value: dict) -> bool:
+    return any(key in value for key in ("content", "message", "persona", "risk_level", "sequence_index"))
 
 
 def _json_fence_payload(value: str) -> str:
