@@ -286,6 +286,34 @@ def test_malformed_json_drafts_error_exposes_payload_fingerprint(monkeypatch):
     assert 'preview={"drafts": [{"content": "断掉的内容"' in detail
 
 
+def test_mimo_malformed_json_drafts_retry_with_larger_token_budget(monkeypatch):
+    requests: list[dict[str, Any]] = []
+    responses = [
+        {"choices": [{"message": {"content": '{"drafts": [{"content": "断掉的内容"'}, "finish_reason": "length"}]},
+        {"choices": [{"message": {"content": '{"drafts":[{"sequence_index":1,"persona":"A","content":"重试后完整","risk_level":"低"}]}'}, "finish_reason": "stop"}]},
+    ]
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        requests.append(json.loads(request.data.decode("utf-8")))
+        return FakeResponse(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = AiGateway().generate_drafts(
+        credentials(),
+        "请输出 json drafts",
+        count=1,
+        topic="群聊",
+        tone="自然",
+        persona_set=["A"],
+        temperature=0.8,
+        max_tokens=512,
+    )
+
+    assert [item["max_tokens"] for item in requests] == [512, 4096]
+    assert [candidate.content for candidate in result.candidates] == ["重试后完整"]
+
+
 def test_generate_drafts_extracts_prefixed_json_object(monkeypatch):
     def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
         return FakeResponse(

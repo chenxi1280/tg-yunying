@@ -170,8 +170,24 @@ class AiGateway:
             reasoning_retry_max_tokens=self._generation_retry_max_tokens(credentials, max_tokens, count),
             timeout=timeout,
         )
+        retry_tokens = self._generation_retry_max_tokens(credentials, max_tokens, count)
+        try:
+            candidates = self._parse_candidates(raw, count, persona_set, material_ids)
+        except RuntimeError as exc:
+            if not _is_malformed_drafts_error(exc) or not self._is_mimo(credentials) or retry_tokens <= max_tokens:
+                raise
+            raw, usage = self._post_openai_compatible(
+                credentials,
+                prompt,
+                temperature,
+                retry_tokens,
+                system_prompt=system_prompt or "你是一个 Telegram 群运营话术助手，只输出用户要求的 JSON。",
+                response_format_json=True,
+                timeout=timeout,
+            )
+            candidates = self._parse_candidates(raw, count, persona_set, material_ids)
         return AiGenerationResult(
-            candidates=self._parse_candidates(raw, count, persona_set, material_ids),
+            candidates=candidates,
             usage=usage,
         )
 
@@ -348,7 +364,8 @@ class AiGateway:
         return "api.deepseek.com" in base_url.lower()
 
     def _is_mimo(self, credentials: AiProviderCredentials) -> bool:
-        return "mimo" in credentials.model_name.lower() or "mimo" in credentials.provider_name.lower() or "xiaomimimo" in credentials.base_url.lower()
+        text = " ".join([credentials.model_name, credentials.provider_name, credentials.base_url]).lower()
+        return "xiaomimimo" in text or "xiaomimino" in text or bool({token for token in re.split(r"[^a-z0-9]+", text) if token} & {"mimo", "mino"})
 
     def _extract_message_content(self, data: dict[str, Any]) -> str:
         choice = self._first_choice(data)
@@ -503,6 +520,10 @@ def _malformed_drafts_error(value: str) -> str:
     preview = " ".join(str(value or "").split())[:180]
     digest = hashlib.sha256(str(value or "").encode("utf-8", errors="replace")).hexdigest()[:12]
     return f"AI provider returned malformed JSON drafts; len={len(value or '')}; sha256={digest}; preview={preview}"
+
+
+def _is_malformed_drafts_error(exc: RuntimeError) -> bool:
+    return "AI provider returned malformed JSON drafts" in str(exc)
 
 
 def _draft_items_from_payload(parsed: Any) -> Any:
