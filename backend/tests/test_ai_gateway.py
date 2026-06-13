@@ -251,6 +251,68 @@ def test_malformed_json_drafts_are_not_used_as_chat_lines(monkeypatch):
         )
 
 
+def test_generate_drafts_extracts_prefixed_json_object(monkeypatch):
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '好的，按你的要求生成：\n{"drafts":[{"sequence_index":1,"persona":"A","content":"这句可以继续接","risk_level":"低"}]}\n'
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = AiGateway().generate_drafts(
+        credentials(),
+        "请输出 json drafts",
+        count=1,
+        topic="群聊",
+        tone="自然",
+        persona_set=["A"],
+        temperature=0.8,
+        max_tokens=512,
+    )
+
+    assert result.candidates[0].content == "这句可以继续接"
+
+
+def test_generate_drafts_extracts_fenced_json_object(monkeypatch):
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '```json\n{"drafts":[{"sequence_index":1,"persona":"A","content":"我也想问下这个","risk_level":"低"}]}\n```'
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = AiGateway().generate_drafts(
+        credentials(),
+        "请输出 json drafts",
+        count=1,
+        topic="群聊",
+        tone="自然",
+        persona_set=["A"],
+        temperature=0.8,
+        max_tokens=512,
+    )
+
+    assert result.candidates[0].content == "我也想问下这个"
+
+
 def test_deepseek_uses_official_chat_completion_path_and_json_mode(monkeypatch):
     captured: dict[str, Any] = {}
 

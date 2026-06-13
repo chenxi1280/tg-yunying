@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import base64
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -412,15 +413,7 @@ class AiGateway:
         )
 
     def _parse_candidates(self, raw: str, count: int, persona_set: list[str], material_ids: list[int] | None) -> list[AiDraftCandidate]:
-        clean = raw.strip()
-        if clean.startswith("```"):
-            # Remove opening code fence (```json or ```)
-            clean = clean.lstrip("`")
-            if clean.startswith("json"):
-                clean = clean[4:].strip()
-            # Remove closing code fence
-            if clean.endswith("```"):
-                clean = clean.rstrip("`").strip()
+        clean = _extract_json_payload(raw)
         try:
             parsed: Any = json.loads(clean)
         except json.JSONDecodeError:
@@ -465,6 +458,62 @@ class AiGateway:
         if not candidates:
             raise RuntimeError("AI provider returned no usable drafts")
         return candidates
+
+
+def _extract_json_payload(raw: str) -> str:
+    clean = str(raw or "").strip()
+    fenced = _json_fence_payload(clean)
+    if fenced:
+        return fenced
+    if clean.startswith("```"):
+        clean = clean.lstrip("`")
+        if clean.startswith("json"):
+            clean = clean[4:].strip()
+        if clean.endswith("```"):
+            clean = clean.rstrip("`").strip()
+    if not clean or clean[0] in "{[":
+        return clean
+    balanced = _first_balanced_json(clean)
+    return balanced or clean
+
+
+def _json_fence_payload(value: str) -> str:
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", value, flags=re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def _first_balanced_json(value: str) -> str:
+    start_positions = [(index, char) for index, char in enumerate(value) if char in "{["]
+    for start, opener in start_positions:
+        payload = _balanced_json_from(value[start:], opener)
+        if payload:
+            return payload
+    return ""
+
+
+def _balanced_json_from(value: str, opener: str) -> str:
+    closer = "}" if opener == "{" else "]"
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(value):
+        if in_string:
+            escaped = (not escaped and char == "\\")
+            if char == '"' and not escaped:
+                in_string = False
+            elif char != "\\":
+                escaped = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append("}" if char == "{" else "]")
+        elif char in "}]":
+            if not stack or char != stack.pop():
+                return ""
+            if not stack and char == closer:
+                return value[: index + 1].strip()
+    return ""
 
 
 def _looks_like_json_drafts_fragment(value: str) -> bool:
