@@ -149,7 +149,7 @@ def test_group_send_verification_action_detects_captcha_text() -> None:
     assert action == "识别图形验证码"
     assert _group_send_verification_action("未解析到群关联频道") == "识别图形验证码"
     assert _group_send_verification_action("批量重查发现账号仍未获群发言权限") == "识别图形验证码"
-    assert _group_send_verification_action("验证码：请输入 1234") == "人工处理"
+    assert _group_send_verification_action("验证码：请输入 1234") == "发送验证回复"
 
 
 def test_membership_items_page_is_not_capped_by_detail_action_limit() -> None:

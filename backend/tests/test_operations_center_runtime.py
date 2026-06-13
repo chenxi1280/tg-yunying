@@ -3850,7 +3850,7 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(AiProvider(id=1, provider_name="mock", provider_type="openai_compatible", base_url="mock://ai", model_name="mock", api_key_ciphertext=encrypt_secret("mock"), health_status="健康"))
+        session.add(AiProvider(id=1, provider_name="Xiaomi MiMo", provider_type="openai_compatible", base_url="mock://xiaomimimo", model_name="mimo-v2.5", api_key_ciphertext=encrypt_secret("mock"), health_status="健康"))
         session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, temperature=0.8, max_tokens=1024))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="校园日常"))
         for account_id in [101, 102, 103]:
