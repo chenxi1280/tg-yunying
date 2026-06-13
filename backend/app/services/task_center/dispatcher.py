@@ -26,6 +26,7 @@ from app.services.verification import create_verification_task
 from app.timezone import BEIJING_TZ
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
+from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
 from .payloads import EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
@@ -94,6 +95,7 @@ _GROUP_SEND_RETRYABLE_VERIFICATION_MARKERS = (
     "不可发言",
 )
 VERIFICATION_READER_CANDIDATE_LIMIT = 5
+HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS = 300
 _ACCOUNT_SESSION_FAILURE_MARKERS = (
     "session",
     "auth key",
@@ -300,9 +302,12 @@ def _hard_hourly_claim_rank():
         & Action.action_type.in_(MEMBERSHIP_ACTION_TYPES)
     )
     hard_hourly_send = Action.payload["hard_hourly_target"].as_boolean().is_(True)
+    overdue_hard_hourly_send = hard_hourly_send & (Action.scheduled_at <= _now() - timedelta(seconds=HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS))
     return case(
-        (hard_hourly_membership | hard_hourly_send, 0),
-        else_=1,
+        (overdue_hard_hourly_send, 0),
+        (hard_hourly_membership, 0),
+        (hard_hourly_send, 1),
+        else_=2,
     )
 
 
@@ -456,14 +461,63 @@ def _setting(settings, name: str, default):
     return getattr(settings, name, default)
 
 
+def _ensure_send_message_content(session: Session, action: Action, account: TgAccount, payload: SendMessagePayload) -> SendMessagePayload:
+    if payload.message_text.strip():
+        return payload
+    if payload.ai_generation_status != "pending":
+        raise AiGenerationUnavailable("send_message action 缺少可发送文案")
+    task = session.get(Task, action.task_id) if action.task_id else None
+    if not task:
+        raise AiGenerationUnavailable("AI 生成缺少任务配置")
+    contents, tokens = generate_group_messages(
+        session,
+        action.tenant_id,
+        _runtime_group_ai_config(task, payload, account),
+        count=1,
+        target_label=payload.target_display,
+        history=payload.ai_generation_history,
+    )
+    content = str(contents[0] if contents else "").strip()
+    if not content:
+        raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
+    return _store_generated_send_payload(action, payload, content, tokens)
+
+
+def _runtime_group_ai_config(task: Task, payload: SendMessagePayload, account: TgAccount) -> dict:
+    config = dict(task.type_config or {})
+    account_key = str(account.id)
+    config["account_personas"] = {account_key: payload.account_role} if payload.account_role else {}
+    config["account_memories"] = {account_key: payload.account_memory} if payload.account_memory else {}
+    config["account_profiles"] = {account_key: payload.account_profile} if payload.account_profile else {}
+    if payload.topic_thread:
+        config["topic_thread"] = payload.topic_thread
+    if payload.topic_plan:
+        config["topic_plan"] = payload.topic_plan
+    return config
+
+
+def _store_generated_send_payload(action: Action, payload: SendMessagePayload, content: str, tokens: int) -> SendMessagePayload:
+    payload_data = payload.model_dump(mode="json")
+    payload_data["message_text"] = content
+    payload_data["ai_generation_status"] = "success"
+    payload_data["ai_generation_tokens"] = int(tokens or 0)
+    action.payload = payload_data
+    return SendMessagePayload.model_validate(payload_data)
+
+
 def _dispatch_send_message(session: Session, action: Action, account: TgAccount, credentials, payload: SendMessagePayload) -> bool:
     group_id = payload.group_id
-    content = payload.message_text
     if group_id:
         group = session.get(TgGroup, group_id)
         if not group:
             _fail(action, FailureType.PEER_INVALID.value, "目标群不存在", auto_check="拦截", validation_stage="target")
             return True
+        try:
+            payload = _ensure_send_message_content(session, action, account, payload)
+        except AiGenerationUnavailable as exc:
+            _fail_with_policy(action, FailureType.UNKNOWN.value, str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE, auto_check="失败", validation_stage="ai_generation")
+            return True
+        content = payload.message_text
         link = session.scalar(
             select(TgGroupAccount).where(TgGroupAccount.group_id == group.id, TgGroupAccount.account_id == account.id, TgGroupAccount.can_send.is_(True))
         )
@@ -511,6 +565,8 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
         if result.ok:
             link.last_sent_at = _now()
         return True
+    payload = _ensure_send_message_content(session, action, account, payload)
+    content = payload.message_text
     target_peer = payload.chat_id
     account_id = account.id
     session_ciphertext = account.session_ciphertext

@@ -19,7 +19,7 @@ class SendMessagePayload(BaseModel):
     group_id: int | None = None
     operation_target_id: int | None = None
     target_display: str = ""
-    message_text: str = Field(min_length=1)
+    message_text: str = ""
     original_text: str = ""
     review_approved: bool = False
     cycle_id: str = ""
@@ -46,6 +46,7 @@ class SendMessagePayload(BaseModel):
     context_expire_after_messages: int = 0
     ai_generation_id: str = ""
     ai_generation_status: str = ""
+    ai_generation_history: str = ""
     ai_generation_tokens: int = 0
     ai_generation_count: int = 0
     hard_hourly_target: bool = False
@@ -90,6 +91,8 @@ class SendMessagePayload(BaseModel):
     def require_destination(self) -> "SendMessagePayload":
         if self.group_id is None and not self.chat_id.strip():
             raise ValueError("send_message action requires group_id or chat_id")
+        if not self.message_text.strip() and self.ai_generation_status != "pending":
+            raise ValueError("send_message action requires message_text unless ai_generation_status is pending")
         if not self.reply_to_message_id and any([self.reply_target_label, self.reply_target_author, self.reply_target_preview, self.reply_target_source]):
             raise ValueError("引用回复 action 缺少 reply_to_message_id")
         return self

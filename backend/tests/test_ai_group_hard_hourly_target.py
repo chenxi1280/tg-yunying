@@ -480,11 +480,13 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
     assert created == 10
-    assert captured["counts"] == [10]
+    assert captured["counts"] == []
     assert len(actions) == 10
     assert task.stats["hard_hourly_last_planned_count"] == 10
     assert task.stats["hard_hourly_next_check_at"] == "2026-06-07T20:10:30"
     assert all(action.payload["hard_hourly_deficit_at_plan"] == 300 for action in actions)
+    assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
+    assert all(action.payload["message_text"] == "" for action in actions)
 
 
 def test_group_ai_chat_hard_hourly_ignores_configured_round_size_for_deficit(monkeypatch):
@@ -539,10 +541,11 @@ def test_group_ai_chat_hard_hourly_ignores_configured_round_size_for_deficit(mon
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
     assert created == 10
-    assert captured["counts"] == [10]
+    assert captured["counts"] == []
     assert len(actions) == 10
     assert task.stats["hard_hourly_last_planned_count"] == 10
     assert all(action.payload["hard_hourly_target"] is True for action in actions)
+    assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
 
 
 def test_hard_hourly_schedule_uses_remaining_deficit_for_batch_spacing():

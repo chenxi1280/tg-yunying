@@ -65,6 +65,8 @@ AI_CHAT_ROUND_INTERVALS_SECONDS = {
 }
 HARD_HOURLY_MIN_BATCH_MESSAGES = 10
 HARD_HOURLY_PLAN_BATCH_MESSAGES = 10
+HARD_HOURLY_DEFER_AI_MIN_GOAL = 100
+DEFERRED_AI_HISTORY_MAX_CHARS = 1000
 AI_GENERATION_REQUEST_BATCH_SIZE = 30
 RECENT_CYCLE_SCAN_LIMIT = 200
 
@@ -184,41 +186,48 @@ def build_plan(session: Session, task: Task) -> int:
         return 0
     requested_reply_count = len(reply_targets)
     normal_count = max(0, turn_count - len(reply_targets))
-    try:
-        planned_items, tokens = _generate_group_planned_items(
-            session,
-            task,
-            generation_config,
-            reply_targets=reply_targets,
-            normal_count=normal_count,
-            target_label=target_label,
-            history=history,
-            fill_reply_shortfall_with_normal=bool(hard_progress),
-        )
-    except AiGenerationUnavailable as exc:
-        task.last_error = str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE
-        stats = dict(task.stats or {})
-        stats["current_mode"] = mode
-        stats["ramp_ratio"] = ramp_ratio
-        stats["context_mode"] = _context_mode(usable_context_rows, idle_continuation)
-        task.stats = stats
-        if hard_progress:
-            mark_plan_result(task, hard_progress, 0, {"ai_generation_unavailable": int(hard_progress.get("deficit") or 1)})
-        return 0
-    planned_items = [item for item in planned_items if not _looks_like_generated_noise(item["content"])]
-    planned_items = _drop_repeated_planned_items(planned_items, previous_ai_messages)
+    defer_ai_generation = _defer_ai_generation_for_plan(config, hard_progress)
+    if defer_ai_generation:
+        planned_items, tokens = _deferred_ai_planned_items(normal_count), 0
+    else:
+        try:
+            planned_items, tokens = _generate_group_planned_items(
+                session,
+                task,
+                generation_config,
+                reply_targets=reply_targets,
+                normal_count=normal_count,
+                target_label=target_label,
+                history=history,
+                fill_reply_shortfall_with_normal=bool(hard_progress),
+            )
+        except AiGenerationUnavailable as exc:
+            task.last_error = str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE
+            stats = dict(task.stats or {})
+            stats["current_mode"] = mode
+            stats["ramp_ratio"] = ramp_ratio
+            stats["context_mode"] = _context_mode(usable_context_rows, idle_continuation)
+            task.stats = stats
+            if hard_progress:
+                mark_plan_result(task, hard_progress, 0, {"ai_generation_unavailable": int(hard_progress.get("deficit") or 1)})
+            return 0
+        planned_items = [item for item in planned_items if not _looks_like_generated_noise(item["content"])]
+        planned_items = _drop_repeated_planned_items(planned_items, previous_ai_messages)
     chat_mode = _chat_mode(usable_context_rows, idle_continuation)
     context_message_ids = [int(row.id) for row in usable_context_rows[-history_depth:]]
-    quality_items, quality_stats = _quality_filter_ai_messages(
-        [item["content"] for item in planned_items],
-        previous_ai_messages,
-        chat_mode=chat_mode,
-        anchor_message_ids=context_message_ids,
-        fact_anchor_required=bool(config.get("fact_anchor_required", True)),
-        low_confidence_silence_enabled=bool(config.get("low_confidence_silence_enabled", True)),
-        limit=turn_count,
-    )
-    quality_items = _attach_reply_targets(quality_items, planned_items)
+    if defer_ai_generation:
+        quality_items, quality_stats = planned_items[:turn_count], {}
+    else:
+        quality_items, quality_stats = _quality_filter_ai_messages(
+            [item["content"] for item in planned_items],
+            previous_ai_messages,
+            chat_mode=chat_mode,
+            anchor_message_ids=context_message_ids,
+            fact_anchor_required=bool(config.get("fact_anchor_required", True)),
+            low_confidence_silence_enabled=bool(config.get("low_confidence_silence_enabled", True)),
+            limit=turn_count,
+        )
+        quality_items = _attach_reply_targets(quality_items, planned_items)
     if not quality_items:
         _mark_quality_skip(task, config, mode, ramp_ratio, _context_mode(usable_context_rows, idle_continuation), chat_mode, quality_stats)
         if hard_progress:
@@ -236,8 +245,9 @@ def build_plan(session: Session, task: Task) -> int:
     capacity_cache = AccountCapacityCache()
     created = 0
     for index, quality_item in enumerate(quality_items):
-        content = quality_item["content"]
-        if rule_version:
+        content = str(quality_item.get("content") or "")
+        deferred_ai = bool(quality_item.get("defer_ai_generation"))
+        if content and rule_version:
             policy_result = apply_output_policy(content, rule_version.output_checks or {}, rule_version.transforms or {})
             if not policy_result.allowed:
                 _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
@@ -263,16 +273,19 @@ def build_plan(session: Session, task: Task) -> int:
             continue
         used_account_ids.add(account.id)
         has_native_reply = _reply_target_message_id(quality_item) is not None
-        filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=group, content=content, reject_mentions=True, reject_replies=not has_native_reply)
-        if not filtered.ok:
-            _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
-            stats_inc(task, "failure_count")
-            continue
+        filtered_content = content
+        if content:
+            filtered = filter_outbound_content(session, tenant_id=task.tenant_id, group=group, content=content, reject_mentions=True, reject_replies=not has_native_reply)
+            if not filtered.ok:
+                _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
+                stats_inc(task, "failure_count")
+                continue
+            filtered_content = filtered.content
         material_result = select_material_for_policy(
             session,
             task.tenant_id,
             (rule_version.routing or {}).get("material_policy") if rule_version else {},
-            context_key=f"{cycle_id}:{index}:{filtered.content}",
+            context_key=f"{cycle_id}:{index}:{filtered_content or 'pending-ai'}",
             default_caption="",
         )
         if material_result.failure_reason and material_result.fallback == "skip":
@@ -289,7 +302,7 @@ def build_plan(session: Session, task: Task) -> int:
                     group_id=group.id,
                     operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
                     target_display=target_label,
-                    message_text=filtered.content,
+                    message_text=filtered_content,
                     media_segments=media_segments,
                     review_approved=True,
                     cycle_id=cycle_id,
@@ -310,7 +323,8 @@ def build_plan(session: Session, task: Task) -> int:
                     context_snapshot_message_id=context_snapshot_message_id,
                     context_expire_after_messages=int(config.get("context_expire_after_messages") or 0),
                     ai_generation_id=cycle_id,
-                    ai_generation_status="success",
+                    ai_generation_status="pending" if deferred_ai else "success",
+                    ai_generation_history=_deferred_ai_history(history) if deferred_ai else "",
                     ai_generation_tokens=tokens,
                     ai_generation_count=len(quality_items),
                     hard_hourly_target=bool(hard_progress),
@@ -534,6 +548,21 @@ def _hard_hourly_account_scan_target(progress: dict[str, object]) -> int:
     goal = max(0, int(progress.get("goal") or 0))
     deficit = max(0, int(progress.get("deficit") or 0))
     return max(HARD_HOURLY_MIN_BATCH_MESSAGES, goal, deficit)
+
+
+def _defer_ai_generation_for_plan(config: dict, progress: dict[str, object]) -> bool:
+    if not progress or not bool(config.get("hard_hourly_defer_ai_generation", True)):
+        return False
+    return int(progress.get("goal") or 0) >= HARD_HOURLY_DEFER_AI_MIN_GOAL
+
+
+def _deferred_ai_planned_items(count: int) -> list[dict]:
+    return [{"content": "", "reply_target": None, "defer_ai_generation": True} for _index in range(max(0, int(count or 0)))]
+
+
+def _deferred_ai_history(history: str) -> str:
+    value = str(history or "").strip()
+    return value[-DEFERRED_AI_HISTORY_MAX_CHARS:] if value else ""
 
 
 def _generate_group_planned_items(
