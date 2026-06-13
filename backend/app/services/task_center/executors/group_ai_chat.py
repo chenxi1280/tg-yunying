@@ -777,7 +777,7 @@ def _collect_context_with_candidate_accounts(session: Session, task: Task, group
     last_error: Exception | None = None
     for account_id in account_ids:
         try:
-            inserted = collect_group_context(session, group, [account_id], create_source_media=False, learning_scene=GROUP_CHAT_SCENE)
+            inserted = collect_group_context(session, group, [account_id], create_source_media=False, learning_scene=None)
         except Exception as exc:
             if not _is_target_history_permission_error(exc):
                 raise

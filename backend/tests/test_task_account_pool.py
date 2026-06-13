@@ -1,8 +1,11 @@
+from datetime import timedelta
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountRuntimeSummary, AccountStatus, Tenant, TgAccount, TgAccountSecuritySnapshot
+from app.models import AccountRuntimeSummary, AccountStatus, Action, Task, Tenant, TgAccount, TgAccountSecuritySnapshot
+from app.services._common import _now
 from app.services.task_center.account_pool import select_task_accounts
 from app.services.task_center.channel_membership import candidate_accounts_for_config
 
@@ -172,6 +175,53 @@ def test_select_task_accounts_does_not_double_penalize_runtime_health_score():
         ]
 
     assert selected_ids == [1]
+
+
+def test_select_task_accounts_filters_recent_successes_in_one_cooldown_window():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        for account_id in range(1, 5):
+            session.add(
+                TgAccount(
+                    id=account_id,
+                    tenant_id=1,
+                    display_name=f"账号{account_id}",
+                    phone_masked=str(account_id),
+                    status=AccountStatus.ACTIVE.value,
+                    health_score=95,
+                )
+            )
+        session.add(Task(id="task-cooldown", tenant_id=1, name="冷却任务", type="group_ai_chat"))
+        now_value = _now()
+        session.add(
+            Action(
+                id="recent-success",
+                tenant_id=1,
+                task_id="task-cooldown",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=1,
+                status="success",
+                scheduled_at=now_value - timedelta(minutes=1),
+                executed_at=now_value - timedelta(minutes=1),
+            )
+        )
+        session.commit()
+
+        selected_ids = [
+            account.id
+            for account in select_task_accounts(
+                session,
+                1,
+                {"max_concurrent": 2, "cooldown_per_account_minutes": 5},
+                limit=2,
+            )
+        ]
+
+    assert selected_ids == [2, 3]
 
 
 def test_membership_candidates_include_all_active_config_accounts():

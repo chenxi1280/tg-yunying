@@ -111,20 +111,30 @@ def _cooldown_filtered_accounts(
     if cooldown <= 0:
         return accounts
     cutoff = _now() - timedelta(minutes=cooldown)
+    recent_account_ids = _recent_success_account_ids(session, accounts, cutoff)
     cooled: list[TgAccount] = []
     for account in accounts:
-        recent = session.scalar(
-            select(Action.id).where(
-                Action.account_id == account.id,
-                Action.status == "success",
-                Action.executed_at >= cutoff,
-            ).limit(1)
-        )
-        if not recent:
+        if account.id not in recent_account_ids:
             cooled.append(account)
         if len(cooled) >= limit:
             break
     return cooled
+
+
+def _recent_success_account_ids(session: Session, accounts: list[TgAccount], cutoff) -> set[int]:
+    account_ids = [int(account.id) for account in accounts]
+    if not account_ids:
+        return set()
+    rows = session.scalars(
+        select(Action.account_id)
+        .where(
+            Action.account_id.in_(account_ids),
+            Action.status == "success",
+            Action.executed_at >= cutoff,
+        )
+        .distinct()
+    )
+    return {int(account_id) for account_id in rows if account_id is not None}
 
 
 def _health_weighted_accounts(
