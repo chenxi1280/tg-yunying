@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
@@ -30,6 +30,11 @@ class AccountCapacityReservation:
     scheduled_at: datetime
 
 
+@dataclass
+class AccountCapacityCache:
+    occupied_counts: dict[tuple, int] = field(default_factory=dict)
+
+
 def account_capacity_decision(
     session: Session,
     *,
@@ -40,6 +45,7 @@ def account_capacity_decision(
     exclude_action_ids: set[str] | None = None,
     exclude_message_task_id: int | None = None,
     reservations: list[AccountCapacityReservation] | None = None,
+    cache: AccountCapacityCache | None = None,
 ) -> AccountCapacityDecision:
     setting = get_scheduling_setting(session, tenant_id)
     at = _naive(scheduled_at or _now())
@@ -72,6 +78,7 @@ def account_capacity_decision(
             hour_end,
             excluded_actions,
             exclude_message_task_id,
+            cache,
         )
         if occupied + _reserved_count(reserved, account_id, hour_start, hour_end) >= hour_limit:
             candidates.append((hour_end, "account_hour_limit", f"账号每小时发送/互动已达上限 {hour_limit}"))
@@ -88,6 +95,7 @@ def account_capacity_decision(
             day_end,
             excluded_actions,
             exclude_message_task_id,
+            cache,
         )
         if occupied + _reserved_count(reserved, account_id, day_start, day_end) >= day_limit:
             candidates.append((day_end, "account_day_limit", f"账号每日发送/互动已达上限 {day_limit}"))
@@ -109,6 +117,7 @@ def available_accounts_by_capacity(
     exclude_action_ids: set[str] | None = None,
     exclude_message_task_id: int | None = None,
     reservations: list[AccountCapacityReservation] | None = None,
+    cache: AccountCapacityCache | None = None,
 ) -> list[TgAccount]:
     available: list[TgAccount] = []
     for account in accounts:
@@ -121,6 +130,7 @@ def available_accounts_by_capacity(
             exclude_action_ids=exclude_action_ids,
             exclude_message_task_id=exclude_message_task_id,
             reservations=reservations,
+            cache=cache,
         )
         if decision.available:
             available.append(account)
@@ -139,6 +149,7 @@ def next_capacity_window(
     exclude_action_ids: set[str] | None = None,
     exclude_message_task_id: int | None = None,
     reservations: list[AccountCapacityReservation] | None = None,
+    cache: AccountCapacityCache | None = None,
 ) -> AccountCapacityDecision:
     decisions = [
         account_capacity_decision(
@@ -150,6 +161,7 @@ def next_capacity_window(
             exclude_action_ids=exclude_action_ids,
             exclude_message_task_id=exclude_message_task_id,
             reservations=reservations,
+            cache=cache,
         )
         for account_id in account_ids
     ]
@@ -174,7 +186,18 @@ def _occupied_count(
     end: datetime,
     exclude_action_ids: set[str],
     exclude_message_task_id: int | None,
+    cache: AccountCapacityCache | None,
 ) -> int:
+    cache_key = (
+        tenant_id,
+        account_id,
+        start,
+        end,
+        tuple(sorted(exclude_action_ids)),
+        exclude_message_task_id or 0,
+    )
+    if cache and cache_key in cache.occupied_counts:
+        return cache.occupied_counts[cache_key]
     action_occupied_at = func.coalesce(Action.executed_at, Action.scheduled_at)
     action_filters = [
         Action.tenant_id == tenant_id,
@@ -198,7 +221,10 @@ def _occupied_count(
         message_filters.append(MessageTask.id != exclude_message_task_id)
     action_count = session.scalar(select(func.count(Action.id)).where(*action_filters)) or 0
     message_count = session.scalar(select(func.count(MessageTask.id)).where(*message_filters)) or 0
-    return int(action_count) + int(message_count)
+    total = int(action_count) + int(message_count)
+    if cache:
+        cache.occupied_counts[cache_key] = total
+    return total
 
 
 def _cooldown_until(
@@ -375,6 +401,7 @@ def _next_reserved_at(
 
 __all__ = [
     "AccountCapacityDecision",
+    "AccountCapacityCache",
     "AccountCapacityReservation",
     "account_capacity_decision",
     "available_accounts_by_capacity",

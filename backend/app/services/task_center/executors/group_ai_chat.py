@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models import Action, OperationTarget, RuleSet, Task, TgGroup
 from app.services._common import _now
 from app.services.account_capacity import (
+    AccountCapacityCache,
     AccountCapacityReservation,
     available_accounts_by_capacity,
     next_capacity_window,
@@ -237,6 +238,7 @@ def build_plan(session: Session, task: Task) -> int:
     hard_blockers: dict[str, int] = {}
     prepared_actions: list[tuple[int, datetime, SendMessagePayload]] = []
     capacity_reservations: list[AccountCapacityReservation] = []
+    capacity_cache = AccountCapacityCache()
     created = 0
     for index, quality_item in enumerate(quality_items):
         content = quality_item["content"]
@@ -258,6 +260,7 @@ def build_plan(session: Session, task: Task) -> int:
             allow_account_repeat,
             hard_progress,
             capacity_reservations,
+            capacity_cache,
         )
         if not account:
             _hard_blocker_inc(hard_blockers, "account_capacity", hard_progress)
@@ -401,9 +404,10 @@ def _choose_capacity_slot(
     allow_repeat: bool,
     progress: dict[str, object],
     reservations: list[AccountCapacityReservation],
+    capacity_cache: AccountCapacityCache,
 ) -> tuple[object | None, datetime]:
     candidate_limit = _capacity_candidate_limit(used_account_ids)
-    available = _available_accounts_at(session, task, selected, planned_at, reservations, limit=candidate_limit)
+    available = _available_accounts_at(session, task, selected, planned_at, reservations, capacity_cache, limit=candidate_limit)
     account = _choose_turn_account(available, available, index, used_account_ids, allow_repeat)
     if account:
         return account, planned_at
@@ -413,10 +417,11 @@ def _choose_capacity_slot(
         account_ids=[item.id for item in selected],
         scheduled_at=planned_at,
         reservations=reservations,
+        cache=capacity_cache,
     )
     if not decision.defer_until or _defer_crosses_hard_hour(progress, decision.defer_until):
         return None, planned_at
-    deferred_available = _available_accounts_at(session, task, selected, decision.defer_until, reservations, limit=candidate_limit)
+    deferred_available = _available_accounts_at(session, task, selected, decision.defer_until, reservations, capacity_cache, limit=candidate_limit)
     account = _choose_turn_account(deferred_available, deferred_available, index, used_account_ids, allow_repeat)
     return (account, decision.defer_until) if account else (None, planned_at)
 
@@ -431,6 +436,7 @@ def _available_accounts_at(
     selected: list,
     scheduled_at: datetime,
     reservations: list[AccountCapacityReservation],
+    capacity_cache: AccountCapacityCache,
     *,
     limit: int | None = None,
 ) -> list:
@@ -440,6 +446,7 @@ def _available_accounts_at(
         accounts=selected,
         scheduled_at=scheduled_at,
         reservations=reservations,
+        cache=capacity_cache,
         limit=limit,
     )
 

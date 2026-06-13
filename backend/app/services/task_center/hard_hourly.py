@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -14,6 +15,15 @@ from app.timezone import BEIJING_TZ
 OPEN_STATUSES = {"pending", "claiming", "executing"}
 SEND_FILTER = (Action.task_type == "group_ai_chat", Action.action_type == "send_message")
 STRATEGY_FORCE_PLANNING = "force_planning"
+
+
+@dataclass(frozen=True)
+class HardHourlyAction:
+    id: str
+    status: str
+    account_id: int | None
+    scheduled_at: datetime | None
+    executed_at: datetime | None
 
 
 def enabled(task_or_config: Task | dict[str, Any]) -> bool:
@@ -129,22 +139,36 @@ def _recent_buckets(session: Session, task: Task, now_local: datetime, current_s
     ]
 
 
-def _recent_actions(session: Session, task: Task, earliest: datetime) -> list[Action]:
-    return list(
-        session.scalars(
-            select(Action).where(
-                Action.task_id == task.id,
-                *SEND_FILTER,
-                (Action.executed_at >= earliest) | (Action.scheduled_at >= earliest),
-            )
+def _recent_actions(session: Session, task: Task, earliest: datetime) -> list[HardHourlyAction]:
+    rows = session.execute(
+        select(
+            Action.id,
+            Action.status,
+            Action.account_id,
+            Action.scheduled_at,
+            Action.executed_at,
+        ).where(
+            Action.task_id == task.id,
+            *SEND_FILTER,
+            (Action.executed_at >= earliest) | (Action.scheduled_at >= earliest),
         )
     )
+    return [
+        HardHourlyAction(
+            str(row.id),
+            str(row.status),
+            row.account_id,
+            row.scheduled_at,
+            row.executed_at,
+        )
+        for row in rows
+    ]
 
 
 def _bucket_summary(
     session: Session,
     task: Task,
-    actions: list[Action],
+    actions: list[HardHourlyAction],
     start: datetime,
     now_local: datetime,
 ) -> dict[str, Any]:
@@ -180,7 +204,7 @@ def _bucket_summary(
 def _effective_future_open_count(
     session: Session,
     task: Task,
-    actions: list[Action],
+    actions: list[HardHourlyAction],
     start: datetime,
     end: datetime,
     now_local: datetime,
@@ -215,11 +239,11 @@ def _effective_future_open_count(
 
 def _future_open_actions(
     task: Task,
-    actions: list[Action],
+    actions: list[HardHourlyAction],
     start: datetime,
     end: datetime,
     now_local: datetime,
-) -> list[Action]:
+) -> list[HardHourlyAction]:
     rows = [action for action in actions if _is_future_open_in_bucket(task, action, start, end, now_local)]
     return sorted(rows, key=lambda action: _normalize_optional(task, action.scheduled_at) or end)
 
@@ -233,7 +257,7 @@ def _bucket_blockers(deficit: int, overdue_open: int, capacity_blocked: int) -> 
     return blockers
 
 
-def _is_success_in_bucket(task: Task, action: Action, start: datetime, end: datetime) -> bool:
+def _is_success_in_bucket(task: Task, action: HardHourlyAction, start: datetime, end: datetime) -> bool:
     executed_at = _normalize_optional(task, action.executed_at)
     return (
         action.status == "success"
@@ -242,7 +266,7 @@ def _is_success_in_bucket(task: Task, action: Action, start: datetime, end: date
     )
 
 
-def _is_future_open_in_bucket(task: Task, action: Action, start: datetime, end: datetime, now_local: datetime) -> bool:
+def _is_future_open_in_bucket(task: Task, action: HardHourlyAction, start: datetime, end: datetime, now_local: datetime) -> bool:
     scheduled_at = _normalize_optional(task, action.scheduled_at)
     return (
         action.status in OPEN_STATUSES
@@ -252,7 +276,7 @@ def _is_future_open_in_bucket(task: Task, action: Action, start: datetime, end: 
     )
 
 
-def _is_overdue_open_in_bucket(task: Task, action: Action, start: datetime, end: datetime, now_local: datetime) -> bool:
+def _is_overdue_open_in_bucket(task: Task, action: HardHourlyAction, start: datetime, end: datetime, now_local: datetime) -> bool:
     scheduled_at = _normalize_optional(task, action.scheduled_at)
     return (
         action.status in OPEN_STATUSES
