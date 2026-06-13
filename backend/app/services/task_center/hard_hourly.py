@@ -86,7 +86,9 @@ def hard_schedule_times(total: int, task: Task, now: datetime, *, target_total: 
     if available <= 0 or total == 1:
         return [current for _ in range(total)]
     spacing_total = max(total, int(target_total or total), 1)
-    step = max(1, available // spacing_total)
+    step = available // spacing_total
+    if step <= 0:
+        return [current for _ in range(total)]
     return [
         min(current + timedelta(seconds=step * index), hour_end - timedelta(seconds=1))
         for index in range(total)

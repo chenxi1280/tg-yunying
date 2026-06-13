@@ -570,6 +570,27 @@ def test_hard_hourly_schedule_uses_remaining_deficit_for_batch_spacing():
     assert max(times) < datetime(2026, 6, 7, 21, 0)
 
 
+def test_hard_hourly_schedule_frontloads_when_bucket_cannot_be_evenly_spaced():
+    now_value = datetime(2026, 6, 7, 20, 59, 50)
+    task = Task(
+        id="task-hard-hourly-schedule-frontload",
+        tenant_id=1,
+        name="硬目标临近整点立即排期",
+        type="group_ai_chat",
+        status="running",
+        timezone="Asia/Shanghai",
+        type_config={
+            "hard_hourly_target_enabled": True,
+            "hourly_min_messages": 300,
+            "hard_hourly_strategy": "force_planning",
+        },
+    )
+
+    times = hard_schedule_times(30, task, now_value, target_total=300)
+
+    assert times == [now_value for _ in range(30)]
+
+
 def test_group_ai_chat_hard_hourly_scans_goal_sized_pool_when_front_accounts_are_full(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1389,6 +1410,38 @@ def test_hard_hourly_due_check_overrides_future_next_run(monkeypatch):
     assert task_ids == ["task-hard-hourly-due-check"]
     assert due_task.next_run_at == now_value
     assert future_task.next_run_at == datetime(2026, 6, 8, 4, 30)
+
+
+def test_hard_hourly_wake_keeps_already_due_next_run(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+    due_at = now_value - timedelta(minutes=5)
+
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-already-due",
+            tenant_id=1,
+            name="硬目标已到期",
+            type="group_ai_chat",
+            status="running",
+            next_run_at=due_at,
+            type_config={
+                "target_group_id": 7,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 2,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+        task_ids = _wake_hard_hourly_tasks(session, limit=10)
+
+    assert task_ids == ["task-hard-hourly-already-due"]
+    assert task.next_run_at == due_at
 
 
 def test_hard_hourly_wake_scans_past_non_hard_tasks(monkeypatch):

@@ -1309,7 +1309,9 @@ def _wake_hard_hourly_tasks(session: Session, *, limit: int) -> list[str]:
     )
     selected = [task for _sort_key, task in candidates[:target_count]]
     for task in selected:
-        task.next_run_at = now
+        next_run_at = _naive_datetime(task.next_run_at)
+        if next_run_at is None or next_run_at > now:
+            task.next_run_at = now
     return [task.id for task in selected]
 
 
