@@ -743,7 +743,7 @@ def test_group_ai_does_not_fill_reply_candidate_shortage_with_normal_turns(monke
     assert "AI 引用回复候选不足" in task.last_error
 
 
-def test_group_ai_hard_hourly_fills_reply_candidate_shortage_with_normal_turns(monkeypatch):
+def test_group_ai_hard_hourly_skips_reply_lookup_for_volume_planning(monkeypatch):
     def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
         samples = [
             "今晚活动几点开始",
@@ -752,8 +752,8 @@ def test_group_ai_hard_hourly_fills_reply_candidate_shortage_with_normal_turns(m
         ]
         return samples[:count], 0
 
-    def fake_generate_group_reply_messages(_session, _tenant_id, _config, *, reply_targets: list[dict], target_label: str, history: str):
-        return ["只生成一条引用回复"], 0
+    def fake_generate_group_reply_messages(*_args, **_kwargs):
+        raise AssertionError("hard-hourly volume planning must not call reply generation")
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
@@ -781,10 +781,9 @@ def test_group_ai_hard_hourly_fills_reply_candidate_shortage_with_normal_turns(m
         actions = session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.created_at.asc())).all()
 
     assert created == 3
-    assert [action.payload.get("reply_to_message_id") for action in actions].count(None) == 2
-    assert sum(1 for action in actions if action.payload.get("reply_to_message_id")) == 1
+    assert [action.payload.get("reply_to_message_id") for action in actions] == [None, None, None]
     assert task.stats["hard_hourly_last_planned_count"] == 3
-    assert task.stats["reply_candidate_shortfall_count"] >= 1
+    assert not task.stats.get("reply_candidate_shortfall_count")
     assert not task.last_error
 
 
