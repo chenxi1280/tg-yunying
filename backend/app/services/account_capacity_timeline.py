@@ -51,6 +51,45 @@ def next_occupied_at_from_timeline(
     return next((value for value in cache.occupied_timelines[cache_key] if scheduled_at < value < window_end), None)
 
 
+def last_occupied_at_from_timeline(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_id: int,
+    scheduled_at: datetime,
+    cooldown_seconds: int,
+    exclude_action_ids: set[str],
+    exclude_message_task_id: int | None,
+    cache: Any,
+    action_statuses: set[str],
+    message_statuses: set[str],
+) -> datetime | None:
+    bucket_start = _bucket_start(scheduled_at)
+    start_at = bucket_start - timedelta(seconds=cooldown_seconds)
+    cache_key = (
+        tenant_id,
+        account_id,
+        start_at,
+        bucket_start + timedelta(seconds=TIMELINE_BUCKET_SECONDS),
+        tuple(sorted(exclude_action_ids)),
+        exclude_message_task_id or 0,
+    )
+    if cache_key not in cache.occupied_timelines:
+        cache.occupied_timelines[cache_key] = _load_occupied_timeline(
+            session,
+            tenant_id=tenant_id,
+            account_id=account_id,
+            start_at=cache_key[2],
+            end_at=cache_key[3],
+            exclude_action_ids=exclude_action_ids,
+            exclude_message_task_id=exclude_message_task_id,
+            action_statuses=action_statuses,
+            message_statuses=message_statuses,
+        )
+    values = [value for value in cache.occupied_timelines[cache_key] if value <= scheduled_at]
+    return max(values) if values else None
+
+
 def _load_occupied_timeline(
     session: Session,
     *,

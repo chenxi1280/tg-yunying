@@ -35,7 +35,6 @@ class AccountCapacityReservation:
 class AccountCapacityCache:
     occupied_counts: dict[tuple, int] = field(default_factory=dict)
     last_occupied_at: dict[tuple, datetime | None] = field(default_factory=dict)
-    next_occupied_at: dict[tuple, datetime | None] = field(default_factory=dict)
     occupied_timelines: dict[tuple, tuple[datetime, ...]] = field(default_factory=dict)
 
 
@@ -252,6 +251,7 @@ def _cooldown_until(
         tenant_id=tenant_id,
         account_id=account_id,
         scheduled_at=scheduled_at,
+        cooldown_seconds=cooldown,
         exclude_action_ids=exclude_action_ids,
         exclude_message_task_id=exclude_message_task_id,
         cache=cache,
@@ -287,6 +287,7 @@ def _cached_last_occupied_at(
     tenant_id: int,
     account_id: int,
     scheduled_at: datetime,
+    cooldown_seconds: int,
     exclude_action_ids: set[str],
     exclude_message_task_id: int | None,
     cache: AccountCapacityCache | None,
@@ -294,14 +295,28 @@ def _cached_last_occupied_at(
     cache_key = _capacity_cache_key(tenant_id, account_id, scheduled_at, exclude_action_ids, exclude_message_task_id)
     if cache and cache_key in cache.last_occupied_at:
         return cache.last_occupied_at[cache_key]
-    result = _last_occupied_at(
-        session,
-        tenant_id=tenant_id,
-        account_id=account_id,
-        scheduled_at=scheduled_at,
-        exclude_action_ids=exclude_action_ids,
-        exclude_message_task_id=exclude_message_task_id,
-    )
+    if cache:
+        result = account_capacity_timeline.last_occupied_at_from_timeline(
+            session,
+            tenant_id=tenant_id,
+            account_id=account_id,
+            scheduled_at=scheduled_at,
+            cooldown_seconds=cooldown_seconds,
+            exclude_action_ids=exclude_action_ids,
+            exclude_message_task_id=exclude_message_task_id,
+            cache=cache,
+            action_statuses=ACTION_OCCUPIED_STATUSES,
+            message_statuses=MESSAGE_TASK_OCCUPIED_STATUSES,
+        )
+    else:
+        result = _last_occupied_at(
+            session,
+            tenant_id=tenant_id,
+            account_id=account_id,
+            scheduled_at=scheduled_at,
+            exclude_action_ids=exclude_action_ids,
+            exclude_message_task_id=exclude_message_task_id,
+        )
     if cache:
         cache.last_occupied_at[cache_key] = result
     return result
@@ -319,18 +334,8 @@ def _cached_next_occupied_at(
     cache: AccountCapacityCache | None,
 ) -> datetime | None:
     window_end = scheduled_at + timedelta(seconds=cooldown_seconds)
-    cache_key = _capacity_cache_key(
-        tenant_id,
-        account_id,
-        scheduled_at,
-        exclude_action_ids,
-        exclude_message_task_id,
-        window_end,
-    )
-    if cache and cache_key in cache.next_occupied_at:
-        return cache.next_occupied_at[cache_key]
     if cache:
-        result = account_capacity_timeline.next_occupied_at_from_timeline(
+        return account_capacity_timeline.next_occupied_at_from_timeline(
             session,
             tenant_id=tenant_id,
             account_id=account_id,
@@ -342,19 +347,15 @@ def _cached_next_occupied_at(
             action_statuses=ACTION_OCCUPIED_STATUSES,
             message_statuses=MESSAGE_TASK_OCCUPIED_STATUSES,
         )
-    else:
-        result = _next_occupied_at(
-            session,
-            tenant_id=tenant_id,
-            account_id=account_id,
-            scheduled_at=scheduled_at,
-            cooldown_seconds=cooldown_seconds,
-            exclude_action_ids=exclude_action_ids,
-            exclude_message_task_id=exclude_message_task_id,
-        )
-    if cache:
-        cache.next_occupied_at[cache_key] = result
-    return result
+    return _next_occupied_at(
+        session,
+        tenant_id=tenant_id,
+        account_id=account_id,
+        scheduled_at=scheduled_at,
+        cooldown_seconds=cooldown_seconds,
+        exclude_action_ids=exclude_action_ids,
+        exclude_message_task_id=exclude_message_task_id,
+    )
 
 
 def _capacity_cache_key(
@@ -484,7 +485,6 @@ def _last_reserved_at(
         if reservation.account_id == account_id and _naive(reservation.scheduled_at) <= scheduled_at
     ]
     return max(values) if values else None
-
 def _next_reserved_at(
     reservations: list[AccountCapacityReservation],
     account_id: int,
