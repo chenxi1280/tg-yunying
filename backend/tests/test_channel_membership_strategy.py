@@ -329,9 +329,7 @@ def test_hard_hourly_reactivates_auto_verification_membership_failures() -> None
     assert task.stats["membership_need_join_count"] == 1
 
 
-def test_hard_hourly_reactivation_batches_membership_action_flush(monkeypatch) -> None:
-    from app.services.task_center import channel_membership as membership_service
-
+def test_hard_hourly_reactivation_batches_membership_action_flush() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -389,14 +387,6 @@ def test_hard_hourly_reactivation_batches_membership_action_flush(monkeypatch) -
         session.commit()
         candidates = session.query(TgAccount).filter(TgAccount.id.in_([41, 42])).all()
 
-        flush_flags: list[bool] = []
-        original_create = membership_service.create_membership_action
-
-        def spy_create(*args, **kwargs):  # noqa: ANN002, ANN003
-            flush_flags.append(bool(kwargs.get("flush", True)))
-            return original_create(*args, **kwargs)
-
-        monkeypatch.setattr(membership_service, "create_membership_action", spy_create)
         created = _reactivate_auto_verification_memberships(
             session,
             task,
@@ -404,9 +394,65 @@ def test_hard_hourly_reactivation_batches_membership_action_flush(monkeypatch) -
             candidates,
             require_send=True,
         )
+        retry_count = session.query(Action).filter(Action.task_id == task.id, Action.status == "pending").count()
 
     assert created == 2
-    assert flush_flags == [False, False]
+    assert retry_count == 2
+
+
+def test_hard_hourly_reactivation_creates_fresh_retry_action_with_fixed_batch_key() -> None:
+    from app.services.task_center import channel_membership as membership_service
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(id=906, tenant_id=1, tg_peer_id="-100906", title="固定批次群", auth_status="已授权运营")
+        target = OperationTarget(id=906, tenant_id=1, target_type="group", tg_peer_id="-100906", title="固定批次群", auth_status="已授权运营", can_send=True)
+        task = Task(
+            id="task-hard-hourly-reactivation-fixed-batch",
+            tenant_id=1,
+            name="固定批次自动验证重试",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"target_operation_target_id": 906, "hard_hourly_target_enabled": True, "hourly_min_messages": 300, "auto_resolve_verification": True},
+            stats={"current_plan_batch_key": "fixed-hard-hourly-batch"},
+        )
+        account = TgAccount(id=61, tenant_id=1, display_name="账号61", phone_masked="61", status="在线", session_ciphertext="session")
+        session.add_all([group, target, task, account])
+        session.flush()
+        payload = EnsureChannelMembershipPayload(channel_id="-100906", channel_target_id=target.id, target_type="group", target_display=target.title, require_send=True)
+        old_action = membership_service.create_membership_action(session, task, account.id, now_value - timedelta(minutes=10), payload)
+        old_action.status = "skipped"
+        old_action.executed_at = now_value - timedelta(minutes=10)
+        old_action.result = {"error_code": "membership_permission_denied", "membership_status": "permission_denied"}
+        session.add(
+            VerificationTask(
+                id=7200,
+                tenant_id=1,
+                account_id=account.id,
+                group_id=group.id,
+                verification_type="群发言权限",
+                detected_reason="需要验证码",
+                suggested_action="发送验证回复",
+                status="失败",
+                handled_at=now_value - timedelta(minutes=10),
+            )
+        )
+        session.commit()
+
+        created = _reactivate_auto_verification_memberships(session, task, target, [account], require_send=True)
+        actions = session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").all()
+        old_result = old_action.result
+        has_retry = any(action.status == "pending" and action.result.get("reactivated_reason") == "hard_hourly_auto_verification_retry" for action in actions)
+
+    assert created == 1
+    assert len(actions) == 2
+    assert old_result == {"error_code": "membership_permission_denied", "membership_status": "permission_denied"}
+    assert has_retry is True
 
 
 def test_hard_hourly_missing_membership_batches_action_flush(monkeypatch) -> None:
