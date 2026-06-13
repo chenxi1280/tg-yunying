@@ -1192,7 +1192,7 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
             _recover_account_proxy_after_failure(action, account, detail or failure_type)
         elif _is_account_session_failure(failure_type, detail):
             _recover_account_session_after_failure(action, account, detail or failure_type)
-        if failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
+        if _is_target_send_permission_failure(failure_type):
             if not _defer_comment_membership_from_gateway_failure(action, account, detail or failure_type):
                 _mark_group_account_cannot_send(action, account, detail or failure_type)
                 _mark_channel_comment_account_cannot_send(action, account, detail or failure_type)
@@ -1254,6 +1254,10 @@ def _is_account_proxy_failure(failure_type: str, detail: str) -> bool:
         return False
     text = f"{failure_type} {detail}".lower()
     return any(marker.lower() in text for marker in _ACCOUNT_PROXY_FAILURE_MARKERS)
+
+
+def _is_target_send_permission_failure(failure_type: str) -> bool:
+    return failure_type in {FailureType.GROUP_PERMISSION_DENIED.value, FailureType.PEER_INVALID.value}
 
 
 def _recover_account_proxy_after_failure(action: Action, account: TgAccount, reason: str) -> None:
