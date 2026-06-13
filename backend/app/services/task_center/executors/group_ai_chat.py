@@ -401,8 +401,6 @@ def _choose_capacity_slot(
     progress: dict[str, object],
     reservations: list[AccountCapacityReservation],
 ) -> tuple[object | None, datetime]:
-    if progress:
-        return _choose_turn_account(selected, selected, index, used_account_ids, allow_repeat), planned_at
     available = _available_accounts_at(session, task, selected, planned_at, reservations)
     account = _choose_turn_account(available, available, index, used_account_ids, allow_repeat)
     if account:

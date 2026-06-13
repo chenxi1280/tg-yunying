@@ -639,7 +639,7 @@ def test_group_ai_chat_hard_hourly_scans_goal_sized_pool_when_front_accounts_are
 
     planned_account_ids = [int(action.account_id) for action in actions if (action.payload or {}).get("hard_hourly_target")]
     assert created == 10
-    assert planned_account_ids == list(range(101, 111))
+    assert planned_account_ids == list(range(181, 191))
     assert task.stats["hard_hourly_last_planned_count"] == 10
     assert "hard_hourly_last_blockers" not in task.stats
 
@@ -693,7 +693,7 @@ def test_group_ai_chat_hard_hourly_uses_accounts_available_later_in_hour(monkeyp
     hard_actions = [action for action in actions if (action.payload or {}).get("hard_hourly_target")]
     assert created == 2
     assert [action.account_id for action in hard_actions] == [101, 101]
-    assert hard_actions[0].scheduled_at == now_value
+    assert hard_actions[0].scheduled_at == datetime(2026, 6, 7, 20, 11)
     assert max(action.scheduled_at for action in hard_actions) < datetime(2026, 6, 7, 21, 0)
     assert task.last_error == ""
     assert "hard_hourly_last_blockers" not in task.stats
@@ -750,11 +750,11 @@ def test_group_ai_chat_hard_hourly_counts_prepared_actions_against_account_hour_
         created = build_group_ai_chat_plan(session, task)
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.account_id.asc())))
 
-    assert created == 5
-    assert [action.account_id for action in actions] == [101, 101, 102, 102, 103]
+    assert created == 3
+    assert [action.account_id for action in actions] == [101, 102, 103]
     assert task.last_error == ""
-    assert task.stats["hard_hourly_last_planned_count"] == 5
-    assert "hard_hourly_last_blockers" not in task.stats
+    assert task.stats["hard_hourly_last_planned_count"] == 3
+    assert task.stats["hard_hourly_last_blockers"] == {"account_capacity": 2}
 
 
 def test_group_ai_chat_hard_hourly_records_account_blocker_without_accounts(monkeypatch):
@@ -791,7 +791,7 @@ def test_group_ai_chat_hard_hourly_records_account_blocker_without_accounts(monk
     assert task.stats["hard_hourly_last_blockers"] == {"account_unavailable": 3}
 
 
-def test_group_ai_chat_hard_hourly_bypasses_capacity_when_accounts_are_full(monkeypatch):
+def test_group_ai_chat_hard_hourly_records_capacity_blocker_when_accounts_are_full(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
@@ -842,10 +842,10 @@ def test_group_ai_chat_hard_hourly_bypasses_capacity_when_accounts_are_full(monk
 
         created = build_group_ai_chat_plan(session, task)
 
-    assert created == 3
-    assert task.last_error == ""
-    assert task.stats["hard_hourly_last_planned_count"] == 3
-    assert "hard_hourly_last_blockers" not in task.stats
+    assert created == 0
+    assert task.last_error == "账号容量已排满，等待账号额度恢复后继续执行"
+    assert task.stats["hard_hourly_last_planned_count"] == 0
+    assert task.stats["hard_hourly_last_blockers"] == {"account_capacity": 3}
 
 
 def test_group_ai_chat_hard_hourly_degrades_history_permission_and_plans(monkeypatch):
