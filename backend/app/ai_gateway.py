@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import hashlib
 import json
 import re
 import urllib.error
@@ -420,7 +421,7 @@ class AiGateway:
         except json.JSONDecodeError:
             parsed = _loads_jsonish_payload(clean)
             if parsed is None and _looks_like_json_drafts_fragment(clean):
-                raise RuntimeError("AI provider returned malformed JSON drafts")
+                raise RuntimeError(_malformed_drafts_error(clean))
             if parsed is None:
                 lines = [line.strip(" -\t") for line in clean.splitlines() if line.strip()]
                 return [
@@ -488,6 +489,12 @@ def _loads_jsonish_payload(value: str) -> Any | None:
     if isinstance(_draft_items_from_payload(parsed), list):
         return parsed
     return None
+
+
+def _malformed_drafts_error(value: str) -> str:
+    preview = " ".join(str(value or "").split())[:180]
+    digest = hashlib.sha256(str(value or "").encode("utf-8", errors="replace")).hexdigest()[:12]
+    return f"AI provider returned malformed JSON drafts; len={len(value or '')}; sha256={digest}; preview={preview}"
 
 
 def _draft_items_from_payload(parsed: Any) -> Any:

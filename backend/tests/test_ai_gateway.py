@@ -251,6 +251,40 @@ def test_malformed_json_drafts_are_not_used_as_chat_lines(monkeypatch):
         )
 
 
+def test_malformed_json_drafts_error_exposes_payload_fingerprint(monkeypatch):
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {"content": '{"drafts": [{"content": "断掉的内容"'},
+                        "finish_reason": "length",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        AiGateway().generate_drafts(
+            credentials(),
+            "请输出 json drafts",
+            count=1,
+            topic="群聊",
+            tone="自然",
+            persona_set=["A"],
+            temperature=0.8,
+            max_tokens=512,
+        )
+
+    detail = str(exc_info.value)
+    assert "AI provider returned malformed JSON drafts" in detail
+    assert "len=" in detail
+    assert "sha256=" in detail
+    assert 'preview={"drafts": [{"content": "断掉的内容"' in detail
+
+
 def test_generate_drafts_extracts_prefixed_json_object(monkeypatch):
     def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
         return FakeResponse(
