@@ -222,7 +222,7 @@ jobs:
       - name: Probe production planner drain
         run: |
           set -euo pipefail
-          ssh silicon-valley-production-server '
+          timeout 330 ssh silicon-valley-production-server '
             set -euo pipefail
             echo "==> planner logs before once"
             docker logs --tail 120 tgyunying-worker-planner || true
