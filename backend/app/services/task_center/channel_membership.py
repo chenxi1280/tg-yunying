@@ -307,7 +307,7 @@ def _create_missing_membership_actions(session: Session, task: Task, channel: Op
     random.shuffle(missing)
     if not missing:
         return 0
-    return _create_membership_actions_for_accounts(session, task, channel, missing, now_value, require_send=require_send)
+    return _create_membership_actions_for_accounts(session, task, channel, joined_ids, missing, now_value, require_send=require_send)
 
 
 def _ready_membership_account_ids(
@@ -337,20 +337,33 @@ def _membership_retry_candidates(
     return [
         account
         for account in candidates
-        if account.id not in joined_ids and _should_create_membership_attempt(existing.get(account.id), task, now_value)
+        if _should_create_membership_attempt_for_account(account.id, existing.get(account.id), joined_ids, task, now_value)
     ]
+
+
+def _should_create_membership_attempt_for_account(
+    account_id: int,
+    action: Action | None,
+    joined_ids: set[int],
+    task: Task,
+    now_value,
+) -> bool:
+    if account_id in joined_ids:
+        return action is None
+    return _should_create_membership_attempt(action, task, now_value)
 
 
 def _create_membership_actions_for_accounts(
     session: Session,
     task: Task,
     channel: OperationTarget,
+    joined_ids: set[int],
     missing: list[TgAccount],
     now_value,
     *,
     require_send: bool,
 ) -> int:
-    scheduled_times = schedule_times(len(missing), _membership_pacing_config(task))
+    scheduled_times = schedule_times(len([account for account in missing if account.id not in joined_ids]), _membership_pacing_config(task))
     scheduled_index = 0
     created = 0
     for account in missing:
@@ -363,6 +376,13 @@ def _create_membership_actions_for_accounts(
             invite_link=_joinable_channel_reference(channel),
             require_send=require_send,
         )
+        if account.id in joined_ids:
+            action = create_membership_action(session, task, account.id, now_value, payload)
+            action.status = "skipped"
+            action.executed_at = now_value
+            action.result = {"success": True, "membership_status": "already_joined", "detail": f"账号已满足目标{_target_noun(channel)}准入"}
+            created += 1
+            continue
         scheduled_at = scheduled_times[scheduled_index] if scheduled_index < len(scheduled_times) else now_value
         scheduled_index += 1
         action = create_membership_action(session, task, account.id, scheduled_at, payload)
