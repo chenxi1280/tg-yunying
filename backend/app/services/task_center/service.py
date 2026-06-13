@@ -47,7 +47,7 @@ from .channel_membership import (
     channel_membership_summary,
     mark_channel_membership_joined,
 )
-from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims
+from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims, recover_expired_hard_hourly_actions
 from .executors import build_task_plan
 from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _membership_accounts, _membership_items, _membership_phase, _message_groups, _relay_batches, _relay_recent_sources, _task_payload
 from .fingerprints import content_fingerprint
@@ -859,6 +859,7 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         if process_type:
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
         processed += recover_expired_claims(session)
+        processed += recover_expired_hard_hourly_actions(session, limit=max(10, limit))
         processed += _recover_continuous_task_states(session)
         processed += _recover_stale_executing_actions(session)
         processed += expire_reviews(session)

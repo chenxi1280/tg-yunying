@@ -314,6 +314,29 @@ def recover_expired_claims(session: Session) -> int:
     return len(rows)
 
 
+def recover_expired_hard_hourly_actions(session: Session, limit: int = 100) -> int:
+    rows = list(
+        session.scalars(
+            select(Action)
+            .where(
+                Action.task_type == "group_ai_chat",
+                Action.action_type == "send_message",
+                Action.status.in_(["pending", "claiming"]),
+                Action.payload["hard_hourly_target"].as_boolean().is_(True),
+            )
+            .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
+            .limit(max(1, int(limit or 100)))
+        )
+    )
+    recovered = 0
+    for action in rows:
+        if not _hard_hourly_bucket_expired(action):
+            continue
+        _skip(action, "hard_hourly_bucket_expired", "硬目标小时窗口已结束，过期补量已跳过")
+        recovered += 1
+    return recovered
+
+
 def _confirm_claim(session: Session, action_id: str, owner: str, token: str) -> bool:
     action = session.get(Action, action_id)
     if not action or action.status != "claiming" or action.claim_owner != owner or action.claim_token != token:
@@ -1941,4 +1964,4 @@ def _same_context_cycle(action_payload: dict, payload: SendMessagePayload) -> bo
     )
 
 
-__all__ = ["claim_actions", "dispatch_action", "due_actions", "recover_expired_claims"]
+__all__ = ["claim_actions", "dispatch_action", "due_actions", "recover_expired_claims", "recover_expired_hard_hourly_actions"]

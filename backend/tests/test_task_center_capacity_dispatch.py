@@ -217,6 +217,53 @@ def test_claim_actions_reassigns_group_send_action_when_account_lost_permission(
         assert action.result["telegram_msg_id"] == "tg-group-reassigned"
 
 
+def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    sent: dict[str, int] = {}
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1, jitter_min_seconds=0, jitter_max_seconds=0))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
+        session.add(Task(id="task-hard-hourly", tenant_id=1, name="硬目标", type="group_ai_chat", status="running", priority=1))
+        session.add(
+            Action(
+                id="action-hard-hourly",
+                tenant_id=1,
+                task_id="task-hard-hourly",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"group_id": 7, "message_text": "new", "review_approved": True, "hard_hourly_target": True},
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+
+        def fake_send_message(account_id, *_args, **_kwargs):  # noqa: ANN001
+            sent["account_id"] = account_id
+            return SendResult(True, remote_message_id="tg-hard-hourly")
+
+        monkeypatch.setattr(dispatcher.gateway, "send_message", fake_send_message)
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert claimed.status == "executing"
+        assert dispatcher.dispatch_action(session, claimed) is True
+
+        action = session.get(Action, "action-hard-hourly")
+        assert sent["account_id"] == 11
+        assert action.status == "success"
+        assert action.result["telegram_msg_id"] == "tg-hard-hourly"
+
+
 def test_dispatch_context_expired_skip_releases_reserved_account_runtime_resource(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1464,6 +1511,54 @@ def test_claim_actions_skips_expired_hard_hourly_bucket_before_current_bucket(mo
         expired = session.get(Action, "action-expired-bucket")
         assert expired.status == "skipped"
         assert expired.result["error_code"] == "hard_hourly_bucket_expired"
+
+
+def test_recovery_skips_future_pending_expired_hard_hourly_bucket():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    expired_bucket = (now_value - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    current_bucket = now_value.replace(minute=0, second=0, microsecond=0)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-hard-recovery", tenant_id=1, name="硬目标", type="group_ai_chat", status="running"))
+        session.add_all(
+            [
+                Action(
+                    id="action-expired-future",
+                    tenant_id=1,
+                    task_id="task-hard-recovery",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=11,
+                    status="pending",
+                    scheduled_at=now_value + timedelta(minutes=5),
+                    payload={"message_text": "old", "hard_hourly_target": True, "hard_hourly_bucket": expired_bucket.isoformat()},
+                ),
+                Action(
+                    id="action-current-future",
+                    tenant_id=1,
+                    task_id="task-hard-recovery",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=12,
+                    status="pending",
+                    scheduled_at=now_value + timedelta(minutes=5),
+                    payload={"message_text": "new", "hard_hourly_target": True, "hard_hourly_bucket": current_bucket.isoformat()},
+                ),
+            ]
+        )
+        session.commit()
+
+        recovered = dispatcher.recover_expired_hard_hourly_actions(session)
+
+        expired = session.get(Action, "action-expired-future")
+        current = session.get(Action, "action-current-future")
+        assert recovered == 1
+        assert expired.status == "skipped"
+        assert expired.result["error_code"] == "hard_hourly_bucket_expired"
+        assert current.status == "pending"
 
 
 def test_hard_hourly_replacement_scan_uses_planned_deficit():
