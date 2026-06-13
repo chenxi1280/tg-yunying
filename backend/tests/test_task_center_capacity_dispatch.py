@@ -227,8 +227,10 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1, jitter_min_seconds=0, jitter_max_seconds=0))
         session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
+        session.add(TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True, permission_label="可发言"))
         session.add(Task(id="task-hard-hourly", tenant_id=1, name="硬目标", type="group_ai_chat", status="running", priority=1))
         session.add(
             Action(
@@ -309,13 +311,35 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypat
                 },
             )
         )
+        session.add(
+            Action(
+                id="action-hard-hourly-ai-sibling",
+                tenant_id=1,
+                task_id="task-hard-hourly-ai",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=12,
+                status="pending",
+                scheduled_at=now_value + timedelta(seconds=10),
+                payload={
+                    "group_id": 7,
+                    "target_display": "运营群",
+                    "message_text": "",
+                    "review_approved": True,
+                    "hard_hourly_target": True,
+                    "ai_generation_status": "pending",
+                    "ai_generation_history": "真人: 今天怎么安排",
+                    "account_role": "追问群友",
+                },
+            )
+        )
         session.commit()
 
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
 
         def fake_generate(_session, _tenant_id, config, *, count, target_label, history):  # noqa: ANN001
-            generated.update({"model": config["ai_model"], "count": count, "target": target_label, "history": history})
-            return ["今天先看看群公告"], 17
+            generated.update({"model": config["ai_model"], "count": count, "target": target_label, "history": history, "personas": config["account_personas"]})
+            return ["今天先看看群公告", "第二条我也等等看"], 17
 
         def fake_send_message(account_id, _group_pk, content, *_args, **_kwargs):  # noqa: ANN001
             sent.update({"account_id": account_id, "content": content})
@@ -329,10 +353,19 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypat
         assert dispatcher.dispatch_action(session, claimed) is True
 
         action = session.get(Action, "action-hard-hourly-ai")
-        assert generated == {"model": "mino-v2.5", "count": 1, "target": "运营群", "history": "真人: 今天怎么安排"}
+        sibling = session.get(Action, "action-hard-hourly-ai-sibling")
+        assert generated == {
+            "model": "mino-v2.5",
+            "count": 2,
+            "target": "运营群",
+            "history": "真人: 今天怎么安排",
+            "personas": {"11": "活跃群友", "12": "追问群友"},
+        }
         assert sent == {"account_id": 11, "content": "今天先看看群公告"}
         assert action.payload["message_text"] == "今天先看看群公告"
+        assert sibling.payload["message_text"] == "第二条我也等等看"
         assert action.payload["ai_generation_status"] == "success"
+        assert sibling.payload["ai_generation_status"] == "success"
         assert action.payload["ai_generation_tokens"] == 17
         assert action.status == "success"
 

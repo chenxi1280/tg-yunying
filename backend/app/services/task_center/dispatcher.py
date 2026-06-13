@@ -96,6 +96,7 @@ _GROUP_SEND_RETRYABLE_VERIFICATION_MARKERS = (
 )
 VERIFICATION_READER_CANDIDATE_LIMIT = 5
 HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS = 300
+AI_DISPATCH_GENERATION_BATCH_SIZE = 10
 _ACCOUNT_SESSION_FAILURE_MARKERS = (
     "session",
     "auth key",
@@ -469,40 +470,78 @@ def _ensure_send_message_content(session: Session, action: Action, account: TgAc
     task = session.get(Task, action.task_id) if action.task_id else None
     if not task:
         raise AiGenerationUnavailable("AI 生成缺少任务配置")
+    batch = _pending_ai_generation_batch(session, action, payload)
     contents, tokens = generate_group_messages(
         session,
         action.tenant_id,
-        _runtime_group_ai_config(task, payload, account),
-        count=1,
+        _runtime_group_ai_config(task, batch),
+        count=len(batch),
         target_label=payload.target_display,
         history=payload.ai_generation_history,
     )
-    content = str(contents[0] if contents else "").strip()
-    if not content:
+    _store_generated_send_payloads(batch, contents, tokens)
+    refreshed = SendMessagePayload.model_validate(action.payload or {})
+    if not refreshed.message_text.strip():
         raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
-    return _store_generated_send_payload(action, payload, content, tokens)
+    return refreshed
 
 
-def _runtime_group_ai_config(task: Task, payload: SendMessagePayload, account: TgAccount) -> dict:
+def _pending_ai_generation_batch(session: Session, action: Action, payload: SendMessagePayload) -> list[tuple[Action, SendMessagePayload]]:
+    rows: list[tuple[Action, SendMessagePayload]] = [(action, payload)]
+    sibling_limit = AI_DISPATCH_GENERATION_BATCH_SIZE - 1
+    if sibling_limit <= 0:
+        return rows
+    siblings = session.scalars(_pending_ai_generation_sibling_query(action, sibling_limit))
+    for sibling in siblings:
+        rows.append((sibling, SendMessagePayload.model_validate(sibling.payload or {})))
+    return rows
+
+
+def _pending_ai_generation_sibling_query(action: Action, limit: int):
+    return (
+        select(Action)
+        .where(
+            Action.id != action.id,
+            Action.tenant_id == action.tenant_id,
+            Action.task_id == action.task_id,
+            Action.action_type == "send_message",
+            Action.status == "pending",
+            Action.payload["ai_generation_status"].as_string() == "pending",
+        )
+        .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
+        .limit(max(1, int(limit or 1)))
+    )
+
+
+def _runtime_group_ai_config(task: Task, batch: list[tuple[Action, SendMessagePayload]]) -> dict:
     config = dict(task.type_config or {})
-    account_key = str(account.id)
-    config["account_personas"] = {account_key: payload.account_role} if payload.account_role else {}
-    config["account_memories"] = {account_key: payload.account_memory} if payload.account_memory else {}
-    config["account_profiles"] = {account_key: payload.account_profile} if payload.account_profile else {}
-    if payload.topic_thread:
-        config["topic_thread"] = payload.topic_thread
-    if payload.topic_plan:
-        config["topic_plan"] = payload.topic_plan
+    config["account_personas"] = _payload_map(batch, "account_role")
+    config["account_memories"] = _payload_map(batch, "account_memory")
+    config["account_profiles"] = _payload_map(batch, "account_profile")
+    first_payload = batch[0][1]
+    if first_payload.topic_thread:
+        config["topic_thread"] = first_payload.topic_thread
+    if first_payload.topic_plan:
+        config["topic_plan"] = first_payload.topic_plan
     return config
 
 
-def _store_generated_send_payload(action: Action, payload: SendMessagePayload, content: str, tokens: int) -> SendMessagePayload:
-    payload_data = payload.model_dump(mode="json")
-    payload_data["message_text"] = content
-    payload_data["ai_generation_status"] = "success"
-    payload_data["ai_generation_tokens"] = int(tokens or 0)
-    action.payload = payload_data
-    return SendMessagePayload.model_validate(payload_data)
+def _payload_map(batch: list[tuple[Action, SendMessagePayload]], attr: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for action, payload in batch:
+        value = str(getattr(payload, attr) or "").strip()
+        if value and action.account_id:
+            values[str(action.account_id)] = value
+    return values
+
+
+def _store_generated_send_payloads(batch: list[tuple[Action, SendMessagePayload]], contents: list[str], tokens: int) -> None:
+    for index, ((action, payload), content) in enumerate(zip(batch, contents, strict=False)):
+        payload_data = payload.model_dump(mode="json")
+        payload_data["message_text"] = str(content or "").strip()
+        payload_data["ai_generation_status"] = "success"
+        payload_data["ai_generation_tokens"] = int(tokens or 0) if index == 0 else 0
+        action.payload = payload_data
 
 
 def _dispatch_send_message(session: Session, action: Action, account: TgAccount, credentials, payload: SendMessagePayload) -> bool:
