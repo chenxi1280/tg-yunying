@@ -4,7 +4,7 @@ import os
 import socket
 from dataclasses import dataclass
 from uuid import uuid4
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -120,6 +120,8 @@ def _release_runtime_resources(action: Action) -> None:
 def dispatch_action(session: Session, action: Action) -> bool:
     if _legacy_review_enabled() and has_pending_review(session, action.id):
         return False
+    if _skip_expired_hard_hourly_action(session, action):
+        return True
     account = session.get(TgAccount, action.account_id) if action.account_id else None
     if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
@@ -241,6 +243,9 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
     for candidate in candidates:
         action = session.get(Action, candidate.id)
         if not action or action.status != "claiming" or action.claim_owner != owner or action.claim_token != token:
+            continue
+        if _skip_expired_hard_hourly_action(session, action):
+            session.commit()
             continue
         if not _apply_claim_account_policy(session, action):
             session.commit()
@@ -1488,6 +1493,35 @@ def _capacity_excluded_action_ids(session: Session, action: Action, account_id: 
 def _is_hard_hourly_send_action(action: Action) -> bool:
     payload = action.payload if isinstance(action.payload, dict) else {}
     return action.action_type == "send_message" and bool(payload.get("hard_hourly_target"))
+
+
+def _skip_expired_hard_hourly_action(session: Session, action: Action) -> bool:
+    if not _hard_hourly_bucket_expired(action):
+        return False
+    _skip(action, "hard_hourly_bucket_expired", "硬目标小时窗口已结束，过期补量已跳过")
+    task = session.get(Task, action.task_id) if action.task_id else None
+    if task:
+        task.next_run_at = _now()
+    return True
+
+
+def _hard_hourly_bucket_expired(action: Action) -> bool:
+    if not _is_hard_hourly_send_action(action):
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    bucket_value = str(payload.get("hard_hourly_bucket") or "").strip()
+    if not bucket_value:
+        return False
+    try:
+        bucket_start = datetime.fromisoformat(bucket_value)
+    except ValueError:
+        return False
+    now_value = _now()
+    if bucket_start.tzinfo is None:
+        now_value = now_value.replace(tzinfo=None)
+    else:
+        now_value = now_value.astimezone(bucket_start.tzinfo)
+    return bucket_start + timedelta(hours=1) <= now_value
 
 
 def _replacement_account_for_action(session: Session, action: Action, account: TgAccount) -> TgAccount | None:
