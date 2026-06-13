@@ -847,7 +847,55 @@ def test_account_capacity_cache_reuses_cooldown_lookups(monkeypatch):
 
     assert first.available is True
     assert second.available is True
-    assert calls == {"last": 1, "next": 1}
+    assert calls == {"last": 1, "next": 0}
+    assert len(cache.occupied_timelines) == 1
+
+
+def test_account_capacity_cache_reuses_future_timeline_for_adjacent_slots(monkeypatch):
+    from app.services import account_capacity as capacity_service
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    scheduled_at = datetime(2026, 6, 8, 20, 10)
+
+    def fail_precise_next_lookup(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("cached capacity checks should use the hourly timeline")
+
+    monkeypatch.setattr(capacity_service, "_next_occupied_at", fail_precise_next_lookup)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_cooldown_seconds=120, jitter_min_seconds=0, jitter_max_seconds=0))
+        session.add(
+            Action(
+                id="future-action-11",
+                tenant_id=1,
+                task_id="task-capacity",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                status="pending",
+                scheduled_at=scheduled_at + timedelta(seconds=60),
+                payload={},
+            )
+        )
+        session.commit()
+
+        cache = AccountCapacityCache()
+        first = account_capacity_decision(session, tenant_id=1, account_id=11, scheduled_at=scheduled_at, cache=cache)
+        second = account_capacity_decision(
+            session,
+            tenant_id=1,
+            account_id=11,
+            scheduled_at=scheduled_at + timedelta(seconds=10),
+            cache=cache,
+        )
+
+    assert first.available is False
+    assert first.defer_until == scheduled_at + timedelta(seconds=180)
+    assert second.available is False
+    assert second.defer_until == scheduled_at + timedelta(seconds=180)
+    assert len(cache.occupied_timelines) == 1
 
 
 def test_task_center_dispatch_reassigns_when_account_limit_reached(monkeypatch):

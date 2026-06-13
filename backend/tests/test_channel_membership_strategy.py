@@ -329,7 +329,7 @@ def test_hard_hourly_reactivates_auto_verification_membership_failures() -> None
     assert task.stats["membership_need_join_count"] == 1
 
 
-def test_hard_hourly_reactivation_batches_membership_action_flush() -> None:
+def test_hard_hourly_reactivation_batches_membership_action_flush(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -386,14 +386,22 @@ def test_hard_hourly_reactivation_batches_membership_action_flush() -> None:
         )
         session.commit()
         candidates = session.query(TgAccount).filter(TgAccount.id.in_([41, 42])).all()
+        original_flush = session.flush
 
-        created = _reactivate_auto_verification_memberships(
-            session,
-            task,
-            target,
-            candidates,
-            require_send=True,
-        )
+        def fail_pending_flush(*args, **kwargs):  # noqa: ANN002, ANN003
+            if session.new:
+                raise AssertionError("reactivation should bulk insert without pending ORM action flush")
+            return original_flush(*args, **kwargs)
+
+        with monkeypatch.context() as context:
+            context.setattr(session, "flush", fail_pending_flush)
+            created = _reactivate_auto_verification_memberships(
+                session,
+                task,
+                target,
+                candidates,
+                require_send=True,
+            )
         retry_count = session.query(Action).filter(Action.task_id == task.id, Action.status == "pending").count()
 
     assert created == 2

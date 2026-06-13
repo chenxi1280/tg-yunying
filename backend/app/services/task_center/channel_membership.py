@@ -4,6 +4,7 @@ import random
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
@@ -433,37 +434,52 @@ def _reactivate_auto_verification_memberships(
     verification_by_account = _auto_verification_tasks_by_account(session, task, group.id, [int(action.account_id) for action in failed_actions])
     now_value = _now()
     created = 0
-    with session.no_autoflush:
-        for action in failed_actions:
-            verification = verification_by_account.get(int(action.account_id or 0))
-            if not verification or not _auto_verification_retry_due(action, verification, now_value):
-                continue
-            payload = EnsureChannelMembershipPayload.model_validate(action.payload or {})
-            scheduled_at = now_value + timedelta(seconds=HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * created)
-            reactivated = Action(
-                tenant_id=task.tenant_id,
-                task_id=task.id,
-                task_type=task.type,
-                action_type=ACTION_TYPE,
-                account_id=int(action.account_id),
-                scheduled_at=scheduled_at,
-                plan_batch_key=f"{task.id}:hard-hourly-auto-verification:{now_value.isoformat()}",
-                action_dedupe_key=(
-                    f"{task.tenant_id}:{task.id}:hard-hourly-auto-verification:"
-                    f"{action.account_id}:{verification.id}:{scheduled_at.isoformat()}"
-                ),
-                payload=payload.model_dump(mode="json"),
-                result={},
-            )
-            session.add(reactivated)
-            reactivated.result = {
-                "reactivated_reason": "hard_hourly_auto_verification_retry",
-                "verification_task_id": verification.id,
-            }
-            created += 1
-    if created:
-        session.flush()
+    rows: list[dict[str, Any]] = []
+    for action in failed_actions:
+        verification = verification_by_account.get(int(action.account_id or 0))
+        if not verification or not _auto_verification_retry_due(action, verification, now_value):
+            continue
+        rows.append(_auto_verification_retry_action_row(task, action, verification, now_value, created))
+        created += 1
+    if rows:
+        session.bulk_insert_mappings(Action, rows)
     return created
+
+
+def _auto_verification_retry_action_row(
+    task: Task,
+    action: Action,
+    verification: VerificationTask,
+    now_value,
+    offset: int,
+) -> dict[str, Any]:
+    payload = EnsureChannelMembershipPayload.model_validate(action.payload or {})
+    scheduled_at = now_value + timedelta(seconds=HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * offset)
+    return {
+        "id": str(uuid4()),
+        "tenant_id": task.tenant_id,
+        "task_id": task.id,
+        "task_type": task.type,
+        "action_type": ACTION_TYPE,
+        "account_id": int(action.account_id),
+        "scheduled_at": scheduled_at,
+        "status": "pending",
+        "lease_owner": "",
+        "claim_owner": "",
+        "claim_token": "",
+        "plan_batch_key": f"{task.id}:hard-hourly-auto-verification:{now_value.isoformat()}",
+        "action_dedupe_key": (
+            f"{task.tenant_id}:{task.id}:hard-hourly-auto-verification:"
+            f"{action.account_id}:{verification.id}:{scheduled_at.isoformat()}"
+        ),
+        "payload": payload.model_dump(mode="json"),
+        "result": {
+            "reactivated_reason": "hard_hourly_auto_verification_retry",
+            "verification_task_id": verification.id,
+        },
+        "retry_count": 0,
+        "created_at": now_value,
+    }
 
 
 def _auto_verification_tasks_by_account(
