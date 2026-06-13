@@ -18,6 +18,7 @@ from app.services.task_center.dispatcher import claim_actions
 from app.services.task_center.runtime_retention import cleanup_runtime_details
 from app.services.task_center.service import _recover_stale_executing_actions, retry_task
 from app.services.task_center.stats import refresh_task_stats
+from app.timezone import BEIJING_TZ
 from app.schemas.task_center import TaskRetryRequest
 
 
@@ -1331,6 +1332,8 @@ def test_claim_actions_skips_expired_hard_hourly_bucket_before_current_bucket(mo
     now_value = _now()
     expired_bucket = (now_value - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
     current_bucket = now_value.replace(minute=0, second=0, microsecond=0)
+    expired_bucket_payload = expired_bucket.replace(tzinfo=BEIJING_TZ)
+    current_bucket_payload = current_bucket.replace(tzinfo=BEIJING_TZ)
     monkeypatch.setattr(dispatcher, "get_settings", lambda: _redis_bucket_settings(enable_redis_token_bucket=False))
 
     with Session(engine) as session:
@@ -1359,7 +1362,11 @@ def test_claim_actions_skips_expired_hard_hourly_bucket_before_current_bucket(mo
                     account_id=11,
                     status="pending",
                     scheduled_at=expired_bucket + timedelta(minutes=59),
-                    payload={"message_text": "expired", "hard_hourly_target": True, "hard_hourly_bucket": expired_bucket.isoformat()},
+                    payload={
+                        "message_text": "expired",
+                        "hard_hourly_target": True,
+                        "hard_hourly_bucket": expired_bucket_payload.isoformat(),
+                    },
                 ),
                 Action(
                     id="action-current-bucket",
@@ -1370,7 +1377,11 @@ def test_claim_actions_skips_expired_hard_hourly_bucket_before_current_bucket(mo
                     account_id=12,
                     status="pending",
                     scheduled_at=now_value,
-                    payload={"message_text": "current", "hard_hourly_target": True, "hard_hourly_bucket": current_bucket.isoformat()},
+                    payload={
+                        "message_text": "current",
+                        "hard_hourly_target": True,
+                        "hard_hourly_bucket": current_bucket_payload.isoformat(),
+                    },
                 ),
             ]
         )

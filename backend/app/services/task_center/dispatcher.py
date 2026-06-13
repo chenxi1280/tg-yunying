@@ -22,6 +22,7 @@ from app.services.developer_apps import credentials_for_account
 from app.services.ai_config import get_scheduling_setting
 from app.services.membership_challenges import auto_resolve_image_verification, record_challenge_attempt
 from app.services.verification import create_verification_task
+from app.timezone import BEIJING_TZ
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
@@ -1520,7 +1521,7 @@ def _hard_hourly_bucket_expired(action: Action) -> bool:
     if bucket_start.tzinfo is None:
         now_value = now_value.replace(tzinfo=None)
     else:
-        now_value = now_value.astimezone(bucket_start.tzinfo)
+        now_value = now_value.replace(tzinfo=BEIJING_TZ).astimezone(bucket_start.tzinfo)
     return bucket_start + timedelta(hours=1) <= now_value
 
 
