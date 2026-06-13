@@ -3175,6 +3175,7 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
                 "topic_hint": "测试话题",
                 "participation_rate": 1,
                 "participation_jitter": 0,
+                "messages_per_round_mode": "manual",
                 "messages_per_round": 1,
             },
         )
@@ -3285,7 +3286,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
                 "provider_name": "pytest AI 活跃",
                 "provider_type": "openai_compatible",
                 "base_url": "mock://group-ai",
-                "model_name": "pytest-chat",
+                "model_name": "mino-v2.5",
                 "api_key": "pytest",
                 "api_key_header": "Authorization",
             },
@@ -3306,6 +3307,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
                 "topic_hint": "continuous ai",
                 "participation_rate": 1,
                 "participation_jitter": 0,
+                "messages_per_round_mode": "manual",
                 "messages_per_round": 1,
             },
         )
