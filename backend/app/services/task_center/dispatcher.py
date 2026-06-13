@@ -276,14 +276,14 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
 
 
 def _hard_hourly_claim_rank():
+    hard_hourly_membership = (
+        Task.type_config["hard_hourly_target_enabled"].as_boolean().is_(True)
+        & Action.action_type.in_(MEMBERSHIP_ACTION_TYPES)
+    )
+    hard_hourly_send = Action.payload["hard_hourly_target"].as_boolean().is_(True)
     return case(
-        (
-            Task.type_config["hard_hourly_target_enabled"].as_boolean().is_(True)
-            & Action.action_type.in_(MEMBERSHIP_ACTION_TYPES),
-            0,
-        ),
-        (Action.payload["hard_hourly_target"].as_boolean().is_(True), 1),
-        else_=2,
+        (hard_hourly_membership | hard_hourly_send, 0),
+        else_=1,
     )
 
 
