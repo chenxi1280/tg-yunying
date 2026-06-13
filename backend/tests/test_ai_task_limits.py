@@ -32,6 +32,7 @@ from app.schemas import (
 from app.services.content_filters import ContentFilterResult
 from app.services.task_center import dispatcher
 from app.services.task_center.ai_generator import AiGenerationUnavailable, generate_group_reply_messages
+from app.services.task_center.channel_membership import gate_channel_membership
 from app.services.task_center.dispatcher import claim_actions, dispatch_action
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
@@ -707,6 +708,80 @@ def test_group_ai_hard_hourly_membership_to_send_dispatch_closed_loop(monkeypatc
     assert second_created == 3
     assert send_handled is True
     assert send_status == "success", send_result
+
+
+def test_group_ai_hard_hourly_retries_stale_membership_actions(monkeypatch):
+    monkeypatch.setattr("app.services.task_center.channel_membership._now", lambda: NOW)
+
+    with _session() as session:
+        _add_tenant(session)
+        session.add(
+            OperationTarget(
+                id=7,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id="-1007",
+                title="测试群目标",
+                can_send=True,
+                auth_status="已授权运营",
+            )
+        )
+        _add_group(session, account_count=3)
+        for link in session.scalars(select(TgGroupAccount).where(TgGroupAccount.group_id == 7)):
+            link.can_send = False
+        task = _add_group_task(
+            session,
+            {
+                "target_operation_target_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 3,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 3,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.add_all(
+            [
+                Action(
+                    id="old-membership-success",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    account_id=101,
+                    status="success",
+                    scheduled_at=NOW - timedelta(minutes=10),
+                    executed_at=NOW - timedelta(minutes=10),
+                    payload={"channel_target_id": 7, "channel_id": "-1007", "require_send": True},
+                ),
+                Action(
+                    id="open-membership",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    account_id=103,
+                    status="pending",
+                    scheduled_at=NOW + timedelta(minutes=30),
+                    payload={"channel_target_id": 7, "channel_id": "-1007", "require_send": True},
+                ),
+            ]
+        )
+        session.commit()
+
+        result = gate_channel_membership(session, task, session.get(OperationTarget, 7), require_send=True)
+        actions = list(
+            session.scalars(
+                select(Action)
+                .where(Action.action_type == "ensure_target_membership")
+                .order_by(Action.account_id.asc(), Action.created_at.asc())
+            )
+        )
+
+    assert result.ready is False
+    assert result.created == 2
+    assert [action.account_id for action in actions] == [101, 101, 102, 103]
+    assert [action.status for action in actions if action.account_id == 103] == ["pending"]
 
 
 def test_group_ai_does_not_fill_reply_candidate_shortage_with_normal_turns(monkeypatch):

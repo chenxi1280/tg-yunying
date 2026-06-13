@@ -21,6 +21,7 @@ LEGACY_ACTION_TYPE = "ensure_channel_membership"
 OPEN_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
 HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS = 2
 HARD_HOURLY_AUTO_VERIFICATION_RETRY_SECONDS = 300
+HARD_HOURLY_MEMBERSHIP_RETRY_SECONDS = 300
 AUTO_VERIFICATION_RETRY_STATUSES = {"待处理", "失败", "需人工处理"}
 
 
@@ -268,6 +269,8 @@ def channel_requires_membership_gate(channel: OperationTarget) -> bool:
 def target_requires_membership_gate(target: OperationTarget, *, require_send: bool = False) -> bool:
     if target.auth_status not in _AUTHORIZED_TARGET_VALUES:
         return True
+    if require_send and target.target_type == "group" and not bool(target.can_send):
+        return True
     if target.target_type == "channel":
         return not bool(target.can_send)
     return False
@@ -298,19 +301,56 @@ def _target_requires_membership_for_candidates(target: OperationTarget, candidat
 def _create_missing_membership_actions(session: Session, task: Task, channel: OperationTarget, candidates: list[TgAccount], *, require_send: bool = False) -> int:
     existing = _membership_actions_by_account(session, channel.id, task_id=task.id)
     group = linked_channel_group(session, channel, create=True)
-    link_stmt = select(TgGroupAccount.account_id).where(
-        TgGroupAccount.tenant_id == task.tenant_id,
-        TgGroupAccount.group_id == group.id,
-    )
+    joined_ids = _ready_membership_account_ids(session, task, channel, group, candidates, require_send=require_send)
+    now_value = _now()
+    missing = _membership_retry_candidates(candidates, existing, joined_ids, task, now_value)
+    random.shuffle(missing)
+    if not missing:
+        return 0
+    return _create_membership_actions_for_accounts(session, task, channel, missing, now_value, require_send=require_send)
+
+
+def _ready_membership_account_ids(
+    session: Session,
+    task: Task,
+    channel: OperationTarget,
+    group: TgGroup,
+    candidates: list[TgAccount],
+    *,
+    require_send: bool,
+) -> set[int]:
+    link_stmt = select(TgGroupAccount.account_id).where(TgGroupAccount.tenant_id == task.tenant_id, TgGroupAccount.group_id == group.id)
     if require_send:
         link_stmt = link_stmt.where(TgGroupAccount.can_send.is_(True))
     joined_ids = {int(account_id) for account_id in session.scalars(link_stmt)}
     joined_ids.update(_directly_ready_channel_account_ids(channel, candidates, require_send=require_send))
-    missing = [account for account in candidates if account.id not in existing]
-    random.shuffle(missing)
-    if not missing:
-        return 0
-    scheduled_times = schedule_times(len([account for account in missing if account.id not in joined_ids]), _membership_pacing_config(task))
+    return joined_ids
+
+
+def _membership_retry_candidates(
+    candidates: list[TgAccount],
+    existing: dict[int, Action],
+    joined_ids: set[int],
+    task: Task,
+    now_value,
+) -> list[TgAccount]:
+    return [
+        account
+        for account in candidates
+        if account.id not in joined_ids and _should_create_membership_attempt(existing.get(account.id), task, now_value)
+    ]
+
+
+def _create_membership_actions_for_accounts(
+    session: Session,
+    task: Task,
+    channel: OperationTarget,
+    missing: list[TgAccount],
+    now_value,
+    *,
+    require_send: bool,
+) -> int:
+    scheduled_times = schedule_times(len(missing), _membership_pacing_config(task))
     scheduled_index = 0
     created = 0
     for account in missing:
@@ -323,18 +363,28 @@ def _create_missing_membership_actions(session: Session, task: Task, channel: Op
             invite_link=_joinable_channel_reference(channel),
             require_send=require_send,
         )
-        if account.id in joined_ids:
-            action = create_membership_action(session, task, account.id, _now(), payload)
-            action.status = "skipped"
-            action.executed_at = _now()
-            action.result = {"success": True, "membership_status": "already_joined", "detail": f"账号已满足目标{_target_noun(channel)}准入"}
-            created += 1
-            continue
-        scheduled_at = scheduled_times[scheduled_index] if scheduled_index < len(scheduled_times) else _now()
+        scheduled_at = scheduled_times[scheduled_index] if scheduled_index < len(scheduled_times) else now_value
         scheduled_index += 1
-        create_membership_action(session, task, account.id, scheduled_at, payload)
+        action = create_membership_action(session, task, account.id, scheduled_at, payload)
+        if task.type == "group_ai_chat" and (task.type_config or {}).get("hard_hourly_target_enabled"):
+            action.result = {**(action.result or {}), "retry_reason": "hard_hourly_membership_retry"}
         created += 1
     return created
+
+
+def _should_create_membership_attempt(action: Action | None, task: Task, now_value) -> bool:
+    if action is None:
+        return True
+    if action.status in OPEN_STATUSES:
+        return False
+    if _is_failed_membership_action(action):
+        return False
+    if not _hard_hourly_membership_fast_track_enabled(task):
+        return False
+    last_attempt_at = action.executed_at or action.scheduled_at or action.created_at
+    if not last_attempt_at:
+        return True
+    return (now_value - last_attempt_at.replace(tzinfo=None)).total_seconds() >= HARD_HOURLY_MEMBERSHIP_RETRY_SECONDS
 
 
 def _reactivate_auto_verification_memberships(
