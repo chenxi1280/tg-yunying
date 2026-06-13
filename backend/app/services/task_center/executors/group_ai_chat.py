@@ -65,6 +65,7 @@ AI_CHAT_ROUND_INTERVALS_SECONDS = {
 HARD_HOURLY_MIN_BATCH_MESSAGES = 10
 HARD_HOURLY_PLAN_BATCH_MESSAGES = 10
 AI_GENERATION_REQUEST_BATCH_SIZE = 20
+RECENT_CYCLE_SCAN_LIMIT = 200
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -569,7 +570,8 @@ def _normal_generation_batches(total: int) -> list[int]:
 def _group_reply_target_pool(session: Session, task: Task, group: TgGroup, rows: list) -> list[dict]:
     targets = [_reply_target_from_context_row(row) for row in reversed(rows) if _reply_target_from_context_row(row)]
     targets.extend(_historical_group_reply_targets(session, task, group))
-    return _exclude_used_reply_targets(_dedupe_reply_targets(targets), _used_group_reply_target_ids(session, task, group))
+    deduped = _dedupe_reply_targets(targets)
+    return _exclude_used_reply_targets(deduped, _used_group_reply_target_ids(session, task, group, _reply_message_ids(deduped)))
 
 
 def _dedupe_reply_targets(targets: list[dict]) -> list[dict]:
@@ -588,6 +590,10 @@ def _exclude_used_reply_targets(targets: list[dict], used_ids: set[int]) -> list
     if not used_ids:
         return targets
     return [target for target in targets if int(target.get("message_id") or 0) not in used_ids]
+
+
+def _reply_message_ids(targets: list[dict]) -> set[int]:
+    return {message_id for target in targets if (message_id := int(target.get("message_id") or 0))}
 
 
 def _reply_target_from_context_row(row) -> dict | None:
@@ -627,22 +633,19 @@ def _historical_group_reply_targets(session: Session, task: Task, group: TgGroup
     return [target for action in rows if (target := _reply_target_from_action(action, group))]
 
 
-def _used_group_reply_target_ids(session: Session, task: Task, group: TgGroup) -> set[int]:
-    actions = session.scalars(
-        select(Action).where(
+def _used_group_reply_target_ids(session: Session, task: Task, group: TgGroup, candidate_ids: set[int]) -> set[int]:
+    if not candidate_ids:
+        return set()
+    rows = session.scalars(
+        select(Action.payload["reply_to_message_id"].as_integer()).where(
             Action.task_id == task.id,
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
+            Action.payload["group_id"].as_integer() == group.id,
+            Action.payload["reply_to_message_id"].as_integer().in_(candidate_ids),
         )
     )
-    used_ids: set[int] = set()
-    for action in actions:
-        if _payload_int(action, "group_id") != group.id:
-            continue
-        reply_to_message_id = _payload_int(action, "reply_to_message_id")
-        if reply_to_message_id:
-            used_ids.add(reply_to_message_id)
-    return used_ids
+    return {int(row) for row in rows if row}
 
 
 def _payload_int(action: Action, key: str) -> int:
@@ -1528,12 +1531,15 @@ def _similarity(left: str, right: str) -> float:
 
 def _next_cycle_index(session: Session, task: Task) -> int:
     max_index = 0
-    rows = session.scalars(select(Action.payload).where(Action.task_id == task.id, Action.task_type == "group_ai_chat"))
+    rows = session.scalars(
+        select(Action.payload["cycle_id"].as_string())
+        .where(Action.task_id == task.id, Action.task_type == "group_ai_chat", Action.action_type == "send_message")
+        .order_by(Action.created_at.desc())
+        .limit(RECENT_CYCLE_SCAN_LIMIT)
+    )
     prefix = f"{task.id}:cycle:"
-    for payload in rows:
-        if not isinstance(payload, dict):
-            continue
-        cycle_id = str(payload.get("cycle_id") or "")
+    for cycle_id in rows:
+        cycle_id = str(cycle_id or "")
         if not cycle_id.startswith(prefix):
             continue
         try:

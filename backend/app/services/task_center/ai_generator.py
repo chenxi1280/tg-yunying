@@ -20,6 +20,7 @@ GROUP_CHAT_REPLY_PURPOSE = "群引用回复"
 CHANNEL_COMMENT_PURPOSE = "频道评论"
 CHANNEL_COMMENT_REPLY_PURPOSE = "频道引用回复"
 AI_CONTENT_REQUEST_TIMEOUT_SECONDS = 120
+GROUP_CHAT_DEFAULT_MODEL = "mimo-v2.5"
 LONG_RUNNING_AI_PURPOSES = frozenset({GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE, CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE})
 SENSITIVE_CONTEXT_GUIDANCE = (
     "成人交易/性服务描述可以作为既有上下文理解和引用，但回复只能围绕原文已有事实做自然短评或追问；"
@@ -47,28 +48,39 @@ class AiGenerationUnavailable(RuntimeError):
     pass
 
 
-def _provider(session: Session, tenant_id: int, provider_id: int | None = None, model_name: str = "") -> tuple[AiProvider | None, TenantAiSetting | None]:
+def _provider(
+    session: Session,
+    tenant_id: int,
+    provider_id: int | None = None,
+    model_name: str = "",
+    *,
+    required_family: str = "",
+) -> tuple[AiProvider | None, TenantAiSetting | None]:
     setting = session.scalar(select(TenantAiSetting).where(TenantAiSetting.tenant_id == tenant_id))
     if not setting or not setting.ai_enabled:
         return None, setting
     normalized_model = normalize_ai_model_name(model_name)
     if provider_id:
         provider = session.get(AiProvider, provider_id)
-        if provider and provider.is_active and provider.health_status == AiProviderHealthStatus.HEALTHY.value:
+        if provider and provider.is_active and provider.health_status == AiProviderHealthStatus.HEALTHY.value and _provider_matches_family(provider, required_family):
             return provider, setting
     if normalized_model:
         provider = _provider_for_model(session, normalized_model)
         if provider:
             return provider, setting
+        if required_family:
+            return None, setting
     if setting.default_provider_id:
         provider = session.get(AiProvider, setting.default_provider_id)
-        if provider and provider.is_active and provider.health_status == AiProviderHealthStatus.HEALTHY.value:
+        if provider and provider.is_active and provider.health_status == AiProviderHealthStatus.HEALTHY.value and _provider_matches_family(provider, required_family):
             return provider, setting
     provider = session.scalar(
         select(AiProvider)
         .where(AiProvider.is_active.is_(True), AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value)
         .order_by(AiProvider.id.asc())
     )
+    if provider and not _provider_matches_family(provider, required_family):
+        provider = _first_provider_for_family(session, required_family)
     return provider, setting
 
 
@@ -87,13 +99,35 @@ def _provider_for_model(session: Session, model_name: str) -> AiProvider | None:
     return next((provider for provider in providers if _model_family(provider.model_name) == family or _model_family(provider.provider_name) == family or _model_family(provider.base_url) == family), None)
 
 
+def _provider_matches_family(provider: AiProvider, family: str) -> bool:
+    return not family or any(_model_family(value) == family for value in [provider.model_name, provider.provider_name, provider.base_url])
+
+
+def _first_provider_for_family(session: Session, family: str) -> AiProvider | None:
+    if not family:
+        return None
+    providers = session.scalars(
+        select(AiProvider)
+        .where(AiProvider.is_active.is_(True), AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value)
+        .order_by(AiProvider.id.asc())
+    ).all()
+    return next((provider for provider in providers if _provider_matches_family(provider, family)), None)
+
+
 def _model_family(value: str) -> str:
     normalized = value.lower()
     if "deepseek" in normalized:
         return "deepseek"
-    if "mimo" in normalized or "xiaomimimo" in normalized:
+    if _looks_like_mimo_family(normalized):
         return "mimo"
     return ""
+
+
+def _looks_like_mimo_family(normalized: str) -> bool:
+    if "xiaomimimo" in normalized or "xiaomimino" in normalized:
+        return True
+    tokens = {token for token in re.split(r"[^a-z0-9]+", normalized) if token}
+    return bool(tokens & {"mimo", "mino"})
 
 
 def generate_contents(
@@ -108,12 +142,53 @@ def generate_contents(
     purpose: str,
     target_label: str = "",
     system_prompt: str | None = None,
+    required_model_family: str = "",
 ) -> tuple[list[str], int]:
-    provider, setting = _provider(session, tenant_id, provider_id, model_name)
+    provider, setting = _provider(session, tenant_id, provider_id, model_name, required_family=required_model_family)
     if not provider or not setting:
         if purpose in LONG_RUNNING_AI_PURPOSES:
-            raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{_unavailable_reason(setting)}")
+            raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{_unavailable_reason(setting, required_model_family)}")
         return _fallback_contents(topic, requirements, purpose, target_label, count), 0
+    prompt, persona_set, tone = _prompt_profile(
+        count=count,
+        purpose=purpose,
+        target_label=target_label,
+        topic=topic,
+        requirements=requirements,
+    )
+    try:
+        result = ai_gateway.generate_drafts(
+            _ai_credentials(provider, model_name),
+            prompt,
+            count=count,
+            topic=topic or requirements,
+            tone=tone,
+            persona_set=persona_set,
+            temperature=max(float(setting.temperature or 0.7), 0.75) if purpose in LONG_RUNNING_AI_PURPOSES else setting.temperature,
+            max_tokens=_content_max_tokens(setting.max_tokens, count, purpose),
+            system_prompt=system_prompt,
+            timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS if purpose in LONG_RUNNING_AI_PURPOSES else DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        if purpose in LONG_RUNNING_AI_PURPOSES:
+            raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
+        raise
+    contents = _clean_generated_contents([candidate.content.strip() for candidate in result.candidates if candidate.content.strip()], purpose, count)
+    usage = getattr(result, "usage", None)
+    tokens = int(getattr(usage, "total_tokens", 0) or 0)
+    if purpose in LONG_RUNNING_AI_PURPOSES:
+        return contents, tokens
+    return contents[:count], tokens
+
+
+def _prompt_profile(
+    *,
+    count: int,
+    purpose: str,
+    target_label: str,
+    topic: str,
+    requirements: str,
+) -> tuple[str, list[str], str]:
     if purpose == GROUP_CHAT_PURPOSE:
         prompt = _group_chat_prompt(count, target_label, topic, requirements)
         persona_set = ["爱提问的群友", "补充细节的群友", "轻松接话的群友", "有经验的群友", "随口吐槽的群友"]
@@ -141,27 +216,17 @@ def generate_contents(
         )
         persona_set = ["老用户", "新用户", "活跃成员", "路人"]
         tone = "自然、口语化、不同账号表达不重复"
-    try:
-        credentials = ai_provider_credentials(provider)
-        if model_name.strip():
-            credentials = replace(credentials, model_name=normalize_ai_model_name(model_name))
-        result = ai_gateway.generate_drafts(
-            credentials,
-            prompt,
-            count=count,
-            topic=topic or requirements,
-            tone=tone,
-            persona_set=persona_set,
-            temperature=max(float(setting.temperature or 0.7), 0.75) if purpose in LONG_RUNNING_AI_PURPOSES else setting.temperature,
-            max_tokens=_content_max_tokens(setting.max_tokens, count, purpose),
-            system_prompt=system_prompt,
-            timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS if purpose in LONG_RUNNING_AI_PURPOSES else DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
-        )
-    except Exception as exc:
-        if purpose in LONG_RUNNING_AI_PURPOSES:
-            raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
-        raise
-    contents = [candidate.content.strip() for candidate in result.candidates if candidate.content.strip()]
+    return prompt, persona_set, tone
+
+
+def _ai_credentials(provider: AiProvider, model_name: str):
+    credentials = ai_provider_credentials(provider)
+    if model_name.strip():
+        return replace(credentials, model_name=normalize_ai_model_name(model_name))
+    return credentials
+
+
+def _clean_generated_contents(contents: list[str], purpose: str, count: int) -> list[str]:
     if purpose in {GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE}:
         contents = clean_group_chat_contents(contents)
         if not contents:
@@ -170,11 +235,7 @@ def generate_contents(
         contents = clean_channel_comment_contents(contents, limit=count)
         if not contents:
             raise AiGenerationUnavailable("AI 评论候选质量不达标，未创建评论")
-    usage = getattr(result, "usage", None)
-    tokens = int(getattr(usage, "total_tokens", 0) or 0)
-    if purpose in LONG_RUNNING_AI_PURPOSES:
-        return contents, tokens
-    return contents[:count], tokens
+    return contents
 
 
 def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: str) -> str:
@@ -257,11 +318,13 @@ def _channel_comment_reply_prompt(count: int, target_label: str, topic: str, req
     )
 
 
-def _unavailable_reason(setting: TenantAiSetting | None) -> str:
+def _unavailable_reason(setting: TenantAiSetting | None, required_family: str = "") -> str:
     if not setting:
         return "租户 AI 配置不存在"
     if not setting.ai_enabled:
         return "租户 AI 配置未启用"
+    if required_family == "mimo":
+        return "没有健康小米 MiMo/mino 供应商"
     return "没有健康 AI 供应商"
 
 
@@ -535,11 +598,12 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
         topic=config.get("topic_hint") or "群聊日常活跃",
         requirements=requirements,
         provider_id=config.get("ai_provider_id"),
-        model_name=str(config.get("ai_model") or ""),
+        model_name=_group_chat_model(config),
         count=count,
         purpose="群活跃续聊",
         target_label=target_label,
         system_prompt=_group_chat_system_prompt(slang_prompt),
+        required_model_family="mimo",
     )
     return _trim(contents, config.get("max_message_length")), tokens
 
@@ -570,13 +634,19 @@ def generate_group_reply_messages(
         topic=config.get("topic_hint") or "群引用回复",
         requirements=_sanitize_sensitive_context(requirements),
         provider_id=config.get("ai_provider_id"),
-        model_name=str(config.get("ai_model") or ""),
+        model_name=_group_chat_model(config),
         count=len(reply_targets),
         purpose=GROUP_CHAT_REPLY_PURPOSE,
         target_label=target_label,
         system_prompt=_group_chat_system_prompt(_slang_system_prompt(session, tenant_id, config)),
+        required_model_family="mimo",
     )
     return _trim(contents, config.get("max_message_length")), tokens
+
+
+def _group_chat_model(config: dict) -> str:
+    configured = str(config.get("ai_model") or "").strip()
+    return configured or GROUP_CHAT_DEFAULT_MODEL
 
 
 def _reply_target_line(index: int, item: dict) -> str:

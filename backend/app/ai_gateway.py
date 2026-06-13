@@ -60,9 +60,17 @@ MODEL_ALIASES = {
     "mimo v2.5": "mimo-v2.5",
     "mimo-v2.5": "mimo-v2.5",
     "xiaomi mimo-v2.5": "mimo-v2.5",
+    "mino v2.5": "mimo-v2.5",
+    "mino-v2.5": "mimo-v2.5",
+    "xiaomi mino v2.5": "mimo-v2.5",
+    "xiaomi mino-v2.5": "mimo-v2.5",
     "mimo v2.5 pro": "mimo-v2.5-pro",
     "mimo-v2.5-pro": "mimo-v2.5-pro",
     "xiaomi mimo-v2.5-pro": "mimo-v2.5-pro",
+    "mino v2.5 pro": "mimo-v2.5-pro",
+    "mino-v2.5-pro": "mimo-v2.5-pro",
+    "xiaomi mino v2.5 pro": "mimo-v2.5-pro",
+    "xiaomi mino-v2.5-pro": "mimo-v2.5-pro",
 }
 DEFAULT_AI_REQUEST_TIMEOUT_SECONDS = 30
 

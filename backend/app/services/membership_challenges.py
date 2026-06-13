@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +22,10 @@ from ._common import _now, ai_gateway, gateway
 from .ai_config import ai_provider_credentials
 
 MIN_IMAGE_VERIFICATION_CONFIDENCE = 0.70
+CN_NUMBER_CHARS = "零〇一二两三四五六七八九十"
+ARITHMETIC_PATTERN = re.compile(rf"(?P<left>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}})\s*(?P<op>[+\-＋－]|加|减)\s*(?P<right>\d{{1,3}}|[{CN_NUMBER_CHARS}]{{1,4}})")
+CODE_PATTERN = re.compile(r"(?:验证码|code|captcha|请输入)[^\d]{0,16}(?P<code>\d{3,8})", re.IGNORECASE)
+CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
 
 @dataclass(frozen=True)
@@ -167,6 +172,45 @@ def auto_resolve_image_verification(
     )
 
 
+def auto_resolve_text_verification(
+    session: Session,
+    task: VerificationTask,
+    account: TgAccount,
+    credentials: Any,
+    *,
+    reader_candidates: list[tuple[TgAccount, Any]] | None = None,
+) -> OperationResult:
+    read_result = read_challenge_context_with_fallback(
+        session,
+        task,
+        account,
+        credentials,
+        reader_candidates=reader_candidates,
+    )
+    answer = _text_verification_answer(task, read_result.context)
+    if not answer:
+        detail = read_result.context.get("read_failure_detail") or "未从验证上下文识别到可提交的文本答案"
+        task.status = "需人工处理"
+        task.failure_detail = str(detail)
+        record_challenge_attempt(session, task, account, read_result.context, status="text_answer_missing")
+        return OperationResult(False, "需人工处理", "verification_answer_missing", str(detail))
+    result = gateway.submit_verification_response(account.id, task.target_peer_id, answer, account.session_ciphertext, credentials)
+    record_challenge_attempt(
+        session,
+        task,
+        account,
+        read_result.context,
+        answer_text=answer,
+        answer_source="rule",
+        challenge_type=_text_challenge_type(read_result.context),
+        status="text_answer_sent" if result.ok else "text_answer_send_failed",
+        result_detail=result.detail or result.failure_type,
+    )
+    if not result.ok:
+        return OperationResult(False, "需人工处理", result.failure_type or "verification_send_failed", result.detail)
+    return OperationResult(True, "已处理", detail=result.detail or "文本验证码已提交")
+
+
 def record_challenge_attempt(
     session: Session,
     task: VerificationTask,
@@ -177,6 +221,8 @@ def record_challenge_attempt(
     answer_text: str = "",
     confidence: float = 0.0,
     model_name: str = "",
+    answer_source: str = "",
+    challenge_type: str = "",
     status: str,
     result_detail: str = "",
 ) -> None:
@@ -187,7 +233,7 @@ def record_challenge_attempt(
             verification_task_id=task.id,
             account_id=account.id,
             group_id=task.group_id,
-            challenge_type="image_captcha" if image_message else "context",
+            challenge_type=challenge_type or ("image_captcha" if image_message else "context"),
             question_hash=_question_hash(task, image_message),
             question_snapshot=task.detected_reason or "",
             context_status=str(context.get("context_status") or ""),
@@ -196,7 +242,7 @@ def record_challenge_attempt(
             media_message_id=str(image_message.get("media_message_id") or ""),
             media_fingerprint=str(image_message.get("media_fingerprint") or ""),
             media_mime_type=str(image_message.get("media_mime_type") or ""),
-            answer_source="mimo" if answer_text else "",
+            answer_source=answer_source or ("mimo" if answer_text else ""),
             answer_text=answer_text,
             confidence=confidence,
             model_name=model_name,
@@ -235,6 +281,50 @@ def _context_payload(
     }
 
 
+def _text_verification_answer(task: VerificationTask, context: dict[str, Any]) -> str:
+    texts = [task.detected_reason or "", task.failure_detail or ""]
+    texts.extend(str(message.get("text") or "") for message in context.get("messages") or [] if isinstance(message, dict))
+    combined = "\n".join(text for text in texts if text)
+    return _arithmetic_answer(combined) or _code_answer(combined)
+
+
+def _arithmetic_answer(text: str) -> str:
+    match = ARITHMETIC_PATTERN.search(text)
+    if not match:
+        return ""
+    left = _number_value(match.group("left"))
+    right = _number_value(match.group("right"))
+    if left is None or right is None:
+        return ""
+    result = left + right if match.group("op") in {"+", "＋", "加"} else left - right
+    return str(result) if 0 <= result <= 9999 else ""
+
+
+def _number_value(raw: str) -> int | None:
+    if raw.isdigit():
+        return int(raw)
+    if raw == "十":
+        return 10
+    if "十" in raw:
+        left, _, right = raw.partition("十")
+        tens = CN_DIGITS.get(left, 1 if left == "" else None)
+        ones = CN_DIGITS.get(right, 0 if right == "" else None)
+        return tens * 10 + ones if tens is not None and ones is not None else None
+    if len(raw) == 1:
+        return CN_DIGITS.get(raw)
+    return None
+
+
+def _code_answer(text: str) -> str:
+    match = CODE_PATTERN.search(text)
+    return match.group("code") if match else ""
+
+
+def _text_challenge_type(context: dict[str, Any]) -> str:
+    texts = " ".join(str(message.get("text") or "") for message in context.get("messages") or [] if isinstance(message, dict))
+    return "arithmetic_captcha" if _arithmetic_answer(texts) else "text_captcha"
+
+
 def _context_status(messages: list[dict[str, Any]]) -> tuple[str, str]:
     if messages:
         return "ok", ""
@@ -254,7 +344,10 @@ def _mimo_vision_provider(session: Session) -> AiProvider | None:
 
 def _looks_like_mimo_provider(provider: AiProvider) -> bool:
     text = " ".join([provider.provider_name or "", provider.model_name or "", provider.base_url or ""]).lower()
-    return "mimo" in text or "xiaomimimo" in text
+    if "xiaomimimo" in text or "xiaomimino" in text:
+        return True
+    tokens = {token for token in re.split(r"[^a-z0-9]+", text) if token}
+    return bool(tokens & {"mimo", "mino"})
 
 
 def _latest_context_image(messages: list[dict[str, Any]]) -> dict[str, Any] | None:

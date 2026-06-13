@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 from dataclasses import dataclass
 from uuid import uuid4
@@ -20,7 +21,7 @@ from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
 from app.services.developer_apps import credentials_for_account
 from app.services.ai_config import get_scheduling_setting
-from app.services.membership_challenges import auto_resolve_image_verification, record_challenge_attempt
+from app.services.membership_challenges import auto_resolve_image_verification, auto_resolve_text_verification, record_challenge_attempt
 from app.services.verification import create_verification_task
 from app.timezone import BEIJING_TZ
 
@@ -52,12 +53,30 @@ _COMMENT_MEMBERSHIP_REQUIRED_MARKERS = (
 )
 _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS = (
     "未关注",
+    "关注",
+    "follow",
+    "subscribe",
     "未加入目标频道",
     "无法进入关联讨论区",
     "缓存频道不可访问",
 )
 _GROUP_SEND_BUTTON_VERIFICATION_MARKERS = ("按钮", "button", "click", "点击")
 _GROUP_SEND_REPLY_VERIFICATION_MARKERS = ("/start", "发送验证回复", "send reply")
+_GROUP_SEND_TEXT_VERIFICATION_MARKERS = (
+    "验证码",
+    "验证问题",
+    "验证回复",
+    "请输入",
+    "输入",
+    "算数",
+    "算术",
+    "加减",
+    "计算",
+    "结果",
+    "等于",
+    "captcha",
+    "code",
+)
 _GROUP_SEND_IMAGE_VERIFICATION_MARKERS = (
     "图片验证码",
     "图形验证码",
@@ -586,6 +605,9 @@ def _recover_group_send_permission_with_linked_channel(
         return probe_result
     if not _auto_follow_required_channel_enabled(session, action):
         return probe_result
+    required_channels = _required_channel_references(detail)
+    if required_channels:
+        return _follow_required_channels_and_reprobe(session, action, account, credentials, payload, probe_result, required_channels)
     follow = getattr(gateway, "ensure_linked_channel_membership", None)
     if not callable(follow):
         return probe_result
@@ -596,6 +618,46 @@ def _recover_group_send_permission_with_linked_channel(
     if reprobe.ok:
         return OperationResult(True, detail=followed.detail or "已关注关联频道并通过群发言验证")
     return OperationResult(False, "失败", reprobe.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, reprobe.detail or detail)
+
+
+def _follow_required_channels_and_reprobe(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    credentials,
+    payload: EnsureChannelMembershipPayload,
+    probe_result,
+    required_channels: list[str],
+):
+    for channel_ref in required_channels:
+        followed = gateway.ensure_channel_membership(account.id, channel_ref, account.session_ciphertext, credentials, invite_link=channel_ref)
+        if not followed.ok:
+            detail = followed.detail or followed.failure_type or probe_result.detail
+            return OperationResult(False, "失败", followed.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, detail)
+    reprobe = gateway.probe_target_capabilities(account.id, payload.channel_id, payload.target_type, account.session_ciphertext, credentials)
+    if reprobe.ok:
+        action.result = {**(action.result or {}), "required_channels_followed": required_channels}
+        return OperationResult(True, detail=f"已关注 {len(required_channels)} 个必需频道并通过群发言验证")
+    detail = reprobe.detail or reprobe.failure_type or probe_result.detail
+    return OperationResult(False, "失败", reprobe.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, detail)
+
+
+def _required_channel_references(detail: str) -> list[str]:
+    refs: list[str] = []
+    refs.extend(match.group("username") for match in re.finditer(r"@(?P<username>[A-Za-z0-9_]{4,})", detail or ""))
+    refs.extend(match.group("username") for match in re.finditer(r"(?:https?://)?(?:t\.me|telegram\.me)/(?!joinchat/|\+)(?P<username>[A-Za-z0-9_]{4,})", detail or ""))
+    refs.extend(_private_invite_ref(match.group(0)) for match in re.finditer(r"(?:https?://)?(?:t\.me|telegram\.me)/(?:joinchat/|\+)[A-Za-z0-9_-]{8,}", detail or ""))
+    deduped: list[str] = []
+    for ref in refs:
+        normalized = ref.strip().strip("/.,，。；;)")
+        if normalized and normalized not in deduped:
+            deduped.append(normalized)
+    return deduped
+
+
+def _private_invite_ref(raw: str) -> str:
+    value = raw.strip().strip("/.,，。；;)")
+    return value if value.startswith("http") else f"https://{value}"
 
 
 def _handle_group_send_permission_denied(
@@ -737,6 +799,8 @@ def _try_auto_group_send_verification(ctx: MembershipDispatchContext, verificati
             audit(ctx.session, tenant_id=ctx.action.tenant_id, actor="system", action="图形验证码转人工", target_type="verification_task", target_id=str(verification_task.id), detail=detail)
             return OperationResult(False, "需人工处理", FailureType.GROUP_PERMISSION_DENIED.value, detail)
         return _try_auto_image_verification(ctx, verification_task)
+    if verification_task.suggested_action == "发送验证回复":
+        return _try_auto_text_verification(ctx, verification_task)
     result = gateway.resolve_verification_task(
         ctx.account.id,
         verification_task.suggested_action,
@@ -755,6 +819,31 @@ def _try_auto_group_send_verification(ctx: MembershipDispatchContext, verificati
     if reprobe.ok:
         _record_group_send_permission_allowed(ctx.session, ctx.action, ctx.account, ctx.payload)
         return OperationResult(True, "已完成", detail=result.detail or reprobe.detail or "verification_resolved")
+    verification_task.status = "失败"
+    verification_task.failure_detail = reprobe.detail or reprobe.failure_type
+    return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, verification_task.failure_detail)
+
+
+def _try_auto_text_verification(ctx: MembershipDispatchContext, verification_task):
+    readers = _image_verification_reader_candidates(ctx.session, verification_task, ctx.account)
+    result = auto_resolve_text_verification(
+        ctx.session,
+        verification_task,
+        ctx.account,
+        ctx.credentials,
+        reader_candidates=readers,
+    )
+    verification_task.status = result.status
+    verification_task.failure_detail = result.detail or result.failure_type
+    if result.status != "需人工处理":
+        verification_task.handled_at = _now()
+    audit(ctx.session, tenant_id=ctx.action.tenant_id, actor="system", action="自动处理文本验证", target_type="verification_task", target_id=str(verification_task.id), detail=f"{result.status}:{verification_task.failure_detail}")
+    if not result.ok:
+        return OperationResult(False, result.status, FailureType.GROUP_PERMISSION_DENIED.value, verification_task.failure_detail)
+    reprobe = gateway.probe_target_capabilities(ctx.account.id, ctx.payload.channel_id, ctx.payload.target_type, ctx.account.session_ciphertext, ctx.credentials)
+    if reprobe.ok:
+        _record_group_send_permission_allowed(ctx.session, ctx.action, ctx.account, ctx.payload)
+        return OperationResult(True, "已完成", detail=result.detail or reprobe.detail or "text_verification_resolved")
     verification_task.status = "失败"
     verification_task.failure_detail = reprobe.detail or reprobe.failure_type
     return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, verification_task.failure_detail)
@@ -804,8 +893,6 @@ def _record_image_reprobe_attempt(ctx: MembershipDispatchContext, verification_t
 
 def _group_send_verification_action(detail: str) -> str:
     normalized = str(detail or "").lower()
-    if any(marker.lower() in normalized for marker in _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS):
-        return "关注频道"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_IMAGE_VERIFICATION_MARKERS):
         return "识别图形验证码"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_RETRYABLE_VERIFICATION_MARKERS):
@@ -814,6 +901,10 @@ def _group_send_verification_action(detail: str) -> str:
         return "点击按钮"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_REPLY_VERIFICATION_MARKERS):
         return "发送验证回复"
+    if any(marker.lower() in normalized for marker in _GROUP_SEND_TEXT_VERIFICATION_MARKERS):
+        return "发送验证回复"
+    if any(marker.lower() in normalized for marker in _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS):
+        return "关注频道"
     return "人工处理"
 
 

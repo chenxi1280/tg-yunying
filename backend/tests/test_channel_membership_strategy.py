@@ -6,10 +6,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, VerificationTask
+from app.integrations.telegram import OperationResult
+from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center.channel_membership import channel_membership_summary, gate_channel_membership
+from app.services.task_center.payloads import EnsureChannelMembershipPayload
 
 
 def test_group_ai_membership_strategy_can_disable_auto_join_actions() -> None:
@@ -71,6 +73,152 @@ def test_group_ai_membership_strategy_disables_auto_follow_and_verification_help
 
         assert dispatcher._auto_follow_required_channel_enabled(session, action) is False
         assert dispatcher._auto_verification_enabled(session, action) is False
+
+
+def test_group_send_verification_classifies_arithmetic_captcha_as_reply() -> None:
+    assert dispatcher._group_send_verification_action("请输入 3 + 5 的结果后才能发言") == "发送验证回复"
+    assert dispatcher._group_send_verification_action("加减验证码：9-4=?") == "发送验证回复"
+    assert dispatcher._group_send_verification_action("请先关注 @alpha @beta 后输入 3+5") == "发送验证回复"
+
+
+def test_group_send_permission_follows_multiple_required_channels(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    followed: list[str] = []
+    probes: list[str] = []
+
+    def fake_follow(_account_id, channel_peer_id, *_args, **_kwargs):
+        followed.append(channel_peer_id)
+        return OperationResult(True, "已处理", detail=f"followed:{channel_peer_id}")
+
+    def fake_probe(_account_id, target_peer_id, _target_type, *_args, **_kwargs):
+        probes.append(target_peer_id)
+        return OperationResult(True, detail="可发言")
+
+    monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", fake_follow)
+    monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", fake_probe)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-multi-follow", tenant_id=1, name="多频道准入", type="group_ai_chat", status="running", type_config={"auto_follow_required_channel": True}))
+        action = Action(id="membership-multi-follow", tenant_id=1, task_id="task-multi-follow", task_type="group_ai_chat", action_type="ensure_target_membership", account_id=11)
+        account = TgAccount(id=11, tenant_id=1, display_name="账号11", phone_masked="11", status="在线", session_ciphertext="session")
+        session.add_all([action, account])
+        session.commit()
+
+        result = dispatcher._recover_group_send_permission_with_linked_channel(
+            session,
+            action,
+            account,
+            object(),
+            EnsureChannelMembershipPayload(channel_id="-100999", channel_target_id=999, target_type="group", target_display="目标群", require_send=True),
+            OperationResult(False, "失败", "group_permission_denied", "需要先关注 @alpha、https://t.me/beta_channel 和 t.me/+InviteHash123 才能发言"),
+        )
+
+    assert result.ok is True
+    assert followed == ["alpha", "beta_channel", "https://t.me/+InviteHash123"]
+    assert probes == ["-100999"]
+
+
+def test_auto_text_verification_extracts_arithmetic_answer_and_rechecks(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    submitted: list[str] = []
+
+    def fake_context(_account_id, *_args, **_kwargs):
+        return [{"message_id": 5, "sender": "验证机器人", "text": "入群验证：3 + 5 = ?", "sent_at": None}]
+
+    def fake_submit(_account_id, _peer, response_text, *_args, **_kwargs):
+        submitted.append(response_text)
+        return OperationResult(True, "已处理", detail="答案已提交")
+
+    def fake_probe(_account_id, _peer, _target_type, *_args, **_kwargs):
+        return OperationResult(True, detail="复检可发言")
+
+    monkeypatch.setattr("app.services.membership_challenges.gateway.fetch_verification_context", fake_context)
+    monkeypatch.setattr("app.services.membership_challenges.gateway.submit_verification_response", fake_submit)
+    monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", fake_probe)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(id=801, tenant_id=1, tg_peer_id="-100801", title="验证群", group_type="supergroup", auth_status="已授权运营", can_send=False)
+        target = OperationTarget(id=901, tenant_id=1, target_type="group", tg_peer_id="-100801", title="验证群", auth_status="只读", can_send=False)
+        task = Task(id="task-text-verify", tenant_id=1, name="文本验证", type="group_ai_chat", status="running", type_config={"auto_resolve_verification": True})
+        account = TgAccount(id=31, tenant_id=1, display_name="账号31", phone_masked="31", status="在线", session_ciphertext="session")
+        action = Action(id="membership-text-verify", tenant_id=1, task_id=task.id, task_type="group_ai_chat", action_type="ensure_target_membership", account_id=31)
+        verification = VerificationTask(
+            tenant_id=1,
+            account_id=31,
+            group_id=group.id,
+            verification_type="群发言权限",
+            detected_reason="入群验证：3 + 5 = ?",
+            suggested_action="发送验证回复",
+            target_peer_id=group.tg_peer_id,
+            target_display=group.title,
+            status="待处理",
+        )
+        session.add_all([group, target, task, account, action, verification])
+        session.add(TgGroupAccount(tenant_id=1, group_id=group.id, account_id=account.id, can_send=False))
+        session.commit()
+
+        ctx = dispatcher.MembershipDispatchContext(
+            session,
+            action,
+            account,
+            object(),
+            EnsureChannelMembershipPayload(channel_id=group.tg_peer_id, channel_target_id=target.id, target_type="group", target_display=group.title, require_send=True),
+            None,
+        )
+        result = dispatcher._try_auto_group_send_verification(ctx, verification)
+
+    assert result.ok is True
+    assert submitted == ["8"]
+
+
+def test_auto_text_verification_extracts_chinese_arithmetic_answer(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    submitted: list[str] = []
+
+    monkeypatch.setattr("app.services.membership_challenges.gateway.fetch_verification_context", lambda *_args, **_kwargs: [{"message_id": 5, "sender": "验证机器人", "text": "入群验证：三加五等于多少", "sent_at": None}])
+    monkeypatch.setattr("app.services.membership_challenges.gateway.submit_verification_response", lambda _account_id, _peer, response_text, *_args, **_kwargs: submitted.append(response_text) or OperationResult(True, "已处理", detail="答案已提交"))
+    monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(True, detail="复检可发言"))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(id=802, tenant_id=1, tg_peer_id="-100802", title="中文验证群", group_type="supergroup", auth_status="已授权运营", can_send=False)
+        target = OperationTarget(id=902, tenant_id=1, target_type="group", tg_peer_id="-100802", title="中文验证群", auth_status="只读", can_send=False)
+        task = Task(id="task-cn-text-verify", tenant_id=1, name="中文文本验证", type="group_ai_chat", status="running", type_config={"auto_resolve_verification": True})
+        account = TgAccount(id=32, tenant_id=1, display_name="账号32", phone_masked="32", status="在线", session_ciphertext="session")
+        action = Action(id="membership-cn-text-verify", tenant_id=1, task_id=task.id, task_type="group_ai_chat", action_type="ensure_target_membership", account_id=32)
+        verification = VerificationTask(
+            tenant_id=1,
+            account_id=32,
+            group_id=group.id,
+            verification_type="群发言权限",
+            detected_reason="入群验证：三加五等于多少",
+            suggested_action="发送验证回复",
+            target_peer_id=group.tg_peer_id,
+            target_display=group.title,
+            status="待处理",
+        )
+        session.add_all([group, target, task, account, action, verification, TgGroupAccount(tenant_id=1, group_id=group.id, account_id=account.id, can_send=False)])
+        session.commit()
+
+        result = dispatcher._try_auto_group_send_verification(
+            dispatcher.MembershipDispatchContext(
+                session,
+                action,
+                account,
+                object(),
+                EnsureChannelMembershipPayload(channel_id=group.tg_peer_id, channel_target_id=target.id, target_type="group", target_display=group.title, require_send=True),
+                None,
+            ),
+            verification,
+        )
+
+    assert result.ok is True
+    assert submitted == ["8"]
 
 
 def test_membership_permission_denied_skip_counts_as_failed() -> None:

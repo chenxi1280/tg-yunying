@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
+from app.integrations.telegram import OperationResult, SendResult
 from app.database import Base
 from app.models import (
     AccountStatus,
@@ -29,8 +30,9 @@ from app.schemas import (
     TaskSettingsUpdate,
 )
 from app.services.content_filters import ContentFilterResult
+from app.services.task_center import dispatcher
 from app.services.task_center.ai_generator import AiGenerationUnavailable, generate_group_reply_messages
-from app.services.task_center.dispatcher import dispatch_action
+from app.services.task_center.dispatcher import claim_actions, dispatch_action
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.service import precheck_task_creation, reset_task, update_group_ai_chat_config
@@ -573,6 +575,138 @@ def test_group_ai_excludes_already_used_reply_targets_across_rounds(monkeypatch)
     assert created == 1
     assert [item["message_id"] for item in captured_reply_targets] == [43]
     assert [action.payload["reply_to_message_id"] for action in actions] == [43]
+
+
+def test_group_ai_reply_target_check_does_not_scan_irrelevant_history(monkeypatch):
+    captured_reply_targets: list[dict] = []
+
+    def fake_generate_group_reply_messages(_session, _tenant_id, _config, *, reply_targets: list[dict], target_label: str, history: str):
+        captured_reply_targets.extend(dict(item) for item in reply_targets)
+        return [f"回复 {item['author']}：{item['preview']}" for item in reply_targets], 0
+
+    def fail_on_irrelevant_history(action, key: str) -> int:
+        if str(action.id).startswith("irrelevant-history-"):
+            raise AssertionError("reply target lookup loaded irrelevant historical action payloads")
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        raw = str(payload.get(key) or "").strip()
+        return int(raw) if raw.isdigit() else 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_reply_messages", fake_generate_group_reply_messages, raising=False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._payload_int", fail_on_irrelevant_history)
+    with _session() as session:
+        _add_tenant(session)
+        _add_group(session, account_count=1)
+        task = _add_group_task(
+            session,
+            {
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 1,
+                "reply_min_per_round": 1,
+                "participation_rate": 1,
+                "participation_jitter": 0,
+            },
+        )
+        for index in range(250):
+            session.add(
+                Action(
+                    id=f"irrelevant-history-{index}",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=101,
+                    status="success",
+                    payload={"group_id": 7, "message_text": f"历史 {index}", "reply_to_message_id": 10_000 + index},
+                    result={"remote_message_id": 20_000 + index},
+                    executed_at=NOW - timedelta(minutes=index + 20),
+                )
+            )
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+
+    assert created == 1
+    assert [item["message_id"] for item in captured_reply_targets] == [44]
+
+
+def test_group_ai_hard_hourly_membership_to_send_dispatch_closed_loop(monkeypatch):
+    dispatcher._ACTION_RESERVATIONS.clear()
+    dispatcher._IN_FLIGHT_ACCOUNTS.clear()
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        seeds = ["晚点还有安排吗", "我看群里刚才挺热闹", "这个时间大家都在吧"]
+        return [seeds[index % len(seeds)] for index in range(count)], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: NOW)
+    monkeypatch.setattr("app.services.task_center.dispatcher._now", lambda: NOW)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+    monkeypatch.setattr("app.services.task_center.dispatcher.credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.ensure_channel_membership", lambda *_args, **_kwargs: OperationResult(True, "已处理", detail="joined"))
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(True, detail="可发言"))
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", lambda *_args, **_kwargs: SendResult(True, remote_message_id="tg-ok"))
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message_to_target", lambda *_args, **_kwargs: SendResult(True, remote_message_id="tg-ok"))
+
+    with _session() as session:
+        _add_tenant(session)
+        session.add(
+            OperationTarget(
+                id=7,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id="-1007",
+                title="测试群目标",
+                can_send=False,
+                auth_status="只读",
+            )
+        )
+        _add_group(session, account_count=3)
+        group = session.get(TgGroup, 7)
+        group.can_send = False
+        group.slowmode_seconds = None
+        for link in session.scalars(select(TgGroupAccount).where(TgGroupAccount.group_id == 7)):
+            link.can_send = False
+        task = _add_group_task(
+            session,
+            {
+                "target_operation_target_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 3,
+                "reply_min_per_round": 0,
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 3,
+                "hard_hourly_strategy": "force_planning",
+            },
+        )
+        session.commit()
+
+        first_created = build_group_ai_chat_plan(session, task)
+        membership_actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.action_type == "ensure_target_membership")))
+        first_send_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id, Action.action_type == "send_message"))
+        membership_results = [dispatch_action(session, action) for action in membership_actions]
+        session.refresh(group)
+        send_links = list(session.scalars(select(TgGroupAccount).where(TgGroupAccount.group_id == 7)))
+
+        second_created = build_group_ai_chat_plan(session, task)
+        [send_action] = claim_actions(session, limit=1, worker_id="hard-hourly-test")
+        send_handled = dispatch_action(session, send_action)
+        group_can_send = group.can_send
+        links_can_send = all(link.can_send for link in send_links)
+        send_status = send_action.status
+        send_result = send_action.result
+
+    assert first_created >= 1
+    assert first_send_count == 0
+    assert membership_results == [True, True, True]
+    assert group_can_send is True
+    assert links_can_send is True
+    assert second_created == 3
+    assert send_handled is True
+    assert send_status == "success", send_result
 
 
 def test_group_ai_does_not_fill_reply_candidate_shortage_with_normal_turns(monkeypatch):

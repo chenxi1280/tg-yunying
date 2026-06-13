@@ -9,6 +9,8 @@
 - 系统可以强推规划，但不能绕过账号安全、目标权限、TG 限制、内容风控和 AI 质量检查。
 - 运营人员看到的 pending 必须拆成“当前小时待执行”“未来计划”“已过期未执行”。
 - 任务中心是执行事实源，运营中心负责聚合和处理影响。
+- 3 个线上 AI 活跃群必须按端到端链路巡检：入群完成、验证完成、`can_send` 判定、小米 MiMo/Mino draft 成功、dispatcher 消化、硬小时目标达成。
+- “已入群”“验证已提交”“pending 已创建”都不是完成；只有当前小时 `send_message success` 达到目标才是硬目标达成。
 
 ## 2. 关键指标
 
@@ -24,6 +26,7 @@
 | `hard_hourly_status` | `met` / `catching_up` / `blocked` / `missed` |
 | `hard_hourly_last_check_at` | 最近一次硬目标检查时间 |
 | `hard_hourly_last_planned_count` | 最近一次强推创建的发送动作数 |
+| `hard_hourly_pipeline` | 入群、验证、`can_send`、MiMo/Mino draft、dispatcher、硬目标分阶段状态 |
 | `hard_hourly_last_blockers` | 最近一次未补足原因分布 |
 | `hard_hourly_recent_buckets` | 最近 24 个小时的达标和阻塞摘要 |
 
@@ -97,10 +100,16 @@ suggested_action
 | `account_capacity` | 账号小时 / 日容量不足 | 增加账号、调整账号组、检查账号冷却 |
 | `account_unavailable` | 账号离线、受限、需重登、健康不可用 | 账号中心处理 |
 | `target_membership_pending` | 目标群入群 / 准入动作未完成 | 查看 membership 阶段 |
+| `target_join_pending` | 账号尚未真正加入目标群 | 检查邀请链接、目标解析、账号入群动作 |
+| `target_verification_pending` | 群管理验证未完成，包括验证码、加减验证、人工审批、关注频道要求 | 查看 verification task 和 membership item |
+| `target_verification_failed` | 自动验证失败或需要人工处理 | 查看验证码读取、MiMo/Mino 识别、提交和复检记录 |
+| `target_required_channel_pending` | 入群前要求关注一个或多个频道，尚未全部完成 | 查看每个必需频道的关注动作和结果 |
+| `target_can_send_blocked` | 已入群但账号仍不可发言、被禁言或 `can_send=false` | 复检群权限并更新账号-目标关系 |
 | `target_permission` | 目标群不可发、账号被禁言、权限不足 | 目标中心处理 |
 | `no_context` | 无真人上下文或无可用历史 | 开启硬目标暖场、补充学习来源 |
 | `quality_filter` | AI 候选被重复、低置信、事实锚点规则拦截 | 调整提示词 / 质量规则 |
 | `ai_generation_unavailable` | AI 服务不可用或生成失败 | 检查 AI 配置和供应商 |
+| `ai_mino_draft_unavailable` | 小米 MiMo/Mino 文本 draft 不可用、空内容或 malformed JSON | 检查 MiMo/Mino 供应商健康和任务 AI 配置 |
 | `content_policy` | 内容规则、敏感词、外链、@ 成员拦截 | 检查规则中心 |
 | `tg_rate_limit` | FloodWait、TG 限速或接口拒绝 | 等待冷却，降低目标或换号 |
 | `dispatcher_lag` | 已到计划时间但 dispatcher 未及时执行 | 检查 worker 和队列 |
@@ -145,6 +154,7 @@ GET /api/tasks/{task_id}/stats
 4. 缺口是否已经有待执行 action 覆盖。
 5. 是否存在 `hard_hourly_overdue_open_count`。
 6. 未达标原因是否集中在账号、目标、AI、质量或 dispatcher。
+7. 端到端阶段是否卡在入群、验证、`can_send`、MiMo/Mino draft 或 dispatcher。
 
 判断口径：
 
@@ -162,11 +172,13 @@ GET /api/tasks/{task_id}/stats
 2. 当前小时 action 明细。
 3. 失败 / 跳过 / unknown_after_send。
 4. membership 阶段。
-5. 账号容量和冷却。
-6. AI 生成记录和质量过滤。
-7. listener_runtime 最近采集时间。
-8. dispatcher worker 心跳。
-9. 最近 24 小时硬目标桶。
+5. verification 阶段：验证码、加减验证、关注多个频道、人工审批、MiMo/Mino 图片识别。
+6. `can_send` 复检结果和账号-目标关系。
+7. 账号容量和冷却。
+8. MiMo/Mino 文本 draft 记录和质量过滤。
+9. listener_runtime 最近采集时间。
+10. dispatcher worker 心跳。
+11. 最近 24 小时硬目标桶。
 
 ### 6.3 Action 明细口径
 排查“很多消息没发”时，必须拆分：
@@ -178,6 +190,9 @@ GET /api/tasks/{task_id}/stats
 失败发送
 跳过发送
 入群 / 关注前置动作
+验证码 / 加减验证 / 关注多个频道前置动作
+已入群但 can_send=false 的账号
+MiMo/Mino draft 成功 / 失败 / malformed JSON
 频道互动动作
 ```
 
@@ -223,12 +238,17 @@ GET /api/tasks/{task_id}/stats
 - pending 中存在 `ensure_target_membership`。
 - `membership_stage` 是 `membership_running` 或 `membership_partial`。
 - membership item 的失败原因包含群管理 bot、图形验证码、`captcha`、`challenge_required`、`manual_required` 或“需要验证”。
+- 账号已经加入目标群，但账号-目标关系仍未写回 `can_send=true`。
+- 验证消息要求先关注一个或多个频道，或要求回答加减验证 / 算术验证。
 
 处理：
 
 - 查看 membership-items。
 - 确认可入群账号数量。
 - 先把失败拆成关注频道、邀请链接失效、目标权限、群管理 bot 图片验证码、人工审批、账号限制和 Telegram API 失败，不得统一写成普通“加入失败”。
+- 入群完成只代表 membership 阶段通过；必须继续看 verification 阶段和 `can_send` 复检。`can_send=false` 时主发送动作不得创建，原因写为 `target_can_send_blocked`。
+- 需要关注多个频道时，每个必需频道都要有独立的 ensure membership 结果；任一频道未关注成功时，目标群状态仍是 `target_required_channel_pending`，不能把部分关注成功写成群准入完成。
+- 加减验证 / 算术验证应从最近验证消息中提取题目、生成答案、提交并复检 `can_send`；题目读取失败、答案低置信、提交失败或复检失败时，分别记录为读取 / 识别 / 提交 / 复检失败，不得合并成“验证失败”。
 - `target_admission_retry` 中出现“未解析到群关联频道”“仍未获群发言权限”或“群无权限或账号不可发言”时，先按疑似群管理验证处理：重新加入 / 复检触发当前验证，读取验证码上下文，图片验证码走 MiMo，提交后再复检；不能直接把整批账号标记为人工处理。
 - 如果准入执行项被标记为“已进入 TG 调用边界但本地结果未知”，先由恢复守护补偿复检目标能力。复检确认可发言的账号改为成功并写回可发言关系；复检仍失败或无法复检时才保留结果未知，避免把实际已加入账号当作失败缺口。
 - 如果页面显示“没有读取到最近验证聊天信息”，先按验证聊天读取空态处理：核对目标 peer、账号是否仍能读取群历史、验证消息是否已过期 / 被删除、账号 session 是否有效，以及是否出现 `GetHistoryRequest` 权限错误。
@@ -238,6 +258,7 @@ GET /api/tasks/{task_id}/stats
 - 对图片验证码账号，检查准入明细中的验证消息、图片摘要、MiMo 答案、置信度、发送结果和复检结果；缺少任一环节时按该环节记录失败原因。
 - MiMo 未配置、图片不可下载、识别低置信、答案发送失败或复检仍不可发言时，标记人工处理，不再自动反复尝试同一张验证码。
 - 主发送不足时记录 `target_membership_pending`，不应写成普通发送失败。
+- 只有入群完成、验证完成、必需频道关注完成且 `can_send=true` 后，才允许把该账号计入硬目标可发账号池。
 
 ### 7.4 AI 生成不足
 
@@ -248,10 +269,11 @@ GET /api/tasks/{task_id}/stats
 
 处理：
 
-- 检查 AI Provider 健康。
+- 检查小米 MiMo/Mino Provider 健康，确认任务 `ai_provider_id` 或租户默认供应商指向 MiMo/Mino。
 - 检查 prompt、目标画像、黑话模板和上下文。
 - 检查重复度、事实锚点和低置信静默规则。
-- 失败必须保留 `ai_generation_unavailable` 或 `quality_filter`，不能把目标当作已完成。
+- 失败必须保留 `ai_generation_unavailable`、`ai_mino_draft_unavailable` 或 `quality_filter`，不能把目标当作已完成。
+- MiMo/Mino 返回空内容、拒答文案、非 JSON draft、字段缺失或数量不足时，按 AI draft 阶段阻塞处理；不允许用本地模板、mock 文案或其他供应商补齐目标。
 
 ### 7.5 Dispatcher 延迟
 
@@ -298,6 +320,8 @@ GET /api/tasks/{task_id}/stats
 - 小时桶使用任务时区，且 aware / naive datetime 不会导致统计丢失。
 - 已过期 pending 不抵扣缺口。
 - 最近 24 小时桶能保留上一小时 missed 状态。
+- 目标群准入测试覆盖入群、验证码、加减验证、关注多个频道、`can_send=false` 阻塞和复检成功。
+- AI 生成测试覆盖小米 MiMo/Mino 健康供应商、malformed JSON、空内容和供应商不可用，不允许 mock 成功。
 
 ### 8.2 发布流程
 
@@ -314,6 +338,7 @@ master -> release -> push release -> GitHub Actions Deploy Production
 - 新硬目标测试任务可以创建。
 - 当前小时硬目标进度正确。
 - `/api/tasks`、`/api/tasks/{id}`、`/api/tasks/{id}/stats` 的硬目标字段一致。
+- 3 个线上 AI 活跃群逐一核对端到端阶段：入群、验证、`can_send`、MiMo/Mino draft、dispatcher、小时达标。
 - overview 24 小时活动统计仍为非零。
 
 ### 8.3 回滚口径
@@ -420,6 +445,39 @@ hourly_min_messages = 10
 - `/api/tasks/{id}` 不展示旧状态。
 - `/api/tasks/{id}/stats` 不展示旧状态。
 - 三个接口的目标、成功、待执行、缺口和状态一致。
+
+### 9.7 群准入验证场景
+
+配置：
+
+```text
+目标群需要验证码 / 加减验证 / 关注多个频道
+hourly_min_messages = 3
+```
+
+预期：
+
+- 系统先生成 `ensure_target_membership`，不会提前创建主发送动作。
+- 图片验证码使用 MiMo 视觉供应商；加减验证从最近验证消息读取题目并提交答案。
+- 需要关注多个频道时，每个频道关注动作独立展示成功 / 失败。
+- 验证提交后必须复检 `can_send`；复检通过后才进入 AI draft 和发送规划。
+- 任一环节失败时，`hard_hourly_last_blockers` 写入对应 membership / verification / can_send 原因。
+
+### 9.8 MiMo/Mino draft 场景
+
+配置：
+
+```text
+hourly_min_messages = 3
+目标群已 can_send
+MiMo/Mino Provider 健康
+```
+
+预期：
+
+- AI 活跃群文本 draft 使用小米 MiMo/Mino。
+- MiMo/Mino 返回可解析 JSON 且候选通过质量门时，创建硬目标发送动作。
+- MiMo/Mino 返回 malformed JSON、空内容、拒答或不可用时，任务记录 `ai_mino_draft_unavailable` / `ai_generation_unavailable`，不生成 mock 成功消息。
 
 ## 10. 数据核对 SQL 口径
 

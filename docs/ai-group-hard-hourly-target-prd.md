@@ -14,6 +14,8 @@
 - 未达标时必须展示真实原因，不允许把跳过、待执行、未知结果或失败伪装成成功。
 - 硬目标不能绕过账号安全、Telegram 明确限制、内容风控、目标权限和执行失败事实。
 - 任务中心和运营数据必须能区分“自然节奏未到”和“硬目标未达成”。
+- 线上指定的 3 个 AI 活跃群必须按同一条端到端链路验收：入群完成、验证完成、`can_send` 判定、MiMo/Mino draft 成功、发送动作被 dispatcher 消化、硬小时目标达成，任一阶段未完成都不能写成已达标。
+- AI 活跃群硬目标场景的文本 draft 和图片验证码识别统一使用小米 MiMo/Mino 健康供应商；供应商不可用、返回空内容、返回非 JSON draft 或图片识别失败时，必须暴露为 AI / 验证阻塞，不允许静默换成 mock、模板或其他供应商伪造成功。
 
 ## 3. 非目标
 
@@ -22,6 +24,7 @@
 - 不用 mock、模板成功或静默降级补足目标。
 - 不承诺在账号不可用、目标不可发、TG FloodWait、AI 生成失败或内容风控拒绝时仍能成功发送。
 - 不替代全局风控中心；硬目标只提高任务规划积极性，不能取消平台安全边界。
+- 不把“已加入目标群”当作“已可发送”。群成员关系、群管理验证、关联频道关注和 `can_send=true` 是独立验收门。
 
 ## 4. 核心概念
 
@@ -99,6 +102,21 @@ deficit = hourly_min_messages - success_current_hour - future_open_current_hour
 
 当 `deficit > 0` 时，Planner 必须尝试追加规划。
 
+### 4.5 端到端完成链路
+
+硬目标达成不是单一发送计数，而是以下阶段全部串通后的结果：
+
+| 阶段 | 完成条件 | 未完成原因码 |
+| --- | --- | --- |
+| 入群完成 | 账号已加入目标群或通过邀请链接进入目标群 | `target_join_pending` / `target_membership_pending` |
+| 验证完成 | 群管理 bot、验证码、加减验证、人工审批或关注频道要求已处理并复检通过 | `target_verification_pending` / `target_verification_failed` |
+| `can_send` 判定 | 账号-目标关系明确写回 `can_send=true`，且未被禁言 / 权限不足拦截 | `target_can_send_blocked` |
+| MiMo/Mino draft 成功 | 健康的小米 MiMo/Mino 供应商返回可解析、可通过质量门的 AI 候选 | `ai_generation_unavailable` / `quality_filter` |
+| 发送动作被 dispatcher 消化 | `send_message` action 已到计划时间并被 dispatcher claim / 执行 / 回写结果 | `dispatcher_lag` |
+| 硬小时目标达成 | 当前小时真实 `send_message success` 达到 `hourly_min_messages` | `hard_hourly_missed` |
+
+任务详情必须同时展示这些阶段，不能只展示一个泛化的“任务运行中”。当阶段卡住时，缺口仍保留在 `hard_hourly_deficit`，并把对应原因写入 `hard_hourly_last_blockers`。
+
 ## 5. 用户故事
 
 1. 运营人员创建 AI 活跃群任务时，可以设置“每小时最低发送量 60 条”。
@@ -153,6 +171,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 - 当前小时成功发送。
 - 当前小时已规划待执行。
 - 当前小时缺口。
+- 端到端阶段状态：入群、验证、`can_send`、MiMo/Mino draft、dispatcher、硬目标。
 - 最近一次强推规划时间。
 - 最近一次强推生成数量。
 - 最近一次未达标原因。
@@ -215,6 +234,14 @@ AI 活跃群任务卡片增加硬目标摘要：
   "hard_hourly_status": "catching_up",
   "hard_hourly_last_check_at": "2026-06-07T20:42:15+08:00",
   "hard_hourly_last_planned_count": 15,
+  "hard_hourly_pipeline": {
+    "membership": "ready",
+    "verification": "ready",
+    "can_send": "ready",
+    "ai_draft": "ready",
+    "dispatcher": "ready",
+    "hourly_target": "catching_up"
+  },
   "hard_hourly_last_blockers": {
     "account_capacity": 7,
     "quality_filter": 3,
@@ -287,6 +314,14 @@ AI 活跃群任务卡片增加硬目标摘要：
   -> 有缺口：进入强推规划
 ```
 
+进入强推规划前必须先执行目标准入门：
+
+- 目标群未加入时生成或复用 `ensure_target_membership`，不能直接规划发送。
+- 已加入但验证未完成时，继续处理验证码 / 加减验证 / 关注频道 / 人工审批队列。
+- 已加入且验证通过后，必须复检账号在目标群的 `can_send` 能力。
+- 只有 `can_send=true` 的账号可以进入 AI draft 和发送动作规划。
+- 硬目标模式可以加速准入动作和验证重试，但不能把未验证账号当成可发送账号。
+
 ### 8.2 强推规划
 
 强推规划要求：
@@ -307,13 +342,15 @@ AI 活跃群任务卡片增加硬目标摘要：
 - 如果没有任何可用上下文，允许使用目标画像、历史摘要和 bootstrap prompt 生成暖场内容。
 - 生成内容仍必须通过事实锚点、重复度、低置信度和内容规则检查。
 - 如果质量门拒绝所有候选，记录 `quality_filter` 或 `no_context_quality_blocked`，不能伪造发送。
+- 文本 draft 必须使用健康的小米 MiMo/Mino 供应商。若任务配置了非 MiMo/Mino 供应商或租户默认供应商不是 MiMo/Mino，硬目标任务应暴露配置错误或 AI 不可用；不得自动降级到 mock、本地模板或其他供应商。
 
 ### 8.4 账号和容量
 
 硬目标可以提高规划强度，但执行前仍必须检查：
 
 - 账号在线 / 可用。
-- 账号在目标群具备发送能力。
+- 账号已经完成入群、验证和关联频道关注要求。
+- 账号在目标群具备发送能力，且账号-目标关系明确为 `can_send=true`。
 - 账号全局冷却。
 - 账号小时 / 日容量。
 - 目标群频控。
@@ -344,6 +381,9 @@ AI 活跃群任务卡片增加硬目标摘要：
 | --- | --- |
 | `account_capacity` | 账号下一次容量窗口或 1 分钟后，取较早的可执行时间 |
 | `target_membership_pending` | membership 下一次计划时间或 1 分钟后 |
+| `target_join_pending` | 入群动作下一次计划时间或 1 分钟后 |
+| `target_verification_pending` | 验证读取 / 自动提交下一次计划时间或 1 分钟后 |
+| `target_can_send_blocked` | 权限复检或人工处理后重试 |
 | `no_context` | 30-60 秒后重试空闲续聊 / 暖场 |
 | `quality_filter` | 60-180 秒后重试，并记录过滤原因 |
 | `ai_generation_unavailable` | 1-5 分钟后重试 |
@@ -419,6 +459,8 @@ AI 活跃群任务卡片增加硬目标摘要：
 | `backend/app/services/task_center/config_fields.py` | 允许新字段通过任务配置白名单 |
 | `backend/app/services/task_center/precheck.py` | 返回硬目标容量预检摘要 |
 | `backend/app/services/task_center/executors/group_ai_chat.py` | 计算当前小时缺口、强推生成、压缩计划时间、写 action 标记 |
+| `backend/app/services/task_center/channel_membership.py` | AI 活跃群目标先完成入群、验证、关联频道关注和 `can_send` 复检 |
+| `backend/app/services/membership_challenges.py` | 图片验证码使用小米 MiMo/Mino，记录读取、识别、提交和复检结果 |
 | `backend/app/services/task_center/pacing.py` | 支持硬目标剩余窗口内的计划时间分配 |
 | `backend/app/services/task_center/stats.py` | 统一刷新当前小时和最近 24 小时硬目标 stats |
 | `backend/app/services/task_center/service.py` | 列表、详情、stats、reset、resume 使用同一统计口径 |
@@ -437,6 +479,11 @@ AI 活跃群任务卡片增加硬目标摘要：
 - 开启 `hourly_min_messages=60` 后，当前小时成功 + 待执行小于 60 时，planner 创建补量发送动作。
 - 补量动作带 `hard_hourly_target=true` 和小时桶。
 - 当前小时达标后，不再继续为硬目标追加动作。
+- 目标群未加入时先生成 / 执行 `ensure_target_membership`，发送动作不会绕过准入阶段。
+- 入群后如果遇到群管理 bot、图片验证码、加减验证、人工审批或要求关注多个频道，任务详情必须显示验证阶段和具体失败 / 等待原因。
+- 需要关注多个频道才能入群时，每个频道关注动作要有独立结果；全部必需频道满足后才允许复检目标群 `can_send`。
+- 验证完成但 `can_send=false` 时，不创建主发送动作，原因记录为 `target_can_send_blocked`。
+- 文本 draft 使用小米 MiMo/Mino 健康供应商；MiMo/Mino 不可用、返回空内容或 malformed JSON 时记录 `ai_generation_unavailable`，不得走 mock 或模板成功。
 - 当前小时无真人新上下文时，硬目标可以触发空闲续聊 / 暖场。
 - 质量过滤、内容规则、账号容量、目标权限和 TG 限制导致无法补足时，stats 记录原因。
 - `max_actions_per_hour` 小于硬目标时，不阻止硬目标规划，但 stats / 详情显示目标超过普通上限。
@@ -458,6 +505,9 @@ AI 活跃群任务卡片增加硬目标摘要：
 
 - 新建一个测试 AI 活跃群任务，设置较低硬目标，例如 3 条 / 小时，确认当前小时缺口会触发追加规划。
 - 设置高于账号容量的硬目标，确认系统不会伪造成功，会展示容量不足或 TG 限制。
+- 对 3 个线上 AI 活跃群逐一核对：入群完成、验证完成、`can_send`、MiMo/Mino draft、dispatcher 消化和硬目标完成度，不允许只用任务 running 或 pending 数量证明达标。
+- 用至少一个需要验证码 / 加减验证 / 关注多个频道的目标验证准入链路；未完成时应停在 membership / verification blocker，完成后应写回 `can_send=true` 并进入发送规划。
+- 人为让 MiMo/Mino 返回 malformed JSON 或关闭健康供应商时，任务必须显示 AI draft 阻塞，不能生成 mock 成功消息。
 - 对比 `/api/overview`、`/api/tasks`、`/api/tasks/{id}/stats` 和 action 明细，确认成功数、待执行数和缺口一致。
 - 暂停任务后，硬目标不再追加规划。
 - 恢复任务后，从恢复后的当前小时继续计算目标。
