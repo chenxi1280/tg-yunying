@@ -401,7 +401,8 @@ def _choose_capacity_slot(
     progress: dict[str, object],
     reservations: list[AccountCapacityReservation],
 ) -> tuple[object | None, datetime]:
-    available = _available_accounts_at(session, task, selected, planned_at, reservations)
+    candidate_limit = _capacity_candidate_limit(used_account_ids)
+    available = _available_accounts_at(session, task, selected, planned_at, reservations, limit=candidate_limit)
     account = _choose_turn_account(available, available, index, used_account_ids, allow_repeat)
     if account:
         return account, planned_at
@@ -414,9 +415,13 @@ def _choose_capacity_slot(
     )
     if not decision.defer_until or _defer_crosses_hard_hour(progress, decision.defer_until):
         return None, planned_at
-    deferred_available = _available_accounts_at(session, task, selected, decision.defer_until, reservations)
+    deferred_available = _available_accounts_at(session, task, selected, decision.defer_until, reservations, limit=candidate_limit)
     account = _choose_turn_account(deferred_available, deferred_available, index, used_account_ids, allow_repeat)
     return (account, decision.defer_until) if account else (None, planned_at)
+
+
+def _capacity_candidate_limit(used_account_ids: set[int]) -> int:
+    return max(1, len(used_account_ids) + 1)
 
 
 def _available_accounts_at(
@@ -425,6 +430,8 @@ def _available_accounts_at(
     selected: list,
     scheduled_at: datetime,
     reservations: list[AccountCapacityReservation],
+    *,
+    limit: int | None = None,
 ) -> list:
     return available_accounts_by_capacity(
         session,
@@ -432,6 +439,7 @@ def _available_accounts_at(
         accounts=selected,
         scheduled_at=scheduled_at,
         reservations=reservations,
+        limit=limit,
     )
 
 
