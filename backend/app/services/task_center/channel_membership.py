@@ -366,29 +366,32 @@ def _create_membership_actions_for_accounts(
     scheduled_times = schedule_times(len([account for account in missing if account.id not in joined_ids]), _membership_pacing_config(task))
     scheduled_index = 0
     created = 0
-    for account in missing:
-        payload = EnsureChannelMembershipPayload(
-            channel_id=channel.tg_peer_id,
-            channel_target_id=channel.id,
-            target_type=channel.target_type,
-            target_display=channel.title,
-            target_username=channel.username or "",
-            invite_link=_joinable_channel_reference(channel),
-            require_send=require_send,
-        )
-        if account.id in joined_ids:
-            action = create_membership_action(session, task, account.id, now_value, payload)
-            action.status = "skipped"
-            action.executed_at = now_value
-            action.result = {"success": True, "membership_status": "already_joined", "detail": f"账号已满足目标{_target_noun(channel)}准入"}
+    with session.no_autoflush:
+        for account in missing:
+            payload = EnsureChannelMembershipPayload(
+                channel_id=channel.tg_peer_id,
+                channel_target_id=channel.id,
+                target_type=channel.target_type,
+                target_display=channel.title,
+                target_username=channel.username or "",
+                invite_link=_joinable_channel_reference(channel),
+                require_send=require_send,
+            )
+            if account.id in joined_ids:
+                action = create_membership_action(session, task, account.id, now_value, payload, flush=False)
+                action.status = "skipped"
+                action.executed_at = now_value
+                action.result = {"success": True, "membership_status": "already_joined", "detail": f"账号已满足目标{_target_noun(channel)}准入"}
+                created += 1
+                continue
+            scheduled_at = scheduled_times[scheduled_index] if scheduled_index < len(scheduled_times) else now_value
+            scheduled_index += 1
+            action = create_membership_action(session, task, account.id, scheduled_at, payload, flush=False)
+            if task.type == "group_ai_chat" and (task.type_config or {}).get("hard_hourly_target_enabled"):
+                action.result = {**(action.result or {}), "retry_reason": "hard_hourly_membership_retry"}
             created += 1
-            continue
-        scheduled_at = scheduled_times[scheduled_index] if scheduled_index < len(scheduled_times) else now_value
-        scheduled_index += 1
-        action = create_membership_action(session, task, account.id, scheduled_at, payload)
-        if task.type == "group_ai_chat" and (task.type_config or {}).get("hard_hourly_target_enabled"):
-            action.result = {**(action.result or {}), "retry_reason": "hard_hourly_membership_retry"}
-        created += 1
+    if created:
+        session.flush()
     return created
 
 

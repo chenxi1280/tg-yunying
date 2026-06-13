@@ -10,7 +10,12 @@ from app.integrations.telegram import OperationResult
 from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
 from app.services.task_center import dispatcher
-from app.services.task_center.channel_membership import channel_membership_summary, gate_channel_membership, _reactivate_auto_verification_memberships
+from app.services.task_center.channel_membership import (
+    _create_membership_actions_for_accounts,
+    _reactivate_auto_verification_memberships,
+    channel_membership_summary,
+    gate_channel_membership,
+)
 from app.services.task_center.payloads import EnsureChannelMembershipPayload
 
 
@@ -397,6 +402,54 @@ def test_hard_hourly_reactivation_batches_membership_action_flush(monkeypatch) -
             task,
             target,
             candidates,
+            require_send=True,
+        )
+
+    assert created == 2
+    assert flush_flags == [False, False]
+
+
+def test_hard_hourly_missing_membership_batches_action_flush(monkeypatch) -> None:
+    from app.services.task_center import channel_membership as membership_service
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        target = OperationTarget(id=906, tenant_id=1, target_type="group", tg_peer_id="-100906", title="缺口群", auth_status="已授权运营", can_send=True)
+        task = Task(
+            id="task-hard-hourly-missing-membership-batch",
+            tenant_id=1,
+            name="硬目标准入批量创建",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"target_operation_target_id": 906, "hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+        )
+        accounts = [
+            TgAccount(id=51, tenant_id=1, display_name="账号51", phone_masked="51", status="在线", session_ciphertext="session"),
+            TgAccount(id=52, tenant_id=1, display_name="账号52", phone_masked="52", status="在线", session_ciphertext="session"),
+        ]
+        session.add_all([target, task, *accounts])
+        session.commit()
+
+        flush_flags: list[bool] = []
+        original_create = membership_service.create_membership_action
+
+        def spy_create(*args, **kwargs):  # noqa: ANN002, ANN003
+            flush_flags.append(bool(kwargs.get("flush", True)))
+            return original_create(*args, **kwargs)
+
+        monkeypatch.setattr(membership_service, "create_membership_action", spy_create)
+        created = _create_membership_actions_for_accounts(
+            session,
+            task,
+            target,
+            set(),
+            accounts,
+            now_value,
             require_send=True,
         )
 

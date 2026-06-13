@@ -788,12 +788,11 @@ def _history_collect_account_ids(config: dict, accounts: list) -> list[int]:
     return [preferred, *[account_id for account_id in account_ids if account_id != preferred]]
 
 
-def _should_refresh_context_for_plan(session: Session, group: TgGroup, history_depth: int, progress: dict[str, object]) -> bool:
-    if not progress:
-        return True
-    probe_depth = max(1, min(int(history_depth or 1), 10))
-    rows = recent_context_messages(session, group, probe_depth)
-    return not any(_is_human_context_row(row) and _is_usable_context_message(row.content) for row in rows)
+def _should_refresh_context_for_plan(_session: Session, _group: TgGroup, _history_depth: int, progress: dict[str, object]) -> bool:
+    if progress:
+        # Hard-hourly planning must not wait on synchronous history fetches; listener workers refresh context separately.
+        return False
+    return True
 
 
 def _collect_context_with_candidate_accounts(session: Session, task: Task, group: TgGroup, account_ids: list[int]) -> int:
