@@ -664,6 +664,10 @@ def test_production_ai_hourly_probe_reports_membership_failures():
     assert "recent_membership_actions" in workflow
     assert "recent_verification_tasks" in workflow
     assert "membership_status" in workflow
+    assert "AI_HOURLY_INSPECT_START" in workflow
+    assert "AI_HOURLY_TASK_VOLUME_TASK=" in workflow
+    assert "AI_HOURLY_TASK_VOLUME_SUMMARY=" in workflow
+    assert "AI_HOURLY_INSPECT_END" in workflow
 
 
 def test_api_error_message_supports_trace_id_in_structured_detail_objects():

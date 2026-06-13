@@ -328,6 +328,8 @@ jobs:
       - name: Inspect AI hourly task volume
         run: |
           set -euo pipefail
+          echo "AI_HOURLY_INSPECT_START"
+          set +e
           timeout 150 ssh silicon-valley-production-server 'timeout 120 docker exec -i tgyunying-backend python -' <<'PY'
           import json
           from datetime import datetime, timedelta, timezone
@@ -551,7 +553,7 @@ jobs:
                       'slang_prompt_template_id': config.get('slang_prompt_template_id'),
                   })
               session.rollback()
-          print('AI_HOURLY_TASK_VOLUME=' + json.dumps({
+          summary = {
               'captured_at': now.isoformat(timespec='seconds'),
               'active_workers_2m': int(active_workers or 0),
               'worker_counts_2m': {str(key): int(value) for key, value in worker_counts.items()},
@@ -562,6 +564,15 @@ jobs:
                   'oldest_pending_age_seconds': int(settings.oldest_pending_age_seconds or 0),
               },
               'hard_due_sample': due_sample,
-              'tasks': rows,
-          }, ensure_ascii=False, sort_keys=True))
+          }
+          print('AI_HOURLY_TASK_VOLUME_SUMMARY=' + json.dumps(summary, ensure_ascii=False, sort_keys=True), flush=True)
+          for row in rows:
+              print('AI_HOURLY_TASK_VOLUME_TASK=' + json.dumps(row, ensure_ascii=False, sort_keys=True), flush=True)
           PY
+          status=$?
+          set -e
+          echo "AI_HOURLY_INSPECT_EXIT=${status}"
+          if [[ "${status}" -ne 0 ]]; then
+            exit "${status}"
+          fi
+          echo "AI_HOURLY_INSPECT_END"
