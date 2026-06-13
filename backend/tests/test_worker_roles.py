@@ -148,6 +148,27 @@ def test_explicit_worker_id_is_scoped_by_process_type(monkeypatch):
     assert [heartbeat.process_type for heartbeat in heartbeats] == ["dispatcher", "planner"]
 
 
+def test_worker_heartbeat_updates_existing_worker_id(monkeypatch):
+    monkeypatch.setenv("TG_OPS_WORKER_ID", "pytest-worker")
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        record_worker_heartbeat(session, process_type="planner", metadata={"limit": 10})
+        session.commit()
+        first = session.query(WorkerHeartbeat).one()
+        first_seen_at = first.last_seen_at
+
+        record_worker_heartbeat(session, process_type="planner", metadata={"limit": 20})
+        session.commit()
+        heartbeats = session.query(WorkerHeartbeat).all()
+
+    assert len(heartbeats) == 1
+    assert heartbeats[0].worker_id == "pytest-worker:planner"
+    assert heartbeats[0].heartbeat_metadata == {"limit": 20}
+    assert heartbeats[0].last_seen_at >= first_seen_at
+
+
 def test_worker_health_module_checks_role_heartbeat_without_worker_imports(monkeypatch):
     from app import worker_health
 
