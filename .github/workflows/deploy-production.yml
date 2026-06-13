@@ -336,7 +336,7 @@ jobs:
 
           from app.config import get_settings
           from app.database import SessionLocal
-          from app.models import Action, Task, WorkerHeartbeat
+          from app.models import Action, Task, VerificationTask, WorkerHeartbeat
           from app.services.task_center.service import _hard_hourly_due_candidate, _hard_hourly_wake_query
           from app.services.task_center.stats import planner_backlog_snapshot
 
@@ -457,6 +457,58 @@ jobs:
                           .limit(20)
                       )
                   ]
+                  recent_membership_actions = [
+                      {
+                          'id': action.id,
+                          'action_type': action.action_type,
+                          'status': action.status,
+                          'account_id': action.account_id,
+                          'scheduled_at': iso(action.scheduled_at),
+                          'executed_at': iso(action.executed_at),
+                          'retry_count': int(action.retry_count or 0),
+                          'error_code': (action.result or {}).get('error_code'),
+                          'error_message': str((action.result or {}).get('error_message') or '')[:220],
+                          'membership_status': (action.result or {}).get('membership_status'),
+                          'reactivated_reason': (action.result or {}).get('reactivated_reason'),
+                          'validation_stage': (action.result or {}).get('validation_stage'),
+                          'verification_task_id': (action.result or {}).get('verification_task_id'),
+                      }
+                      for action in session.scalars(
+                          select(Action)
+                          .where(Action.task_id == task.id, Action.action_type.in_(('ensure_target_membership', 'ensure_channel_membership')))
+                          .where(Action.scheduled_at >= inspection_since)
+                          .order_by(Action.scheduled_at.desc(), Action.created_at.desc())
+                          .limit(20)
+                      )
+                  ]
+                  membership_account_ids = [
+                      int(action['account_id'])
+                      for action in recent_membership_actions
+                      if action.get('account_id') is not None
+                  ]
+                  recent_verification_tasks = [
+                      {
+                          'id': verification.id,
+                          'account_id': verification.account_id,
+                          'group_id': verification.group_id,
+                          'status': verification.status,
+                          'verification_type': verification.verification_type,
+                          'suggested_action': verification.suggested_action,
+                          'can_auto_resolve': bool(verification.can_auto_resolve),
+                          'detected_reason': str(verification.detected_reason or '')[:220],
+                          'failure_detail': str(verification.failure_detail or '')[:220],
+                          'target_display': verification.target_display,
+                          'created_at': iso(verification.created_at),
+                          'handled_at': iso(verification.handled_at),
+                      }
+                      for verification in session.scalars(
+                          select(VerificationTask)
+                          .where(VerificationTask.tenant_id == task.tenant_id)
+                          .where(VerificationTask.account_id.in_(membership_account_ids) if membership_account_ids else VerificationTask.id < 0)
+                          .order_by(VerificationTask.id.desc())
+                          .limit(20)
+                      )
+                  ]
                   config = task.type_config or {}
                   rows.append({
                       'name': name,
@@ -491,6 +543,8 @@ jobs:
                       'action_counts': {str(key): int(value) for key, value in action_counts.items()},
                       'type_status_counts': type_status_counts,
                       'recent_send_actions': recent_send_actions,
+                      'recent_membership_actions': recent_membership_actions,
+                      'recent_verification_tasks': recent_verification_tasks,
                       'messages_per_round_mode': config.get('messages_per_round_mode'),
                       'messages_per_round': config.get('messages_per_round'),
                       'reply_min_per_round': config.get('reply_min_per_round'),

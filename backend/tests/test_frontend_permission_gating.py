@@ -657,6 +657,15 @@ def test_production_deploy_starts_four_dispatcher_workers():
     assert compose.count('ACCOUNT_SHARD_TOTAL: "4"') == 4
 
 
+def test_production_ai_hourly_probe_reports_membership_failures():
+    workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
+
+    assert "VerificationTask" in workflow
+    assert "recent_membership_actions" in workflow
+    assert "recent_verification_tasks" in workflow
+    assert "membership_status" in workflow
+
+
 def test_api_error_message_supports_trace_id_in_structured_detail_objects():
     source = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
