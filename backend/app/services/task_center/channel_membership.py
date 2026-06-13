@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, Action, GroupAuthStatus, OperationTarget, Task, TgAccount, TgGroup, TgGroupAccount
+from app.models import AccountStatus, Action, GroupAuthStatus, OperationTarget, Task, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
 
 from .account_pool import select_task_accounts
@@ -20,6 +20,8 @@ ACTION_TYPE = "ensure_target_membership"
 LEGACY_ACTION_TYPE = "ensure_channel_membership"
 OPEN_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
 HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS = 2
+HARD_HOURLY_AUTO_VERIFICATION_RETRY_SECONDS = 300
+AUTO_VERIFICATION_RETRY_STATUSES = {"待处理", "失败", "需人工处理"}
 
 
 @dataclass(frozen=True)
@@ -33,8 +35,18 @@ class MembershipGateResult:
 
 def gate_channel_membership(session: Session, task: Task, channel: OperationTarget, *, require_send: bool = False) -> MembershipGateResult:
     candidates = candidate_accounts_for_config(session, task.tenant_id, task.account_config or {})
+    strategy_enabled, disabled_reason = _membership_action_strategy(task, channel)
+    reactivated = _reactivate_auto_verification_memberships(
+        session,
+        task,
+        channel,
+        candidates,
+        require_send=require_send,
+    ) if strategy_enabled else 0
     summary = channel_membership_summary(session, task.tenant_id, channel, task.account_config or {}, candidates=candidates, task_id=task.id, require_send=require_send)
     stats = _merge_membership_stats(task, summary)
+    if reactivated:
+        stats["membership_reactivated_verification_actions"] = int(stats.get("membership_reactivated_verification_actions") or 0) + reactivated
     if not _target_requires_membership_for_candidates(channel, candidates, require_send=require_send):
         stats["membership_stage"] = "membership_ready"
         task.stats = stats
@@ -49,7 +61,6 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
 
     ready_count = int(summary.get("joined_account_count") or 0)
     open_count = _open_membership_action_count(session, task)
-    strategy_enabled, disabled_reason = _membership_action_strategy(task, channel)
     if not strategy_enabled:
         stats["membership_stage"] = "membership_partial" if ready_count > 0 else "membership_blocked"
         task.stats = stats
@@ -79,9 +90,9 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
         if ready_count > 0:
             if task.last_error in {"正在执行频道关注前置阶段", "正在执行关注频道前置阶段", "正在执行目标准入前置阶段"}:
                 task.last_error = ""
-            return MembershipGateResult(True, waiting=True)
+            return MembershipGateResult(True, created=reactivated, waiting=True)
         task.last_error = "正在执行目标准入前置阶段"
-        return MembershipGateResult(False, waiting=True)
+        return MembershipGateResult(False, created=reactivated, waiting=True)
 
     refreshed = channel_membership_summary(session, task.tenant_id, channel, task.account_config or {}, candidates=candidates, task_id=task.id, require_send=require_send)
     stats = _merge_membership_stats(task, refreshed)
@@ -324,6 +335,84 @@ def _create_missing_membership_actions(session: Session, task: Task, channel: Op
         create_membership_action(session, task, account.id, scheduled_at, payload)
         created += 1
     return created
+
+
+def _reactivate_auto_verification_memberships(
+    session: Session,
+    task: Task,
+    channel: OperationTarget,
+    candidates: list[TgAccount],
+    *,
+    require_send: bool,
+) -> int:
+    if not require_send or not _hard_hourly_membership_fast_track_enabled(task):
+        return 0
+    group = linked_channel_group(session, channel, create=False)
+    if not group:
+        return 0
+    latest_actions = _membership_actions_by_account(session, channel.id, task_id=task.id)
+    candidate_ids = {int(account.id) for account in candidates}
+    failed_actions = [
+        action
+        for account_id, action in latest_actions.items()
+        if account_id in candidate_ids and action.account_id and _is_failed_membership_action(action)
+    ]
+    verification_by_account = _auto_verification_tasks_by_account(session, task, group.id, [int(action.account_id) for action in failed_actions])
+    now_value = _now()
+    created = 0
+    for action in failed_actions:
+        verification = verification_by_account.get(int(action.account_id or 0))
+        if not verification or not _auto_verification_retry_due(action, verification, now_value):
+            continue
+        payload = EnsureChannelMembershipPayload.model_validate(action.payload or {})
+        reactivated = create_membership_action(
+            session,
+            task,
+            int(action.account_id),
+            now_value + timedelta(seconds=HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * created),
+            payload,
+        )
+        reactivated.result = {
+            **(reactivated.result or {}),
+            "reactivated_reason": "hard_hourly_auto_verification_retry",
+            "verification_task_id": verification.id,
+        }
+        created += 1
+    return created
+
+
+def _auto_verification_tasks_by_account(
+    session: Session,
+    task: Task,
+    group_id: int,
+    account_ids: list[int],
+) -> dict[int, VerificationTask]:
+    if not account_ids:
+        return {}
+    rows = session.scalars(
+        select(VerificationTask)
+        .where(
+            VerificationTask.tenant_id == task.tenant_id,
+            VerificationTask.group_id == group_id,
+            VerificationTask.account_id.in_(account_ids),
+            VerificationTask.status.in_(AUTO_VERIFICATION_RETRY_STATUSES),
+        )
+        .order_by(VerificationTask.id.desc())
+    )
+    latest: dict[int, VerificationTask] = {}
+    for verification in rows:
+        if verification.account_id and verification.account_id not in latest and verification.can_auto_resolve:
+            latest[int(verification.account_id)] = verification
+    return latest
+
+
+def _auto_verification_retry_due(action: Action, verification: VerificationTask, now_value) -> bool:
+    if verification.status not in AUTO_VERIFICATION_RETRY_STATUSES or not verification.can_auto_resolve:
+        return False
+    last_attempt_at = verification.handled_at or action.executed_at or action.created_at
+    if not last_attempt_at:
+        return True
+    return (now_value - last_attempt_at.replace(tzinfo=None)).total_seconds() >= HARD_HOURLY_AUTO_VERIFICATION_RETRY_SECONDS
 
 
 def _membership_action_strategy(task: Task, channel: OperationTarget) -> tuple[bool, str]:
