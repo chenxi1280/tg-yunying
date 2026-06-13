@@ -179,15 +179,10 @@ def build_plan(session: Session, task: Task) -> int:
     audit_learning_profile_use(session, task, profile_preview, "AI活群任务")
     generation_config = _generation_config_with_profile(round_config, account_memories, account_profiles, topic_thread, topic_plan, profile_preview)
     cycle_id = f"{task.id}:cycle:{cycle_index}"
-    reply_min = min(turn_count, int(config.get("reply_min_per_round") or 0))
-    reply_target_pool = _group_reply_target_pool(session, task, group, usable_context_rows)
-    if reply_min > len(reply_target_pool):
-        stats_inc(task, "reply_target_shortfall_count")
-        if not hard_progress:
-            task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
-            return 0
-        reply_min = len(reply_target_pool)
-    reply_targets = reply_target_pool[:reply_min]
+    reply_targets = _reply_targets_for_plan(session, task, group, usable_context_rows, turn_count, config, hard_progress)
+    if reply_targets is None:
+        return 0
+    requested_reply_count = len(reply_targets)
     normal_count = max(0, turn_count - len(reply_targets))
     try:
         planned_items, tokens = _generate_group_planned_items(
@@ -351,7 +346,7 @@ def build_plan(session: Session, task: Task) -> int:
             AccountCapacityReservation(account_id=account.id, scheduled_at=planned_at)
         )
     prepared_reply_count = sum(1 for _account_id, _planned_at, payload in prepared_actions if payload.reply_to_message_id)
-    if prepared_reply_count < reply_min:
+    if prepared_reply_count < requested_reply_count:
         stats_inc(task, "reply_candidate_shortfall_count")
         if not hard_progress:
             task.last_error = "AI 引用回复候选不足，已跳过本轮"
@@ -384,6 +379,28 @@ def build_plan(session: Session, task: Task) -> int:
         mark_plan_result(task, hard_progress, created, hard_blockers or None)
     stats_inc(task, "total_rounds")
     return created
+
+
+def _reply_targets_for_plan(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    usable_context_rows: list,
+    turn_count: int,
+    config: dict,
+    hard_progress: dict[str, object],
+) -> list[dict] | None:
+    if hard_progress:
+        return []
+    reply_min = min(turn_count, int(config.get("reply_min_per_round") or 0))
+    if reply_min <= 0:
+        return []
+    reply_target_pool = _group_reply_target_pool(session, task, group, usable_context_rows)
+    if reply_min > len(reply_target_pool):
+        stats_inc(task, "reply_target_shortfall_count")
+        task.last_error = "可引用消息不足，等待监听到可回复消息后继续执行"
+        return None
+    return reply_target_pool[:reply_min]
 
 
 def _hard_blocked_last_error(created: int, blockers: dict[str, int], progress: dict[str, object]) -> str:
