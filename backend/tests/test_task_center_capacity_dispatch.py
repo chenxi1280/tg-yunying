@@ -2006,6 +2006,11 @@ def test_recovery_skips_future_pending_expired_hard_hourly_bucket():
         assert current.status == "pending"
 
 
+def test_hard_hourly_recovery_uses_large_cleanup_batch():
+    assert task_service._hard_hourly_recovery_limit(5) == 1000
+    assert task_service._hard_hourly_recovery_limit(100) == 2000
+
+
 def test_hard_hourly_replacement_scan_uses_planned_deficit():
     action = Action(payload={"hard_hourly_target": True, "hard_hourly_deficit_at_plan": 300})
     task = Task(type_config={"hourly_min_messages": 120})

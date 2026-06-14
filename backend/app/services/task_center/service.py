@@ -97,6 +97,8 @@ COMMENT_UNAVAILABLE_MARKERS = (
 ACCOUNT_AUTH_MARKERS = ("session", "auth key", "auth_key", "unauthorized", "重新登录", "账号没有可用 session", "session 已失效")
 RATE_LIMIT_MARKERS = ("floodwait", "too many requests", "slowmode", "慢速模式", "冷却")
 HARD_HOURLY_WAKE_MIN_SCAN = 20
+HARD_HOURLY_RECOVERY_MIN_BATCH = 1000
+HARD_HOURLY_RECOVERY_LIMIT_MULTIPLIER = 20
 
 
 from .config_fields import (
@@ -859,7 +861,7 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         if process_type:
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
         processed += recover_expired_claims(session)
-        processed += recover_expired_hard_hourly_actions(session, limit=max(10, limit))
+        processed += recover_expired_hard_hourly_actions(session, limit=_hard_hourly_recovery_limit(limit))
         processed += _recover_continuous_task_states(session)
         processed += _recover_stale_executing_actions(session)
         processed += expire_reviews(session)
@@ -873,6 +875,10 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
             processed += wake_waiting_actions_for_source_media(session, tenant_id=tenant_id, limit=max(10, limit))
         session.commit()
     return processed, touched_tenant_ids
+
+
+def _hard_hourly_recovery_limit(limit: int) -> int:
+    return max(HARD_HOURLY_RECOVERY_MIN_BATCH, int(limit or 0) * HARD_HOURLY_RECOVERY_LIMIT_MULTIPLIER)
 
 
 def drain_task_planner(session_factory, limit: int = 100) -> int:
