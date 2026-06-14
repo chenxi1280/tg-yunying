@@ -351,7 +351,7 @@ def test_refresh_task_stats_calculates_hard_hourly_target_progress(monkeypatch):
     assert stats["hard_hourly_success_count"] == 2
     assert stats["hard_hourly_open_count"] == 1
     assert stats["hard_hourly_overdue_open_count"] == 1
-    assert stats["hard_hourly_deficit"] == 2
+    assert stats["hard_hourly_deficit"] == 3
     assert stats["hard_hourly_status"] == "blocked"
     assert stats["hard_hourly_last_blockers"] == {"dispatcher_lag": 1}
     assert stats["hard_hourly_bucket"] == "2026-06-07T20:00:00+08:00"
@@ -664,13 +664,13 @@ def test_group_ai_chat_hard_hourly_reuses_selected_accounts_when_front_accounts_
 
     planned_account_ids = [int(action.account_id) for action in actions if (action.payload or {}).get("hard_hourly_target")]
     planned_counts = Counter(planned_account_ids)
-    assert created == 220
+    assert created == 300
     assert set(planned_account_ids) == set(range(101, 201))
     assert planned_counts[101] == 3
     assert planned_counts[120] == 3
-    assert planned_counts[121] == 2
-    assert planned_counts[200] == 2
-    assert task.stats["hard_hourly_last_planned_count"] == 220
+    assert planned_counts[121] == 3
+    assert planned_counts[200] == 3
+    assert task.stats["hard_hourly_last_planned_count"] == 300
     assert "hard_hourly_last_blockers" not in task.stats
 
 
@@ -1188,7 +1188,7 @@ def test_group_ai_chat_hard_hourly_membership_permission_blocker(monkeypatch):
     assert task.stats["hard_hourly_last_blockers"] == {"target_permission": 3}
 
 
-def test_hard_hourly_future_pending_covers_deficit_but_overdue_does_not(monkeypatch):
+def test_hard_hourly_future_pending_is_visible_but_does_not_cover_deficit(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 30)
@@ -1226,13 +1226,13 @@ def test_hard_hourly_future_pending_covers_deficit_but_overdue_does_not(monkeypa
     assert stats["hard_hourly_success_count"] == 1
     assert stats["hard_hourly_open_count"] == 1
     assert stats["hard_hourly_overdue_open_count"] == 1
-    assert stats["hard_hourly_deficit"] == 1
+    assert stats["hard_hourly_deficit"] == 2
     assert stats["hard_hourly_status"] == "blocked"
     assert stats["hard_hourly_last_blockers"] == {"dispatcher_lag": 1}
     assert needs_more is True
 
 
-def test_hard_hourly_future_pending_can_fully_cover_deficit(monkeypatch):
+def test_hard_hourly_future_pending_does_not_fully_cover_deficit(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 30)
@@ -1269,11 +1269,12 @@ def test_hard_hourly_future_pending_can_fully_cover_deficit(monkeypatch):
 
     assert stats["hard_hourly_open_count"] == 2
     assert stats["hard_hourly_overdue_open_count"] == 0
-    assert stats["hard_hourly_deficit"] == 0
-    assert needs_more is False
+    assert stats["hard_hourly_deficit"] == 2
+    assert stats["hard_hourly_status"] == "catching_up"
+    assert needs_more is True
 
 
-def test_hard_hourly_future_open_over_account_capacity_covers_deficit(monkeypatch):
+def test_hard_hourly_future_open_over_account_capacity_stays_visible_without_covering_deficit(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 30)
@@ -1330,10 +1331,10 @@ def test_hard_hourly_future_open_over_account_capacity_covers_deficit(monkeypatc
 
     assert stats["hard_hourly_open_count"] == 3
     assert stats["hard_hourly_overdue_open_count"] == 0
-    assert stats["hard_hourly_deficit"] == 0
+    assert stats["hard_hourly_deficit"] == 3
     assert stats["hard_hourly_status"] == "catching_up"
     assert "hard_hourly_last_blockers" not in stats
-    assert needs_more is False
+    assert needs_more is True
 
 
 def test_hard_hourly_deficit_wakes_future_next_run(monkeypatch):

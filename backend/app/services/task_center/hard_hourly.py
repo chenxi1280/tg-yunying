@@ -69,7 +69,10 @@ def hard_hourly_stats(session: Session, task: Task, now: datetime, current_stats
     status = _current_status(current, now_local, bucket_end, last_blockers)
     updated = dict(current_stats)
     updated.update(_current_stat_values(task, now_local, current, status))
-    updated["hard_hourly_last_blockers"] = last_blockers
+    if last_blockers:
+        updated["hard_hourly_last_blockers"] = last_blockers
+    else:
+        updated.pop("hard_hourly_last_blockers", None)
     updated["hard_hourly_recent_buckets"] = buckets
     if int(current.get("deficit") or 0) <= 0:
         updated.pop("hard_hourly_next_check_at", None)
@@ -189,7 +192,10 @@ def _bucket_summary(
         for action in actions
         if _is_overdue_open_in_bucket(task, action, start, end, now_local)
     )
-    deficit = max(0, goal(task.type_config or {}) - success - future_open)
+    # Hard-hourly acceptance is based on delivered messages.
+    # Future pending work stays visible, but it is not counted as done.
+    effective_future_open = 0 if enabled(task) else future_open
+    deficit = max(0, goal(task.type_config or {}) - success - effective_future_open)
     blockers = _bucket_blockers(deficit, overdue_open, capacity_blocked)
     return {
         "bucket": bucket_iso(task, start),
