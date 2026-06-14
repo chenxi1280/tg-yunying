@@ -202,6 +202,51 @@ def test_permission_denied_verification_reads_successful_username_ref(monkeypatc
     assert verification.target_peer_id == "qdsfxy"
 
 
+def test_permission_denied_verification_prefers_send_ready_title_group_for_reader_fallback(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+    monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *_args, **_kwargs: OperationResult(True, detail="joined"))
+    monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(False, "失败", "群无权限", "群无权限或账号不可发言"))
+    monkeypatch.setattr(dispatcher, "_auto_verify_and_apply_group_send", lambda *_args, **_kwargs: False)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=912, tenant_id=1, target_type="group", tg_peer_id="-1002766", username="qdsfxy", title="青岛师范学院", auth_status="只读", can_send=False))
+        session.add(TgGroup(id=2766, tenant_id=1, tg_peer_id="-1002766", title="青岛师范学院", group_type="supergroup", can_send=False))
+        live_group = TgGroup(id=2149, tenant_id=1, tg_peer_id="-1002149", title="青岛师范学院", group_type="supergroup", auth_status="已授权运营", can_send=True)
+        session.add(live_group)
+        session.add_all([
+            TgAccount(id=32, tenant_id=1, display_name="加入账号", phone_masked="32", status="在线", session_ciphertext="session-32"),
+            TgAccount(id=33, tenant_id=1, display_name="可读账号", phone_masked="33", status="在线", session_ciphertext="session-33"),
+            TgGroupAccount(tenant_id=1, group_id=2149, account_id=33, can_send=True),
+            Task(id="task-title-reader-verification", tenant_id=1, name="同名 reader 验证", type="group_ai_chat", status="running"),
+            Action(
+                id="membership-title-reader-verification",
+                tenant_id=1,
+                task_id="task-title-reader-verification",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=32,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"channel_id": "-1002766", "channel_target_id": 912, "target_type": "group", "target_display": "青岛师范学院", "target_username": "qdsfxy", "require_send": True},
+            ),
+        ])
+        session.commit()
+
+        action = session.get(Action, "membership-title-reader-verification")
+        assert dispatcher.dispatch_action(session, action) is True
+        verification = session.query(VerificationTask).one()
+        readers = dispatcher._image_verification_reader_candidates(session, verification, session.get(TgAccount, 32))
+
+    assert verification.group_id == live_group.id
+    assert verification.target_peer_id == "-1002149"
+    assert [account.id for account, _credentials in readers] == [33]
+
+
 def test_auto_text_verification_extracts_arithmetic_answer_and_rechecks(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

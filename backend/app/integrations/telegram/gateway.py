@@ -50,10 +50,28 @@ def _button_labels(message: Any) -> list[str]:
     labels: list[str] = []
     for row in getattr(message, "buttons", None) or []:
         for button in row:
-            label = (getattr(button, "text", "") or "").strip()
+            label = _button_label(button)
             if label:
                 labels.append(label)
     return labels
+
+
+def _button_label(button: Any) -> str:
+    text = (getattr(button, "text", "") or "").strip()
+    url = _button_url(button)
+    if url and url not in text:
+        return f"{text} ({url})" if text else url
+    return text
+
+
+def _button_url(button: Any) -> str:
+    for candidate in (button, getattr(button, "button", None)):
+        if candidate is None:
+            continue
+        url = (getattr(candidate, "url", "") or "").strip()
+        if url:
+            return url
+    return ""
 
 
 def _verification_message_text(message: Any) -> str:

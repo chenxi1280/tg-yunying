@@ -19,7 +19,7 @@ from app.ai_gateway import (
 )
 from app.database import Base
 from app.integrations.telegram import DeveloperAppCredentials
-from app.integrations.telegram.gateway import TelethonTelegramGateway, _permission_detail_from_context_rows
+from app.integrations.telegram.gateway import TelethonTelegramGateway, _permission_detail_from_context_rows, _verification_message_text
 from app.models import AiProvider, FailureType, Tenant, TenantAiSetting
 from app.security import encrypt_secret
 from app.services.task_center.ai_generator import (
@@ -83,6 +83,16 @@ def test_permission_detail_from_context_rows_exposes_actionable_gate_prompt():
     )
 
     assert detail == "群无权限或账号不可发言：入群验证：请先关注 @alpha、https://t.me/beta_channel 后输入 3 + 5"
+
+
+def test_verification_message_text_preserves_button_urls_for_auto_follow():
+    button = SimpleNamespace(text="天津音乐学院报告频道", url="https://t.me/tj_report")
+    message = SimpleNamespace(message="您需要关注我们的频道才能发言", media=None, buttons=[[button]])
+
+    text = _verification_message_text(message)
+
+    assert "天津音乐学院报告频道" in text
+    assert "https://t.me/tj_report" in text
 
 
 def test_probe_permission_denied_uses_recent_context_detail(monkeypatch):

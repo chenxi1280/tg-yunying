@@ -1043,6 +1043,9 @@ def _membership_group_for_payload(
 ) -> TgGroup:
     group_peer = _membership_group_peer(target, payload)
     group = session.scalar(select(TgGroup).where(TgGroup.tenant_id == target.tenant_id, TgGroup.tg_peer_id == group_peer))
+    preferred_group = _send_ready_title_group(session, target, payload)
+    if create and preferred_group and (group is None or not group.can_send):
+        return preferred_group
     if group or not create:
         return group
     group = TgGroup(
@@ -1057,6 +1060,24 @@ def _membership_group_for_payload(
     session.add(group)
     session.flush()
     return group
+
+
+def _send_ready_title_group(session: Session, target: OperationTarget, payload: EnsureChannelMembershipPayload) -> TgGroup | None:
+    if payload.target_type != "group":
+        return None
+    names = [name for name in _dedupe_refs([payload.target_display, target.title]) if name]
+    if not names:
+        return None
+    groups = list(
+        session.scalars(
+            select(TgGroup).where(
+                TgGroup.tenant_id == target.tenant_id,
+                TgGroup.title.in_(names),
+                TgGroup.can_send.is_(True),
+            )
+        )
+    )
+    return sorted(groups, key=_membership_group_rank)[0] if groups else None
 
 
 def _membership_group_peer(target: OperationTarget, payload: EnsureChannelMembershipPayload) -> str:
@@ -1130,6 +1151,8 @@ def _record_group_send_permission_denied(session: Session, action: Action, accou
 
 
 def _verification_target_peer_ref(payload: EnsureChannelMembershipPayload, group: TgGroup) -> str:
+    if payload.target_type == "group" and _is_stable_telegram_peer(group.tg_peer_id):
+        return group.tg_peer_id
     if payload.target_type == "group":
         public_ref = _public_group_ref(payload.channel_id)
         if public_ref:
