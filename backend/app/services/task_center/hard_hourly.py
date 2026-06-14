@@ -15,6 +15,7 @@ from app.timezone import BEIJING_TZ
 OPEN_STATUSES = {"pending", "claiming", "executing"}
 SEND_FILTER = (Action.task_type == "group_ai_chat", Action.action_type == "send_message")
 STRATEGY_FORCE_PLANNING = "force_planning"
+HARD_HOURLY_FRONTLOAD_WINDOW_SECONDS = 15 * 60
 
 
 @dataclass(frozen=True)
@@ -41,11 +42,14 @@ def goal(config: dict[str, Any]) -> int:
 def current_progress(session: Session, task: Task, now: datetime) -> dict[str, Any]:
     stats = hard_hourly_stats(session, task, now, task.stats or {})
     now_local = normalize(task, now)
+    delivery_deficit = int(stats.get("hard_hourly_deficit") or 0)
+    planning_deficit = int(stats.get("hard_hourly_planning_deficit", delivery_deficit) or 0)
     return {
         "enabled": bool(stats.get("hard_hourly_target_enabled")),
         "goal": int(stats.get("hard_hourly_goal") or 0),
         "bucket": str(stats.get("hard_hourly_bucket") or ""),
-        "deficit": int(stats.get("hard_hourly_deficit") or 0),
+        "deficit": planning_deficit,
+        "delivery_deficit": delivery_deficit,
         "future_open_count": int(stats.get("hard_hourly_open_count") or 0),
         "overdue_open_count": int(stats.get("hard_hourly_overdue_open_count") or 0),
         "hour_end": hour_bounds(task, now)[1],
@@ -86,6 +90,7 @@ def hard_schedule_times(total: int, task: Task, now: datetime, *, target_total: 
     current = normalize(task, now)
     _start, hour_end = hour_bounds(task, current)
     available = max(0, int((hour_end - current).total_seconds()) - 1)
+    available = min(available, HARD_HOURLY_FRONTLOAD_WINDOW_SECONDS)
     if available <= 0 or total == 1:
         return [current for _ in range(total)]
     spacing_total = max(total, int(target_total or total), 1)
@@ -195,16 +200,18 @@ def _bucket_summary(
     # Hard-hourly acceptance is based on delivered messages.
     # Future pending work stays visible, but it is not counted as done.
     effective_future_open = 0 if enabled(task) else future_open
-    deficit = max(0, goal(task.type_config or {}) - success - effective_future_open)
-    blockers = _bucket_blockers(deficit, overdue_open, capacity_blocked)
+    delivery_deficit = max(0, goal(task.type_config or {}) - success - effective_future_open)
+    planning_deficit = max(0, goal(task.type_config or {}) - success - future_open)
+    blockers = _bucket_blockers(delivery_deficit, overdue_open, capacity_blocked)
     return {
         "bucket": bucket_iso(task, start),
         "goal": goal(task.type_config or {}),
         "success_count": success,
         "future_open_count": future_open,
         "overdue_open_count": overdue_open,
-        "deficit": deficit,
-        "status": _bucket_status(success, deficit, overdue_open, start, end, now_local),
+        "deficit": delivery_deficit,
+        "planning_deficit": planning_deficit,
+        "status": _bucket_status(success, delivery_deficit, overdue_open, start, end, now_local),
         "blockers": blockers,
     }
 
@@ -325,6 +332,7 @@ def _current_stat_values(task: Task, now_local: datetime, bucket: dict[str, Any]
         "hard_hourly_open_count": bucket["future_open_count"],
         "hard_hourly_overdue_open_count": bucket["overdue_open_count"],
         "hard_hourly_deficit": bucket["deficit"],
+        "hard_hourly_planning_deficit": bucket["planning_deficit"],
         "hard_hourly_status": status,
     }
 

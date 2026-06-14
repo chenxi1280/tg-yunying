@@ -555,6 +555,7 @@ jobs:
                       'goal': stats.get('hard_hourly_goal'),
                       'success': stats.get('hard_hourly_success_count'),
                       'deficit': stats.get('hard_hourly_deficit'),
+                      'planning_deficit': stats.get('hard_hourly_planning_deficit'),
                       'hard_status': stats.get('hard_hourly_status'),
                       'open': stats.get('hard_hourly_open_count'),
                       'overdue': stats.get('hard_hourly_overdue_open_count'),
