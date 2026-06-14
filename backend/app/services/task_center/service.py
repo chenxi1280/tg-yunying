@@ -1404,6 +1404,13 @@ def _update_type_config(session: Session, tenant_id: int, task_id: str, expected
     next_config = validated_type_config(expected_type, next_config)
     validate_rule_binding(session, tenant_id, next_config)
     task.type_config = next_config
+    _clear_unfinished_plan(session, task)
+    if task.status not in {"completed", "failed"}:
+        now = _now()
+        scheduled_start = _naive_datetime(task.scheduled_start)
+        task.status = "pending" if scheduled_start and scheduled_start > now else "running"
+        task.next_run_at = scheduled_start if task.status == "pending" else now
+    task.last_error = ""
     task.updated_at = _now()
     audit(session, tenant_id=tenant_id, actor=actor, action="更新任务类型配置", target_type="task", target_id=task.id, detail=expected_type)
     session.commit()
