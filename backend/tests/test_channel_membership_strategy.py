@@ -460,6 +460,66 @@ def test_image_verification_falls_back_to_text_answer_when_context_has_no_image(
     assert submitted == ["10"]
 
 
+def test_image_verification_falls_back_to_required_channel_links(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    followed: list[str] = []
+
+    monkeypatch.setattr("app.services.membership_challenges.gateway.fetch_verification_context", lambda *_args, **_kwargs: [{"message_id": 5, "sender": "验证机器人", "text": "请先关注 [按钮：报告频道 (https://t.me/qdsf_report)]", "sent_at": None}])
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.ensure_channel_membership", lambda _account_id, channel_ref, *_args, **_kwargs: followed.append(channel_ref) or OperationResult(True, "已处理", detail="已关注"))
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(True, detail="复检可发言"))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(id=804, tenant_id=1, tg_peer_id="-100804", title="关注验证群", group_type="supergroup", auth_status="已授权运营", can_send=False)
+        target = OperationTarget(id=904, tenant_id=1, target_type="group", tg_peer_id="-100804", title="关注验证群", auth_status="只读", can_send=False)
+        task = Task(id="task-image-follow-fallback", tenant_id=1, name="图形转关注", type="group_ai_chat", status="running")
+        account = TgAccount(id=34, tenant_id=1, display_name="账号34", phone_masked="34", status="在线", session_ciphertext="session")
+        action = Action(id="membership-image-follow-fallback", tenant_id=1, task_id=task.id, task_type="group_ai_chat", action_type="ensure_target_membership", account_id=34)
+        verification = VerificationTask(tenant_id=1, account_id=34, group_id=group.id, verification_type="群发言权限", detected_reason="群无权限或账号不可发言", suggested_action="识别图形验证码", target_peer_id=group.tg_peer_id, target_display=group.title, status="待处理")
+        session.add_all([group, target, task, account, action, verification])
+        session.commit()
+
+        result = dispatcher._try_auto_group_send_verification(
+            dispatcher.MembershipDispatchContext(session, action, account, object(), EnsureChannelMembershipPayload(channel_id=group.tg_peer_id, channel_target_id=target.id, target_type="group", target_display=group.title, require_send=True), None),
+            verification,
+        )
+
+    assert result.ok is True
+    assert followed == ["qdsf_report"]
+    assert verification.suggested_action == "关注频道"
+
+
+def test_image_verification_falls_back_to_button_click_when_context_has_buttons(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    resolved: list[str] = []
+
+    monkeypatch.setattr("app.services.membership_challenges.gateway.fetch_verification_context", lambda *_args, **_kwargs: [{"message_id": 5, "sender": "验证机器人", "text": "请点击下方按钮完成验证 [按钮：开始验证]", "sent_at": None}])
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.resolve_verification_task", lambda _account_id, action, *_args, **_kwargs: resolved.append(action) or OperationResult(True, "已处理", detail="已点击首个验证按钮"))
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(True, detail="复检可发言"))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(id=805, tenant_id=1, tg_peer_id="-100805", title="按钮验证群", group_type="supergroup", auth_status="已授权运营", can_send=False)
+        target = OperationTarget(id=905, tenant_id=1, target_type="group", tg_peer_id="-100805", title="按钮验证群", auth_status="只读", can_send=False)
+        task = Task(id="task-image-button-fallback", tenant_id=1, name="图形转按钮", type="group_ai_chat", status="running")
+        account = TgAccount(id=35, tenant_id=1, display_name="账号35", phone_masked="35", status="在线", session_ciphertext="session")
+        action = Action(id="membership-image-button-fallback", tenant_id=1, task_id=task.id, task_type="group_ai_chat", action_type="ensure_target_membership", account_id=35)
+        verification = VerificationTask(tenant_id=1, account_id=35, group_id=group.id, verification_type="群发言权限", detected_reason="群无权限或账号不可发言", suggested_action="识别图形验证码", target_peer_id=group.tg_peer_id, target_display=group.title, status="待处理")
+        session.add_all([group, target, task, account, action, verification])
+        session.commit()
+
+        result = dispatcher._try_auto_group_send_verification(
+            dispatcher.MembershipDispatchContext(session, action, account, object(), EnsureChannelMembershipPayload(channel_id=group.tg_peer_id, channel_target_id=target.id, target_type="group", target_display=group.title, require_send=True), None),
+            verification,
+        )
+
+    assert result.ok is True
+    assert resolved == ["点击按钮"]
+    assert verification.suggested_action == "点击按钮"
+
+
 def test_verification_context_reads_deep_enough_for_active_group_history() -> None:
     assert VERIFICATION_CONTEXT_DEFAULT_LIMIT >= 120
 

@@ -1272,6 +1272,9 @@ def _try_auto_image_verification(ctx: MembershipDispatchContext, verification_ta
         verification_task.handled_at = _now()
     audit(ctx.session, tenant_id=ctx.action.tenant_id, actor="system", action="自动处理图形验证码", target_type="verification_task", target_id=str(verification_task.id), detail=f"{result.status}:{verification_task.failure_detail}")
     if not result.ok:
+        context_result = _try_context_verification_fallback(ctx, verification_task, result)
+        if context_result is not None:
+            return context_result
         return OperationResult(False, result.status, FailureType.GROUP_PERMISSION_DENIED.value, verification_task.failure_detail)
     reprobe = gateway.probe_target_capabilities(ctx.account.id, ctx.payload.channel_id, ctx.payload.target_type, ctx.account.session_ciphertext, ctx.credentials)
     if reprobe.ok:
@@ -1282,6 +1285,69 @@ def _try_auto_image_verification(ctx: MembershipDispatchContext, verification_ta
     verification_task.failure_detail = reprobe.detail or reprobe.failure_type
     _record_image_reprobe_attempt(ctx, verification_task, result, "reprobe_failed", verification_task.failure_detail)
     return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, verification_task.failure_detail)
+
+
+def _try_context_verification_fallback(ctx: MembershipDispatchContext, verification_task, image_result):
+    context_text = _verification_context_text(getattr(image_result, "attempt_context", None) or {})
+    if not context_text:
+        return None
+    payload = _verification_probe_payload(ctx.payload, verification_task)
+    required_channels = _required_channel_references(context_text)
+    if required_channels and _auto_follow_required_channel_enabled(ctx.session, ctx.action):
+        verification_task.suggested_action = "关注频道"
+        followed = _follow_required_channels_and_reprobe(ctx.session, ctx.action, ctx.account, ctx.credentials, payload, image_result, required_channels)
+        return _apply_context_fallback_result(ctx, verification_task, payload, followed)
+    if not _context_requires_button_click(context_text):
+        return None
+    verification_task.suggested_action = "点击按钮"
+    clicked = gateway.resolve_verification_task(
+        ctx.account.id,
+        "点击按钮",
+        verification_task.target_peer_id or payload.channel_id,
+        ctx.account.session_ciphertext,
+        ctx.credentials,
+    )
+    if not clicked.ok:
+        return _apply_context_fallback_result(ctx, verification_task, payload, clicked)
+    reprobe = gateway.probe_target_capabilities(ctx.account.id, payload.channel_id, payload.target_type, ctx.account.session_ciphertext, ctx.credentials)
+    return _apply_context_fallback_result(ctx, verification_task, payload, reprobe, success_detail=clicked.detail)
+
+
+def _verification_context_text(context: dict[str, object]) -> str:
+    messages = context.get("messages") if isinstance(context, dict) else []
+    texts = [str(message.get("text") or "") for message in messages or [] if isinstance(message, dict)]
+    return "\n".join(text for text in texts if text)
+
+
+def _verification_probe_payload(payload: EnsureChannelMembershipPayload, verification_task) -> EnsureChannelMembershipPayload:
+    target_peer = str(getattr(verification_task, "target_peer_id", "") or "")
+    if target_peer and _is_stable_telegram_peer(target_peer):
+        return _payload_with_channel_ref(payload, target_peer, getattr(verification_task, "target_display", "") or payload.target_display)
+    return payload
+
+
+def _context_requires_button_click(context_text: str) -> bool:
+    normalized = context_text.lower()
+    return any(marker.lower() in normalized for marker in _GROUP_SEND_BUTTON_VERIFICATION_MARKERS)
+
+
+def _apply_context_fallback_result(
+    ctx: MembershipDispatchContext,
+    verification_task,
+    payload: EnsureChannelMembershipPayload,
+    result,
+    *,
+    success_detail: str = "",
+):
+    if result.ok:
+        verification_task.status = "已处理"
+        verification_task.failure_detail = success_detail or result.detail or "verification_context_fallback_resolved"
+        verification_task.handled_at = _now()
+        _record_group_send_permission_allowed(ctx.session, ctx.action, ctx.account, payload)
+        return OperationResult(True, "已完成", detail=verification_task.failure_detail)
+    verification_task.status = result.status or "需人工处理"
+    verification_task.failure_detail = result.detail or result.failure_type or "verification_context_fallback_failed"
+    return OperationResult(False, verification_task.status, FailureType.GROUP_PERMISSION_DENIED.value, verification_task.failure_detail)
 
 
 def _record_image_reprobe_attempt(ctx: MembershipDispatchContext, verification_task, image_result, status: str, detail: str) -> None:
