@@ -1116,6 +1116,9 @@ def test_target_membership_classifies_frozen_account_as_unavailable(monkeypatch)
         assert attempt is not None
         assert attempt.failure_type == "账号不可用"
         assert frozen_detail in attempt.failure_detail
+        account = session.get(TgAccount, 11)
+        assert account.status == "疑似封禁"
+        assert account.health_score <= 20
 
 
 def test_target_membership_skips_when_joined_probe_still_cannot_send(monkeypatch):

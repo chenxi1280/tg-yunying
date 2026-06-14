@@ -121,6 +121,7 @@ _ACCOUNT_FROZEN_FAILURE_MARKERS = (
     "frozen accounts",
     "not available for frozen accounts",
 )
+FROZEN_ACCOUNT_HEALTH_SCORE = 20
 
 
 @dataclass(frozen=True)
@@ -1300,7 +1301,9 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
         if failure_type == FailureType.ACCOUNT_LIMITED.value:
             account.status = AccountStatus.LIMITED.value
             account.health_score = min(account.health_score, 55)
-        if _is_account_proxy_failure(failure_type, detail):
+        if _is_account_frozen_failure(failure_type, detail):
+            _mark_account_frozen(account)
+        elif _is_account_proxy_failure(failure_type, detail):
             _recover_account_proxy_after_failure(action, account, detail or failure_type)
         elif _is_account_session_failure(failure_type, detail):
             _recover_account_session_after_failure(action, account, detail or failure_type)
@@ -1364,6 +1367,11 @@ def _is_account_session_failure(failure_type: str, detail: str) -> bool:
 def _is_account_frozen_failure(failure_type: str, detail: str) -> bool:
     text = f"{failure_type} {detail}".lower()
     return any(marker in text for marker in _ACCOUNT_FROZEN_FAILURE_MARKERS)
+
+
+def _mark_account_frozen(account: TgAccount) -> None:
+    account.status = AccountStatus.SUSPECTED_BANNED.value
+    account.health_score = min(account.health_score, FROZEN_ACCOUNT_HEALTH_SCORE)
 
 
 def _is_account_proxy_failure(failure_type: str, detail: str) -> bool:
