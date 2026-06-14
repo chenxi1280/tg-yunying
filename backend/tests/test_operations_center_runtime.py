@@ -3808,6 +3808,99 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
     assert task.last_error == ""
 
 
+def test_group_ai_chat_rotates_mimo_provider_after_quota_exhausted(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    calls: list[str] = []
+
+    def fake_generate_drafts(credentials, prompt, *, count, topic, tone, persona_set, temperature, max_tokens, **_kwargs):  # noqa: ANN001
+        calls.append(credentials.provider_name)
+        if credentials.provider_name == "MiMo exhausted":
+            raise RuntimeError('AI provider HTTP 429: {"error":{"message":"quota exhausted"}}')
+        return AiGenerationResult(
+            candidates=[AiDraftCandidate(persona="A", content="备用小米继续接一句", risk_level="低")],
+            usage=AiUsage(total_tokens=42, billable=True),
+        )
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        _add_mimo_quota_rotation_task(session)
+        created = build_group_ai_chat_plan(session, session.get(Task, "ai-provider-quota-rotation"))
+        action = session.scalar(select(Action).where(Action.task_id == "ai-provider-quota-rotation"))
+        exhausted = session.get(AiProvider, 1)
+        spare = session.get(AiProvider, 2)
+
+    assert created == 1
+    assert calls == ["MiMo exhausted", "MiMo spare"]
+    assert action is not None
+    assert action.payload["message_text"] == "备用小米继续接一句"
+    assert exhausted.health_status == "异常"
+    assert "quota exhausted" in exhausted.last_error
+    assert spare.health_status == "健康"
+
+
+def _add_mimo_quota_rotation_task(session: Session) -> None:
+    session.add(Tenant(id=1, name="默认运营空间"))
+    session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="MiMo 备用群", auth_status="已授权运营"))
+    session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+    session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+    provider_rows = [
+        (1, "MiMo exhausted", "https://api.xiaomimimo.com/v1", "mimo-v2.5"),
+        (2, "MiMo spare", "https://token-plan-cn.xiaomimimo.com/v1", "mimo-v2.5"),
+        (3, "DeepSeek", "https://api.deepseek.com", "deepseek-v4-flash"),
+    ]
+    session.add_all(
+        [
+            AiProvider(
+                id=provider_id,
+                provider_name=name,
+                provider_type="openai_compatible",
+                base_url=base_url,
+                model_name=model_name,
+                api_key_ciphertext=encrypt_secret(f"key-{provider_id}"),
+                is_active=True,
+                health_status="健康",
+            )
+            for provider_id, name, base_url, model_name in provider_rows
+        ]
+    )
+    session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, temperature=0.6, max_tokens=1024))
+    session.add(
+        Task(
+            id="ai-provider-quota-rotation",
+            tenant_id=1,
+            name="AI 供应商配额轮换",
+            type="group_ai_chat",
+            status="running",
+            account_config=_single_account_config(),
+            pacing_config=_fixed_pacing_config(),
+            type_config=_mimo_quota_rotation_config(),
+        )
+    )
+    session.commit()
+
+
+def _single_account_config() -> dict[str, object]:
+    return {"selection_mode": "manual", "account_ids": [101], "max_concurrent": 1, "cooldown_per_account_minutes": 0}
+
+
+def _fixed_pacing_config() -> dict[str, object]:
+    return {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0}
+
+
+def _mimo_quota_rotation_config() -> dict[str, object]:
+    return {
+        "target_group_id": 7,
+        "topic_hint": "MiMo 续聊",
+        "ai_model": "MiMo-V2.5",
+        "messages_per_round_mode": "manual",
+        "messages_per_round": 1,
+        "silent_mode_enabled": False,
+    }
+
+
 def test_group_ai_chat_punctuation_cleanup_preserves_times_and_urls():
     cleaned = _humanize_group_chat_punctuation("9:30，到 https://example.com/a?x=1,2，可以看下。")
 

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.ai_gateway import DEFAULT_AI_REQUEST_TIMEOUT_SECONDS, normalize_ai_model_name
 from app.models import AiProvider, AiProviderHealthStatus, PromptTemplate, TenantAiSetting
-from app.services._common import ai_gateway
+from app.services._common import _now, ai_gateway
 from app.services.ai_config import ai_provider_credentials
 from app.services.content_filters import looks_like_generated_template_noise, looks_like_operator_ui_content
 
@@ -41,6 +41,14 @@ AI_PROVIDER_REFUSAL_MARKERS = (
     "内容政策",
     "安全策略",
     "无法协助",
+)
+AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS = (
+    "quota exhausted",
+    "insufficient quota",
+    "quota_exhausted",
+    "余额不足",
+    "配额不足",
+    "配额耗尽",
 )
 
 
@@ -156,29 +164,102 @@ def generate_contents(
         topic=topic,
         requirements=requirements,
     )
-    try:
-        result = ai_gateway.generate_drafts(
-            _ai_credentials(provider, model_name),
-            prompt,
-            count=count,
-            topic=topic or requirements,
-            tone=tone,
-            persona_set=persona_set,
-            temperature=max(float(setting.temperature or 0.7), 0.75) if purpose in LONG_RUNNING_AI_PURPOSES else setting.temperature,
-            max_tokens=_content_max_tokens(setting.max_tokens, count, purpose),
-            system_prompt=system_prompt,
-            timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS if purpose in LONG_RUNNING_AI_PURPOSES else DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
-        )
-    except Exception as exc:
-        if purpose in LONG_RUNNING_AI_PURPOSES:
-            raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{exc}") from exc
-        raise
+    result = _generate_with_provider_candidates(
+        session,
+        provider,
+        prompt,
+        count=count,
+        topic=topic or requirements,
+        tone=tone,
+        persona_set=persona_set,
+        temperature=max(float(setting.temperature or 0.7), 0.75) if purpose in LONG_RUNNING_AI_PURPOSES else setting.temperature,
+        max_tokens=_content_max_tokens(setting.max_tokens, count, purpose),
+        system_prompt=system_prompt,
+        timeout=AI_CONTENT_REQUEST_TIMEOUT_SECONDS if purpose in LONG_RUNNING_AI_PURPOSES else DEFAULT_AI_REQUEST_TIMEOUT_SECONDS,
+        model_name=model_name,
+        required_model_family=required_model_family,
+        allow_quota_rotation=not provider_id,
+        purpose=purpose,
+    )
     contents = _clean_generated_contents([candidate.content.strip() for candidate in result.candidates if candidate.content.strip()], purpose, count)
     usage = getattr(result, "usage", None)
     tokens = int(getattr(usage, "total_tokens", 0) or 0)
     if purpose in LONG_RUNNING_AI_PURPOSES:
         return contents, tokens
     return contents[:count], tokens
+
+
+def _generate_with_provider_candidates(
+    session: Session,
+    provider: AiProvider,
+    prompt: str,
+    *,
+    count: int,
+    topic: str,
+    tone: str,
+    persona_set: list[str],
+    temperature: float,
+    max_tokens: int,
+    system_prompt: str | None,
+    timeout: int,
+    model_name: str,
+    required_model_family: str,
+    allow_quota_rotation: bool,
+    purpose: str,
+):
+    providers = [provider]
+    if allow_quota_rotation:
+        providers.extend(_quota_rotation_providers(session, provider, required_model_family))
+    last_exc: Exception | None = None
+    for candidate in providers:
+        try:
+            return ai_gateway.generate_drafts(
+                _ai_credentials(candidate, model_name),
+                prompt,
+                count=count,
+                topic=topic,
+                tone=tone,
+                persona_set=persona_set,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            last_exc = exc
+            if not _is_ai_provider_quota_exhausted(exc):
+                break
+            _mark_provider_quota_exhausted(candidate, exc)
+            if candidate == providers[-1]:
+                break
+    if purpose in LONG_RUNNING_AI_PURPOSES:
+        raise AiGenerationUnavailable(f"{AI_GENERATION_UNAVAILABLE_MESSAGE}：{last_exc}") from last_exc
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("AI provider generation failed without detail")
+
+
+def _quota_rotation_providers(session: Session, provider: AiProvider, required_family: str) -> list[AiProvider]:
+    if required_family != "mimo":
+        return []
+    providers = session.scalars(
+        select(AiProvider)
+        .where(AiProvider.is_active.is_(True), AiProvider.health_status == AiProviderHealthStatus.HEALTHY.value)
+        .order_by(AiProvider.id.asc())
+    ).all()
+    return [candidate for candidate in providers if candidate.id != provider.id and _provider_matches_family(candidate, required_family)]
+
+
+def _is_ai_provider_quota_exhausted(exc: Exception) -> bool:
+    detail = str(exc).lower()
+    return any(marker in detail for marker in AI_PROVIDER_QUOTA_EXHAUSTED_MARKERS)
+
+
+def _mark_provider_quota_exhausted(provider: AiProvider, exc: Exception) -> None:
+    provider.health_status = AiProviderHealthStatus.UNHEALTHY.value
+    provider.last_check_at = _now()
+    provider.last_error = f"AI provider quota exhausted: {str(exc)[:300]}"
+    provider.updated_at = _now()
 
 
 def _prompt_profile(
