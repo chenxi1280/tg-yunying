@@ -744,16 +744,13 @@ def _ensure_membership_refs(
 def _membership_static_refs(session: Session, action: Action, payload: EnsureChannelMembershipPayload) -> list[str]:
     target = session.get(OperationTarget, payload.channel_target_id)
     candidate_refs = [group.tg_peer_id for group in _membership_candidate_groups(session, action.tenant_id, payload)]
-    verified_refs = _membership_verified_peer_refs(session, action.tenant_id, target, payload)
-    refs = []
-    if payload.target_type == "group" and payload.require_send:
-        refs.extend(candidate_refs)
-        refs.extend(verified_refs)
-    else:
-        refs.append(payload.invite_link)
+    verified_refs = _membership_verified_peer_refs(session, action, target, payload)
     username = payload.target_username or ""
     if target and target.tenant_id == action.tenant_id:
         username = username or target.username or ""
+    if payload.target_type == "group" and payload.require_send:
+        return _membership_send_required_refs(payload, target, candidate_refs, verified_refs, username)
+    refs = [payload.invite_link]
     if username and not (payload.target_type == "group" and payload.require_send):
         refs.extend([username, f"https://t.me/{username.lstrip('@')}"])
     refs.append(payload.channel_id)
@@ -761,29 +758,47 @@ def _membership_static_refs(session: Session, action: Action, payload: EnsureCha
         refs.append(target.tg_peer_id)
     refs.extend(candidate_refs)
     refs.extend(verified_refs)
-    if payload.target_type == "group" and payload.require_send:
-        refs.append(payload.invite_link)
-        if username:
-            refs.extend([username, f"https://t.me/{username.lstrip('@')}"])
     return _dedupe_refs(refs)
+
+
+def _membership_send_required_refs(
+    payload: EnsureChannelMembershipPayload,
+    target: OperationTarget | None,
+    candidate_refs: list[str],
+    verified_refs: list[str],
+    username: str,
+) -> list[str]:
+    raw_refs = [payload.channel_id]
+    if target:
+        raw_refs.append(target.tg_peer_id)
+    raw_refs.extend(candidate_refs)
+    stable_refs = [ref for ref in candidate_refs + verified_refs + raw_refs if _is_stable_telegram_peer(ref)]
+    public_refs = [payload.invite_link]
+    if username:
+        public_refs.extend([username, f"https://t.me/{username.lstrip('@')}"])
+    public_refs.extend([ref for ref in raw_refs if ref and not _is_stable_telegram_peer(ref)])
+    return _dedupe_refs(stable_refs + public_refs)
 
 
 def _membership_verified_peer_refs(
     session: Session,
-    tenant_id: int,
+    action: Action,
     target: OperationTarget | None,
     payload: EnsureChannelMembershipPayload,
 ) -> list[str]:
     names = [payload.target_display]
-    if target and target.tenant_id == tenant_id:
+    task = session.get(Task, action.task_id) if action.task_id else None
+    if target and target.tenant_id == action.tenant_id:
         names.append(target.title)
+    if task and task.tenant_id == action.tenant_id:
+        names.append(task.name)
     clean_names = [name for name in _dedupe_refs(names) if name]
     if not clean_names:
         return []
     refs = session.scalars(
         select(VerificationTask.target_peer_id)
         .where(
-            VerificationTask.tenant_id == tenant_id,
+            VerificationTask.tenant_id == action.tenant_id,
             VerificationTask.target_display.in_(clean_names),
         )
         .order_by(VerificationTask.id.desc())
