@@ -1017,13 +1017,14 @@ def _mark_membership_joined(session: Session, action: Action, account: TgAccount
         raise ValueError("operation target not found")
     group = _membership_group_for_payload(session, target, payload, create=True)
     label = "已关注" if payload.target_type == "channel" else "可发言"
+    target_can_send = True if payload.target_type == "group" else bool(target.can_send)
     link = _group_account_link(session, action.tenant_id, group.id, account.id, create=True)
     link.permission_label = label
-    link.can_send = True if payload.target_type == "group" else bool(link.can_send or target.can_send)
+    link.can_send = bool(link.can_send or target_can_send)
     group.auth_status = GroupAuthStatus.AUTHORIZED.value
-    group.can_send = bool(group.can_send or link.can_send)
+    group.can_send = bool(group.can_send or target_can_send)
     target.auth_status = GroupAuthStatus.AUTHORIZED.value
-    target.can_send = bool(target.can_send or link.can_send)
+    target.can_send = bool(target.can_send or target_can_send)
     target.updated_at = _now()
     _sync_target_peer_after_membership(session, target, payload.channel_id, action=action)
 
