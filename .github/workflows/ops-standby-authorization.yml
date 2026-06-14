@@ -121,7 +121,7 @@ jobs:
 
           def resource_summary(session):
               proxies = list(session.scalars(select(AccountProxy).where(AccountProxy.tenant_id == 1).order_by(AccountProxy.id.asc())))
-              apps = list(session.scalars(select(TelegramDeveloperApp).where(TelegramDeveloperApp.tenant_id == 1).order_by(TelegramDeveloperApp.id.asc())))
+              apps = list(session.scalars(select(TelegramDeveloperApp).order_by(TelegramDeveloperApp.id.asc())))
               proxy_statuses = {}
               for proxy in proxies:
                   key = f"{proxy.status}/{proxy.alert_status}"
