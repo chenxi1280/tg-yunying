@@ -864,6 +864,73 @@ def test_target_membership_requires_send_rechecks_existing_group_link(monkeypatc
         assert verification.suggested_action == "关注频道"
 
 
+def test_pending_ai_generation_batch_is_scoped_to_generation_cycle():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    current_payload = {
+        "group_id": 7,
+        "message_text": "",
+        "ai_generation_status": "pending",
+        "ai_generation_id": "cycle-new",
+        "cycle_id": "cycle-new",
+        "ai_generation_history": "第二条真人上下文",
+    }
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-ai-batch", tenant_id=1, name="ai batch", type="group_ai_chat", status="running"))
+        session.add_all(
+            [
+                Action(
+                    id="action-current",
+                    tenant_id=1,
+                    task_id="task-ai-batch",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=11,
+                    status="pending",
+                    scheduled_at=now_value,
+                    payload=current_payload,
+                ),
+                Action(
+                    id="action-old-cycle",
+                    tenant_id=1,
+                    task_id="task-ai-batch",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=12,
+                    status="pending",
+                    scheduled_at=now_value - timedelta(seconds=1),
+                    payload={
+                        **current_payload,
+                        "ai_generation_id": "cycle-old",
+                        "cycle_id": "cycle-old",
+                        "ai_generation_history": "第一条真人上下文",
+                    },
+                ),
+                Action(
+                    id="action-new-sibling",
+                    tenant_id=1,
+                    task_id="task-ai-batch",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=13,
+                    status="pending",
+                    scheduled_at=now_value + timedelta(seconds=1),
+                    payload={**current_payload, "turn_index": 2},
+                ),
+            ]
+        )
+        session.commit()
+
+        action = session.get(Action, "action-current")
+        payload = dispatcher.validate_action_payload(action.action_type, action.payload or {})
+        batch = dispatcher._pending_ai_generation_batch(session, action, payload)
+
+        assert [row.id for row, _payload in batch] == ["action-current", "action-new-sibling"]
+
+
 def test_target_membership_follows_linked_channel_before_blocking_group_send(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

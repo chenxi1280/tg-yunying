@@ -491,13 +491,16 @@ def _pending_ai_generation_batch(session: Session, action: Action, payload: Send
     sibling_limit = AI_DISPATCH_GENERATION_BATCH_SIZE - 1
     if sibling_limit <= 0:
         return rows
-    siblings = session.scalars(_pending_ai_generation_sibling_query(action, sibling_limit))
+    generation_id = str(payload.ai_generation_id or "").strip()
+    if not generation_id:
+        return rows
+    siblings = session.scalars(_pending_ai_generation_sibling_query(action, generation_id, sibling_limit))
     for sibling in siblings:
         rows.append((sibling, SendMessagePayload.model_validate(sibling.payload or {})))
     return rows
 
 
-def _pending_ai_generation_sibling_query(action: Action, limit: int):
+def _pending_ai_generation_sibling_query(action: Action, generation_id: str, limit: int):
     return (
         select(Action)
         .where(
@@ -507,6 +510,7 @@ def _pending_ai_generation_sibling_query(action: Action, limit: int):
             Action.action_type == "send_message",
             Action.status == "pending",
             Action.payload["ai_generation_status"].as_string() == "pending",
+            Action.payload["ai_generation_id"].as_string() == generation_id,
         )
         .order_by(Action.scheduled_at.asc(), Action.created_at.asc())
         .limit(max(1, int(limit or 1)))
