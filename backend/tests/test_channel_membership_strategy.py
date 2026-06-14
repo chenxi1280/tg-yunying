@@ -162,7 +162,7 @@ def test_group_reference_prefers_send_ready_title_group_when_exact_peer_is_stale
     assert group.id == 2149
 
 
-def test_permission_denied_verification_reads_successful_username_ref(monkeypatch) -> None:
+def test_permission_denied_verification_reads_selected_group_ref(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -196,10 +196,10 @@ def test_permission_denied_verification_reads_successful_username_ref(monkeypatc
         action = session.get(Action, "membership-username-verification")
         assert dispatcher.dispatch_action(session, action) is True
         verification = session.query(VerificationTask).one()
-        resolved_group = session.query(TgGroup).filter(TgGroup.tg_peer_id == "qdsfxy").one()
+        resolved_group = session.query(TgGroup).filter(TgGroup.tg_peer_id == "-1002766").one()
 
     assert verification.group_id == resolved_group.id
-    assert verification.target_peer_id == "qdsfxy"
+    assert verification.target_peer_id == "-1002766"
 
 
 def test_permission_denied_verification_prefers_send_ready_title_group_for_reader_fallback(monkeypatch) -> None:

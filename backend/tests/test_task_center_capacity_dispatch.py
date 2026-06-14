@@ -2227,7 +2227,7 @@ def test_recovery_reprobes_existing_unknown_target_membership_action(monkeypatch
         assert link.can_send is True
 
 
-def test_membership_retries_stale_username_with_existing_group_peer(monkeypatch):
+def test_membership_prefers_existing_group_peer_over_stale_username(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -2275,7 +2275,7 @@ def test_membership_retries_stale_username_with_existing_group_peer(monkeypatch)
         action = session.get(Action, "action-membership")
         target = session.get(OperationTarget, 7)
         link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.account_id == 11))
-        assert calls == ["@qdsfxy", "-1002149"]
+        assert calls == ["-1002149"]
         assert probes == ["-1002149"]
         assert action.status == "success"
         assert action.result["membership_fallback_ref"] == "-1002149"
