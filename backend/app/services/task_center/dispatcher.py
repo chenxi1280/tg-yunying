@@ -21,7 +21,7 @@ from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
 from app.services.developer_apps import credentials_for_account
 from app.services.ai_config import get_scheduling_setting
-from app.services.membership_challenges import auto_resolve_image_verification, auto_resolve_text_verification, record_challenge_attempt
+from app.services.membership_challenges import auto_resolve_image_verification, auto_resolve_text_verification, read_challenge_context_with_fallback, record_challenge_attempt
 from app.services.verification import create_verification_task
 from app.timezone import BEIJING_TZ
 
@@ -961,19 +961,41 @@ def _recover_send_message_required_channel(
     detail = send_result.detail or send_result.failure_type or ""
     if send_result.ok or send_result.failure_type != FailureType.GROUP_PERMISSION_DENIED.value:
         return False
-    if not _group_send_permission_needs_linked_channel(detail):
-        return False
     membership_payload = _group_send_membership_payload(session, action, group, payload)
     if membership_payload is None:
         return False
     recovered = _recover_group_send_permission_with_linked_channel(session, action, account, credentials, membership_payload, send_result)
-    if not recovered.ok:
-        return False
-    _record_group_send_permission_allowed(session, action, account, membership_payload)
-    _requeue_send_after_required_channel_follow(action, recovered.detail or "已关注必需频道，等待重新发送")
+    if recovered.ok:
+        _record_group_send_permission_allowed(session, action, account, membership_payload)
+        _requeue_send_after_required_channel_follow(action, recovered.detail or "已关注必需频道，等待重新发送")
+        _finish_execution_attempt(attempt, action, failure_type=send_result.failure_type, detail=detail)
+        _release_runtime_resources(action)
+        return True
+    verification = _record_group_send_permission_denied(
+        session,
+        action,
+        account,
+        membership_payload,
+        recovered.detail or recovered.failure_type or detail,
+    )
+    ctx = MembershipDispatchContext(session, action, account, credentials, membership_payload, attempt)
+    auto_verified = _auto_verify_send_permission(ctx, verification)
+    if auto_verified.ok:
+        _requeue_send_after_permission_recovery(action, auto_verified.detail or "群发言权限已恢复，等待重新发送", verification)
+    else:
+        snapshot = _verification_result_snapshot(action)
+        failure_detail = recovered.detail or recovered.failure_type or detail
+        _fail(action, send_result.failure_type, failure_detail, auto_check="失败", validation_stage="send_permission")
+        action.result = {**(action.result or {}), **snapshot, "membership_status": "permission_denied"}
     _finish_execution_attempt(attempt, action, failure_type=send_result.failure_type, detail=detail)
     _release_runtime_resources(action)
     return True
+
+
+def _auto_verify_send_permission(ctx: MembershipDispatchContext, verification_task):
+    if not _auto_verification_enabled(ctx.session, ctx.action):
+        return OperationResult(False, "需人工处理", FailureType.GROUP_PERMISSION_DENIED.value, "任务未启用自动验证")
+    return _try_auto_group_send_verification(ctx, verification_task)
 
 
 def _group_send_membership_payload(
@@ -1016,6 +1038,25 @@ def _requeue_send_after_required_channel_follow(action: Action, detail: str) -> 
         "auto_check": "等待重发",
         "validation_stage": "required_channel_follow",
         "prerequisite_channel_followed": True,
+    }
+
+
+def _requeue_send_after_permission_recovery(action: Action, detail: str, verification_task) -> None:
+    previous = dict(action.result or {})
+    action.status = "pending"
+    action.scheduled_at = _now()
+    action.executed_at = None
+    _clear_action_lease(action)
+    action.result = {
+        **previous,
+        "success": False,
+        "error_code": "send_permission_recovered_retry",
+        "error_message": detail,
+        "auto_check": "等待重发",
+        "validation_stage": "send_permission_recovered",
+        "verification_task_id": verification_task.id,
+        "verification_status": verification_task.status,
+        "verification_action": verification_task.suggested_action,
     }
 
 
@@ -1384,7 +1425,31 @@ def _try_auto_follow_verification(ctx: MembershipDispatchContext, verification_t
         payload,
         probe_result,
     )
+    if not result.ok:
+        required_channels = _required_channels_from_verification_context(ctx, verification_task)
+        if required_channels and _auto_follow_required_channel_enabled(ctx.session, ctx.action):
+            result = _follow_required_channels_and_reprobe(
+                ctx.session,
+                ctx.action,
+                ctx.account,
+                ctx.credentials,
+                payload,
+                probe_result,
+                required_channels,
+            )
     return _apply_context_fallback_result(ctx, verification_task, payload, result)
+
+
+def _required_channels_from_verification_context(ctx: MembershipDispatchContext, verification_task) -> list[str]:
+    readers = _image_verification_reader_candidates(ctx.session, verification_task, ctx.account)
+    read_result = read_challenge_context_with_fallback(
+        ctx.session,
+        verification_task,
+        ctx.account,
+        ctx.credentials,
+        reader_candidates=readers,
+    )
+    return _required_channel_references(_verification_context_text(read_result.context))
 
 
 def _try_context_verification_fallback(ctx: MembershipDispatchContext, verification_task, image_result):

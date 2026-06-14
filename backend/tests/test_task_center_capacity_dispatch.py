@@ -1102,6 +1102,51 @@ def test_group_send_failure_follows_required_channel_and_requeues(monkeypatch):
         assert action.result["required_channels_followed"] == ["qiyue201"]
 
 
+def test_group_send_permission_denied_auto_verifies_and_requeues(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    probes: list[str] = []
+    resolved: list[str] = []
+
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "send_message",
+        lambda *_args, **_kwargs: SendResult(
+            False,
+            failure_type=FailureType.GROUP_PERMISSION_DENIED.value,
+            detail="群无权限或账号不可发言：需要点击按钮完成验证",
+        ),
+    )
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "resolve_verification_task",
+        lambda _account_id, action, *_args, **_kwargs: resolved.append(action) or OperationResult(True, "已处理", detail="已点击验证按钮"),
+    )
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "probe_target_capabilities",
+        lambda _account_id, target_peer_id, *_args, **_kwargs: probes.append(target_peer_id) or OperationResult(True, detail="复检可发言"),
+    )
+
+    with Session(engine) as session:
+        _seed_required_channel_send_action(session, _now())
+        session.commit()
+
+        action = session.get(Action, "action-send-follow")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.group_id == 7, TgGroupAccount.account_id == 11))
+        verification = session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7, VerificationTask.account_id == 11))
+        assert action.status == "pending"
+        assert action.result["error_code"] == "send_permission_recovered_retry"
+        assert action.result["verification_task_id"] == verification.id
+        assert link is not None and link.can_send is True
+        assert verification is not None and verification.status == "已处理"
+        assert resolved == ["点击按钮"]
+        assert probes == ["-10021"]
+
+
 def test_target_membership_follows_linked_channel_when_join_entry_is_blocked(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
