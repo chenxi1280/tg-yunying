@@ -890,28 +890,34 @@ def test_target_membership_requires_send_rechecks_existing_group_link(monkeypatc
         )
         session.commit()
 
+        joined: list[str] = []
+        probe_results = [
+            OperationResult(False, "失败", "群无权限", "群无权限或账号不可发言"),
+            OperationResult(True, detail="重新入群后可发言"),
+        ]
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
-        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("existing group link must be probed before join")))
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "ensure_channel_membership",
+            lambda _account_id, channel_ref, *_args, **_kwargs: joined.append(channel_ref) or OperationResult(True, detail="重新入群成功"),
+        )
         monkeypatch.setattr(
             dispatcher.gateway,
             "probe_target_capabilities",
-            lambda *args, **kwargs: OperationResult(False, "失败", "群无权限", "缓存频道不可访问 / 账号无权限"),
+            lambda *args, **kwargs: probe_results.pop(0),
         )
 
         action = session.get(Action, "action-membership")
         assert dispatcher.dispatch_action(session, action) is True
 
         link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.group_id == 7, TgGroupAccount.account_id == 11))
-        assert link is not None
-        assert link.can_send is False
-        assert link.permission_label == "缓存频道不可访问 / 账号无权限"
-        assert action.status == "skipped"
-        assert action.result["error_code"] == "membership_permission_denied"
-        assert action.result["membership_status"] == "permission_denied"
         verification = session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7, VerificationTask.account_id == 11))
-        assert verification is not None
-        assert verification.status == "失败"
-        assert verification.suggested_action == "关注频道"
+        assert joined == ["-10021"]
+        assert link is not None
+        assert link.can_send is True
+        assert action.status == "success"
+        assert action.result["membership_status"] == "already_joined"
+        assert verification is None
 
 
 def test_pending_ai_generation_batch_is_scoped_to_generation_cycle():

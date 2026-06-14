@@ -869,6 +869,9 @@ def _dispatch_existing_membership(
         _apply_operation_result(action, account, True, "", "already_joined", attempt=attempt)
         action.result = {**(action.result or {}), "membership_status": "already_joined"}
         return True
+    handled, result = _handle_existing_membership_probe_denied(ctx, result)
+    if handled:
+        return True
     recovered = _recover_group_send_permission_with_linked_channel(session, action, account, credentials, payload, result)
     if recovered.ok:
         _record_group_send_permission_allowed(session, action, account, payload)
@@ -886,6 +889,39 @@ def _dispatch_existing_membership(
         return True
     _apply_operation_result(action, account, False, result.failure_type, result.detail or result.failure_type, attempt=attempt)
     return True
+
+
+def _handle_existing_membership_probe_denied(ctx: MembershipDispatchContext, probe_result) -> tuple[bool, object]:
+    refreshed = _refresh_joined_group_membership_before_verification(ctx, probe_result)
+    if refreshed is None or not refreshed.ok:
+        return False, refreshed or probe_result
+    _record_group_send_permission_allowed(ctx.session, ctx.action, ctx.account, ctx.payload)
+    _apply_operation_result(ctx.action, ctx.account, True, "", refreshed.detail or "rejoined", attempt=ctx.attempt)
+    ctx.action.result = {**(ctx.action.result or {}), "membership_status": "already_joined", "membership_rejoined": True}
+    return True, refreshed
+
+
+def _refresh_joined_group_membership_before_verification(ctx: MembershipDispatchContext, probe_result):
+    detail = probe_result.detail or probe_result.failure_type or ""
+    if not _group_send_probe_should_rejoin(detail):
+        return None
+    join_result, joined_payload, fallback_ref = _ensure_membership_with_peer_candidates(ctx)
+    _record_membership_peer_ref(ctx.action, joined_payload, fallback_ref)
+    if not join_result.ok:
+        return join_result
+    reprobe = gateway.probe_target_capabilities(
+        ctx.account.id,
+        joined_payload.channel_id,
+        joined_payload.target_type,
+        ctx.account.session_ciphertext,
+        ctx.credentials,
+    )
+    return OperationResult(True, detail=join_result.detail or reprobe.detail or "重新入群后可发言") if reprobe.ok else reprobe
+
+
+def _group_send_probe_should_rejoin(detail: str) -> bool:
+    normalized = str(detail or "").lower()
+    return any(marker.lower() in normalized for marker in _GROUP_SEND_RETRYABLE_VERIFICATION_MARKERS)
 
 
 def _requires_group_send_probe(payload: EnsureChannelMembershipPayload) -> bool:
