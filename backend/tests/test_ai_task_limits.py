@@ -163,7 +163,20 @@ def _add_channel(session: Session, message_count: int, account_count: int, comme
             )
         )
     for account_id in range(101, 101 + account_count):
-        session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"评论账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, health_score=100))
+        session.add(
+            TgAccount(
+                id=account_id,
+                tenant_id=1,
+                display_name=f"评论账号{account_id}",
+                username=f"comment_user_{account_id}",
+                tg_first_name=f"评论号{account_id}",
+                avatar_object_key=f"avatars/{account_id}.jpg",
+                profile_sync_status="已同步",
+                phone_masked=str(account_id),
+                status=AccountStatus.ACTIVE.value,
+                health_score=100,
+            )
+        )
     return channel
 
 
@@ -935,6 +948,59 @@ def test_channel_comment_planner_respects_current_hour_budget(monkeypatch):
     assert created == 5
     assert total_actions == 5
     assert sorted(per_message) == [2, 3]
+
+
+def test_channel_comment_planner_stops_when_collected_comments_reach_target(monkeypatch):
+    generated_counts: list[int] = []
+
+    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
+        generated_counts.append(count)
+        return [f"新增评论 {index}" for index in range(count)], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+    with _session() as session:
+        _add_tenant(session)
+        _add_channel(session, message_count=1, account_count=3)
+        task = _add_comment_task(session)
+        task.type_config = {**task.type_config, "message_ids": [41], "target_comments_per_message": 2}
+        session.add_all(
+            [
+                ChannelMessageComment(tenant_id=1, channel_target_id=31, channel_message_id=41, comment_message_id=8101, author_name="评论号101", author_username="comment_user_101"),
+                ChannelMessageComment(tenant_id=1, channel_target_id=31, channel_message_id=41, comment_message_id=8102, author_name="评论号102", author_username="comment_user_102"),
+            ]
+        )
+        session.commit()
+
+        created = build_channel_comment_plan(session, task)
+        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+
+    assert generated_counts == []
+    assert created == 0
+    assert total_actions == 0
+
+
+def test_channel_comment_planner_excludes_uninitialized_profile_accounts(monkeypatch):
+    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
+        return [f"评论 {index}" for index in range(count)], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+    with _session() as session:
+        _add_tenant(session)
+        _add_channel(session, message_count=1, account_count=2)
+        uninitialized = session.get(TgAccount, 101)
+        uninitialized.username = "english_name"
+        uninitialized.tg_first_name = "John"
+        uninitialized.avatar_object_key = ""
+        uninitialized.profile_sync_status = "未同步"
+        task = _add_comment_task(session)
+        task.type_config = {**task.type_config, "message_ids": [41], "target_comments_per_message": 2}
+        session.commit()
+
+        created = build_channel_comment_plan(session, task)
+        action_accounts = session.scalars(select(Action.account_id).where(Action.task_id == task.id)).all()
+
+    assert created == 2
+    assert action_accounts == [102, 102]
 
 
 def test_channel_comment_plans_minimum_auto_replies(monkeypatch):

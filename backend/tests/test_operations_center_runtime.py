@@ -1014,6 +1014,21 @@ def _channel_comment_action(action_id: str, comment_text: str, scheduled_at: dat
     )
 
 
+def _initialized_comment_account(account_id: int = 101) -> TgAccount:
+    return TgAccount(
+        id=account_id,
+        tenant_id=1,
+        display_name="评论账号",
+        username=f"comment_user_{account_id}",
+        tg_first_name=f"评论号{account_id}",
+        avatar_object_key=f"avatars/{account_id}.jpg",
+        profile_sync_status="已同步",
+        phone_masked=str(account_id),
+        status=AccountStatus.ACTIVE.value,
+        health_score=100,
+    )
+
+
 def _channel_like_action(action_id: str, account_id: int, scheduled_at: datetime) -> Action:
     return Action(
         id=action_id,
@@ -3209,7 +3224,7 @@ def test_channel_comment_reply_mode_requires_and_plans_reply_targets(monkeypatch
     monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", lambda *_args, **_kwargs: (["回复 A", "回复 B"], 0))
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="评论账号", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=100))
+        session.add(_initialized_comment_account())
         session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营"))
         session.add(ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=9001, content_preview="频道消息"))
         session.add(ChannelMessageComment(tenant_id=1, channel_target_id=31, channel_message_id=41, comment_message_id=8101, author_name="用户 A"))
@@ -3251,7 +3266,7 @@ def test_channel_comment_reply_targets_must_belong_to_selected_messages(monkeypa
     monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", lambda *_args, **_kwargs: (["回复 A"], 0))
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="评论账号", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=100))
+        session.add(_initialized_comment_account())
         session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营"))
         session.add(ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=9001, content_preview="目标频道消息"))
         session.add(ChannelMessage(id=42, tenant_id=1, channel_target_id=31, message_id=9002, content_preview="其它频道消息"))
@@ -3296,7 +3311,7 @@ def test_channel_comment_drops_ai_template_duplicates_and_missing_fillers(monkey
     monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", lambda *_args, **_kwargs: (generated, 0))
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="评论账号", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=100))
+        session.add(_initialized_comment_account())
         session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营"))
         session.add(ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=9001, content_preview="今天试了 18cm 收纳盒，塞进小柜子刚好"))
         task = Task(
@@ -3346,7 +3361,7 @@ def test_channel_comment_dedupes_same_message_beyond_recent_task_window(monkeypa
     base_time = datetime(2026, 5, 24, 12, 0, 0)
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="评论账号", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=100))
+        session.add(_initialized_comment_account())
         session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道目标", can_send=True, auth_status="已授权运营"))
         session.add(ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=9001, content_preview="今天试了 18cm 收纳盒，塞进小柜子刚好"))
         for index in range(25):

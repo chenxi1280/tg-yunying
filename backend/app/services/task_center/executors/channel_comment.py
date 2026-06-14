@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSet, Task
+from app.models import Action, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSet, Task, TgAccount
 
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 from ..account_pool import select_task_accounts
@@ -18,6 +18,8 @@ from .common import add_tokens, adjust_for_account_hour_limit, channel_message_a
 
 CHANNEL_COMMENT_SCENE = "channel_comment"
 MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE = 4
+PROFILE_SYNCED_STATUS = "已同步"
+COMMENT_ACCOUNT_PROFILE_ERROR = "评论账号资料未初始化，请先在账号中心批量初始化中文昵称、username 和头像"
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -92,7 +94,7 @@ def build_plan(session: Session, task: Task) -> int:
     target_per_message = int(config.get("target_comments_per_message") or 1)
     _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("comment_count_jitter") or 0))
     account_scan_limit = max(len(actions), max_target_per_message, int((task.account_config or {}).get("max_concurrent") or max_target_per_message))
-    accounts = channel_member_accounts(
+    ready_accounts = channel_member_accounts(
         session,
         task,
         channel,
@@ -105,8 +107,9 @@ def build_plan(session: Session, task: Task) -> int:
         ),
         require_send=True,
     )
+    accounts = _comment_ready_accounts(task, ready_accounts)
     if not accounts:
-        task.last_error = "没有可用账号，等待账号恢复后继续执行"
+        task.last_error = COMMENT_ACCOUNT_PROFILE_ERROR if ready_accounts else "没有可用账号，等待账号恢复后继续执行"
         return 0
     record_channel_capacity_warning(task, "回复", target_per_message, len(accounts))
     times = schedule_times(len(actions), task.pacing_config or {})
@@ -214,17 +217,80 @@ def _generate_normal_channel_comments(
 
 
 def _message_comment_quantities(session: Session, task: Task, config: dict, messages: list[ChannelMessage]) -> list[tuple[ChannelMessage, int]]:
-    deficits = [_message_comment_deficit(session, task, config, message) for message in messages]
+    managed_usernames = _tenant_account_usernames(session, task.tenant_id)
+    deficits = [_message_comment_deficit(session, task, config, message, managed_usernames) for message in messages]
     budget = int((task.pacing_config or {}).get("max_actions_per_hour") or 0)
     quantities = allocate_message_budget(deficits, budget) if budget > 0 else deficits
     capped = [min(quantity, MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE) for quantity in quantities]
     return list(zip(messages, capped, strict=False))
 
 
-def _message_comment_deficit(session: Session, task: Task, config: dict, message: ChannelMessage) -> int:
+def _message_comment_deficit(session: Session, task: Task, config: dict, message: ChannelMessage, managed_usernames: set[str]) -> int:
     desired = quantity_with_jitter(int(config.get("target_comments_per_message") or 1), float(config.get("comment_count_jitter") or 0))
-    used_count = channel_message_action_count(session, task, "post_comment", message)
+    used_count = max(
+        channel_message_action_count(session, task, "post_comment", message),
+        _collected_managed_comment_count(session, task, message, managed_usernames),
+    )
     return max(0, desired - used_count)
+
+
+def _collected_managed_comment_count(session: Session, task: Task, message: ChannelMessage, managed_usernames: set[str]) -> int:
+    if not managed_usernames:
+        return 0
+    return int(
+        session.scalar(
+            select(func.count(ChannelMessageComment.id)).where(
+                ChannelMessageComment.tenant_id == task.tenant_id,
+                ChannelMessageComment.channel_target_id == message.channel_target_id,
+                ChannelMessageComment.channel_message_id == message.id,
+                func.lower(ChannelMessageComment.author_username).in_(managed_usernames),
+            )
+        )
+        or 0
+    )
+
+
+def _tenant_account_usernames(session: Session, tenant_id: int) -> set[str]:
+    rows = session.scalars(
+        select(TgAccount.username).where(
+            TgAccount.tenant_id == tenant_id,
+            TgAccount.deleted_at.is_(None),
+            TgAccount.username.is_not(None),
+        )
+    )
+    return {str(username or "").strip().lstrip("@").lower() for username in rows if str(username or "").strip()}
+
+
+def _comment_ready_accounts(task: Task, accounts: list) -> list:
+    ready = [account for account in accounts if _comment_account_profile_ready(account)]
+    blocked_count = len(accounts) - len(ready)
+    stats = dict(task.stats or {})
+    if blocked_count:
+        stats["comment_profile_blocked_account_count"] = blocked_count
+        stats["comment_profile_ready_account_count"] = len(ready)
+        task.last_error = COMMENT_ACCOUNT_PROFILE_ERROR
+    else:
+        stats.pop("comment_profile_blocked_account_count", None)
+        stats.pop("comment_profile_ready_account_count", None)
+        if task.last_error == COMMENT_ACCOUNT_PROFILE_ERROR:
+            task.last_error = ""
+    task.stats = stats
+    return ready
+
+
+def _comment_account_profile_ready(account) -> bool:
+    return all(
+        [
+            _has_chinese_text(account.tg_first_name),
+            bool(str(account.username or "").strip()),
+            bool(str(account.avatar_object_key or "").strip()),
+            str(account.profile_sync_status or "").strip() == PROFILE_SYNCED_STATUS,
+        ]
+    )
+
+
+def _has_chinese_text(value: str | None) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in str(value or ""))
 
 
 def _config_with_comment_profile(config: dict, profile_preview: dict) -> dict:
