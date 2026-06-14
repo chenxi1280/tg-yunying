@@ -146,8 +146,11 @@ def _permission_prompt_is_actionable(text: str) -> bool:
 
 async def _verification_context_row(message: Any) -> dict[str, Any] | None:
     text = _verification_message_text(message)
-    if not text:
+    media_summary = _verification_media_summary(message)
+    if not text and not media_summary["has_media"]:
         return None
+    if not text:
+        text = "[媒体消息]"
     sender = await message.get_sender()
     sender_name = (
         getattr(sender, "first_name", None)
@@ -160,7 +163,7 @@ async def _verification_context_row(message: Any) -> dict[str, Any] | None:
         "sender": sender_name,
         "text": text[:VERIFICATION_CONTEXT_PREVIEW_LIMIT],
         "sent_at": getattr(message, "date", None),
-        **_verification_media_summary(message),
+        **media_summary,
     }
 
 

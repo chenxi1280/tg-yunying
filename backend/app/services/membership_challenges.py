@@ -117,7 +117,7 @@ def auto_resolve_image_verification(
         text_result = _submit_text_answer_from_context(session, task, account, credentials, context)
         if text_result:
             return text_result
-        detail = context.get("read_failure_detail") or "未读取到验证码图片"
+        detail = _missing_image_detail(context)
         return _image_verification_failure(session, task, account, detail, context=context)
     if _already_tried_image(session, task, image_message):
         return _image_verification_failure(session, task, account, "同一图片验证码已自动尝试过，需人工确认或等待新验证码", image_message, context)
@@ -387,6 +387,14 @@ def _context_status(messages: list[dict[str, Any]]) -> tuple[str, str]:
         return "ok", ""
     detail = "没有读取到最近验证聊天信息。请确认验证消息是否仍存在、账号是否能读取群历史。"
     return "empty", detail
+
+
+def _missing_image_detail(context: dict[str, Any]) -> str:
+    detail = str(context.get("read_failure_detail") or "未读取到验证码图片")
+    messages = [message for message in context.get("messages") or [] if isinstance(message, dict)]
+    media_count = sum(1 for message in messages if message.get("has_media"))
+    status = str(context.get("context_status") or "unknown")
+    return f"{detail}（context_status={status}, messages={len(messages)}, media={media_count}）"
 
 
 def _mimo_vision_provider(session: Session) -> AiProvider | None:

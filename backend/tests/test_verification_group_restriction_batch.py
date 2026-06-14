@@ -122,3 +122,27 @@ def test_verification_context_keeps_button_and_media_challenges():
         "media_message_id": 88,
         "media_mime_type": "",
     }
+
+
+def test_verification_context_keeps_pure_media_challenge():
+    sender = SimpleNamespace(first_name="验证机器人", username="verify_bot", title="")
+    sent_at = datetime(2026, 6, 9, 12, 31)
+
+    async def get_sender():
+        return sender
+
+    message = SimpleNamespace(
+        id=89,
+        message="",
+        media=object(),
+        buttons=[],
+        date=sent_at,
+        get_sender=get_sender,
+    )
+
+    row = asyncio.run(_verification_context_row(message))
+
+    assert row is not None
+    assert row["text"] == "[媒体消息]"
+    assert row["has_media"] is True
+    assert row["media_message_id"] == 89

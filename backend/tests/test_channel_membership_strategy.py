@@ -460,6 +460,36 @@ def test_image_verification_falls_back_to_text_answer_when_context_has_no_image(
     assert submitted == ["10"]
 
 
+def test_image_verification_missing_image_detail_includes_context_summary(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    monkeypatch.setattr(
+        "app.services.membership_challenges.gateway.fetch_verification_context",
+        lambda *_args, **_kwargs: [{"message_id": 5, "sender": "验证机器人", "text": "欢迎入群", "sent_at": None, "has_media": False}],
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(id=806, tenant_id=1, tg_peer_id="-100806", title="无图验证群", group_type="supergroup", auth_status="已授权运营", can_send=False)
+        target = OperationTarget(id=906, tenant_id=1, target_type="group", tg_peer_id="-100806", title="无图验证群", auth_status="只读", can_send=False)
+        task = Task(id="task-image-missing-detail", tenant_id=1, name="图形无图详情", type="group_ai_chat", status="running")
+        account = TgAccount(id=36, tenant_id=1, display_name="账号36", phone_masked="36", status="在线", session_ciphertext="session")
+        action = Action(id="membership-image-missing-detail", tenant_id=1, task_id=task.id, task_type="group_ai_chat", action_type="ensure_target_membership", account_id=36)
+        verification = VerificationTask(tenant_id=1, account_id=36, group_id=group.id, verification_type="群发言权限", detected_reason="群无权限或账号不可发言", suggested_action="识别图形验证码", target_peer_id=group.tg_peer_id, target_display=group.title, status="待处理")
+        session.add_all([group, target, task, account, action, verification])
+        session.commit()
+
+        result = dispatcher._try_auto_group_send_verification(
+            dispatcher.MembershipDispatchContext(session, action, account, object(), EnsureChannelMembershipPayload(channel_id=group.tg_peer_id, channel_target_id=target.id, target_type="group", target_display=group.title, require_send=True), None),
+            verification,
+        )
+
+    assert result.ok is False
+    assert "context_status=ok" in verification.failure_detail
+    assert "messages=1" in verification.failure_detail
+
+
 def test_image_verification_falls_back_to_required_channel_links(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
