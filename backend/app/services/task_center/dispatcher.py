@@ -116,6 +116,11 @@ _ACCOUNT_PROXY_FAILURE_MARKERS = (
     "unreachable",
     "network",
 )
+_ACCOUNT_FROZEN_FAILURE_MARKERS = (
+    "frozen account",
+    "frozen accounts",
+    "not available for frozen accounts",
+)
 
 
 @dataclass(frozen=True)
@@ -653,7 +658,8 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
         _mark_membership_joined(session, action, account, payload)
     elif result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
         return _handle_group_send_permission_denied(ctx, result, membership_status="joined", skip_on_failure=True)
-    _apply_operation_result(action, account, result.ok, result.failure_type, result.detail or result.membership_status, attempt=attempt)
+    failure_type = _classify_membership_failure(result.failure_type, result.detail or result.membership_status)
+    _apply_operation_result(action, account, result.ok, failure_type, result.detail or result.membership_status, attempt=attempt)
     if result.ok:
         action.result = {**(action.result or {}), "membership_status": result.membership_status or "joined"}
     return True
@@ -1275,6 +1281,12 @@ def _apply_operation_result(action: Action, account: TgAccount, ok: bool, failur
     _apply_send_result(action, account, ok, "", failure_type, detail, attempt=attempt)
 
 
+def _classify_membership_failure(failure_type: str, detail: str) -> str:
+    if _is_account_frozen_failure(failure_type, detail):
+        return FailureType.ACCOUNT_UNAVAILABLE.value
+    return failure_type
+
+
 def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: str = "", failure_type: str = "", detail: str = "", *, attempt: ExecutionAttempt | None = None) -> None:
     if ok:
         action.status = "success"
@@ -1346,6 +1358,11 @@ def _is_account_session_failure(failure_type: str, detail: str) -> bool:
         return False
     text = f"{failure_type} {detail}".lower()
     return any(marker.lower() in text for marker in _ACCOUNT_SESSION_FAILURE_MARKERS)
+
+
+def _is_account_frozen_failure(failure_type: str, detail: str) -> bool:
+    text = f"{failure_type} {detail}".lower()
+    return any(marker in text for marker in _ACCOUNT_FROZEN_FAILURE_MARKERS)
 
 
 def _is_account_proxy_failure(failure_type: str, detail: str) -> bool:

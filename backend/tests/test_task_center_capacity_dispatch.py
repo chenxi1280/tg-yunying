@@ -825,9 +825,38 @@ def test_target_membership_requires_send_rechecks_existing_group_link(monkeypatc
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(Task(id="task-membership", tenant_id=1, name="membership", type="group_ai_chat", status="running"))
-        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-10021", title="目标群", auth_status="已授权运营", can_send=True))
-        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
-        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-10021", title="目标群", auth_status="已授权运营", can_send=True, require_review=False))
+        session.add(
+            OperationTarget(
+                id=21,
+                tenant_id=1,
+                target_type="group",
+                tg_peer_id="-10021",
+                title="目标群",
+                auth_status="已授权运营",
+                can_send=True,
+            )
+        )
+        session.add(
+            TgAccount(
+                id=11,
+                tenant_id=1,
+                display_name="账号",
+                phone_masked="+861***0011",
+                status="在线",
+                session_ciphertext="session",
+            )
+        )
+        session.add(
+            TgGroup(
+                id=7,
+                tenant_id=1,
+                tg_peer_id="-10021",
+                title="目标群",
+                auth_status="已授权运营",
+                can_send=True,
+                require_review=False,
+            )
+        )
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="已加入"))
         session.add(
             Action(
@@ -1035,6 +1064,58 @@ def test_target_membership_follows_linked_channel_when_join_entry_is_blocked(mon
         assert action.result["membership_status"] == "joined"
         assert action.result["prerequisite_channel_followed"] is True
         assert session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7)) is None
+
+
+def test_target_membership_classifies_frozen_account_as_unavailable(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-frozen-entry", tenant_id=1, name="frozen-entry", type="group_ai_chat", status="running"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-10021", title="目标群", auth_status="已授权运营", can_send=True))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-10021", title="目标群", auth_status="已授权运营", can_send=True, require_review=False))
+        session.add(
+            Action(
+                id="action-frozen-entry",
+                tenant_id=1,
+                task_id="task-frozen-entry",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={
+                    "channel_id": "-10021",
+                    "channel_target_id": 21,
+                    "target_type": "group",
+                    "target_display": "目标群",
+                    "require_send": True,
+                },
+            )
+        )
+        session.commit()
+
+        frozen_detail = "You tried to use a method that is not available for frozen accounts (caused by JoinChannelRequest)"
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "ensure_channel_membership",
+            lambda *args, **kwargs: OperationResult(False, "失败", "未知错误", frozen_detail),
+        )
+
+        action = session.get(Action, "action-frozen-entry")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        assert action.status == "failed"
+        assert action.result["error_code"] == "账号不可用"
+        assert action.result["validation_stage"] == "telegram_api"
+        attempt = session.scalar(select(ExecutionAttempt).where(ExecutionAttempt.action_id == action.id))
+        assert attempt is not None
+        assert attempt.failure_type == "账号不可用"
+        assert frozen_detail in attempt.failure_detail
 
 
 def test_target_membership_skips_when_joined_probe_still_cannot_send(monkeypatch):
