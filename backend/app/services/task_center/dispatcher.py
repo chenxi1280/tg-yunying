@@ -28,6 +28,7 @@ from app.timezone import BEIJING_TZ
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group
+from .executors.common import quantity_jitter_bounds
 from .payloads import EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
@@ -1809,6 +1810,9 @@ def _dispatch_like(action: Action, account: TgAccount, credentials, session: Ses
 
 
 def _dispatch_comment(action: Action, account: TgAccount, credentials, session: Session, payload: PostCommentPayload) -> bool:
+    if _comment_success_limit_reached(session, action, payload):
+        _skip(action, "comment_target_reached", "频道消息评论已达到当前上限，跳过旧计划")
+        return True
     if not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
         return True
     account_id = account.id
@@ -1823,6 +1827,44 @@ def _dispatch_comment(action: Action, account: TgAccount, credentials, session: 
     result = gateway.reply_channel_message(account_id, channel_peer, message_id, content, session_ciphertext, credentials, reply_to_message_id=payload.reply_to_message_id)
     _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
     return True
+
+
+def _comment_success_limit_reached(session: Session, action: Action, payload: PostCommentPayload) -> bool:
+    task = session.get(Task, action.task_id)
+    config = task.type_config if task and isinstance(task.type_config, dict) else {}
+    target = int(config.get("target_comments_per_message") or 0)
+    if not task or task.type != "channel_comment" or target <= 0:
+        return False
+    _lower, limit = quantity_jitter_bounds(target, float(config.get("comment_count_jitter") or 0))
+    success_count = 0
+    rows = session.scalars(
+        select(Action.payload).where(
+            Action.id != action.id,
+            Action.task_id == action.task_id,
+            Action.action_type == "post_comment",
+            Action.status == "success",
+        )
+    )
+    for existing_payload in rows:
+        if _same_comment_message(existing_payload, payload):
+            success_count += 1
+    return success_count >= limit
+
+
+def _same_comment_message(existing_payload: object, payload: PostCommentPayload) -> bool:
+    if not isinstance(existing_payload, dict):
+        return False
+    channel_message_id = _payload_int(existing_payload, "channel_message_id")
+    message_id = _payload_int(existing_payload, "message_id")
+    return (bool(payload.channel_message_id) and channel_message_id == payload.channel_message_id) or message_id == payload.message_id
+
+
+def _payload_int(payload: dict, key: str) -> int:
+    raw = payload.get(key)
+    if isinstance(raw, int):
+        return raw
+    text = str(raw or "").strip()
+    return int(text) if text.isdigit() else 0
 
 
 def _ensure_channel_action_membership(session: Session, action: Action, account: TgAccount, channel_target_id: int | None) -> bool:
