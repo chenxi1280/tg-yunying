@@ -1466,6 +1466,53 @@ def test_target_membership_skips_when_joined_probe_still_cannot_send(monkeypatch
         assert action.result["verification_task_id"] == verification.id
 
 
+def test_target_membership_retries_join_after_required_channel_follow(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-follow-then-join", tenant_id=1, name="follow-then-join", type="group_ai_chat", status="running"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-10021", title="天津音乐学院", auth_status="已授权运营", can_send=True))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-10021", title="天津音乐学院", auth_status="已授权运营", can_send=True))
+        session.add(
+            Action(
+                id="action-follow-then-join",
+                tenant_id=1,
+                task_id="task-follow-then-join",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"channel_id": "-10021", "channel_target_id": 21, "target_type": "group", "target_display": "天津音乐学院", "require_send": True},
+            )
+        )
+        session.commit()
+
+        joins: list[str] = []
+
+        def ensure_membership(_account_id, channel_ref, *_args, **_kwargs):
+            joins.append(channel_ref)
+            if channel_ref == "-10021" and joins.count("-10021") == 1:
+                return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "您需要关注我们的频道才能发言。 [按钮：天津音乐学院车库备用 (https://t.me/qiyue201)]")
+            return OperationResult(True, detail="joined")
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", ensure_membership)
+        monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", lambda *args, **kwargs: OperationResult(True, detail="可发言"))
+
+        action = session.get(Action, "action-follow-then-join")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        assert joins == ["-10021", "qiyue201", "-10021"]
+        assert action.status == "success"
+        assert action.result["target_membership_retried_after_required_channel"] is True
+        assert action.result["required_channels_followed"] == ["qiyue201"]
+
+
 def test_group_send_permission_denied_classifies_button_verification(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
