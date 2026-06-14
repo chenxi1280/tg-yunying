@@ -72,11 +72,14 @@ def _verification_message_text(message: Any) -> str:
 def _permission_detail_with_references(detail: str, fallback: str = GROUP_PERMISSION_DETAIL) -> str:
     if not detail:
         return fallback
-    has_reference = bool(
+    return f"{fallback}：{detail}" if _permission_detail_has_references(detail) else fallback
+
+
+def _permission_detail_has_references(detail: str) -> bool:
+    return bool(
         re.search(r"@[A-Za-z0-9_]{4,}", detail)
         or re.search(r"(?:https?://)?(?:t\.me|telegram\.me)/(?:joinchat/|\+)?[A-Za-z0-9_-]{4,}", detail)
     )
-    return f"{fallback}：{detail}" if has_reference else fallback
 
 
 def _permission_detail_from_context_rows(rows: list[dict[str, Any]], fallback: str = TARGET_PERMISSION_DETAIL) -> str:
@@ -1176,6 +1179,8 @@ class TelethonTelegramGateway(TelegramGateway):
             return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, detail)
 
     async def _permission_detail_from_probe_exception(self, client: Any, target: Any, mapped: SendResult) -> str:
+        if mapped.failure_type == FailureType.GROUP_PERMISSION_DENIED.value and _permission_detail_has_references(mapped.detail or ""):
+            return mapped.detail or GROUP_PERMISSION_DETAIL
         context_detail = await self._permission_detail_from_target_context(client, target)
         if context_detail != TARGET_PERMISSION_DETAIL:
             return context_detail
@@ -1184,8 +1189,11 @@ class TelethonTelegramGateway(TelegramGateway):
         return context_detail
 
     async def _permission_detail_from_target_context(self, client: Any, target: Any) -> str:
+        get_messages = getattr(client, "get_messages", None)
+        if not callable(get_messages):
+            return TARGET_PERMISSION_DETAIL
         try:
-            messages = await client.get_messages(target, limit=VERIFICATION_CONTEXT_DEFAULT_LIMIT)
+            messages = await get_messages(target, limit=VERIFICATION_CONTEXT_DEFAULT_LIMIT)
         except Exception as exc:  # noqa: BLE001 - probe detail should expose context-read failures.
             detail = str(exc) or exc.__class__.__name__
             return f"{TARGET_PERMISSION_DETAIL}；验证上下文读取失败：{detail}"
