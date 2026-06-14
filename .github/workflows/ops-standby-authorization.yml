@@ -64,7 +64,7 @@ jobs:
           from sqlalchemy import select
 
           from app.database import SessionLocal
-          from app.models import AccountStatus, TgAccount, TgAccountAuthorization
+          from app.models import AccountProxy, AccountStatus, TelegramDeveloperApp, TgAccount, TgAccountAuthorization
           from app.schemas.account_security import AccountSecurityBatchCreate, ManagedTwoFaRequest
           from app.services.account_authorization_constants import ACTIVE_STATUSES
           from app.services.account_security.service import (
@@ -119,9 +119,38 @@ jobs:
                       )
               return result
 
+          def resource_summary(session):
+              proxies = list(session.scalars(select(AccountProxy).where(AccountProxy.tenant_id == 1).order_by(AccountProxy.id.asc())))
+              apps = list(session.scalars(select(TelegramDeveloperApp).where(TelegramDeveloperApp.tenant_id == 1).order_by(TelegramDeveloperApp.id.asc())))
+              proxy_statuses = {}
+              for proxy in proxies:
+                  key = f"{proxy.status}/{proxy.alert_status}"
+                  proxy_statuses[key] = proxy_statuses.get(key, 0) + 1
+              app_statuses = {}
+              for app in apps:
+                  key = f"active={app.is_active}/health={app.health_status}"
+                  app_statuses[key] = app_statuses.get(key, 0) + 1
+              return {
+                  "proxy_total": len(proxies),
+                  "proxy_statuses": proxy_statuses,
+                  "healthy_proxy_ids": [
+                      proxy.id
+                      for proxy in proxies
+                      if proxy.status in {"healthy", "健康"} and proxy.alert_status in {"normal", "recovered", ""}
+                  ][:20],
+                  "developer_app_total": len(apps),
+                  "developer_app_statuses": app_statuses,
+                  "healthy_developer_app_ids": [
+                      app.id
+                      for app in apps
+                      if app.is_active and app.health_status == "健康"
+                  ][:20],
+              }
+
           with SessionLocal() as session:
               gaps = online_gap_accounts(session)
               print("OPS_STANDBY_GAPS " + json.dumps(gaps, ensure_ascii=False), flush=True)
+              print("OPS_STANDBY_RESOURCES " + json.dumps(resource_summary(session), ensure_ascii=False), flush=True)
               if gaps:
                   precheck = precheck_account_security_batch(
                       session,
