@@ -18,7 +18,7 @@ from app.services.task_center import account_pool
 from app.services.task_center.dispatcher import claim_actions
 from app.services.task_center.runtime_retention import cleanup_runtime_details
 from app.services.task_center.service import _recover_stale_executing_actions, retry_task
-from app.services.task_center.stats import refresh_task_stats, retry_failed_actions
+from app.services.task_center.stats import planner_backlog_snapshot, refresh_task_stats, retry_failed_actions
 from app.timezone import BEIJING_TZ
 from app.schemas.task_center import TaskRetryRequest
 
@@ -2607,6 +2607,31 @@ def test_retry_failed_only_requeues_unknown_after_send_actions():
         assert session.get(Action, "action-failed").status == "pending"
         assert session.get(Action, "action-membership-denied").status == "pending"
         assert session.get(Action, "action-skipped").status == "skipped"
+
+
+def test_planner_backlog_ignores_expired_hard_hourly_pending_actions():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    expired_bucket = (now_value - timedelta(hours=2)).replace(minute=0, second=0, microsecond=0)
+    current_bucket = now_value.replace(minute=0, second=0, microsecond=0)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(id="task-hard-backlog", tenant_id=1, name="hard", type="group_ai_chat", status="running", type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300})
+        session.add(task)
+        session.add_all(
+            [
+                Action(id="old-hard", tenant_id=1, task_id=task.id, task_type=task.type, action_type="send_message", status="pending", scheduled_at=expired_bucket, payload={"hard_hourly_target": True, "hard_hourly_bucket": expired_bucket.isoformat()}),
+                Action(id="current-hard", tenant_id=1, task_id=task.id, task_type=task.type, action_type="send_message", status="pending", scheduled_at=now_value, payload={"hard_hourly_target": True, "hard_hourly_bucket": current_bucket.isoformat()}),
+            ]
+        )
+        session.commit()
+
+        snapshot = planner_backlog_snapshot(session, task)
+
+    assert snapshot["task_pending"] == 1
+    assert snapshot["global_pending"] == 1
 
 
 def test_runtime_cleanup_summarizes_then_deletes_all_window_out_details():

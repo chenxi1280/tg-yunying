@@ -90,13 +90,12 @@ def planner_backlog_snapshot(session: Session, task: Task) -> dict[str, int | bo
     ]
     if _can_plan_with_partial_membership(task):
         task_filters.append(Action.action_type.notin_(BUSINESS_MEMBERSHIP_ACTION_TYPES))
-    global_pending = session.scalar(select(func.count(Action.id)).where(Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES))) or 0
-    task_pending = session.scalar(
-        select(func.count(Action.id)).where(*task_filters)
-    ) or 0
-    oldest_pending = session.scalar(
-        select(func.min(Action.scheduled_at)).where(*task_filters)
-    )
+    now_value = _now()
+    global_actions = _active_backlog_actions(session, [Action.status.in_(PLANNER_BACKLOG_OPEN_STATUSES)], now_value)
+    task_actions = _active_backlog_actions(session, task_filters, now_value)
+    global_pending = len(global_actions)
+    task_pending = len(task_actions)
+    oldest_pending = min((action.scheduled_at for action in task_actions if action.scheduled_at), default=None)
     oldest_at = as_beijing(oldest_pending)
     oldest_age = int((_now() - oldest_at).total_seconds()) if oldest_at else 0
     blocked = (
@@ -110,6 +109,11 @@ def planner_backlog_snapshot(session: Session, task: Task) -> dict[str, int | bo
         "task_pending": int(task_pending or 0),
         "oldest_age_seconds": int(oldest_age),
     }
+
+
+def _active_backlog_actions(session: Session, filters: list[Any], now_value: datetime) -> list[Action]:
+    actions = session.scalars(select(Action).where(*filters)).all()
+    return [action for action in actions if not _hard_hourly_bucket_expired(action, now_value)]
 
 
 def _can_plan_with_partial_membership(task: Task) -> bool:
