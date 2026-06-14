@@ -835,6 +835,7 @@ def test_standby_session_batch_polls_primary_session_code_when_challenge_has_no_
             AccountSecurityBatchCreate(
                 account_ids=[account.id],
                 action_types=["provision_standby_session"],
+                standby_slot_strategy="standby_1",
                 confirm_text="确认",
                 reason="自动补齐备用 session",
             ),

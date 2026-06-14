@@ -393,3 +393,11 @@ def _json_list(value: str) -> list[str]:
     except ValueError:
         return []
     return [str(item) for item in data] if isinstance(data, list) else []
+
+
+def _json_dict(value: str) -> dict[str, Any]:
+    try:
+        data = json.loads(value or "{}")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
