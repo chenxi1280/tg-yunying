@@ -3237,8 +3237,9 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
 
 
 def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
+    context_suffix = uuid4().hex[:8]
     messages = [
-        ("ai-context-1", "第一条真人上下文"),
+        (f"ai-context-1-{context_suffix}", f"第一条真人上下文 {context_suffix}"),
     ]
     sends: list[str] = []
 
@@ -3255,15 +3256,15 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         ]
 
     def fake_generate_drafts(_credentials, prompt, **_kwargs):
-        if "第二条真人上下文" in prompt:
+        if f"第二条真人上下文 {context_suffix}" in prompt:
             candidates = [
-                AiDraftCandidate(persona="自然群友", content="第二条真人上下文这个信息可以往具体案例上聊。"),
-                AiDraftCandidate(persona="补充群友", content="这个新内容更适合先问问实际发生了什么。"),
+                AiDraftCandidate(persona="自然群友", content=f"第二条真人上下文 {context_suffix} 这个信息可以往具体案例上聊。"),
+                AiDraftCandidate(persona="补充群友", content=f"这个新内容 {context_suffix} 更适合先问问实际发生了什么。"),
             ]
         else:
             candidates = [
-                AiDraftCandidate(persona="自然群友", content="第一条真人上下文可以先从实际体验聊起。"),
-                AiDraftCandidate(persona="补充群友", content="我觉得第一条真人上下文这里要看具体情况。"),
+                AiDraftCandidate(persona="自然群友", content=f"第一条真人上下文 {context_suffix} 可以先从实际体验聊起。"),
+                AiDraftCandidate(persona="补充群友", content=f"我觉得第一条真人上下文 {context_suffix} 这里要看具体情况。"),
             ]
         return AiGenerationResult(
             candidates=candidates,
@@ -3321,7 +3322,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         first_context_send_count = len(sends)
         assert first_context_send_count >= 1
 
-        messages.append(("ai-context-2", "第二条真人上下文"))
+        messages.append((f"ai-context-2-{context_suffix}", f"第二条真人上下文 {context_suffix}"))
         reset_listener_runtime_cache()
         drain_task_center(SessionLocal, 10)
         drain_task_center(SessionLocal, 10)
@@ -3330,7 +3331,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
             drain_task_center(SessionLocal, 10)
             detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert len(sends) > first_context_send_count
-        assert any("第二条真人上下文" in content for content in sends[first_context_send_count:])
+        assert any(f"第二条真人上下文 {context_suffix}" in content for content in sends[first_context_send_count:])
         assert detail["task"]["status"] == "running"
         assert detail["task"]["stats"]["success_count"] >= len(sends)
 
