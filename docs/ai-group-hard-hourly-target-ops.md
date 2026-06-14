@@ -39,6 +39,9 @@
 | `hard_hourly_deficit_at_plan` | 规划时缺口 |
 | `cycle_id` | AI 活跃群轮次 |
 | `turn_index` | 本轮发言序号 |
+| `error_code=required_channel_followed_retry` | 发送阶段发现必需频道已自动关注，原发送动作等待重发 |
+| `required_channels_followed` | 本次自动关注成功的必需频道列表 |
+| `prerequisite_channel_followed` | 原发送动作重发前置频道关注已完成 |
 
 ### 2.3 全局指标
 运营中心或监控应聚合：
@@ -262,6 +265,22 @@ MiMo/Mino draft 成功 / 失败 / malformed JSON
 - MiMo 未配置、图片不可下载、识别低置信、答案发送失败或复检仍不可发言时，标记人工处理，不再自动反复尝试同一张验证码。
 - 主发送不足时记录 `target_membership_pending`，不应写成普通发送失败。
 - 只有入群完成、验证完成、必需频道关注完成且 `can_send=true` 后，才允许把该账号计入硬目标可发账号池。
+
+### 7.3.1 发送阶段要求关注频道
+
+现象：
+
+- 群里出现管理员或学院助手提示“您需要关注我们的频道才能发言”。
+- 用户发出的消息被删除，action 失败类型是 `group_permission_denied`。
+- 失败详情或按钮中包含一个或多个频道 username / t.me 链接。
+
+处理：
+
+- Dispatcher 应解析失败详情中的必需频道，逐个执行自动关注。
+- 关注成功后必须复检目标群 `can_send`，复检通过才允许把原 `send_message` action 重新置为 `pending`。
+- 重排 action 的 result 应包含 `error_code=required_channel_followed_retry`、`required_channels_followed` 和 `prerequisite_channel_followed=true`，用于区分“已补前置条件等待重发”和普通失败。
+- 只有后续真实重发成功才计入 `hard_hourly_success_count`；自动关注本身不能抵扣硬目标。
+- 如果频道解析、关注或复检失败，保留真实失败原因并进入 `target_required_channel_pending` 或 `target_can_send_blocked` 排查，不得写成成功或静默跳过。
 
 ### 7.4 AI 生成不足
 

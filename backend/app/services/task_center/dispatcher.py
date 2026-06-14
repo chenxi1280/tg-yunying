@@ -638,6 +638,8 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
             credentials,
             **send_kwargs,
         )
+        if _recover_send_message_required_channel(session, action, account, credentials, group, payload, result, attempt):
+            return True
         _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
         if result.ok:
             link.last_sent_at = _now()
@@ -944,6 +946,77 @@ def _follow_required_channels_and_reprobe(
         return OperationResult(True, detail=f"已关注 {len(required_channels)} 个必需频道并通过群发言验证")
     detail = reprobe.detail or reprobe.failure_type or probe_result.detail
     return OperationResult(False, "失败", reprobe.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, detail)
+
+
+def _recover_send_message_required_channel(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    credentials,
+    group: TgGroup,
+    payload: SendMessagePayload,
+    send_result,
+    attempt: ExecutionAttempt | None,
+) -> bool:
+    detail = send_result.detail or send_result.failure_type or ""
+    if send_result.ok or send_result.failure_type != FailureType.GROUP_PERMISSION_DENIED.value:
+        return False
+    if not _group_send_permission_needs_linked_channel(detail):
+        return False
+    membership_payload = _group_send_membership_payload(session, action, group, payload)
+    if membership_payload is None:
+        return False
+    recovered = _recover_group_send_permission_with_linked_channel(session, action, account, credentials, membership_payload, send_result)
+    if not recovered.ok:
+        return False
+    _record_group_send_permission_allowed(session, action, account, membership_payload)
+    _requeue_send_after_required_channel_follow(action, recovered.detail or "已关注必需频道，等待重新发送")
+    _finish_execution_attempt(attempt, action, failure_type=send_result.failure_type, detail=detail)
+    _release_runtime_resources(action)
+    return True
+
+
+def _group_send_membership_payload(
+    session: Session,
+    action: Action,
+    group: TgGroup,
+    payload: SendMessagePayload,
+) -> EnsureChannelMembershipPayload | None:
+    target = session.get(OperationTarget, int(payload.operation_target_id or 0)) if payload.operation_target_id else None
+    if not target:
+        target = session.scalar(
+            select(OperationTarget).where(
+                OperationTarget.tenant_id == action.tenant_id,
+                OperationTarget.target_type == "group",
+                OperationTarget.tg_peer_id == group.tg_peer_id,
+            )
+        )
+    if not target or target.tenant_id != action.tenant_id:
+        return None
+    return EnsureChannelMembershipPayload(
+        channel_id=group.tg_peer_id,
+        channel_target_id=target.id,
+        target_type="group",
+        target_display=payload.target_display or group.title or target.title,
+        require_send=True,
+    )
+
+
+def _requeue_send_after_required_channel_follow(action: Action, detail: str) -> None:
+    previous = dict(action.result or {})
+    action.status = "pending"
+    action.scheduled_at = _now()
+    action.executed_at = None
+    _clear_action_lease(action)
+    action.result = {
+        **previous,
+        "success": False,
+        "error_code": "required_channel_followed_retry",
+        "error_message": detail,
+        "auto_check": "等待重发",
+        "validation_stage": "required_channel_follow",
+        "prerequisite_channel_followed": True,
+    }
 
 
 def _required_channel_references(detail: str) -> list[str]:

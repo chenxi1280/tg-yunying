@@ -302,6 +302,18 @@ AI 活跃群任务卡片增加硬目标摘要：
 
 该标记用于详情、统计、审计和排障，不影响发送内容。
 
+当 `send_message` 已进入 Telegram 调用并被群管理提示“需要关注频道才能发言”或消息被删除时，不能把该动作写成成功，也不能永久降级为普通发送失败。Dispatcher 必须从失败详情、按钮或关联频道中解析必需频道，完成自动关注并复检目标群 `can_send`。复检通过后，原发送动作回到 `pending`，并在 result 中记录：
+
+```json
+{
+  "error_code": "required_channel_followed_retry",
+  "required_channels_followed": ["qiyue201"],
+  "prerequisite_channel_followed": true
+}
+```
+
+如果必需频道解析、关注或复检失败，动作保持真实失败原因；不得用模板发送、mock 成功或跳过消息来抵扣硬小时目标。
+
 ## 8. Planner 行为
 
 ### 8.1 调度入口
@@ -487,6 +499,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 - `can_auto_resolve=true` 只代表可尝试自动验证；如果读取验证聊天失败，例如 `private`、`lack permission`、`banned` 或 `GetHistoryRequest`，必须记录 `verification_context_unreadable`，不得算作自动验证已完成。
 - join ref、verification peer 和 send peer 必须分开展示和验收；通过 username / invite 完成准入时，不能继续用旧 numeric peer 读取验证码或规划发送。
 - 需要关注多个频道才能入群时，每个频道关注动作要有独立结果；全部必需频道满足后才允许复检目标群 `can_send`。
+- 发送阶段被管理员提示“需要关注频道才能发言”或消息被删除时，dispatcher 必须自动关注必需频道、复检 `can_send`，并把原发送动作重排；只有重发成功才计入硬目标成功数。
 - 验证完成但 `can_send=false` 时，不创建主发送动作，原因记录为 `target_can_send_blocked`。
 - 文本 draft 使用小米 MiMo/Mino 健康供应商；MiMo/Mino 不可用、返回空内容或 malformed JSON 时记录 `ai_generation_unavailable`，不得走 mock 或模板成功。
 - 当前小时无真人新上下文时，硬目标可以触发空闲续聊 / 暖场。
