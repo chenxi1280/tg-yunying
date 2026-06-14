@@ -737,10 +737,16 @@ def _ensure_membership_refs(
 
 
 def _membership_static_refs(session: Session, action: Action, payload: EnsureChannelMembershipPayload) -> list[str]:
-    refs = [payload.channel_id, payload.invite_link]
+    refs = [payload.invite_link]
     target = session.get(OperationTarget, payload.channel_target_id)
+    username = payload.target_username or ""
     if target and target.tenant_id == action.tenant_id:
-        refs.extend([target.tg_peer_id, target.username, f"https://t.me/{target.username.lstrip('@')}" if target.username else ""])
+        username = username or target.username or ""
+    if username:
+        refs.extend([username, f"https://t.me/{username.lstrip('@')}"])
+    refs.append(payload.channel_id)
+    if target and target.tenant_id == action.tenant_id:
+        refs.append(target.tg_peer_id)
     refs.extend(group.tg_peer_id for group in _membership_candidate_groups(session, action.tenant_id, payload))
     return _dedupe_refs(refs)
 
@@ -1020,13 +1026,12 @@ def _mark_membership_joined(session: Session, action: Action, account: TgAccount
     target_can_send = True if payload.target_type == "group" else bool(target.can_send)
     link = _group_account_link(session, action.tenant_id, group.id, account.id, create=True)
     link.permission_label = label
-    link.can_send = bool(link.can_send or target_can_send)
+    link.can_send = True
     group.auth_status = GroupAuthStatus.AUTHORIZED.value
     group.can_send = bool(group.can_send or target_can_send)
     target.auth_status = GroupAuthStatus.AUTHORIZED.value
     target.can_send = bool(target.can_send or target_can_send)
     target.updated_at = _now()
-    _sync_target_peer_after_membership(session, target, payload.channel_id, action=action)
 
 
 def _membership_group_for_payload(
@@ -1036,12 +1041,13 @@ def _membership_group_for_payload(
     *,
     create: bool,
 ) -> TgGroup:
-    group = session.scalar(select(TgGroup).where(TgGroup.tenant_id == target.tenant_id, TgGroup.tg_peer_id == payload.channel_id))
+    group_peer = _membership_group_peer(target, payload)
+    group = session.scalar(select(TgGroup).where(TgGroup.tenant_id == target.tenant_id, TgGroup.tg_peer_id == group_peer))
     if group or not create:
         return group
     group = TgGroup(
         tenant_id=target.tenant_id,
-        tg_peer_id=payload.channel_id,
+        tg_peer_id=group_peer,
         title=payload.target_display or target.title,
         group_type="channel" if payload.target_type == "channel" else "supergroup",
         member_count=target.member_count,
@@ -1053,22 +1059,19 @@ def _membership_group_for_payload(
     return group
 
 
-def _sync_target_peer_after_membership(session: Session, target: OperationTarget, peer_ref: str, *, action: Action) -> None:
-    if not _is_stable_telegram_peer(peer_ref) or target.tg_peer_id == peer_ref:
-        return
-    conflict = session.scalar(
-        select(OperationTarget).where(
-            OperationTarget.tenant_id == target.tenant_id,
-            OperationTarget.tg_peer_id == peer_ref,
-            OperationTarget.id != target.id,
-        )
-    )
-    if conflict:
-        action.result = {**(action.result or {}), "target_peer_update_skipped": "peer_conflict"}
-        return
-    target.tg_peer_id = peer_ref
-    target.updated_at = _now()
-    action.result = {**(action.result or {}), "target_peer_updated": True}
+def _membership_group_peer(target: OperationTarget, payload: EnsureChannelMembershipPayload) -> str:
+    ref = str(payload.channel_id or "").strip()
+    target_peer = str(target.tg_peer_id or "").strip()
+    if _is_join_link_ref(ref) and target_peer:
+        return target_peer
+    if not _is_stable_telegram_peer(ref) and _is_stable_telegram_peer(target_peer):
+        return target_peer
+    return ref or target_peer
+
+
+def _is_join_link_ref(ref: str) -> bool:
+    value = (ref or "").strip().lower()
+    return value.startswith(("http://t.me/", "https://t.me/", "t.me/", "http://telegram.me/", "https://telegram.me/", "telegram.me/", "+"))
 
 
 def _record_group_send_permission_allowed(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload) -> None:
@@ -1080,7 +1083,6 @@ def _record_group_send_permission_allowed(session: Session, action: Action, acco
     link.can_send = True
     link.permission_label = "可发言"
     _sync_group_target_send_state(session, group, target)
-    _sync_target_peer_after_membership(session, target, payload.channel_id, action=action)
 
 
 def _record_group_send_permission_denied(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload, detail: str):
