@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import Action, Task
 from app.services._common import _now
-from app.timezone import as_beijing
+from app.timezone import BEIJING_TZ, as_beijing
 
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
 from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
@@ -25,6 +25,8 @@ PLANNER_BACKLOG_STAT_KEYS = (
     "planner_backlog_task_pending",
     "planner_backlog_oldest_age_seconds",
 )
+HARD_HOURLY_EXPIRED_ERROR_CODE = "hard_hourly_bucket_expired"
+HARD_HOURLY_EXPIRED_ERROR_MESSAGE = "硬目标小时窗口已结束，过期补量已跳过"
 
 
 def next_run_after_task(task: Task):
@@ -160,8 +162,17 @@ def retry_failed_actions(session: Session, task: Task) -> int:
     retry_delay = int(policy["retry_delay_seconds"]) if policy.get("retry_delay_seconds") is not None else 60
     backoff = policy.get("retry_backoff") or "none"
     count = 0
-    for action in session.scalars(select(Action).where(Action.task_id == task.id, Action.status.in_(["failed", "retryable_failed"]), Action.retry_count < max_retries)):
+    query = select(Action).where(
+        Action.task_id == task.id,
+        Action.status.in_(["failed", "retryable_failed"]),
+        Action.retry_count < max_retries,
+    )
+    for action in session.scalars(query):
         previous_result = dict(action.result or {})
+        now_value = _now()
+        if _skip_expired_hard_hourly_retry(action, previous_result, now_value):
+            count += 1
+            continue
         action.retry_count += 1
         delay = retry_delay
         if backoff == "linear":
@@ -169,7 +180,7 @@ def retry_failed_actions(session: Session, task: Task) -> int:
         elif backoff == "exponential":
             delay *= 2 ** max(0, action.retry_count - 1)
         action.status = "pending"
-        action.scheduled_at = _now() + timedelta(seconds=delay)
+        action.scheduled_at = now_value + timedelta(seconds=delay)
         action.executed_at = None
         action.lease_owner = ""
         action.lease_expires_at = None
@@ -181,6 +192,44 @@ def retry_failed_actions(session: Session, task: Task) -> int:
         }
         count += 1
     return count
+
+
+def _skip_expired_hard_hourly_retry(action: Action, previous_result: dict[str, Any], now_value: datetime) -> bool:
+    if not _hard_hourly_bucket_expired(action, now_value):
+        return False
+    action.status = "skipped"
+    action.executed_at = now_value
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    action.result = {
+        "success": False,
+        "error_code": HARD_HOURLY_EXPIRED_ERROR_CODE,
+        "error_message": HARD_HOURLY_EXPIRED_ERROR_MESSAGE,
+        "validation_stage": "hard_hourly_retry_recovery",
+        "auto_check": "过期补量跳过",
+        "previous_result": previous_result,
+    }
+    return True
+
+
+def _hard_hourly_bucket_expired(action: Action, now_value: datetime) -> bool:
+    if action.action_type != "send_message":
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    if not payload.get("hard_hourly_target"):
+        return False
+    bucket_value = str(payload.get("hard_hourly_bucket") or "").strip()
+    if not bucket_value:
+        return False
+    try:
+        bucket_start = datetime.fromisoformat(bucket_value)
+    except ValueError:
+        return False
+    if bucket_start.tzinfo is None:
+        comparable_now = now_value.replace(tzinfo=None)
+    else:
+        comparable_now = now_value.replace(tzinfo=BEIJING_TZ).astimezone(bucket_start.tzinfo)
+    return bucket_start + timedelta(hours=1) <= comparable_now
 
 
 def empty_stats() -> dict[str, Any]:

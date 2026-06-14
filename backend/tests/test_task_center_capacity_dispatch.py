@@ -18,7 +18,7 @@ from app.services.task_center import account_pool
 from app.services.task_center.dispatcher import claim_actions
 from app.services.task_center.runtime_retention import cleanup_runtime_details
 from app.services.task_center.service import _recover_stale_executing_actions, retry_task
-from app.services.task_center.stats import refresh_task_stats
+from app.services.task_center.stats import refresh_task_stats, retry_failed_actions
 from app.timezone import BEIJING_TZ
 from app.schemas.task_center import TaskRetryRequest
 
@@ -2009,6 +2009,70 @@ def test_recovery_skips_future_pending_expired_hard_hourly_bucket():
 def test_hard_hourly_recovery_uses_large_cleanup_batch():
     assert task_service._hard_hourly_recovery_limit(5) == 1000
     assert task_service._hard_hourly_recovery_limit(100) == 2000
+
+
+def test_retry_skips_expired_hard_hourly_bucket_without_rescheduling(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 14, 17, 5, 0)
+    expired_bucket = datetime(2026, 6, 14, 16, 0, 0)
+    current_bucket = datetime(2026, 6, 14, 17, 0, 0)
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(
+            id="task-hard-retry",
+            tenant_id=1,
+            name="硬目标重试",
+            type="group_ai_chat",
+            status="running",
+            failure_policy={"max_retries": 1, "retry_delay_seconds": 30, "retry_backoff": "none"},
+        )
+        session.add(task)
+        session.add_all(
+            [
+                Action(
+                    id="action-expired-retry",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="failed",
+                    retry_count=0,
+                    scheduled_at=now_value - timedelta(minutes=20),
+                    payload={"hard_hourly_target": True, "hard_hourly_bucket": expired_bucket.isoformat()},
+                    result={"error_code": "execution_timeout"},
+                ),
+                Action(
+                    id="action-current-retry",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="failed",
+                    retry_count=0,
+                    scheduled_at=now_value - timedelta(minutes=1),
+                    payload={"hard_hourly_target": True, "hard_hourly_bucket": current_bucket.isoformat()},
+                    result={"error_code": "execution_timeout"},
+                ),
+            ]
+        )
+        session.commit()
+
+        processed = retry_failed_actions(session, task)
+
+        expired = session.get(Action, "action-expired-retry")
+        current = session.get(Action, "action-current-retry")
+        assert processed == 2
+        assert expired.status == "skipped"
+        assert expired.retry_count == 0
+        assert expired.result["error_code"] == "hard_hourly_bucket_expired"
+        assert expired.result["previous_result"]["error_code"] == "execution_timeout"
+        assert current.status == "pending"
+        assert current.retry_count == 1
+        assert current.scheduled_at == now_value + timedelta(seconds=30)
+        assert current.result["retry_scheduled"] is True
 
 
 def test_hard_hourly_replacement_scan_uses_planned_deficit():
