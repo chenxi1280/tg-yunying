@@ -436,6 +436,9 @@ def _choose_capacity_slot(
     reservations: list[AccountCapacityReservation],
     capacity_cache: AccountCapacityCache,
 ) -> tuple[object | None, datetime]:
+    if progress:
+        # Hard-hourly targets are explicit quota commitments; claim/dispatch records the capacity override.
+        return _choose_turn_account(selected, selected, index, used_account_ids, allow_repeat), planned_at
     candidate_limit = _capacity_candidate_limit(used_account_ids)
     available = _available_accounts_at(session, task, selected, planned_at, reservations, capacity_cache, limit=candidate_limit)
     account = _choose_turn_account(available, available, index, used_account_ids, allow_repeat)

@@ -12,6 +12,7 @@ from app.integrations.telegram import OperationResult, SendResult
 from app.models import Action, DailyRuntimeStat, ExecutionAttempt, GroupContextMessage, OperationTarget, ReviewQueue, RuntimeCleanupAudit, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
 from app.services.task_center import dispatcher
+from app.services.task_center.executors import group_ai_chat
 from app.services.task_center import service as task_service
 from app.services.task_center import account_pool
 from app.services.task_center.dispatcher import claim_actions
@@ -234,6 +235,20 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
         session.add(Task(id="task-hard-hourly", tenant_id=1, name="硬目标", type="group_ai_chat", status="running", priority=1))
         session.add(
             Action(
+                id="action-prior-hourly",
+                tenant_id=1,
+                task_id="task-hard-hourly",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                status="success",
+                scheduled_at=now_value - timedelta(minutes=1),
+                executed_at=now_value - timedelta(minutes=1),
+                payload={"group_id": 7, "message_text": "old"},
+            )
+        )
+        session.add(
+            Action(
                 id="action-hard-hourly",
                 tenant_id=1,
                 task_id="task-hard-hourly",
@@ -263,6 +278,8 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
         action = session.get(Action, "action-hard-hourly")
         assert sent["account_id"] == 11
         assert action.status == "success"
+        assert action.result["account_policy_action"] == "hard_hourly_capacity_override"
+        assert action.result["account_policy_reason"] == "hard_hourly_target"
         assert action.result["telegram_msg_id"] == "tg-hard-hourly"
 
 
@@ -1185,6 +1202,106 @@ def test_hard_hourly_membership_claim_bypasses_send_capacity_policy():
         assert action.status == "pending"
         assert action.scheduled_at == now_value
         assert action.result == {}
+
+
+def test_hard_hourly_send_claim_bypasses_send_capacity_policy(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: _redis_bucket_settings(enable_redis_token_bucket=False))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1, jitter_min_seconds=0, jitter_max_seconds=0))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="硬目标号", phone_masked="+861***0011", status="在线"))
+        session.add(
+            Task(
+                id="task-hard-send-policy", tenant_id=1, name="硬目标发言", type="group_ai_chat", status="running",
+                priority=9,
+                type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+            )
+        )
+        session.add_all(
+            [
+                Action(
+                    id="action-prior-send",
+                    tenant_id=1, task_id="task-hard-send-policy", task_type="group_ai_chat", action_type="send_message",
+                    account_id=11,
+                    status="success",
+                    scheduled_at=now_value,
+                    executed_at=now_value,
+                    payload={"message_text": "上一条"},
+                ),
+                Action(
+                    id="action-hard-send",
+                    tenant_id=1, task_id="task-hard-send-policy", task_type="group_ai_chat", action_type="send_message",
+                    account_id=11,
+                    status="pending",
+                    scheduled_at=now_value,
+                    payload={"message_text": "硬目标补量", "hard_hourly_target": True},
+                ),
+            ]
+        )
+        session.commit()
+
+        claimed = claim_actions(session, limit=1, worker_id="worker-hard-hourly")
+
+        action = session.get(Action, "action-hard-send")
+        assert [item.id for item in claimed] == ["action-hard-send"]
+        assert action.status == "executing"
+        assert action.result["account_policy_action"] == "hard_hourly_capacity_override"
+
+
+def test_hard_hourly_plan_slot_ignores_send_capacity_policy():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1, jitter_min_seconds=0, jitter_max_seconds=0))
+        account = TgAccount(id=11, tenant_id=1, display_name="硬目标号", phone_masked="+861***0011", status="在线")
+        task = Task(
+            id="task-hard-plan-policy",
+            tenant_id=1,
+            name="硬目标规划",
+            type="group_ai_chat",
+            status="running",
+            priority=9,
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+        )
+        session.add_all([account, task])
+        session.add(
+            Action(
+                id="action-prior-plan-send",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=account.id,
+                status="success",
+                scheduled_at=now_value,
+                executed_at=now_value,
+                payload={"message_text": "上一条"},
+            )
+        )
+        session.commit()
+
+        chosen, planned_at = group_ai_chat._choose_capacity_slot(
+            session,
+            task,
+            [account],
+            now_value,
+            0,
+            set(),
+            True,
+            {"goal": 300, "deficit": 300, "bucket": now_value.isoformat()},
+            [],
+            group_ai_chat.AccountCapacityCache(),
+        )
+
+        assert chosen.id == account.id
+        assert planned_at == now_value
 
 
 def test_target_membership_skips_when_joined_probe_still_cannot_send(monkeypatch):

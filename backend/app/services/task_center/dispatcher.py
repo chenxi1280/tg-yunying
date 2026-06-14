@@ -407,6 +407,9 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
         return True
     if _is_hard_hourly_membership_action(session, action):
         return True
+    if _is_hard_hourly_send_action(action):
+        _record_hard_hourly_capacity_override(action)
+        return True
     decision = account_capacity_decision(
         session,
         tenant_id=action.tenant_id,
@@ -2033,6 +2036,9 @@ def _defer(action: Action, scheduled_at, code: str, detail: str) -> None:
 def _account_after_global_policy(session: Session, action: Action, account: TgAccount, *, allow_reassign: bool = True) -> TgAccount | None:
     if _is_hard_hourly_membership_action(session, action):
         return account
+    if _is_hard_hourly_send_action(action):
+        _record_hard_hourly_capacity_override(action)
+        return account
     decision = account_capacity_decision(
         session,
         tenant_id=action.tenant_id,
@@ -2087,6 +2093,14 @@ def _capacity_excluded_action_ids(session: Session, action: Action, account_id: 
 def _is_hard_hourly_send_action(action: Action) -> bool:
     payload = action.payload if isinstance(action.payload, dict) else {}
     return action.action_type == "send_message" and bool(payload.get("hard_hourly_target"))
+
+
+def _record_hard_hourly_capacity_override(action: Action) -> None:
+    action.result = {
+        **(action.result or {}),
+        "account_policy_action": "hard_hourly_capacity_override",
+        "account_policy_reason": "hard_hourly_target",
+    }
 
 
 def _skip_expired_hard_hourly_action(session: Session, action: Action) -> bool:
