@@ -85,6 +85,17 @@ prune_static_releases() {
   done
 }
 
+prune_docker_pull_cache() {
+  echo "==> Docker disk usage before image pull"
+  docker system df || true
+  echo "==> Pruning stopped containers and unused image cache before image pull"
+  docker container prune -f
+  docker builder prune -af
+  docker image prune -af
+  echo "==> Docker disk usage after image cache prune"
+  docker system df || true
+}
+
 preserve_frontend_assets() {
   local releases_dir="$1"
   local tmp_dir="$2"
@@ -161,6 +172,8 @@ BACKEND_SERVICES=(
   worker-account-security
   worker-metrics
 )
+
+prune_docker_pull_cache
 
 echo "==> Pulling backend image"
 compose pull "${BACKEND_SERVICES[@]}"
