@@ -22,6 +22,13 @@ from app.services.content_filters import filter_outbound_content, rewrite_reject
 from app.services.developer_apps import credentials_for_account
 from app.services.ai_config import get_scheduling_setting
 from app.services.membership_challenges import auto_resolve_image_verification, auto_resolve_text_verification, read_challenge_context_with_fallback, record_challenge_attempt
+from app.services.required_channel_prompts import (
+    REQUIRED_CHANNEL_BLOCKED_LABEL,
+    REQUIRED_CHANNEL_PERMISSION_LABEL,
+    REQUIRED_CHANNEL_PROMPT_PREVIEW_LENGTH,
+    required_channel_prompt_applies_to_send,
+    required_channel_references,
+)
 from app.services.verification import create_verification_task
 from app.timezone import BEIJING_TZ
 
@@ -105,6 +112,9 @@ _GROUP_SEND_RETRYABLE_VERIFICATION_MARKERS = (
     "群无权限或账号不可发言",
     "不可发言",
 )
+RECENT_REQUIRED_CHANNEL_PROMPT_LIMIT = 25
+RECENT_REQUIRED_CHANNEL_PROMPT_LOOKBACK_HOURS = 6
+REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS = 300
 VERIFICATION_READER_CANDIDATE_LIMIT = 5
 HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS = 300
 AI_DISPATCH_GENERATION_BATCH_SIZE = 10
@@ -143,6 +153,17 @@ class MembershipDispatchContext:
     credentials: object
     payload: EnsureChannelMembershipPayload
     attempt: ExecutionAttempt | None
+
+
+@dataclass(frozen=True)
+class PreSendRequiredChannelContext:
+    session: Session
+    action: Action
+    account: TgAccount
+    credentials: object
+    group: TgGroup
+    link: TgGroupAccount
+    payload: SendMessagePayload
 
 
 def _reserve_runtime_resources(action: Action) -> bool:
@@ -596,10 +617,10 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
             _fail_with_policy(action, FailureType.UNKNOWN.value, str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE, auto_check="失败", validation_stage="ai_generation")
             return True
         content = payload.message_text
-        link = session.scalar(
-            select(TgGroupAccount).where(TgGroupAccount.group_id == group.id, TgGroupAccount.account_id == account.id, TgGroupAccount.can_send.is_(True))
-        )
-        if not link:
+        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.group_id == group.id, TgGroupAccount.account_id == account.id))
+        if not link or not link.can_send:
+            if link and _defer_send_for_required_channel_admission(action, link):
+                return True
             _fail_with_policy(
                 action,
                 FailureType.ACCOUNT_UNAVAILABLE.value,
@@ -607,6 +628,9 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
                 auto_check="拦截",
                 validation_stage="account_target_permission",
             )
+            return True
+        prompt_ctx = PreSendRequiredChannelContext(session, action, account, credentials, group, link, payload)
+        if _recover_pre_send_required_channel_prompt(prompt_ctx):
             return True
         failure_type, failure_detail = validate_group_send_policy(session, tenant_id=action.tenant_id, group=group, content=content, review_approved=payload.review_approved)
         if failure_type:
@@ -1000,7 +1024,7 @@ def _recover_group_send_permission_with_linked_channel(
         return probe_result
     if not _auto_follow_required_channel_enabled(session, action):
         return probe_result
-    required_channels = _required_channel_references(detail)
+    required_channels = required_channel_references(detail)
     if required_channels:
         return _follow_required_channels_and_reprobe(
             session,
@@ -1088,7 +1112,13 @@ def _recover_send_message_required_channel(
         return False
     recovered = _recover_group_send_permission_with_linked_channel(session, action, account, credentials, membership_payload, send_result)
     if recovered.ok:
-        _record_group_send_permission_allowed(session, action, account, membership_payload)
+        _record_group_send_permission_allowed(
+            session,
+            action,
+            account,
+            membership_payload,
+            permission_label=REQUIRED_CHANNEL_PERMISSION_LABEL,
+        )
         _requeue_send_after_required_channel_follow(action, recovered.detail or "已关注必需频道，等待重新发送")
         _finish_execution_attempt(attempt, action, failure_type=send_result.failure_type, detail=detail)
         _release_runtime_resources(action)
@@ -1112,6 +1142,70 @@ def _recover_send_message_required_channel(
     _finish_execution_attempt(attempt, action, failure_type=send_result.failure_type, detail=detail)
     _release_runtime_resources(action)
     return True
+
+
+def _recover_pre_send_required_channel_prompt(ctx: PreSendRequiredChannelContext) -> bool:
+    if _required_channel_prompt_already_resolved(ctx.action, ctx.link):
+        return False
+    detail = _recent_required_channel_prompt_for_send(ctx)
+    if not detail:
+        return False
+    send_result = OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail)
+    return _recover_send_message_required_channel(
+        ctx.session,
+        ctx.action,
+        ctx.account,
+        ctx.credentials,
+        ctx.group,
+        ctx.payload,
+        send_result,
+        None,
+    )
+
+
+def _defer_send_for_required_channel_admission(action: Action, link: TgGroupAccount) -> bool:
+    if REQUIRED_CHANNEL_BLOCKED_LABEL not in str(link.permission_label or ""):
+        return False
+    action.status = "pending"
+    action.scheduled_at = _now() + timedelta(seconds=REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS)
+    action.executed_at = None
+    _clear_action_lease(action)
+    action.result = {
+        **(action.result or {}),
+        "success": False,
+        "error_code": "required_channel_admission_pending",
+        "error_message": "账号需要先关注必需频道并复检群发言权限",
+        "auto_check": "等待准入",
+        "validation_stage": "required_channel_follow",
+    }
+    return True
+
+
+def _required_channel_prompt_already_resolved(action: Action, link: TgGroupAccount) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    if result.get("prerequisite_channel_followed"):
+        return True
+    return bool(link.can_send and link.permission_label == REQUIRED_CHANNEL_PERMISSION_LABEL)
+
+
+def _recent_required_channel_prompt_for_send(ctx: PreSendRequiredChannelContext) -> str:
+    cutoff = _now() - timedelta(hours=RECENT_REQUIRED_CHANNEL_PROMPT_LOOKBACK_HOURS)
+    observed_at = func.coalesce(GroupContextMessage.sent_at, GroupContextMessage.created_at)
+    rows = ctx.session.scalars(
+        select(GroupContextMessage)
+        .where(
+            GroupContextMessage.tenant_id == ctx.action.tenant_id,
+            GroupContextMessage.group_id == ctx.group.id,
+            observed_at >= cutoff,
+        )
+        .order_by(observed_at.desc(), GroupContextMessage.id.desc())
+        .limit(RECENT_REQUIRED_CHANNEL_PROMPT_LIMIT)
+    )
+    for row in rows:
+        text = str(row.content or "").strip()
+        if required_channel_prompt_applies_to_send(text, ctx.account, allow_global=True):
+            return text[:REQUIRED_CHANNEL_PROMPT_PREVIEW_LENGTH]
+    return ""
 
 
 def _auto_verify_send_permission(ctx: MembershipDispatchContext, verification_task):
@@ -1180,24 +1274,6 @@ def _requeue_send_after_permission_recovery(action: Action, detail: str, verific
         "verification_status": verification_task.status,
         "verification_action": verification_task.suggested_action,
     }
-
-
-def _required_channel_references(detail: str) -> list[str]:
-    refs: list[str] = []
-    refs.extend(match.group("username") for match in re.finditer(r"@(?P<username>[A-Za-z0-9_]{4,})", detail or ""))
-    refs.extend(match.group("username") for match in re.finditer(r"(?:https?://)?(?:t\.me|telegram\.me)/(?!joinchat/|\+)(?P<username>[A-Za-z0-9_]{4,})", detail or ""))
-    refs.extend(_private_invite_ref(match.group(0)) for match in re.finditer(r"(?:https?://)?(?:t\.me|telegram\.me)/(?:joinchat/|\+)[A-Za-z0-9_-]{8,}", detail or ""))
-    deduped: list[str] = []
-    for ref in refs:
-        normalized = ref.strip().strip("/.,，。；;)")
-        if normalized and normalized not in deduped:
-            deduped.append(normalized)
-    return deduped
-
-
-def _private_invite_ref(raw: str) -> str:
-    value = raw.strip().strip("/.,，。；;)")
-    return value if value.startswith("http") else f"https://{value}"
 
 
 def _handle_group_send_permission_denied(
@@ -1352,14 +1428,21 @@ def _is_join_link_ref(ref: str) -> bool:
     return value.startswith(("http://t.me/", "https://t.me/", "t.me/", "http://telegram.me/", "https://telegram.me/", "telegram.me/", "+"))
 
 
-def _record_group_send_permission_allowed(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload) -> None:
+def _record_group_send_permission_allowed(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload: EnsureChannelMembershipPayload,
+    *,
+    permission_label: str = "可发言",
+) -> None:
     target = session.get(OperationTarget, payload.channel_target_id)
     if not target:
         return
     group = _membership_group_for_payload(session, target, payload, create=True)
     link = _group_account_link(session, action.tenant_id, group.id, account.id, create=True)
     link.can_send = True
-    link.permission_label = "可发言"
+    link.permission_label = permission_label
     _sync_group_target_send_state(session, group, target)
 
 
@@ -1574,7 +1657,7 @@ def _required_channels_from_verification_context(ctx: MembershipDispatchContext,
         ctx.credentials,
         reader_candidates=readers,
     )
-    return _required_channel_references(_verification_context_text(read_result.context))
+    return required_channel_references(_verification_context_text(read_result.context))
 
 
 def _try_context_verification_fallback(ctx: MembershipDispatchContext, verification_task, image_result):
@@ -1582,7 +1665,7 @@ def _try_context_verification_fallback(ctx: MembershipDispatchContext, verificat
     if not context_text:
         return None
     payload = _verification_probe_payload(ctx.payload, verification_task)
-    required_channels = _required_channel_references(context_text)
+    required_channels = required_channel_references(context_text)
     if required_channels and _auto_follow_required_channel_enabled(ctx.session, ctx.action):
         verification_task.suggested_action = "关注频道"
         followed = _follow_required_channels_and_reprobe(

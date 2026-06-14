@@ -24,6 +24,7 @@ from app.schemas import CampaignCreate, GenerateDraftsRequest
 from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, gateway, require_system_user_core_features
 from .campaigns import approve_all_drafts, create_campaign, generate_drafts
 from .developer_apps import credentials_for_account
+from .required_channel_prompts import apply_required_channel_prompt_admission
 from .source_media import ensure_source_media_asset
 from .target_learning import record_group_learning_sample as record_target_group_learning_sample
 from .tenant_learning_samples import GROUP_CHAT_SCENE, record_group_learning_sample as record_tenant_group_learning_sample
@@ -330,6 +331,12 @@ def collect_group_context(
             )
             session.add(message)
             session.flush()
+            apply_required_channel_prompt_admission(
+                session,
+                group,
+                content,
+                remote_message_id=str(snapshot.remote_message_id),
+            )
             if create_source_media and snapshot.message_type != "text":
                 ensure_source_media_asset(
                     session,

@@ -746,6 +746,28 @@ def test_account_center_exposes_standby_session_batch_entry_and_filters():
     assert "standby_slot_strategy: standbySlotStrategy" in drawer
 
 
+def test_account_center_quick_searches_login_problem_accounts():
+    accounts_view = (PROJECT_ROOT / "frontend/src/app/views/AccountsView.tsx").read_text()
+
+    assert "登录有问题" in accounts_view
+    assert "没有登录上平台" in accounts_view
+    assert "'Session失效'" in accounts_view
+    assert "hasLoginIssue(account)" in accounts_view
+    assert "account.authorization_summary.primary_status !== 'active'" in accounts_view
+    assert "accountTable.setQuery('登录有问题')" in accounts_view
+
+
+def test_account_center_prd_documents_login_problem_quick_search_scope():
+    prd = (PROJECT_ROOT / "docs/tg-ops-platform-prd.md").read_text()
+    design = (PROJECT_ROOT / "docs/account-security-hardening-design.md").read_text()
+
+    for source in (prd, design):
+        assert "登录有问题" in source
+        assert "没有登录上平台" in source
+        assert "等待验证码、等待扫码、等待2FA、需重新登录、异常、Session 失效" in source
+        assert "主授权不可用" in source
+
+
 def test_standby_session_batch_uses_dedicated_confirmation_flow_not_profile_preview():
     drawer = (PROJECT_ROOT / "frontend/src/app/views/AccountSecurityBatchDrawer.tsx").read_text()
 
