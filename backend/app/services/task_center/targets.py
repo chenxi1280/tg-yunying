@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import GroupAuthStatus, OperationTarget, TgGroup
@@ -18,45 +18,36 @@ def group_from_reference(
     if target:
         if target.tenant_id != tenant_id or target.target_type != "group":
             return None
-        group = session.scalar(
-            select(TgGroup)
-            .where(
-                TgGroup.tenant_id == tenant_id,
-                TgGroup.tg_peer_id == target.tg_peer_id,
-            )
-            .order_by(TgGroup.id.asc())
-            .limit(1)
-        )
-        if group and (not require_authorized or group.auth_status == GroupAuthStatus.AUTHORIZED.value):
-            return group
-        return _group_from_target_title(session, tenant_id, target, require_authorized=require_authorized)
+        return _best_target_group(session, tenant_id, target, require_authorized=require_authorized)
     group = session.get(TgGroup, int(group_id)) if group_id else None
     if group and group.tenant_id == tenant_id and (not require_authorized or group.auth_status == GroupAuthStatus.AUTHORIZED.value):
         return group
     return None
 
 
-def _group_from_target_title(session: Session, tenant_id: int, target: OperationTarget, *, require_authorized: bool) -> TgGroup | None:
-    if not target.title:
-        return None
-    groups = list(
-        session.scalars(
-            select(TgGroup)
-            .where(TgGroup.tenant_id == tenant_id, TgGroup.title == target.title)
-            .order_by(TgGroup.id.asc())
-        )
-    )
-    for group in sorted(groups, key=_group_target_fallback_rank):
+def _best_target_group(session: Session, tenant_id: int, target: OperationTarget, *, require_authorized: bool) -> TgGroup | None:
+    groups = _target_candidate_groups(session, tenant_id, target)
+    for group in sorted(groups, key=lambda item: _group_target_rank(item, target)):
         if require_authorized and group.auth_status != GroupAuthStatus.AUTHORIZED.value:
             continue
         return group
     return None
 
 
-def _group_target_fallback_rank(group: TgGroup) -> tuple[int, int, int]:
-    stable_rank = 0 if str(group.tg_peer_id or "").lstrip("-").isdigit() else 1
+def _target_candidate_groups(session: Session, tenant_id: int, target: OperationTarget) -> list[TgGroup]:
+    filters = [TgGroup.tg_peer_id == target.tg_peer_id]
+    if target.title:
+        filters.append(TgGroup.title == target.title)
+    rows = session.scalars(select(TgGroup).where(TgGroup.tenant_id == tenant_id, or_(*filters)))
+    return list({int(group.id): group for group in rows}.values())
+
+
+def _group_target_rank(group: TgGroup, target: OperationTarget) -> tuple[int, int, int, int, int]:
     send_rank = 0 if group.can_send else 1
-    return (stable_rank, send_rank, int(group.id or 0))
+    exact_rank = 0 if group.tg_peer_id == target.tg_peer_id else 1
+    authorized_rank = 0 if group.auth_status == GroupAuthStatus.AUTHORIZED.value else 1
+    stable_rank = 0 if str(group.tg_peer_id or "").lstrip("-").isdigit() else 1
+    return (send_rank, exact_rank, authorized_rank, stable_rank, int(group.id or 0))
 
 
 def group_ids_from_operation_targets(session: Session, tenant_id: int, operation_target_ids: list[int]) -> list[int]:

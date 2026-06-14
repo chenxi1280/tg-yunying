@@ -15,6 +15,7 @@ from app.services._common import _now
 from .account_pool import select_task_accounts
 from .pacing import schedule_times
 from .payloads import EnsureChannelMembershipPayload, create_membership_action
+from .targets import group_from_reference
 
 
 ACTION_TYPE = "ensure_target_membership"
@@ -114,7 +115,7 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
 def channel_member_accounts(session: Session, task: Task, channel: OperationTarget, accounts: list[TgAccount], *, require_send: bool = False) -> list[TgAccount]:
     if not require_send and not _target_requires_membership_for_candidates(channel, accounts):
         return accounts
-    group = linked_channel_group(session, channel, create=False)
+    group = linked_channel_group(session, channel, create=False, prefer_send_ready=require_send)
     directly_ready_ids = _directly_ready_channel_account_ids(channel, accounts, require_send=require_send)
     if not group:
         return [account for account in accounts if account.id in directly_ready_ids]
@@ -180,7 +181,7 @@ def channel_membership_summary(
 ) -> dict[str, Any]:
     candidate_rows = candidates if candidates is not None else candidate_accounts_for_config(session, tenant_id, account_config)
     candidate_ids = [account.id for account in candidate_rows]
-    group = linked_channel_group(session, channel, create=False)
+    group = linked_channel_group(session, channel, create=False, prefer_send_ready=require_send)
     joined_ids: set[int] = {account.id for account in candidate_rows if account_satisfies_authorized_target(channel, account, require_send=require_send)}
     if group and candidate_ids:
         link_stmt = select(TgGroupAccount.account_id).where(
@@ -240,7 +241,11 @@ def candidate_accounts_for_config(session: Session, tenant_id: int, account_conf
     return list(session.scalars(stmt)) if stmt is not None else []
 
 
-def linked_channel_group(session: Session, channel: OperationTarget, *, create: bool) -> TgGroup | None:
+def linked_channel_group(session: Session, channel: OperationTarget, *, create: bool, prefer_send_ready: bool = False) -> TgGroup | None:
+    if prefer_send_ready and channel.target_type == "group":
+        group = group_from_reference(session, channel.tenant_id, operation_target_id=channel.id, require_authorized=False)
+        if group:
+            return group
     group = session.scalar(
         select(TgGroup).where(
             TgGroup.tenant_id == channel.tenant_id,
@@ -301,7 +306,7 @@ def _target_requires_membership_for_candidates(target: OperationTarget, candidat
 
 def _create_missing_membership_actions(session: Session, task: Task, channel: OperationTarget, candidates: list[TgAccount], *, require_send: bool = False) -> int:
     existing = _membership_actions_by_account(session, channel.id, task_id=task.id)
-    group = linked_channel_group(session, channel, create=True)
+    group = linked_channel_group(session, channel, create=True, prefer_send_ready=require_send)
     joined_ids = _ready_membership_account_ids(session, task, channel, group, candidates, require_send=require_send)
     now_value = _now()
     missing = _membership_retry_candidates(candidates, existing, joined_ids, task, now_value)
@@ -421,7 +426,7 @@ def _reactivate_auto_verification_memberships(
 ) -> int:
     if not require_send or not _hard_hourly_membership_fast_track_enabled(task):
         return 0
-    group = linked_channel_group(session, channel, create=False)
+    group = linked_channel_group(session, channel, create=False, prefer_send_ready=require_send)
     if not group:
         return 0
     latest_actions = _membership_actions_by_account(session, channel.id, task_id=task.id)

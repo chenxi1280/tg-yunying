@@ -1062,11 +1062,25 @@ def _membership_group_for_payload(
 def _membership_group_peer(target: OperationTarget, payload: EnsureChannelMembershipPayload) -> str:
     ref = str(payload.channel_id or "").strip()
     target_peer = str(target.tg_peer_id or "").strip()
+    public_ref = _public_group_ref(ref) if payload.target_type == "group" else ""
+    if public_ref:
+        return public_ref
     if _is_join_link_ref(ref) and target_peer:
         return target_peer
     if not _is_stable_telegram_peer(ref) and _is_stable_telegram_peer(target_peer):
         return target_peer
     return ref or target_peer
+
+
+def _public_group_ref(ref: str) -> str:
+    value = str(ref or "").strip()
+    if not value or _is_stable_telegram_peer(value) or _looks_like_invite_ref(value):
+        return ""
+    lowered = value.lower()
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/", "https://telegram.me/", "http://telegram.me/", "telegram.me/"):
+        if lowered.startswith(prefix):
+            return value[len(prefix):].strip("/").lstrip("@")
+    return value.lstrip("@")
 
 
 def _is_join_link_ref(ref: str) -> bool:
@@ -1103,7 +1117,7 @@ def _record_group_send_permission_denied(session: Session, action: Action, accou
         verification_type="群发言权限",
         detected_reason=detail or "账号已加入但没有群发言权限",
         suggested_action=_group_send_verification_action(detail),
-        target_peer_id=group.tg_peer_id,
+        target_peer_id=_verification_target_peer_ref(payload, group),
         target_display=group.title,
     )
     action.result = {
@@ -1113,6 +1127,14 @@ def _record_group_send_permission_denied(session: Session, action: Action, accou
         "verification_action": verification.suggested_action,
     }
     return verification
+
+
+def _verification_target_peer_ref(payload: EnsureChannelMembershipPayload, group: TgGroup) -> str:
+    if payload.target_type == "group":
+        public_ref = _public_group_ref(payload.channel_id)
+        if public_ref:
+            return public_ref
+    return group.tg_peer_id
 
 
 def _auto_verify_and_apply_group_send(ctx: MembershipDispatchContext, verification_task, *, membership_status: str) -> bool:

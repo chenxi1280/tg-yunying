@@ -110,12 +110,15 @@ deficit = hourly_min_messages - success_current_hour - future_open_current_hour
 | --- | --- | --- |
 | 入群完成 | 账号已加入目标群或通过邀请链接进入目标群 | `target_join_pending` / `target_membership_pending` |
 | 验证完成 | 群管理 bot、验证码、加减验证、人工审批或关注频道要求已处理并复检通过 | `target_verification_pending` / `target_verification_failed` |
+| 验证上下文可读 | 自动验证能读取本次准入触发的验证聊天 / 图片 / 按钮上下文 | `verification_context_unreadable` |
 | `can_send` 判定 | 账号-目标关系明确写回 `can_send=true`，且未被禁言 / 权限不足拦截 | `target_can_send_blocked` |
 | MiMo/Mino draft 成功 | 健康的小米 MiMo/Mino 供应商返回可解析、可通过质量门的 AI 候选 | `ai_generation_unavailable` / `quality_filter` |
 | 发送动作被 dispatcher 消化 | `send_message` action 已到计划时间并被 dispatcher claim / 执行 / 回写结果 | `dispatcher_lag` |
 | 硬小时目标达成 | 当前小时真实 `send_message success` 达到 `hourly_min_messages` | `hard_hourly_missed` |
 
 任务详情必须同时展示这些阶段，不能只展示一个泛化的“任务运行中”。当阶段卡住时，缺口仍保留在 `hard_hourly_deficit`，并把对应原因写入 `hard_hourly_last_blockers`。
+
+准入引用和发送引用必须分开验收：`join_ref` 可来自邀请链接、username 或历史 peer；验证上下文读取和 `can_send` 复检必须使用本次准入成功的可读 peer；最终发送规划必须使用已证明 `can_send=true` 的 send peer。不能把 stale numeric peer 上的旧本地群记录当作本次准入成功证据。
 
 ## 5. 用户故事
 
@@ -481,6 +484,8 @@ AI 活跃群任务卡片增加硬目标摘要：
 - 当前小时达标后，不再继续为硬目标追加动作。
 - 目标群未加入时先生成 / 执行 `ensure_target_membership`，发送动作不会绕过准入阶段。
 - 入群后如果遇到群管理 bot、图片验证码、加减验证、人工审批或要求关注多个频道，任务详情必须显示验证阶段和具体失败 / 等待原因。
+- `can_auto_resolve=true` 只代表可尝试自动验证；如果读取验证聊天失败，例如 `private`、`lack permission`、`banned` 或 `GetHistoryRequest`，必须记录 `verification_context_unreadable`，不得算作自动验证已完成。
+- join ref、verification peer 和 send peer 必须分开展示和验收；通过 username / invite 完成准入时，不能继续用旧 numeric peer 读取验证码或规划发送。
 - 需要关注多个频道才能入群时，每个频道关注动作要有独立结果；全部必需频道满足后才允许复检目标群 `can_send`。
 - 验证完成但 `can_send=false` 时，不创建主发送动作，原因记录为 `target_can_send_blocked`。
 - 文本 draft 使用小米 MiMo/Mino 健康供应商；MiMo/Mino 不可用、返回空内容或 malformed JSON 时记录 `ai_generation_unavailable`，不得走 mock 或模板成功。
@@ -506,6 +511,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 - 新建一个测试 AI 活跃群任务，设置较低硬目标，例如 3 条 / 小时，确认当前小时缺口会触发追加规划。
 - 设置高于账号容量的硬目标，确认系统不会伪造成功，会展示容量不足或 TG 限制。
 - 对 3 个线上 AI 活跃群逐一核对：入群完成、验证完成、`can_send`、MiMo/Mino draft、dispatcher 消化和硬目标完成度，不允许只用任务 running 或 pending 数量证明达标。
+- 线上验收只认 3 个目标各自当前小时 `send_message success >= hourly_min_messages` 且 `hard_hourly_status=met`；任一目标不是 `300 / 300` 时，结论仍是未验收。
 - 用至少一个需要验证码 / 加减验证 / 关注多个频道的目标验证准入链路；未完成时应停在 membership / verification blocker，完成后应写回 `can_send=true` 并进入发送规划。
 - 人为让 MiMo/Mino 返回 malformed JSON 或关闭健康供应商时，任务必须显示 AI draft 阻塞，不能生成 mock 成功消息。
 - 对比 `/api/overview`、`/api/tasks`、`/api/tasks/{id}/stats` 和 action 明细，确认成功数、待执行数和缺口一致。

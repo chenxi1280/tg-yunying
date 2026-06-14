@@ -103,6 +103,7 @@ suggested_action
 | `target_join_pending` | 账号尚未真正加入目标群 | 检查邀请链接、目标解析、账号入群动作 |
 | `target_verification_pending` | 群管理验证未完成，包括验证码、加减验证、人工审批、关注频道要求 | 查看 verification task 和 membership item |
 | `target_verification_failed` | 自动验证失败或需要人工处理 | 查看验证码读取、MiMo/Mino 识别、提交和复检记录 |
+| `verification_context_unreadable` | VerificationTask 可自动处理，但验证聊天 / 图片 / 按钮上下文不可读，常见于 `private`、`lack permission`、`banned` 或 `GetHistoryRequest` | 核对 join ref、verification peer、send peer、reader account 和 submit account 是否一致 |
 | `target_required_channel_pending` | 入群前要求关注一个或多个频道，尚未全部完成 | 查看每个必需频道的关注动作和结果 |
 | `target_can_send_blocked` | 已入群但账号仍不可发言、被禁言或 `can_send=false` | 复检群权限并更新账号-目标关系 |
 | `target_permission` | 目标群不可发、账号被禁言、权限不足 | 目标中心处理 |
@@ -252,6 +253,8 @@ MiMo/Mino draft 成功 / 失败 / malformed JSON
 - `target_admission_retry` 中出现“未解析到群关联频道”“仍未获群发言权限”或“群无权限或账号不可发言”时，先按疑似群管理验证处理：重新加入 / 复检触发当前验证，读取验证码上下文，图片验证码走 MiMo，提交后再复检；不能直接把整批账号标记为人工处理。
 - 如果准入执行项被标记为“已进入 TG 调用边界但本地结果未知”，先由恢复守护补偿复检目标能力。复检确认可发言的账号改为成功并写回可发言关系；复检仍失败或无法复检时才保留结果未知，避免把实际已加入账号当作失败缺口。
 - 如果页面显示“没有读取到最近验证聊天信息”，先按验证聊天读取空态处理：核对目标 peer、账号是否仍能读取群历史、验证消息是否已过期 / 被删除、账号 session 是否有效，以及是否出现 `GetHistoryRequest` 权限错误。
+- 出现 `private`、`lack permission`、`banned` 或 `GetHistoryRequest` 时，单独记录为 `verification_context_unreadable`。先核对本次入群使用的 `join_ref`、验证任务读取的 peer、发送规划使用的 send peer 是否一致；不能反复用 stale numeric peer 或不可读账号重试图片验证码。
+- 通过 username / invite 触发准入时，验证任务应读取本次成功准入的公共 username 或已证明可读的 send peer；只有 `can_send=true` 的同目标 group 才能进入硬目标可发账号池。
 - 单账号弹窗点击“重新读取”时，应先重新加入 / 重试准入来触发当前验证码上下文；如果加入后直接可发言，则关闭待处理；如果仍需验证码，系统再读取最新验证消息。
 - 验证码读取允许双账号协作：加入账号负责触发入群和提交验证码；同目标中已可读历史的账号可负责读取群管理 bot / 管理员验证码消息和图片。
 - 图片验证码分支必须确认系统设置里存在健康的 MiMo 视觉供应商，且任务启用了 `ai_assisted_verification`。DeepSeek 等纯文本供应商不能处理图片验证码。
@@ -461,6 +464,7 @@ hourly_min_messages = 3
 - 图片验证码使用 MiMo 视觉供应商；加减验证从最近验证消息读取题目并提交答案。
 - 需要关注多个频道时，每个频道关注动作独立展示成功 / 失败。
 - 验证提交后必须复检 `can_send`；复检通过后才进入 AI draft 和发送规划。
+- 验证上下文读取失败时，`hard_hourly_last_blockers` 必须写 `verification_context_unreadable`；不能写成 MiMo 识别中或验证码已自动处理。
 - 任一环节失败时，`hard_hourly_last_blockers` 写入对应 membership / verification / can_send 原因。
 
 ### 9.8 MiMo/Mino draft 场景

@@ -18,6 +18,7 @@ from app.services.task_center.channel_membership import (
     gate_channel_membership,
 )
 from app.services.task_center.payloads import EnsureChannelMembershipPayload
+from app.services.task_center.targets import group_from_reference
 
 
 def test_group_ai_membership_strategy_can_disable_auto_join_actions() -> None:
@@ -124,6 +125,81 @@ def test_group_send_permission_follows_multiple_required_channels(monkeypatch) -
     assert result.ok is True
     assert followed == ["alpha", "beta_channel", "https://t.me/+InviteHash123"]
     assert probes == ["-100999"]
+
+
+def test_membership_summary_uses_send_ready_title_group_when_target_peer_is_stale() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        target = OperationTarget(id=910, tenant_id=1, target_type="group", tg_peer_id="-1002766", title="青岛师范学院", auth_status="只读", can_send=False)
+        stale_group = TgGroup(id=2766, tenant_id=1, tg_peer_id="-1002766", title="青岛师范学院", group_type="supergroup", can_send=False)
+        live_group = TgGroup(id=2149, tenant_id=1, tg_peer_id="-1002149", title="青岛师范学院", group_type="supergroup", auth_status="已授权运营", can_send=True)
+        account = TgAccount(id=31, tenant_id=1, display_name="账号31", phone_masked="31", status="在线", session_ciphertext="session")
+        session.add_all([target, stale_group, live_group, account, TgGroupAccount(tenant_id=1, group_id=live_group.id, account_id=account.id, can_send=True)])
+        session.commit()
+
+        summary = channel_membership_summary(session, 1, target, {"selection_mode": "all"}, candidates=[account], require_send=True)
+
+    assert summary["joined_account_count"] == 1
+    assert summary["need_join_account_count"] == 0
+
+
+def test_group_reference_prefers_send_ready_title_group_when_exact_peer_is_stale() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=912, tenant_id=1, target_type="group", tg_peer_id="-1002766", title="青岛师范学院", auth_status="只读", can_send=False))
+        session.add(TgGroup(id=2766, tenant_id=1, tg_peer_id="-1002766", title="青岛师范学院", group_type="supergroup", can_send=False))
+        session.add(TgGroup(id=2149, tenant_id=1, tg_peer_id="-1002149", title="青岛师范学院", group_type="supergroup", auth_status="已授权运营", can_send=True))
+        session.commit()
+
+        group = group_from_reference(session, 1, operation_target_id=912, require_authorized=False)
+
+    assert group.id == 2149
+
+
+def test_permission_denied_verification_reads_successful_username_ref(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+    monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *_args, **_kwargs: OperationResult(True, detail="joined"))
+    monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(False, "失败", "群无权限", "群无权限或账号不可发言"))
+    monkeypatch.setattr(dispatcher, "_auto_verify_and_apply_group_send", lambda *_args, **_kwargs: False)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=911, tenant_id=1, target_type="group", tg_peer_id="-1002766", username="qdsfxy", title="青岛师范学院", auth_status="只读", can_send=False))
+        session.add(TgGroup(id=2766, tenant_id=1, tg_peer_id="-1002766", title="青岛师范学院", group_type="supergroup", can_send=False))
+        session.add(TgAccount(id=32, tenant_id=1, display_name="账号32", phone_masked="32", status="在线", session_ciphertext="session"))
+        session.add(Task(id="task-username-verification", tenant_id=1, name="用户名验证", type="group_ai_chat", status="running", type_config={"auto_resolve_verification": True}))
+        session.add(
+            Action(
+                id="membership-username-verification",
+                tenant_id=1,
+                task_id="task-username-verification",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=32,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"channel_id": "-1002766", "channel_target_id": 911, "target_type": "group", "target_display": "青岛师范学院", "target_username": "qdsfxy", "require_send": True},
+            )
+        )
+        session.commit()
+
+        action = session.get(Action, "membership-username-verification")
+        assert dispatcher.dispatch_action(session, action) is True
+        verification = session.query(VerificationTask).one()
+        resolved_group = session.query(TgGroup).filter(TgGroup.tg_peer_id == "qdsfxy").one()
+
+    assert verification.group_id == resolved_group.id
+    assert verification.target_peer_id == "qdsfxy"
 
 
 def test_auto_text_verification_extracts_arithmetic_answer_and_rechecks(monkeypatch) -> None:
