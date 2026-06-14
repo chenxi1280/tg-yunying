@@ -3318,13 +3318,43 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
 
         from app.services.task_center.service import drain_task_center
 
+        def has_open_send_action() -> bool:
+            with SessionLocal() as session:
+                return bool(
+                    session.scalar(
+                        select(Action.id)
+                        .where(
+                            Action.task_id == task_id,
+                            Action.action_type == "send_message",
+                            Action.status.in_(["pending", "claiming", "executing"]),
+                        )
+                        .limit(1)
+                    )
+                )
+
         drain_task_center(SessionLocal, 10)
         drain_task_center(SessionLocal, 10)
+        for _ in range(5):
+            if not has_open_send_action():
+                break
+            drain_task_center(SessionLocal, 10)
+        assert not has_open_send_action()
         first_context_send_count = len(sends)
         assert first_context_send_count >= 1
 
         messages.append((f"ai-context-2-{context_suffix}", f"第二条真人上下文 {context_suffix}"))
-        reset_listener_runtime_cache()
+        from app.services.group_listeners import collect_group_context
+
+        with SessionLocal() as session:
+            db_group = session.get(TgGroup, group["id"])
+            assert db_group is not None
+            inserted = collect_group_context(session, db_group, [account["id"]])
+            task = session.get(Task, task_id)
+            assert task is not None
+            task.next_run_at = datetime.now(UTC).replace(tzinfo=None)
+            session.commit()
+        assert inserted >= 1
+
         drain_task_center(SessionLocal, 10)
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
@@ -3332,7 +3362,8 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
             drain_task_center(SessionLocal, 10)
             detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert len(sends) > first_context_send_count
-        assert any(second_context_marker in content for content in sends[first_context_send_count:])
+        second_cycle_sends = sends[first_context_send_count:]
+        assert any(second_context_marker in content for content in second_cycle_sends), second_cycle_sends
         assert detail["task"]["status"] == "running"
         assert detail["task"]["stats"]["success_count"] >= len(sends)
 
