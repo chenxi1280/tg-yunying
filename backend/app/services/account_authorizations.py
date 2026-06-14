@@ -33,6 +33,7 @@ from .account_authorization_read_model import (
     authorization_summary_for_account,
     list_account_authorizations,
 )
+from .account_two_fa import rotate_managed_two_fa_after_login
 from .developer_apps import credentials_for_developer_app
 
 
@@ -86,14 +87,28 @@ def verify_standby_authorization_login(
     _expire_flow_if_needed(session, account, flow, actor, password_2fa)
     app = _require_developer_app(session, flow.developer_app_id)
     proxy = _require_proxy(session, account.tenant_id, flow.proxy_id)
+    credentials = credentials_for_developer_app(app, proxy)
     status, raw_session = gateway.finish_login(
         code,
         password_2fa,
         account_id=account.id,
         phone=get_account_phone(account),
-        credentials=credentials_for_developer_app(app, proxy),
+        credentials=credentials,
     )
-    return _finish_standby_login(session, account, flow, status, raw_session, actor)
+    asset = _finish_standby_login(session, account, flow, status, raw_session, actor)
+    if password_2fa:
+        rotate_managed_two_fa_after_login(
+            session,
+            account,
+            session_ciphertext=asset.session_ciphertext,
+            current_password=password_2fa,
+            credentials=credentials,
+            telegram_gateway=gateway,
+            marker=f"standby-{asset.id}",
+        )
+        session.commit()
+        session.refresh(asset)
+    return asset
 
 
 def check_standby_authorization_qr_login(session: Session, account_id: int, flow_id: int, *, actor: str) -> TgAccountAuthorization:

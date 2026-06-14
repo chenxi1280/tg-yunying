@@ -14,8 +14,9 @@ from app.integrations.telegram.contracts import AccountAuthorizationSnapshot as 
 from app.models import AiProvider, AccountProxy, AccountStatus, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot, TgVerificationCode
 from app.schemas import TgAccountCreate
 from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ManagedTwoFaRequest, ProfileGenerationStrategy
-from app.security import encrypt_secret, encrypt_session
+from app.security import decrypt_secret, encrypt_secret, encrypt_session
 from app.storage import save_avatar_bytes
+from app.services import accounts as accounts_service
 import app.services.account_security.service as account_security_service
 from app.services._common import _now
 from app.services.account_security import (
@@ -28,6 +29,7 @@ from app.services.account_security import (
     save_managed_two_fa_password,
 )
 from app.services.accounts import create_account
+from app.services.accounts import verify_login
 from app.services.task_center.service import delete_task, get_task_detail, list_tasks
 
 
@@ -668,9 +670,10 @@ def test_standby_session_batch_exposes_manual_required_instead_of_fake_success(m
         monkeypatch.setattr(
             account_security_service.gateway,
             "start_login",
-            lambda *_args, **_kwargs: SimpleNamespace(status="等待验证码", code_preview=None, code_expires_at=_now() + timedelta(minutes=3), qr_payload=None),
+            lambda *_args, **_kwargs: SimpleNamespace(status="等待验证码", code_preview=None, code_expires_at=_now(), qr_payload=None),
         )
         monkeypatch.setattr(account_security_service.gateway, "poll_verification_codes", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(account_security_service.time, "sleep", lambda *_args, **_kwargs: None)
         batch = create_account_security_batch(
             session,
             1,
@@ -691,8 +694,53 @@ def test_standby_session_batch_exposes_manual_required_instead_of_fake_success(m
         assert detail["task"]["status"] == "stopped"
         assert detail["task"]["stats"]["success_count"] == 0
         assert item["status"] == "manual_required"
-        assert item["standby_session_status"] == "manual_required"
-        assert item["failure_type"] == "standby_session_executor_missing"
+        assert item["standby_session_status"] == "code_waiting"
+        assert item["failure_type"] == "verification_code_unreadable"
+        assert "验证码不可读取" in item["failure_detail"]
+        assert item["target_slot"] == "standby_1"
+        assert item["developer_app_label"] == "测试开发者应用"
+        assert item["proxy_label"] == "备用代理"
+        assert item["verification_code_status"] == "验证码不可读取"
+
+
+def test_standby_session_batch_requires_managed_2fa_when_telegram_requests_password(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        session.add(AccountProxy(id=1, tenant_id=1, name="备用代理", port=1080, status="healthy", alert_status="normal"))
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "start_login",
+            lambda *_args, **_kwargs: SimpleNamespace(status="等待验证码", code_preview="12345", code_expires_at=_now() + timedelta(minutes=3), qr_payload=None),
+        )
+        monkeypatch.setattr(
+            account_security_service.gateway,
+            "finish_login",
+            lambda *_args, **_kwargs: (AccountStatus.WAITING_2FA.value, ""),
+        )
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(
+                account_ids=[account.id],
+                action_types=["provision_standby_session"],
+                confirm_text="确认",
+                reason="补齐备用 session",
+            ),
+            "tester",
+        )
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        detail = get_task_detail(session, 1, f"account_security_batch:{batch.id}")
+        item = detail["account_security_batch"]["items"][0]
+
+        assert detail["account_security_batch"]["batch_status"] == "manual_required"
+        assert item["status"] == "manual_required"
+        assert item["standby_session_status"] == "two_fa_waiting"
+        assert item["failure_type"] == "two_fa_not_managed"
+        assert "未托管 2FA" in item["failure_detail"]
+        assert item["target_slot"] == "standby_1"
+        assert item["verification_code_status"] == "已读取"
+        assert item["two_fa_usage_status"] == "未托管 2FA"
 
 
 def test_standby_session_batch_auto_provisions_missing_standby_slot(monkeypatch):
@@ -737,6 +785,13 @@ def test_standby_session_batch_auto_provisions_missing_standby_slot(monkeypatch)
         assert refreshed.items[0].status == "succeeded"
         assert asset is not None
         assert asset.session_ciphertext
+        detail = get_task_detail(session, 1, f"account_security_batch:{batch.id}")
+        item = detail["account_security_batch"]["items"][0]
+        assert item["target_slot"] == "standby_2"
+        assert item["developer_app_label"] == "测试开发者应用"
+        assert item["proxy_label"] == "备用代理"
+        assert item["verification_code_status"] == "已读取"
+        assert item["two_fa_usage_status"] == "已使用托管 2FA"
 
 
 def test_standby_session_batch_polls_primary_session_code_when_challenge_has_no_preview(monkeypatch):
@@ -755,11 +810,20 @@ def test_standby_session_batch_polls_primary_session_code_when_challenge_has_no_
             "start_login",
             lambda *_args, **_kwargs: SimpleNamespace(status="等待验证码", code_preview=None, code_expires_at=_now() + timedelta(minutes=3), qr_payload=None),
         )
+        poll_attempts = {"count": 0}
+
+        def poll_verification_codes(*_args, **_kwargs):
+            poll_attempts["count"] += 1
+            if poll_attempts["count"] == 1:
+                return []
+            return [SimpleNamespace(code="67890", raw_hint="TG 官方服务消息验证码", expires_at=_now() + timedelta(minutes=3))]
+
         monkeypatch.setattr(
             account_security_service.gateway,
             "poll_verification_codes",
-            lambda *_args, **_kwargs: [SimpleNamespace(code="67890", raw_hint="TG 官方服务消息验证码", expires_at=_now() + timedelta(minutes=3))],
+            poll_verification_codes,
         )
+        monkeypatch.setattr(account_security_service.time, "sleep", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(
             account_security_service.gateway,
             "finish_login",
@@ -788,6 +852,132 @@ def test_standby_session_batch_polls_primary_session_code_when_challenge_has_no_
         assert asset.session_ciphertext
         assert code is not None
         assert code.code_preview == "67890"
+        assert poll_attempts["count"] == 2
+
+
+def test_standby_session_batch_auto_provisions_both_missing_slots_without_manual_codes(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+        session.add(AccountProxy(id=1, tenant_id=1, name="备用代理", port=1080, status="healthy", alert_status="normal"))
+        save_managed_two_fa_password(
+            session,
+            1,
+            account.id,
+            ManagedTwoFaRequest(password="managed-password", reason="首次托管"),
+            "tester",
+        )
+        started_roles: list[str] = []
+        submitted_codes: list[str] = []
+        submitted_passwords: list[str | None] = []
+        rotations: list[dict[str, str | None]] = []
+        poll_codes = iter(["11111", "22222"])
+
+        def start_login(*_args, **kwargs):
+            started_roles.append(kwargs.get("credentials").app_name if kwargs.get("credentials") else "")
+            return SimpleNamespace(status="等待验证码", code_preview=None, code_expires_at=_now() + timedelta(minutes=3), qr_payload=None)
+
+        def poll_verification_codes(*_args, **_kwargs):
+            code = next(poll_codes)
+            return [SimpleNamespace(code=code, raw_hint="TG 官方服务消息验证码", expires_at=_now() + timedelta(minutes=3))]
+
+        def finish_login(code, password_2fa, *_args, **_kwargs):
+            submitted_codes.append(code)
+            submitted_passwords.append(password_2fa)
+            return AccountStatus.ACTIVE.value, f"standby-session-{code}"
+
+        def set_two_fa(session_ciphertext, password, **kwargs):
+            rotations.append(
+                {
+                    "session_ciphertext": session_ciphertext,
+                    "password": password,
+                    "current_password": kwargs.get("current_password"),
+                }
+            )
+            return SimpleNamespace(ok=True, status="enabled", detail="", failure_type="")
+
+        monkeypatch.setattr(account_security_service.gateway, "start_login", start_login)
+        monkeypatch.setattr(account_security_service.gateway, "poll_verification_codes", poll_verification_codes)
+        monkeypatch.setattr(account_security_service.gateway, "finish_login", finish_login)
+        monkeypatch.setattr(account_security_service.gateway, "set_two_fa_password", set_two_fa)
+        batch = create_account_security_batch(
+            session,
+            1,
+            AccountSecurityBatchCreate(
+                account_ids=[account.id],
+                action_types=["provision_standby_session"],
+                standby_slot_strategy="auto_missing",
+                confirm_text="确认",
+                reason="自动补齐两个备用 session",
+            ),
+            "tester",
+        )
+
+        assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
+        refreshed = account_security_batch_detail(session, 1, batch.id)
+        roles = set(
+            session.scalars(
+                select(TgAccountAuthorization.role).where(
+                    TgAccountAuthorization.account_id == account.id,
+                    TgAccountAuthorization.role.in_(["standby_1", "standby_2"]),
+                )
+            )
+        )
+        codes = list(
+            session.scalars(
+                select(TgVerificationCode.code_preview)
+                .where(TgVerificationCode.account_id == account.id, TgVerificationCode.source == "standby_authorization_auto_login")
+                .order_by(TgVerificationCode.id.asc())
+            )
+        )
+
+        assert refreshed.status == "succeeded"
+        assert refreshed.items[0].status == "succeeded"
+        assert roles == {"standby_1", "standby_2"}
+        assert submitted_codes == ["11111", "22222"]
+        assert submitted_passwords == ["managed-password", rotations[0]["password"]]
+        assert [rotation["current_password"] for rotation in rotations] == ["managed-password", submitted_passwords[1]]
+        assert codes == ["11111", "22222"]
+        snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
+        assert snapshot is not None
+        assert decrypt_secret(snapshot.two_fa_password_ciphertext) == rotations[-1]["password"]
+        detail = get_task_detail(session, 1, f"account_security_batch:{batch.id}")
+        item = detail["account_security_batch"]["items"][0]
+        assert item["target_slot"] == "standby_1 / standby_2"
+
+
+def test_primary_login_with_2fa_rotates_and_saves_new_managed_password(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session, status=AccountStatus.WAITING_2FA.value, session_value="")
+        rotations: list[dict[str, str | None]] = []
+
+        def finish_login(code, password_2fa, *_args, **_kwargs):
+            assert code is None
+            assert password_2fa == "old-2fa-password"
+            return AccountStatus.ACTIVE.value, "primary-session-raw"
+
+        def set_two_fa(session_ciphertext, password, **kwargs):
+            rotations.append(
+                {
+                    "session_ciphertext": session_ciphertext,
+                    "password": password,
+                    "current_password": kwargs.get("current_password"),
+                }
+            )
+            return SimpleNamespace(ok=True, status="enabled", detail="", failure_type="")
+
+        monkeypatch.setattr(accounts_service.gateway, "finish_login", finish_login)
+        monkeypatch.setattr(accounts_service.gateway, "set_two_fa_password", set_two_fa)
+
+        verified = verify_login(session, account.id, None, "old-2fa-password", actor="tester")
+        snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
+
+        assert verified.status == AccountStatus.ACTIVE.value
+        assert rotations
+        assert rotations[0]["current_password"] == "old-2fa-password"
+        assert rotations[0]["password"] != "old-2fa-password"
+        assert snapshot is not None
+        assert snapshot.two_fa_status == "enabled"
+        assert decrypt_secret(snapshot.two_fa_password_ciphertext) == rotations[0]["password"]
 
 
 def test_standby_session_self_heal_activates_existing_standby_when_primary_session_missing():
@@ -1231,10 +1421,10 @@ def test_managed_two_fa_save_and_rotate_store_encrypted_password(monkeypatch):
             ManagedTwoFaRequest(password="old-password", reason="首次托管"),
             "tester",
         )
-        calls: list[str] = []
+        calls: list[dict[str, str | None]] = []
 
         def set_two_fa(_session_ciphertext, password, **_kwargs):
-            calls.append(password)
+            calls.append({"password": password, "current_password": _kwargs.get("current_password")})
             return SimpleNamespace(ok=True, status="enabled", detail="", failure_type="")
 
         monkeypatch.setattr(account_security_service.gateway, "set_two_fa_password", set_two_fa)
@@ -1249,7 +1439,7 @@ def test_managed_two_fa_save_and_rotate_store_encrypted_password(monkeypatch):
 
         assert saved.two_fa_status == "enabled"
         assert rotated.two_fa_status == "enabled"
-        assert calls == ["new-password"]
+        assert calls == [{"password": "new-password", "current_password": "old-password"}]
         assert snapshot.two_fa_password_ciphertext
         assert snapshot.two_fa_password_ciphertext != "new-password"
 

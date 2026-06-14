@@ -43,6 +43,8 @@ export function runtimeStageLabel(task: TaskCenterTask, summary?: TaskRuntimeSum
 export function statusLabel(value?: string | null): string {
   if (['running', 'executing'].includes(value ?? '')) return '运行中';
   if (value === 'pending') return '启动中';
+  if (value === 'code_waiting') return '等待验证码';
+  if (value === 'two_fa_waiting') return '等待 2FA';
   if (value === 'paused') return '已暂停';
   if (value === 'draft') return '草稿';
   if (value === 'target_reached') return '已达标';

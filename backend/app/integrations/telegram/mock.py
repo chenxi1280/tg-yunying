@@ -410,6 +410,7 @@ class TelegramGateway:
         hint: str = "",
         recovery_email: str = "",
         credentials: DeveloperAppCredentials | None = None,
+        current_password: str | None = None,
     ) -> AccountSecurityOperationResult:
         if not session_ciphertext:
             return AccountSecurityOperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")

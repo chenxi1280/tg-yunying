@@ -191,7 +191,10 @@ export function TaskCenterDetailModal({
     { title: '2FA', dataIndex: 'two_fa_status', width: 100, render: (value) => value ? <DetailStatusBadge status={value} /> : '-' },
     { title: '备用 session', dataIndex: 'standby_session_status', width: 130, render: (value) => value ? <DetailStatusBadge status={value} /> : '-' },
     { title: '目标槽位', dataIndex: 'target_slot', width: 110, render: (value) => value || '-' },
+    { title: '开发者应用', dataIndex: 'developer_app_label', width: 130, render: (value) => value || '-' },
+    { title: '代理', dataIndex: 'proxy_label', width: 110, render: (value) => value || '-' },
     { title: '验证码读取', dataIndex: 'verification_code_status', width: 120, render: (value) => value || '-' },
+    { title: '2FA 使用', dataIndex: 'two_fa_usage_status', width: 130, render: (value) => value || '-' },
     { title: '保留设备', dataIndex: 'preserved_devices_summary', width: 220, render: (value) => value || 'primary / standby_1 / standby_2 / 官方锚点设备' },
     {
       title: '头像回显',

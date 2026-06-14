@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-import secrets
+import time
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -46,6 +46,12 @@ from app.storage import media_root, object_path, save_avatar_bytes
 
 from .._common import _now, ai_gateway, audit, gateway, require_tenant
 from ..account_authorizations import attempt_standby_authorization_recovery, start_standby_authorization_login, verify_standby_authorization_login
+from ..account_two_fa import (
+    MANAGED_TWO_FA_HINT,
+    generate_managed_two_fa_password,
+    managed_two_fa_password,
+    record_managed_two_fa_password,
+)
 from ..ai_config import ai_provider_credentials, get_tenant_ai_setting
 from ..developer_apps import credentials_for_account
 
@@ -61,6 +67,15 @@ STANDBY_SESSION_ACTIONS = {"provision_standby_session", "self_heal_session"}
 ALL_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS | STANDBY_SESSION_ACTIONS
 OFFICIAL_ANCHOR_API_IDS = {4, 6, 8, 2040, 2834, 21724}
 OFFICIAL_ANCHOR_PLATFORM_HINTS = ("android", "ios", "iphone", "ipad", "mac", "windows", "linux", "desktop")
+STANDBY_FAILURE_STATUS = {
+    "verification_code_unreadable": "code_waiting",
+    "two_fa_not_managed": "two_fa_waiting",
+    "two_fa_invalid": "two_fa_waiting",
+    "two_fa_rotation_failed": "two_fa_waiting",
+    "standby_session_executor_missing": "manual_required",
+}
+STANDBY_CODE_POLL_INTERVAL_SECONDS = 2
+STANDBY_CODE_POLL_FALLBACK_WINDOW_SECONDS = 20
 
 
 @dataclass(frozen=True)
@@ -291,8 +306,8 @@ def _item_out(item: TgAccountSecurityBatchItem):
 
 
 def _standby_session_status(item: TgAccountSecurityBatchItem) -> str:
-    if item.failure_type == "standby_session_executor_missing":
-        return "manual_required"
+    if item.failure_type in STANDBY_FAILURE_STATUS:
+        return STANDBY_FAILURE_STATUS[item.failure_type]
     if item.status in {"pending", "running", "waiting", "failed", "succeeded", "manual_required"}:
         return item.status
     return "pending" if item.precheck_status == "pending" else item.precheck_status
@@ -303,13 +318,6 @@ def _require_account(session: Session, tenant_id: int, account_id: int) -> TgAcc
     if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
         raise ValueError("account not found")
     return account
-
-
-def _record_managed_two_fa(snapshot: TgAccountSecuritySnapshot, password: str) -> None:
-    snapshot.two_fa_status = "enabled"
-    snapshot.two_fa_password_ciphertext = encrypt_secret(password)
-    snapshot.two_fa_password_hint = "TG运营平台托管"
-    snapshot.two_fa_password_stored_at = _now()
 
 
 def _managed_two_fa_out(account_id: int, snapshot: TgAccountSecuritySnapshot) -> ManagedTwoFaOut:
@@ -479,8 +487,7 @@ def save_managed_two_fa_password(
     actor: str,
 ) -> ManagedTwoFaOut:
     account = _require_account(session, tenant_id, account_id)
-    snapshot = _snapshot(session, account)
-    _record_managed_two_fa(snapshot, payload.password)
+    snapshot = record_managed_two_fa_password(session, account, payload.password)
     audit(session, tenant_id=tenant_id, actor=actor, action="保存账号托管二步密码", target_type="tg_account", target_id=str(account.id), detail=payload.reason)
     session.commit()
     return _managed_two_fa_out(account.id, snapshot)
@@ -495,11 +502,16 @@ def rotate_managed_two_fa_password(
 ) -> ManagedTwoFaOut:
     account = _require_account(session, tenant_id, account_id)
     credentials = credentials_for_account(session, account)
-    result = gateway.set_two_fa_password(account.session_ciphertext, payload.password, credentials=credentials, hint="TG运营平台托管")
+    result = gateway.set_two_fa_password(
+        account.session_ciphertext,
+        payload.password,
+        credentials=credentials,
+        hint=MANAGED_TWO_FA_HINT,
+        current_password=managed_two_fa_password(session, account),
+    )
     if not result.ok:
         raise ValueError(result.detail or result.failure_type or "2FA rotate failed")
-    snapshot = _snapshot(session, account)
-    _record_managed_two_fa(snapshot, payload.password)
+    snapshot = record_managed_two_fa_password(session, account, payload.password)
     audit(session, tenant_id=tenant_id, actor=actor, action="轮换账号托管二步密码", target_type="tg_account", target_id=str(account.id), detail=payload.reason)
     session.commit()
     return _managed_two_fa_out(account.id, snapshot)
@@ -822,17 +834,19 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
         if "cleanup_devices" in action_types:
             failures.extend(_execute_cleanup(session, account, item, credentials))
         if "set_two_fa" in action_types:
-            generated_password = _generate_two_fa_password(account, item)
-            result = gateway.set_two_fa_password(account.session_ciphertext, generated_password, credentials=credentials, hint="TG运营平台托管")
+            generated_password = generate_managed_two_fa_password(account, str(item.id))
+            result = gateway.set_two_fa_password(
+                account.session_ciphertext,
+                generated_password,
+                credentials=credentials,
+                hint=MANAGED_TWO_FA_HINT,
+                current_password=managed_two_fa_password(session, account),
+            )
             item.two_fa_status = result.status if result.ok else "failed"
             if not result.ok:
                 failures.append(result.detail or result.failure_type)
             else:
-                snapshot = _snapshot(session, account)
-                snapshot.two_fa_status = "enabled"
-                snapshot.two_fa_password_ciphertext = encrypt_secret(generated_password)
-                snapshot.two_fa_password_hint = "TG运营平台托管"
-                snapshot.two_fa_password_stored_at = _now()
+                record_managed_two_fa_password(session, account, generated_password)
         if action_types & STANDBY_SESSION_ACTIONS:
             failures.extend(_execute_standby_session_provision(session, account, item, action_types))
         if "update_profile" in action_types and item.profile_status not in {"succeeded", "skipped"}:
@@ -916,25 +930,49 @@ def _execute_standby_session_provision(
             return []
         item.failure_detail = provision_failure
     item.status = "manual_required"
-    item.failure_type = "standby_session_executor_missing"
+    item.failure_type = item.failure_type or "standby_session_executor_missing"
     item.failure_detail = item.failure_detail or "备用 session 自动补齐执行器尚未接入登录网关"
     return [item.failure_detail]
 
 
 def _auto_provision_standby_session(session: Session, account: TgAccount, item: TgAccountSecurityBatchItem) -> str:
     if not account.session_ciphertext:
+        item.failure_type = "account_not_online"
         return "主 session 不可用，无法自动读取备用登录验证码"
-    role = _target_standby_role(session, account, item)
-    if not role:
+    roles = _target_standby_roles(session, account, item)
+    if not roles:
         item.failure_detail = "备用 session 已满足一主两从"
         return ""
     app = _auto_standby_developer_app(session, account)
     if app is None:
+        item.failure_type = "developer_app_unavailable"
         return "没有可用的 TG 开发者应用用于备用 session 登录"
     proxy = _auto_standby_proxy(session, account)
     if proxy is None:
+        item.failure_type = "proxy_unavailable"
         return "没有可用代理用于备用 session 登录"
-    password_2fa = _managed_two_fa_password(session, account)
+    password_2fa = managed_two_fa_password(session, account)
+    completed_roles: list[str] = []
+    for role in roles:
+        failure = _auto_provision_standby_role(session, account, item, role, app, proxy, password_2fa)
+        if failure:
+            return failure
+        completed_roles.append(role)
+        password_2fa = managed_two_fa_password(session, account) or password_2fa
+    item.failure_type = ""
+    item.failure_detail = f"已补齐 {', '.join(completed_roles)} 备用 session"
+    return ""
+
+
+def _auto_provision_standby_role(
+    session: Session,
+    account: TgAccount,
+    item: TgAccountSecurityBatchItem,
+    role: str,
+    app: TelegramDeveloperApp,
+    proxy: AccountProxy,
+    password_2fa: str | None,
+) -> str:
     flow = start_standby_authorization_login(
         session,
         account.id,
@@ -946,6 +984,7 @@ def _auto_provision_standby_session(session: Session, account: TgAccount, item: 
     )
     code = _standby_login_code(session, account, flow)
     if not code:
+        item.failure_type = "verification_code_unreadable"
         return "验证码不可读取，已记录备用授权登录流水"
     try:
         asset = verify_standby_authorization_login(
@@ -957,14 +996,43 @@ def _auto_provision_standby_session(session: Session, account: TgAccount, item: 
             actor="account-security-worker",
         )
     except ValueError as exc:
-        return str(exc)
+        item.failure_type = _standby_login_failure_type(str(exc), password_2fa)
+        return _standby_login_failure_detail(item.failure_type, str(exc))
     item.failure_detail = f"已补齐 {asset.role} 备用 session"
     return ""
+
+
+def _standby_login_failure_type(detail: str, password_2fa: str | None) -> str:
+    if "修改为平台托管新密码失败" in detail:
+        return "two_fa_rotation_failed"
+    if AccountStatus.WAITING_2FA.value in detail:
+        return "two_fa_invalid" if password_2fa else "two_fa_not_managed"
+    return "standby_login_failed"
+
+
+def _standby_login_failure_detail(failure_type: str, detail: str) -> str:
+    if failure_type == "two_fa_not_managed":
+        return "Telegram 要求二步密码，但账号未托管 2FA"
+    if failure_type == "two_fa_invalid":
+        return "托管 2FA 校验失败，需轮换托管 2FA 后重试"
+    if failure_type == "two_fa_rotation_failed":
+        return f"备用登录已完成，但 2FA 新密码轮换失败：{detail}"
+    return detail
 
 
 def _standby_login_code(session: Session, account: TgAccount, flow) -> str | None:
     if flow.code_preview:
         return flow.code_preview
+    deadline = flow.code_expires_at or (_now() + timedelta(seconds=STANDBY_CODE_POLL_FALLBACK_WINDOW_SECONDS))
+    while _now() <= deadline:
+        code = _poll_standby_login_code_once(session, account, flow)
+        if code:
+            return code
+        time.sleep(STANDBY_CODE_POLL_INTERVAL_SECONDS)
+    return None
+
+
+def _poll_standby_login_code_once(session: Session, account: TgAccount, flow) -> str | None:
     try:
         snapshots = gateway.poll_verification_codes(
             account.id,
@@ -1101,7 +1169,16 @@ def _target_standby_role(session: Session, account: TgAccount, item: TgAccountSe
     return _target_standby_role_for_strategy(session, account, _standby_slot_strategy(session, item))
 
 
+def _target_standby_roles(session: Session, account: TgAccount, item: TgAccountSecurityBatchItem) -> list[str]:
+    return _target_standby_roles_for_strategy(session, account, _standby_slot_strategy(session, item))
+
+
 def _target_standby_role_for_strategy(session: Session, account: TgAccount, requested: str) -> str:
+    roles = _target_standby_roles_for_strategy(session, account, requested)
+    return roles[0] if roles else ""
+
+
+def _target_standby_roles_for_strategy(session: Session, account: TgAccount, requested: str) -> list[str]:
     existing_roles = set(
         session.scalars(
             select(TgAccountAuthorization.role).where(
@@ -1114,11 +1191,8 @@ def _target_standby_role_for_strategy(session: Session, account: TgAccount, requ
         )
     )
     if requested in {"standby_1", "standby_2"}:
-        return "" if requested in existing_roles else requested
-    for role in ["standby_1", "standby_2"]:
-        if role not in existing_roles:
-            return role
-    return ""
+        return [] if requested in existing_roles else [requested]
+    return [role for role in ["standby_1", "standby_2"] if role not in existing_roles]
 
 
 def _standby_slot_strategy(session: Session, item: TgAccountSecurityBatchItem) -> str:
@@ -1138,8 +1212,8 @@ def _standby_precheck_status(session: Session, account: TgAccount, standby_slot_
     blockers: list[str] = []
     warnings: list[str] = []
     suggested: list[str] = []
-    role = _target_standby_role_for_strategy(session, account, standby_slot_strategy)
-    if not role:
+    roles = _target_standby_roles_for_strategy(session, account, standby_slot_strategy)
+    if not roles:
         warnings.append("备用 session 已满足一主两从")
         return StandbyPrecheckStatus(blockers, warnings, suggested)
     if _auto_standby_developer_app(session, account) is None:
@@ -1148,7 +1222,7 @@ def _standby_precheck_status(session: Session, account: TgAccount, standby_slot_
     if _auto_standby_proxy(session, account) is None:
         blockers.append("没有可用代理用于备用 session 登录")
         suggested.append("先绑定或补充健康账号代理")
-    if not _managed_two_fa_password(session, account):
+    if not managed_two_fa_password(session, account):
         warnings.append("账号未托管 2FA；如果 Telegram 要求二步密码，备用 session 补齐会进入人工处理")
     return StandbyPrecheckStatus(blockers, warnings, suggested)
 
@@ -1180,13 +1254,6 @@ def _auto_standby_proxy(session: Session, account: TgAccount) -> AccountProxy | 
     return session.scalar(stmt)
 
 
-def _managed_two_fa_password(session: Session, account: TgAccount) -> str | None:
-    snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
-    if not snapshot or not snapshot.two_fa_password_ciphertext:
-        return None
-    return decrypt_secret(snapshot.two_fa_password_ciphertext)
-
-
 def _fresh_session_wait_until(session: Session, account: TgAccount):
     now_value = _now()
     authorization = session.scalar(
@@ -1205,11 +1272,6 @@ def _fresh_session_wait_until(session: Session, account: TgAccount):
 def _is_fresh_reset_forbidden(detail: str | None) -> bool:
     text = (detail or "").upper()
     return "FRESH_RESET_AUTHORISATION_FORBIDDEN" in text or "FRESH_RESET_AUTHORIZATION_FORBIDDEN" in text or ("24" in text and "SESSION" in text)
-
-
-def _generate_two_fa_password(account: TgAccount, item: TgAccountSecurityBatchItem) -> str:
-    token = secrets.token_urlsafe(18)
-    return f"TgOps-{account.id}-{item.id}-{token}"
 
 
 def _execute_avatar_update(session: Session, account: TgAccount, item: TgAccountSecurityBatchItem, credentials, *, overwrite_existing: bool = False) -> object:

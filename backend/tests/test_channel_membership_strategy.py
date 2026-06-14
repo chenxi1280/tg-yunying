@@ -21,6 +21,37 @@ from app.services.task_center.payloads import EnsureChannelMembershipPayload
 from app.services.task_center.targets import group_from_reference
 
 
+def test_group_ai_membership_actions_default_to_four_hour_window(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr("app.services.task_center.pacing.random.randint", lambda lo, hi: hi)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=920, tenant_id=1, target_type="group", tg_peer_id="-100920", title="四小时准入群", auth_status="只读", can_send=False))
+        for account_id in range(1, 41):
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext="session"))
+        task = Task(
+            id="task-four-hour-membership",
+            tenant_id=1,
+            name="四小时准入",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"target_operation_target_id": 920},
+        )
+        session.add(task)
+        session.commit()
+
+        result = gate_channel_membership(session, task, session.get(OperationTarget, 920), require_send=True)
+        rows = session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").order_by(Action.scheduled_at.asc()).all()
+
+    assert result.created == 40
+    assert len(rows) == 40
+    assert rows[-1].scheduled_at - rows[0].scheduled_at <= timedelta(hours=4)
+    assert task.stats["membership_schedule_window_hours"] == 4
+
+
 def test_group_ai_membership_strategy_can_disable_auto_join_actions() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

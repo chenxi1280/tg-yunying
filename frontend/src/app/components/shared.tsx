@@ -7,7 +7,7 @@ import { formatBeijingDateTime } from '../time';
 export function statusTone(status: string | null | undefined): BadgeTone {
   const value = status || '未配置';
   if (['在线', '已发送', '可用', '已授权运营', '已完成', '已同步', '健康', '账号可发言', '可查看', '可发言', '已处理', '已达标', '运行中', 'running', 'redeemed', 'success', 'completed', 'approved', 'target_reached'].includes(value)) return 'positive';
-  if (['等待验证码', '等待扫码', '等待2FA', '排队中', '发送中', '同步中', '只读归档', '冷却中', '等待处理', '待确认', '执行中', '待处理', '启动校验中', '准入补齐中', '等待 AI', '等待上下文', '等待冷却 / 下一轮', '等待下一轮', '容量不足', '需人工处理', '收尾中', 'unused', 'pending', 'executing', 'wrapping_up'].includes(value)) return 'warning';
+  if (['等待验证码', '等待扫码', '等待2FA', '排队中', '发送中', '同步中', '只读归档', '冷却中', '等待处理', '待确认', '执行中', '待处理', '启动校验中', '准入补齐中', '等待 AI', '等待上下文', '等待冷却 / 下一轮', '等待下一轮', '容量不足', '需人工处理', '收尾中', 'unused', 'pending', 'executing', 'wrapping_up', 'code_waiting', 'two_fa_waiting'].includes(value)) return 'warning';
   if (['失败', '受限', '异常', '禁止操作', '已取消', '禁用', '账号不可发言', '不可发言', '内容违规', '账号不可用', '账号受限', '群无权限', '群慢速模式', 'FloodWait', '目标无效', '未知错误', '部分失败', '有失败', '人工停止', '已暂停', '已删除', 'failed', 'rejected', 'paused', 'stopped', 'deleted'].includes(value)) return 'danger';
   if (['草稿', '未确认', '未配置', '无失败', '未同步', '不可见', '已过期', '已忽略', '待规划', 'disabled', 'draft', 'skipped', 'expired'].includes(value)) return 'muted';
   return 'neutral';

@@ -6,10 +6,17 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Material, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem
+from app.models import AccountProxy, Material, TelegramDeveloperApp, TgAccount, TgAccountAuthorization, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgLoginFlow
 
 PROFILE_BATCH_TASK_PREFIX = "account_security_batch:"
 PROFILE_BATCH_TASK_TYPE = "account_profile_init"
+STANDBY_FAILURE_STATUS = {
+    "verification_code_unreadable": "code_waiting",
+    "two_fa_not_managed": "two_fa_waiting",
+    "two_fa_invalid": "two_fa_waiting",
+    "two_fa_rotation_failed": "two_fa_waiting",
+    "standby_session_executor_missing": "manual_required",
+}
 DELETED_PROFILE_BATCH_STATUS = "deleted"
 ACCOUNT_SECURITY_TASK_TYPES = {
     "account_profile_init",
@@ -155,6 +162,7 @@ def _projection_stats(batch: TgAccountSecurityBatch, items: list[TgAccountSecuri
 def _profile_batch_item(session: Session, item: TgAccountSecurityBatchItem) -> dict[str, Any]:
     account = session.get(TgAccount, item.account_id)
     cache_status = _avatar_cache_status(session, item.avatar_source)
+    standby_context = _standby_context(session, item)
     return {
         "account_id": item.account_id,
         "display_name": item.generated_display_name or (account.display_name if account else ""),
@@ -174,10 +182,10 @@ def _profile_batch_item(session: Session, item: TgAccountSecurityBatchItem) -> d
         "failure_detail": item.failure_detail,
         "preserved_devices_summary": "primary / standby_1 / standby_2 / 官方锚点设备",
         "cleaned_devices_summary": _cleaned_devices_summary(item),
-        "target_slot": _target_slot(item),
-        "developer_app_label": "",
-        "proxy_label": "",
-        "verification_code_status": "",
+        "target_slot": standby_context["target_slot"],
+        "developer_app_label": standby_context["developer_app_label"],
+        "proxy_label": standby_context["proxy_label"],
+        "verification_code_status": _verification_code_status(item),
         "two_fa_usage_status": _two_fa_usage_status(item),
     }
 
@@ -249,8 +257,8 @@ def _task_type_for_batch(batch: TgAccountSecurityBatch) -> str:
 
 
 def _standby_session_status(item: TgAccountSecurityBatchItem) -> str:
-    if item.failure_type == "standby_session_executor_missing":
-        return "manual_required"
+    if item.failure_type in STANDBY_FAILURE_STATUS:
+        return STANDBY_FAILURE_STATUS[item.failure_type]
     if item.status in {"pending", "running", "waiting", "failed", "succeeded", "manual_required"}:
         return item.status
     return "pending" if item.precheck_status == "pending" else item.precheck_status
@@ -266,11 +274,110 @@ def _target_slot(item: TgAccountSecurityBatchItem) -> str:
 
 
 def _two_fa_usage_status(item: TgAccountSecurityBatchItem) -> str:
+    if item.failure_type == "two_fa_not_managed":
+        return "未托管 2FA"
+    if item.failure_type == "two_fa_invalid":
+        return "托管 2FA 校验失败"
+    if item.failure_type == "two_fa_rotation_failed":
+        return "2FA 新密码轮换失败"
+    if _standby_session_status(item) == "succeeded" or "已补齐" in (item.failure_detail or ""):
+        return "已使用托管 2FA"
     if item.two_fa_status == "enabled":
         return "平台托管密码已记录"
     if item.two_fa_status == "failed":
         return "2FA 设置失败"
     return ""
+
+
+def _verification_code_status(item: TgAccountSecurityBatchItem) -> str:
+    if item.failure_type == "verification_code_unreadable":
+        return "验证码不可读取"
+    if item.failure_type in {"two_fa_not_managed", "two_fa_invalid"}:
+        return "已读取"
+    if _standby_session_status(item) == "succeeded" or "已补齐" in (item.failure_detail or ""):
+        return "已读取"
+    return ""
+
+
+def _standby_context(session: Session, item: TgAccountSecurityBatchItem) -> dict[str, str]:
+    flow = _latest_standby_login_flow(session, item)
+    asset = _latest_standby_authorization(session, item, flow.authorization_role if flow else "")
+    role = _standby_role(session, item, flow, asset)
+    app_id = (flow.developer_app_id if flow else None) or (asset.developer_app_id if asset else None)
+    proxy_id = (flow.proxy_id if flow else None) or (asset.proxy_id if asset else None)
+    return {
+        "target_slot": role or _target_slot(item),
+        "developer_app_label": _developer_app_label(session, app_id),
+        "proxy_label": _proxy_label(session, proxy_id),
+    }
+
+
+def _standby_role(session: Session, item: TgAccountSecurityBatchItem, flow: TgLoginFlow | None, asset: TgAccountAuthorization | None) -> str:
+    if item.status == "succeeded":
+        roles = _current_standby_roles(session, item)
+        if roles:
+            return " / ".join(roles)
+    if flow and flow.authorization_role:
+        return flow.authorization_role
+    if asset and asset.role:
+        return asset.role
+    strategy = _standby_slot_strategy(session, item)
+    return strategy if strategy in {"standby_1", "standby_2"} else ""
+
+
+def _current_standby_roles(session: Session, item: TgAccountSecurityBatchItem) -> list[str]:
+    return list(
+        session.scalars(
+            select(TgAccountAuthorization.role)
+            .where(
+                TgAccountAuthorization.account_id == item.account_id,
+                TgAccountAuthorization.disabled_at.is_(None),
+                TgAccountAuthorization.role.in_(["standby_1", "standby_2"]),
+                TgAccountAuthorization.status.in_(["active", "standby"]),
+                TgAccountAuthorization.session_ciphertext != "",
+            )
+            .order_by(TgAccountAuthorization.role.asc())
+        )
+    )
+
+
+def _standby_slot_strategy(session: Session, item: TgAccountSecurityBatchItem) -> str:
+    batch = session.get(TgAccountSecurityBatch, item.batch_id)
+    if not batch:
+        return ""
+    return str(_json_dict(batch.profile_strategy).get("standby_slot_strategy") or "")
+
+
+def _latest_standby_login_flow(session: Session, item: TgAccountSecurityBatchItem) -> TgLoginFlow | None:
+    return session.scalar(
+        select(TgLoginFlow)
+        .where(
+            TgLoginFlow.account_id == item.account_id,
+            TgLoginFlow.authorization_role.in_(["standby_1", "standby_2"]),
+        )
+        .order_by(TgLoginFlow.id.desc())
+        .limit(1)
+    )
+
+
+def _latest_standby_authorization(session: Session, item: TgAccountSecurityBatchItem, role: str) -> TgAccountAuthorization | None:
+    stmt = select(TgAccountAuthorization).where(
+        TgAccountAuthorization.account_id == item.account_id,
+        TgAccountAuthorization.role.in_(["standby_1", "standby_2"]),
+    )
+    if role in {"standby_1", "standby_2"}:
+        stmt = stmt.where(TgAccountAuthorization.role == role)
+    return session.scalar(stmt.order_by(TgAccountAuthorization.id.desc()).limit(1))
+
+
+def _developer_app_label(session: Session, app_id: int | None) -> str:
+    app = session.get(TelegramDeveloperApp, app_id) if app_id else None
+    return app.app_name if app else ""
+
+
+def _proxy_label(session: Session, proxy_id: int | None) -> str:
+    proxy = session.get(AccountProxy, proxy_id) if proxy_id else None
+    return proxy.name if proxy else ""
 
 
 def _material_for_source(session: Session, source: str) -> Material | None:

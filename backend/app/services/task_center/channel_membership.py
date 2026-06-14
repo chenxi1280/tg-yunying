@@ -21,6 +21,8 @@ from .targets import group_from_reference
 ACTION_TYPE = "ensure_target_membership"
 LEGACY_ACTION_TYPE = "ensure_channel_membership"
 OPEN_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
+AI_GROUP_MEMBERSHIP_SCHEDULE_WINDOW_HOURS = 4
+AI_GROUP_MEMBERSHIP_SCHEDULE_WINDOW_SECONDS = AI_GROUP_MEMBERSHIP_SCHEDULE_WINDOW_HOURS * 3600
 HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS = 2
 HARD_HOURLY_AUTO_VERIFICATION_RETRY_SECONDS = 300
 HARD_HOURLY_MEMBERSHIP_RETRY_SECONDS = 300
@@ -79,6 +81,8 @@ def gate_channel_membership(session: Session, task: Task, channel: OperationTarg
     if created:
         stats["membership_stage"] = "membership_running"
         stats["membership_created_actions"] = int(stats.get("membership_created_actions") or 0) + created
+        if _uses_four_hour_membership_window(task, channel, require_send=require_send):
+            stats["membership_schedule_window_hours"] = AI_GROUP_MEMBERSHIP_SCHEDULE_WINDOW_HOURS
         _record_fast_tracked_memberships(stats, fast_tracked)
         task.stats = stats
         if ready_count > 0:
@@ -370,7 +374,8 @@ def _create_membership_actions_for_accounts(
     *,
     require_send: bool,
 ) -> int:
-    scheduled_times = schedule_times(len([account for account in missing if account.id not in joined_ids]), _membership_pacing_config(task))
+    pending_count = len([account for account in missing if account.id not in joined_ids])
+    scheduled_times = _membership_schedule_times(task, channel, pending_count, now_value, require_send=require_send)
     scheduled_index = 0
     created = 0
     with session.no_autoflush:
@@ -565,6 +570,32 @@ def _membership_pacing_config(task: Task) -> dict[str, Any]:
     if (config.get("mode") or "template") == "fixed":
         return config
     return {**config, "template": config.get("template") or "moderate_6h"}
+
+
+def _membership_schedule_times(
+    task: Task,
+    channel: OperationTarget,
+    pending_count: int,
+    now_value,
+    *,
+    require_send: bool,
+) -> list:
+    if _uses_four_hour_membership_window(task, channel, require_send=require_send):
+        return _four_hour_membership_schedule(pending_count, now_value)
+    return schedule_times(pending_count, _membership_pacing_config(task), start_at=now_value)
+
+
+def _uses_four_hour_membership_window(task: Task, channel: OperationTarget, *, require_send: bool) -> bool:
+    return task.type == "group_ai_chat" and channel.target_type == "group" and require_send
+
+
+def _four_hour_membership_schedule(pending_count: int, now_value) -> list:
+    if pending_count <= 0:
+        return []
+    if pending_count == 1:
+        return [now_value]
+    step_seconds = AI_GROUP_MEMBERSHIP_SCHEDULE_WINDOW_SECONDS / max(1, pending_count - 1)
+    return [now_value + timedelta(seconds=int(step_seconds * index)) for index in range(pending_count)]
 
 
 def _fast_track_hard_hourly_membership_actions(session: Session, task: Task, channel: OperationTarget) -> int:

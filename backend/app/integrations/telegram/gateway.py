@@ -530,10 +530,11 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials,
         *,
         hint: str = "platform managed",
+        current_password: str | None = None,
     ) -> AccountSecurityOperationResult:
         client = await self._authorized_client(session_ciphertext, credentials, error_message="账号没有可用 session")
         try:
-            changed = await client.edit_2fa(new_password=password, hint=hint)
+            changed = await client.edit_2fa(current_password=current_password, new_password=password, hint=hint)
         except Exception as exc:  # noqa: BLE001 - keep Telegram restriction visible.
             mapped = self._map_send_error(exc)
             detail = mapped.detail or str(exc)
@@ -548,8 +549,17 @@ class TelethonTelegramGateway(TelegramGateway):
         credentials: DeveloperAppCredentials | None = None,
         *,
         hint: str = "platform managed",
+        current_password: str | None = None,
     ) -> AccountSecurityOperationResult:
-        return self._run(self._set_two_fa_password_async(session_ciphertext, password, self._usable_credentials(credentials), hint=hint))
+        return self._run(
+            self._set_two_fa_password_async(
+                session_ciphertext,
+                password,
+                self._usable_credentials(credentials),
+                hint=hint,
+                current_password=current_password,
+            )
+        )
 
     async def _confirm_two_fa_email_async(
         self,

@@ -98,6 +98,8 @@ function statusText(value: string) {
     manual_required: '需人工处理',
     skipped: '跳过',
     pending: '待执行',
+    code_waiting: '等待验证码',
+    two_fa_waiting: '等待 2FA',
     running: '执行中',
     succeeded: '成功',
     partial_success: '部分成功',

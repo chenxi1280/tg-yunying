@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Card, Collapse, Form, Input, Modal, Select, Space, Steps, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Collapse, Form, Input, Modal, Segmented, Select, Space, Steps, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, CirclePause, CirclePlay, RefreshCcw } from 'lucide-react';
 import { api, apiWithMeta, ApiError } from '../../shared/api/client';
@@ -46,6 +46,7 @@ import {
   toDateTimeLocal,
   words,
 } from './taskCenterViewModel';
+import { buildTaskQuickGroups, filterTasksByQuickGroup } from './taskCenterListGrouping';
 import { EditBasics, TaskRuntimeAdvancedFields, WizardAccounts, WizardBasics, WizardOperationProfile, WizardReview, WizardTarget, WizardTypeConfig } from './TaskCenterWizardSections';
 import { TaskCenterDetailModal } from './TaskCenterDetailModal';
 
@@ -76,6 +77,22 @@ function HardHourlyTaskSummary({ task }: { task: TaskCenterTask }) {
         <Tag color={hardHourlyStatusColor(stats.hard_hourly_status)}>{hardHourlyStatusLabel(stats.hard_hourly_status)}</Tag>
       </Space>
     </Space>
+  );
+}
+
+function MembershipTaskSummary({ task }: { task: TaskCenterTask }) {
+  const stats = task.stats || {};
+  const ready = Number(stats.membership_joined_count ?? stats.membership_summary?.joined_account_count ?? 0);
+  const pending = Number(stats.membership_need_join_count ?? stats.membership_summary?.need_join_account_count ?? 0);
+  const failed = Number(stats.membership_failed_count ?? stats.membership_summary?.failed_account_count ?? 0);
+  const windowHours = Number(stats.membership_schedule_window_hours ?? stats.membership_summary?.schedule_window_hours ?? 0);
+  if (!ready && !pending && !failed && !windowHours) return null;
+  const windowLabel = windowHours > 0 ? `，${windowHours} 小时内排完` : '';
+  return (
+    <Typography.Text type="secondary">
+      加入账号前置任务：已可发 {ready}，待准备 {pending}，失败 {failed}
+      {windowLabel}
+    </Typography.Text>
   );
 }
 
@@ -212,6 +229,7 @@ export default function TaskCenterView({
   const [wizardStep, setWizardStep] = React.useState(0);
   const [taskType, setTaskType] = React.useState<TaskCenterTaskType>('group_ai_chat');
   const [taskTypeFilter, setTaskTypeFilter] = React.useState<TaskTypeFilter>('all');
+  const [selectedTaskGroupId, setSelectedTaskGroupId] = React.useState('all');
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
   const appliedPrefillNonce = React.useRef<number | null>(null);
@@ -1172,6 +1190,7 @@ export default function TaskCenterView({
         <Space direction="vertical" size={0}>
           <Typography.Text>{task.stats?.success_count ?? 0}/{task.stats?.total_actions ?? 0} 成功，{task.stats?.failure_count ?? 0} 失败</Typography.Text>
           <HardHourlyTaskSummary task={task} />
+          <MembershipTaskSummary task={task} />
         </Space>
       ),
     },
@@ -1387,6 +1406,15 @@ export default function TaskCenterView({
   const detailProfile = detail && !isSystemTask(detail.task) ? currentOperationProfile({ pacing_config: detail.task.pacing_config }) : null;
   const detailPlannedTotal = (detail?.stats.total_actions ?? 0) + plannedActions.length;
   const attemptDiagnosis = attemptDetail ? failureDiagnosis(attemptDetail.action) : null;
+  const taskQuickGroups = buildTaskQuickGroups(table.filteredRows);
+  const visibleTaskRows = filterTasksByQuickGroup(table.filteredRows, selectedTaskGroupId);
+  const taskQuickGroupIds = taskQuickGroups.map((group) => group.id).join('|');
+
+  React.useEffect(() => {
+    if (selectedTaskGroupId === 'all') return;
+    const exists = taskQuickGroupIds.split('|').includes(selectedTaskGroupId);
+    if (!exists) setSelectedTaskGroupId('all');
+  }, [selectedTaskGroupId, taskQuickGroupIds]);
 
   return (
     <>
@@ -1400,10 +1428,30 @@ export default function TaskCenterView({
         {actionWarning && <Alert className="form-alert" type="warning" showIcon message={actionWarning} />}
         <Space className="toolbar-row" wrap>
           <Select<TaskTypeFilter> style={{ width: 180 }} value={taskTypeFilter} options={TASK_TYPE_FILTER_OPTIONS} onChange={setTaskTypeFilter} />
+          <Typography.Text type="secondary">按目标群聊 + 关联频道</Typography.Text>
+          <Segmented
+            value={selectedTaskGroupId}
+            onChange={(value) => {
+              setSelectedTaskGroupId(String(value));
+              table.setPage(1);
+            }}
+            options={[
+              { label: `全部任务分组 ${table.filteredRows.length}`, value: 'all' },
+              ...taskQuickGroups.map((group) => ({ label: group.label, value: group.id })),
+            ]}
+          />
           {table.searchInput}
           <Button loading={loading} onClick={() => void load(taskTypeFilter)}>刷新</Button>
         </Space>
-        <Table<TaskCenterTask> className="tg-table" rowKey="id" columns={columns} dataSource={table.filteredRows} pagination={table.pagination} scroll={{ x: 1380 }} loading={loading} />
+        <Table<TaskCenterTask>
+          className="tg-table"
+          rowKey={(row) => row.id}
+          columns={columns}
+          dataSource={visibleTaskRows}
+          pagination={{ ...table.pagination, total: visibleTaskRows.length }}
+          scroll={{ x: 1380 }}
+          loading={loading}
+        />
       </Card>
 
       <Modal className="tg-modal large" title="创建任务" open={modalOpen} width={980} footer={null} destroyOnHidden centered onCancel={() => setModalOpen(false)}>

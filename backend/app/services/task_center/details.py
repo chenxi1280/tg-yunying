@@ -248,6 +248,7 @@ def _membership_phase_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
         "success_account_count": success,
         "failed_account_count": failed,
         "blocked_account_count": int(summary.get("blocked_account_count") or 0),
+        "schedule_window_hours": int(stats.get("membership_schedule_window_hours") or summary.get("schedule_window_hours") or 0),
         "estimated_finish_at": summary.get("estimated_finish_at"),
     }
 

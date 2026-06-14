@@ -209,6 +209,8 @@ def post_login_verify(
         require_resource_tenant(session, current_user, TgAccount, account_id)
         return account_out_for_user(verify_login(session, account_id, payload.code, payload.password_2fa), current_user)
     except ValueError as exc:
+        if "2FA 登录成功" in str(exc):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise not_found(str(exc)) from exc
 
 

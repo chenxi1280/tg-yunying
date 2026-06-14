@@ -1,5 +1,7 @@
 # TG 账号安全加固与资料初始化设计文档
 
+> 账号备用授权自动补齐的一期 PRD 见 `docs/account-standby-auto-authorization-prd.md`。当线上已维护备用 TG Developer App 时，账号管理仍必须以真实登录成功的 `standby_1 session` / `standby_2 session` 作为备用授权验收标准，不能把 Developer App 数量当成备用 session 数量。
+
 ## 1. 背景与目标
 
 账号登录到平台后，还需要同时解决安全加固和账号资料初始化问题：
@@ -275,6 +277,8 @@
 如 Telegram 要求 2FA，读取平台加密托管 2FA 密码
   ↓
 完成真实 Telegram 登录并保存 session_ciphertext
+  ↓
+如本次使用了 2FA，立即把 Telegram 2FA 修改为新的平台托管密码并密文保存
   ↓
 立即健康检查，成功后计入健康备用 session
 ```
@@ -727,6 +731,10 @@ frontend/src/app/views/AccountSecurityBatchDetailModal.tsx
 | 开发者应用 | 自动分配 / 手动选择；异常应用不可选 |
 | 代理 | 自动分配 / 手动选择；异常代理不可选 |
 | 2FA 使用 | 使用平台托管 2FA；未托管账号标记为需人工 |
+
+当槽位策略为“自动补齐缺失槽位”时，同一账号缺少 `standby_1` 和 `standby_2` 的，后台 worker 必须在同一个批次项内连续完成两个备用 session 的真实登录。验证码由当前主 session 自动读取和轮询，不要求运营人员手动从主应用复制验证码；只有验证码在有效期内仍不可读取、未托管 2FA、Telegram 要求 QR 或资源不可用时，才进入人工处理。
+
+当任一登录流程第一次由运营人员输入 Telegram 2FA 旧密码时，系统先用该旧密码完成真实登录并临时托管，随后立即通过 Telegram 修改为新的平台托管 2FA 密码并只保存新密码。自动补齐两个备用槽位时，如果 `standby_1` 登录后完成了 2FA 轮换，`standby_2` 必须使用刚保存的新托管密码继续登录；如果轮换失败，批次项进入 `two_fa_rotation_failed`，不能显示补齐成功。
 
 步骤三：预检和确认。
 

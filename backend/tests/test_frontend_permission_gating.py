@@ -324,7 +324,12 @@ def test_risk_control_account_quick_filter_drives_table_rows_before_pagination()
 
 def test_task_detail_membership_completion_uses_completed_at():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskMembershipPanel.tsx").read_text()
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
+    assert "加入账号前置任务" in source
+    assert "4 小时内排完" in source
+    assert "MembershipTaskSummary" in view
+    assert "加入账号前置任务" in view
     assert "完成时间" in source
     assert "dataIndex: 'completed_at'" in source
     assert "membershipPhase?.status" in source
@@ -758,6 +763,23 @@ def test_standby_session_batch_explains_zero_executable_and_current_profile_name
     assert "mode === 'standby_session' ? '账号（当前资料）' : '账号'" in drawer
 
 
+def test_standby_session_batch_labels_code_and_two_fa_waiting_states():
+    drawer = (PROJECT_ROOT / "frontend/src/app/views/AccountSecurityBatchDrawer.tsx").read_text()
+    runtime = (PROJECT_ROOT / "frontend/src/app/views/taskRuntimeStage.ts").read_text()
+    shared = (PROJECT_ROOT / "frontend/src/app/components/shared.tsx").read_text()
+    task_detail = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+
+    assert "code_waiting: '等待验证码'" in drawer
+    assert "two_fa_waiting: '等待 2FA'" in drawer
+    assert "if (value === 'code_waiting') return '等待验证码';" in runtime
+    assert "if (value === 'two_fa_waiting') return '等待 2FA';" in runtime
+    assert "'code_waiting'" in shared
+    assert "'two_fa_waiting'" in shared
+    assert "dataIndex: 'developer_app_label'" in task_detail
+    assert "dataIndex: 'proxy_label'" in task_detail
+    assert "dataIndex: 'two_fa_usage_status'" in task_detail
+
+
 def test_account_detail_has_authorization_assets_tab_with_slot_cards_and_recovery_action():
     modals = (PROJECT_ROOT / "frontend/src/app/views/AccountModals.tsx").read_text()
     assets_panel = (PROJECT_ROOT / "frontend/src/app/views/AccountAuthorizationAssetsPanel.tsx").read_text()
@@ -821,6 +843,25 @@ def test_task_center_exposes_task_type_filter_request_parameter():
     assert "account_profile_init" in source
     assert "params.set('type', nextTaskTypeFilter)" in source
     assert "api<TaskCenterTask[]>(`/tasks${query ? `?${query}` : ''}`)" in source
+
+
+def test_task_center_list_groups_by_target_group_and_channel():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    grouping = (PROJECT_ROOT / "frontend/src/app/views/taskCenterListGrouping.ts").read_text()
+
+    assert "buildTaskQuickGroups" in grouping
+    assert "filterTasksByQuickGroup" in grouping
+    assert "targetGroupLabel" in grouping
+    assert "associatedChannelLabel" in grouping
+    assert "const [selectedTaskGroupId, setSelectedTaskGroupId] = React.useState('all');" in source
+    assert "const taskQuickGroups = buildTaskQuickGroups(table.filteredRows);" in source
+    assert "const visibleTaskRows = filterTasksByQuickGroup(table.filteredRows, selectedTaskGroupId);" in source
+    assert "全部任务分组" in source
+    assert "<Segmented" in source
+    assert "dataSource={visibleTaskRows}" in source
+    assert "Table<TaskCenterTask>" in source
+    assert "目标群聊" in source
+    assert "关联频道" in source
 
 
 def test_task_center_hides_delete_for_account_security_system_tasks():

@@ -6,6 +6,7 @@ import { StatusBadge } from '../components/shared';
 import { formatDateTime, statusLabel } from './taskCenterViewModel';
 
 type MembershipFilters = { phase: string; manualRequired: string };
+const DEFAULT_MEMBERSHIP_WINDOW_LABEL = '4 小时内排完';
 
 interface TaskMembershipPanelProps {
   membershipPhase: TaskCenterDetail['membership_phase'];
@@ -41,6 +42,12 @@ function membershipPhaseLabel(phase?: string) {
     failed: '失败',
   };
   return labels[phase || ''] || phase || '-';
+}
+
+function membershipWindowLabel(membershipPhase: TaskCenterDetail['membership_phase']) {
+  const hours = Number(membershipPhase?.schedule_window_hours ?? membershipPhase?.summary?.schedule_window_hours ?? 0);
+  if (hours === 4) return DEFAULT_MEMBERSHIP_WINDOW_LABEL;
+  return hours > 0 ? `${hours} 小时内排完` : '-';
 }
 
 function needsOperatorAction(item: TaskMembershipItem) {
@@ -98,6 +105,7 @@ export function TaskMembershipPanel({
           bordered
           size="small"
           column={4}
+          title="加入账号前置任务"
           items={[
             { key: 'stage', label: '状态', children: membershipPhase?.stage || 'not_required' },
             { key: 'status', label: '子任务状态', children: membershipPhase?.status || membershipPhase?.stage || 'not_required' },
@@ -110,6 +118,7 @@ export function TaskMembershipPanel({
             { key: 'success', label: '成功/跳过', children: membershipPhase?.success_account_count ?? membershipPhase?.success_count ?? membershipPhase?.summary?.success_account_count ?? 0 },
             { key: 'blocked', label: '不可准备', children: membershipPhase?.blocked_account_count ?? 0 },
             { key: 'targets', label: '目标数', children: membershipPhase?.summary?.target_count ?? '-' },
+            { key: 'window', label: '排程窗口', children: membershipWindowLabel(membershipPhase) },
             { key: 'eta', label: '预计完成', children: formatDateTime(membershipPhase?.estimated_finish_at || membershipPhase?.summary?.estimated_finish_at) || '-' },
           ]}
         />
