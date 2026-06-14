@@ -4,174 +4,150 @@ import json
 from collections import Counter, defaultdict
 from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.models import Action, ChannelMessage, ChannelMessageComment, OperationTarget, Task
+from app.models import Action, ChannelMessage, OperationTarget, Task
 from app.services._common import _now
 
 
-SINCE = _now() - timedelta(hours=24)
+SINCE = _now() - timedelta(days=7)
+ACTION_SCAN_LIMIT = 20000
+TOP_LIMIT = 20
 
 
 def iso(value) -> str | None:
     return value.isoformat() if value else None
 
 
-def short_action(action: Action) -> dict:
+def payload_int(payload: dict, key: str) -> int:
+    raw = payload.get(key)
+    if isinstance(raw, int):
+        return raw
+    text = str(raw or "").strip()
+    return int(text) if text.isdigit() else 0
+
+
+def action_message_key(action: Action) -> tuple[int, int, int] | None:
     payload = action.payload if isinstance(action.payload, dict) else {}
-    result = action.result if isinstance(action.result, dict) else {}
+    channel_target_id = payload_int(payload, "channel_target_id")
+    channel_message_id = payload_int(payload, "channel_message_id")
+    message_id = payload_int(payload, "message_id")
+    if not channel_target_id or not (channel_message_id or message_id):
+        return None
+    return channel_target_id, channel_message_id, message_id
+
+
+def task_config(task: Task | None) -> dict:
+    config = task.type_config if task and isinstance(task.type_config, dict) else {}
     return {
-        "id": action.id,
-        "status": action.status,
-        "created_at": iso(action.created_at),
-        "scheduled_at": iso(action.scheduled_at),
-        "executed_at": iso(action.executed_at),
-        "account_id": action.account_id,
-        "channel_message_id": payload.get("channel_message_id"),
-        "message_id": payload.get("message_id"),
-        "comment_mode": payload.get("comment_mode"),
-        "reply_to_message_id": payload.get("reply_to_message_id"),
-        "reply_target_source": payload.get("reply_target_source"),
-        "reply_target_author": payload.get("reply_target_author"),
-        "reply_target_preview": str(payload.get("reply_target_preview") or "")[:80],
-        "failure_type": result.get("failure_type") or result.get("error_code"),
-        "failure_detail": str(result.get("detail") or result.get("error_message") or result.get("error") or "")[:160],
-        "telegram_msg_id": result.get("telegram_msg_id") or result.get("remote_message_id"),
-    }
-
-
-def channel_comment_stats(session, channel_target_id: int) -> dict:
-    message_rows = list(
-        session.execute(
-            select(ChannelMessage.id, ChannelMessage.message_id, ChannelMessage.comment_available)
-            .where(ChannelMessage.channel_target_id == channel_target_id)
-            .order_by(ChannelMessage.id.desc())
-            .limit(30)
-        )
-    )
-    if not message_rows:
-        return {"message_count_sample": 0, "comment_total": 0, "per_message_sample": []}
-    message_ids = [row.id for row in message_rows]
-    counts = dict(
-        session.execute(
-            select(ChannelMessageComment.channel_message_id, func.count(ChannelMessageComment.id))
-            .where(ChannelMessageComment.channel_message_id.in_(message_ids))
-            .group_by(ChannelMessageComment.channel_message_id)
-        ).all()
-    )
-    total = session.scalar(
-        select(func.count(ChannelMessageComment.id)).where(ChannelMessageComment.channel_target_id == channel_target_id)
-    ) or 0
-    return {
-        "message_count_sample": len(message_rows),
-        "comment_total": int(total),
-        "per_message_sample": [
-            {
-                "channel_message_id": row.id,
-                "message_id": row.message_id,
-                "comment_available": bool(row.comment_available),
-                "reference_count": int(counts.get(row.id) or 0),
-            }
-            for row in message_rows[:12]
-        ],
-    }
-
-
-def action_summary(actions: list[Action]) -> dict:
-    status_counts = Counter(action.status for action in actions)
-    reply_count = sum(1 for action in actions if (action.payload or {}).get("reply_to_message_id"))
-    mode_counts = Counter(str((action.payload or {}).get("comment_mode") or "") for action in actions)
-    by_message: dict[int, Counter] = defaultdict(Counter)
-    for action in actions:
-        payload = action.payload if isinstance(action.payload, dict) else {}
-        channel_message_id = int(payload.get("channel_message_id") or 0)
-        if channel_message_id:
-            by_message[channel_message_id]["total"] += 1
-            if payload.get("reply_to_message_id"):
-                by_message[channel_message_id]["reply"] += 1
-    return {
-        "total": len(actions),
-        "reply": reply_count,
-        "direct": len(actions) - reply_count,
-        "status_counts": dict(status_counts),
-        "comment_mode_counts": dict(mode_counts),
-        "by_message": {str(key): dict(value) for key, value in sorted(by_message.items())[:20]},
+        "name": task.name if task else "",
+        "status": task.status if task else "",
+        "target_comments_per_message": config.get("target_comments_per_message"),
+        "comment_count_jitter": config.get("comment_count_jitter"),
+        "message_scope": config.get("message_scope"),
+        "message_count": config.get("message_count"),
+        "deleted_at": iso(task.deleted_at) if task else None,
     }
 
 
 def main() -> None:
     with SessionLocal() as session:
-        tasks = list(
+        actions = list(
             session.scalars(
-                select(Task)
-                .where(Task.type == "channel_comment", Task.deleted_at.is_(None))
-                .order_by(Task.updated_at.desc())
-                .limit(10)
+                select(Action)
+                .where(Action.action_type == "post_comment", Action.task_type == "channel_comment", Action.created_at >= SINCE)
+                .order_by(Action.created_at.desc())
+                .limit(ACTION_SCAN_LIMIT)
             )
         )
-        output = []
-        for task in tasks:
+        tasks = {task.id: task for task in session.scalars(select(Task).where(Task.type == "channel_comment"))}
+        grouped: dict[tuple[int, int, int], dict] = {}
+        for action in actions:
+            key = action_message_key(action)
+            if key is None:
+                continue
+            bucket = grouped.setdefault(
+                key,
+                {
+                    "total": 0,
+                    "status_counts": Counter(),
+                    "task_counts": Counter(),
+                    "task_status_counts": defaultdict(Counter),
+                    "first_created_at": iso(action.created_at),
+                    "last_created_at": iso(action.created_at),
+                    "last_executed_at": iso(action.executed_at),
+                },
+            )
+            bucket["total"] += 1
+            bucket["status_counts"][action.status] += 1
+            bucket["task_counts"][action.task_id] += 1
+            bucket["task_status_counts"][action.task_id][action.status] += 1
+            created_at = iso(action.created_at)
+            executed_at = iso(action.executed_at)
+            if created_at and (not bucket["first_created_at"] or created_at < bucket["first_created_at"]):
+                bucket["first_created_at"] = created_at
+            if created_at and (not bucket["last_created_at"] or created_at > bucket["last_created_at"]):
+                bucket["last_created_at"] = created_at
+            if executed_at and (not bucket["last_executed_at"] or executed_at > bucket["last_executed_at"]):
+                bucket["last_executed_at"] = executed_at
+
+        overages = []
+        for key, bucket in sorted(grouped.items(), key=lambda item: item[1]["total"], reverse=True)[:TOP_LIMIT]:
+            channel_target_id, channel_message_id, message_id = key
+            channel = session.get(OperationTarget, channel_target_id)
+            message = session.get(ChannelMessage, channel_message_id) if channel_message_id else None
+            task_breakdown = []
+            for task_id, count in bucket["task_counts"].most_common(8):
+                task_breakdown.append(
+                    {
+                        "task_id": task_id,
+                        "count": count,
+                        "status_counts": dict(bucket["task_status_counts"][task_id]),
+                        "config": task_config(tasks.get(task_id)),
+                    }
+                )
+            overages.append(
+                {
+                    "channel_target_id": channel_target_id,
+                    "channel_title": channel.title if channel else "",
+                    "channel_message_id": channel_message_id,
+                    "message_id": message.message_id if message else message_id,
+                    "message_comment_available": bool(message.comment_available) if message else None,
+                    "total_actions_7d": bucket["total"],
+                    "status_counts": dict(bucket["status_counts"]),
+                    "task_count": len(bucket["task_counts"]),
+                    "task_breakdown": task_breakdown,
+                    "first_created_at": bucket["first_created_at"],
+                    "last_created_at": bucket["last_created_at"],
+                    "last_executed_at": bucket["last_executed_at"],
+                }
+            )
+
+        active_tasks = []
+        for task in sorted(tasks.values(), key=lambda item: item.updated_at or item.created_at, reverse=True)[:20]:
             config = task.type_config if isinstance(task.type_config, dict) else {}
-            stats = task.stats if isinstance(task.stats, dict) else {}
-            channel_target_id = int(config.get("target_channel_id") or 0)
-            channel = session.get(OperationTarget, channel_target_id) if channel_target_id else None
-            recent_actions = list(
-                session.scalars(
-                    select(Action)
-                    .where(
-                        Action.task_id == task.id,
-                        Action.action_type == "post_comment",
-                        Action.created_at >= SINCE,
-                    )
-                    .order_by(Action.created_at.desc())
-                    .limit(300)
-                )
-            )
-            all_recent = list(
-                session.scalars(
-                    select(Action)
-                    .where(Action.task_id == task.id, Action.action_type == "post_comment")
-                    .order_by(Action.created_at.desc())
-                    .limit(300)
-                )
-            )
-            output.append(
+            active_tasks.append(
                 {
                     "task_id": task.id,
                     "name": task.name,
                     "status": task.status,
-                    "last_error": task.last_error,
-                    "next_run_at": iso(task.next_run_at),
+                    "deleted": bool(task.deleted_at),
                     "updated_at": iso(task.updated_at),
-                    "target_channel_id": channel_target_id,
-                    "target_channel_title": channel.title if channel else "",
-                    "config": {
-                        "target_comments_per_message": config.get("target_comments_per_message"),
-                        "reply_min_per_message": config.get("reply_min_per_message"),
-                        "comment_mode": config.get("comment_mode"),
-                        "reply_to_message_ids": config.get("reply_to_message_ids"),
-                        "message_scope": config.get("message_scope"),
-                        "message_count": config.get("message_count"),
-                        "message_ids": config.get("message_ids"),
-                    },
-                    "stats": {
-                        "reply_planned_count": stats.get("reply_planned_count"),
-                        "reply_target_shortfall_count": stats.get("reply_target_shortfall_count"),
-                        "reply_candidate_shortfall_count": stats.get("reply_candidate_shortfall_count"),
-                        "reply_success_count": stats.get("reply_success_count"),
-                        "reply_failure_count": stats.get("reply_failure_count"),
-                        "reply_payload_error_count": stats.get("reply_payload_error_count"),
-                        "telegram_reply_failure_count": stats.get("telegram_reply_failure_count"),
-                        "last_reply_failure_type": stats.get("last_reply_failure_type"),
-                    },
-                    "recent_24h_actions": action_summary(recent_actions),
-                    "latest_actions": action_summary(all_recent),
-                    "latest_samples": [short_action(action) for action in all_recent[:20]],
-                    "comment_reference_pool": channel_comment_stats(session, channel_target_id) if channel_target_id else {},
+                    "target_channel_id": config.get("target_channel_id"),
+                    "target_comments_per_message": config.get("target_comments_per_message"),
+                    "comment_count_jitter": config.get("comment_count_jitter"),
+                    "message_scope": config.get("message_scope"),
+                    "message_count": config.get("message_count"),
                 }
             )
-        print("COMMENT_REPLY_INVESTIGATION", json.dumps(output, ensure_ascii=False), flush=True)
+        output = {
+            "scanned_actions": len(actions),
+            "since": iso(SINCE),
+            "overage_candidates": overages,
+            "recent_channel_comment_tasks": active_tasks,
+        }
+        print("COMMENT_LIMIT_INVESTIGATION", json.dumps(output, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":
