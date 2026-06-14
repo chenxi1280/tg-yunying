@@ -88,6 +88,14 @@ def test_group_send_verification_classifies_arithmetic_captcha_as_reply() -> Non
     assert dispatcher._group_send_verification_action("请先关注 @alpha @beta 后输入 3+5") == "发送验证回复"
 
 
+def test_group_send_verification_prioritizes_button_channel_follow() -> None:
+    detail = "群无权限或账号不可发言：学院助手：您需要关注我们的频道才能发言。 [按钮：天津音乐学院车库备用 (https://t.me/qiyue201)]"
+
+    assert dispatcher._group_send_verification_action(detail) == "关注频道"
+    assert dispatcher._group_send_verification_action("群无权限或账号不可发言：需要点击按钮完成验证") == "点击按钮"
+    assert dispatcher._group_send_verification_action("群无权限或账号不可发言") == "识别图形验证码"
+
+
 def test_group_send_permission_follows_multiple_required_channels(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

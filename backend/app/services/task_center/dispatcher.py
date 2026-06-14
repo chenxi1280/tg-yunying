@@ -1470,16 +1470,16 @@ def _group_send_verification_action(detail: str) -> str:
     normalized = str(detail or "").lower()
     if any(marker.lower() in normalized for marker in _GROUP_SEND_IMAGE_VERIFICATION_MARKERS):
         return "识别图形验证码"
-    if any(marker.lower() in normalized for marker in _GROUP_SEND_RETRYABLE_VERIFICATION_MARKERS):
-        return "识别图形验证码"
-    if any(marker.lower() in normalized for marker in _GROUP_SEND_BUTTON_VERIFICATION_MARKERS):
-        return "点击按钮"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_REPLY_VERIFICATION_MARKERS):
         return "发送验证回复"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_TEXT_VERIFICATION_MARKERS):
         return "发送验证回复"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS):
         return "关注频道"
+    if any(marker.lower() in normalized for marker in _GROUP_SEND_BUTTON_VERIFICATION_MARKERS):
+        return "点击按钮"
+    if any(marker.lower() in normalized for marker in _GROUP_SEND_RETRYABLE_VERIFICATION_MARKERS):
+        return "识别图形验证码"
     return "人工处理"
 
 
