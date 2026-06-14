@@ -14,6 +14,7 @@ from app.services._common import _now
 SINCE = _now() - timedelta(days=7)
 ACTION_SCAN_LIMIT = 20000
 TOP_LIMIT = 20
+STATUS_COUNTED_BY_PLANNER = {"pending", "executing", "success", "failed"}
 
 
 def iso(value) -> str | None:
@@ -36,6 +37,31 @@ def action_message_key(action: Action) -> tuple[int, int, int] | None:
     if not channel_target_id or not (channel_message_id or message_id):
         return None
     return channel_target_id, channel_message_id, message_id
+
+
+def code_would_count(action: Action, message: ChannelMessage | None) -> bool:
+    if not message or action.status not in STATUS_COUNTED_BY_PLANNER:
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return payload.get("channel_message_id") == message.id or payload.get("message_id") == message.message_id
+
+
+def normalized_would_count(action: Action, message: ChannelMessage | None) -> bool:
+    if not message or action.status not in STATUS_COUNTED_BY_PLANNER:
+        return False
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return payload_int(payload, "channel_message_id") == message.id or payload_int(payload, "message_id") == message.message_id
+
+
+def payload_type_sample(action: Action) -> dict:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return {
+        "status": action.status,
+        "channel_message_id": payload.get("channel_message_id"),
+        "channel_message_id_type": type(payload.get("channel_message_id")).__name__,
+        "message_id": payload.get("message_id"),
+        "message_id_type": type(payload.get("message_id")).__name__,
+    }
 
 
 def task_config(task: Task | None) -> dict:
@@ -97,6 +123,11 @@ def main() -> None:
             channel_target_id, channel_message_id, message_id = key
             channel = session.get(OperationTarget, channel_target_id)
             message = session.get(ChannelMessage, channel_message_id) if channel_message_id else None
+            related_actions = [
+                action
+                for action in actions
+                if action_message_key(action) == key
+            ]
             task_breakdown = []
             for task_id, count in bucket["task_counts"].most_common(8):
                 task_breakdown.append(
@@ -115,9 +146,12 @@ def main() -> None:
                     "message_id": message.message_id if message else message_id,
                     "message_comment_available": bool(message.comment_available) if message else None,
                     "total_actions_7d": bucket["total"],
+                    "planner_exact_count_7d": sum(1 for action in related_actions if code_would_count(action, message)),
+                    "planner_normalized_count_7d": sum(1 for action in related_actions if normalized_would_count(action, message)),
                     "status_counts": dict(bucket["status_counts"]),
                     "task_count": len(bucket["task_counts"]),
                     "task_breakdown": task_breakdown,
+                    "payload_type_samples": [payload_type_sample(action) for action in related_actions[:5]],
                     "first_created_at": bucket["first_created_at"],
                     "last_created_at": bucket["last_created_at"],
                     "last_executed_at": bucket["last_executed_at"],
