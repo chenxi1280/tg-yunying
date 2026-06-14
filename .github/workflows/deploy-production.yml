@@ -483,9 +483,34 @@ jobs:
                           .limit(20)
                       )
                   ]
+                  recent_failed_membership_actions = [
+                      {
+                          'id': action.id,
+                          'action_type': action.action_type,
+                          'status': action.status,
+                          'account_id': action.account_id,
+                          'scheduled_at': iso(action.scheduled_at),
+                          'executed_at': iso(action.executed_at),
+                          'retry_count': int(action.retry_count or 0),
+                          'error_code': (action.result or {}).get('error_code'),
+                          'error_message': str((action.result or {}).get('error_message') or '')[:300],
+                          'membership_status': (action.result or {}).get('membership_status'),
+                          'reactivated_reason': (action.result or {}).get('reactivated_reason'),
+                          'validation_stage': (action.result or {}).get('validation_stage'),
+                          'verification_task_id': (action.result or {}).get('verification_task_id'),
+                      }
+                      for action in session.scalars(
+                          select(Action)
+                          .where(Action.task_id == task.id, Action.action_type.in_(('ensure_target_membership', 'ensure_channel_membership')))
+                          .where(Action.scheduled_at >= inspection_since)
+                          .where(Action.status.in_(('failed', 'skipped', 'unknown_after_send')))
+                          .order_by(Action.executed_at.desc().nullslast(), Action.scheduled_at.desc(), Action.created_at.desc())
+                          .limit(20)
+                      )
+                  ]
                   membership_account_ids = [
                       int(action['account_id'])
-                      for action in recent_membership_actions
+                      for action in [*recent_membership_actions, *recent_failed_membership_actions]
                       if action.get('account_id') is not None
                   ]
                   recent_verification_tasks = [
@@ -546,6 +571,7 @@ jobs:
                       'type_status_counts': type_status_counts,
                       'recent_send_actions': recent_send_actions,
                       'recent_membership_actions': recent_membership_actions,
+                      'recent_failed_membership_actions': recent_failed_membership_actions,
                       'recent_verification_tasks': recent_verification_tasks,
                       'messages_per_round_mode': config.get('messages_per_round_mode'),
                       'messages_per_round': config.get('messages_per_round'),
