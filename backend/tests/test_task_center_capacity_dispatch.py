@@ -1121,6 +1121,72 @@ def test_target_membership_classifies_frozen_account_as_unavailable(monkeypatch)
         assert account.health_score <= 20
 
 
+def test_hard_hourly_membership_claim_bypasses_send_capacity_policy():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="准入号", phone_masked="+861***0011", status="在线"))
+        session.add(
+            Task(
+                id="task-hard-membership-policy",
+                tenant_id=1,
+                name="硬目标准入",
+                type="group_ai_chat",
+                status="running",
+                type_config={
+                    "hard_hourly_target_enabled": True,
+                    "hourly_min_messages": 300,
+                },
+            )
+        )
+        session.add(
+            Action(
+                id="action-prior-send",
+                tenant_id=1,
+                task_id="task-hard-membership-policy",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                status="success",
+                scheduled_at=now_value,
+                executed_at=now_value,
+                payload={"message_text": "上一条"},
+            )
+        )
+        session.add(
+            Action(
+                id="action-hard-membership",
+                tenant_id=1,
+                task_id="task-hard-membership-policy",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={
+                    "channel_id": "-10021",
+                    "channel_target_id": 21,
+                    "target_type": "group",
+                    "target_display": "目标群",
+                    "require_send": True,
+                },
+                result={},
+            )
+        )
+        session.commit()
+
+        action = session.get(Action, "action-hard-membership")
+        assert dispatcher._apply_claim_account_policy(session, action) is True
+
+        assert action.status == "pending"
+        assert action.scheduled_at == now_value
+        assert action.result == {}
+
+
 def test_target_membership_skips_when_joined_probe_still_cannot_send(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

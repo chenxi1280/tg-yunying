@@ -395,6 +395,8 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
         }
         action.account_id = replacement.id
         return True
+    if _is_hard_hourly_membership_action(session, action):
+        return True
     decision = account_capacity_decision(
         session,
         tenant_id=action.tenant_id,
@@ -428,6 +430,19 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
 
 def _is_membership_action(action: Action) -> bool:
     return action.action_type in MEMBERSHIP_ACTION_TYPES
+
+
+def _is_hard_hourly_membership_action(session: Session, action: Action) -> bool:
+    if not _is_membership_action(action):
+        return False
+    task = session.get(Task, action.task_id) if action.task_id else None
+    config = task.type_config if task and isinstance(task.type_config, dict) else {}
+    return (
+        task is not None
+        and task.type == "group_ai_chat"
+        and bool(config.get("hard_hourly_target_enabled"))
+        and int(config.get("hourly_min_messages") or 0) > 0
+    )
 
 
 def _replacement_for_lost_group_send_permission(session: Session, action: Action, account: TgAccount) -> TgAccount | None:
@@ -1683,6 +1698,8 @@ def _defer(action: Action, scheduled_at, code: str, detail: str) -> None:
 
 
 def _account_after_global_policy(session: Session, action: Action, account: TgAccount, *, allow_reassign: bool = True) -> TgAccount | None:
+    if _is_hard_hourly_membership_action(session, action):
+        return account
     decision = account_capacity_decision(
         session,
         tenant_id=action.tenant_id,
