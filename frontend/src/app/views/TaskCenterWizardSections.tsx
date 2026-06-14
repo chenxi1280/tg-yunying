@@ -122,7 +122,7 @@ export function WizardTypeConfig({
       validator(_: unknown, value: number | null) {
         if (!getFieldValue('hard_hourly_target_enabled')) return Promise.resolve();
         if (Number.isInteger(Number(value)) && Number(value) >= GROUP_AI_HARD_HOURLY_MIN_MESSAGES) return Promise.resolve();
-        return Promise.reject(new Error('开启后必须填写不小于 300 的整数'));
+        return Promise.reject(new Error('开启后必须填写不小于 60 的整数'));
       },
     }),
   ];

@@ -34,7 +34,7 @@ export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
 };
 
 export const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号与节奏', '预检确认'];
-export const GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 300;
+export const GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 60;
 
 export const OPERATION_PROFILE_TEMPLATES = [
   { value: 'natural_full_day', label: '全天自然活跃', curve: [2, 2, 1, 1, 0, 0, 1, 2, 4, 5, 6, 6, 5, 4, 6, 7, 8, 9, 10, 10, 8, 6, 4, 3] },

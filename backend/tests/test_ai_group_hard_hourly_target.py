@@ -56,6 +56,15 @@ def _load_hard_target_migration():
     return module
 
 
+def _load_hard_target_60_migration():
+    migration_path = Path(__file__).resolve().parents[1] / "migrations" / "versions" / "0059_ai_group_hard_target_60.py"
+    spec = importlib.util.spec_from_file_location("migration_0059_ai_group_hard_target_60", migration_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_group_ai_chat_create_persists_hard_hourly_target_config():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -112,6 +121,33 @@ def test_ai_group_hard_target_migration_repairs_target_and_stale_stats():
     assert "hard_hourly_next_check_at" not in stats
 
 
+def test_ai_group_hard_target_60_migration_lowers_only_old_default():
+    migration = _load_hard_target_60_migration()
+    current_time = datetime(2026, 6, 14, 12, 0)
+
+    values = migration._task_update_values(
+        {"hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+        {
+            "hard_hourly_goal": 300,
+            "hard_hourly_deficit": 240,
+            "hard_hourly_next_check_at": "2026-06-14T12:01:00",
+            "hard_hourly_status": "catching_up",
+        },
+        current_time,
+    )
+    manual_values = migration._task_update_values(
+        {"hard_hourly_target_enabled": True, "hourly_min_messages": 360},
+        {"hard_hourly_goal": 360},
+        current_time,
+    )
+
+    assert values["type_config"]["hourly_min_messages"] == 60
+    assert values["stats"]["hard_hourly_goal"] == 60
+    assert "hard_hourly_deficit" not in values["stats"]
+    assert "hard_hourly_next_check_at" not in values["stats"]
+    assert manual_values is None
+
+
 def test_ai_group_task_list_prefers_authoritative_target_title():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -151,16 +187,16 @@ def test_group_ai_chat_create_rejects_disabled_or_low_hard_hourly_target():
             target_group_id=7,
             hard_hourly_target_enabled=False,
         )
-    with pytest.raises(ValueError, match="不能低于 300"):
+    with pytest.raises(ValueError, match="不能低于 60"):
         GroupAIChatTaskCreate(
             name="低硬目标",
             target_group_id=7,
             hard_hourly_target_enabled=True,
-            hourly_min_messages=299,
+            hourly_min_messages=59,
         )
 
 
-def test_group_ai_chat_create_defaults_to_hard_hourly_target_300():
+def test_group_ai_chat_create_defaults_to_hard_hourly_target_60():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -176,7 +212,7 @@ def test_group_ai_chat_create_defaults_to_hard_hourly_target_300():
         )
 
     assert task.type_config["hard_hourly_target_enabled"] is True
-    assert task.type_config["hourly_min_messages"] == 300
+    assert task.type_config["hourly_min_messages"] == 60
     assert task.type_config["hard_hourly_strategy"] == "force_planning"
 
 

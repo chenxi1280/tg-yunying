@@ -1016,7 +1016,8 @@ def _recover_group_send_permission_with_linked_channel(
     if not followed.ok:
         return OperationResult(False, "失败", followed.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, followed.detail or detail)
     if retry_target_membership:
-        refreshed = _retry_target_membership_after_required_channel(action, account, credentials, payload)
+        ctx = MembershipDispatchContext(session, action, account, credentials, payload, None)
+        refreshed = _retry_target_membership_after_required_channel(ctx)
         if not refreshed.ok:
             return refreshed
     reprobe = gateway.probe_target_capabilities(account.id, payload.channel_id, payload.target_type, account.session_ciphertext, credentials)
@@ -1042,7 +1043,8 @@ def _follow_required_channels_and_reprobe(
             detail = followed.detail or followed.failure_type or probe_result.detail
             return OperationResult(False, "失败", followed.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, detail)
     if retry_target_membership:
-        refreshed = _retry_target_membership_after_required_channel(action, account, credentials, payload)
+        ctx = MembershipDispatchContext(session, action, account, credentials, payload, None)
+        refreshed = _retry_target_membership_after_required_channel(ctx)
         if not refreshed.ok:
             return refreshed
     reprobe = gateway.probe_target_capabilities(account.id, payload.channel_id, payload.target_type, account.session_ciphertext, credentials)
@@ -1053,23 +1055,13 @@ def _follow_required_channels_and_reprobe(
     return OperationResult(False, "失败", reprobe.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, detail)
 
 
-def _retry_target_membership_after_required_channel(
-    action: Action,
-    account: TgAccount,
-    credentials,
-    payload: EnsureChannelMembershipPayload,
-):
-    if action.action_type not in MEMBERSHIP_ACTION_TYPES:
+def _retry_target_membership_after_required_channel(ctx: MembershipDispatchContext):
+    if ctx.action.action_type not in MEMBERSHIP_ACTION_TYPES:
         return OperationResult(True, detail="send_action_no_target_membership_retry")
-    result = gateway.ensure_channel_membership(
-        account.id,
-        payload.channel_id,
-        account.session_ciphertext,
-        credentials,
-        invite_link=_membership_invite_for_ref(payload, payload.channel_id),
-    )
+    result, joined_payload, fallback_ref = _ensure_membership_with_peer_candidates(ctx)
+    _record_membership_peer_ref(ctx.action, joined_payload, fallback_ref)
     if result.ok:
-        action.result = {**(action.result or {}), "target_membership_retried_after_required_channel": True}
+        ctx.action.result = {**(ctx.action.result or {}), "target_membership_retried_after_required_channel": True}
         return OperationResult(True, detail=result.detail or "target_membership_retried")
     detail = result.detail or result.failure_type or "关注必需频道后仍无法加入目标群"
     return OperationResult(False, "失败", result.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, detail)
@@ -1848,24 +1840,19 @@ def _ensure_channel_action_membership(session: Session, action: Action, account:
         return _ensure_post_comment_membership(session, action, account, channel)
     if channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel" and account_satisfies_authorized_target(channel, account):
         return True
-    group = (
-        session.scalar(select(TgGroup).where(TgGroup.tenant_id == action.tenant_id, TgGroup.tg_peer_id == channel.tg_peer_id))
-        if channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel"
-        else None
-    )
-    link = (
-        session.scalar(
-            select(TgGroupAccount).where(
-                TgGroupAccount.tenant_id == action.tenant_id,
-                TgGroupAccount.group_id == group.id,
-                TgGroupAccount.account_id == account.id,
-            )
-        )
-        if group
-        else None
-    )
-    if link:
+    if _channel_action_has_membership_link(session, action, account, channel):
         return True
+    if action.action_type == "like_message" and channel and channel.tenant_id == action.tenant_id and channel.target_type == "channel":
+        _defer_channel_action_for_membership(
+            session,
+            action,
+            account,
+            channel,
+            "账号未关注目标频道，等待准入后继续点赞",
+            error_code="channel_membership_required",
+            require_send=False,
+        )
+        return False
     _fail_with_policy(
         action,
         FailureType.ACCOUNT_UNAVAILABLE.value,
@@ -1874,6 +1861,18 @@ def _ensure_channel_action_membership(session: Session, action: Action, account:
         validation_stage="account_channel_membership",
     )
     return False
+
+
+def _channel_action_has_membership_link(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    channel: OperationTarget | None,
+) -> bool:
+    if not channel or channel.tenant_id != action.tenant_id or channel.target_type != "channel":
+        return False
+    group = session.scalar(select(TgGroup).where(TgGroup.tenant_id == action.tenant_id, TgGroup.tg_peer_id == channel.tg_peer_id))
+    return bool(group and _channel_account_link(session, action.tenant_id, group.id, account.id))
 
 
 def _ensure_post_comment_membership(session: Session, action: Action, account: TgAccount, channel: OperationTarget | None) -> bool:
@@ -1892,18 +1891,45 @@ def _ensure_post_comment_membership(session: Session, action: Action, account: T
 
 
 def _defer_comment_for_membership(session: Session, action: Action, account: TgAccount, channel: OperationTarget, detail: str) -> None:
+    _defer_channel_action_for_membership(
+        session,
+        action,
+        account,
+        channel,
+        detail,
+        error_code="comment_membership_required",
+        require_send=True,
+    )
+
+
+def _defer_channel_action_for_membership(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    channel: OperationTarget,
+    detail: str,
+    *,
+    error_code: str,
+    require_send: bool,
+) -> None:
     task = session.get(Task, action.task_id)
-    if task and not _open_comment_membership_action(session, action, account.id, channel.id):
-        create_membership_action(session, task, account.id, _now(), _comment_membership_payload(channel))
+    if task and not _open_channel_membership_action(session, action, account.id, channel.id):
+        create_membership_action(session, task, account.id, _now(), _channel_membership_payload(channel, require_send=require_send))
     action.status = "pending"
     action.scheduled_at = _now() + _COMMENT_MEMBERSHIP_RETRY_DELAY
     action.executed_at = None
     _clear_action_lease(action)
-    action.result = {"success": False, "error_code": "comment_membership_required", "error_message": detail, "auto_check": "等待准入", "validation_stage": "account_channel_membership"}
+    action.result = {
+        "success": False,
+        "error_code": error_code,
+        "error_message": detail,
+        "auto_check": "等待准入",
+        "validation_stage": "account_channel_membership",
+    }
     _release_runtime_resources(action)
 
 
-def _open_comment_membership_action(session: Session, action: Action, account_id: int, channel_target_id: int) -> Action | None:
+def _open_channel_membership_action(session: Session, action: Action, account_id: int, channel_target_id: int) -> Action | None:
     return session.scalar(
         select(Action).where(
             Action.tenant_id == action.tenant_id,
@@ -1916,7 +1942,7 @@ def _open_comment_membership_action(session: Session, action: Action, account_id
     )
 
 
-def _comment_membership_payload(channel: OperationTarget) -> EnsureChannelMembershipPayload:
+def _channel_membership_payload(channel: OperationTarget, *, require_send: bool) -> EnsureChannelMembershipPayload:
     return EnsureChannelMembershipPayload(
         channel_id=channel.tg_peer_id,
         channel_target_id=channel.id,
@@ -1924,7 +1950,7 @@ def _comment_membership_payload(channel: OperationTarget) -> EnsureChannelMember
         target_display=channel.title,
         target_username=channel.username or "",
         invite_link=channel.username or channel.tg_peer_id,
-        require_send=True,
+        require_send=require_send,
     )
 
 

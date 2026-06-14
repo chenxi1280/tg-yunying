@@ -502,6 +502,76 @@ def test_channel_main_action_runtime_guard_blocks_unjoined_account(monkeypatch):
         assert action.result["validation_stage"] == "account_channel_membership"
 
 
+def _add_unjoined_like_action(session: Session, now_value) -> Action:
+    session.add(Tenant(id=1, name="默认运营空间"))
+    session.flush()
+    session.add(TgAccount(id=32, tenant_id=1, display_name="未关注点赞账号", phone_masked="+861***0032", status="在线"))
+    session.add(
+        OperationTarget(
+            id=532,
+            tenant_id=1,
+            target_type="channel",
+            tg_peer_id="like-guard-channel",
+            title="点赞前置频道",
+            username="like_guard",
+            auth_status="已授权运营",
+            can_send=False,
+        )
+    )
+    task = Task(
+        id="task-like-runtime-guard",
+        tenant_id=1,
+        name="like runtime guard",
+        type="channel_like",
+        status="running",
+        account_config={},
+        pacing_config={},
+        failure_policy={},
+    )
+    session.add(task)
+    session.flush()
+    action = Action(
+        id="action-like-runtime-guard",
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="like_message",
+        account_id=32,
+        status="pending",
+        scheduled_at=now_value,
+        payload={
+            "channel_id": "like-guard-channel",
+            "channel_target_id": 532,
+            "message_id": 1,
+            "reaction_emoji": "👍",
+        },
+    )
+    session.add(action)
+    session.commit()
+    return action
+
+
+def test_channel_like_runtime_guard_defers_until_membership(monkeypatch):
+    engine = _engine()
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "send_channel_reaction",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unjoined account must not reach gateway")),
+    )
+
+    with Session(engine) as session:
+        action = _add_unjoined_like_action(session, _now())
+        dispatch_action(session, action)
+        membership_action = session.query(Action).filter(Action.action_type == "ensure_target_membership").one()
+        assert action.status == "pending"
+        assert action.result["error_code"] == "channel_membership_required"
+        assert action.result["validation_stage"] == "account_channel_membership"
+        assert membership_action.account_id == 32
+        assert membership_action.payload["channel_target_id"] == 532
+        assert membership_action.payload["require_send"] is False
+
+
 def test_legacy_channel_attempt_runtime_guard_blocks_unjoined_account():
     engine = _engine()
 

@@ -13,7 +13,7 @@ TaskTypeValue = Literal["group_ai_chat", "group_relay", "channel_view", "channel
 TaskStatusValue = Literal["draft", "pending", "running", "paused", "target_reached", "wrapping_up", "completed", "stopped", "failed", "deleted"]
 ActionStatusValue = Literal["pending", "executing", "success", "failed", "skipped"]
 ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
-GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 300
+GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 60
 
 
 class QuietHours(BaseModel):
@@ -208,7 +208,7 @@ class GroupAIChatConfig(BaseModel):
         if not self.hourly_min_messages:
             raise ValueError("AI 活跃群必须填写每小时最低发送量")
         if self.hourly_min_messages < GROUP_AI_HARD_HOURLY_MIN_MESSAGES:
-            raise ValueError("AI 活跃群每小时最低发送量不能低于 300")
+            raise ValueError("AI 活跃群每小时最低发送量不能低于 60")
         return self
 
 

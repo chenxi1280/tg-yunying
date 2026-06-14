@@ -380,15 +380,15 @@ master -> release -> push release -> GitHub Actions Deploy Production
 配置：
 
 ```text
-hourly_min_messages = 3
-账号数量 >= 3
+hourly_min_messages = 60
+账号数量 >= 60
 目标群可发送
 ```
 
 预期：
 
-- 当前小时不足 3 条时自动补量。
-- 成功达到 3 条后停止硬目标补量。
+- 当前小时不足 60 条时自动补量。
+- 成功达到 60 条后停止硬目标补量。
 - 任务 stats 显示 `met`。
 
 ### 9.2 高目标不可达场景
@@ -475,7 +475,7 @@ hourly_min_messages = 10
 
 ```text
 目标群需要验证码 / 加减验证 / 关注多个频道
-hourly_min_messages = 3
+hourly_min_messages = 60
 ```
 
 预期：
@@ -492,7 +492,7 @@ hourly_min_messages = 3
 配置：
 
 ```text
-hourly_min_messages = 3
+hourly_min_messages = 60
 目标群已 can_send
 MiMo/Mino Provider 健康
 ```
