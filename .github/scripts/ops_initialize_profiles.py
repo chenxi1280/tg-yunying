@@ -2,22 +2,18 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from collections import Counter
 
 from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.models import AccountStatus, Tenant, TgAccount
-from app.schemas.account_security import AccountSecurityRetryRequest
-from app.services.account_security import account_security_batch_detail, drain_account_security_batches, retry_account_security_batch
+from app.services.account_security import account_security_batch_detail
 
 
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
-ACTOR = "codex-prod-profile-init-20260614"
 TENANT_ID = 1
 BATCH_IDS = [18, 19]
-MAX_IDLE_ROUNDS = 3
 
 
 def has_cjk(value: str | None) -> bool:
@@ -68,7 +64,7 @@ def batch_rows(session) -> list[dict]:
                 "next_retry_at": item.next_retry_at.isoformat() if item.next_retry_at else None,
             }
             for item in detail.items
-            if item.status in {"failed", "partial_success", "waiting", "running"}
+            if item.status in {"failed", "partial_success", "waiting", "running", "pending"}
         ]
         rows.append(
             {
@@ -80,7 +76,7 @@ def batch_rows(session) -> list[dict]:
                 "failed": detail.failed_count,
                 "item_statuses": dict(item_statuses),
                 "failure_types": dict(failure_types),
-                "attention_items": attention_items[:30],
+                "attention_items": attention_items[:80],
             }
         )
     return rows
@@ -98,8 +94,10 @@ def print_remaining(session) -> int:
             )
         )
         remaining = [account for account in accounts if needs_initialization(account)]
+        online_remaining = [account for account in remaining if account.status == AccountStatus.ACTIVE.value and account.session_ciphertext]
         total_remaining += len(remaining)
         reason_counts = Counter(reason for account in remaining for reason in remaining_reasons(account))
+        online_reason_counts = Counter(reason for account in online_remaining for reason in remaining_reasons(account))
         status_counts = Counter(account.status for account in remaining)
         print(
             "REMAINING",
@@ -108,9 +106,11 @@ def print_remaining(session) -> int:
                     "tenant_id": tenant.id,
                     "tenant_name": tenant.name,
                     "count": len(remaining),
+                    "online_count": len(online_remaining),
                     "status_counts": dict(status_counts),
                     "reason_counts": dict(reason_counts),
-                    "account_ids": [account.id for account in remaining[:80]],
+                    "online_reason_counts": dict(online_reason_counts),
+                    "account_ids": [account.id for account in remaining[:120]],
                 },
                 ensure_ascii=False,
             ),
@@ -121,31 +121,7 @@ def print_remaining(session) -> int:
 
 def main() -> None:
     with SessionLocal() as session:
-        print("BEFORE_RETRY", json.dumps(batch_rows(session), ensure_ascii=False), flush=True)
-        for batch_id in BATCH_IDS:
-            retry_account_security_batch(session, TENANT_ID, batch_id, AccountSecurityRetryRequest(), actor=ACTOR)
-        print("AFTER_RETRY", json.dumps(batch_rows(session), ensure_ascii=False), flush=True)
-
-    idle_rounds = 0
-    while True:
-        processed = drain_account_security_batches(SessionLocal, limit=10)
-        with SessionLocal() as session:
-            rows = batch_rows(session)
-        print("BATCH_STATUSES", json.dumps(rows, ensure_ascii=False), flush=True)
-        active = [row for row in rows if row["status"] in {"running", "ready"}]
-        if not active:
-            break
-        if processed == 0:
-            idle_rounds += 1
-            if idle_rounds >= MAX_IDLE_ROUNDS:
-                print("STOPPED_IDLE_ACTIVE_BATCHES", json.dumps(active, ensure_ascii=False), flush=True)
-                break
-            time.sleep(30)
-        else:
-            idle_rounds = 0
-
-    with SessionLocal() as session:
-        print("FINAL_BATCHES", json.dumps(batch_rows(session), ensure_ascii=False), flush=True)
+        print("QUERY_BATCHES", json.dumps(batch_rows(session), ensure_ascii=False), flush=True)
         remaining_total = print_remaining(session)
     print("FINAL_REMAINING_TOTAL", remaining_total, flush=True)
 
