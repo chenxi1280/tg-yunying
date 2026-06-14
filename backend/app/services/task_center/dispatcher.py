@@ -1215,6 +1215,8 @@ def _try_auto_group_send_verification(ctx: MembershipDispatchContext, verificati
         return _try_auto_image_verification(ctx, verification_task)
     if verification_task.suggested_action == "发送验证回复":
         return _try_auto_text_verification(ctx, verification_task)
+    if verification_task.suggested_action == "关注频道":
+        return _try_auto_follow_verification(ctx, verification_task)
     result = gateway.resolve_verification_task(
         ctx.account.id,
         verification_task.suggested_action,
@@ -1291,6 +1293,25 @@ def _try_auto_image_verification(ctx: MembershipDispatchContext, verification_ta
     verification_task.failure_detail = reprobe.detail or reprobe.failure_type
     _record_image_reprobe_attempt(ctx, verification_task, result, "reprobe_failed", verification_task.failure_detail)
     return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, verification_task.failure_detail)
+
+
+def _try_auto_follow_verification(ctx: MembershipDispatchContext, verification_task):
+    detail = "\n".join(
+        text
+        for text in (verification_task.detected_reason, verification_task.failure_detail)
+        if text
+    )
+    payload = _verification_probe_payload(ctx.payload, verification_task)
+    probe_result = OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail)
+    result = _recover_group_send_permission_with_linked_channel(
+        ctx.session,
+        ctx.action,
+        ctx.account,
+        ctx.credentials,
+        payload,
+        probe_result,
+    )
+    return _apply_context_fallback_result(ctx, verification_task, payload, result)
 
 
 def _try_context_verification_fallback(ctx: MembershipDispatchContext, verification_task, image_result):
