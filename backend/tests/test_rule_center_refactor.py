@@ -966,6 +966,42 @@ def test_telethon_cache_probe_fails_when_permissions_cannot_be_confirmed(monkeyp
     assert result.detail == "缓存频道不可访问 / 账号无权限"
 
 
+def test_telethon_probe_preserves_required_channel_reference(monkeypatch):
+    gateway = TelethonTelegramGateway()
+
+    class FakeClient:
+        async def is_user_authorized(self) -> bool:
+            return True
+
+        async def get_permissions(self, target, user):  # noqa: ANN001 - mirrors Telethon shape.
+            raise RuntimeError(
+                "Must join @RequiredChannel before sending. "
+                "The channel specified is private and you lack permission to access it "
+                "(caused by SendMessageRequest)"
+            )
+
+    async def fake_get_or_create_client(credentials, raw_session):  # noqa: ANN001 - mirrors gateway hook.
+        return FakeClient()
+
+    async def fake_resolve_target(client, peer_id, *, group_id=0):  # noqa: ANN001 - mirrors Telethon helper.
+        return type("_Target", (), {"default_banned_rights": None})()
+
+    monkeypatch.setattr(gateway, "_get_or_create_client", fake_get_or_create_client)
+    monkeypatch.setattr("app.integrations.telegram.gateway.resolve_telethon_target", fake_resolve_target)
+
+    result = asyncio.run(
+        gateway._probe_target_capabilities_async(
+            "raw-session",
+            "@cache",
+            "channel",
+            DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1, app_name="pytest"),
+        )
+    )
+
+    assert result.ok is False
+    assert "@RequiredChannel" in result.detail
+
+
 def test_zip_avatar_pack_import_maps_to_image_materials():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -41,6 +42,8 @@ _resolve_telethon_target = resolve_telethon_target
 
 VERIFICATION_CONTEXT_DEFAULT_LIMIT = 120
 VERIFICATION_CONTEXT_PREVIEW_LIMIT = 500
+GROUP_PERMISSION_DETAIL = "群无权限或账号不可发言"
+TARGET_PERMISSION_DETAIL = "缓存频道不可访问 / 账号无权限"
 
 
 def _button_labels(message: Any) -> list[str]:
@@ -64,6 +67,16 @@ def _verification_message_text(message: Any) -> str:
     if labels:
         parts.append(f"[按钮：{' / '.join(labels)}]")
     return " ".join(parts).strip()
+
+
+def _permission_detail_with_references(detail: str, fallback: str = GROUP_PERMISSION_DETAIL) -> str:
+    if not detail:
+        return fallback
+    has_reference = bool(
+        re.search(r"@[A-Za-z0-9_]{4,}", detail)
+        or re.search(r"(?:https?://)?(?:t\.me|telegram\.me)/(?:joinchat/|\+)?[A-Za-z0-9_-]{4,}", detail)
+    )
+    return f"{fallback}：{detail}" if has_reference else fallback
 
 
 async def _verification_context_row(message: Any) -> dict[str, Any] | None:
@@ -739,7 +752,7 @@ class TelethonTelegramGateway(TelegramGateway):
         lower_detail = detail.lower()
         permission_request_markers = ("sendmessagerequest", "joinchannelrequest", "importchatinviterequest")
         if any(request in lower_detail for request in permission_request_markers) and any(marker in lower_detail for marker in send_permission_markers):
-            return SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="群无权限或账号不可发言")
+            return SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail=_permission_detail_with_references(detail))
         if "joinchannelrequest" in lower_detail and "successfully requested to join" in lower_detail:
             return SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="已提交入群申请，等待审批后才能发言")
         if isinstance(exc, errors.FloodWaitError):
@@ -1093,20 +1106,23 @@ class TelethonTelegramGateway(TelegramGateway):
             target = await resolve_telethon_target(client, target_peer_id, group_id=0)
             default_rights = getattr(target, "default_banned_rights", None)
             if default_rights and getattr(default_rights, "send_messages", False):
-                return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "缓存频道不可访问 / 账号无权限")
+                return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, TARGET_PERMISSION_DETAIL)
             if hasattr(client, "get_permissions"):
                 try:
                     permissions = await client.get_permissions(target, "me")
                     if not _can_send_text_in_group(target, permissions):
-                        return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "缓存频道不可访问 / 账号无权限")
-                except Exception:
-                    return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "缓存频道不可访问 / 账号无权限")
+                        return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, TARGET_PERMISSION_DETAIL)
+                except Exception as exc:
+                    mapped = self._map_send_error(exc)
+                    detail = mapped.detail if mapped.failure_type == FailureType.GROUP_PERMISSION_DENIED.value else TARGET_PERMISSION_DETAIL
+                    return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail)
             else:
-                return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "缓存频道不可访问 / 账号无权限")
+                return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, TARGET_PERMISSION_DETAIL)
             return OperationResult(True, detail=f"{target_type}:{target_peer_id}:可访问")
         except Exception as exc:  # Telethon exposes many RPC subclasses; map them at the adapter boundary.
             mapped = self._map_send_error(exc)
-            return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, "缓存频道不可访问 / 账号无权限")
+            detail = mapped.detail if mapped.failure_type == FailureType.GROUP_PERMISSION_DENIED.value else TARGET_PERMISSION_DETAIL
+            return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, detail)
 
     async def _update_profile_async(
         self,
