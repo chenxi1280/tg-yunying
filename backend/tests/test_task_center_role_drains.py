@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -10,7 +11,16 @@ from app.database import Base
 from app.models import AccountStatus, Action, RuntimeMetricSnapshot, Task, TaskRuntimeSummary, Tenant, TgAccount, WorkerHeartbeat
 from app.schemas.task_center import TaskSettingsUpdate
 from app.services._common import _now
-from app.services.task_center import service
+from app.services.task_center import dispatcher, service
+
+
+@pytest.fixture(autouse=True)
+def clear_dispatcher_runtime_state():
+    dispatcher._ACTION_RESERVATIONS.clear()
+    dispatcher._IN_FLIGHT_ACCOUNTS.clear()
+    yield
+    dispatcher._ACTION_RESERVATIONS.clear()
+    dispatcher._IN_FLIGHT_ACCOUNTS.clear()
 
 
 def _session_factory():
