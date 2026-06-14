@@ -1012,6 +1012,7 @@ def _record_image_reprobe_attempt(ctx: MembershipDispatchContext, verification_t
         getattr(image_result, "attempt_context", None) or {},
         image_message=getattr(image_result, "image_message", None),
         answer_text=getattr(image_result, "answer_text", ""),
+        answer_source=getattr(image_result, "answer_source", ""),
         confidence=float(getattr(image_result, "confidence", 0.0) or 0.0),
         model_name=getattr(image_result, "model_name", ""),
         status=status,

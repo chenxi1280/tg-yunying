@@ -39,7 +39,7 @@ from app.timezone import BEIJING_TZ
 
 _resolve_telethon_target = resolve_telethon_target
 
-VERIFICATION_CONTEXT_DEFAULT_LIMIT = 30
+VERIFICATION_CONTEXT_DEFAULT_LIMIT = 120
 VERIFICATION_CONTEXT_PREVIEW_LIMIT = 500
 
 

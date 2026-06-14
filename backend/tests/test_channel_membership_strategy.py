@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram import OperationResult
+from app.integrations.telegram.gateway import VERIFICATION_CONTEXT_DEFAULT_LIMIT
 from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
 from app.services.task_center import dispatcher
@@ -224,6 +225,122 @@ def test_auto_text_verification_extracts_chinese_arithmetic_answer(monkeypatch) 
 
     assert result.ok is True
     assert submitted == ["8"]
+
+
+def test_image_verification_falls_back_to_text_answer_when_context_has_no_image(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    submitted: list[str] = []
+
+    monkeypatch.setattr(
+        "app.services.membership_challenges.gateway.fetch_verification_context",
+        lambda *_args, **_kwargs: [
+            {"message_id": 5, "sender": "验证机器人", "text": "入群验证：4 + 6 = ?", "sent_at": None}
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.membership_challenges.gateway.submit_verification_response",
+        lambda _account_id, _peer, response_text, *_args, **_kwargs: submitted.append(response_text)
+        or OperationResult(True, "已处理", detail="答案已提交"),
+    )
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "probe_target_capabilities",
+        lambda *_args, **_kwargs: OperationResult(True, detail="复检可发言"),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(
+            id=803,
+            tenant_id=1,
+            tg_peer_id="-100803",
+            title="误判验证群",
+            group_type="supergroup",
+            auth_status="已授权运营",
+            can_send=False,
+        )
+        target = OperationTarget(
+            id=903,
+            tenant_id=1,
+            target_type="group",
+            tg_peer_id="-100803",
+            title="误判验证群",
+            auth_status="只读",
+            can_send=False,
+        )
+        task = Task(
+            id="task-image-text-fallback",
+            tenant_id=1,
+            name="图形误判文本验证",
+            type="group_ai_chat",
+            status="running",
+            type_config={"auto_resolve_verification": True},
+        )
+        account = TgAccount(
+            id=33,
+            tenant_id=1,
+            display_name="账号33",
+            phone_masked="33",
+            status="在线",
+            session_ciphertext="session",
+        )
+        action = Action(
+            id="membership-image-text-fallback",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="ensure_target_membership",
+            account_id=33,
+        )
+        verification = VerificationTask(
+            tenant_id=1,
+            account_id=33,
+            group_id=group.id,
+            verification_type="群发言权限",
+            detected_reason="未解析到群关联频道",
+            suggested_action="识别图形验证码",
+            target_peer_id=group.tg_peer_id,
+            target_display=group.title,
+            status="待处理",
+        )
+        session.add_all(
+            [
+                group,
+                target,
+                task,
+                account,
+                action,
+                verification,
+                TgGroupAccount(tenant_id=1, group_id=group.id, account_id=account.id, can_send=False),
+            ]
+        )
+        session.commit()
+
+        result = dispatcher._try_auto_group_send_verification(
+            dispatcher.MembershipDispatchContext(
+                session,
+                action,
+                account,
+                object(),
+                EnsureChannelMembershipPayload(
+                    channel_id=group.tg_peer_id,
+                    channel_target_id=target.id,
+                    target_type="group",
+                    target_display=group.title,
+                    require_send=True,
+                ),
+                None,
+            ),
+            verification,
+        )
+
+    assert result.ok is True
+    assert submitted == ["10"]
+
+
+def test_verification_context_reads_deep_enough_for_active_group_history() -> None:
+    assert VERIFICATION_CONTEXT_DEFAULT_LIMIT >= 120
 
 
 def test_membership_permission_denied_skip_counts_as_failed() -> None:

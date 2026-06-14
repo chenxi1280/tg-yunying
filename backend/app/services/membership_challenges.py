@@ -33,6 +33,7 @@ class ImageVerificationOperationResult(OperationResult):
     attempt_context: dict[str, Any] | None = None
     image_message: dict[str, Any] | None = None
     answer_text: str = ""
+    answer_source: str = ""
     confidence: float = 0.0
     model_name: str = ""
 
@@ -103,9 +104,6 @@ def auto_resolve_image_verification(
     *,
     reader_candidates: list[tuple[TgAccount, Any]] | None = None,
 ) -> OperationResult:
-    provider = _mimo_vision_provider(session)
-    if provider is None:
-        return _image_verification_failure(session, task, account, "未配置可用 MiMo 视觉供应商")
     read_result = read_challenge_context_with_fallback(
         session,
         task,
@@ -116,10 +114,16 @@ def auto_resolve_image_verification(
     context = read_result.context
     image_message = _latest_context_image(context["messages"])
     if not image_message:
+        text_result = _submit_text_answer_from_context(session, task, account, credentials, context)
+        if text_result:
+            return text_result
         detail = context.get("read_failure_detail") or "未读取到验证码图片"
         return _image_verification_failure(session, task, account, detail, context=context)
     if _already_tried_image(session, task, image_message):
         return _image_verification_failure(session, task, account, "同一图片验证码已自动尝试过，需人工确认或等待新验证码", image_message, context)
+    provider = _mimo_vision_provider(session)
+    if provider is None:
+        return _image_verification_failure(session, task, account, "未配置可用 MiMo 视觉供应商", image_message, context)
     media = gateway.fetch_verification_media(
         read_result.reader_account.id,
         task.target_peer_id,
@@ -151,6 +155,7 @@ def auto_resolve_image_verification(
         context,
         image_message=image_message,
         answer_text=answer.answer,
+        answer_source="mimo",
         confidence=answer.confidence,
         model_name=provider.model_name,
         status=status,
@@ -167,6 +172,7 @@ def auto_resolve_image_verification(
         attempt_context=context,
         image_message=image_message,
         answer_text=answer.answer,
+        answer_source="mimo",
         confidence=answer.confidence,
         model_name=provider.model_name,
     )
@@ -194,7 +200,13 @@ def auto_resolve_text_verification(
         task.failure_detail = str(detail)
         record_challenge_attempt(session, task, account, read_result.context, status="text_answer_missing")
         return OperationResult(False, "需人工处理", "verification_answer_missing", str(detail))
-    result = gateway.submit_verification_response(account.id, task.target_peer_id, answer, account.session_ciphertext, credentials)
+    result = gateway.submit_verification_response(
+        account.id,
+        task.target_peer_id,
+        answer,
+        account.session_ciphertext,
+        credentials,
+    )
     record_challenge_attempt(
         session,
         task,
@@ -209,6 +221,51 @@ def auto_resolve_text_verification(
     if not result.ok:
         return OperationResult(False, "需人工处理", result.failure_type or "verification_send_failed", result.detail)
     return OperationResult(True, "已处理", detail=result.detail or "文本验证码已提交")
+
+
+def _submit_text_answer_from_context(
+    session: Session,
+    task: VerificationTask,
+    account: TgAccount,
+    credentials: Any,
+    context: dict[str, Any],
+) -> ImageVerificationOperationResult | None:
+    answer = _text_verification_answer(task, context)
+    if not answer:
+        return None
+    result = gateway.submit_verification_response(account.id, task.target_peer_id, answer, account.session_ciphertext, credentials)
+    status = "text_answer_sent" if result.ok else "text_answer_send_failed"
+    detail = result.detail or result.failure_type or "文本验证码已提交"
+    record_challenge_attempt(
+        session,
+        task,
+        account,
+        context,
+        answer_text=answer,
+        answer_source="rule",
+        challenge_type=_text_challenge_type(context),
+        status=status,
+        result_detail=detail,
+    )
+    session.flush()
+    if not result.ok:
+        return ImageVerificationOperationResult(
+            False,
+            "需人工处理",
+            result.failure_type or "verification_send_failed",
+            detail,
+            attempt_context=context,
+            answer_text=answer,
+            answer_source="rule",
+        )
+    return ImageVerificationOperationResult(
+        True,
+        "已处理",
+        detail=detail,
+        attempt_context=context,
+        answer_text=answer,
+        answer_source="rule",
+    )
 
 
 def record_challenge_attempt(
