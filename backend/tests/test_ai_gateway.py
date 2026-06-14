@@ -131,6 +131,52 @@ def test_probe_permission_denied_uses_recent_context_detail(monkeypatch):
     assert result.detail == "群无权限或账号不可发言：入群验证：请先关注 @alpha 和 @beta 后输入 3 + 5"
 
 
+def test_probe_permission_exception_uses_recent_context_detail(monkeypatch):
+    class FakeMessage:
+        id = 8
+        date = None
+        media = None
+        buttons = None
+        message = "发言验证：请点击下方按钮或回复验证码 1234"
+
+        async def get_sender(self):
+            return SimpleNamespace(first_name="验证机器人")
+
+    class FakeClient:
+        async def is_user_authorized(self):
+            return True
+
+        async def get_permissions(self, _target, _user):
+            raise RuntimeError("You can't write in this chat (caused by GetParticipantRequest)")
+
+        async def get_messages(self, _target, *, limit):
+            assert limit > 1
+            return [FakeMessage()]
+
+    async def fake_client(*_args, **_kwargs):
+        return FakeClient()
+
+    async def fake_target(*_args, **_kwargs):
+        return SimpleNamespace(default_banned_rights=None)
+
+    gateway = TelethonTelegramGateway()
+    monkeypatch.setattr(gateway, "_get_or_create_client", fake_client)
+    monkeypatch.setattr("app.integrations.telegram.gateway.resolve_telethon_target", fake_target)
+
+    result = gateway._run(
+        gateway._probe_target_capabilities_async(
+            "raw-session",
+            "-1008",
+            "group",
+            DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1),
+        )
+    )
+
+    assert result.ok is False
+    assert result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value
+    assert result.detail == "群无权限或账号不可发言：发言验证：请点击下方按钮或回复验证码 1234"
+
+
 class FakeResponse:
     def __init__(self, payload: dict[str, Any]) -> None:
         self.payload = payload

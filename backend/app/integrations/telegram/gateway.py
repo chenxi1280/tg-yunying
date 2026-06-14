@@ -1146,6 +1146,7 @@ class TelethonTelegramGateway(TelegramGateway):
         client = await self._get_or_create_client(credentials, raw_session)
         if not await client.is_user_authorized():
             return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
+        target = None
         try:
             target = await resolve_telethon_target(client, target_peer_id, group_id=0)
             default_rights = getattr(target, "default_banned_rights", None)
@@ -1160,15 +1161,27 @@ class TelethonTelegramGateway(TelegramGateway):
                         return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail)
                 except Exception as exc:
                     mapped = self._map_send_error(exc)
-                    detail = mapped.detail if mapped.failure_type == FailureType.GROUP_PERMISSION_DENIED.value else TARGET_PERMISSION_DETAIL
+                    detail = await self._permission_detail_from_probe_exception(client, target, mapped)
                     return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail)
             else:
                 return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, TARGET_PERMISSION_DETAIL)
             return OperationResult(True, detail=f"{target_type}:{target_peer_id}:可访问")
         except Exception as exc:  # Telethon exposes many RPC subclasses; map them at the adapter boundary.
             mapped = self._map_send_error(exc)
-            detail = mapped.detail if mapped.failure_type == FailureType.GROUP_PERMISSION_DENIED.value else TARGET_PERMISSION_DETAIL
+            detail = (
+                await self._permission_detail_from_probe_exception(client, target, mapped)
+                if target is not None
+                else mapped.detail if mapped.failure_type == FailureType.GROUP_PERMISSION_DENIED.value else TARGET_PERMISSION_DETAIL
+            )
             return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, detail)
+
+    async def _permission_detail_from_probe_exception(self, client: Any, target: Any, mapped: SendResult) -> str:
+        context_detail = await self._permission_detail_from_target_context(client, target)
+        if context_detail != TARGET_PERMISSION_DETAIL:
+            return context_detail
+        if mapped.failure_type == FailureType.GROUP_PERMISSION_DENIED.value and mapped.detail:
+            return mapped.detail
+        return context_detail
 
     async def _permission_detail_from_target_context(self, client: Any, target: Any) -> str:
         try:
