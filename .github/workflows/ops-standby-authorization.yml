@@ -70,6 +70,7 @@ jobs:
           from app.services.account_security.service import (
               account_security_batch_detail,
               create_account_security_batch,
+              precheck_account_security_batch,
               save_managed_two_fa_password,
           )
           from app.worker import drain_once
@@ -121,6 +122,46 @@ jobs:
           with SessionLocal() as session:
               gaps = online_gap_accounts(session)
               print("OPS_STANDBY_GAPS " + json.dumps(gaps, ensure_ascii=False), flush=True)
+              if gaps:
+                  precheck = precheck_account_security_batch(
+                      session,
+                      1,
+                      AccountSecurityBatchCreate(
+                          account_ids=[item["id"] for item in gaps],
+                          action_types=["provision_standby_session", "self_heal_session"],
+                          standby_slot_strategy="auto_missing",
+                          reason=REASON,
+                      ),
+                  )
+                  blocker_counts = {}
+                  warning_counts = {}
+                  for item in precheck.items:
+                      for blocker in item.blockers:
+                          blocker_counts[blocker] = blocker_counts.get(blocker, 0) + 1
+                      for warning in item.warnings:
+                          warning_counts[warning] = warning_counts.get(warning, 0) + 1
+                  print(
+                      "OPS_STANDBY_PRECHECK "
+                      + json.dumps(
+                          {
+                              "summary": precheck.summary,
+                              "blockers": blocker_counts,
+                              "warnings": warning_counts,
+                              "sample": [
+                                  {
+                                      "account_id": item.account_id,
+                                      "precheck_status": item.precheck_status,
+                                      "blockers": item.blockers,
+                                      "warnings": item.warnings,
+                                      "suggested_actions": item.suggested_actions,
+                                  }
+                                  for item in precheck.items[:10]
+                              ],
+                          },
+                          ensure_ascii=False,
+                      ),
+                      flush=True,
+                  )
               if DRY_RUN or not gaps:
                   print("OPS_STANDBY_RESULT " + json.dumps({"dry_run": DRY_RUN, "gap_count": len(gaps)}, ensure_ascii=False), flush=True)
                   raise SystemExit(0)
@@ -178,6 +219,7 @@ jobs:
                       "standby_session_status": item.get("standby_session_status", ""),
                       "failure_type": item.get("failure_type", ""),
                       "failure_detail": item.get("failure_detail", ""),
+                      "skipped_reason": item.get("skipped_reason", ""),
                   }
                   for item in detail["items"]
               ],
