@@ -857,7 +857,12 @@ def test_task_center_list_groups_by_target_group_and_channel():
     assert "const taskQuickGroups = buildTaskQuickGroups(table.filteredRows);" in source
     assert "const visibleTaskRows = filterTasksByQuickGroup(table.filteredRows, selectedTaskGroupId);" in source
     assert "全部任务分组" in source
-    assert "<Segmented" in source
+    assert "<Select<string>" in source
+    assert 'aria-label="任务分组"' in source
+    assert "TASK_GROUP_SELECT_WIDTH" in source
+    assert "TASK_GROUP_DROPDOWN_WIDTH" in source
+    assert "popupMatchSelectWidth={TASK_GROUP_DROPDOWN_WIDTH}" in source
+    assert "<Segmented" not in source[source.index("const taskQuickGroups"):source.index("dataSource={visibleTaskRows}")]
     assert "dataSource={visibleTaskRows}" in source
     assert "Table<TaskCenterTask>" in source
     assert "目标群聊" in source

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Card, Collapse, Form, Input, Modal, Segmented, Select, Space, Steps, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Collapse, Form, Input, Modal, Select, Space, Steps, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, CirclePause, CirclePlay, RefreshCcw } from 'lucide-react';
 import { api, apiWithMeta, ApiError } from '../../shared/api/client';
@@ -136,6 +136,8 @@ type MembershipPageState = { current: number; pageSize: number; total: number; l
 type MembershipFilters = { phase: string; manualRequired: string };
 const TASK_CREATE_TIMEOUT_MS = 120_000;
 const MEMBERSHIP_PAGE_SIZE = 20;
+const TASK_GROUP_SELECT_WIDTH = 360;
+const TASK_GROUP_DROPDOWN_WIDTH = 480;
 const DEFAULT_MEMBERSHIP_FILTERS: MembershipFilters = { phase: 'all', manualRequired: 'all' };
 const GROUP_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'messages_per_round'];
 const COMMENT_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'target_comments_per_message', 'max_comments_per_account_per_hour'];
@@ -1429,8 +1431,11 @@ export default function TaskCenterView({
         <Space className="toolbar-row" wrap>
           <Select<TaskTypeFilter> style={{ width: 180 }} value={taskTypeFilter} options={TASK_TYPE_FILTER_OPTIONS} onChange={setTaskTypeFilter} />
           <Typography.Text type="secondary">按目标群聊 + 关联频道</Typography.Text>
-          <Segmented
+          <Select<string>
+            aria-label="任务分组"
+            style={{ width: TASK_GROUP_SELECT_WIDTH, maxWidth: '100%' }}
             value={selectedTaskGroupId}
+            popupMatchSelectWidth={TASK_GROUP_DROPDOWN_WIDTH}
             onChange={(value) => {
               setSelectedTaskGroupId(String(value));
               table.setPage(1);
