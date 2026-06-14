@@ -698,6 +698,8 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
 
 def _membership_existing_group_for_account(ctx: MembershipDispatchContext) -> tuple[EnsureChannelMembershipPayload, TgGroup | None]:
     for group in _membership_candidate_groups(ctx.session, ctx.action.tenant_id, ctx.payload):
+        if _requires_group_send_probe(ctx.payload) and not _is_stable_telegram_peer(group.tg_peer_id):
+            continue
         link = _channel_account_link(ctx.session, ctx.action.tenant_id, group.id, ctx.account.id)
         if link:
             return _payload_with_channel_ref(ctx.payload, group.tg_peer_id, group.title), group
