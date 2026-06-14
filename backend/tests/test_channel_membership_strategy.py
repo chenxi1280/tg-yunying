@@ -349,9 +349,10 @@ def test_target_membership_prefers_verified_peer_over_stale_username(monkeypatch
         target = OperationTarget(id=914, tenant_id=1, target_type="group", tg_peer_id="qdsfxy", username="qdsfxy", title="青岛师范学院", auth_status="只读", can_send=False)
         task = Task(id="task-stale-username", tenant_id=1, name="青岛师范学院", type="group_ai_chat", status="running")
         account = TgAccount(id=44, tenant_id=1, display_name="账号44", phone_masked="44", status="在线", session_ciphertext="session")
+        stale_group = TgGroup(id=3426, tenant_id=1, title="青岛师范学院", tg_peer_id="qdsfxy", can_send=False)
         verification = VerificationTask(tenant_id=1, account_id=44, verification_type="群发言权限", target_peer_id="-1003426646531", target_display="青岛师范学院", status="需人工处理")
         action = Action(id="membership-stale-username", tenant_id=1, task_id=task.id, task_type="group_ai_chat", action_type="ensure_target_membership", account_id=44, payload={"channel_id": "qdsfxy", "channel_target_id": 914, "target_type": "group", "target_display": "青岛师范学院", "target_username": "qdsfxy", "invite_link": "https://t.me/qdsfxy", "require_send": True})
-        session.add_all([target, task, account, verification, action])
+        session.add_all([target, task, account, stale_group, verification, action])
         session.commit()
 
         assert dispatcher.dispatch_action(session, action) is True
