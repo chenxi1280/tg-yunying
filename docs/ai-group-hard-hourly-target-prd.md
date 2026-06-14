@@ -499,6 +499,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 - `can_auto_resolve=true` 只代表可尝试自动验证；如果读取验证聊天失败，例如 `private`、`lack permission`、`banned` 或 `GetHistoryRequest`，必须记录 `verification_context_unreadable`，不得算作自动验证已完成。
 - join ref、verification peer 和 send peer 必须分开展示和验收；通过 username / invite 完成准入时，不能继续用旧 numeric peer 读取验证码或规划发送。
 - 需要关注多个频道才能入群时，每个频道关注动作要有独立结果；全部必需频道满足后才允许复检目标群 `can_send`。
+- 已跳过的准入失败如果错误详情包含必需频道链接或“需要关注频道”提示，硬目标模式必须按重试周期重新生成准入动作，让自动关注和 `can_send` 复检继续推进；不能把这类账号永久留在失败池。
 - 发送阶段被管理员提示“需要关注频道才能发言”或消息被删除时，dispatcher 必须自动关注必需频道、复检 `can_send`，并把原发送动作重排；只有重发成功才计入硬目标成功数。
 - 验证完成但 `can_send=false` 时，不创建主发送动作，原因记录为 `target_can_send_blocked`。
 - 文本 draft 使用小米 MiMo/Mino 健康供应商；MiMo/Mino 不可用、返回空内容或 malformed JSON 时记录 `ai_generation_unavailable`，不得走 mock 或模板成功。

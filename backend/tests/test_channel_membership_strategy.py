@@ -699,6 +699,55 @@ def test_hard_hourly_reactivates_auto_verification_membership_failures() -> None
     assert task.stats["membership_need_join_count"] == 1
 
 
+def test_hard_hourly_reactivates_required_channel_membership_failures() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        target = OperationTarget(id=907, tenant_id=1, target_type="group", tg_peer_id="-100907", title="关注群", auth_status="已授权运营", can_send=True)
+        group = TgGroup(id=807, tenant_id=1, tg_peer_id="-100907", title="关注群", group_type="supergroup", auth_status="已授权运营", can_send=True)
+        task = Task(
+            id="task-hard-hourly-required-channel",
+            tenant_id=1,
+            name="硬目标关注频道重试",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"target_operation_target_id": 907, "hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+        )
+        account = TgAccount(id=32, tenant_id=1, display_name="账号32", phone_masked="32", status="在线", session_ciphertext="session")
+        session.add_all([target, group, task, account])
+        session.flush()
+        payload = EnsureChannelMembershipPayload(channel_id="-100907", channel_target_id=target.id, target_type="group", target_display=target.title, require_send=True)
+        old_action = Action(
+            id="membership-required-channel-32",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="ensure_target_membership",
+            account_id=account.id,
+            status="skipped",
+            scheduled_at=now_value - timedelta(minutes=10),
+            executed_at=now_value - timedelta(minutes=10),
+            payload=payload.model_dump(mode="json"),
+            result={"error_code": "membership_permission_denied", "error_message": "您需要关注我们的频道才能发言 https://t.me/qiyue201"},
+        )
+        session.add(old_action)
+        session.commit()
+
+        result = gate_channel_membership(session, task, target, require_send=True)
+        rows = session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").order_by(Action.scheduled_at.asc()).all()
+
+    assert result.waiting is True
+    assert result.created == 1
+    assert [row.status for row in rows] == ["skipped", "pending"]
+    assert rows[1].result["reactivated_reason"] == "hard_hourly_required_channel_retry"
+    assert task.stats["membership_failed_count"] == 0
+    assert task.stats["membership_need_join_count"] == 1
+
+
 def test_hard_hourly_reactivation_batches_membership_action_flush(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

@@ -25,6 +25,7 @@ HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS = 2
 HARD_HOURLY_AUTO_VERIFICATION_RETRY_SECONDS = 300
 HARD_HOURLY_MEMBERSHIP_RETRY_SECONDS = 300
 AUTO_VERIFICATION_RETRY_STATUSES = {"待处理", "失败", "需人工处理"}
+REQUIRED_CHANNEL_RETRY_MARKERS = ("需要关注", "关注我们的频道", "t.me/", "telegram.me/", "required channel")
 
 
 @dataclass(frozen=True)
@@ -442,24 +443,32 @@ def _reactivate_auto_verification_memberships(
     rows: list[dict[str, Any]] = []
     for action in failed_actions:
         verification = verification_by_account.get(int(action.account_id or 0))
-        if not verification or not _auto_verification_retry_due(action, verification, now_value):
+        if verification and _auto_verification_retry_due(action, verification, now_value):
+            rows.append(_membership_retry_action_row(task, action, now_value, created, "hard_hourly_auto_verification_retry", verification.id))
+            created += 1
             continue
-        rows.append(_auto_verification_retry_action_row(task, action, verification, now_value, created))
+        if not _required_channel_retry_due(action, now_value):
+            continue
+        rows.append(_membership_retry_action_row(task, action, now_value, created, "hard_hourly_required_channel_retry"))
         created += 1
     if rows:
         session.bulk_insert_mappings(Action, rows)
     return created
 
 
-def _auto_verification_retry_action_row(
+def _membership_retry_action_row(
     task: Task,
     action: Action,
-    verification: VerificationTask,
     now_value,
     offset: int,
+    reason: str,
+    verification_id: int | None = None,
 ) -> dict[str, Any]:
     payload = EnsureChannelMembershipPayload.model_validate(action.payload or {})
     scheduled_at = now_value + timedelta(seconds=HARD_HOURLY_MEMBERSHIP_FAST_TRACK_INTERVAL_SECONDS * offset)
+    result = {"reactivated_reason": reason}
+    if verification_id:
+        result["verification_task_id"] = verification_id
     return {
         "id": str(uuid4()),
         "tenant_id": task.tenant_id,
@@ -475,13 +484,10 @@ def _auto_verification_retry_action_row(
         "plan_batch_key": f"{task.id}:hard-hourly-auto-verification:{now_value.isoformat()}",
         "action_dedupe_key": (
             f"{task.tenant_id}:{task.id}:hard-hourly-auto-verification:"
-            f"{action.account_id}:{verification.id}:{scheduled_at.isoformat()}"
+            f"{action.account_id}:{reason}:{verification_id or 'required-channel'}:{scheduled_at.isoformat()}"
         ),
         "payload": payload.model_dump(mode="json"),
-        "result": {
-            "reactivated_reason": "hard_hourly_auto_verification_retry",
-            "verification_task_id": verification.id,
-        },
+        "result": result,
         "retry_count": 0,
         "created_at": now_value,
     }
@@ -519,6 +525,29 @@ def _auto_verification_retry_due(action: Action, verification: VerificationTask,
     if not last_attempt_at:
         return True
     return (now_value - last_attempt_at.replace(tzinfo=None)).total_seconds() >= HARD_HOURLY_AUTO_VERIFICATION_RETRY_SECONDS
+
+
+def _required_channel_retry_due(action: Action, now_value) -> bool:
+    if not _membership_failure_mentions_required_channel(action):
+        return False
+    last_attempt_at = action.executed_at or action.scheduled_at or action.created_at
+    if not last_attempt_at:
+        return True
+    return (now_value - last_attempt_at.replace(tzinfo=None)).total_seconds() >= HARD_HOURLY_MEMBERSHIP_RETRY_SECONDS
+
+
+def _membership_failure_mentions_required_channel(action: Action) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    detail = " ".join(
+        str(value or "")
+        for value in (
+            result.get("error_message"),
+            result.get("detail"),
+            result.get("failure_detail"),
+            result.get("detected_reason"),
+        )
+    ).lower()
+    return any(marker.lower() in detail for marker in REQUIRED_CHANNEL_RETRY_MARKERS)
 
 
 def _membership_action_strategy(task: Task, channel: OperationTarget) -> tuple[bool, str]:
