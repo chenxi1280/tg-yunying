@@ -375,6 +375,12 @@ def mark_test_channel_comment_ready(channel_target_id: int, account_ids: list[in
         group.auth_status = "已授权运营"
         group.can_send = True
         for account_id in account_ids:
+            account = session.get(TgAccount, account_id)
+            assert account is not None
+            account.username = account.username or f"pytest_comment_{account_id}"
+            account.tg_first_name = account.tg_first_name or f"评论号{account_id}"
+            account.avatar_object_key = account.avatar_object_key or f"avatars/test-comment-{account_id}.jpg"
+            account.profile_sync_status = "已同步"
             link = session.query(TgGroupAccount).filter_by(group_id=group.id, account_id=account_id).first()
             if link is None:
                 link = TgGroupAccount(tenant_id=channel.tenant_id, group_id=group.id, account_id=account_id)
@@ -3681,10 +3687,17 @@ def test_task_center_channel_comment_allows_multiple_replies_per_account(monkeyp
         with SessionLocal() as session:
             first = session.get(TgAccount, account["id"])
             first.status = AccountStatus.ACTIVE.value
+            first.username = first.username or f"pytest_comment_first_{uuid4().hex[:8]}"
+            first.tg_first_name = "评论号一"
+            first.avatar_object_key = first.avatar_object_key or "avatars/pytest-comment-first.jpg"
+            first.profile_sync_status = "已同步"
             second = TgAccount(
                 tenant_id=1,
                 display_name="pytest 第二评论账号",
                 username=f"pytest_comment_second_{uuid4().hex[:8]}",
+                tg_first_name="评论号二",
+                avatar_object_key="avatars/pytest-comment-second.jpg",
+                profile_sync_status="已同步",
                 phone_masked=f"+comment-second-{uuid4().hex[:8]}",
                 status=AccountStatus.ACTIVE.value,
                 health_score=97,
