@@ -665,6 +665,10 @@ def test_production_deploy_starts_four_dispatcher_workers():
 def test_production_ai_hourly_probe_reports_membership_failures():
     workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
 
+    assert "run_production_diagnostics:" in workflow
+    assert "Run production planner drain and AI hourly volume diagnostics after deploy" in workflow
+    assert "default: false" in workflow
+    assert workflow.count("if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_production_diagnostics }}") == 2
     assert "VerificationTask" in workflow
     assert "recent_membership_actions" in workflow
     assert "recent_failed_membership_actions" in workflow

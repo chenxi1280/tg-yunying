@@ -2,6 +2,12 @@ name: Deploy Production
 
 'on':
   workflow_dispatch:
+    inputs:
+      run_production_diagnostics:
+        description: Run production planner drain and AI hourly volume diagnostics after deploy
+        required: false
+        default: false
+        type: boolean
   push:
     branches:
       - release
@@ -220,6 +226,7 @@ jobs:
             --branch-list "${BRANCHES}"
 
       - name: Probe production planner drain
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_production_diagnostics }}
         run: |
           set -euo pipefail
           timeout 330 ssh silicon-valley-production-server '
@@ -326,6 +333,7 @@ jobs:
           '
 
       - name: Inspect AI hourly task volume
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_production_diagnostics }}
         run: |
           set -euo pipefail
           echo "AI_HOURLY_INSPECT_START"
