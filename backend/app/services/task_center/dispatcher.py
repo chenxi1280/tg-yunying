@@ -739,6 +739,9 @@ def _ensure_membership_refs(
 def _membership_static_refs(session: Session, action: Action, payload: EnsureChannelMembershipPayload) -> list[str]:
     refs = [payload.invite_link]
     target = session.get(OperationTarget, payload.channel_target_id)
+    candidate_refs = [group.tg_peer_id for group in _membership_candidate_groups(session, action.tenant_id, payload)]
+    if payload.target_type == "group" and payload.require_send:
+        refs.extend(candidate_refs)
     username = payload.target_username or ""
     if target and target.tenant_id == action.tenant_id:
         username = username or target.username or ""
@@ -747,7 +750,7 @@ def _membership_static_refs(session: Session, action: Action, payload: EnsureCha
     refs.append(payload.channel_id)
     if target and target.tenant_id == action.tenant_id:
         refs.append(target.tg_peer_id)
-    refs.extend(group.tg_peer_id for group in _membership_candidate_groups(session, action.tenant_id, payload))
+    refs.extend(candidate_refs)
     return _dedupe_refs(refs)
 
 
@@ -784,9 +787,9 @@ def _membership_candidate_groups(session: Session, tenant_id: int, payload: Ensu
 
 
 def _membership_group_rank(group: TgGroup) -> tuple[int, int, int]:
-    stable_rank = 0 if _is_stable_telegram_peer(group.tg_peer_id) else 1
     send_rank = 0 if group.can_send else 1
-    return (stable_rank, send_rank, int(group.id or 0))
+    stable_rank = 0 if _is_stable_telegram_peer(group.tg_peer_id) else 1
+    return (send_rank, stable_rank, int(group.id or 0))
 
 
 def _payload_with_channel_ref(payload: EnsureChannelMembershipPayload, ref: str, display: str) -> EnsureChannelMembershipPayload:
