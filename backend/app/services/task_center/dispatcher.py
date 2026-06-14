@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from app.integrations.telegram import OperationResult, OutboundSegment
 from app.config import get_settings
-from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, TgGroupAccount
+from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now, audit, gateway
 from app.services.account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery
 from app.services.account_capacity import account_capacity_decision
@@ -742,21 +742,54 @@ def _ensure_membership_refs(
 
 
 def _membership_static_refs(session: Session, action: Action, payload: EnsureChannelMembershipPayload) -> list[str]:
-    refs = [payload.invite_link]
     target = session.get(OperationTarget, payload.channel_target_id)
     candidate_refs = [group.tg_peer_id for group in _membership_candidate_groups(session, action.tenant_id, payload)]
+    verified_refs = _membership_verified_peer_refs(session, action.tenant_id, target, payload)
+    refs = []
     if payload.target_type == "group" and payload.require_send:
         refs.extend(candidate_refs)
+        refs.extend(verified_refs)
+    else:
+        refs.append(payload.invite_link)
     username = payload.target_username or ""
     if target and target.tenant_id == action.tenant_id:
         username = username or target.username or ""
-    if username:
+    if username and not (payload.target_type == "group" and payload.require_send):
         refs.extend([username, f"https://t.me/{username.lstrip('@')}"])
     refs.append(payload.channel_id)
     if target and target.tenant_id == action.tenant_id:
         refs.append(target.tg_peer_id)
     refs.extend(candidate_refs)
+    refs.extend(verified_refs)
+    if payload.target_type == "group" and payload.require_send:
+        refs.append(payload.invite_link)
+        if username:
+            refs.extend([username, f"https://t.me/{username.lstrip('@')}"])
     return _dedupe_refs(refs)
+
+
+def _membership_verified_peer_refs(
+    session: Session,
+    tenant_id: int,
+    target: OperationTarget | None,
+    payload: EnsureChannelMembershipPayload,
+) -> list[str]:
+    names = [payload.target_display]
+    if target and target.tenant_id == tenant_id:
+        names.append(target.title)
+    clean_names = [name for name in _dedupe_refs(names) if name]
+    if not clean_names:
+        return []
+    refs = session.scalars(
+        select(VerificationTask.target_peer_id)
+        .where(
+            VerificationTask.tenant_id == tenant_id,
+            VerificationTask.target_display.in_(clean_names),
+        )
+        .order_by(VerificationTask.id.desc())
+        .limit(10)
+    )
+    return [ref for ref in _dedupe_refs([str(ref or "") for ref in refs]) if _is_stable_telegram_peer(ref)]
 
 
 def _membership_dialog_refs(ctx: MembershipDispatchContext) -> list[str]:
@@ -967,6 +1000,10 @@ def _recover_group_send_permission_with_linked_channel(
     followed = follow(account.id, payload.channel_id, account.session_ciphertext, credentials)
     if not followed.ok:
         return OperationResult(False, "失败", followed.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, followed.detail or detail)
+    if retry_target_membership:
+        refreshed = _retry_target_membership_after_required_channel(action, account, credentials, payload)
+        if not refreshed.ok:
+            return refreshed
     reprobe = gateway.probe_target_capabilities(account.id, payload.channel_id, payload.target_type, account.session_ciphertext, credentials)
     if reprobe.ok:
         return OperationResult(True, detail=followed.detail or "已关注关联频道并通过群发言验证")
@@ -1500,6 +1537,7 @@ def _try_auto_follow_verification(ctx: MembershipDispatchContext, verification_t
         ctx.credentials,
         payload,
         probe_result,
+        retry_target_membership=ctx.action.action_type in MEMBERSHIP_ACTION_TYPES,
     )
     if not result.ok:
         required_channels = _required_channels_from_verification_context(ctx, verification_task)
@@ -1512,6 +1550,7 @@ def _try_auto_follow_verification(ctx: MembershipDispatchContext, verification_t
                 payload,
                 probe_result,
                 required_channels,
+                retry_target_membership=ctx.action.action_type in MEMBERSHIP_ACTION_TYPES,
             )
     return _apply_context_fallback_result(ctx, verification_task, payload, result)
 
@@ -1536,7 +1575,16 @@ def _try_context_verification_fallback(ctx: MembershipDispatchContext, verificat
     required_channels = _required_channel_references(context_text)
     if required_channels and _auto_follow_required_channel_enabled(ctx.session, ctx.action):
         verification_task.suggested_action = "关注频道"
-        followed = _follow_required_channels_and_reprobe(ctx.session, ctx.action, ctx.account, ctx.credentials, payload, image_result, required_channels)
+        followed = _follow_required_channels_and_reprobe(
+            ctx.session,
+            ctx.action,
+            ctx.account,
+            ctx.credentials,
+            payload,
+            image_result,
+            required_channels,
+            retry_target_membership=ctx.action.action_type in MEMBERSHIP_ACTION_TYPES,
+        )
         return _apply_context_fallback_result(ctx, verification_task, payload, followed)
     if not _context_requires_button_click(context_text):
         return None

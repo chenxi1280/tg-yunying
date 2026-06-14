@@ -203,9 +203,10 @@ def test_auto_follow_verification_uses_explicit_required_channel_links(monkeypat
         )
 
     assert result.ok is True
-    assert followed == ["second_channel", "qiyue201"]
+    assert followed == ["second_channel", "qiyue201", "-100812"]
     assert probes == ["-100812"]
     assert verification.status == "已处理"
+    assert action.result["target_membership_retried_after_required_channel"] is True
 
 
 def test_auto_follow_verification_reads_button_links_from_context(monkeypatch) -> None:
@@ -248,8 +249,9 @@ def test_auto_follow_verification_reads_button_links_from_context(monkeypatch) -
         )
 
     assert result.ok is True
-    assert followed == ["qiyue201"]
+    assert followed == ["qiyue201", "-100813"]
     assert verification.status == "已处理"
+    assert action.result["target_membership_retried_after_required_channel"] is True
 
 
 def test_membership_summary_uses_send_ready_title_group_when_target_peer_is_stale() -> None:
@@ -325,6 +327,37 @@ def test_permission_denied_verification_reads_selected_group_ref(monkeypatch) ->
 
     assert verification.group_id == resolved_group.id
     assert verification.target_peer_id == "-1002766"
+
+
+def test_target_membership_prefers_verified_peer_over_stale_username(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    calls: list[str] = []
+
+    def fake_join(_account_id, target_peer_id, *_args, **_kwargs):
+        calls.append(target_peer_id)
+        if target_peer_id == "-1003426646531":
+            return OperationResult(True, detail="joined")
+        return OperationResult(False, "失败", "peer_invalid", f'No user has "{target_peer_id}" as username')
+
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+    monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", fake_join)
+    monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(True, detail="可发言"))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        target = OperationTarget(id=914, tenant_id=1, target_type="group", tg_peer_id="qdsfxy", username="qdsfxy", title="青岛师范学院", auth_status="只读", can_send=False)
+        task = Task(id="task-stale-username", tenant_id=1, name="青岛师范学院", type="group_ai_chat", status="running")
+        account = TgAccount(id=44, tenant_id=1, display_name="账号44", phone_masked="44", status="在线", session_ciphertext="session")
+        verification = VerificationTask(tenant_id=1, account_id=44, verification_type="群发言权限", target_peer_id="-1003426646531", target_display="青岛师范学院", status="需人工处理")
+        action = Action(id="membership-stale-username", tenant_id=1, task_id=task.id, task_type="group_ai_chat", action_type="ensure_target_membership", account_id=44, payload={"channel_id": "qdsfxy", "channel_target_id": 914, "target_type": "group", "target_display": "青岛师范学院", "target_username": "qdsfxy", "invite_link": "https://t.me/qdsfxy", "require_send": True})
+        session.add_all([target, task, account, verification, action])
+        session.commit()
+
+        assert dispatcher.dispatch_action(session, action) is True
+
+    assert calls[0] == "-1003426646531"
+    assert "qdsfxy" not in calls[:1]
 
 
 def test_permission_denied_verification_prefers_send_ready_title_group_for_reader_fallback(monkeypatch) -> None:
@@ -641,8 +674,9 @@ def test_image_verification_falls_back_to_required_channel_links(monkeypatch) ->
         )
 
     assert result.ok is True
-    assert followed == ["qdsf_report"]
+    assert followed == ["qdsf_report", "-100804"]
     assert verification.suggested_action == "关注频道"
+    assert action.result["target_membership_retried_after_required_channel"] is True
 
 
 def test_image_verification_falls_back_to_button_click_when_context_has_buttons(monkeypatch) -> None:

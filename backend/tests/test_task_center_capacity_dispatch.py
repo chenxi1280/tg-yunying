@@ -256,7 +256,7 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
                 action_type="send_message",
                 account_id=11,
                 status="pending",
-                scheduled_at=now_value,
+                scheduled_at=_now(),
                 payload={"group_id": 7, "message_text": "new", "review_approved": True, "hard_hourly_target": True},
             )
         )
@@ -1156,7 +1156,6 @@ def test_group_send_permission_denied_auto_verifies_and_requeues(monkeypatch):
 def test_target_membership_follows_linked_channel_when_join_entry_is_blocked(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -1173,15 +1172,23 @@ def test_target_membership_follows_linked_channel_when_join_entry_is_blocked(mon
                 action_type="ensure_target_membership",
                 account_id=11,
                 status="pending",
-                scheduled_at=now_value,
+                scheduled_at=_now(),
                 payload={"channel_id": "-10021", "channel_target_id": 21, "target_type": "group", "target_display": "目标群", "require_send": True},
             )
         )
         session.commit()
 
         followed: list[tuple[int, str]] = []
+        joined: list[str] = []
+
+        def fake_ensure_membership(_account_id, target_peer_id, *_args, **_kwargs):
+            joined.append(target_peer_id)
+            if len(joined) == 1:
+                return OperationResult(False, "失败", "群无权限", "缓存频道不可访问 / 账号无权限")
+            return OperationResult(True, "已处理", detail="已加入目标群")
+
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
-        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *args, **kwargs: OperationResult(False, "失败", "群无权限", "缓存频道不可访问 / 账号无权限"))
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", fake_ensure_membership)
         monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", lambda *args, **kwargs: OperationResult(True, detail="group:-10021:可访问"))
         monkeypatch.setattr(
             dispatcher.gateway,
@@ -1194,11 +1201,13 @@ def test_target_membership_follows_linked_channel_when_join_entry_is_blocked(mon
         assert dispatcher.dispatch_action(session, action) is True
 
         link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.group_id == 7, TgGroupAccount.account_id == 11))
+        assert joined == ["-10021", "-10021"]
         assert followed == [(11, "-10021")]
         assert link is not None and link.can_send is True
         assert action.status == "success"
         assert action.result["membership_status"] == "joined"
         assert action.result["prerequisite_channel_followed"] is True
+        assert action.result["target_membership_retried_after_required_channel"] is True
         assert session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7)) is None
 
 
@@ -1976,7 +1985,7 @@ def test_claim_actions_does_not_starve_overdue_hard_hourly_send_behind_membershi
                     action_type="ensure_target_membership",
                     account_id=11,
                     status="pending",
-                    scheduled_at=now_value,
+                    scheduled_at=_now(),
                     payload={"channel_id": "-1007", "channel_target_id": 7, "target_type": "group", "require_send": True},
                 ),
                 Action(
@@ -2638,7 +2647,7 @@ def test_membership_prefers_existing_group_peer_over_stale_username(monkeypatch)
         assert link.can_send is True
 
 
-def test_membership_prefers_username_before_numeric_peer_for_join(monkeypatch):
+def test_membership_prefers_stable_peer_before_username_for_send_required_join(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = _now()
@@ -2675,7 +2684,7 @@ def test_membership_prefers_username_before_numeric_peer_for_join(monkeypatch):
         action = session.get(Action, "action-membership")
         assert dispatcher.dispatch_action(session, action) is True
 
-        assert calls == ["qdsfxy"]
+        assert calls == ["-1002149"]
         assert session.get(Action, "action-membership").status == "success"
 
 

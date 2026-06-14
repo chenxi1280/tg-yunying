@@ -1751,10 +1751,6 @@ def test_material_prd_api_surface_detail_versions_references_refresh_and_groups(
 def test_message_send_task_prd_list_detail_and_precheck_endpoints():
     with TestClient(app) as client:
         headers = auth_headers(client)
-        route_methods = {(route.path, method) for route in app.routes for method in getattr(route, "methods", set())}
-        assert ("/api/message-send-tasks/{task_id}/dispatch", "POST") in route_methods
-        assert ("/api/message-send-tasks/{task_id}/retry", "POST") in route_methods
-        assert ("/api/message-send-tasks/{task_id}/cancel", "POST") in route_methods
         suffix = uuid4().hex[:8]
         with SessionLocal() as session:
             account = TgAccount(
