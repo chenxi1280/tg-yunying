@@ -2227,6 +2227,65 @@ def test_recovery_reprobes_existing_unknown_target_membership_action(monkeypatch
         assert link.can_send is True
 
 
+def test_membership_retries_stale_username_with_existing_group_peer(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    calls: list[str] = []
+    probes: list[str] = []
+
+    def fake_join(_account_id, channel_peer_id, *_args, **_kwargs):
+        calls.append(channel_peer_id)
+        if channel_peer_id == "@qdsfxy":
+            return OperationResult(False, "失败", "未知错误", 'No user has "qdsfxy" as username')
+        return OperationResult(True, detail="joined")
+
+    def fake_probe(_account_id, target_peer_id, _target_type, *_args, **_kwargs):
+        probes.append(target_peer_id)
+        return OperationResult(True, detail="可发言")
+
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+    monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", fake_join)
+    monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", fake_probe)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=7, tenant_id=1, title="青岛师范学院", target_type="group", tg_peer_id="@qdsfxy"))
+        session.add(TgGroup(id=2149, tenant_id=1, title="青岛师范学院", tg_peer_id="-1002149", can_send=False))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
+        session.add(Task(id="task-membership", tenant_id=1, name="retry", type="target_admission_retry", status="running", stats={}))
+        session.add(
+            Action(
+                id="action-membership",
+                tenant_id=1,
+                task_id="task-membership",
+                task_type="target_admission_retry",
+                action_type="ensure_target_membership",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"channel_id": "@qdsfxy", "channel_target_id": 7, "target_type": "group", "target_display": "青岛师范学院", "require_send": True},
+            )
+        )
+        session.commit()
+
+        action = session.get(Action, "action-membership")
+        assert dispatcher.dispatch_action(session, action) is True
+
+        action = session.get(Action, "action-membership")
+        target = session.get(OperationTarget, 7)
+        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.account_id == 11))
+        assert calls == ["@qdsfxy", "-1002149"]
+        assert probes == ["-1002149"]
+        assert action.status == "success"
+        assert action.result["membership_fallback_ref"] == "-1002149"
+        assert action.result["membership_peer_ref"] == "-1002149"
+        assert action.result["target_peer_updated"] is True
+        assert target.tg_peer_id == "-1002149"
+        assert link.group_id == 2149
+        assert link.can_send is True
+
+
 def test_retry_failed_only_requeues_unknown_after_send_actions():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

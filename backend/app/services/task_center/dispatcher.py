@@ -27,7 +27,7 @@ from app.timezone import BEIJING_TZ
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
-from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
+from .channel_membership import account_satisfies_authorized_target, linked_channel_group
 from .payloads import EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
@@ -77,6 +77,16 @@ _GROUP_SEND_TEXT_VERIFICATION_MARKERS = (
     "等于",
     "captcha",
     "code",
+)
+_PEER_REF_INVALID_MARKERS = (
+    "no user has",
+    "could not find the input entity",
+    "cannot find any entity",
+    "目标实体无法解析",
+    "目标群无效",
+    "目标无效",
+    "频道不可访问",
+    "缺少频道地址",
 )
 _GROUP_SEND_IMAGE_VERIFICATION_MARKERS = (
     "图片验证码",
@@ -644,7 +654,8 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
 
 
 def _dispatch_channel_membership(session: Session, action: Action, account: TgAccount, credentials, payload: EnsureChannelMembershipPayload) -> bool:
-    existing_group = session.scalar(select(TgGroup).where(TgGroup.tenant_id == action.tenant_id, TgGroup.tg_peer_id == payload.channel_id))
+    lookup_ctx = MembershipDispatchContext(session, action, account, credentials, payload, None)
+    payload, existing_group = _membership_existing_group_for_account(lookup_ctx)
     if existing_group:
         existing_link = session.scalar(
             select(TgGroupAccount).where(
@@ -656,29 +667,166 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
         if existing_link and _dispatch_existing_membership(session, action, account, credentials, payload, existing_link):
             return True
     attempt = _begin_execution_attempt(session, action, account)
-    ctx = MembershipDispatchContext(session, action, account, credentials, payload, attempt)
     _mark_executing(action)
     session.commit()
     _mark_gateway_call_started(session, attempt)
-    result = gateway.ensure_channel_membership(
-        account.id,
-        payload.channel_id,
-        account.session_ciphertext,
-        credentials,
-        invite_link=payload.invite_link,
-    )
+    ctx = MembershipDispatchContext(session, action, account, credentials, payload, attempt)
+    result, payload, fallback_ref = _ensure_membership_with_peer_candidates(ctx)
+    runtime_ctx = MembershipDispatchContext(session, action, account, credentials, payload, attempt)
+    _record_membership_peer_ref(action, payload, fallback_ref)
     if result.ok:
         probe_result = _probe_joined_group_send_permission(session, action, account, credentials, payload)
         if probe_result is not None and not probe_result.ok:
-            return _handle_group_send_permission_denied(ctx, probe_result, membership_status="joined", skip_on_failure=False)
+            return _handle_group_send_permission_denied(runtime_ctx, probe_result, membership_status="joined", skip_on_failure=False)
         _mark_membership_joined(session, action, account, payload)
     elif result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
-        return _handle_group_send_permission_denied(ctx, result, membership_status="joined", skip_on_failure=True)
-    failure_type = _classify_membership_failure(result.failure_type, result.detail or result.membership_status)
-    _apply_operation_result(action, account, result.ok, failure_type, result.detail or result.membership_status, attempt=attempt)
+        return _handle_group_send_permission_denied(runtime_ctx, result, membership_status="joined", skip_on_failure=True)
+    result_detail = _membership_result_detail(result)
+    failure_type = _classify_membership_failure(result.failure_type, result_detail)
+    _apply_operation_result(action, account, result.ok, failure_type, result_detail, attempt=attempt)
     if result.ok:
-        action.result = {**(action.result or {}), "membership_status": result.membership_status or "joined"}
+        membership_status = getattr(result, "membership_status", "") or "joined"
+        action.result = {**(action.result or {}), "membership_status": membership_status}
     return True
+
+
+def _membership_existing_group_for_account(ctx: MembershipDispatchContext) -> tuple[EnsureChannelMembershipPayload, TgGroup | None]:
+    for group in _membership_candidate_groups(ctx.session, ctx.action.tenant_id, ctx.payload):
+        link = _channel_account_link(ctx.session, ctx.action.tenant_id, group.id, ctx.account.id)
+        if link:
+            return _payload_with_channel_ref(ctx.payload, group.tg_peer_id, group.title), group
+    return ctx.payload, None
+
+
+def _membership_result_detail(result) -> str:
+    return result.detail or getattr(result, "membership_status", "")
+
+
+def _ensure_membership_with_peer_candidates(ctx: MembershipDispatchContext):
+    result, next_payload, fallback_ref = _ensure_membership_refs(ctx, _membership_static_refs(ctx.session, ctx.action, ctx.payload))
+    if result.ok or not _membership_peer_ref_invalid(result):
+        return result, next_payload, fallback_ref
+    dialog_refs = _membership_dialog_refs(ctx)
+    if not dialog_refs:
+        return result, next_payload, fallback_ref
+    return _ensure_membership_refs(ctx, dialog_refs, fallback_ref=fallback_ref)
+
+
+def _ensure_membership_refs(
+    ctx: MembershipDispatchContext,
+    refs: list[str],
+    *,
+    fallback_ref: str = "",
+):
+    result = OperationResult(False, "失败", FailureType.PEER_INVALID.value, "缺少可用目标准入引用")
+    selected_payload = ctx.payload
+    for ref in _dedupe_refs(refs):
+        candidate = _payload_with_channel_ref(ctx.payload, ref, ctx.payload.target_display)
+        result = gateway.ensure_channel_membership(
+            ctx.account.id,
+            candidate.channel_id,
+            ctx.account.session_ciphertext,
+            ctx.credentials,
+            invite_link=_membership_invite_for_ref(ctx.payload, ref),
+        )
+        selected_payload = candidate
+        fallback_ref = fallback_ref or (ref if ref != ctx.payload.channel_id else "")
+        if result.ok or not _membership_peer_ref_invalid(result):
+            return result, selected_payload, fallback_ref
+    return result, selected_payload, fallback_ref
+
+
+def _membership_static_refs(session: Session, action: Action, payload: EnsureChannelMembershipPayload) -> list[str]:
+    refs = [payload.channel_id, payload.invite_link]
+    target = session.get(OperationTarget, payload.channel_target_id)
+    if target and target.tenant_id == action.tenant_id:
+        refs.extend([target.tg_peer_id, target.username, f"https://t.me/{target.username.lstrip('@')}" if target.username else ""])
+    refs.extend(group.tg_peer_id for group in _membership_candidate_groups(session, action.tenant_id, payload))
+    return _dedupe_refs(refs)
+
+
+def _membership_dialog_refs(ctx: MembershipDispatchContext) -> list[str]:
+    list_groups = getattr(gateway, "list_groups", None)
+    if not callable(list_groups):
+        return []
+    try:
+        groups = list_groups(ctx.account.id, ctx.account.session_ciphertext, ctx.credentials)
+    except Exception as exc:  # noqa: BLE001 - expose lookup failure without hiding original join error.
+        ctx.action.result = {**(ctx.action.result or {}), "membership_dialog_lookup_error": str(exc)[:200]}
+        return []
+    names = {name for name in (ctx.payload.target_display, _target_title_from_action(ctx.action, ctx.payload)) if name}
+    return _dedupe_refs([group.tg_peer_id for group in groups if getattr(group, "title", "") in names])
+
+
+def _target_title_from_action(action: Action, payload: EnsureChannelMembershipPayload) -> str:
+    if payload.target_display:
+        return payload.target_display
+    return str((action.payload or {}).get("target_display") or "")
+
+
+def _membership_candidate_groups(session: Session, tenant_id: int, payload: EnsureChannelMembershipPayload) -> list[TgGroup]:
+    names = [payload.target_display]
+    target = session.get(OperationTarget, payload.channel_target_id)
+    if target and target.tenant_id == tenant_id:
+        names.append(target.title)
+    ref_filters = [TgGroup.tg_peer_id == payload.channel_id]
+    clean_names = [name for name in _dedupe_refs(names) if name]
+    if clean_names:
+        ref_filters.append(TgGroup.title.in_(clean_names))
+    groups = list(session.scalars(select(TgGroup).where(TgGroup.tenant_id == tenant_id, or_(*ref_filters))))
+    return sorted(groups, key=_membership_group_rank)
+
+
+def _membership_group_rank(group: TgGroup) -> tuple[int, int, int]:
+    stable_rank = 0 if _is_stable_telegram_peer(group.tg_peer_id) else 1
+    send_rank = 0 if group.can_send else 1
+    return (stable_rank, send_rank, int(group.id or 0))
+
+
+def _payload_with_channel_ref(payload: EnsureChannelMembershipPayload, ref: str, display: str) -> EnsureChannelMembershipPayload:
+    return payload.model_copy(update={"channel_id": ref, "target_display": display or payload.target_display})
+
+
+def _membership_invite_for_ref(payload: EnsureChannelMembershipPayload, ref: str) -> str:
+    if ref == payload.channel_id:
+        return payload.invite_link
+    if _looks_like_invite_ref(ref):
+        return ref
+    return ""
+
+
+def _looks_like_invite_ref(ref: str) -> bool:
+    value = (ref or "").strip()
+    return value.startswith(("+", "https://t.me/+", "http://t.me/+", "t.me/+", "https://telegram.me/+", "telegram.me/+"))
+
+
+def _dedupe_refs(refs) -> list[str]:
+    result: list[str] = []
+    for raw in refs:
+        ref = str(raw or "").strip()
+        if ref and ref not in result:
+            result.append(ref)
+    return result
+
+
+def _membership_peer_ref_invalid(result) -> bool:
+    failure_type = result.failure_type or ""
+    detail = (result.detail or failure_type).lower()
+    if failure_type == FailureType.PEER_INVALID.value:
+        return True
+    return failure_type == FailureType.UNKNOWN.value and any(marker in detail for marker in _PEER_REF_INVALID_MARKERS)
+
+
+def _record_membership_peer_ref(action: Action, payload: EnsureChannelMembershipPayload, fallback_ref: str) -> None:
+    result = {**(action.result or {}), "membership_peer_ref": payload.channel_id}
+    if fallback_ref:
+        result["membership_fallback_ref"] = fallback_ref
+    action.result = result
+
+
+def _is_stable_telegram_peer(peer_id: str) -> bool:
+    value = str(peer_id or "").strip()
+    return value.lstrip("-").isdigit()
 
 
 def _dispatch_existing_membership(
@@ -864,31 +1012,81 @@ def _verification_result_snapshot(action: Action) -> dict[str, object]:
 
 
 def _mark_membership_joined(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload) -> None:
-    mark_channel_membership_joined(
-        session,
-        action.tenant_id,
-        payload.channel_target_id,
-        account.id,
-        permission_label="已关注" if payload.target_type == "channel" else "可发言",
+    target = session.get(OperationTarget, payload.channel_target_id)
+    if not target or target.tenant_id != action.tenant_id:
+        raise ValueError("operation target not found")
+    group = _membership_group_for_payload(session, target, payload, create=True)
+    label = "已关注" if payload.target_type == "channel" else "可发言"
+    link = _group_account_link(session, action.tenant_id, group.id, account.id, create=True)
+    link.permission_label = label
+    link.can_send = True if payload.target_type == "group" else bool(link.can_send or target.can_send)
+    group.auth_status = GroupAuthStatus.AUTHORIZED.value
+    group.can_send = bool(group.can_send or link.can_send)
+    target.auth_status = GroupAuthStatus.AUTHORIZED.value
+    target.can_send = bool(target.can_send or link.can_send)
+    target.updated_at = _now()
+    _sync_target_peer_after_membership(session, target, payload.channel_id, action=action)
+
+
+def _membership_group_for_payload(
+    session: Session,
+    target: OperationTarget,
+    payload: EnsureChannelMembershipPayload,
+    *,
+    create: bool,
+) -> TgGroup:
+    group = session.scalar(select(TgGroup).where(TgGroup.tenant_id == target.tenant_id, TgGroup.tg_peer_id == payload.channel_id))
+    if group or not create:
+        return group
+    group = TgGroup(
+        tenant_id=target.tenant_id,
+        tg_peer_id=payload.channel_id,
+        title=payload.target_display or target.title,
+        group_type="channel" if payload.target_type == "channel" else "supergroup",
+        member_count=target.member_count,
+        auth_status=target.auth_status,
+        can_send=target.can_send,
     )
+    session.add(group)
+    session.flush()
+    return group
+
+
+def _sync_target_peer_after_membership(session: Session, target: OperationTarget, peer_ref: str, *, action: Action) -> None:
+    if not _is_stable_telegram_peer(peer_ref) or target.tg_peer_id == peer_ref:
+        return
+    conflict = session.scalar(
+        select(OperationTarget).where(
+            OperationTarget.tenant_id == target.tenant_id,
+            OperationTarget.tg_peer_id == peer_ref,
+            OperationTarget.id != target.id,
+        )
+    )
+    if conflict:
+        action.result = {**(action.result or {}), "target_peer_update_skipped": "peer_conflict"}
+        return
+    target.tg_peer_id = peer_ref
+    target.updated_at = _now()
+    action.result = {**(action.result or {}), "target_peer_updated": True}
 
 
 def _record_group_send_permission_allowed(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload) -> None:
     target = session.get(OperationTarget, payload.channel_target_id)
     if not target:
         return
-    group = linked_channel_group(session, target, create=True)
+    group = _membership_group_for_payload(session, target, payload, create=True)
     link = _group_account_link(session, action.tenant_id, group.id, account.id, create=True)
     link.can_send = True
     link.permission_label = "可发言"
     _sync_group_target_send_state(session, group, target)
+    _sync_target_peer_after_membership(session, target, payload.channel_id, action=action)
 
 
 def _record_group_send_permission_denied(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload, detail: str):
     target = session.get(OperationTarget, payload.channel_target_id)
     if not target:
         return
-    group = linked_channel_group(session, target, create=True)
+    group = _membership_group_for_payload(session, target, payload, create=True)
     link = _group_account_link(session, action.tenant_id, group.id, account.id, create=True)
     link.can_send = False
     link.permission_label = (detail or FailureType.GROUP_PERMISSION_DENIED.value)[:80]
