@@ -665,6 +665,10 @@ def test_production_ai_hourly_probe_reports_membership_failures():
     assert "recent_failed_membership_actions" in workflow
     assert "recent_verification_tasks" in workflow
     assert "membership_status" in workflow
+    assert "membership_peer_ref" in workflow
+    assert "membership_fallback_ref" in workflow
+    assert "target_peer_id" in workflow
+    assert "account_policy_reason" in workflow
     assert "AI_HOURLY_INSPECT_START" in workflow
     assert "AI_HOURLY_TASK_VOLUME_TASK=" in workflow
     assert "AI_HOURLY_TASK_VOLUME_SUMMARY=" in workflow

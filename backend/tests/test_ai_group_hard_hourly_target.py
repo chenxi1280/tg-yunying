@@ -479,10 +479,10 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
         created = build_group_ai_chat_plan(session, task)
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
-    assert created == 10
+    assert created == 300
     assert captured["counts"] == []
-    assert len(actions) == 10
-    assert task.stats["hard_hourly_last_planned_count"] == 10
+    assert len(actions) == 300
+    assert task.stats["hard_hourly_last_planned_count"] == 300
     assert task.stats["hard_hourly_next_check_at"] == "2026-06-07T20:10:30"
     assert all(action.payload["hard_hourly_deficit_at_plan"] == 300 for action in actions)
     assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
@@ -540,10 +540,10 @@ def test_group_ai_chat_hard_hourly_ignores_configured_round_size_for_deficit(mon
         created = build_group_ai_chat_plan(session, task)
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
 
-    assert created == 10
+    assert created == 300
     assert captured["counts"] == []
-    assert len(actions) == 10
-    assert task.stats["hard_hourly_last_planned_count"] == 10
+    assert len(actions) == 300
+    assert task.stats["hard_hourly_last_planned_count"] == 300
     assert all(action.payload["hard_hourly_target"] is True for action in actions)
     assert all(action.payload["ai_generation_status"] == "pending" for action in actions)
 
@@ -662,10 +662,10 @@ def test_group_ai_chat_hard_hourly_scans_goal_sized_pool_when_front_accounts_are
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.account_id.asc())))
 
     planned_account_ids = [int(action.account_id) for action in actions if (action.payload or {}).get("hard_hourly_target")]
-    assert created == 10
-    assert planned_account_ids == list(range(181, 191))
-    assert task.stats["hard_hourly_last_planned_count"] == 10
-    assert "hard_hourly_last_blockers" not in task.stats
+    assert created == 20
+    assert planned_account_ids == list(range(181, 201))
+    assert task.stats["hard_hourly_last_planned_count"] == 20
+    assert task.stats["hard_hourly_last_blockers"] == {"account_capacity": 200}
 
 
 def test_group_ai_chat_hard_hourly_uses_accounts_available_later_in_hour(monkeypatch):
