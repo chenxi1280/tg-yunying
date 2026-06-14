@@ -848,8 +848,19 @@ def _skip_membership_already_joined(action: Action) -> None:
 
 
 def _skip_membership_permission_denied(action: Action, detail: str) -> None:
+    verification_result = _verification_result_snapshot(action)
     _skip(action, "membership_permission_denied", f"账号无法加入/访问目标：{detail}")
-    action.result = {**(action.result or {}), "membership_status": "permission_denied", "validation_stage": "target_membership_runtime"}
+    action.result = {
+        **(action.result or {}),
+        **verification_result,
+        "membership_status": "permission_denied",
+        "validation_stage": "target_membership_runtime",
+    }
+
+
+def _verification_result_snapshot(action: Action) -> dict[str, object]:
+    result = action.result or {}
+    return {key: result[key] for key in ("verification_task_id", "verification_status", "verification_action") if key in result}
 
 
 def _mark_membership_joined(session: Session, action: Action, account: TgAccount, payload: EnsureChannelMembershipPayload) -> None:
@@ -882,7 +893,7 @@ def _record_group_send_permission_denied(session: Session, action: Action, accou
     link.can_send = False
     link.permission_label = (detail or FailureType.GROUP_PERMISSION_DENIED.value)[:80]
     _sync_group_target_send_state(session, group, target)
-    return create_verification_task(
+    verification = create_verification_task(
         session,
         tenant_id=action.tenant_id,
         account_id=account.id,
@@ -894,6 +905,13 @@ def _record_group_send_permission_denied(session: Session, action: Action, accou
         target_peer_id=group.tg_peer_id,
         target_display=group.title,
     )
+    action.result = {
+        **(action.result or {}),
+        "verification_task_id": verification.id,
+        "verification_status": verification.status,
+        "verification_action": verification.suggested_action,
+    }
+    return verification
 
 
 def _auto_verify_and_apply_group_send(ctx: MembershipDispatchContext, verification_task, *, membership_status: str) -> bool:

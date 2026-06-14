@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -17,7 +18,8 @@ from app.ai_gateway import (
     normalize_ai_model_name,
 )
 from app.database import Base
-from app.integrations.telegram.gateway import TelethonTelegramGateway
+from app.integrations.telegram import DeveloperAppCredentials
+from app.integrations.telegram.gateway import TelethonTelegramGateway, _permission_detail_from_context_rows
 from app.models import AiProvider, FailureType, Tenant, TenantAiSetting
 from app.security import encrypt_secret
 from app.services.task_center.ai_generator import (
@@ -70,6 +72,63 @@ def test_send_message_private_channel_error_maps_to_group_permission_denied():
 
     assert result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value
     assert result.detail == "群无权限或账号不可发言"
+
+
+def test_permission_detail_from_context_rows_exposes_actionable_gate_prompt():
+    detail = _permission_detail_from_context_rows(
+        [
+            {"text": "普通聊天内容"},
+            {"text": "入群验证：请先关注 @alpha、https://t.me/beta_channel 后输入 3 + 5"},
+        ],
+    )
+
+    assert detail == "群无权限或账号不可发言：入群验证：请先关注 @alpha、https://t.me/beta_channel 后输入 3 + 5"
+
+
+def test_probe_permission_denied_uses_recent_context_detail(monkeypatch):
+    class FakeMessage:
+        id = 7
+        date = None
+        media = None
+        buttons = None
+        message = "入群验证：请先关注 @alpha 和 @beta 后输入 3 + 5"
+
+        async def get_sender(self):
+            return SimpleNamespace(first_name="验证机器人")
+
+    class FakeClient:
+        async def is_user_authorized(self):
+            return True
+
+        async def get_permissions(self, _target, _user):
+            return SimpleNamespace(send_messages=False, post_messages=False, participant=None)
+
+        async def get_messages(self, _target, *, limit):
+            assert limit > 1
+            return [FakeMessage()]
+
+    async def fake_client(*_args, **_kwargs):
+        return FakeClient()
+
+    async def fake_target(*_args, **_kwargs):
+        return SimpleNamespace(default_banned_rights=None)
+
+    gateway = TelethonTelegramGateway()
+    monkeypatch.setattr(gateway, "_get_or_create_client", fake_client)
+    monkeypatch.setattr("app.integrations.telegram.gateway.resolve_telethon_target", fake_target)
+
+    result = gateway._run(
+        gateway._probe_target_capabilities_async(
+            "raw-session",
+            "-1007",
+            "group",
+            DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1),
+        )
+    )
+
+    assert result.ok is False
+    assert result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value
+    assert result.detail == "群无权限或账号不可发言：入群验证：请先关注 @alpha 和 @beta 后输入 3 + 5"
 
 
 class FakeResponse:

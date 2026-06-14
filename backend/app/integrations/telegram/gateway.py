@@ -79,6 +79,50 @@ def _permission_detail_with_references(detail: str, fallback: str = GROUP_PERMIS
     return f"{fallback}：{detail}" if has_reference else fallback
 
 
+def _permission_detail_from_context_rows(rows: list[dict[str, Any]], fallback: str = TARGET_PERMISSION_DETAIL) -> str:
+    prompts = _actionable_permission_prompts(rows)
+    if not prompts:
+        return fallback
+    return f"{GROUP_PERMISSION_DETAIL}：{' | '.join(prompts[:3])}"
+
+
+def _actionable_permission_prompts(rows: list[dict[str, Any]]) -> list[str]:
+    prompts: list[str] = []
+    for row in rows:
+        text = str(row.get("text") or "").strip()
+        if not text or not _permission_prompt_is_actionable(text):
+            continue
+        compact = re.sub(r"\s+", " ", text)[:VERIFICATION_CONTEXT_PREVIEW_LIMIT]
+        if compact not in prompts:
+            prompts.append(compact)
+    return prompts
+
+
+def _permission_prompt_is_actionable(text: str) -> bool:
+    normalized = text.lower()
+    if _permission_detail_with_references(text) != GROUP_PERMISSION_DETAIL:
+        return True
+    markers = (
+        "验证",
+        "验证码",
+        "captcha",
+        "code",
+        "关注",
+        "订阅",
+        "加入频道",
+        "点击",
+        "按钮",
+        "[按钮",
+        "+",
+        "＋",
+        "-",
+        "－",
+        "加",
+        "减",
+    )
+    return any(marker.lower() in normalized for marker in markers)
+
+
 async def _verification_context_row(message: Any) -> dict[str, Any] | None:
     text = _verification_message_text(message)
     if not text:
@@ -1106,12 +1150,14 @@ class TelethonTelegramGateway(TelegramGateway):
             target = await resolve_telethon_target(client, target_peer_id, group_id=0)
             default_rights = getattr(target, "default_banned_rights", None)
             if default_rights and getattr(default_rights, "send_messages", False):
-                return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, TARGET_PERMISSION_DETAIL)
+                detail = await self._permission_detail_from_target_context(client, target)
+                return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail)
             if hasattr(client, "get_permissions"):
                 try:
                     permissions = await client.get_permissions(target, "me")
                     if not _can_send_text_in_group(target, permissions):
-                        return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, TARGET_PERMISSION_DETAIL)
+                        detail = await self._permission_detail_from_target_context(client, target)
+                        return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail)
                 except Exception as exc:
                     mapped = self._map_send_error(exc)
                     detail = mapped.detail if mapped.failure_type == FailureType.GROUP_PERMISSION_DENIED.value else TARGET_PERMISSION_DETAIL
@@ -1123,6 +1169,19 @@ class TelethonTelegramGateway(TelegramGateway):
             mapped = self._map_send_error(exc)
             detail = mapped.detail if mapped.failure_type == FailureType.GROUP_PERMISSION_DENIED.value else TARGET_PERMISSION_DETAIL
             return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, detail)
+
+    async def _permission_detail_from_target_context(self, client: Any, target: Any) -> str:
+        try:
+            messages = await client.get_messages(target, limit=VERIFICATION_CONTEXT_DEFAULT_LIMIT)
+        except Exception as exc:  # noqa: BLE001 - probe detail should expose context-read failures.
+            detail = str(exc) or exc.__class__.__name__
+            return f"{TARGET_PERMISSION_DETAIL}；验证上下文读取失败：{detail}"
+        rows: list[dict[str, Any]] = []
+        for message in messages:
+            row = await _verification_context_row(message)
+            if row:
+                rows.append(row)
+        return _permission_detail_from_context_rows(rows)
 
     async def _update_profile_async(
         self,

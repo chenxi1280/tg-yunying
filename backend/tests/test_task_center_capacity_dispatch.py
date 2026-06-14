@@ -1227,6 +1227,7 @@ def test_target_membership_skips_when_joined_probe_still_cannot_send(monkeypatch
         verification = session.scalar(select(VerificationTask).where(VerificationTask.group_id == 7, VerificationTask.account_id == 11))
         assert verification is not None
         assert verification.suggested_action == "关注频道"
+        assert action.result["verification_task_id"] == verification.id
 
 
 def test_group_send_permission_denied_classifies_button_verification(monkeypatch):
