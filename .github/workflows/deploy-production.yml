@@ -53,9 +53,4 @@ jobs:
           set -euo pipefail
           ssh silicon-valley-production-server 'docker ps --filter name=tgyunying --format "{{.Names}} {{.Status}}"'
           ssh silicon-valley-production-server 'docker inspect tgyunying-backend --format "{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}"'
-          ssh silicon-valley-production-server '
-            set -euo pipefail
-            docker stop tgyunying-worker-account-security >/tmp/tgyunying-account-security-stop.log
-            trap "docker start tgyunying-worker-account-security >/tmp/tgyunying-account-security-start.log" EXIT
-            docker exec -i tgyunying-backend python -
-          ' < .github/scripts/ops_initialize_profiles.py
+          ssh silicon-valley-production-server 'docker exec -i tgyunying-backend python -' < .github/scripts/ops_initialize_profiles.py
