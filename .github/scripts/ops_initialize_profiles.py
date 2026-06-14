@@ -8,12 +8,17 @@ from sqlalchemy import select
 
 from app.database import SessionLocal
 from app.models import AccountStatus, Tenant, TgAccount
-from app.services.account_security import account_security_batch_detail
+from app.schemas.account_security import AccountSecurityRetryRequest
+from app.services.account_security import account_security_batch_detail, drain_account_security_batches, retry_account_security_batch
 
 
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 TENANT_ID = 1
-BATCH_IDS = [18, 19]
+PROFILE_BATCH_ID = 18
+AVATAR_BATCH_ID = 19
+PROFILE_ITEM_ID = 1240
+AVATAR_ITEM_ID = 1242
+ACTOR = "codex-prod-profile-init-20260614"
 
 
 def has_cjk(value: str | None) -> bool:
@@ -45,41 +50,37 @@ def remaining_reasons(account: TgAccount) -> list[str]:
     return reasons
 
 
-def batch_rows(session) -> list[dict]:
-    rows = []
-    for batch_id in BATCH_IDS:
-        detail = account_security_batch_detail(session, TENANT_ID, batch_id)
-        failure_types = Counter(item.failure_type for item in detail.items if item.failure_type)
-        item_statuses = Counter(item.status for item in detail.items)
-        attention_items = [
-            {
-                "item_id": item.id,
-                "account_id": item.account_id,
-                "status": item.status,
-                "profile_status": item.profile_status,
-                "username_status": item.username_status,
-                "avatar_status": item.avatar_status,
-                "failure_type": item.failure_type,
-                "failure_detail": (item.failure_detail or "")[:260],
-                "next_retry_at": item.next_retry_at.isoformat() if item.next_retry_at else None,
-            }
-            for item in detail.items
-            if item.status in {"failed", "partial_success", "waiting", "running", "pending"}
-        ]
-        rows.append(
-            {
-                "batch_id": batch_id,
-                "status": detail.status,
-                "total": detail.total_count,
-                "success": detail.success_count,
-                "skipped": detail.skipped_count,
-                "failed": detail.failed_count,
-                "item_statuses": dict(item_statuses),
-                "failure_types": dict(failure_types),
-                "attention_items": attention_items[:80],
-            }
-        )
-    return rows
+def batch_row(session, batch_id: int) -> dict:
+    detail = account_security_batch_detail(session, TENANT_ID, batch_id)
+    item_statuses = Counter(item.status for item in detail.items)
+    attention_items = [
+        {
+            "item_id": item.id,
+            "account_id": item.account_id,
+            "status": item.status,
+            "profile_status": item.profile_status,
+            "avatar_status": item.avatar_status,
+            "failure_type": item.failure_type,
+            "failure_detail": (item.failure_detail or "")[:220],
+            "next_retry_at": item.next_retry_at.isoformat() if item.next_retry_at else None,
+        }
+        for item in detail.items
+        if item.id in {PROFILE_ITEM_ID, AVATAR_ITEM_ID} or item.status in {"failed", "waiting", "running", "pending"}
+    ]
+    return {
+        "batch_id": batch_id,
+        "status": detail.status,
+        "total": detail.total_count,
+        "success": detail.success_count,
+        "skipped": detail.skipped_count,
+        "failed": detail.failed_count,
+        "item_statuses": dict(item_statuses),
+        "attention_items": attention_items[:80],
+    }
+
+
+def print_batches(session, label: str) -> None:
+    print(label, json.dumps([batch_row(session, PROFILE_BATCH_ID), batch_row(session, AVATAR_BATCH_ID)], ensure_ascii=False), flush=True)
 
 
 def print_remaining(session) -> int:
@@ -104,7 +105,6 @@ def print_remaining(session) -> int:
             json.dumps(
                 {
                     "tenant_id": tenant.id,
-                    "tenant_name": tenant.name,
                     "count": len(remaining),
                     "online_count": len(online_remaining),
                     "status_counts": dict(status_counts),
@@ -119,9 +119,29 @@ def print_remaining(session) -> int:
     return total_remaining
 
 
+def retry_single_item(batch_id: int, item_id: int) -> None:
+    with SessionLocal() as session:
+        retry_account_security_batch(
+            session,
+            TENANT_ID,
+            batch_id,
+            AccountSecurityRetryRequest(item_ids=[item_id]),
+            actor=ACTOR,
+        )
+        print_batches(session, f"AFTER_RETRY_ITEM_{item_id}")
+    processed = drain_account_security_batches(SessionLocal, limit=1)
+    print("DRAIN_PROCESSED", json.dumps({"item_id": item_id, "processed": processed}, ensure_ascii=False), flush=True)
+    with SessionLocal() as session:
+        print_batches(session, f"AFTER_DRAIN_ITEM_{item_id}")
+
+
 def main() -> None:
     with SessionLocal() as session:
-        print("QUERY_BATCHES", json.dumps(batch_rows(session), ensure_ascii=False), flush=True)
+        print_batches(session, "BEFORE_TARGETED_RETRY")
+    retry_single_item(PROFILE_BATCH_ID, PROFILE_ITEM_ID)
+    retry_single_item(AVATAR_BATCH_ID, AVATAR_ITEM_ID)
+    with SessionLocal() as session:
+        print_batches(session, "FINAL_BATCHES")
         remaining_total = print_remaining(session)
     print("FINAL_REMAINING_TOTAL", remaining_total, flush=True)
 
