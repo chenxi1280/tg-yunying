@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -594,7 +595,7 @@ def test_hard_hourly_schedule_frontloads_when_bucket_cannot_be_evenly_spaced():
     assert times == [now_value for _ in range(30)]
 
 
-def test_group_ai_chat_hard_hourly_scans_goal_sized_pool_when_front_accounts_are_full(monkeypatch):
+def test_group_ai_chat_hard_hourly_reuses_selected_accounts_when_front_accounts_are_full(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
@@ -662,13 +663,18 @@ def test_group_ai_chat_hard_hourly_scans_goal_sized_pool_when_front_accounts_are
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.account_id.asc())))
 
     planned_account_ids = [int(action.account_id) for action in actions if (action.payload or {}).get("hard_hourly_target")]
-    assert created == 20
-    assert planned_account_ids == list(range(181, 201))
-    assert task.stats["hard_hourly_last_planned_count"] == 20
-    assert task.stats["hard_hourly_last_blockers"] == {"account_capacity": 200}
+    planned_counts = Counter(planned_account_ids)
+    assert created == 220
+    assert set(planned_account_ids) == set(range(101, 201))
+    assert planned_counts[101] == 3
+    assert planned_counts[120] == 3
+    assert planned_counts[121] == 2
+    assert planned_counts[200] == 2
+    assert task.stats["hard_hourly_last_planned_count"] == 220
+    assert "hard_hourly_last_blockers" not in task.stats
 
 
-def test_group_ai_chat_hard_hourly_uses_accounts_available_later_in_hour(monkeypatch):
+def test_group_ai_chat_hard_hourly_uses_current_slot_when_account_cools_down_later(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
@@ -717,13 +723,13 @@ def test_group_ai_chat_hard_hourly_uses_accounts_available_later_in_hour(monkeyp
     hard_actions = [action for action in actions if (action.payload or {}).get("hard_hourly_target")]
     assert created == 2
     assert [action.account_id for action in hard_actions] == [101, 101]
-    assert hard_actions[0].scheduled_at == datetime(2026, 6, 7, 20, 11)
+    assert hard_actions[0].scheduled_at == datetime(2026, 6, 7, 20, 10)
     assert max(action.scheduled_at for action in hard_actions) < datetime(2026, 6, 7, 21, 0)
     assert task.last_error == ""
     assert "hard_hourly_last_blockers" not in task.stats
 
 
-def test_group_ai_chat_hard_hourly_counts_prepared_actions_against_account_hour_limit(monkeypatch):
+def test_group_ai_chat_hard_hourly_reuses_accounts_in_same_round(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
@@ -774,11 +780,11 @@ def test_group_ai_chat_hard_hourly_counts_prepared_actions_against_account_hour_
         created = build_group_ai_chat_plan(session, task)
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.account_id.asc())))
 
-    assert created == 3
-    assert [action.account_id for action in actions] == [101, 102, 103]
+    assert created == 5
+    assert [action.account_id for action in actions] == [101, 101, 102, 102, 103]
     assert task.last_error == ""
-    assert task.stats["hard_hourly_last_planned_count"] == 3
-    assert task.stats["hard_hourly_last_blockers"] == {"account_capacity": 2}
+    assert task.stats["hard_hourly_last_planned_count"] == 5
+    assert "hard_hourly_last_blockers" not in task.stats
 
 
 def test_group_ai_chat_hard_hourly_records_account_blocker_without_accounts(monkeypatch):
@@ -815,7 +821,7 @@ def test_group_ai_chat_hard_hourly_records_account_blocker_without_accounts(monk
     assert task.stats["hard_hourly_last_blockers"] == {"account_unavailable": 3}
 
 
-def test_group_ai_chat_hard_hourly_records_capacity_blocker_when_accounts_are_full(monkeypatch):
+def test_group_ai_chat_hard_hourly_plans_when_accounts_are_full(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 7, 20, 10)
@@ -866,10 +872,10 @@ def test_group_ai_chat_hard_hourly_records_capacity_blocker_when_accounts_are_fu
 
         created = build_group_ai_chat_plan(session, task)
 
-    assert created == 0
-    assert task.last_error == "账号容量已排满，等待账号额度恢复后继续执行"
-    assert task.stats["hard_hourly_last_planned_count"] == 0
-    assert task.stats["hard_hourly_last_blockers"] == {"account_capacity": 3}
+    assert created == 3
+    assert task.last_error == ""
+    assert task.stats["hard_hourly_last_planned_count"] == 3
+    assert "hard_hourly_last_blockers" not in task.stats
 
 
 def test_group_ai_chat_hard_hourly_skips_history_refresh_and_plans(monkeypatch):
