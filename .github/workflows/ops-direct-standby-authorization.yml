@@ -201,9 +201,15 @@ jobs:
                   flow.failure_detail = "主授权未读取到备用登录验证码"
                   session.commit()
                   return {"role": role, "ok": False, "stage": "code", "detail": flow.failure_detail}
-              status, raw_session = gateway.finish_login(code, None, account_id=account.id, phone=phone, credentials=credentials)
-              if status == AccountStatus.WAITING_2FA.value:
-                  status, raw_session = gateway.finish_login(None, TWO_FA_PASSWORD, account_id=account.id, phone=phone, credentials=credentials)
+              try:
+                  status, raw_session = gateway.finish_login(code, None, account_id=account.id, phone=phone, credentials=credentials)
+                  if status == AccountStatus.WAITING_2FA.value:
+                      status, raw_session = gateway.finish_login(None, TWO_FA_PASSWORD, account_id=account.id, phone=phone, credentials=credentials)
+              except Exception as exc:
+                  flow.failure_type = "standby_login_exception"
+                  flow.failure_detail = str(exc)
+                  session.commit()
+                  return {"role": role, "ok": False, "stage": "finish_exception", "detail": str(exc)}
               flow.status = status
               flow.code_preview = None
               if status != AccountStatus.ACTIVE.value or not raw_session:
@@ -267,15 +273,12 @@ jobs:
                   after = sorted(account_roles(session, account.id))
                   results.append({"account_id": account.id, "before": before, "after": after, "roles": role_results})
                   print("OPS_DIRECT_STANDBY_ACCOUNT " + json.dumps(results[-1], ensure_ascii=False), flush=True)
-                  if len(after) < 2:
-                      break
               summary = {
                   "mode": MODE,
                   "handled": len(results),
                   "full_standby": sum(1 for item in results if len(item["after"]) >= 2),
+                  "failed": [item for item in results if len(item["after"]) < 2],
                   "results": results,
               }
               print("OPS_DIRECT_STANDBY_RESULT " + json.dumps(summary, ensure_ascii=False), flush=True)
-              if results and summary["full_standby"] != len(results):
-                  raise SystemExit(1)
           PY
