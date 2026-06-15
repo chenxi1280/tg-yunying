@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: smoke handles one account; batch handles multiple gap accounts
+        description: smoke handles one account; batch handles multiple gap accounts; audit only reads counts
         required: true
         default: smoke
         type: choice
         options:
           - smoke
           - batch
+          - audit
       limit:
         description: Max accounts to handle in batch mode; smoke ignores this and uses 1
         required: true
@@ -250,9 +251,35 @@ jobs:
               session.commit()
               return {"role": role, "ok": True, "authorization_id": asset.id, "developer_app_id": app.id}
 
-          results = []
           with SessionLocal() as session:
               apps = healthy_apps(session)
+              if MODE == "audit":
+                  active_accounts = list(
+                      session.scalars(
+                          select(TgAccount).where(
+                              TgAccount.deleted_at.is_(None),
+                              TgAccount.status == AccountStatus.ACTIVE.value,
+                              TgAccount.session_ciphertext != "",
+                          ).order_by(TgAccount.id.asc())
+                      )
+                  )
+                  gaps = [
+                      {"account_id": account.id, "roles": sorted(account_roles(session, account.id))}
+                      for account in active_accounts
+                      if len(account_roles(session, account.id)) < 2
+                  ]
+                  summary = {
+                      "mode": MODE,
+                      "active_accounts": len(active_accounts),
+                      "full_standby": len(active_accounts) - len(gaps),
+                      "gap_count": len(gaps),
+                      "gap_accounts": gaps,
+                      "developer_app_ids": [app.id for app in apps],
+                  }
+                  print("OPS_DIRECT_STANDBY_AUDIT " + json.dumps(summary, ensure_ascii=False), flush=True)
+                  raise SystemExit(0)
+
+              results = []
               targets = gap_accounts(session)[:LIMIT]
               print(
                   "OPS_DIRECT_STANDBY_START "
