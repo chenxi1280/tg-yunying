@@ -181,7 +181,10 @@ jobs:
               app = choose_app(apps, account, role)
               credentials = credentials_for_developer_app(app, None)
               phone = get_account_phone(account)
-              challenge = gateway.start_login("code", account_id=account.id, phone=phone, credentials=credentials)
+              try:
+                  challenge = gateway.start_login("code", account_id=account.id, phone=phone, credentials=credentials)
+              except Exception as exc:
+                  return {"role": role, "ok": False, "stage": "start_exception", "detail": str(exc)}
               flow = TgLoginFlow(
                   tenant_id=account.tenant_id,
                   account_id=account.id,
