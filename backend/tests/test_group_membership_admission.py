@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import AccountPool, OperationTarget, TaskMembershipAdmissionItem, Tenant, TgAccount
 from app.schemas import GroupMembershipAdmissionTaskCreate
-from app.services.task_center.membership_admission import lock_membership_admission_snapshot
+from app.services.task_center.membership_admission import lock_membership_admission_snapshot, plan_membership_admission_actions, sync_membership_admission_items
 from app.services.task_center.service import create_and_start_group_membership_admission_task, create_group_membership_admission_task
 
 
@@ -137,3 +137,73 @@ def test_locks_snapshot_once_from_selected_account_pools() -> None:
         assert [item.account_id for item in second_items] == [11, 12, 21]
         assert task.stats["admission_snapshot_total"] == 3
         assert task.stats["admission_pending_count"] == 3
+
+
+def test_plans_membership_actions_for_pending_snapshot_items() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(account_group_ids=[1]), "tester")
+        lock_membership_admission_snapshot(session, task)
+
+        actions = plan_membership_admission_actions(session, task, now=NOW)
+
+        assert len(actions) == 2
+        assert {action.account_id for action in actions} == {11, 12}
+        assert all(action.action_type == "ensure_target_membership" for action in actions)
+        assert all(action.payload["require_send"] is True for action in actions)
+        items = session.scalars(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == task.id)).all()
+        assert {item.phase for item in items} == {"joining"}
+        assert all(item.membership_action_id for item in items)
+
+
+def test_membership_success_moves_item_to_test_message_pending() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(), "tester")
+        [item] = lock_membership_admission_snapshot(session, task)[:1]
+        [action] = plan_membership_admission_actions(session, task, now=NOW, limit=1)
+        action.status = "success"
+        action.result = {"success": True, "membership_status": "joined"}
+        session.commit()
+
+        sync_membership_admission_items(session, task)
+
+        session.refresh(item)
+        assert item.phase == "test_message_pending"
+        assert item.manual_required is False
+
+
+def test_membership_permission_denied_marks_waiting_approval() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(), "tester")
+        [item] = lock_membership_admission_snapshot(session, task)[:1]
+        [action] = plan_membership_admission_actions(session, task, now=NOW, limit=1)
+        action.status = "skipped"
+        action.result = {"membership_status": "permission_denied", "error_message": "已提交入群申请，等待管理员审批"}
+        session.commit()
+
+        sync_membership_admission_items(session, task)
+
+        session.refresh(item)
+        assert item.phase == "waiting_approval"
+        assert item.manual_required is True
+        assert item.failure_type == "group_admin"
+
+
+def test_membership_unrecoverable_failure_marks_failed() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(), "tester")
+        [item] = lock_membership_admission_snapshot(session, task)[:1]
+        [action] = plan_membership_admission_actions(session, task, now=NOW, limit=1)
+        action.status = "failed"
+        action.result = {"error_code": "账号不可用", "error_message": "session 已失效"}
+        session.commit()
+
+        sync_membership_admission_items(session, task)
+
+        session.refresh(item)
+        assert item.phase == "failed"
+        assert item.manual_required is True
+        assert item.failure_type == "account_unavailable"
