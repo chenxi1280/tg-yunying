@@ -100,6 +100,14 @@ def sync_membership_admission_items(session: Session, task: Task, now: datetime 
     session.flush()
 
 
+def membership_admission_detail(session: Session, task: Task) -> tuple[dict, list[dict]]:
+    if task.type != "group_membership_admission":
+        return {}, []
+    items = _items_for_task(session, task)
+    accounts = _accounts_by_id(session, [item.account_id for item in items])
+    return _admission_phase(items), [_admission_item_payload(item, accounts.get(item.account_id)) for item in items]
+
+
 def _items_for_task(session: Session, task: Task) -> list[TaskMembershipAdmissionItem]:
     return list(
         session.scalars(
@@ -108,6 +116,43 @@ def _items_for_task(session: Session, task: Task) -> list[TaskMembershipAdmissio
             .order_by(TaskMembershipAdmissionItem.account_id.asc())
         )
     )
+
+
+def _admission_phase(items: list[TaskMembershipAdmissionItem]) -> dict:
+    return {
+        "snapshot_total": len(items),
+        "pending_count": sum(1 for item in items if item.phase == PHASE_PENDING),
+        "joining_count": sum(1 for item in items if item.phase == PHASE_JOINING),
+        "test_message_pending_count": sum(1 for item in items if item.phase == PHASE_TEST_MESSAGE_PENDING),
+        "testing_message_count": sum(1 for item in items if item.phase == PHASE_TESTING_MESSAGE),
+        "completed_count": sum(1 for item in items if item.phase == PHASE_COMPLETED),
+        "failed_count": sum(1 for item in items if item.phase == PHASE_FAILED),
+        "manual_required_count": sum(1 for item in items if item.manual_required),
+        "completed": bool(items) and all(item.phase == PHASE_COMPLETED for item in items),
+    }
+
+
+def _admission_item_payload(item: TaskMembershipAdmissionItem, account: TgAccount | None) -> dict:
+    return {
+        "id": item.id,
+        "account_id": item.account_id,
+        "display_name": account.display_name if account else f"账号 #{item.account_id}",
+        "username": account.username if account else "",
+        "target_id": item.target_id,
+        "phase": item.phase,
+        "membership_action_id": item.membership_action_id,
+        "test_message_action_id": item.test_message_action_id,
+        "test_message_text": item.test_message_text,
+        "test_message_id": item.test_message_id,
+        "delete_after_send": item.delete_after_send,
+        "delete_status": item.delete_status,
+        "failure_type": item.failure_type,
+        "failure_detail": item.failure_detail,
+        "manual_required": item.manual_required,
+        "completed_at": item.completed_at,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    }
 
 
 def _pending_items(session: Session, task: Task, limit: int | None) -> list[TaskMembershipAdmissionItem]:

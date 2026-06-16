@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountPool, OperationTarget, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup
+from app.models import AccountPool, Action, OperationTarget, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup
 from app.schemas import GroupMembershipAdmissionTaskCreate
 from app.services.task_center.membership_admission import (
     lock_membership_admission_snapshot,
@@ -16,7 +16,9 @@ from app.services.task_center.membership_admission import (
     plan_membership_admission_test_messages,
     sync_membership_admission_items,
 )
+from app.services.task_center.executors import build_task_plan
 from app.services.task_center.service import create_and_start_group_membership_admission_task, create_group_membership_admission_task
+from app.services.task_center.service import get_task_detail
 
 
 NOW = datetime(2026, 6, 16, 20, 0, 0)
@@ -283,3 +285,54 @@ def test_test_message_failure_marks_item_failed() -> None:
         assert item.phase == "failed"
         assert item.failure_type == "test_message_failed"
         assert item.failure_detail == "该账号不可向此群发送"
+
+
+def test_executor_build_plan_locks_snapshot_and_creates_membership_actions() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(account_group_ids=[1]), "tester")
+
+        created = build_task_plan(session, task)
+
+        items = session.scalars(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == task.id)).all()
+        assert created == 2
+        assert [item.account_id for item in items] == [11, 12]
+        assert {item.phase for item in items} == {"joining"}
+
+
+def test_executor_build_plan_creates_test_messages_after_membership_success() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(account_group_ids=[1]), "tester")
+        build_task_plan(session, task)
+        item = session.scalar(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == task.id, TaskMembershipAdmissionItem.account_id == 11))
+        action = session.get(Action, item.membership_action_id)
+        action.status = "success"
+        action.result = {"success": True, "membership_status": "joined"}
+        session.commit()
+
+        created = build_task_plan(session, task)
+
+        session.refresh(item)
+        assert created == 1
+        assert item.phase == "testing_message"
+        assert item.test_message_action_id
+
+
+def test_task_detail_exposes_membership_admission_items() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(account_group_ids=[1]), "tester")
+        build_task_plan(session, task)
+
+        detail = get_task_detail(session, 1, task.id)
+
+        phase = detail["membership_admission_phase"]
+        items = detail["membership_admission_items"]
+        assert phase["snapshot_total"] == 2
+        assert phase["joining_count"] == 2
+        assert len(items) == 2
+        assert items[0]["account_id"] == 11
+        assert items[0]["phase"] == "joining"
+        assert items[0]["membership_action_id"]
+        assert items[0]["display_name"] == "账号11"

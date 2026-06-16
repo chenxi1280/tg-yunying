@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Task
 
-from . import channel_comment, channel_like, channel_view, group_ai_chat, group_relay
+from . import channel_comment, channel_like, channel_view, group_ai_chat, group_membership_admission, group_relay
 
 
 class TaskExecutor(Protocol):
@@ -16,6 +16,7 @@ class TaskExecutor(Protocol):
 EXECUTORS: dict[str, TaskExecutor] = {
     "group_ai_chat": group_ai_chat,
     "group_relay": group_relay,
+    "group_membership_admission": group_membership_admission,
     "channel_view": channel_view,
     "channel_like": channel_like,
     "channel_comment": channel_comment,

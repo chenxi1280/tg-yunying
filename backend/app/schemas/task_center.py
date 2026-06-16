@@ -830,6 +830,8 @@ class TaskDetailOut(BaseModel):
     accounts: list[TaskDetailAccountOut] = Field(default_factory=list)
     membership_phase: dict[str, Any] = Field(default_factory=dict)
     membership_accounts: list[dict[str, Any]] = Field(default_factory=list)
+    membership_admission_phase: dict[str, Any] = Field(default_factory=dict)
+    membership_admission_items: list[dict[str, Any]] = Field(default_factory=list)
     message_groups: list[TaskMessageGroupOut] = Field(default_factory=list)
     ai_cycles: list[TaskAICycleOut] = Field(default_factory=list)
     ai_generation_records: list[TaskAIGenerationRecordOut] = Field(default_factory=list)

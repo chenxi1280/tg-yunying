@@ -55,6 +55,7 @@ from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
 from .membership_fast_track import fast_track_pending_hard_hourly_memberships
+from .membership_admission import membership_admission_detail
 from .membership_recovery_gate import recover_missing_hard_hourly_memberships
 from .review import expire_reviews
 from .reviews import ReviewStateError, approve_review, list_reviews, reject_review
@@ -269,6 +270,7 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
     operation_plan_links = list(session.scalars(select(OperationPlanTaskLink).where(OperationPlanTaskLink.tenant_id == tenant_id, OperationPlanTaskLink.task_id == task.id)))
     membership_phase = _membership_phase(task, actions)
     membership_accounts = [] if _defer_membership_detail_rows(task) else _membership_accounts(session, actions)
+    admission_phase, admission_items = membership_admission_detail(session, task)
     task_payload = _task_payload(session, task, actions=business_actions)
     task_payload["runtime_stage"] = derive_task_runtime_stage(task, actions=actions, membership_phase=membership_phase, summary=task_summary)
     return {
@@ -280,6 +282,8 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
         "accounts": _detail_accounts(session, business_actions),
         "membership_phase": membership_phase,
         "membership_accounts": membership_accounts,
+        "membership_admission_phase": admission_phase,
+        "membership_admission_items": admission_items,
         "message_groups": _message_groups(session, task, business_actions),
         "ai_cycles": _ai_cycles(business_actions),
         "ai_generation_records": _ai_generation_records(business_actions),
@@ -309,6 +313,8 @@ def _lightweight_membership_task_detail(session: Session, tenant_id: int, task: 
         "accounts": [],
         "membership_phase": membership_phase,
         "membership_accounts": [],
+        "membership_admission_phase": {},
+        "membership_admission_items": [],
         "message_groups": [],
         "ai_cycles": [],
         "ai_generation_records": [],
