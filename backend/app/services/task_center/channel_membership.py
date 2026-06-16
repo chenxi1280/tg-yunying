@@ -29,6 +29,7 @@ HARD_HOURLY_AUTO_VERIFICATION_RETRY_SECONDS = 300
 HARD_HOURLY_MEMBERSHIP_RETRY_SECONDS = 300
 AUTO_VERIFICATION_RETRY_STATUSES = {"待处理", "失败", "需人工处理"}
 REQUIRED_CHANNEL_RETRY_MARKERS = ("需要关注", "关注我们的频道", "t.me/", "telegram.me/", "required channel")
+TARGET_REF_RETRY_MARKERS = ("no user has", "could not find the input entity", "cannot find any entity", "目标实体无法解析", "目标群无效", "目标无效")
 
 
 @dataclass(frozen=True)
@@ -486,6 +487,8 @@ def _membership_recovery_retry_reason(
         return _reactivation_reason(task, "auto_verification")
     if recovery.bucket != AUTO_RETRY_BUCKET:
         return ""
+    if _target_ref_retry_due(action, now_value):
+        return _reactivation_reason(task, "target_ref")
     if verification and _auto_verification_retry_due(action, verification, now_value):
         return _reactivation_reason(task, "auto_verification")
     if _required_channel_retry_due(action, now_value):
@@ -497,9 +500,13 @@ def _reactivation_reason(task: Task, reason_type: str) -> str:
     if _hard_hourly_membership_fast_track_enabled(task):
         if reason_type == "auto_verification":
             return "hard_hourly_auto_verification_retry"
+        if reason_type == "target_ref":
+            return "hard_hourly_target_ref_retry"
         return "hard_hourly_required_channel_retry"
     if reason_type == "auto_verification":
         return "membership_recovery_auto_verification"
+    if reason_type == "target_ref":
+        return "membership_recovery_target_ref"
     return "membership_recovery_required_channel"
 
 
@@ -583,7 +590,24 @@ def _required_channel_retry_due(action: Action, now_value) -> bool:
     return (now_value - last_attempt_at.replace(tzinfo=None)).total_seconds() >= HARD_HOURLY_MEMBERSHIP_RETRY_SECONDS
 
 
+def _target_ref_retry_due(action: Action, now_value) -> bool:
+    if not _membership_failure_mentions_target_ref(action):
+        return False
+    last_attempt_at = action.executed_at or action.scheduled_at or action.created_at
+    if not last_attempt_at:
+        return True
+    return (now_value - last_attempt_at.replace(tzinfo=None)).total_seconds() >= HARD_HOURLY_MEMBERSHIP_RETRY_SECONDS
+
+
 def _membership_failure_mentions_required_channel(action: Action) -> bool:
+    return _membership_failure_mentions(action, REQUIRED_CHANNEL_RETRY_MARKERS)
+
+
+def _membership_failure_mentions_target_ref(action: Action) -> bool:
+    return _membership_failure_mentions(action, TARGET_REF_RETRY_MARKERS)
+
+
+def _membership_failure_mentions(action: Action, markers: tuple[str, ...]) -> bool:
     result = action.result if isinstance(action.result, dict) else {}
     detail = " ".join(
         str(value or "")
@@ -594,7 +618,7 @@ def _membership_failure_mentions_required_channel(action: Action) -> bool:
             result.get("detected_reason"),
         )
     ).lower()
-    return any(marker.lower() in detail for marker in REQUIRED_CHANNEL_RETRY_MARKERS)
+    return any(marker.lower() in detail for marker in markers)
 
 
 def _membership_action_strategy(task: Task, channel: OperationTarget) -> tuple[bool, str]:

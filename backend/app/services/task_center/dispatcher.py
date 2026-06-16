@@ -754,6 +754,7 @@ def _ensure_membership_refs(
     selected_payload = ctx.payload
     for ref in _dedupe_refs(refs):
         candidate = _payload_with_channel_ref(ctx.payload, ref, ctx.payload.target_display)
+        _record_membership_attempted_ref(ctx.action, ref)
         result = gateway.ensure_channel_membership(
             ctx.account.id,
             candidate.channel_id,
@@ -911,6 +912,12 @@ def _record_membership_peer_ref(action: Action, payload: EnsureChannelMembership
     if fallback_ref:
         result["membership_fallback_ref"] = fallback_ref
     action.result = result
+
+
+def _record_membership_attempted_ref(action: Action, ref: str) -> None:
+    result = action.result if isinstance(action.result, dict) else {}
+    attempted = [str(item) for item in result.get("membership_attempted_refs") or []]
+    action.result = {**result, "membership_attempted_refs": _dedupe_refs([*attempted, ref])}
 
 
 def _is_stable_telegram_peer(peer_id: str) -> bool:
@@ -2432,6 +2439,7 @@ def _fail(action: Action, failure_type: str, detail: str, *, auto_check: str = "
     action.status = "failed"
     _clear_action_lease(action)
     action.result = {
+        **(action.result or {}),
         "success": False,
         "error_code": failure_type,
         "error_message": detail,
@@ -2446,6 +2454,7 @@ def _mark_unknown_after_send(session: Session, action: Action, detail: str) -> N
     action.status = "unknown_after_send"
     _clear_action_lease(action)
     action.result = {
+        **(action.result or {}),
         "success": False,
         "error_code": "unknown_after_send",
         "error_message": detail or "执行项已进入 TG 调用边界但本地结果未知，需人工或补偿确认",
@@ -2471,7 +2480,7 @@ def _fail_with_policy(action: Action, failure_type: str, detail: str, *, auto_ch
 def _skip(action: Action, code: str, detail: str) -> None:
     action.status = "skipped"
     _clear_action_lease(action)
-    action.result = {"success": False, "error_code": code, "error_message": detail, "auto_check": "跳过", "validation_stage": "context"}
+    action.result = {**(action.result or {}), "success": False, "error_code": code, "error_message": detail, "auto_check": "跳过", "validation_stage": "context"}
     action.executed_at = _now()
     _release_runtime_resources(action)
 
@@ -2480,7 +2489,7 @@ def _defer(action: Action, scheduled_at, code: str, detail: str) -> None:
     action.status = "pending"
     action.scheduled_at = scheduled_at
     _clear_action_lease(action)
-    action.result = {"success": False, "error_code": code, "error_message": detail, "auto_check": "延后", "validation_stage": "account_policy"}
+    action.result = {**(action.result or {}), "success": False, "error_code": code, "error_message": detail, "auto_check": "延后", "validation_stage": "account_policy"}
     _release_runtime_resources(action)
 
 

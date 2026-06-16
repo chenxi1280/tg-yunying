@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -180,6 +180,41 @@ def test_reactivate_memberships_does_not_retry_account_unavailable() -> None:
 
     assert created == 0
     assert retry_count == 0
+
+
+def test_reactivate_memberships_requeues_stale_target_reference() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    old_value = _now() - timedelta(minutes=10)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        channel = OperationTarget(id=903, tenant_id=1, target_type="group", tg_peer_id="qdsfxy", title="青岛师范学院", auth_status="只读", can_send=False)
+        group = TgGroup(id=803, tenant_id=1, tg_peer_id="qdsfxy", title="青岛师范学院", auth_status="只读", can_send=False)
+        task = Task(id="task-stale-target-ref", tenant_id=1, name="青岛师范学院", type="group_ai_chat", status="running")
+        account = TgAccount(id=13, tenant_id=1, display_name="账号13", phone_masked="13", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
+        action = Action(
+            id="membership-stale-target-ref",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="ensure_target_membership",
+            account_id=13,
+            status="failed",
+            scheduled_at=old_value,
+            executed_at=old_value,
+            payload={"channel_id": "qdsfxy", "channel_target_id": 903, "target_type": "group", "target_display": "青岛师范学院", "target_username": "qdsfxy", "require_send": True},
+            result={"error_code": "未知错误", "error_message": 'No user has "qdsfxy" as username'},
+        )
+        session.add_all([channel, group, task, account, action])
+        session.commit()
+
+        created = _reactivate_auto_verification_memberships(session, task, channel, [account], require_send=True)
+        retry = session.scalar(select(Action).where(Action.task_id == task.id, Action.status == "pending"))
+
+    assert created == 1
+    assert retry is not None
+    assert retry.result["reactivated_reason"] == "membership_recovery_target_ref"
 
 
 def test_group_send_verification_classifies_arithmetic_captcha_as_reply() -> None:
@@ -428,6 +463,44 @@ def test_target_membership_prefers_verified_peer_over_stale_username(monkeypatch
 
     assert calls[0] == "-1003426646531"
     assert "qdsfxy" not in calls[:1]
+
+
+def test_failed_membership_keeps_attempted_peer_reference(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        dispatcher.gateway,
+        "ensure_channel_membership",
+        lambda *_args, **_kwargs: OperationResult(False, "失败", "peer_invalid", "目标实体无法解析"),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=915, tenant_id=1, target_type="group", tg_peer_id="-100915", title="诊断群", auth_status="只读", can_send=False))
+        session.add(TgAccount(id=45, tenant_id=1, display_name="账号45", phone_masked="45", status="在线", session_ciphertext="session"))
+        session.add(Task(id="task-peer-ref", tenant_id=1, name="诊断群", type="group_ai_chat", status="running"))
+        action = Action(
+            id="membership-peer-ref",
+            tenant_id=1,
+            task_id="task-peer-ref",
+            task_type="group_ai_chat",
+            action_type="ensure_target_membership",
+            account_id=45,
+            status="pending",
+            scheduled_at=now_value,
+            payload={"channel_id": "-100915", "channel_target_id": 915, "target_type": "group", "target_display": "诊断群", "require_send": True},
+        )
+        session.add(action)
+        session.commit()
+
+        assert dispatcher.dispatch_action(session, action) is True
+
+    assert action.status == "failed"
+    assert action.result["error_code"] == "peer_invalid"
+    assert action.result["membership_peer_ref"] == "-100915"
 
 
 def test_permission_denied_verification_prefers_send_ready_title_group_for_reader_fallback(monkeypatch) -> None:

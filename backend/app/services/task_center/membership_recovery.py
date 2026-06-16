@@ -16,6 +16,7 @@ _REQUIRED_CHANNEL_MARKERS = ("需要关注", "关注我们的频道", "t.me/", "
 _CAPTCHA_MARKERS = ("图形验证码", "验证码", "captcha", "识别图形")
 _GROUP_ADMIN_MARKERS = ("管理员解除", "群内由管理员", "被禁言", "ban", "mute", "无发言权限", "群限制")
 _UNAVAILABLE_MARKERS = ("frozen account", "frozen accounts", "not available for frozen", "账号不可用", "session", "重新登录")
+_TARGET_REF_MARKERS = ("no user has", "could not find the input entity", "cannot find any entity", "目标实体无法解析", "目标群无效", "目标无效")
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,8 @@ def classify_membership_recovery(
         return MembershipRecovery(READY_BUCKET, "已可发言", "无需处理")
     if _account_unavailable(account_status, text):
         return MembershipRecovery(ACCOUNT_UNAVAILABLE_BUCKET, "账号不可用", "剔除该账号并从账号池补位", account_replace_required=True)
+    if _is_target_ref_stale(text):
+        return MembershipRecovery(AUTO_RETRY_BUCKET, "目标引用刷新", "系统刷新目标群引用后重新入群", auto_retryable=True)
     if _is_required_channel(text):
         return MembershipRecovery(AUTO_RETRY_BUCKET, "自动恢复", "系统自动重新关注前置频道并重查发言权限", auto_retryable=True)
     if verification_action == "识别图形验证码" or _is_captcha(text):
@@ -87,3 +90,7 @@ def _is_captcha(text: str) -> bool:
 
 def _is_group_admin_required(text: str) -> bool:
     return any(marker.lower() in text for marker in _GROUP_ADMIN_MARKERS)
+
+
+def _is_target_ref_stale(text: str) -> bool:
+    return any(marker.lower() in text for marker in _TARGET_REF_MARKERS)
