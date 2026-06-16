@@ -1073,7 +1073,7 @@ def export_operation_target_invite_link(session: Session, tenant_id: int, target
             "exporter_account_id": account.id,
             "attempted_account_count": len(failures) + 1,
         }
-    raise ValueError(f"invite link export failed: {'; '.join(failures[:5])}")
+    raise ValueError(f"invite link export failed after {len(failures)} accounts: {'; '.join(failures[:5])}")
 
 
 def _invite_export_candidate_accounts(session: Session, target: OperationTarget) -> list[TgAccount]:
@@ -1093,7 +1093,7 @@ def _invite_export_candidate_accounts(session: Session, target: OperationTarget)
                 TgGroupAccount.can_send.is_(True),
             )
             .order_by(TgAccount.id.asc())
-            .limit(30)
+            .limit(200)
         )
     )
 
