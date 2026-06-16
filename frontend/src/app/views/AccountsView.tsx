@@ -10,11 +10,22 @@ import { AccountSecurityBatchDrawer } from './AccountSecurityBatchDrawer';
 import { formatBeijingDateTime } from '../time';
 
 const LOGIN_REQUIRED_STATUSES = new Set(['待登录', '等待验证码', '等待扫码', '等待2FA', '需重新登录', '异常']);
+const LOGIN_PROBLEM_STATUSES = new Set([...LOGIN_REQUIRED_STATUSES, 'Session失效']);
 const ACCOUNT_RESTRICTED_STATUSES = new Set(['受限', '疑似封禁', '已封禁', 'Session失效']);
+const LOGIN_PROBLEM_SEARCH_TEXT = '登录有问题 没有登录上平台 待登录 等待验证码 等待扫码 等待2FA 需重新登录 异常 Session失效 Session 失效 session完全失效 session 完全失效 主授权不可用 主授权缺失 登录失败 验证码没收到 登录验证码没收到';
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
 const authorizationStatusLabel = (status: string) => status === 'active' ? '主授权可用' : status === 'missing' ? '主授权缺失' : status;
 function accountHealthScore(account: Account, availabilityByAccountId: Map<number, AccountAvailabilitySummary>) {
   return availabilityByAccountId.get(account.id)?.health_score ?? account.health_score;
+}
+function latestLoginText(account: Account) {
+  const flow = account.latest_login_flow;
+  if (!flow) return '';
+  return [flow.method, flow.status, flow.failure_type, flow.failure_detail, flow.trace_id].filter(Boolean).join(' ');
+}
+function hasLoginIssue(account: Account) {
+  const flow = account.latest_login_flow;
+  return LOGIN_PROBLEM_STATUSES.has(account.status) || account.authorization_summary.primary_status !== 'active' || Boolean(flow?.failure_type || flow?.failure_detail);
 }
 
 interface Props {
@@ -101,6 +112,7 @@ export default function AccountsView({
         account.pool_name,
         account.status,
         account.profile_sync_status,
+        latestLoginText(account),
         account.developer_app_name,
         account.authorization_summary.primary_status,
         account.authorization_summary.risk_hint,
@@ -121,6 +133,7 @@ export default function AccountsView({
         !account.tg_first_name ? '昵称为空 资料待初始化 资料不完整' : '',
         ACCOUNT_RESTRICTED_STATUSES.has(account.status) ? '账号级受限 受限 系统探测恢复' : '',
         LOGIN_REQUIRED_STATUSES.has(account.status) ? '待完成登录 等待 登录' : '',
+        hasLoginIssue(account) ? LOGIN_PROBLEM_SEARCH_TEXT : '',
         canSecurityRead && accountHealthScore(account, availabilityByAccountId) < 60 ? '健康分偏低 健康' : '',
         canSecurityRead && account.proxy_status && account.proxy_status !== 'healthy' && account.proxy_status !== '健康' ? '代理异常 代理' : '',
       ],
@@ -128,6 +141,7 @@ export default function AccountsView({
   });
   const restrictedAccounts = accounts.filter((account) => ACCOUNT_RESTRICTED_STATUSES.has(account.status));
   const loginRequiredAccounts = accounts.filter((account) => LOGIN_REQUIRED_STATUSES.has(account.status));
+  const loginProblemAccounts = accounts.filter((account) => hasLoginIssue(account));
   const lowHealthAccounts = canSecurityRead ? accounts.filter((account) => accountHealthScore(account, availabilityByAccountId) < 60 && !ACCOUNT_RESTRICTED_STATUSES.has(account.status)) : [];
   const proxyBlockedAccounts = canSecurityRead ? accounts.filter((account) => account.proxy_status && account.proxy_status !== 'healthy' && account.proxy_status !== '健康') : [];
   const selectedAccounts = accounts.filter((account) => selectedAccountIds.includes(account.id));
@@ -198,12 +212,17 @@ export default function AccountsView({
       title: '状态',
       key: 'status',
       width: 150,
-      render: (_, account) => (
-        <Space orientation="vertical" size={4}>
-          <StatusBadge status={account.status} />
-          <StatusBadge status={account.profile_sync_status} label={`资料 ${account.profile_sync_status}`} />
-        </Space>
-      ),
+      render: (_, account) => {
+        const loginFlow = account.latest_login_flow;
+        return (
+          <Space orientation="vertical" size={4}>
+            <StatusBadge status={account.status} />
+            <StatusBadge status={account.profile_sync_status} label={`资料 ${account.profile_sync_status}`} />
+            {loginFlow?.failure_detail && <Typography.Text type="danger">登录失败：{loginFlow.failure_detail}</Typography.Text>}
+            {!loginFlow?.failure_detail && loginFlow?.failure_type && <Typography.Text type="danger">登录失败：{loginFlow.failure_type}</Typography.Text>}
+          </Space>
+        );
+      },
     },
     {
       title: '底层连接',
@@ -372,10 +391,10 @@ export default function AccountsView({
           <Button size="small" disabled={!restrictedAccounts.length} onClick={() => accountTable.setQuery('账号级受限')}>查看账号</Button>
         </Card>
         <Card className="summary-card" size="small">
-          <span>待完成登录</span>
-          <strong>{loginRequiredAccounts.length}</strong>
-          <p>只展示完成登录入口，验证码、扫码、2FA 按登录流程继续。</p>
-          <Button size="small" disabled={!loginRequiredAccounts.length} onClick={() => accountTable.setQuery('待完成登录')}>查看登录</Button>
+          <span>登录有问题</span>
+          <strong>{loginProblemAccounts.length}</strong>
+          <p>待完成登录 {loginRequiredAccounts.length} 个；验证码没收到、登录失败、Session 完全失效或主授权不可用也会命中。</p>
+          <Button size="small" disabled={!loginProblemAccounts.length} onClick={() => accountTable.setQuery('登录有问题')}>查看问题账号</Button>
         </Card>
         <Card className="summary-card" size="small">
           <span>健康分偏低</span>

@@ -1,4 +1,5 @@
 import type { ArchiveItem } from './archives';
+import type { AccountAuthorizationSummary, AccountLatestLoginFlow } from './accountAuth';
 import type { Contact, Group, MessageTask } from './messaging';
 import type { OperationTarget, OperationTaskAttempt } from './operations';
 
@@ -60,16 +61,7 @@ export type Account = {
   proxy_status: string | null;
   proxy_alert_status: string | null;
   authorization_summary: AccountAuthorizationSummary;
-};
-
-export type AccountAuthorizationSummary = {
-  primary_status: string;
-  primary_source: string;
-  standby_count: number;
-  target_standby_count: number;
-  has_standby: boolean;
-  is_blocking: boolean;
-  risk_hint: string;
+  latest_login_flow: AccountLatestLoginFlow | null;
 };
 
 export type AccountAuthorizationAsset = {

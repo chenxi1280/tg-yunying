@@ -35,6 +35,7 @@ from app.storage import object_path, preview_url, save_avatar_bytes
 
 from ._common import _is_expired, _now, audit, gateway, get_account_phone, mask_phone, require_tenant
 from .account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery, is_proxy_recovery_signal
+from .account_search import filter_accounts_by_search
 from .account_two_fa import rotate_managed_two_fa_after_login
 from .developer_apps import credentials_for_account, first_assignable_developer_app
 from .tenants import ensure_account_quota_available
@@ -1433,20 +1434,9 @@ def _account_listing_stmt(session: Session, filters: AccountListFilters):
     return stmt
 
 
-def _account_matches_search(account: TgAccount, needle: str) -> bool:
-    values = [
-        account.display_name,
-        account.username,
-        account.phone_masked,
-        get_account_phone(account),
-    ]
-    return any(needle in str(value).lower() for value in values if value)
-
-
 def _searched_accounts(session: Session, stmt, search: str | None) -> list[TgAccount]:
-    needle = (search or "").strip().lower()
     accounts = list(session.scalars(stmt.order_by(TgAccount.id)))
-    return [account for account in accounts if _account_matches_search(account, needle)] if needle else accounts
+    return filter_accounts_by_search(session, accounts, search)
 
 
 def count_accounts(session: Session, filters: AccountListFilters) -> int:

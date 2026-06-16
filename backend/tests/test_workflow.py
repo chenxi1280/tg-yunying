@@ -880,6 +880,97 @@ def test_login_start_failure_records_flow_audit_and_structured_error(monkeypatch
         assert audit is not None
 
 
+def test_account_list_exposes_latest_login_failure_summary():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        with SessionLocal() as session:
+            account = TgAccount(
+                tenant_id=1,
+                display_name="验证码没收到账号",
+                username="login_code_missing",
+                phone_masked=f"login-{uuid4().hex[:8]}",
+                status=AccountStatus.ERROR.value,
+                health_score=20,
+            )
+            session.add(account)
+            session.flush()
+            session.add(
+                TgLoginFlow(
+                    tenant_id=1,
+                    account_id=account.id,
+                    method="code",
+                    status=AccountStatus.ERROR.value,
+                    failure_type="code_not_received",
+                    failure_detail="登录验证码没收到，登录失败",
+                    trace_id="trace-code-missing",
+                    created_at=_now(),
+                )
+            )
+            session.commit()
+            account_id = account.id
+
+        response = client.get("/api/tg-accounts?page_size=200", headers=headers)
+
+    assert response.status_code == 200, response.text
+    listed = next(item for item in response.json() if item["id"] == account_id)
+    flow = listed["latest_login_flow"]
+    assert flow["method"] == "code"
+    assert flow["status"] == AccountStatus.ERROR.value
+    assert flow["failure_type"] == "code_not_received"
+    assert flow["failure_detail"] == "登录验证码没收到，登录失败"
+    assert flow["trace_id"] == "trace-code-missing"
+    assert flow["created_at"]
+
+
+def test_account_list_search_matches_login_problem_conditions():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        with SessionLocal() as session:
+            target = TgAccount(
+                tenant_id=1,
+                display_name="服务端搜索登录问题",
+                username="server_search_login_issue",
+                phone_masked=f"search-{uuid4().hex[:8]}",
+                status=AccountStatus.ERROR.value,
+                health_score=20,
+            )
+            normal = TgAccount(
+                tenant_id=1,
+                display_name="服务端搜索正常账号",
+                username="server_search_normal",
+                phone_masked=f"normal-{uuid4().hex[:8]}",
+                status=AccountStatus.ACTIVE.value,
+                health_score=90,
+                session_ciphertext="session",
+            )
+            session.add_all([target, normal])
+            session.flush()
+            session.add(
+                TgLoginFlow(
+                    tenant_id=1,
+                    account_id=target.id,
+                    method="code",
+                    status=AccountStatus.ERROR.value,
+                    failure_type="code_not_received",
+                    failure_detail="登录验证码没收到，登录失败",
+                    trace_id="trace-search-login",
+                    created_at=_now(),
+                )
+            )
+            session.commit()
+            target_id = target.id
+            normal_id = normal.id
+
+        by_code = client.get("/api/tg-accounts?search=验证码没收到&page_size=200", headers=headers)
+        by_problem = client.get("/api/tg-accounts?search=登录有问题&page_size=200", headers=headers)
+
+    assert by_code.status_code == 200, by_code.text
+    assert target_id in {item["id"] for item in by_code.json()}
+    assert normal_id not in {item["id"] for item in by_code.json()}
+    assert by_problem.status_code == 200, by_problem.text
+    assert target_id in {item["id"] for item in by_problem.json()}
+
+
 def test_repeated_login_verify_after_success_returns_online_account(monkeypatch):
     calls = 0
 

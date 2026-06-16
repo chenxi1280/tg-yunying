@@ -89,6 +89,15 @@ class AccountAuthorizationSummaryOut(ApiModel):
     risk_hint: str = ""
 
 
+class AccountLatestLoginFlowOut(ApiModel):
+    method: str = ""
+    status: str = ""
+    failure_type: str = ""
+    failure_detail: str = ""
+    trace_id: str = ""
+    created_at: datetime | None = None
+
+
 class AccountAuthorizationOut(ApiModel):
     id: int | None
     account_id: int
@@ -167,6 +176,7 @@ class AccountOut(ApiModel):
     proxy_status: str | None = None
     proxy_alert_status: str | None = None
     authorization_summary: AccountAuthorizationSummaryOut = Field(default_factory=AccountAuthorizationSummaryOut)
+    latest_login_flow: AccountLatestLoginFlowOut | None = None
     deleted_at: datetime | None = None
     deleted_by: str = ""
     delete_reason: str = ""
