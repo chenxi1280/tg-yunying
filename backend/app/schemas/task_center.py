@@ -9,7 +9,7 @@ from .api import ApiModel
 from .operation_plans import OperationPlanTaskLinkOut
 from .runtime_summary import TaskRuntimeSummaryOut
 
-TaskTypeValue = Literal["group_ai_chat", "group_relay", "channel_view", "channel_like", "channel_comment"]
+TaskTypeValue = Literal["group_ai_chat", "group_relay", "group_membership_admission", "channel_view", "channel_like", "channel_comment"]
 TaskStatusValue = Literal["draft", "pending", "running", "paused", "target_reached", "wrapping_up", "completed", "stopped", "failed", "deleted"]
 ActionStatusValue = Literal["pending", "executing", "success", "failed", "skipped"]
 ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
@@ -353,6 +353,46 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
         return self
 
 
+class GroupMembershipAdmissionPacingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["spread"] = "spread"
+    max_concurrent: int = Field(default=5, ge=1, le=50)
+    per_minute: int = Field(default=10, ge=1, le=200)
+
+
+class GroupMembershipAdmissionTestMessageConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["ai_random"] = "ai_random"
+    min_chars: int = Field(default=3, ge=1, le=80)
+    max_chars: int = Field(default=12, ge=1, le=120)
+    delete_after_send: bool = False
+
+    @model_validator(mode="after")
+    def validate_length_window(self) -> "GroupMembershipAdmissionTestMessageConfig":
+        if self.max_chars < self.min_chars:
+            raise ValueError("test_message.max_chars 必须大于等于 min_chars")
+        return self
+
+
+class GroupMembershipAdmissionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_operation_target_id: int = Field(gt=0)
+    account_group_ids: list[int] = Field(default_factory=list)
+    admission_pacing: GroupMembershipAdmissionPacingConfig = Field(default_factory=GroupMembershipAdmissionPacingConfig)
+    test_message: GroupMembershipAdmissionTestMessageConfig = Field(default_factory=GroupMembershipAdmissionTestMessageConfig)
+
+    @model_validator(mode="after")
+    def validate_account_groups(self) -> "GroupMembershipAdmissionConfig":
+        group_ids = list(dict.fromkeys(int(item) for item in self.account_group_ids if int(item) > 0))
+        if not group_ids:
+            raise ValueError("account_group_ids 至少选择一个账号分组")
+        self.account_group_ids = group_ids
+        return self
+
+
 class TaskCreateCommon(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -365,6 +405,12 @@ class TaskCreateCommon(BaseModel):
     account_config: AccountConfig = Field(default_factory=AccountConfig)
     pacing_config: PacingConfig = Field(default_factory=PacingConfig)
     failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
+
+    @model_validator(mode="after")
+    def validate_schedule_window(self) -> "TaskCreateCommon":
+        if self.scheduled_start and self.scheduled_end and self.scheduled_end <= self.scheduled_start:
+            raise ValueError("scheduled_end 必须晚于 scheduled_start")
+        return self
 
 
 class GroupAIChatTaskCreate(TaskCreateCommon, GroupAIChatConfig):
@@ -387,6 +433,10 @@ class ChannelCommentTaskCreate(TaskCreateCommon, ChannelCommentConfig):
     pass
 
 
+class GroupMembershipAdmissionTaskCreate(TaskCreateCommon, GroupMembershipAdmissionConfig):
+    pass
+
+
 class GroupAIChatTaskConfigUpdate(GroupAIChatConfig):
     pass
 
@@ -404,6 +454,10 @@ class ChannelLikeTaskConfigUpdate(ChannelLikeConfig):
 
 
 class ChannelCommentTaskConfigUpdate(ChannelCommentConfig):
+    pass
+
+
+class GroupMembershipAdmissionTaskConfigUpdate(GroupMembershipAdmissionConfig):
     pass
 
 
@@ -970,6 +1024,11 @@ __all__ = [
     "GroupAIChatTaskConfigUpdate",
     "GroupAIChatTaskPreviewRequest",
     "GroupAIChatTaskCreate",
+    "GroupMembershipAdmissionConfig",
+    "GroupMembershipAdmissionPacingConfig",
+    "GroupMembershipAdmissionTaskConfigUpdate",
+    "GroupMembershipAdmissionTaskCreate",
+    "GroupMembershipAdmissionTestMessageConfig",
     "GroupRelayConfig",
     "GroupRelayTaskConfigUpdate",
     "GroupRelayTaskCreate",

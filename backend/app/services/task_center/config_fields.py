@@ -9,6 +9,8 @@ from app.schemas.task_center import (
     ChannelViewTaskCreate,
     GroupAIChatConfig,
     GroupAIChatTaskCreate,
+    GroupMembershipAdmissionConfig,
+    GroupMembershipAdmissionTaskCreate,
     GroupRelayConfig,
     GroupRelayTaskCreate,
 )
@@ -16,6 +18,7 @@ from app.schemas.task_center import (
 TYPE_CONFIG_MODELS = {
     "group_ai_chat": GroupAIChatConfig,
     "group_relay": GroupRelayConfig,
+    "group_membership_admission": GroupMembershipAdmissionConfig,
     "channel_view": ChannelViewConfig,
     "channel_like": ChannelLikeConfig,
     "channel_comment": ChannelCommentConfig,
@@ -23,6 +26,7 @@ TYPE_CONFIG_MODELS = {
 TASK_CREATE_MODELS = {
     "group_ai_chat": GroupAIChatTaskCreate,
     "group_relay": GroupRelayTaskCreate,
+    "group_membership_admission": GroupMembershipAdmissionTaskCreate,
     "channel_view": ChannelViewTaskCreate,
     "channel_like": ChannelLikeTaskCreate,
     "channel_comment": ChannelCommentTaskCreate,
@@ -161,6 +165,12 @@ TYPE_SETTINGS_FIELDS = {
         "dedup_window_minutes",
         "dedup_method",
         "require_review",
+    },
+    "group_membership_admission": {
+        "target_operation_target_id",
+        "account_group_ids",
+        "admission_pacing",
+        "test_message",
     },
     "channel_view": {
         "target_views_per_message",

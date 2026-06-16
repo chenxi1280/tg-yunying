@@ -51,6 +51,7 @@ class TaskStatus(StrEnum):
 class TaskCenterTaskType(StrEnum):
     GROUP_AI_CHAT = "group_ai_chat"
     GROUP_RELAY = "group_relay"
+    GROUP_MEMBERSHIP_ADMISSION = "group_membership_admission"
     CHANNEL_VIEW = "channel_view"
     CHANNEL_LIKE = "channel_like"
     CHANNEL_COMMENT = "channel_comment"

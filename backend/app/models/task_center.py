@@ -148,6 +148,34 @@ class RuntimeMetricSnapshot(Base):
     tags: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class TaskMembershipAdmissionItem(Base):
+    __tablename__ = "task_membership_admission_items"
+    __table_args__ = (
+        UniqueConstraint("task_id", "account_id", name="uq_membership_admission_task_account"),
+        Index("ix_membership_admission_task_phase", "task_id", "phase"),
+        Index("ix_membership_admission_manual", "task_id", "manual_required"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    target_id: Mapped[int] = mapped_column(ForeignKey("operation_targets.id"))
+    phase: Mapped[str] = mapped_column(String(40), default="pending")
+    membership_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
+    test_message_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
+    test_message_text: Mapped[str] = mapped_column(Text, default="")
+    test_message_id: Mapped[str] = mapped_column(String(160), default="")
+    delete_after_send: Mapped[bool] = mapped_column(Boolean, default=False)
+    delete_status: Mapped[str] = mapped_column(String(40), default="")
+    failure_type: Mapped[str] = mapped_column(String(80), default="")
+    failure_detail: Mapped[str] = mapped_column(Text, default="")
+    manual_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class ListenerSourceState(Base):
     __tablename__ = "listener_source_state"
     __table_args__ = (
@@ -341,6 +369,7 @@ __all__ = [
     "RuntimeCleanupAudit",
     "SourceMediaAsset",
     "Task",
+    "TaskMembershipAdmissionItem",
     "TargetLearningProfile",
     "TargetLearningProfileVersion",
     "TargetLearningSample",
