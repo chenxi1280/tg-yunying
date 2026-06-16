@@ -765,13 +765,24 @@ def test_account_center_exposes_standby_session_batch_entry_and_filters():
 
 def test_account_center_quick_searches_login_problem_accounts():
     accounts_view = (PROJECT_ROOT / "frontend/src/app/views/AccountsView.tsx").read_text()
+    account_types = (PROJECT_ROOT / "frontend/src/app/types/accounts.ts").read_text()
+    account_auth_types = (PROJECT_ROOT / "frontend/src/app/types/accountAuth.ts").read_text()
 
     assert "登录有问题" in accounts_view
     assert "没有登录上平台" in accounts_view
     assert "'Session失效'" in accounts_view
+    assert "session完全失效" in accounts_view
+    assert "登录验证码没收到" in accounts_view
+    assert "latestLoginText(account)" in accounts_view
+    assert "account.latest_login_flow" in accounts_view
+    assert "登录失败：{loginFlow.failure_detail}" in accounts_view
     assert "hasLoginIssue(account)" in accounts_view
+    assert "flow?.failure_type || flow?.failure_detail" in accounts_view
     assert "account.authorization_summary.primary_status !== 'active'" in accounts_view
     assert "accountTable.setQuery('登录有问题')" in accounts_view
+    assert "latest_login_flow: AccountLatestLoginFlow | null" in account_types
+    assert "export type AccountLatestLoginFlow" in account_auth_types
+    assert "最近登录流水存在失败类型 / 失败详情" in (PROJECT_ROOT / "docs/tg-ops-platform-prd.md").read_text()
 
 
 def test_account_center_prd_documents_login_problem_quick_search_scope():

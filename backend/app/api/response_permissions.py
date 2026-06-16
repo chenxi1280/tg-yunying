@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import object_session
 
 from app.auth import CurrentUser
+from app.models import TgLoginFlow
 from app.schemas import AccountOut, AccountRuntimeSummaryOut, AuditLogOut
 from app.services.account_authorizations import authorization_summaries_for_accounts, authorization_summary_for_account
 
@@ -24,11 +26,15 @@ def account_out_for_user(
     account: Any,
     current_user: CurrentUser,
     authorization_summary: dict[str, Any] | None = None,
+    latest_login_flow: Any | None = None,
 ) -> dict[str, Any]:
     data = AccountOut.model_validate(account).model_dump()
     summary = authorization_summary or _authorization_summary_for_loaded_account(account)
     if summary:
         data["authorization_summary"] = summary
+    flow = latest_login_flow if latest_login_flow is not None else _latest_login_flow_for_loaded_account(account)
+    if flow:
+        data["latest_login_flow"] = _login_flow_summary(flow)
     can_read_phone = _can_read_phone(current_user)
     if not can_read_phone:
         data["phone_number"] = None
@@ -45,7 +51,8 @@ def account_out_for_user(
 
 def accounts_out_for_user(accounts: list[Any], current_user: CurrentUser) -> list[dict[str, Any]]:
     summaries = _authorization_summaries_for_loaded_accounts(accounts)
-    return [account_out_for_user(account, current_user, summaries.get(account.id)) for account in accounts]
+    flows = _latest_login_flows_for_loaded_accounts(accounts)
+    return [account_out_for_user(account, current_user, summaries.get(account.id), flows.get(account.id)) for account in accounts]
 
 
 def _authorization_summary_for_loaded_account(account: Any) -> dict[str, Any] | None:
@@ -62,6 +69,46 @@ def _authorization_summaries_for_loaded_accounts(accounts: list[Any]) -> dict[in
     if session is None:
         return {}
     return authorization_summaries_for_accounts(session, accounts)
+
+
+def _latest_login_flow_for_loaded_account(account: Any) -> Any | None:
+    session = object_session(account)
+    if session is None:
+        return None
+    return session.scalar(
+        select(TgLoginFlow)
+        .where(TgLoginFlow.account_id == account.id)
+        .order_by(TgLoginFlow.id.desc())
+        .limit(1)
+    )
+
+
+def _latest_login_flows_for_loaded_accounts(accounts: list[Any]) -> dict[int, Any]:
+    if not accounts:
+        return {}
+    session = object_session(accounts[0])
+    if session is None:
+        return {}
+    account_ids = [account.id for account in accounts]
+    latest_ids = (
+        select(func.max(TgLoginFlow.id).label("id"))
+        .where(TgLoginFlow.account_id.in_(account_ids))
+        .group_by(TgLoginFlow.account_id)
+        .subquery()
+    )
+    rows = session.scalars(select(TgLoginFlow).join(latest_ids, TgLoginFlow.id == latest_ids.c.id))
+    return {row.account_id: row for row in rows}
+
+
+def _login_flow_summary(flow: Any) -> dict[str, Any]:
+    return {
+        "method": flow.method,
+        "status": flow.status,
+        "failure_type": flow.failure_type,
+        "failure_detail": flow.failure_detail,
+        "trace_id": flow.trace_id,
+        "created_at": flow.created_at,
+    }
 
 
 def _can_read_phone(current_user: CurrentUser) -> bool:
