@@ -155,6 +155,7 @@ def _group_for_operation_target(session: Session, tenant_id: int, target_id: int
         raise ValueError("运营目标未授权")
     if require_can_send and not target.can_send:
         raise ValueError("运营目标不可发送")
+    target = _canonical_group_target(session, tenant_id, target)
     group = session.scalar(
         select(TgGroup).where(
             TgGroup.tenant_id == tenant_id,
@@ -174,6 +175,45 @@ def _group_for_operation_target(session: Session, tenant_id: int, target_id: int
         session.add(group)
         session.flush()
     return target, group
+
+
+def _canonical_group_target(session: Session, tenant_id: int, target: OperationTarget) -> OperationTarget:
+    if _has_stable_group_reference(target):
+        return target
+    title = str(target.title or "").strip()
+    if not title:
+        return target
+    candidates = list(
+        session.scalars(
+            select(OperationTarget)
+            .where(
+                OperationTarget.tenant_id == tenant_id,
+                OperationTarget.target_type == "group",
+                OperationTarget.id != target.id,
+                OperationTarget.title == title,
+                OperationTarget.can_send.is_(True),
+                OperationTarget.auth_status == GroupAuthStatus.AUTHORIZED.value,
+            )
+            .order_by(OperationTarget.updated_at.desc(), OperationTarget.id.desc())
+        )
+    )
+    stable_candidates = [candidate for candidate in candidates if _has_stable_group_reference(candidate)]
+    return stable_candidates[0] if stable_candidates else target
+
+
+def _has_stable_group_reference(target: OperationTarget) -> bool:
+    return _is_stable_telegram_peer(target.tg_peer_id) or _looks_like_join_link(target.tg_peer_id)
+
+
+def _is_stable_telegram_peer(peer_id: str) -> bool:
+    value = str(peer_id or "").strip()
+    return value.lstrip("-").isdigit()
+
+
+def _looks_like_join_link(peer_id: str) -> bool:
+    value = str(peer_id or "").strip()
+    prefixes = ("+", "https://t.me/+", "http://t.me/+", "t.me/+", "https://telegram.me/+", "telegram.me/+")
+    return value.startswith(prefixes)
 
 
 def _normalize_inline_target_input(
