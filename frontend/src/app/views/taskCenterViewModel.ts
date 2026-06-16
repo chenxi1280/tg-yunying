@@ -6,6 +6,7 @@ export { runtimeStage, runtimeStageLabel, statusLabel } from './taskRuntimeStage
 export const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
   { value: 'group_ai_chat', label: 'AI 活跃群' },
   { value: 'group_relay', label: '转发监听群' },
+  { value: 'group_membership_admission', label: '群聊准入任务' },
   { value: 'channel_view', label: '频道消息浏览' },
   { value: 'channel_like', label: '频道消息点赞' },
   { value: 'channel_comment', label: '频道消息评论/回复' },
@@ -20,6 +21,7 @@ TYPE_LABEL.account_standby_session_provision = '备用 session 补齐批次';
 export const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
   group_ai_chat: '/tasks/group-ai-chat',
   group_relay: '/tasks/group-relay',
+  group_membership_admission: '/tasks/group-membership-admission',
   channel_view: '/tasks/channel-view',
   channel_like: '/tasks/channel-like',
   channel_comment: '/tasks/channel-comment',
@@ -28,6 +30,7 @@ export const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
 export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
   group_ai_chat: '/tasks/group-ai-chat/create-and-start',
   group_relay: '/tasks/group-relay/create-and-start',
+  group_membership_admission: '/tasks/group-membership-admission/create-and-start',
   channel_view: '/tasks/channel-view/create-and-start',
   channel_like: '/tasks/channel-like/create-and-start',
   channel_comment: '/tasks/channel-comment/create-and-start',
@@ -407,6 +410,17 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       dedup_method: 'hash',
     };
   }
+  if (type === 'group_membership_admission') {
+    return {
+      scheduled_start: toBeijingDateTimeLocalValue(new Date().toISOString()),
+      account_group_ids: [],
+      admission_max_concurrent: 5,
+      admission_per_minute: 10,
+      test_message_min_chars: 3,
+      test_message_max_chars: 12,
+      delete_after_send: false,
+    };
+  }
   if (type === 'channel_view') {
     return {
       message_scope: 'dynamic_new',
@@ -459,7 +473,7 @@ export function defaultRuleSelection(ruleSets: RuleSet[], taskType: TaskCenterTa
 export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messageScope: string, accountMode: string): string[] {
   if (step === 0) return ['name'];
   if (step === 1) {
-    if (taskType === 'group_ai_chat') return ['target_operation_target_id'];
+    if (taskType === 'group_ai_chat' || taskType === 'group_membership_admission') return ['target_operation_target_id'];
     if (taskType === 'group_relay') return ['source_operation_target_ids', 'target_operation_target_id'];
     const fields = ['target_channel_id', 'message_scope'];
     if (['latest_n', 'dynamic_new'].includes(messageScope)) fields.push('message_count');
@@ -467,6 +481,7 @@ export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messag
     if (messageScope === 'date_range') fields.push('date_from', 'date_to');
     return fields;
   }
+  if (step === 3 && taskType === 'group_membership_admission') return ['account_group_ids'];
   if (step === 3) return accountSelectionFields(accountMode);
   return [];
 }
@@ -540,6 +555,20 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'filter_admin_messages',
       'excluded_sender_peer_ids',
       'excluded_sender_input',
+    ];
+  }
+  if (taskType === 'group_membership_admission') {
+    return [
+      'name',
+      'scheduled_start',
+      'scheduled_end',
+      'target_operation_target_id',
+      'account_group_ids',
+      'admission_max_concurrent',
+      'admission_per_minute',
+      'test_message_min_chars',
+      'test_message_max_chars',
+      'delete_after_send',
     ];
   }
   if (taskType === 'channel_view') {

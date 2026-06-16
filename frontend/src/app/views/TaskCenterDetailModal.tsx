@@ -204,6 +204,15 @@ export function TaskCenterDetailModal({
     },
     { title: '失败原因', key: 'failure', ellipsis: true, render: (_, item) => item.failure_detail || item.failure_type || '-' },
   ];
+  const admissionColumns: ColumnsType<TaskCenterDetail['membership_admission_items'][number]> = [
+    { title: '账号', key: 'account', width: 180, render: (_, item) => item.display_name || `账号 #${item.account_id}` },
+    { title: '阶段', dataIndex: 'phase', width: 130, render: (value, item) => <Tag color={item.manual_required ? 'orange' : value === 'completed' ? 'green' : value === 'failed' ? 'red' : 'blue'}>{value}</Tag> },
+    { title: '测试消息', dataIndex: 'test_message_text', ellipsis: true, render: (value) => value || '-' },
+    { title: '消息 ID', dataIndex: 'test_message_id', width: 120, render: (value) => value || '-' },
+    { title: '删除', dataIndex: 'delete_status', width: 110, render: (value) => value || '-' },
+    { title: '失败原因', key: 'failure', ellipsis: true, render: (_, item) => item.failure_detail || item.failure_type || '-' },
+    { title: '完成时间', dataIndex: 'completed_at', width: 170, render: (value) => formatDateTime(value) },
+  ];
   const detailTabs = detail ? [
     accountSecurityBatch ? {
       key: 'account-security-batch',
@@ -230,6 +239,33 @@ export function TaskCenterDetailModal({
             pagination={{ pageSize: 8 }}
             size="small"
             scroll={{ x: 1700 }}
+          />
+        </Space>
+      ),
+    } : null,
+    detail.membership_admission_items.length > 0 ? {
+      key: 'membership-admission',
+      label: `群聊准入 (${detail.membership_admission_items.length})`,
+      children: (
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Descriptions
+            bordered
+            size="small"
+            column={4}
+            items={[
+              { key: 'total', label: '快照账号', children: detail.membership_admission_phase.snapshot_total ?? 0 },
+              { key: 'completed', label: '已达标', children: detail.membership_admission_phase.completed_count ?? 0 },
+              { key: 'manual', label: '需人工处理', children: detail.membership_admission_phase.manual_required_count ?? 0 },
+              { key: 'failed', label: '失败', children: detail.membership_admission_phase.failed_count ?? 0 },
+            ]}
+          />
+          <Table
+            rowKey="id"
+            columns={admissionColumns}
+            dataSource={detail.membership_admission_items}
+            pagination={{ pageSize: 20 }}
+            size="small"
+            scroll={{ x: 1000 }}
           />
         </Space>
       ),

@@ -729,6 +729,28 @@ export default function TaskCenterView({
 
   function createPayload(values: any): Record<string, any> {
     const base = commonPayload(values);
+    if (taskType === 'group_membership_admission') {
+      return {
+        ...base,
+        scheduled_start: fromBeijingDateTimeLocalValue(values.scheduled_start),
+        scheduled_end: fromBeijingDateTimeLocalValue(values.scheduled_end),
+        account_config: { selection_mode: 'all', account_group_id: null, account_ids: [], max_concurrent: values.admission_max_concurrent ?? 5, cooldown_per_account_minutes: 0, ban_policy: 'skip' },
+        pacing_config: { mode: 'template', operation_profile: operationProfileFromValues(values), max_actions_per_hour: values.admission_per_minute ? Number(values.admission_per_minute) * 60 : null },
+        target_operation_target_id: values.target_operation_target_id,
+        account_group_ids: csvNumbers(values.account_group_ids),
+        admission_pacing: {
+          mode: 'spread',
+          max_concurrent: values.admission_max_concurrent ?? 5,
+          per_minute: values.admission_per_minute ?? 10,
+        },
+        test_message: {
+          mode: 'ai_random',
+          min_chars: values.test_message_min_chars ?? 3,
+          max_chars: values.test_message_max_chars ?? 12,
+          delete_after_send: Boolean(values.delete_after_send),
+        },
+      };
+    }
     if (taskType === 'group_ai_chat') {
       const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
       return {
@@ -925,7 +947,7 @@ export default function TaskCenterView({
     try {
       await form.validateFields(fieldsForSubmit(taskType, messageScope, accountMode, pacingMode));
       const values = form.getFieldsValue(true);
-      const result = !options.skipCapacityCheck ? await runTaskPrecheck(values) : precheck;
+      const result = taskType !== 'group_membership_admission' && !options.skipCapacityCheck ? await runTaskPrecheck(values) : precheck;
       if (start && result?.decision === 'block') {
         setActionError(`预检未通过：${formatPrecheckReasons(result.blockers) || '存在阻塞项'}`);
         return;
@@ -1129,7 +1151,7 @@ export default function TaskCenterView({
         if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType)) applyDefaultRuleSet(await ensureRuleSets(), taskType);
       }
       if (wizardStep === 3) {
-        await runTaskPrecheck(form.getFieldsValue(true));
+        if (taskType !== 'group_membership_admission') await runTaskPrecheck(form.getFieldsValue(true));
       }
       setWizardStep((value) => Math.min(value + 1, WIZARD_STEPS.length - 1));
     } catch (error) {
@@ -1469,7 +1491,7 @@ export default function TaskCenterView({
           {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} />}
           {wizardStep === 3 && (
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
-              <WizardAccounts accountMode={accountMode} accounts={accounts} accountPools={accountPools} />
+              <WizardAccounts accountMode={accountMode} accounts={accounts} accountPools={accountPools} taskType={taskType} />
               <WizardOperationProfile form={form} values={formValues} taskType={taskType} />
               <Collapse
                 ghost
@@ -1518,7 +1540,7 @@ export default function TaskCenterView({
           <Typography.Title level={5}>类型参数</Typography.Title>
           <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} />
           <Typography.Title level={5}>账号选择</Typography.Title>
-          <WizardAccounts accountMode={editAccountMode} accounts={accounts} accountPools={accountPools} />
+          <WizardAccounts accountMode={editAccountMode} accounts={accounts} accountPools={accountPools} taskType={editableTaskType} />
           <Typography.Title level={5}>节奏策略</Typography.Title>
           <WizardOperationProfile form={editForm} values={editFormValues} taskType={editableTaskType} />
           {editShowsAiLimitRecommendation && (

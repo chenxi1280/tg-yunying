@@ -1,4 +1,4 @@
-export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment';
+export type TaskCenterTaskType = 'group_ai_chat' | 'group_relay' | 'group_membership_admission' | 'channel_view' | 'channel_like' | 'channel_comment';
 export type TaskCenterSystemTaskType = 'account_profile_init' | 'account_device_cleanup' | 'account_2fa_setup' | 'account_standby_session_provision';
 export type TaskCenterAnyTaskType = TaskCenterTaskType | TaskCenterSystemTaskType;
 
@@ -207,6 +207,27 @@ export type TaskMembershipItem = {
   account_replace_required: boolean;
 };
 
+export type TaskMembershipAdmissionItem = {
+  id: number;
+  account_id: number;
+  display_name: string;
+  username: string;
+  target_id: number;
+  phase: string;
+  membership_action_id: string | null;
+  test_message_action_id: string | null;
+  test_message_text: string;
+  test_message_id: string;
+  delete_after_send: boolean;
+  delete_status: string;
+  failure_type: string;
+  failure_detail: string;
+  manual_required: boolean;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type TaskCenterDetail = {
   task: TaskCenterTask;
   actions: TaskCenterAction[];
@@ -216,6 +237,8 @@ export type TaskCenterDetail = {
   accounts: Array<{ id: number; display_name: string; username: string | null; status: string }>;
   membership_phase: Record<string, any>;
   membership_accounts: TaskMembershipItem[];
+  membership_admission_phase: Record<string, any>;
+  membership_admission_items: TaskMembershipAdmissionItem[];
   learning_profile_preview?: Record<string, any>;
   message_groups: Array<{
     channel_target_id: number | null;

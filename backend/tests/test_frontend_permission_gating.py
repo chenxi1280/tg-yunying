@@ -214,6 +214,23 @@ def test_task_center_ai_chat_account_distribution_controls_are_visible():
     assert 'label="账号并发上限（账号数）"' in source
 
 
+def test_frontend_exposes_group_membership_admission_task_type():
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    assert "'group_membership_admission'" in types
+    assert "群聊准入任务" in view_model
+    assert "group_membership_admission: '/tasks/group-membership-admission'" in view_model
+    assert "account_group_ids" in view_model
+    assert "admission_pacing" in view
+    assert "test_message" in view
+    assert "membership_admission_items" in types
+    assert "membership_admission_phase" in types
+    assert "delete_after_send" in wizard
+
+
 def test_task_center_target_selects_support_searching():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()

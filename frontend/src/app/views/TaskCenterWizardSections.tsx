@@ -31,6 +31,7 @@ export function WizardBasics({ taskType, onTypeChange }: { taskType: TaskCenterT
         <Select options={TASK_TYPES} value={taskType} onChange={onTypeChange} />
       </Form.Item>
       <Form.Item name="name" label="任务名称" rules={[{ required: true }]}><Input /></Form.Item>
+      {taskType === 'group_membership_admission' && <Form.Item name="scheduled_start" label="开始时间" rules={[{ required: true }]}><Input type="datetime-local" /></Form.Item>}
       <Form.Item name="scheduled_end" label="结束时间（可选）"><Input type="datetime-local" placeholder="不填则持续运行" /></Form.Item>
     </div>
   );
@@ -44,12 +45,12 @@ export function WizardTarget({ taskType, groupTargets, channelTargets, messages,
     }));
   const sendableGroupTargetOptions = groupTargetOptions.filter((option) => groupTargets.find((target) => target.id === option.value)?.can_send);
   const channelTargetOptions = channelTargets.map((target) => ({ value: target.id, label: target.title }));
-  if (taskType === 'group_ai_chat') {
+  if (taskType === 'group_ai_chat' || taskType === 'group_membership_admission') {
     return (
       <div className="form-grid">
-        <Form.Item name="target_operation_target_id" label="已有运营目标群"><Select allowClear options={groupTargetOptions} {...targetSelectProps} /></Form.Item>
-        {allowInlineTarget && <Form.Item name="target_input" label="粘贴新群入口"><Input placeholder="@group_name / https://t.me/+invite / peer id" /></Form.Item>}
-        {allowInlineTarget && <Form.Item name="target_title" label="目标名称"><Input placeholder="可选，不填时使用入口作为名称" /></Form.Item>}
+        <Form.Item name="target_operation_target_id" label="已有运营目标群" rules={[{ required: taskType === 'group_membership_admission' }]}><Select allowClear options={groupTargetOptions} {...targetSelectProps} /></Form.Item>
+        {taskType === 'group_ai_chat' && allowInlineTarget && <Form.Item name="target_input" label="粘贴新群入口"><Input placeholder="@group_name / https://t.me/+invite / peer id" /></Form.Item>}
+        {taskType === 'group_ai_chat' && allowInlineTarget && <Form.Item name="target_title" label="目标名称"><Input placeholder="可选，不填时使用入口作为名称" /></Form.Item>}
       </div>
     );
   }
@@ -235,6 +236,20 @@ export function WizardTypeConfig({
       </Space>
     );
   }
+  if (taskType === 'group_membership_admission') {
+    return (
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Alert type="info" showIcon message="群聊准入任务会在开始时间锁定所选账号分组，逐个完成入群、验证和真实测试发言。" />
+        <div className="form-grid">
+          <Form.Item name="admission_max_concurrent" label="准入最大并发" rules={[{ required: true }]}><InputNumber min={1} max={50} /></Form.Item>
+          <Form.Item name="admission_per_minute" label="每分钟处理数" rules={[{ required: true }]}><InputNumber min={1} max={200} /></Form.Item>
+          <Form.Item name="test_message_min_chars" label="测试发言最少字数" rules={[{ required: true }]}><InputNumber min={1} max={80} /></Form.Item>
+          <Form.Item name="test_message_max_chars" label="测试发言最多字数" rules={[{ required: true }]}><InputNumber min={1} max={120} /></Form.Item>
+          <Form.Item name="delete_after_send" valuePropName="checked"><Checkbox>发送成功后尝试删除测试消息</Checkbox></Form.Item>
+        </div>
+      </Space>
+    );
+  }
   if (taskType === 'group_relay') {
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
@@ -403,7 +418,14 @@ export function TaskRuntimeAdvancedFields() {
   );
 }
 
-export function WizardAccounts({ accountMode, accounts, accountPools }: { accountMode: string; accounts: Account[]; accountPools: AccountPool[] }) {
+export function WizardAccounts({ accountMode, accounts, accountPools, taskType }: { accountMode: string; accounts: Account[]; accountPools: AccountPool[]; taskType: TaskCenterTaskType }) {
+  if (taskType === 'group_membership_admission') {
+    return (
+      <div className="form-grid">
+        <Form.Item name="account_group_ids" label="账号分组" rules={[{ required: true }]}><Select mode="multiple" options={accountPools.map((pool) => ({ value: pool.id, label: `${pool.name} (${pool.account_count})` }))} /></Form.Item>
+      </div>
+    );
+  }
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
       <div className="form-grid">
