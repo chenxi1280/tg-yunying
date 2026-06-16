@@ -303,6 +303,74 @@ def test_target_admission_retry_detail_defers_membership_rows_to_page_api() -> N
         assert detail["membership_accounts"] == []
 
 
+def test_group_ai_membership_phase_prefers_deduped_stats_over_action_rows() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            Task(
+                id="task-deduped-membership",
+                tenant_id=1,
+                name="青岛",
+                type="group_ai_chat",
+                status="running",
+                stats={
+                    "membership_stage": "membership_ready",
+                    "membership_summary": {
+                        "joined_account_count": 1,
+                        "need_join_account_count": 0,
+                        "failed_account_count": 0,
+                        "blocked_account_count": 0,
+                    },
+                    "membership_joined_count": 1,
+                    "membership_need_join_count": 0,
+                    "membership_failed_count": 0,
+                },
+            )
+        )
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="重复账号", phone_masked="+861***0011", status="在线"))
+        session.add_all(
+            [
+                Action(
+                    id="membership-old-failed",
+                    tenant_id=1,
+                    task_id="task-deduped-membership",
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    account_id=11,
+                    status="failed",
+                    scheduled_at=now_value,
+                    executed_at=now_value,
+                    result={"error_message": "历史失败"},
+                    payload={"channel_target_id": 21, "target_type": "group", "target_display": "目标群"},
+                ),
+                Action(
+                    id="membership-new-pending",
+                    tenant_id=1,
+                    task_id="task-deduped-membership",
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    account_id=11,
+                    status="pending",
+                    scheduled_at=now_value,
+                    payload={"channel_target_id": 21, "target_type": "group", "target_display": "目标群"},
+                ),
+            ]
+        )
+        session.commit()
+
+        detail = get_task_detail(session, 1, "task-deduped-membership")
+
+        assert detail["membership_phase"]["stage"] == "membership_ready"
+        assert detail["membership_phase"]["success_account_count"] == 1
+        assert detail["membership_phase"]["pending_account_count"] == 0
+        assert detail["membership_phase"]["failed_account_count"] == 0
+
+
 def test_membership_items_page_tolerates_legacy_bad_target_id() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

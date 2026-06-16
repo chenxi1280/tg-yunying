@@ -19,6 +19,7 @@ from ._common import _now, audit, gateway
 from .developer_apps import credentials_for_account
 from .membership_challenges import (
     auto_resolve_image_verification,
+    auto_resolve_text_verification,
     read_challenge_context,
     read_challenge_context_with_fallback,
 )
@@ -39,6 +40,7 @@ __all__ = [
 MANUAL_VERIFICATION_ACTIONS = {"人工处理", "手动处理", "线下处理"}
 GROUP_RESTRICTION_VERIFICATION_TYPES = ("群发言权限", "群发言不可用")
 OPEN_VERIFICATION_STATUSES = ("待处理", "失败", "需人工处理")
+CONFIRMABLE_VERIFICATION_STATUSES = {"待处理", "失败", "需人工处理"}
 ADMIN_APPROVAL_CANDIDATE_LIMIT = 10
 VERIFICATION_READER_CANDIDATE_LIMIT = 5
 IMAGE_VERIFICATION_MARKERS = ("图片", "图形", "验证码", "captcha", "bot", "机器人")
@@ -228,7 +230,7 @@ def confirm_verification_task(session: Session, task_id: int, actor: str) -> Ver
     task = session.get(VerificationTask, task_id)
     if not task:
         raise ValueError("verification task not found")
-    if task.status not in {"待处理", "失败"}:
+    if task.status not in CONFIRMABLE_VERIFICATION_STATUSES:
         return task
     _fill_verification_target(session, task)
     account = session.get(TgAccount, task.account_id) if task.account_id else None
@@ -246,10 +248,10 @@ def confirm_verification_task(session: Session, task_id: int, actor: str) -> Ver
     else:
         try:
             credentials = credentials_for_account(session, account)
-            result = gateway.resolve_verification_task(account.id, task.suggested_action, task.target_peer_id, account.session_ciphertext, credentials)
+            result = _resolve_confirmed_verification(session, task, account, credentials)
             task.status = result.status
-            task.failure_detail = result.detail
-            if task.status in {"已处理", "已完成"} and task.group_id:
+            task.failure_detail = result.detail or result.failure_type
+            if result.ok and task.group_id:
                 _mark_group_sendable(session, task, account)
         except Exception as exc:  # noqa: BLE001
             task.status = "失败"
@@ -260,6 +262,28 @@ def confirm_verification_task(session: Session, task_id: int, actor: str) -> Ver
     session.commit()
     session.refresh(task)
     return task
+
+
+def _resolve_confirmed_verification(
+    session: Session,
+    task: VerificationTask,
+    account: TgAccount,
+    credentials,
+) -> OperationResult:
+    action = task.suggested_action.strip()
+    group = session.get(TgGroup, task.group_id) if task.group_id else None
+    readers = _verification_reader_candidates(session, task, account, group) if group else []
+    if action == "识别图形验证码":
+        return auto_resolve_image_verification(session, task, account, credentials, reader_candidates=readers)
+    if action == "发送验证回复":
+        return auto_resolve_text_verification(session, task, account, credentials, reader_candidates=readers)
+    return gateway.resolve_verification_task(
+        account.id,
+        task.suggested_action,
+        task.target_peer_id,
+        account.session_ciphertext,
+        credentials,
+    )
 
 
 def resolve_group_restriction_task(session: Session, task_id: int, actor: str) -> VerificationTask:

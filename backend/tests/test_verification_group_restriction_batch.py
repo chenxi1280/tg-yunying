@@ -2,7 +2,11 @@ import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 
-from app.models import VerificationTask
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from app.database import Base
+from app.models import Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.integrations.telegram import SendResult
 from app.services.verification import (
     _apply_batch_approval_detail,
@@ -10,7 +14,9 @@ from app.services.verification import (
     _upgrade_existing_verification_task,
     _verification_action_for_group_restriction,
     _verification_send_failure_status,
+    confirm_verification_task,
 )
+from app.integrations.telegram import OperationResult
 from app.integrations.telegram.gateway import _verification_context_row
 
 
@@ -90,6 +96,47 @@ def test_existing_manual_verification_task_upgrades_to_auto_action():
     assert task.handled_at is None
     assert task.target_peer_id == "@qdsfxy"
     assert task.target_display == "青岛师范学院"
+
+
+def test_confirm_verification_task_runs_auto_image_for_manual_required(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    calls: list[int] = []
+
+    def fake_auto_image(session, task, account, credentials, *, reader_candidates=None):
+        calls.append(task.id)
+        return OperationResult(True, "已处理", detail="MiMo 已识别并提交验证码")
+
+    monkeypatch.setattr("app.services.verification.credentials_for_account", lambda *_args: object())
+    monkeypatch.setattr("app.services.verification.auto_resolve_image_verification", fake_auto_image)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="验证码账号", phone_masked="11", status="在线", session_ciphertext="cipher"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="青岛师范学院", can_send=False))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=False))
+        verification = VerificationTask(
+            id=101,
+            tenant_id=1,
+            account_id=11,
+            group_id=7,
+            verification_type="群发言权限",
+            detected_reason="群无权限或账号不可发言",
+            suggested_action="识别图形验证码",
+            target_peer_id="-1007",
+            target_display="青岛师范学院",
+            status="需人工处理",
+        )
+        session.add(verification)
+        session.commit()
+
+        updated = confirm_verification_task(session, 101, "tester")
+        link = session.query(TgGroupAccount).filter_by(group_id=7, account_id=11).one()
+
+    assert calls == [101]
+    assert updated.status == "已处理"
+    assert updated.failure_detail == "MiMo 已识别并提交验证码"
+    assert link.can_send is True
 
 
 def test_verification_context_keeps_button_and_media_challenges():

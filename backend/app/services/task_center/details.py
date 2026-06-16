@@ -173,11 +173,20 @@ def _detail_accounts(session: Session, actions: list[Action]) -> list[dict[str, 
 
 
 def _membership_phase(task: Task, actions: list[Action] | None = None) -> dict[str, Any]:
+    stats = task.stats or {}
+    if isinstance(stats, dict) and _has_membership_stats(stats):
+        legacy = {
+            "stage": stats.get("membership_stage") or "",
+            "summary": stats.get("membership_summary") or {},
+            "joined_count": int(stats.get("membership_joined_count") or 0),
+            "need_join_count": int(stats.get("membership_need_join_count") or 0),
+            "failed_count": int(stats.get("membership_failed_count") or 0),
+        }
+        return {**_membership_phase_from_stats(stats), **legacy}
     if actions:
         rows = [action for action in actions if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}]
         if rows:
             return _membership_phase_from_actions(rows)
-    stats = task.stats or {}
     if not isinstance(stats, dict):
         return {}
     legacy = {
@@ -188,6 +197,18 @@ def _membership_phase(task: Task, actions: list[Action] | None = None) -> dict[s
         "failed_count": int(stats.get("membership_failed_count") or 0),
     }
     return {**_membership_phase_from_stats(stats), **legacy}
+
+
+def _has_membership_stats(stats: dict[str, Any]) -> bool:
+    return any(
+        key in stats
+        for key in (
+            "membership_summary",
+            "membership_joined_count",
+            "membership_need_join_count",
+            "membership_failed_count",
+        )
+    )
 
 
 def _membership_phase_from_actions(rows: list[Action]) -> dict[str, Any]:
