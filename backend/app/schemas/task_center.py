@@ -809,6 +809,12 @@ class TaskMembershipItemOut(BaseModel):
     verification_action: str = ""
     can_auto_resolve: bool = False
     challenge_question: str = ""
+    recovery_bucket: str = ""
+    recovery_label: str = ""
+    recovery_action: str = ""
+    operator_required: bool = False
+    auto_retryable: bool = False
+    account_replace_required: bool = False
 
 
 class TaskRetryRequest(BaseModel):

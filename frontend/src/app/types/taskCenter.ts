@@ -199,6 +199,12 @@ export type TaskMembershipItem = {
   verification_action: string;
   can_auto_resolve: boolean;
   challenge_question: string;
+  recovery_bucket: string;
+  recovery_label: string;
+  recovery_action: string;
+  operator_required: boolean;
+  auto_retryable: boolean;
+  account_replace_required: boolean;
 };
 
 export type TaskCenterDetail = {

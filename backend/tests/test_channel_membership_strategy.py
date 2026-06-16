@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.integrations.telegram import OperationResult
 from app.integrations.telegram.gateway import VERIFICATION_CONTEXT_DEFAULT_LIMIT
-from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center.channel_membership import (
@@ -111,6 +111,75 @@ def test_group_ai_membership_strategy_disables_auto_follow_and_verification_help
 
         assert dispatcher._auto_follow_required_channel_enabled(session, action) is False
         assert dispatcher._auto_verification_enabled(session, action) is False
+
+
+def test_reactivate_memberships_requeues_recoverable_failures_for_group_ai() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    old_value = now_value - timedelta(minutes=10)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        channel = OperationTarget(id=901, tenant_id=1, target_type="group", tg_peer_id="-100901", title="准入恢复群", auth_status="只读", can_send=False)
+        group = TgGroup(id=801, tenant_id=1, tg_peer_id="-100901", title="准入恢复群", auth_status="只读", can_send=False)
+        task = Task(id="task-recovery-reactivate", tenant_id=1, name="恢复重排", type="group_ai_chat", status="running")
+        account = TgAccount(id=11, tenant_id=1, display_name="账号11", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
+        action = Action(
+            id="membership-required-channel-failed",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="ensure_target_membership",
+            account_id=11,
+            status="skipped",
+            scheduled_at=old_value,
+            executed_at=old_value,
+            payload={"channel_id": "-100901", "channel_target_id": 901, "target_type": "group", "target_display": "准入恢复群", "require_send": True},
+            result={"membership_status": "permission_denied", "error_message": "需要关注我们的频道才能发言"},
+        )
+        session.add_all([channel, group, task, account, action])
+        session.commit()
+
+        created = _reactivate_auto_verification_memberships(session, task, channel, [account], require_send=True)
+        retry_count = session.query(Action).filter(Action.task_id == task.id, Action.status == "pending").count()
+
+    assert created == 1
+    assert retry_count == 1
+
+
+def test_reactivate_memberships_does_not_retry_account_unavailable() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    old_value = _now() - timedelta(minutes=10)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        channel = OperationTarget(id=902, tenant_id=1, target_type="group", tg_peer_id="-100902", title="冻结群", auth_status="只读", can_send=False)
+        group = TgGroup(id=802, tenant_id=1, tg_peer_id="-100902", title="冻结群", auth_status="只读", can_send=False)
+        task = Task(id="task-no-retry-frozen", tenant_id=1, name="冻结不重排", type="group_ai_chat", status="running")
+        account = TgAccount(id=12, tenant_id=1, display_name="账号12", phone_masked="12", status=AccountStatus.SUSPECTED_BANNED.value, session_ciphertext="session")
+        action = Action(
+            id="membership-frozen-failed",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="ensure_target_membership",
+            account_id=12,
+            status="failed",
+            scheduled_at=old_value,
+            executed_at=old_value,
+            payload={"channel_id": "-100902", "channel_target_id": 902, "target_type": "group", "target_display": "冻结群", "require_send": True},
+            result={"error_code": "账号不可用", "error_message": "method is not available for frozen accounts"},
+        )
+        session.add_all([channel, group, task, account, action])
+        session.commit()
+
+        created = _reactivate_auto_verification_memberships(session, task, channel, [account], require_send=True)
+        retry_count = session.query(Action).filter(Action.task_id == task.id, Action.status == "pending").count()
+
+    assert created == 0
+    assert retry_count == 0
 
 
 def test_group_send_verification_classifies_arithmetic_captcha_as_reply() -> None:

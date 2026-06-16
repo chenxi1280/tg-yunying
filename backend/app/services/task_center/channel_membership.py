@@ -13,6 +13,7 @@ from app.models import AccountStatus, Action, GroupAuthStatus, OperationTarget, 
 from app.services._common import _now
 
 from .account_pool import select_task_accounts
+from .membership_recovery import AUTO_RETRY_BUCKET, VERIFICATION_BUCKET, classify_membership_recovery
 from .pacing import schedule_times
 from .payloads import EnsureChannelMembershipPayload, create_membership_action
 from .targets import group_from_reference
@@ -430,7 +431,7 @@ def _reactivate_auto_verification_memberships(
     *,
     require_send: bool,
 ) -> int:
-    if not require_send or not _hard_hourly_membership_fast_track_enabled(task):
+    if not require_send or task.type != "group_ai_chat":
         return 0
     group = linked_channel_group(session, channel, create=False, prefer_send_ready=require_send)
     if not group:
@@ -443,22 +444,63 @@ def _reactivate_auto_verification_memberships(
         if account_id in candidate_ids and action.account_id and _is_failed_membership_action(action)
     ]
     verification_by_account = _auto_verification_tasks_by_account(session, task, group.id, [int(action.account_id) for action in failed_actions])
+    account_by_id = {int(account.id): account for account in candidates}
     now_value = _now()
     created = 0
     rows: list[dict[str, Any]] = []
     for action in failed_actions:
-        verification = verification_by_account.get(int(action.account_id or 0))
-        if verification and _auto_verification_retry_due(action, verification, now_value):
-            rows.append(_membership_retry_action_row(task, action, now_value, created, "hard_hourly_auto_verification_retry", verification.id))
-            created += 1
+        account_id = int(action.account_id or 0)
+        verification = verification_by_account.get(account_id)
+        account = account_by_id.get(account_id)
+        reason = _membership_recovery_retry_reason(task, action, account, verification, now_value)
+        if not reason:
             continue
-        if not _required_channel_retry_due(action, now_value):
-            continue
-        rows.append(_membership_retry_action_row(task, action, now_value, created, "hard_hourly_required_channel_retry"))
+        rows.append(_membership_retry_action_row(task, action, now_value, created, reason, verification.id if verification else None))
         created += 1
     if rows:
         session.bulk_insert_mappings(Action, rows)
     return created
+
+
+def _membership_recovery_retry_reason(
+    task: Task,
+    action: Action,
+    account: TgAccount | None,
+    verification: VerificationTask | None,
+    now_value,
+) -> str:
+    result = action.result if isinstance(action.result, dict) else {}
+    failure_type = str(result.get("error_code") or "")
+    failure_detail = str(result.get("error_message") or result.get("detail") or result.get("failure_detail") or "")
+    recovery = classify_membership_recovery(
+        phase="failed",
+        account_status=account.status if account else "",
+        action_status=action.status,
+        failure_type=failure_type,
+        failure_detail=failure_detail,
+        verification_action=verification.suggested_action if verification else "",
+        verification_status=verification.status if verification else "",
+        can_auto_resolve=bool(verification.can_auto_resolve) if verification else False,
+    )
+    if recovery.bucket == VERIFICATION_BUCKET and verification and _auto_verification_retry_due(action, verification, now_value):
+        return _reactivation_reason(task, "auto_verification")
+    if recovery.bucket != AUTO_RETRY_BUCKET:
+        return ""
+    if verification and _auto_verification_retry_due(action, verification, now_value):
+        return _reactivation_reason(task, "auto_verification")
+    if _required_channel_retry_due(action, now_value):
+        return _reactivation_reason(task, "required_channel")
+    return ""
+
+
+def _reactivation_reason(task: Task, reason_type: str) -> str:
+    if _hard_hourly_membership_fast_track_enabled(task):
+        if reason_type == "auto_verification":
+            return "hard_hourly_auto_verification_retry"
+        return "hard_hourly_required_channel_retry"
+    if reason_type == "auto_verification":
+        return "membership_recovery_auto_verification"
+    return "membership_recovery_required_channel"
 
 
 def _membership_retry_action_row(

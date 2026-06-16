@@ -51,7 +51,19 @@ function membershipWindowLabel(membershipPhase: TaskCenterDetail['membership_pha
 }
 
 function needsOperatorAction(item: TaskMembershipItem) {
-  return item.manual_required || item.phase === 'manual_required' || Boolean(item.verification_task_id);
+  return item.operator_required || item.account_replace_required || item.manual_required || item.phase === 'manual_required' || Boolean(item.verification_task_id);
+}
+
+function recoveryColor(item: TaskMembershipItem) {
+  const colors: Record<string, string> = {
+    ready: 'green',
+    auto_retry: 'blue',
+    verification: 'gold',
+    group_admin: 'orange',
+    account_unavailable: 'red',
+    waiting: 'default',
+  };
+  return colors[item.recovery_bucket] || 'default';
 }
 
 export function TaskMembershipPanel({
@@ -71,6 +83,7 @@ export function TaskMembershipPanel({
   const columns: ColumnsType<TaskMembershipItem> = [
     { title: '账号', key: 'account', width: 180, render: (_, item) => <Space direction="vertical" size={0}><Typography.Text strong>{item.display_name || `账号 #${item.account_id}`}</Typography.Text><Typography.Text type="secondary">{item.username ? `@${item.username}` : '-'}</Typography.Text></Space> },
     { title: '阶段', dataIndex: 'phase', width: 130, render: (value) => <Tag color={value === 'ready' ? 'green' : value === 'manual_required' ? 'gold' : value === 'failed' ? 'red' : undefined}>{membershipPhaseLabel(value)}</Tag> },
+    { title: '恢复队列', key: 'recovery', width: 150, render: (_, item) => <Tag color={recoveryColor(item)}>{item.recovery_label || '-'}</Tag> },
     { title: '可发言', dataIndex: 'can_send', width: 90, render: (value) => value ? <Tag color="green">是</Tag> : <Tag>否</Tag> },
     { title: '验证', key: 'verification', width: 190, render: (_, item) => item.verification_task_id ? <Space direction="vertical" size={0}><Typography.Text>{item.verification_action || '验证辅助'}</Typography.Text><Typography.Text type="secondary">#{item.verification_task_id} {item.verification_status || '待处理'}</Typography.Text></Space> : '-' },
     { title: '目标', dataIndex: 'target_display', width: 180, ellipsis: true },
@@ -173,7 +186,7 @@ export function TaskMembershipPanel({
             onChange: onMembershipPageChange,
           }}
           size="small"
-          scroll={{ x: 1370 }}
+          scroll={{ x: 1520 }}
         />
       </Space>
       <MembershipDetailDrawer item={selectedItem} onClose={() => setSelectedItem(null)} onOpenAccountVerification={openAccountVerification} />
@@ -205,8 +218,8 @@ function MembershipDetailDrawer({
             <Alert
               type="warning"
               showIcon
-              message="需要到账号验证待处理完成处置"
-              description="先在 Telegram 内完成人工动作，再回到账号详情的验证待处理中标记已人工处理或重查群限制。"
+              message={item.account_replace_required ? '账号不可用，需要补位' : '需要人工完成准入处置'}
+              description={item.recovery_action || '先在 Telegram 内完成人工动作，再回到账号详情的验证待处理中标记已人工处理或重查群限制。'}
               action={<Button size="small" type="primary" onClick={() => onOpenAccountVerification(item)}>打开账号处理</Button>}
             />
           )}
@@ -218,9 +231,12 @@ function MembershipDetailDrawer({
               { key: 'account', label: '账号', children: `${item.display_name || `账号 #${item.account_id}`} ${item.username ? `/ @${item.username}` : ''}` },
               { key: 'target', label: '目标', children: item.target_display || item.target_id || '-' },
               { key: 'phase', label: '当前阶段', children: <Tag>{membershipPhaseLabel(item.phase)}</Tag> },
+              { key: 'recovery', label: '恢复队列', children: <Tag color={recoveryColor(item)}>{item.recovery_label || '-'}</Tag> },
+              { key: 'recovery-action', label: '系统动作', children: item.recovery_action || '-' },
               { key: 'status', label: '动作状态', children: <DetailStatusBadge status={item.status} /> },
               { key: 'can-send', label: '可发言', children: item.can_send ? <Tag color="green">已可发言</Tag> : <Tag>未确认</Tag> },
               { key: 'manual', label: '人工处理', children: item.manual_required ? <Tag color="gold">需要人工处理</Tag> : '否' },
+              { key: 'replace', label: '账号补位', children: item.account_replace_required ? <Tag color="red">需要补位</Tag> : '否' },
               { key: 'planned', label: '计划时间', children: formatDateTime(item.scheduled_at) },
               { key: 'completed', label: '完成时间', children: formatDateTime(item.completed_at) },
             ]}

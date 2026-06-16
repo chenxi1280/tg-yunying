@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, VerificationTask
+from app.models import AccountStatus, Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, VerificationTask
 from app.services._common import _now
 from app.services.task_center.dispatcher import _group_send_verification_action
 from app.services.task_center.service import get_task_detail, list_membership_items_page
@@ -141,6 +141,56 @@ def test_membership_items_page_projects_action_and_verification_state() -> None:
         challenge_rows, challenge_total = list_membership_items_page(session, 1, "task-membership-items", phase="challenge_required", page=1, page_size=10)
         assert challenge_total == 1
         assert challenge_rows[0]["account_id"] == 11
+
+
+def test_membership_items_page_projects_recovery_queue_fields() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-membership-recovery", tenant_id=1, name="准入恢复", type="group_ai_chat", status="running"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="目标群"))
+        session.add_all(
+            [
+                TgAccount(id=21, tenant_id=1, display_name="关注账号", phone_masked="+861***0021", status=AccountStatus.ACTIVE.value, session_ciphertext="cipher-21"),
+                TgAccount(id=22, tenant_id=1, display_name="验证码账号", phone_masked="+861***0022", status=AccountStatus.ACTIVE.value, session_ciphertext="cipher-22"),
+                TgAccount(id=23, tenant_id=1, display_name="群限制账号", phone_masked="+861***0023", status=AccountStatus.ACTIVE.value, session_ciphertext="cipher-23"),
+                TgAccount(id=24, tenant_id=1, display_name="冻结账号", phone_masked="+861***0024", status=AccountStatus.SUSPECTED_BANNED.value, session_ciphertext="cipher-24"),
+            ]
+        )
+        common_payload = {"channel_id": "-1007", "channel_target_id": 21, "target_type": "group", "target_display": "目标群", "require_send": True}
+        session.add_all(
+            [
+                Action(id="membership-follow", tenant_id=1, task_id="task-membership-recovery", task_type="group_ai_chat", action_type="ensure_target_membership", account_id=21, status="skipped", scheduled_at=now_value, result={"membership_status": "permission_denied", "error_message": "您需要关注我们的频道才能发言"}, payload=common_payload),
+                Action(id="membership-captcha-queue", tenant_id=1, task_id="task-membership-recovery", task_type="group_ai_chat", action_type="ensure_target_membership", account_id=22, status="skipped", scheduled_at=now_value, result={"membership_status": "permission_denied", "error_message": "需要群管理 bot 的图形验证码"}, payload=common_payload),
+                Action(id="membership-admin", tenant_id=1, task_id="task-membership-recovery", task_type="group_ai_chat", action_type="ensure_target_membership", account_id=23, status="skipped", scheduled_at=now_value, result={"membership_status": "permission_denied", "error_message": "请先在 Telegram 群内由管理员解除限制"}, payload=common_payload),
+                Action(id="membership-frozen", tenant_id=1, task_id="task-membership-recovery", task_type="group_ai_chat", action_type="ensure_target_membership", account_id=24, status="failed", scheduled_at=now_value, result={"error_code": "账号不可用", "error_message": "method is not available for frozen accounts"}, payload=common_payload),
+            ]
+        )
+        session.add_all(
+            [
+                VerificationTask(tenant_id=1, account_id=22, group_id=7, verification_type="群发言权限", detected_reason="需要群管理 bot 的图形验证码", suggested_action="识别图形验证码", target_peer_id="-1007", target_display="目标群", status="待处理"),
+                VerificationTask(tenant_id=1, account_id=23, group_id=7, verification_type="群发言权限", detected_reason="请先在 Telegram 群内由管理员解除限制", suggested_action="人工处理", target_peer_id="-1007", target_display="目标群", status="需人工处理"),
+            ]
+        )
+        session.commit()
+
+        rows, total = list_membership_items_page(session, 1, "task-membership-recovery", page=1, page_size=10)
+
+    assert total == 4
+    by_account = {row["account_id"]: row for row in rows}
+    assert by_account[21]["recovery_bucket"] == "auto_retry"
+    assert by_account[21]["recovery_action"] == "系统自动重新关注前置频道并重查发言权限"
+    assert by_account[21]["auto_retryable"] is True
+    assert by_account[22]["recovery_bucket"] == "verification"
+    assert by_account[22]["operator_required"] is True
+    assert by_account[23]["recovery_bucket"] == "group_admin"
+    assert by_account[23]["recovery_action"] == "群管理员解除限制后批量重查"
+    assert by_account[24]["recovery_bucket"] == "account_unavailable"
+    assert by_account[24]["account_replace_required"] is True
 
 
 def test_group_send_verification_action_detects_captcha_text() -> None:

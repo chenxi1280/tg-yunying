@@ -12,6 +12,7 @@ from .executors.common import quantity_jitter_bounds
 from .executors.group_ai_chat import account_profile_summaries
 from .executors.group_relay import relay_source_filter_reason
 from .fingerprints import content_fingerprint
+from .membership_recovery import classify_membership_recovery
 from app.services.task_runtime_stage import derive_task_runtime_stage
 
 
@@ -440,12 +441,25 @@ def _membership_item_payload(
     verification = verifications.get((group.id, account_id)) if group else None
     phase = _membership_item_phase(action, verification)
     latest_attempt = attempts.get(action.id)
+    account = accounts.get(account_id)
+    failure_type = result.get("error_code") or _attempt_failure_type(latest_attempt)
+    failure_detail = result.get("error_message") or result.get("detail") or _attempt_failure_detail(latest_attempt)
+    recovery = classify_membership_recovery(
+        phase=phase,
+        account_status=account.status if account else "",
+        action_status=action.status,
+        failure_type=failure_type,
+        failure_detail=failure_detail,
+        verification_action=verification.suggested_action if verification else "",
+        verification_status=verification.status if verification else "",
+        can_auto_resolve=bool(verification.can_auto_resolve) if verification else False,
+    )
     return {
         "item_id": action.id,
         "latest_action_id": action.id,
         "account_id": account_id,
-        "display_name": accounts[account_id].display_name if account_id in accounts else f"账号 #{account_id}",
-        "username": accounts[account_id].username if account_id in accounts else "",
+        "display_name": account.display_name if account else f"账号 #{account_id}",
+        "username": account.username if account else "",
         "status": action.status,
         "phase": phase,
         "can_send": phase == "ready",
@@ -454,14 +468,15 @@ def _membership_item_payload(
         "target_display": payload.get("target_display") or "",
         "scheduled_at": action.scheduled_at,
         "completed_at": latest_attempt.after_call_at if latest_attempt and latest_attempt.after_call_at else action.executed_at,
-        "failure_type": result.get("error_code") or _attempt_failure_type(latest_attempt),
-        "failure_detail": result.get("error_message") or result.get("detail") or _attempt_failure_detail(latest_attempt),
+        "failure_type": failure_type,
+        "failure_detail": failure_detail,
         "manual_required": phase == "manual_required",
         "verification_task_id": verification.id if verification else None,
         "verification_status": verification.status if verification else "",
         "verification_action": verification.suggested_action if verification else "",
         "can_auto_resolve": bool(verification.can_auto_resolve) if verification else False,
         "challenge_question": verification.detected_reason if verification else "",
+        **recovery.as_payload(),
     }
 
 
