@@ -25,6 +25,7 @@ from app.schemas.task_center import (
     GroupAIChatTaskCreate,
     GroupAIChatTaskConfigUpdate,
     GroupAIChatTaskPreviewRequest,
+    GroupMembershipAdmissionTaskCreate,
     GroupRelayConfig,
     GroupRelayTaskCreate,
     GroupRelayTaskConfigUpdate,
@@ -129,6 +130,10 @@ def create_group_relay_task(session: Session, tenant_id: int, payload: GroupRela
     return _create_task(session, tenant_id, "group_relay", payload, actor)
 
 
+def create_group_membership_admission_task(session: Session, tenant_id: int, payload: GroupMembershipAdmissionTaskCreate, actor: str) -> Task:
+    return _create_task(session, tenant_id, "group_membership_admission", payload, actor)
+
+
 def create_channel_view_task(session: Session, tenant_id: int, payload: ChannelViewTaskCreate, actor: str) -> Task:
     return _create_task(session, tenant_id, "channel_view", payload, actor)
 
@@ -147,6 +152,10 @@ def create_and_start_group_ai_chat_task(session: Session, tenant_id: int, payloa
 
 def create_and_start_group_relay_task(session: Session, tenant_id: int, payload: GroupRelayTaskCreate, actor: str) -> Task:
     return _create_and_start_task(session, tenant_id, "group_relay", payload, actor)
+
+
+def create_and_start_group_membership_admission_task(session: Session, tenant_id: int, payload: GroupMembershipAdmissionTaskCreate, actor: str) -> Task:
+    return _create_and_start_task(session, tenant_id, "group_membership_admission", payload, actor)
 
 
 def create_and_start_channel_view_task(session: Session, tenant_id: int, payload: ChannelViewTaskCreate, actor: str) -> Task:
@@ -1726,11 +1735,13 @@ __all__ = [
     "create_and_start_channel_like_task",
     "create_and_start_channel_view_task",
     "create_and_start_group_ai_chat_task",
+    "create_and_start_group_membership_admission_task",
     "create_and_start_group_relay_task",
     "create_channel_comment_task",
     "create_channel_like_task",
     "create_channel_view_task",
     "create_group_ai_chat_task",
+    "create_group_membership_admission_task",
     "create_group_relay_task",
     "add_task_source_filter_override",
     "delete_task",

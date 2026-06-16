@@ -23,6 +23,7 @@ from app.schemas import (
     GroupAIChatTaskConfigUpdate,
     GroupAIChatTaskPreviewRequest,
     GroupAIChatTaskCreate,
+    GroupMembershipAdmissionTaskCreate,
     GroupRelayTaskConfigUpdate,
     GroupRelayTaskCreate,
     RecommendTaskAccountsRequest,
@@ -49,11 +50,13 @@ from app.services.task_center import (
     create_and_start_channel_like_task,
     create_and_start_channel_view_task,
     create_and_start_group_ai_chat_task,
+    create_and_start_group_membership_admission_task,
     create_and_start_group_relay_task,
     create_channel_comment_task,
     create_channel_like_task,
     create_channel_view_task,
     create_group_ai_chat_task,
+    create_group_membership_admission_task,
     create_group_relay_task,
     delete_task,
     generate_channel_comment_preview,
@@ -115,6 +118,22 @@ def post_group_relay_task(payload: GroupRelayTaskCreate, session: Session = Depe
 def post_group_relay_create_and_start(payload: GroupRelayTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
         return create_and_start_group_relay_task(session, current_user.tenant_id or 1, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tasks/group-membership-admission", response_model=TaskOut)
+def post_group_membership_admission_task(payload: GroupMembershipAdmissionTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return create_group_membership_admission_task(session, current_user.tenant_id or 1, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tasks/group-membership-admission/create-and-start", response_model=TaskOut)
+def post_group_membership_admission_create_and_start(payload: GroupMembershipAdmissionTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return create_and_start_group_membership_admission_task(session, current_user.tenant_id or 1, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
