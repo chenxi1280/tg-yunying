@@ -1,6 +1,6 @@
 """membership admission delete action link
 
-Revision ID: 0061_membership_admission_delete_action
+Revision ID: 0061_admission_delete_action
 Revises: 0060_group_membership_admission
 Create Date: 2026-06-16
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0061_membership_admission_delete_action"
+revision = "0061_admission_delete_action"
 down_revision = "0060_group_membership_admission"
 branch_labels = None
 depends_on = None
