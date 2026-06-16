@@ -1623,11 +1623,7 @@ def _try_auto_image_verification(ctx: MembershipDispatchContext, verification_ta
 
 
 def _try_auto_follow_verification(ctx: MembershipDispatchContext, verification_task):
-    detail = "\n".join(
-        text
-        for text in (verification_task.detected_reason, verification_task.failure_detail)
-        if text
-    )
+    detail = _auto_follow_detail_text(ctx.action, verification_task)
     payload = _verification_probe_payload(ctx.payload, verification_task)
     probe_result = OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, detail)
     result = _recover_group_send_permission_with_linked_channel(
@@ -1653,6 +1649,21 @@ def _try_auto_follow_verification(ctx: MembershipDispatchContext, verification_t
                 retry_target_membership=ctx.action.action_type in MEMBERSHIP_ACTION_TYPES,
             )
     return _apply_context_fallback_result(ctx, verification_task, payload, result)
+
+
+def _auto_follow_detail_text(action: Action, verification_task) -> str:
+    result = action.result if isinstance(action.result, dict) else {}
+    return "\n".join(
+        text
+        for text in (
+            verification_task.detected_reason,
+            verification_task.failure_detail,
+            result.get("error_message"),
+            result.get("detail"),
+            result.get("failure_detail"),
+        )
+        if text
+    )
 
 
 def _required_channels_from_verification_context(ctx: MembershipDispatchContext, verification_task) -> list[str]:

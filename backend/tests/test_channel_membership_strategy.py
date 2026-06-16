@@ -358,6 +358,76 @@ def test_auto_follow_verification_reads_button_links_from_context(monkeypatch) -
     assert action.result["target_membership_retried_after_required_channel"] is True
 
 
+def test_auto_follow_verification_uses_action_error_button_links_before_linked_channel(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    followed: list[str] = []
+    linked_attempts: list[str] = []
+
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.ensure_channel_membership",
+        lambda _account_id, channel_ref, *_args, **_kwargs: followed.append(channel_ref) or OperationResult(True, "已处理", detail="已关注"),
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.probe_target_capabilities",
+        lambda *_args, **_kwargs: OperationResult(True, detail="复检可发言"),
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.ensure_linked_channel_membership",
+        lambda _account_id, channel_ref, *_args, **_kwargs: linked_attempts.append(channel_ref) or OperationResult(False, "失败", "linked_channel_wrong_type", "Cannot cast InputPeerUser to any kind of InputChannel."),
+        raising=False,
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(id=814, tenant_id=1, tg_peer_id="-100814", title="天津音乐学院", group_type="supergroup", auth_status="已授权运营", can_send=False)
+        target = OperationTarget(id=914, tenant_id=1, target_type="group", tg_peer_id="-100814", title="天津音乐学院", auth_status="只读", can_send=False)
+        task = Task(id="task-follow-action-error", tenant_id=1, name="关注动作错误", type="group_ai_chat", status="running", type_config={"auto_follow_required_channel": True})
+        account = TgAccount(id=44, tenant_id=1, display_name="账号44", phone_masked="44", status="在线", session_ciphertext="session")
+        action = Action(
+            id="membership-follow-action-error",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="ensure_target_membership",
+            account_id=44,
+            result={
+                "error_message": "您需要关注我们的频道才能发言。 [按钮：天津音乐学院车库备用 (https://t.me/qiyue201)]",
+            },
+        )
+        verification = VerificationTask(
+            tenant_id=1,
+            account_id=44,
+            group_id=group.id,
+            verification_type="群发言权限",
+            detected_reason="群无权限或账号不可发言",
+            suggested_action="关注频道",
+            target_peer_id=group.tg_peer_id,
+            target_display=group.title,
+            status="待处理",
+        )
+        session.add_all([group, target, task, account, action, verification, TgGroupAccount(tenant_id=1, group_id=group.id, account_id=account.id, can_send=False)])
+        session.commit()
+
+        result = dispatcher._try_auto_group_send_verification(
+            dispatcher.MembershipDispatchContext(
+                session,
+                action,
+                account,
+                object(),
+                EnsureChannelMembershipPayload(channel_id=group.tg_peer_id, channel_target_id=target.id, target_type="group", target_display=group.title, require_send=True),
+                None,
+            ),
+            verification,
+        )
+
+    assert result.ok is True
+    assert followed == ["qiyue201", "-100814"]
+    assert linked_attempts == []
+    assert verification.status == "已处理"
+    assert action.result["target_membership_retried_after_required_channel"] is True
+
+
 def test_membership_summary_uses_send_ready_title_group_when_target_peer_is_stale() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
