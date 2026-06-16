@@ -8,9 +8,14 @@ from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountPool, OperationTarget, TaskMembershipAdmissionItem, Tenant, TgAccount
+from app.models import AccountPool, OperationTarget, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup
 from app.schemas import GroupMembershipAdmissionTaskCreate
-from app.services.task_center.membership_admission import lock_membership_admission_snapshot, plan_membership_admission_actions, sync_membership_admission_items
+from app.services.task_center.membership_admission import (
+    lock_membership_admission_snapshot,
+    plan_membership_admission_actions,
+    plan_membership_admission_test_messages,
+    sync_membership_admission_items,
+)
 from app.services.task_center.service import create_and_start_group_membership_admission_task, create_group_membership_admission_task
 
 
@@ -44,6 +49,7 @@ def _seed_snapshot_data(session: Session) -> None:
         ]
     )
     session.add(OperationTarget(id=485, tenant_id=1, target_type="group", tg_peer_id="-100485", title="天津"))
+    session.add(TgGroup(id=485, tenant_id=1, tg_peer_id="-100485", title="天津"))
     session.add_all(
         [
             TgAccount(id=11, tenant_id=1, pool_id=1, display_name="账号11", phone_masked="11", status="在线"),
@@ -207,3 +213,73 @@ def test_membership_unrecoverable_failure_marks_failed() -> None:
         assert item.phase == "failed"
         assert item.manual_required is True
         assert item.failure_type == "account_unavailable"
+
+
+def test_plans_test_message_actions_after_membership_success() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(), "tester")
+        [item] = lock_membership_admission_snapshot(session, task)[:1]
+        [action] = plan_membership_admission_actions(session, task, now=NOW, limit=1)
+        action.status = "success"
+        action.result = {"success": True, "membership_status": "joined"}
+        sync_membership_admission_items(session, task)
+
+        [send_action] = plan_membership_admission_test_messages(session, task, now=NOW, limit=1)
+
+        session.refresh(item)
+        assert item.phase == "testing_message"
+        assert item.test_message_action_id == send_action.id
+        assert send_action.action_type == "send_message"
+        assert send_action.account_id == item.account_id
+        assert send_action.payload["group_id"] == 485
+        assert send_action.payload["operation_target_id"] == 485
+        assert send_action.payload["ai_generation_status"] == "pending"
+        assert send_action.payload["profile_scene"] == "group_membership_admission_test"
+
+
+def test_test_message_success_completes_item() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(), "tester")
+        [item] = lock_membership_admission_snapshot(session, task)[:1]
+        [action] = plan_membership_admission_actions(session, task, now=NOW, limit=1)
+        action.status = "success"
+        action.result = {"success": True, "membership_status": "joined"}
+        sync_membership_admission_items(session, task)
+        [send_action] = plan_membership_admission_test_messages(session, task, now=NOW, limit=1)
+        send_action.status = "success"
+        send_action.payload = {**send_action.payload, "message_text": "签到一下", "ai_generation_status": "success"}
+        send_action.result = {"success": True, "telegram_msg_id": "777"}
+        session.commit()
+
+        sync_membership_admission_items(session, task, now=NOW + timedelta(minutes=1))
+
+        session.refresh(item)
+        assert item.phase == "completed"
+        assert item.test_message_text == "签到一下"
+        assert item.test_message_id == "777"
+        assert item.completed_at == NOW + timedelta(minutes=1)
+        assert task.stats["admission_completed_count"] == 1
+
+
+def test_test_message_failure_marks_item_failed() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(), "tester")
+        [item] = lock_membership_admission_snapshot(session, task)[:1]
+        [action] = plan_membership_admission_actions(session, task, now=NOW, limit=1)
+        action.status = "success"
+        action.result = {"success": True, "membership_status": "joined"}
+        sync_membership_admission_items(session, task)
+        [send_action] = plan_membership_admission_test_messages(session, task, now=NOW, limit=1)
+        send_action.status = "failed"
+        send_action.result = {"error_code": "群无权限", "error_message": "该账号不可向此群发送"}
+        session.commit()
+
+        sync_membership_admission_items(session, task)
+
+        session.refresh(item)
+        assert item.phase == "failed"
+        assert item.failure_type == "test_message_failed"
+        assert item.failure_detail == "该账号不可向此群发送"
