@@ -175,14 +175,7 @@ def _detail_accounts(session: Session, actions: list[Action]) -> list[dict[str, 
 def _membership_phase(task: Task, actions: list[Action] | None = None) -> dict[str, Any]:
     stats = task.stats or {}
     if isinstance(stats, dict) and _has_membership_stats(stats):
-        legacy = {
-            "stage": stats.get("membership_stage") or "",
-            "summary": stats.get("membership_summary") or {},
-            "joined_count": int(stats.get("membership_joined_count") or 0),
-            "need_join_count": int(stats.get("membership_need_join_count") or 0),
-            "failed_count": int(stats.get("membership_failed_count") or 0),
-        }
-        return {**_membership_phase_from_stats(stats), **legacy}
+        return _deduped_membership_phase(actions, stats)
     if actions:
         rows = [action for action in actions if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}]
         if rows:
@@ -197,6 +190,21 @@ def _membership_phase(task: Task, actions: list[Action] | None = None) -> dict[s
         "failed_count": int(stats.get("membership_failed_count") or 0),
     }
     return {**_membership_phase_from_stats(stats), **legacy}
+
+
+def _deduped_membership_phase(actions: list[Action] | None, stats: dict[str, Any]) -> dict[str, Any]:
+    legacy = {
+        "stage": stats.get("membership_stage") or "",
+        "summary": stats.get("membership_summary") or {},
+        "joined_count": int(stats.get("membership_joined_count") or 0),
+        "need_join_count": int(stats.get("membership_need_join_count") or 0),
+        "failed_count": int(stats.get("membership_failed_count") or 0),
+    }
+    phase = {**_membership_phase_from_stats(stats), **legacy}
+    rows = [action for action in (actions or []) if action.action_type in {"ensure_channel_membership", "ensure_target_membership"}]
+    if rows:
+        phase["ready_account_count"] = sum(1 for action in rows if _membership_action_ready_before_task(action))
+    return phase
 
 
 def _has_membership_stats(stats: dict[str, Any]) -> bool:
