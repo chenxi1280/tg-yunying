@@ -418,10 +418,14 @@ def _should_create_membership_attempt(action: Action | None, task: Task, now_val
         return False
     if not _hard_hourly_membership_fast_track_enabled(task):
         return False
-    last_attempt_at = action.executed_at or action.scheduled_at or action.created_at
+    last_attempt_at = _terminal_membership_retry_reference(action)
     if not last_attempt_at:
         return True
     return (now_value - last_attempt_at.replace(tzinfo=None)).total_seconds() >= HARD_HOURLY_MEMBERSHIP_RETRY_SECONDS
+
+
+def _terminal_membership_retry_reference(action: Action):
+    return action.executed_at or action.created_at or action.scheduled_at
 
 
 def _reactivate_auto_verification_memberships(

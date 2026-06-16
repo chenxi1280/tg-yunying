@@ -1316,3 +1316,60 @@ def test_hard_hourly_group_ai_fast_tracks_future_membership_actions() -> None:
     assert [row.account_id for row in rows] == [21, 22]
     assert rows[0].scheduled_at <= now_value + timedelta(seconds=5)
     assert rows[1].scheduled_at <= now_value + timedelta(seconds=10)
+
+
+def test_hard_hourly_retries_terminal_future_scheduled_membership_action() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        target = OperationTarget(
+            id=908,
+            tenant_id=1,
+            target_type="group",
+            tg_peer_id="-100908",
+            title="青岛师范学院",
+            auth_status="已授权运营",
+            can_send=True,
+        )
+        task = Task(
+            id="task-hard-hourly-terminal-future-membership",
+            tenant_id=1,
+            name="硬目标终态准入恢复",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"target_operation_target_id": 908, "hard_hourly_target_enabled": True, "hourly_min_messages": 300},
+        )
+        account = TgAccount(id=31, tenant_id=1, display_name="账号31", phone_masked="31", status="在线", session_ciphertext="session")
+        stale_action = Action(
+            id="membership-terminal-future",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="ensure_target_membership",
+            account_id=31,
+            status="skipped",
+            scheduled_at=now_value + timedelta(hours=1),
+            created_at=now_value - timedelta(minutes=10),
+            result={"membership_status": "not_joined"},
+            payload={"channel_target_id": target.id, "target_type": "group", "target_display": target.title},
+        )
+        session.add_all([target, task, account, stale_action])
+        session.commit()
+
+        result = gate_channel_membership(session, task, target, require_send=True)
+        rows = (
+            session.query(Action)
+            .filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership")
+            .order_by(Action.created_at.asc())
+            .all()
+        )
+
+    assert result.created == 1
+    assert len(rows) == 2
+    assert rows[-1].account_id == 31
+    assert rows[-1].status == "pending"
+    assert rows[-1].scheduled_at <= now_value + timedelta(seconds=5)
