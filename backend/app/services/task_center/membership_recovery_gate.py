@@ -2,15 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Action, OperationTarget, Task
+from app.models import OperationTarget, Task
 
 from .channel_membership import (
-    ACTION_TYPE,
-    LEGACY_ACTION_TYPE,
-    OPEN_STATUSES,
     gate_channel_membership,
 )
 from .hard_hourly import enabled as hard_hourly_enabled
@@ -44,7 +41,6 @@ def _should_recover_task(session: Session, task: Task) -> bool:
     return (
         hard_hourly_enabled(task)
         and _membership_need_join_count(task.stats or {}) > 0
-        and _open_membership_action_count(session, task.id) == 0
     )
 
 
@@ -53,19 +49,6 @@ def _membership_need_join_count(stats: dict[str, Any]) -> int:
         return int(stats.get("membership_need_join_count") or 0)
     except (TypeError, ValueError):
         return 0
-
-
-def _open_membership_action_count(session: Session, task_id: str) -> int:
-    return int(
-        session.scalar(
-            select(func.count(Action.id)).where(
-                Action.task_id == task_id,
-                Action.action_type.in_([ACTION_TYPE, LEGACY_ACTION_TYPE]),
-                Action.status.in_(OPEN_STATUSES),
-            )
-        )
-        or 0
-    )
 
 
 def _target_for_task(session: Session, task: Task) -> OperationTarget | None:
