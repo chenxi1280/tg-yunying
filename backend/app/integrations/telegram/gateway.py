@@ -23,6 +23,7 @@ from .contracts import (
     DeveloperAppCredentials,
     GroupMessageSnapshot,
     GroupSnapshot,
+    InviteLinkResult,
     LoginChallenge,
     OperationResult,
     OutboundSegment,
@@ -1009,6 +1010,44 @@ class TelethonTelegramGateway(TelegramGateway):
         invite_link: str = "",
     ) -> ChannelMembershipResult:
         return self._run(self._ensure_channel_membership_async(session_ciphertext, channel_peer_id, self._usable_credentials(credentials), invite_link))
+
+    async def _export_group_invite_link_async(
+        self,
+        session_ciphertext: str | None,
+        group_peer_id: str,
+        credentials: DeveloperAppCredentials,
+    ) -> InviteLinkResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return InviteLinkResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return InviteLinkResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
+        try:
+            from telethon import functions
+
+            target = (group_peer_id or "").strip()
+            if not target:
+                return InviteLinkResult(False, "失败", FailureType.PEER_INVALID.value, "缺少目标群")
+            entity_ref: int | str = int(target) if target.lstrip("-").isdigit() else target.lstrip("@")
+            entity = await client.get_entity(entity_ref)
+            invite = await client(functions.messages.ExportChatInviteRequest(peer=entity))
+            link = str(getattr(invite, "link", "") or "").strip()
+            if not link:
+                return InviteLinkResult(False, "失败", "invite_link_empty", "Telegram 未返回邀请链接")
+            return InviteLinkResult(True, detail=link, invite_link=link)
+        except Exception as exc:
+            mapped = self._map_send_error(exc)
+            return InviteLinkResult(False, "失败", mapped.failure_type or "invite_export_failed", mapped.detail or str(exc))
+
+    def export_group_invite_link(
+        self,
+        account_id: int,
+        group_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> InviteLinkResult:
+        return self._run(self._export_group_invite_link_async(session_ciphertext, group_peer_id, self._usable_credentials(credentials)))
 
     async def _ensure_linked_channel_membership_async(
         self,

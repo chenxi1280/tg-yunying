@@ -21,6 +21,7 @@ from app.schemas import (
     OperationTargetAccountUpdate,
     OperationTargetAdmissionRetryRequest,
     OperationTargetDetailOut,
+    OperationTargetInviteLinkExportOut,
     OperationTargetMessageSyncOut,
     OperationTargetOut,
     OperationTargetsSyncOut,
@@ -35,6 +36,7 @@ from app.services import (
     create_operation_target,
     create_operation_task,
     dispatch_operation_task,
+    export_operation_target_invite_link,
     filter_channel_message_comments,
     filter_channel_messages,
     filter_operation_targets,
@@ -153,6 +155,18 @@ def post_operation_target_admission_retry(
 ):
     try:
         return retry_operation_target_admission(session, current_user.tenant_id or 1, target_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/operation-targets/{target_id}/invite-link/export", response_model=OperationTargetInviteLinkExportOut)
+def post_operation_target_invite_link_export(
+    target_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return export_operation_target_invite_link(session, current_user.tenant_id or 1, target_id, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

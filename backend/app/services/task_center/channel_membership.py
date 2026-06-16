@@ -703,10 +703,18 @@ def _record_fast_tracked_memberships(stats: dict[str, Any], count: int) -> None:
 
 def _joinable_channel_reference(channel: OperationTarget) -> str:
     if channel.username:
-        return f"https://t.me/{channel.username.lstrip('@')}"
+        username = channel.username.strip()
+        if _looks_like_invite_ref(username):
+            return username
+        return f"https://t.me/{username.lstrip('@')}"
     if str(channel.tg_peer_id).startswith(("https://t.me/", "http://t.me/", "t.me/", "https://telegram.me/", "http://telegram.me/", "telegram.me/", "+")):
         return str(channel.tg_peer_id)
     return ""
+
+
+def _looks_like_invite_ref(ref: str) -> bool:
+    value = (ref or "").strip()
+    return value.startswith(("+", "https://t.me/+", "http://t.me/+", "t.me/+", "https://telegram.me/+", "telegram.me/+"))
 
 
 def _membership_actions_by_account(session: Session, channel_target_id: int, *, task_id: str | None = None) -> dict[int, Action]:

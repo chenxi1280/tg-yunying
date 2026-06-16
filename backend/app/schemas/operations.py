@@ -136,6 +136,13 @@ class OperationTargetAdmissionRetryRequest(BaseModel):
         return self
 
 
+class OperationTargetInviteLinkExportOut(BaseModel):
+    target: OperationTargetOut
+    invite_link: str
+    exporter_account_id: int
+    attempted_account_count: int
+
+
 class OperationTargetGroupMessageOut(BaseModel):
     id: int
     listener_account_id: int
@@ -323,6 +330,7 @@ __all__ = [
     "OperationTargetAccountOut",
     "OperationTargetAccountUpdate",
     "OperationTargetAdmissionRetryRequest",
+    "OperationTargetInviteLinkExportOut",
     "OperationTargetGroupMessageOut",
     "OperationTargetLinkedGroupOut",
     "OperationTargetDetailOut",

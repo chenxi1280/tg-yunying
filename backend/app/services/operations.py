@@ -1036,6 +1036,73 @@ def retry_operation_target_admission(
     return operation_target_detail(session, tenant_id, target_id, admission_retry=summary)
 
 
+def export_operation_target_invite_link(session: Session, tenant_id: int, target_id: int, actor: str) -> dict:
+    target = _operation_target_for_tenant(session, tenant_id, target_id)
+    if target.target_type != "group":
+        raise ValueError("only group targets can export invite links")
+    if not _is_stable_telegram_peer(target.tg_peer_id):
+        raise ValueError("target must have a stable Telegram peer before exporting invite link")
+    accounts = _invite_export_candidate_accounts(session, target)
+    if not accounts:
+        raise ValueError("no send-ready accounts available to export invite link")
+    failures: list[str] = []
+    for account in accounts:
+        result = gateway.export_group_invite_link(account.id, target.tg_peer_id, account.session_ciphertext, credentials_for_account(session, account))
+        if not result.ok or not result.invite_link:
+            failures.append(f"{account.id}:{result.failure_type or result.detail}")
+            continue
+        invite_link = result.invite_link.strip()
+        if len(invite_link) > 120:
+            raise ValueError("exported invite link is too long for target username field")
+        target.username = invite_link
+        target.updated_at = _now()
+        audit(
+            session,
+            tenant_id=tenant_id,
+            actor=actor,
+            action="导出运营目标邀请链接",
+            target_type="operation_target",
+            target_id=str(target.id),
+            detail=f"exporter_account_id={account.id}; attempted={len(failures) + 1}",
+        )
+        session.commit()
+        session.refresh(target)
+        return {
+            "target": target,
+            "invite_link": invite_link,
+            "exporter_account_id": account.id,
+            "attempted_account_count": len(failures) + 1,
+        }
+    raise ValueError(f"invite link export failed: {'; '.join(failures[:5])}")
+
+
+def _invite_export_candidate_accounts(session: Session, target: OperationTarget) -> list[TgAccount]:
+    group = _linked_group_for_target(session, target)
+    if not group:
+        return []
+    return list(
+        session.scalars(
+            select(TgAccount)
+            .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
+            .where(
+                TgAccount.tenant_id == target.tenant_id,
+                TgAccount.status == AccountStatus.ACTIVE.value,
+                TgAccount.deleted_at.is_(None),
+                TgGroupAccount.tenant_id == target.tenant_id,
+                TgGroupAccount.group_id == group.id,
+                TgGroupAccount.can_send.is_(True),
+            )
+            .order_by(TgAccount.id.asc())
+            .limit(30)
+        )
+    )
+
+
+def _is_stable_telegram_peer(peer_id: str) -> bool:
+    value = str(peer_id or "").strip()
+    return value.lstrip("-").isdigit()
+
+
 def operation_target_detail(
     session: Session,
     tenant_id: int,
@@ -1817,6 +1884,7 @@ __all__ = [
     "dispatch_operation_task",
     "drain_operation_tasks",
     "ensure_operation_targets_from_legacy_groups",
+    "export_operation_target_invite_link",
     "filter_channel_message_comments",
     "filter_channel_messages",
     "filter_operation_targets",

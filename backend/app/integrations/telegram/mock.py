@@ -21,6 +21,7 @@ from .contracts import (
     DeveloperAppCredentials,
     GroupMessageSnapshot,
     GroupSnapshot,
+    InviteLinkResult,
     LoginChallenge,
     OperationResult,
     OutboundSegment,
@@ -160,6 +161,18 @@ class TelegramGateway:
         if "blocked" in target.lower():
             return ChannelMembershipResult(False, "失败", FailureType.PEER_INVALID.value, "频道不可访问", "failed")
         return ChannelMembershipResult(True, detail=f"joined:{target}:{account_id}", membership_status="joined")
+
+    def export_group_invite_link(
+        self,
+        account_id: int,
+        group_peer_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> InviteLinkResult:
+        if "no-admin" in group_peer_id.lower():
+            return InviteLinkResult(False, "失败", "admin_required", "账号无权导出邀请链接")
+        link = f"https://t.me/+mockInvite{account_id}"
+        return InviteLinkResult(True, detail=link, invite_link=link)
 
     def send_channel_reaction(
         self,

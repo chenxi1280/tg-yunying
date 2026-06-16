@@ -803,7 +803,10 @@ def _membership_send_required_refs(
     stable_refs = [ref for ref in candidate_refs + verified_refs + raw_refs if _is_stable_telegram_peer(ref)]
     public_refs = [payload.invite_link]
     if username:
-        public_refs.extend([username, f"https://t.me/{username.lstrip('@')}"])
+        if _looks_like_invite_ref(username):
+            public_refs.append(username)
+        else:
+            public_refs.extend([username, f"https://t.me/{username.lstrip('@')}"])
     public_refs.extend([ref for ref in raw_refs if ref and not _is_stable_telegram_peer(ref)])
     return _dedupe_refs(stable_refs + public_refs)
 

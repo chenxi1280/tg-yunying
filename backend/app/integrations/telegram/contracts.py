@@ -57,6 +57,11 @@ class ChannelMembershipResult(OperationResult):
 
 
 @dataclass(frozen=True)
+class InviteLinkResult(OperationResult):
+    invite_link: str = ""
+
+
+@dataclass(frozen=True)
 class GroupSnapshot:
     tg_peer_id: str
     title: str
