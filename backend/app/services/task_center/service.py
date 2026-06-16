@@ -54,6 +54,7 @@ from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
 from .membership_fast_track import fast_track_pending_hard_hourly_memberships
+from .membership_recovery_gate import recover_missing_hard_hourly_memberships
 from .review import expire_reviews
 from .reviews import ReviewStateError, approve_review, list_reviews, reject_review
 from .precheck import run_precheck_task_creation
@@ -863,6 +864,8 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
             record_worker_heartbeat(session, process_type=process_type, metadata={"limit": limit})
         processed += recover_expired_claims(session)
         processed += recover_expired_hard_hourly_actions(session, limit=_hard_hourly_recovery_limit(limit))
+        processed += fast_track_pending_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
+        processed += recover_missing_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
         processed += fast_track_pending_hard_hourly_memberships(session, limit=_hard_hourly_recovery_limit(limit))
         processed += _recover_continuous_task_states(session)
         processed += _recover_stale_executing_actions(session)
