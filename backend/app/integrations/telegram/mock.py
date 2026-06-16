@@ -138,6 +138,20 @@ class TelegramGateway:
     ) -> SendResult:
         return self.send_message(account_id, 0, content, segments, session_ciphertext, target_peer_id, credentials)
 
+    def delete_message(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        message_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        if not target_peer_id:
+            return OperationResult(False, "失败", FailureType.PEER_INVALID.value, "缺少目标群")
+        if not str(message_id).strip():
+            return OperationResult(False, "失败", FailureType.PEER_INVALID.value, "缺少消息 ID")
+        return OperationResult(True, detail=f"deleted:{target_peer_id}:{message_id}:{account_id}")
+
     def view_channel_message(
         self,
         account_id: int,

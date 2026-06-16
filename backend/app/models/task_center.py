@@ -164,6 +164,7 @@ class TaskMembershipAdmissionItem(Base):
     phase: Mapped[str] = mapped_column(String(40), default="pending")
     membership_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
     test_message_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
+    delete_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
     test_message_text: Mapped[str] = mapped_column(Text, default="")
     test_message_id: Mapped[str] = mapped_column(String(160), default="")
     delete_after_send: Mapped[bool] = mapped_column(Boolean, default=False)

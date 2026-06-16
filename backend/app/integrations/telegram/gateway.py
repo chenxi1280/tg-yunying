@@ -1187,6 +1187,39 @@ class TelethonTelegramGateway(TelegramGateway):
     ) -> SendResult:
         return self.send_message(account_id, 0, content, segments, session_ciphertext, target_peer_id, credentials)
 
+    async def _delete_message_async(
+        self,
+        session_ciphertext: str | None,
+        target_peer_id: str,
+        message_id: str,
+        credentials: DeveloperAppCredentials,
+    ) -> OperationResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
+        try:
+            target = await resolve_telethon_target(client, target_peer_id, group_id=0)
+            await client.delete_messages(target, [int(message_id)])
+            return OperationResult(True, detail=f"message_id={message_id}")
+        except ValueError:
+            return OperationResult(False, "失败", FailureType.PEER_INVALID.value, "删除消息 ID 非数字")
+        except Exception as exc:
+            mapped = self._map_send_error(exc)
+            return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, mapped.detail or str(exc))
+
+    def delete_message(
+        self,
+        account_id: int,
+        target_peer_id: str,
+        message_id: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        return self._run(self._delete_message_async(session_ciphertext, target_peer_id, message_id, self._usable_credentials(credentials)))
+
     def probe_target_capabilities(
         self,
         account_id: int,

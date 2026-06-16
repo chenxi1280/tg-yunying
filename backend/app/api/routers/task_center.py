@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+from io import StringIO
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
@@ -66,6 +69,8 @@ from app.services.task_center import (
     list_action_attempts,
     list_membership_items_page,
     list_reviews,
+    mark_membership_admission_manual_handled,
+    membership_admission_failure_rows,
     list_tasks,
     pause_task,
     precheck_task_creation,
@@ -73,6 +78,8 @@ from app.services.task_center import (
     reject_review,
     reset_task,
     resume_task,
+    retry_failed_membership_admission_items,
+    retry_membership_admission_item,
     retry_task,
     start_task,
     stop_task,
@@ -416,6 +423,69 @@ def get_task_membership_items(
     response.headers["X-Page"] = str(page)
     response.headers["X-Page-Size"] = str(page_size)
     return rows
+
+
+@router.post("/api/tasks/{task_id}/membership-admission/items/{item_id}/retry", response_model=TaskDetailOut)
+def post_membership_admission_item_retry(
+    task_id: str,
+    item_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        retry_membership_admission_item(session, current_user.tenant_id or 1, task_id, item_id)
+        return get_task_detail(session, current_user.tenant_id or 1, task_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/tasks/{task_id}/membership-admission/retry-failed", response_model=TaskDetailOut)
+def post_membership_admission_retry_failed(
+    task_id: str,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        retry_failed_membership_admission_items(session, current_user.tenant_id or 1, task_id)
+        return get_task_detail(session, current_user.tenant_id or 1, task_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/tasks/{task_id}/membership-admission/items/{item_id}/manual-handled", response_model=TaskDetailOut)
+def post_membership_admission_manual_handled(
+    task_id: str,
+    item_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        mark_membership_admission_manual_handled(session, current_user.tenant_id or 1, task_id, item_id)
+        return get_task_detail(session, current_user.tenant_id or 1, task_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.get("/api/tasks/{task_id}/membership-admission/failures.csv")
+def get_membership_admission_failures_csv(
+    task_id: str,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        rows = membership_admission_failure_rows(session, current_user.tenant_id or 1, task_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+    columns = ["account_id", "display_name", "username", "phase", "manual_required", "failure_type", "failure_detail", "test_message_id", "delete_status"]
+    buffer = StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns)
+    writer.writeheader()
+    writer.writerows(rows)
+    return Response(
+        content="\ufeff" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="membership-admission-{task_id}-failures.csv"'},
+    )
 
 
 @router.get("/api/tasks/{task_id}/actions/{action_id}/attempts", response_model=list[ExecutionAttemptOut])

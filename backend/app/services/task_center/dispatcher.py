@@ -36,7 +36,7 @@ from .account_pool import account_matches_current_shard, current_account_shard, 
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group
 from .executors.common import quantity_jitter_bounds
-from .payloads import EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
+from .payloads import DeleteMessagePayload, EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from . import runtime_resources as _runtime_resources
@@ -199,6 +199,8 @@ def dispatch_action(session: Session, action: Action) -> bool:
             return _dispatch_channel_membership(session, action, account, credentials, payload)
         if action.action_type == "send_message":
             return _dispatch_send_message(session, action, account, credentials, payload)
+        if action.action_type == "delete_message":
+            return _dispatch_delete_message(session, action, account, credentials, payload)
         if action.action_type == "view_message":
             return _dispatch_view(action, account, credentials, session, payload)
         if action.action_type == "like_message":
@@ -680,6 +682,27 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
     _mark_gateway_call_started(session, attempt)
     result = gateway.send_message_to_target(account_id, target_peer, content, "channel", None, session_ciphertext, credentials)
     _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
+    return True
+
+
+def _dispatch_delete_message(session: Session, action: Action, account: TgAccount, credentials, payload: DeleteMessagePayload) -> bool:
+    group = session.get(TgGroup, payload.group_id) if payload.group_id else None
+    target_peer = group.tg_peer_id if group else payload.chat_id
+    if not target_peer:
+        _fail(action, FailureType.PEER_INVALID.value, "删除消息缺少目标群")
+        return True
+    attempt = _begin_execution_attempt(session, action, account)
+    _mark_executing(action)
+    session.commit()
+    _mark_gateway_call_started(session, attempt)
+    result = gateway.delete_message(
+        account.id,
+        target_peer,
+        payload.message_id,
+        account.session_ciphertext,
+        credentials,
+    )
+    _apply_operation_result(action, account, result.ok, result.failure_type, result.detail, attempt=attempt)
     return True
 
 

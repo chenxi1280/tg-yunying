@@ -41,6 +41,11 @@ interface TaskCenterDetailModalProps {
   onMembershipFiltersChange: (filters: { phase: string; manualRequired: string }) => void;
   onOpenAccountDetail?: (accountId: number, tab?: string) => void | Promise<void>;
   onResumeTask: (task: TaskCenterTask) => void;
+  admissionBusyId: string;
+  onRetryAdmissionItem: (item: TaskCenterDetail['membership_admission_items'][number]) => void | Promise<void>;
+  onRetryFailedAdmissionItems: (task: TaskCenterTask) => void | Promise<void>;
+  onMarkAdmissionManualHandled: (item: TaskCenterDetail['membership_admission_items'][number]) => void | Promise<void>;
+  onExportAdmissionFailures: (task: TaskCenterTask) => void | Promise<void>;
   onClose: () => void;
 }
 
@@ -138,6 +143,11 @@ export function TaskCenterDetailModal({
   onMembershipFiltersChange,
   onOpenAccountDetail,
   onResumeTask,
+  admissionBusyId,
+  onRetryAdmissionItem,
+  onRetryFailedAdmissionItems,
+  onMarkAdmissionManualHandled,
+  onExportAdmissionFailures,
   onClose,
 }: TaskCenterDetailModalProps) {
   const summaryUpdatedAt = detail?.task_runtime_summary?.updated_at ?? null;
@@ -212,6 +222,21 @@ export function TaskCenterDetailModal({
     { title: '删除', dataIndex: 'delete_status', width: 110, render: (value) => value || '-' },
     { title: '失败原因', key: 'failure', ellipsis: true, render: (_, item) => item.failure_detail || item.failure_type || '-' },
     { title: '完成时间', dataIndex: 'completed_at', width: 170, render: (value) => formatDateTime(value) },
+    {
+      title: '操作',
+      key: 'action',
+      width: 190,
+      render: (_, item) => (
+        <Space>
+          {canManageTasks && item.phase === 'failed' && (
+            <Button size="small" loading={admissionBusyId === `retry:${item.id}`} onClick={() => onRetryAdmissionItem(item)}>重试</Button>
+          )}
+          {canManageTasks && item.manual_required && (
+            <Button size="small" loading={admissionBusyId === `manual:${item.id}`} onClick={() => onMarkAdmissionManualHandled(item)}>已处理，重查</Button>
+          )}
+        </Space>
+      ),
+    },
   ];
   const detailTabs = detail ? [
     accountSecurityBatch ? {
@@ -219,6 +244,14 @@ export function TaskCenterDetailModal({
       label: TYPE_LABEL[accountSecurityBatch.system_task_type] || '账号安全批次',
       children: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          {canManageTasks && (Number(detail.membership_admission_phase.failed_count ?? 0) > 0 || Number(detail.membership_admission_phase.manual_required_count ?? 0) > 0) && (
+            <Space>
+              {Number(detail.membership_admission_phase.failed_count ?? 0) > 0 && (
+                <Button loading={admissionBusyId === 'retry-failed'} onClick={() => onRetryFailedAdmissionItems(detail.task)}>重试失败项</Button>
+              )}
+              <Button loading={admissionBusyId === `export:${detail.task.id}`} onClick={() => onExportAdmissionFailures(detail.task)}>导出失败清单</Button>
+            </Space>
+          )}
           <Descriptions
             bordered
             size="small"

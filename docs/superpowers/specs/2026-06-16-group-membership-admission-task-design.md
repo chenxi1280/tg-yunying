@@ -176,6 +176,7 @@ task_membership_admission_items
 - phase
 - membership_action_id
 - test_message_action_id
+- delete_action_id
 - test_message_text
 - test_message_id
 - delete_after_send
@@ -194,6 +195,26 @@ task_membership_admission_items
 - 快照生成后不因分组变更而改变。
 - `completed_at` 只在真实测试消息发送成功后写入。
 - `manual_required=true` 不代表失败，代表需要外部处理后继续。
+
+## 接口设计
+
+任务创建接口：
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| POST | `/api/tasks/group-membership-admission` | 创建草稿任务 |
+| POST | `/api/tasks/group-membership-admission/create-and-start` | 创建并启动任务 |
+
+运营操作接口：
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| POST | `/api/tasks/{task_id}/membership-admission/items/{item_id}/retry` | 重试单个失败账号 |
+| POST | `/api/tasks/{task_id}/membership-admission/retry-failed` | 批量重试失败账号 |
+| POST | `/api/tasks/{task_id}/membership-admission/items/{item_id}/manual-handled` | 人工审批或解除限制后重新验证 |
+| GET | `/api/tasks/{task_id}/membership-admission/failures.csv` | 导出失败或需人工处理账号清单 |
+
+详情接口 `/api/tasks/{task_id}` 返回 `membership_admission_phase` 和 `membership_admission_items`，详情页直接用这两个字段展示快照进度、失败原因、测试消息和删除状态。
 
 ## 调度设计
 
@@ -268,7 +289,7 @@ task_membership_admission_items
 
 - 增加 AI 测试发言生成器，限制长度和低风险风格。
 - 增加真实发送测试消息 action。
-- 支持可选删除测试消息。
+- 支持可选删除测试消息；删除通过 `delete_message` action 执行，失败只记录 `delete_failed`。
 - 用测试发言成功驱动账号达标。
 
 ### 第四阶段：前端创建与详情页
@@ -284,6 +305,40 @@ task_membership_admission_items
 - 再选择一个真实目标群做 10 到 20 个账号的小批量验证。
 - 验证通过后再用于 AI 活跃群正式准备。
 - 生产观察指标包括达标率、等待审批数、验证失败数、测试发言失败数、平均完成时长。
+
+## 当前落地验收
+
+本次代码落地后的本地验收命令：
+
+```bash
+PYTHONPATH=backend python - <<'PY'
+from backend.tests import test_group_membership_admission as gt
+for name in sorted(n for n in dir(gt) if n.startswith('test_')):
+    getattr(gt, name)()
+print('group admission direct tests ok')
+PY
+
+PYTHONPATH=backend python - <<'PY'
+from backend.tests import test_frontend_permission_gating as ft
+ft.test_frontend_exposes_group_membership_admission_task_type()
+print('frontend static ok')
+PY
+
+PYTHONPATH=backend python -m py_compile \
+  backend/app/services/task_center/membership_admission.py \
+  backend/app/services/task_center/dispatcher.py \
+  backend/app/services/task_center/payloads.py \
+  backend/app/integrations/telegram/mock.py \
+  backend/app/integrations/telegram/gateway.py \
+  backend/app/api/routers/task_center.py \
+  backend/app/models/task_center.py \
+  backend/app/services/task_center/executors/group_membership_admission.py
+
+npm --prefix frontend run build
+git diff --check
+```
+
+`pytest backend/tests/test_group_membership_admission.py` 在当前仓库会先加载全局 `conftest.py`，它依赖外部 PostgreSQL 测试库；本地无该库时不作为准入阻塞。群聊准入相关用例使用上面的直接调用方式验证业务状态机。
 
 ## 验收口径
 

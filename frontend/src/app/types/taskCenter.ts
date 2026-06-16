@@ -216,6 +216,7 @@ export type TaskMembershipAdmissionItem = {
   phase: string;
   membership_action_id: string | null;
   test_message_action_id: string | null;
+  delete_action_id: string | null;
   test_message_text: string;
   test_message_id: string;
   delete_after_send: boolean;

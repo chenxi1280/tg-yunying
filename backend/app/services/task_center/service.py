@@ -55,7 +55,13 @@ from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
 from .membership_fast_track import fast_track_pending_hard_hourly_memberships
-from .membership_admission import membership_admission_detail
+from .membership_admission import (
+    mark_membership_admission_manual_handled,
+    membership_admission_detail,
+    membership_admission_failure_rows,
+    retry_failed_membership_admission_items,
+    retry_membership_admission_item,
+)
 from .membership_recovery_gate import recover_missing_hard_hourly_memberships
 from .review import expire_reviews
 from .reviews import ReviewStateError, approve_review, list_reviews, reject_review

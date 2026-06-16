@@ -98,6 +98,22 @@ class SendMessagePayload(BaseModel):
         return self
 
 
+class DeleteMessagePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group_id: int | None = None
+    chat_id: str = ""
+    message_id: str = Field(min_length=1)
+    operation_target_id: int | None = None
+    target_display: str = ""
+
+    @model_validator(mode="after")
+    def require_destination(self) -> "DeleteMessagePayload":
+        if self.group_id is None and not self.chat_id.strip():
+            raise ValueError("delete_message action requires group_id or chat_id")
+        return self
+
+
 class ViewMessagePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -162,6 +178,7 @@ class EnsureChannelMembershipPayload(BaseModel):
 PAYLOAD_MODELS = {
     "ensure_channel_membership": EnsureChannelMembershipPayload,
     "ensure_target_membership": EnsureChannelMembershipPayload,
+    "delete_message": DeleteMessagePayload,
     "send_message": SendMessagePayload,
     "view_message": ViewMessagePayload,
     "like_message": LikeMessagePayload,
@@ -243,6 +260,10 @@ def _action_dedupe_key(task: Task, plan_batch_key: str, action_type: str, accoun
 
 def create_send_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: SendMessagePayload) -> Action:
     return _create_action(session, task, "send_message", account_id, scheduled_at, payload)
+
+
+def create_delete_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: DeleteMessagePayload) -> Action:
+    return _create_action(session, task, "delete_message", account_id, scheduled_at, payload)
 
 
 def create_membership_action(

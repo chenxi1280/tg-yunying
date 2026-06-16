@@ -2,7 +2,7 @@ import React from 'react';
 import { Alert, Button, Card, Collapse, Form, Input, Modal, Select, Space, Steps, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, CirclePause, CirclePlay, RefreshCcw } from 'lucide-react';
-import { api, apiWithMeta, ApiError } from '../../shared/api/client';
+import { api, apiWithMeta, ApiError, API_BASE } from '../../shared/api/client';
 import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskMembershipItem, TaskPrecheck } from '../types';
 import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
 import { fromBeijingDateTimeLocalValue } from '../time';
@@ -1016,6 +1016,45 @@ export default function TaskCenterView({
     }
   }
 
+  async function membershipAdmissionAction(path: string, loadingKey: string) {
+    setBusyId(`admission:${loadingKey}`);
+    setActionError('');
+    try {
+      const updated = await api<TaskCenterDetail>(path, { method: 'POST' });
+      setDetail(updated);
+      await load();
+      return true;
+    } catch (error) {
+      setActionError(errorMessage(error));
+      return false;
+    } finally {
+      setBusyId('');
+    }
+  }
+
+  async function downloadMembershipAdmissionFailures(task: TaskCenterTask) {
+    setBusyId(`admission:export:${task.id}`);
+    setActionError('');
+    try {
+      const token = localStorage.getItem('tg_ops_token');
+      const response = await fetch(`${API_BASE}/tasks/${task.id}/membership-admission/failures.csv`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `membership-admission-${task.id}-failures.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setBusyId('');
+    }
+  }
+
   async function deleteTask(task: TaskCenterTask, reason: string) {
     setBusyId(`${task.id}:delete`);
     setActionError('');
@@ -1589,6 +1628,11 @@ export default function TaskCenterView({
         onMembershipFiltersChange={updateMembershipFilters}
         onOpenAccountDetail={onOpenAccountDetail}
         onResumeTask={(task) => void taskAction(task, 'resume')}
+        admissionBusyId={busyId.startsWith('admission:') ? busyId.slice('admission:'.length) : ''}
+        onRetryAdmissionItem={(item) => void membershipAdmissionAction(`/tasks/${detail?.task.id}/membership-admission/items/${item.id}/retry`, `retry:${item.id}`)}
+        onRetryFailedAdmissionItems={(task) => void membershipAdmissionAction(`/tasks/${task.id}/membership-admission/retry-failed`, 'retry-failed')}
+        onMarkAdmissionManualHandled={(item) => void membershipAdmissionAction(`/tasks/${detail?.task.id}/membership-admission/items/${item.id}/manual-handled`, `manual:${item.id}`)}
+        onExportAdmissionFailures={(task) => void downloadMembershipAdmissionFailures(task)}
         onClose={() => {
           setDetail(null);
           setMembershipPage({ current: 1, pageSize: MEMBERSHIP_PAGE_SIZE, total: 0, loading: false });

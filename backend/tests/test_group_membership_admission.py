@@ -12,8 +12,13 @@ from app.models import AccountPool, Action, OperationTarget, TaskMembershipAdmis
 from app.schemas import GroupMembershipAdmissionTaskCreate
 from app.services.task_center.membership_admission import (
     lock_membership_admission_snapshot,
+    mark_membership_admission_manual_handled,
+    membership_admission_failure_rows,
     plan_membership_admission_actions,
+    plan_membership_admission_delete_messages,
     plan_membership_admission_test_messages,
+    retry_failed_membership_admission_items,
+    retry_membership_admission_item,
     sync_membership_admission_items,
 )
 from app.services.task_center.executors import build_task_plan
@@ -265,6 +270,53 @@ def test_test_message_success_completes_item() -> None:
         assert task.stats["admission_completed_count"] == 1
 
 
+def test_delete_after_send_creates_delete_action() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        payload = _admission_payload(test_message={"delete_after_send": True})
+        task = create_and_start_group_membership_admission_task(session, 1, payload, "tester")
+        [item] = lock_membership_admission_snapshot(session, task)[:1]
+        [action] = plan_membership_admission_actions(session, task, now=NOW, limit=1)
+        action.status = "success"
+        action.result = {"success": True, "membership_status": "joined"}
+        sync_membership_admission_items(session, task)
+        [send_action] = plan_membership_admission_test_messages(session, task, now=NOW, limit=1)
+        send_action.status = "success"
+        send_action.payload = {**send_action.payload, "message_text": "签到一下", "ai_generation_status": "success"}
+        send_action.result = {"success": True, "telegram_msg_id": "777"}
+        sync_membership_admission_items(session, task)
+
+        [delete_action] = plan_membership_admission_delete_messages(session, task, now=NOW)
+
+        session.refresh(item)
+        assert item.phase == "completed"
+        assert item.delete_status == "deleting"
+        assert item.delete_action_id == delete_action.id
+        assert delete_action.action_type == "delete_message"
+        assert delete_action.payload["message_id"] == "777"
+
+
+def test_delete_action_success_marks_item_deleted() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(test_message={"delete_after_send": True}), "tester")
+        [item] = lock_membership_admission_snapshot(session, task)[:1]
+        item.phase = "completed"
+        item.test_message_id = "777"
+        item.delete_status = "delete_pending"
+        [delete_action] = plan_membership_admission_delete_messages(session, task, now=NOW)
+        delete_action.status = "success"
+        delete_action.result = {"success": True}
+        session.commit()
+
+        sync_membership_admission_items(session, task)
+
+        session.refresh(item)
+        assert item.phase == "completed"
+        assert item.delete_status == "deleted"
+        assert item.failure_type == ""
+
+
 def test_test_message_failure_marks_item_failed() -> None:
     with _session() as session:
         _seed_snapshot_data(session)
@@ -336,3 +388,85 @@ def test_task_detail_exposes_membership_admission_items() -> None:
         assert items[0]["phase"] == "joining"
         assert items[0]["membership_action_id"]
         assert items[0]["display_name"] == "账号11"
+
+
+def test_retry_membership_admission_item_resets_failed_state() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(), "tester")
+        [item] = lock_membership_admission_snapshot(session, task)[:1]
+        item.phase = "failed"
+        item.failure_type = "test_message_failed"
+        item.failure_detail = "该账号不可向此群发送"
+        item.membership_action_id = "old-membership"
+        item.test_message_action_id = "old-test"
+        item.delete_action_id = "old-delete"
+        item.delete_status = "delete_failed"
+        session.commit()
+
+        updated = retry_membership_admission_item(session, 1, task.id, item.id)
+
+        assert updated.phase == "pending"
+        assert updated.membership_action_id is None
+        assert updated.test_message_action_id is None
+        assert updated.delete_action_id is None
+        assert updated.delete_status == ""
+        assert updated.failure_type == ""
+
+
+def test_retry_failed_membership_admission_items_resets_only_failed_items() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(account_group_ids=[1]), "tester")
+        items = lock_membership_admission_snapshot(session, task)
+        items[0].phase = "failed"
+        items[0].failure_type = "test_message_failed"
+        items[1].phase = "waiting_approval"
+        items[1].manual_required = True
+        session.commit()
+
+        count = retry_failed_membership_admission_items(session, 1, task.id)
+
+        session.refresh(items[0])
+        session.refresh(items[1])
+        assert count == 1
+        assert items[0].phase == "pending"
+        assert items[1].phase == "waiting_approval"
+
+
+def test_mark_membership_admission_manual_handled_requeues_item() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(), "tester")
+        [item] = lock_membership_admission_snapshot(session, task)[:1]
+        item.phase = "waiting_approval"
+        item.manual_required = True
+        item.failure_type = "group_admin"
+        item.failure_detail = "等待管理员审批"
+        session.commit()
+
+        updated = mark_membership_admission_manual_handled(session, 1, task.id, item.id)
+
+        assert updated.phase == "pending"
+        assert updated.manual_required is False
+        assert updated.failure_type == ""
+
+
+def test_membership_admission_failure_rows_include_failed_and_manual_items() -> None:
+    with _session() as session:
+        _seed_snapshot_data(session)
+        task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(account_group_ids=[1]), "tester")
+        items = lock_membership_admission_snapshot(session, task)
+        items[0].phase = "failed"
+        items[0].failure_type = "test_message_failed"
+        items[0].failure_detail = "该账号不可向此群发送"
+        items[1].phase = "waiting_approval"
+        items[1].manual_required = True
+        items[1].failure_type = "group_admin"
+        session.commit()
+
+        rows = membership_admission_failure_rows(session, 1, task.id)
+
+        assert [row["account_id"] for row in rows] == ["11", "12"]
+        assert rows[0]["failure_detail"] == "该账号不可向此群发送"
+        assert rows[1]["manual_required"] == "true"

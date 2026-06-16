@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.models import AccountStatus, Action, OperationTarget, Task, TaskMembershipAdmissionItem, TgAccount, TgGroup
 from app.services._common import _now
 from app.services.task_center.membership_recovery import AUTO_RETRY_BUCKET, GROUP_ADMIN_BUCKET, classify_membership_recovery
-from app.services.task_center.payloads import EnsureChannelMembershipPayload, SendMessagePayload, create_membership_action, create_send_action
+from app.services.task_center.payloads import DeleteMessagePayload, EnsureChannelMembershipPayload, SendMessagePayload, create_delete_action, create_membership_action, create_send_action
 from app.services.task_center.stats import empty_stats
 
 
@@ -21,6 +21,7 @@ PHASE_FAILED = "failed"
 PHASE_COMPLETED = "completed"
 MEMBERSHIP_DONE_STATUSES = {"success", "failed", "skipped"}
 TEST_MESSAGE_DONE_STATUSES = {"success", "failed"}
+DELETE_DONE_STATUSES = {"success", "failed"}
 
 
 def lock_membership_admission_snapshot(session: Session, task: Task, now: datetime | None = None) -> list[TaskMembershipAdmissionItem]:
@@ -86,19 +87,35 @@ def plan_membership_admission_test_messages(session: Session, task: Task, now: d
     session.flush()
     return actions
 
+def plan_membership_admission_delete_messages(session: Session, task: Task, now: datetime | None = None, limit: int | None = None) -> list[Action]:
+    target = _target_for_task(session, task)
+    group = _group_for_target(session, task, target)
+    items = _delete_pending_items(session, task, limit)
+    planned_at = now or _now()
+    actions: list[Action] = []
+    for item in items:
+        action = create_delete_action(session, task, item.account_id, planned_at, _delete_message_payload(target, group, item))
+        item.delete_action_id = action.id
+        item.delete_status = "deleting"
+        item.updated_at = planned_at
+        actions.append(action)
+    session.flush()
+    return actions
+
 
 def sync_membership_admission_items(session: Session, task: Task, now: datetime | None = None) -> None:
     timestamp = now or _now()
     items = _items_for_task(session, task)
     membership_actions = _actions_by_id(session, [item.membership_action_id for item in items if item.membership_action_id])
     test_actions = _actions_by_id(session, [item.test_message_action_id for item in items if item.test_message_action_id])
+    delete_actions = _actions_by_id(session, [item.delete_action_id for item in items if item.delete_action_id])
     accounts = _accounts_by_id(session, [item.account_id for item in items])
     for item in items:
         _sync_membership_item_if_done(item, membership_actions, accounts, timestamp)
         _sync_test_message_item_if_done(item, test_actions, timestamp)
+        _sync_delete_message_item_if_done(item, delete_actions, timestamp)
     _refresh_snapshot_stats(task, items)
     session.flush()
-
 
 def membership_admission_detail(session: Session, task: Task) -> tuple[dict, list[dict]]:
     if task.type != "group_membership_admission":
@@ -106,6 +123,92 @@ def membership_admission_detail(session: Session, task: Task) -> tuple[dict, lis
     items = _items_for_task(session, task)
     accounts = _accounts_by_id(session, [item.account_id for item in items])
     return _admission_phase(items), [_admission_item_payload(item, accounts.get(item.account_id)) for item in items]
+
+def retry_membership_admission_item(session: Session, tenant_id: int, task_id: str, item_id: int) -> TaskMembershipAdmissionItem:
+    task, item = _task_and_item(session, tenant_id, task_id, item_id)
+    _reset_item_for_retry(item, _now())
+    _wake_task(task)
+    _refresh_snapshot_stats(task, _items_for_task(session, task))
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def retry_failed_membership_admission_items(session: Session, tenant_id: int, task_id: str) -> int:
+    task = _admission_task(session, tenant_id, task_id)
+    failed_items = [item for item in _items_for_task(session, task) if item.phase == PHASE_FAILED]
+    timestamp = _now()
+    for item in failed_items:
+        _reset_item_for_retry(item, timestamp)
+    _wake_task(task)
+    _refresh_snapshot_stats(task, _items_for_task(session, task))
+    session.commit()
+    return len(failed_items)
+
+
+def mark_membership_admission_manual_handled(session: Session, tenant_id: int, task_id: str, item_id: int) -> TaskMembershipAdmissionItem:
+    task, item = _task_and_item(session, tenant_id, task_id, item_id)
+    _reset_item_for_retry(item, _now())
+    _wake_task(task)
+    _refresh_snapshot_stats(task, _items_for_task(session, task))
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def membership_admission_failure_rows(session: Session, tenant_id: int, task_id: str) -> list[dict[str, str]]:
+    task = _admission_task(session, tenant_id, task_id)
+    items = [item for item in _items_for_task(session, task) if item.phase == PHASE_FAILED or item.manual_required]
+    accounts = _accounts_by_id(session, [item.account_id for item in items])
+    return [_failure_export_row(item, accounts.get(item.account_id)) for item in items]
+
+def _admission_task(session: Session, tenant_id: int, task_id: str) -> Task:
+    task = session.get(Task, task_id)
+    if not task or task.tenant_id != tenant_id or task.type != "group_membership_admission":
+        raise ValueError("群聊准入任务不存在")
+    return task
+
+
+def _task_and_item(session: Session, tenant_id: int, task_id: str, item_id: int) -> tuple[Task, TaskMembershipAdmissionItem]:
+    task = _admission_task(session, tenant_id, task_id)
+    item = session.get(TaskMembershipAdmissionItem, item_id)
+    if not item or item.tenant_id != tenant_id or item.task_id != task.id:
+        raise ValueError("群聊准入账号项不存在")
+    return task, item
+
+
+def _failure_export_row(item: TaskMembershipAdmissionItem, account: TgAccount | None) -> dict[str, str]:
+    return {
+        "account_id": str(item.account_id),
+        "display_name": account.display_name if account else f"账号 #{item.account_id}",
+        "username": account.username if account else "",
+        "phase": item.phase,
+        "manual_required": "true" if item.manual_required else "false",
+        "failure_type": item.failure_type,
+        "failure_detail": item.failure_detail,
+        "test_message_id": item.test_message_id,
+        "delete_status": item.delete_status,
+    }
+
+
+def _reset_item_for_retry(item: TaskMembershipAdmissionItem, timestamp: datetime) -> None:
+    item.phase = PHASE_PENDING
+    item.membership_action_id = None
+    item.test_message_action_id = None
+    item.delete_action_id = None
+    item.delete_status = ""
+    item.manual_required = False
+    item.failure_type = ""
+    item.failure_detail = ""
+    item.completed_at = None
+    item.updated_at = timestamp
+
+
+def _wake_task(task: Task) -> None:
+    if task.status != "paused":
+        task.status = "running"
+        task.next_run_at = _now()
+    task.last_error = ""
 
 
 def _items_for_task(session: Session, task: Task) -> list[TaskMembershipAdmissionItem]:
@@ -142,6 +245,7 @@ def _admission_item_payload(item: TaskMembershipAdmissionItem, account: TgAccoun
         "phase": item.phase,
         "membership_action_id": item.membership_action_id,
         "test_message_action_id": item.test_message_action_id,
+        "delete_action_id": item.delete_action_id,
         "test_message_text": item.test_message_text,
         "test_message_id": item.test_message_id,
         "delete_after_send": item.delete_after_send,
@@ -157,6 +261,23 @@ def _admission_item_payload(item: TaskMembershipAdmissionItem, account: TgAccoun
 
 def _pending_items(session: Session, task: Task, limit: int | None) -> list[TaskMembershipAdmissionItem]:
     return _items_by_phase(session, task, PHASE_PENDING, limit)
+
+
+def _delete_pending_items(session: Session, task: Task, limit: int | None) -> list[TaskMembershipAdmissionItem]:
+    stmt = (
+        select(TaskMembershipAdmissionItem)
+        .where(
+            TaskMembershipAdmissionItem.tenant_id == task.tenant_id,
+            TaskMembershipAdmissionItem.task_id == task.id,
+            TaskMembershipAdmissionItem.phase == PHASE_COMPLETED,
+            TaskMembershipAdmissionItem.delete_after_send.is_(True),
+            TaskMembershipAdmissionItem.delete_status == "delete_pending",
+        )
+        .order_by(TaskMembershipAdmissionItem.account_id.asc())
+    )
+    if limit:
+        stmt = stmt.limit(limit)
+    return list(session.scalars(stmt))
 
 
 def _items_by_phase(session: Session, task: Task, phase: str, limit: int | None) -> list[TaskMembershipAdmissionItem]:
@@ -210,6 +331,16 @@ def _test_message_payload(task: Task, target: OperationTarget, group: TgGroup) -
         ai_generation_id=f"{task.id}:membership-admission-test",
         ai_generation_count=1,
         profile_scene="group_membership_admission_test",
+    )
+
+
+def _delete_message_payload(target: OperationTarget, group: TgGroup, item: TaskMembershipAdmissionItem) -> DeleteMessagePayload:
+    return DeleteMessagePayload(
+        group_id=group.id,
+        chat_id=str(group.tg_peer_id or target.tg_peer_id or ""),
+        operation_target_id=target.id,
+        target_display=target.title,
+        message_id=item.test_message_id,
     )
 
 
@@ -274,6 +405,21 @@ def _sync_test_message_item_if_done(item: TaskMembershipAdmissionItem, actions: 
     item.updated_at = timestamp
 
 
+def _sync_delete_message_item_if_done(item: TaskMembershipAdmissionItem, actions: dict[str, Action], timestamp: datetime) -> None:
+    action = actions.get(item.delete_action_id or "")
+    if not action or action.status not in DELETE_DONE_STATUSES:
+        return
+    if action.status == "success" and bool((action.result or {}).get("success")):
+        item.delete_status = "deleted"
+        item.failure_type = ""
+        item.failure_detail = ""
+    else:
+        item.delete_status = "delete_failed"
+        item.failure_type = "delete_message_failed"
+        item.failure_detail = str((action.result or {}).get("error_message") or "删除测试消息失败")
+    item.updated_at = timestamp
+
+
 def _sync_membership_item(item: TaskMembershipAdmissionItem, action: Action, account: TgAccount | None, timestamp: datetime) -> None:
     if _membership_action_success(action):
         _mark_test_message_pending(item, timestamp)
@@ -302,6 +448,7 @@ def _mark_completed(item: TaskMembershipAdmissionItem, action: Action, timestamp
     item.phase = PHASE_COMPLETED
     item.test_message_text = str((action.payload or {}).get("message_text") or "")
     item.test_message_id = str((action.result or {}).get("telegram_msg_id") or "")
+    item.delete_action_id = None
     item.delete_status = "not_requested" if not item.delete_after_send else "delete_pending"
     item.failure_type = ""
     item.failure_detail = ""
