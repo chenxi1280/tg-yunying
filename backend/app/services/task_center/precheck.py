@@ -10,7 +10,6 @@ from app.schemas.risk_control import RiskPreflightRequest
 from app.schemas.task_center import TaskPrecheckRequest
 from app.services.risk_control import risk_preflight
 
-from .account_pool import select_task_accounts
 from .ai_limits import recommend_ai_limits
 from .channel_membership import channel_membership_summary
 from .config_fields import COMMON_CREATE_FIELDS, TASK_CREATE_MODELS
@@ -73,17 +72,6 @@ def run_precheck_task_creation(
     if task_type in {"channel_view", "channel_like", "channel_comment", "group_ai_chat", "group_relay"} and target_ability:
         membership_summary = _precheck_membership_summary(session, tenant_id, target_ability, account_config, type_config, candidates)
     membership_subtask_preview = _membership_subtask_preview(membership_summary)
-    available_accounts = (
-        select_task_accounts(
-            session,
-            tenant_id,
-            account_config,
-            limit=max(len(candidates), 1),
-            enforce_max_concurrent=False,
-        )
-        if candidates
-        else []
-    )
     if candidates:
         risk_payload = RiskPreflightRequest(
             scenario="task_create",
@@ -99,7 +87,7 @@ def run_precheck_task_creation(
     trace_id = str(risk.get("trace_id") or "")
     risk_hits = [*_as_str_list(risk.get("decision_reasons")), *_as_str_list(risk.get("target_warnings")), *_as_str_list(risk.get("content_warnings")), *_as_str_list(risk.get("proxy_warnings"))]
     suggested_actions.extend(_as_str_list(risk.get("suggested_actions")))
-    available_count = min(len(available_accounts), len(risk.get("available_accounts") or available_accounts))
+    available_count = len(risk.get("available_accounts") or [])
     limited_count = len(risk.get("limited_accounts") or [])
     blocked_count = len(risk.get("blocked_accounts") or [])
     if estimated_actions and target_per_unit:

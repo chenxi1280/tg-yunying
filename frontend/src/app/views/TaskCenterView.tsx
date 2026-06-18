@@ -947,7 +947,7 @@ export default function TaskCenterView({
     try {
       await form.validateFields(fieldsForSubmit(taskType, messageScope, accountMode, pacingMode));
       const values = form.getFieldsValue(true);
-      const result = taskType !== 'group_membership_admission' && !options.skipCapacityCheck ? await runTaskPrecheck(values) : precheck;
+      const result = taskType !== 'group_membership_admission' && !options.skipCapacityCheck ? precheck ?? await runTaskPrecheck(values) : precheck;
       if (start && result?.decision === 'block') {
         setActionError(`预检未通过：${formatPrecheckReasons(result.blockers) || '存在阻塞项'}`);
         return;

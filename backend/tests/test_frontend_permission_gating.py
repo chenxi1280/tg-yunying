@@ -969,6 +969,12 @@ def test_task_center_create_refreshes_after_long_timeout_and_capacity_summary_ty
     assert "最大并发" in wizard
 
 
+def test_task_center_create_reuses_review_precheck_before_submit():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    assert "const result = taskType !== 'group_membership_admission' && !options.skipCapacityCheck ? precheck ?? await runTaskPrecheck(values) : precheck;" in source
+
+
 def test_api_error_message_supports_timeout_copy_and_trace_id():
     source = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 

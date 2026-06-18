@@ -2475,6 +2475,47 @@ def test_task_creation_precheck_covers_group_and_channel_requirements():
         assert blocked["blockers"]
 
 
+def test_task_creation_precheck_reuses_batched_risk_capacity_for_many_accounts():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    query_count = 0
+
+    def count_query(*_args):
+        nonlocal query_count
+        query_count += 1
+
+    event.listen(engine, "before_cursor_execute", count_query)
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1, default_account_day_limit=5, default_account_cooldown_seconds=120))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-10021", title="目标群", can_send=True, auth_status="已授权运营"))
+        session.add_all(
+            [
+                TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, health_score=95)
+                for account_id in range(1, 31)
+            ]
+        )
+        session.commit()
+        query_count = 0
+
+        result = precheck_task_creation(
+            session,
+            1,
+            TaskPrecheckRequest(
+                task_type="group_ai_chat",
+                payload={
+                    "name": "批量账号 AI 活跃预检",
+                    "target_operation_target_id": 21,
+                    "account_config": {"selection_mode": "all", "max_concurrent": 30, "cooldown_per_account_minutes": 0},
+                },
+            ),
+        )
+
+    event.remove(engine, "before_cursor_execute", count_query)
+    assert result["available_account_count"] == 30
+    assert query_count < 50
+
+
 def test_group_ai_precheck_warns_for_preparable_target_and_mixed_account_health():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
