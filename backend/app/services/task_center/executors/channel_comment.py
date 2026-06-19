@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.models import Action, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSet, Task, TgAccount
 
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
-from ..account_pool import select_task_accounts
+from ..account_pool import daily_uncovered_account_count, select_task_accounts
 from ..ai_limits import allocate_message_budget
 from ..ai_generator import AiGenerationUnavailable, clean_channel_comment_contents, generate_channel_comments, generate_channel_reply_comments
 from ..channel_membership import channel_member_accounts, gate_channel_membership
@@ -39,6 +39,29 @@ def build_plan(session: Session, task: Task) -> int:
     profile_preview = tenant_learning_profile_preview(session, task.tenant_id, CHANNEL_COMMENT_SCENE)
     audit_learning_profile_use(session, task, profile_preview, "AI评论任务")
     config = _config_with_comment_profile(config, profile_preview)
+    target_per_message = int(config.get("target_comments_per_message") or 1)
+    _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("comment_count_jitter") or 0))
+    account_scan_limit = max(max_target_per_message, int((task.account_config or {}).get("max_concurrent") or max_target_per_message))
+    ready_accounts = channel_member_accounts(
+        session,
+        task,
+        channel,
+        select_task_accounts(
+            session,
+            task.tenant_id,
+            task.account_config or {},
+            limit=account_scan_limit,
+            enforce_max_concurrent=False,
+            daily_coverage_task_id=task.id,
+            daily_coverage_action_types=("post_comment",),
+        ),
+        require_send=True,
+    )
+    accounts = _comment_ready_accounts(task, ready_accounts)
+    if not accounts:
+        task.last_error = COMMENT_ACCOUNT_PROFILE_ERROR if ready_accounts else "没有可用账号，等待账号恢复后继续执行"
+        return 0
+    coverage_remaining = daily_uncovered_account_count(session, task.id, ("post_comment",), accounts)
     actions: list[tuple[ChannelMessage, str, dict | None]] = []
     reply_min_by_message: dict[int, int] = {}
     requested_reply_targets = [int(item) for item in config.get("reply_to_message_ids") or [] if int(item or 0) > 0]
@@ -48,7 +71,13 @@ def build_plan(session: Session, task: Task) -> int:
         task.last_error = "回复对象不属于当前频道消息，请先采集评论后重新选择"
         return 0
     quality_skipped = False
-    for message, quantity in _message_comment_quantities(session, task, config, messages):
+    for message, quantity in _message_comment_quantities(
+        session,
+        task,
+        config,
+        messages,
+        daily_coverage_min_total=coverage_remaining,
+    ):
         if rule_version:
             context_text = "\n".join(
                 item
@@ -90,26 +119,6 @@ def build_plan(session: Session, task: Task) -> int:
         actions.extend((message, content, _reply_target_for_index(comment_mode, reply_targets, index)) for index, content in enumerate(contents))
     if not actions:
         task.last_error = "AI 评论候选语义重复或模板化，已跳过本轮" if quality_skipped else ""
-        return 0
-    target_per_message = int(config.get("target_comments_per_message") or 1)
-    _lower, max_target_per_message = quantity_jitter_bounds(target_per_message, float(config.get("comment_count_jitter") or 0))
-    account_scan_limit = max(len(actions), max_target_per_message, int((task.account_config or {}).get("max_concurrent") or max_target_per_message))
-    ready_accounts = channel_member_accounts(
-        session,
-        task,
-        channel,
-        select_task_accounts(
-            session,
-            task.tenant_id,
-            task.account_config or {},
-            limit=account_scan_limit,
-            enforce_max_concurrent=False,
-        ),
-        require_send=True,
-    )
-    accounts = _comment_ready_accounts(task, ready_accounts)
-    if not accounts:
-        task.last_error = COMMENT_ACCOUNT_PROFILE_ERROR if ready_accounts else "没有可用账号，等待账号恢复后继续执行"
         return 0
     record_channel_capacity_warning(task, "回复", target_per_message, len(accounts))
     times = schedule_times(len(actions), task.pacing_config or {})
@@ -216,13 +225,35 @@ def _generate_normal_channel_comments(
     )
 
 
-def _message_comment_quantities(session: Session, task: Task, config: dict, messages: list[ChannelMessage]) -> list[tuple[ChannelMessage, int]]:
+def _message_comment_quantities(
+    session: Session,
+    task: Task,
+    config: dict,
+    messages: list[ChannelMessage],
+    *,
+    daily_coverage_min_total: int = 0,
+) -> list[tuple[ChannelMessage, int]]:
     managed_usernames = _tenant_account_usernames(session, task.tenant_id)
     deficits = [_message_comment_deficit(session, task, config, message, managed_usernames) for message in messages]
+    deficits = _apply_daily_coverage_minimum(deficits, daily_coverage_min_total)
     budget = int((task.pacing_config or {}).get("max_actions_per_hour") or 0)
     quantities = allocate_message_budget(deficits, budget) if budget > 0 else deficits
-    capped = [min(quantity, MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE) for quantity in quantities]
+    cap = max(MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE, int(daily_coverage_min_total or 0))
+    capped = [min(quantity, cap) for quantity in quantities]
     return list(zip(messages, capped, strict=False))
+
+
+def _apply_daily_coverage_minimum(deficits: list[int], minimum: int) -> list[int]:
+    adjusted = [max(0, int(deficit or 0)) for deficit in deficits]
+    remaining = max(0, int(minimum or 0) - sum(adjusted))
+    if not adjusted or remaining <= 0:
+        return adjusted
+    index = 0
+    while remaining > 0:
+        adjusted[index % len(adjusted)] += 1
+        remaining -= 1
+        index += 1
+    return adjusted
 
 
 def _message_comment_deficit(session: Session, task: Task, config: dict, message: ChannelMessage, managed_usernames: set[str]) -> int:

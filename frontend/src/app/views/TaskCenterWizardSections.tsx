@@ -149,7 +149,7 @@ export function WizardTypeConfig({
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
         <Alert type="info" showIcon message="AI 回复会按绑定规则集先过滤输入上下文，再逐条校验候选回复。" />
-        <Alert type="info" showIcon message="小时上限控制总量；每轮发言只分配本轮机会，参与比例按多轮统计。" />
+        <Alert type="info" showIcon message="小时上限控制总量；当天未参与账号会优先补齐，并在预算内抬高本轮下限。" />
         {ruleFields}
         <div className="form-grid">
           <Form.Item name="topic_hint" label="话题方向（可选）"><Input.TextArea rows={2} placeholder="不填时系统会按群目标方向或自然开场自动起聊" /></Form.Item>
