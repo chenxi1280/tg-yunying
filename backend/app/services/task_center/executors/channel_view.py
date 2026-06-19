@@ -157,11 +157,10 @@ def _view_quantity_for_message(
 ) -> int:
     base = quantity_with_jitter(inputs.daily_target, float(config.get("view_count_jitter") or 0))
     completed_count = _completed_view_count(session, task, message)
-    effective_total = max(inputs.total_target, coverage_remaining)
-    if completed_count >= effective_total:
+    if completed_count >= inputs.total_target:
         return 0
     used_count = len(channel_message_account_ids(session, task, "view_message", message, execution_date=inputs.execution_date))
-    return max(0, min(max(base, coverage_remaining), effective_total - completed_count) - used_count)
+    return max(0, min(max(base, coverage_remaining), inputs.total_target - completed_count) - used_count)
 
 
 def _remaining_task_daily_capacity(session: Session, task: Task, execution_date: str, daily_cap: int | None) -> int:

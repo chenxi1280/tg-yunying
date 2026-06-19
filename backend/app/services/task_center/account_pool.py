@@ -17,6 +17,7 @@ from app.models import (
 )
 from app.services._common import _now
 from app.services.account_capacity import available_accounts_by_capacity
+from app.timezone import as_beijing, beijing_day_bounds
 
 
 HEALTH_WEIGHT_MEDIUM = 55
@@ -157,6 +158,8 @@ def daily_uncovered_account_count(
     if not accounts or not task_id or not action_types:
         return 0
     covered_ids = _daily_covered_account_ids(session, task_id, action_types)
+    if not covered_ids:
+        return 0
     return sum(1 for account in accounts if account.id not in covered_ids)
 
 
@@ -165,8 +168,7 @@ def _daily_covered_account_ids(
     task_id: str,
     action_types: tuple[str, ...],
 ) -> set[int]:
-    day_start = _day_start(_now())
-    day_end = day_start + timedelta(days=1)
+    day_start, day_end = beijing_day_bounds(_now())
     rows = session.execute(
         select(Action.account_id, Action.executed_at, Action.scheduled_at, Action.created_at).where(
             Action.task_id == task_id,
@@ -183,8 +185,7 @@ def _daily_covered_account_ids(
 
 
 def _daily_covered_account_query(task_id: str, action_types: tuple[str, ...]):
-    day_start = _day_start(_now())
-    day_end = day_start + timedelta(days=1)
+    day_start, day_end = beijing_day_bounds(_now())
     occupied_at = func.coalesce(Action.executed_at, Action.scheduled_at, Action.created_at)
     return (
         select(Action.account_id)
@@ -200,12 +201,9 @@ def _daily_covered_account_query(task_id: str, action_types: tuple[str, ...]):
     )
 
 
-def _day_start(value: datetime) -> datetime:
-    return value.replace(hour=0, minute=0, second=0, microsecond=0)
-
-
 def _in_day(value: datetime | None, day_start: datetime, day_end: datetime) -> bool:
-    return value is not None and day_start <= value < day_end
+    comparable = as_beijing(value)
+    return comparable is not None and day_start <= comparable < day_end
 
 
 def _health_weighted_accounts(

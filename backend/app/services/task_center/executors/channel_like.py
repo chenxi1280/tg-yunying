@@ -92,7 +92,8 @@ def _like_actions_for_messages(
         used_accounts = channel_message_account_ids(session, task, "like_message", message, include_skipped_codes=LIKE_UNAVAILABLE_SKIP_CODES)
         available_accounts = [account for account in accounts if account.id not in used_accounts]
         base_desired = quantity_with_jitter(target_per_message, float(config.get("like_count_jitter") or 0))
-        quantity = min(max(0, max(base_desired, coverage_remaining) - len(used_accounts)), len(available_accounts))
+        target_deficit = max(0, base_desired - len(used_accounts))
+        quantity = min(target_deficit, len(available_accounts))
         actions.extend((message, available_accounts[index].id, reactions[index % len(reactions)]) for index in range(quantity))
         coverage_remaining = max(0, coverage_remaining - quantity)
     return actions
