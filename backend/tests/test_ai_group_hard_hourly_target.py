@@ -703,10 +703,10 @@ def test_group_ai_chat_hard_hourly_reuses_selected_accounts_when_front_accounts_
     planned_counts = Counter(planned_account_ids)
     assert created == 220
     assert set(planned_account_ids) == set(range(101, 201))
-    assert planned_counts[101] == 3
-    assert planned_counts[120] == 3
-    assert planned_counts[121] == 2
-    assert planned_counts[200] == 2
+    assert planned_counts[101] == 2
+    assert planned_counts[180] == 2
+    assert planned_counts[181] == 3
+    assert planned_counts[200] == 3
     assert task.stats["hard_hourly_last_planned_count"] == 220
     assert "hard_hourly_last_blockers" not in task.stats
 

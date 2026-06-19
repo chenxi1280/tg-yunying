@@ -235,11 +235,11 @@ def _message_comment_quantities(
 ) -> list[tuple[ChannelMessage, int]]:
     managed_usernames = _tenant_account_usernames(session, task.tenant_id)
     deficits = [_message_comment_deficit(session, task, config, message, managed_usernames) for message in messages]
-    deficits = _apply_daily_coverage_minimum(deficits, daily_coverage_min_total)
+    coverage_floor = min(max(0, int(daily_coverage_min_total or 0)), sum(deficits))
+    deficits = _apply_daily_coverage_minimum(deficits, coverage_floor)
     budget = int((task.pacing_config or {}).get("max_actions_per_hour") or 0)
     quantities = allocate_message_budget(deficits, budget) if budget > 0 else deficits
-    cap = max(MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE, int(daily_coverage_min_total or 0))
-    capped = [min(quantity, cap) for quantity in quantities]
+    capped = [min(quantity, MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE) for quantity in quantities]
     return list(zip(messages, capped, strict=False))
 
 

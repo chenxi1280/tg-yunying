@@ -197,7 +197,7 @@ def test_task_center_ai_chat_account_distribution_controls_are_visible():
     assert 'label="每轮总发言数"' in source
     assert '<InputNumber min={1} max={10}' not in source
     assert "小时上限控制总量" in source
-    assert "参与比例按多轮统计" in source
+    assert "当天未参与账号会优先补齐" in source
     assert "function markMessagesPerRoundManual" in source
     assert "setFieldValue('messages_per_round_mode', 'manual')" in source
     assert "onChange={markMessagesPerRoundManual}" in source
