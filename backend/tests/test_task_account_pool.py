@@ -224,6 +224,56 @@ def test_select_task_accounts_filters_recent_successes_in_one_cooldown_window():
     assert selected_ids == [2, 3]
 
 
+def test_select_task_accounts_prioritizes_uncovered_daily_task_accounts():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        for account_id in range(1, 7):
+            session.add(
+                TgAccount(
+                    id=account_id,
+                    tenant_id=1,
+                    display_name=f"账号{account_id}",
+                    phone_masked=str(account_id),
+                    status=AccountStatus.ACTIVE.value,
+                    health_score=95,
+                )
+            )
+        session.add(Task(id="task-coverage", tenant_id=1, name="日内覆盖任务", type="group_ai_chat"))
+        now_value = _now()
+        for account_id in (1, 2):
+            session.add(
+                Action(
+                    id=f"covered-{account_id}",
+                    tenant_id=1,
+                    task_id="task-coverage",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=account_id,
+                    status="success",
+                    scheduled_at=now_value,
+                    executed_at=now_value,
+                )
+            )
+        session.commit()
+
+        selected_ids = [
+            account.id
+            for account in select_task_accounts(
+                session,
+                1,
+                {"max_concurrent": 2},
+                limit=2,
+                daily_coverage_task_id="task-coverage",
+                daily_coverage_action_types=("send_message",),
+            )
+        ]
+
+    assert selected_ids == [3, 4]
+
+
 def test_membership_candidates_include_all_active_config_accounts():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

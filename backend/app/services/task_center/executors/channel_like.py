@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.models import ChannelMessage, OperationTarget, Task
 
-from ..account_pool import select_task_accounts
+from ..account_pool import daily_uncovered_account_count, select_task_accounts
 from ..channel_membership import channel_member_accounts, gate_channel_membership
 from ..pacing import schedule_times
 from ..payloads import LikeMessagePayload, create_like_action
@@ -39,23 +39,28 @@ def build_plan(session: Session, task: Task) -> int:
             task.account_config or {},
             limit=account_scan_limit,
             enforce_max_concurrent=False,
+            daily_coverage_task_id=task.id,
+            daily_coverage_action_types=("like_message",),
         ),
     )
     if not accounts:
         task.last_error = "没有可用账号，等待账号恢复后继续执行"
         return 0
     record_channel_capacity_warning(task, "点赞", target_per_message, len(accounts))
-    actions: list[tuple[ChannelMessage, int, str]] = []
-    for message in messages:
-        used_accounts = channel_message_account_ids(session, task, "like_message", message, include_skipped_codes=LIKE_UNAVAILABLE_SKIP_CODES)
-        available_accounts = [account for account in accounts if account.id not in used_accounts]
-        desired = quantity_with_jitter(target_per_message, float(config.get("like_count_jitter") or 0))
-        used_count = len(used_accounts)
-        quantity = min(max(0, desired - used_count), len(available_accounts))
-        actions.extend((message, available_accounts[index].id, reactions[index % len(reactions)]) for index in range(quantity))
+    actions = _like_actions_for_messages(session, task, config, messages, accounts, reactions, target_per_message)
     if not actions:
         task.last_error = task.last_error or "没有可新增的有效点赞账号"
         return 0
+    return _create_like_actions(session, task, channel, config, actions)
+
+
+def _create_like_actions(
+    session: Session,
+    task: Task,
+    channel: OperationTarget,
+    config: dict,
+    actions: list[tuple[ChannelMessage, int, str]],
+) -> int:
     times = schedule_times(len(actions), task.pacing_config or {})
     created = 0
     for index, (message, account_id, reaction) in enumerate(actions):
@@ -70,6 +75,27 @@ def build_plan(session: Session, task: Task) -> int:
         )
         created += 1
     return created
+
+
+def _like_actions_for_messages(
+    session: Session,
+    task: Task,
+    config: dict,
+    messages: list[ChannelMessage],
+    accounts: list,
+    reactions: list[str],
+    target_per_message: int,
+) -> list[tuple[ChannelMessage, int, str]]:
+    coverage_remaining = daily_uncovered_account_count(session, task.id, ("like_message",), accounts)
+    actions: list[tuple[ChannelMessage, int, str]] = []
+    for message in messages:
+        used_accounts = channel_message_account_ids(session, task, "like_message", message, include_skipped_codes=LIKE_UNAVAILABLE_SKIP_CODES)
+        available_accounts = [account for account in accounts if account.id not in used_accounts]
+        base_desired = quantity_with_jitter(target_per_message, float(config.get("like_count_jitter") or 0))
+        quantity = min(max(0, max(base_desired, coverage_remaining) - len(used_accounts)), len(available_accounts))
+        actions.extend((message, available_accounts[index].id, reactions[index % len(reactions)]) for index in range(quantity))
+        coverage_remaining = max(0, coverage_remaining - quantity)
+    return actions
 
 
 __all__ = ["build_plan"]

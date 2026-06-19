@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -22,6 +22,7 @@ from app.services.account_capacity import available_accounts_by_capacity
 HEALTH_WEIGHT_MEDIUM = 55
 HEALTH_WEIGHT_LOW = 30
 LOW_HEALTH_PARTICIPATION_STEP = 4
+DAILY_COVERAGE_STATUSES = ("pending", "executing", "success")
 
 
 def select_task_accounts(
@@ -35,6 +36,8 @@ def select_task_accounts(
     enforce_max_concurrent: bool = True,
     enforce_capacity: bool = True,
     enforce_shard: bool = False,
+    daily_coverage_task_id: str | None = None,
+    daily_coverage_action_types: tuple[str, ...] = (),
 ) -> list[TgAccount]:
     max_concurrent = int(account_config.get("max_concurrent") or 20)
     requested = int(limit or max_concurrent)
@@ -47,13 +50,11 @@ def select_task_accounts(
             TgGroupAccount.group_id == target_group_id,
             TgGroupAccount.can_send.is_(True),
         )
+    if daily_coverage_task_id and daily_coverage_action_types:
+        stmt = _daily_coverage_ordered_query(stmt, daily_coverage_task_id, daily_coverage_action_types)
     scan_limit = max(wanted * LOW_HEALTH_PARTICIPATION_STEP, wanted)
-    accounts = _cooldown_filtered_accounts(
-        session,
-        _unique_accounts(session.scalars(stmt.limit(scan_limit))),
-        account_config,
-        scan_limit,
-    )
+    accounts = _unique_accounts(session.scalars(stmt.limit(scan_limit)))
+    accounts = _cooldown_filtered_accounts(session, accounts, account_config, scan_limit)
     available = (
         available_accounts_by_capacity(
             session,
@@ -101,6 +102,16 @@ def _account_query(session: Session, tenant_id: int, account_config: dict, *, en
     return stmt
 
 
+def _daily_coverage_ordered_query(stmt, task_id: str, action_types: tuple[str, ...]):
+    covered_ids = _daily_covered_account_query(task_id, action_types)
+    covered_rank = case((TgAccount.id.in_(covered_ids), 1), else_=0)
+    return stmt.order_by(None).order_by(
+        covered_rank.asc(),
+        func.coalesce(AccountRuntimeSummary.health_score, TgAccount.health_score).desc(),
+        TgAccount.id.asc(),
+    )
+
+
 def _cooldown_filtered_accounts(
     session: Session,
     accounts: list[TgAccount],
@@ -135,6 +146,66 @@ def _recent_success_account_ids(session: Session, accounts: list[TgAccount], cut
         .distinct()
     )
     return {int(account_id) for account_id in rows if account_id is not None}
+
+
+def daily_uncovered_account_count(
+    session: Session,
+    task_id: str,
+    action_types: tuple[str, ...],
+    accounts: list[TgAccount],
+) -> int:
+    if not accounts or not task_id or not action_types:
+        return 0
+    covered_ids = _daily_covered_account_ids(session, task_id, action_types)
+    return sum(1 for account in accounts if account.id not in covered_ids)
+
+
+def _daily_covered_account_ids(
+    session: Session,
+    task_id: str,
+    action_types: tuple[str, ...],
+) -> set[int]:
+    day_start = _day_start(_now())
+    day_end = day_start + timedelta(days=1)
+    rows = session.execute(
+        select(Action.account_id, Action.executed_at, Action.scheduled_at, Action.created_at).where(
+            Action.task_id == task_id,
+            Action.action_type.in_(action_types),
+            Action.account_id.is_not(None),
+            Action.status.in_(DAILY_COVERAGE_STATUSES),
+        )
+    )
+    covered_ids: set[int] = set()
+    for account_id, executed_at, scheduled_at, created_at in rows:
+        if _in_day(executed_at or scheduled_at or created_at, day_start, day_end):
+            covered_ids.add(int(account_id))
+    return covered_ids
+
+
+def _daily_covered_account_query(task_id: str, action_types: tuple[str, ...]):
+    day_start = _day_start(_now())
+    day_end = day_start + timedelta(days=1)
+    occupied_at = func.coalesce(Action.executed_at, Action.scheduled_at, Action.created_at)
+    return (
+        select(Action.account_id)
+        .where(
+            Action.task_id == task_id,
+            Action.action_type.in_(action_types),
+            Action.account_id.is_not(None),
+            Action.status.in_(DAILY_COVERAGE_STATUSES),
+            occupied_at >= day_start,
+            occupied_at < day_end,
+        )
+        .distinct()
+    )
+
+
+def _day_start(value: datetime) -> datetime:
+    return value.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _in_day(value: datetime | None, day_start: datetime, day_end: datetime) -> bool:
+    return value is not None and day_start <= value < day_end
 
 
 def _health_weighted_accounts(

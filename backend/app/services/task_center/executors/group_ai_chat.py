@@ -23,7 +23,7 @@ from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 from app.services.material_rules import select_material_for_policy
 
-from ..account_pool import select_task_accounts
+from ..account_pool import daily_uncovered_account_count, select_task_accounts
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages, generate_group_reply_messages
 from ..channel_membership import gate_channel_membership
 from ..fingerprints import fingerprint_exists, remember_fingerprint
@@ -157,6 +157,7 @@ def build_plan(session: Session, task: Task) -> int:
         has_context=bool(usable_context_rows),
         cycle_index=cycle_index,
         pacing_config=task.pacing_config or {},
+        daily_coverage_uncovered_count=_daily_coverage_uncovered_count(session, task, accounts, hard_progress),
     )
     history_parts = [f"{row.sender_name}: {row.content}" for row in usable_context_rows[-50:]]
     if idle_continuation:
@@ -498,8 +499,22 @@ def _select_accounts_for_plan(session: Session, task: Task, group: TgGroup, prog
         task.tenant_id,
         task.account_config or {},
         target_group_id=group.id,
+        daily_coverage_task_id=task.id,
+        daily_coverage_action_types=("send_message",),
         **options,
     )
+
+
+def _daily_coverage_uncovered_count(
+    session: Session,
+    task: Task,
+    accounts: list,
+    progress: dict[str, object],
+) -> int:
+    uncovered = daily_uncovered_account_count(session, task.id, ("send_message",), accounts)
+    if not progress:
+        return uncovered
+    return min(uncovered, max(0, int(progress.get("deficit") or 0)))
 
 
 def _account_shortage_reason(
@@ -962,18 +977,31 @@ def _last_successful_ai_action_at(session: Session, task: Task) -> datetime | No
     return _naive_datetime(action.executed_at or action.scheduled_at or action.created_at)
 
 
-def _select_cycle_accounts(accounts: list, config: dict, mode: str, ramp_ratio: float, *, has_context: bool, cycle_index: int = 1, pacing_config: dict | None = None) -> tuple[list, int]:
-    rotated_accounts = _rotate_accounts(accounts, cycle_index)
+def _select_cycle_accounts(
+    accounts: list,
+    config: dict,
+    mode: str,
+    ramp_ratio: float,
+    *,
+    has_context: bool,
+    cycle_index: int = 1,
+    pacing_config: dict | None = None,
+    daily_coverage_uncovered_count: int = 0,
+) -> tuple[list, int]:
+    coverage_count = max(0, min(int(daily_coverage_uncovered_count or 0), len(accounts)))
+    rotated_accounts = accounts if coverage_count else _rotate_accounts(accounts, cycle_index)
     if str(config.get("messages_per_round_mode") or "auto") == "manual":
         messages_per_round = _manual_messages_per_round(config, mode)
         desired = _desired_participant_count(rotated_accounts, config, mode, ramp_ratio)
         turn_count = _manual_turn_count(desired, messages_per_round)
+        turn_count = max(turn_count, coverage_count)
         participant_count = _manual_participant_count(desired, turn_count, len(rotated_accounts), config)
         selected = rotated_accounts[:participant_count]
         if not bool(config.get("allow_account_repeat", True)):
             turn_count = min(turn_count, len(selected))
         return selected, max(1, turn_count)
     turn_count = _auto_messages_per_round(config, mode, has_context, pacing_config or {})
+    turn_count = max(turn_count, coverage_count)
     desired = _desired_participant_count(rotated_accounts, config, mode, ramp_ratio)
     selected_count = min(max(turn_count, desired), len(rotated_accounts))
     selected = rotated_accounts[:selected_count]

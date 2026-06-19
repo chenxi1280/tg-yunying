@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,6 +42,42 @@ def test_participant_count_does_not_apply_curve_ramp_ratio(monkeypatch) -> None:
     monkeypatch.setattr(group_ai_chat.random, "uniform", lambda _lo, _hi: 1.0)
 
     assert group_ai_chat._desired_participant_count(accounts, {"participation_rate": 0.8}, "低频期", 0.1) == 80
+
+
+def test_daily_coverage_priority_is_not_rotated_out(monkeypatch) -> None:
+    accounts = [SimpleNamespace(id=account_id) for account_id in [3, 4, 5, 1, 2]]
+    monkeypatch.setattr(group_ai_chat.random, "uniform", lambda _lo, _hi: 1.0)
+
+    selected, turn_count = group_ai_chat._select_cycle_accounts(
+        accounts,
+        {"messages_per_round_mode": "manual", "messages_per_round": 2, "participation_rate": 0.4},
+        "正常期",
+        1.0,
+        has_context=True,
+        cycle_index=4,
+        daily_coverage_uncovered_count=3,
+    )
+
+    assert [account.id for account in selected[:3]] == [3, 4, 5]
+    assert turn_count == 3
+
+
+def test_daily_coverage_minimum_turns_can_exceed_participation_rate(monkeypatch) -> None:
+    accounts = [SimpleNamespace(id=account_id) for account_id in range(1, 7)]
+    monkeypatch.setattr(group_ai_chat.random, "uniform", lambda _lo, _hi: 1.0)
+
+    selected, turn_count = group_ai_chat._select_cycle_accounts(
+        accounts,
+        {"messages_per_round_mode": "manual", "messages_per_round": 2, "participation_rate": 0.2},
+        "正常期",
+        1.0,
+        has_context=True,
+        cycle_index=1,
+        daily_coverage_uncovered_count=5,
+    )
+
+    assert [account.id for account in selected[:5]] == [1, 2, 3, 4, 5]
+    assert turn_count == 5
 
 
 def test_ai_next_run_after_uses_hourly_round_interval() -> None:
