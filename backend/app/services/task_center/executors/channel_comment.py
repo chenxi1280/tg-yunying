@@ -22,7 +22,7 @@ from .common import add_tokens, adjust_for_account_hour_limit, channel_message_a
 CHANNEL_COMMENT_SCENE = "channel_comment"
 MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE = 4
 DEFAULT_MAX_TOTAL_COMMENTS = 80
-DEFAULT_MAX_TOTAL_COMMENTS_JITTER = 0.3
+DEFAULT_MAX_TOTAL_COMMENTS_JITTER = 0.2
 PROFILE_SYNCED_STATUS = "已同步"
 COMMENT_ACCOUNT_PROFILE_ERROR = "评论账号资料未初始化，请先在账号中心批量初始化中文昵称、username 和头像"
 CURRENT_HOUR_BUDGET_STATUSES = ("pending", "claiming", "executing", "success")

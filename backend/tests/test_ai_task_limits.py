@@ -247,7 +247,7 @@ def test_channel_comment_schema_defaults_task_total_limit_with_jitter():
     payload = ChannelCommentTaskCreate(name="默认总上限评论", target_channel_id=31)
 
     assert payload.max_total_comments == 80
-    assert payload.max_total_comments_jitter == 0.3
+    assert payload.max_total_comments_jitter == 0.2
 
 
 def test_channel_comment_legacy_config_uses_default_total_limit_jitter(monkeypatch):
@@ -264,7 +264,7 @@ def test_channel_comment_legacy_config_uses_default_total_limit_jitter(monkeypat
     resolved = channel_comment._resolved_total_comment_limit(task, {})
 
     assert resolved == 91
-    assert captured == {"quantity": 80, "jitter_ratio": 0.3}
+    assert captured == {"quantity": 80, "jitter_ratio": 0.2}
     assert task.stats["max_total_comments_resolved"] == 91
 
 

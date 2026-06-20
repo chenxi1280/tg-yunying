@@ -452,7 +452,7 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
     message_scope: 'dynamic_new',
     message_count: 10,
     max_total_comments: 80,
-    max_total_comments_jitter: 0.3,
+    max_total_comments_jitter: 0.2,
     reply_min_per_message: 0,
     language: 'zh-CN',
     comment_style: 'mixed',

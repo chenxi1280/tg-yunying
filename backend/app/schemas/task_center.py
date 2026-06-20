@@ -331,7 +331,7 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     target_comments_per_message: int = Field(default=10, ge=1, le=1000)
     comment_count_jitter: float = Field(default=0.3, ge=0, le=1)
     max_total_comments: int = Field(default=80, ge=1, le=100000)
-    max_total_comments_jitter: float = Field(default=0.3, ge=0, le=1)
+    max_total_comments_jitter: float = Field(default=0.2, ge=0, le=1)
     comment_mode: Literal["comment", "reply", "mixed"] = "comment"
     reply_to_message_ids: list[int] = Field(default_factory=list)
     reply_min_per_message: int = Field(default=0, ge=0)
