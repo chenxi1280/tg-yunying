@@ -1328,8 +1328,8 @@ class TelethonTelegramGateway(TelegramGateway):
             await client(
                 functions.account.UpdateProfileRequest(
                     first_name=first_name or None,
-                    last_name=last_name or None,
-                    about=bio or None,
+                    last_name=last_name,
+                    about=bio,
                 )
             )
             if avatar_path:

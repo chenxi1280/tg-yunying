@@ -554,6 +554,13 @@ def test_profile_batch_summary_labels_manual_items_as_auto_skipped():
     assert "需人工处理 {precheck" not in source
 
 
+def test_telegram_profile_update_can_clear_last_name():
+    source = (PROJECT_ROOT / "backend/app/integrations/telegram/gateway.py").read_text()
+
+    assert "last_name=last_name," in source
+    assert "last_name=last_name or None" not in source
+
+
 def test_app_refresh_does_not_replace_accounts_with_empty_fallback_on_account_api_failure():
     source = (PROJECT_ROOT / "frontend/src/app/context/refresh.ts").read_text()
 
