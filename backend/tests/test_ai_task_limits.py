@@ -950,6 +950,56 @@ def test_channel_comment_planner_respects_current_hour_budget(monkeypatch):
     assert sorted(per_message) == [2, 3]
 
 
+def test_channel_comment_planner_uses_remaining_current_hour_budget(monkeypatch):
+    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
+        seeds = [
+            "尺寸细节看着挺明确",
+            "透明盖子这点比较实用",
+            "承重信息如果补一下更好",
+            "小厨房收纳应该能用上",
+        ]
+        return [f"{message_content}：{seeds[index % len(seeds)]}" for index in range(count)], 0
+
+    now_value = NOW + timedelta(minutes=30)
+    monkeypatch.setattr("app.services.task_center.executors.channel_comment._now", lambda: now_value, raising=False)
+    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+    with _session() as session:
+        _add_tenant(session)
+        _add_channel(session, message_count=2, account_count=120)
+        task = _add_comment_task(session)
+        task.pacing_config = {
+            "mode": "fixed",
+            "max_actions_per_hour": 100,
+            "interval_seconds_min": 0,
+            "interval_seconds_max": 0,
+            "jitter_percent": 0,
+        }
+        task.type_config = {**task.type_config, "target_comments_per_message": 100}
+        existing_actions = [
+            Action(
+                id=f"existing-current-hour-comment-{index}",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="channel_comment",
+                action_type="post_comment",
+                account_id=101 + index,
+                status="success",
+                scheduled_at=now_value - timedelta(minutes=10),
+                executed_at=now_value - timedelta(minutes=5),
+                payload={"channel_message_id": 41 if index % 2 == 0 else 42},
+            )
+            for index in range(96)
+        ]
+        session.add_all(existing_actions)
+        session.commit()
+
+        created = build_channel_comment_plan(session, task)
+        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+
+    assert created == 4
+    assert total_actions == 100
+
+
 def test_channel_comment_planner_stops_when_collected_comments_reach_target(monkeypatch):
     generated_counts: list[int] = []
 

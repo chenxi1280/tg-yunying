@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 from sqlalchemy.orm import Session
 
 from app.models import ChannelMessage, OperationTarget, Task
@@ -11,6 +13,10 @@ from ..payloads import LikeMessagePayload, create_like_action
 from .common import adjust_for_account_hour_limit, channel_message_account_ids, channel_message_payload, channel_scope, quantity_jitter_bounds, quantity_with_jitter, record_channel_capacity_warning
 
 LIKE_UNAVAILABLE_SKIP_CODES = {"reaction_unavailable_message", "reaction_unavailable_sibling"}
+PRIMARY_REACTION_RATIO = 0.7
+EXTRA_REACTION_RATIO = 0.1
+MIN_EXTRA_REACTION_QUANTITY = 10
+DEFAULT_EXTRA_REACTIONS = ("👏", "🎉", "😁", "🤩", "👌", "🙏", "💯", "⚡")
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -94,9 +100,65 @@ def _like_actions_for_messages(
         base_desired = quantity_with_jitter(target_per_message, float(config.get("like_count_jitter") or 0))
         target_deficit = max(0, base_desired - len(used_accounts))
         quantity = min(target_deficit, len(available_accounts))
-        actions.extend((message, available_accounts[index].id, reactions[index % len(reactions)]) for index in range(quantity))
+        message_reactions = _reaction_plan(reactions, quantity, str(config.get("reaction_type") or "random"))
+        actions.extend((message, available_accounts[index].id, message_reactions[index]) for index in range(quantity))
         coverage_remaining = max(0, coverage_remaining - quantity)
     return actions
+
+
+def _reaction_plan(reactions: list[str], quantity: int, reaction_type: str = "random") -> list[str]:
+    normalized = _normalize_reactions(reactions)
+    if quantity <= 0:
+        return []
+    if reaction_type == "specific" or len(normalized) == 1:
+        return [normalized[0]] * quantity
+    primary_count = _primary_reaction_count(quantity)
+    extra_count = _extra_reaction_count(normalized, quantity, primary_count)
+    secondary_count = max(0, quantity - primary_count - extra_count)
+    plan = [normalized[0]] * primary_count
+    plan.extend(_secondary_reactions(normalized[1:], secondary_count))
+    plan.extend(_extra_reactions(normalized, extra_count))
+    random.shuffle(plan)
+    return plan
+
+
+def _normalize_reactions(reactions: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for reaction in reactions or []:
+        value = str(reaction).strip()
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized or ["👍"]
+
+
+def _primary_reaction_count(quantity: int) -> int:
+    if quantity <= 1:
+        return quantity
+    return min(quantity, max(1, round(quantity * PRIMARY_REACTION_RATIO)))
+
+
+def _extra_reaction_count(reactions: list[str], quantity: int, primary_count: int) -> int:
+    extra_pool = [reaction for reaction in DEFAULT_EXTRA_REACTIONS if reaction not in reactions]
+    if quantity < MIN_EXTRA_REACTION_QUANTITY or not extra_pool:
+        return 0
+    secondary_minimum = min(len(reactions) - 1, max(0, quantity - primary_count))
+    extra_room = max(0, quantity - primary_count - secondary_minimum)
+    return min(extra_room, len(extra_pool), max(1, round(quantity * EXTRA_REACTION_RATIO)))
+
+
+def _secondary_reactions(reactions: list[str], quantity: int) -> list[str]:
+    if quantity <= 0 or not reactions:
+        return []
+    guaranteed = list(reactions[: min(quantity, len(reactions))])
+    remaining = quantity - len(guaranteed)
+    selected = guaranteed + random.choices(reactions, k=remaining)
+    random.shuffle(selected)
+    return selected
+
+
+def _extra_reactions(configured_reactions: list[str], quantity: int) -> list[str]:
+    extra_pool = [reaction for reaction in DEFAULT_EXTRA_REACTIONS if reaction not in configured_reactions]
+    return random.sample(extra_pool, k=min(quantity, len(extra_pool)))
 
 
 __all__ = ["build_plan"]

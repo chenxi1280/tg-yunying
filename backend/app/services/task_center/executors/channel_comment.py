@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Action, ChannelMessage, ChannelMessageComment, OperationTarget, RuleSet, Task, TgAccount
+from app.services._common import _now
 
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 from ..account_pool import daily_uncovered_account_count, select_task_accounts
@@ -20,6 +23,7 @@ CHANNEL_COMMENT_SCENE = "channel_comment"
 MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE = 4
 PROFILE_SYNCED_STATUS = "已同步"
 COMMENT_ACCOUNT_PROFILE_ERROR = "评论账号资料未初始化，请先在账号中心批量初始化中文昵称、username 和头像"
+CURRENT_HOUR_BUDGET_STATUSES = ("pending", "claiming", "executing", "success")
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -237,10 +241,43 @@ def _message_comment_quantities(
     deficits = [_message_comment_deficit(session, task, config, message, managed_usernames) for message in messages]
     coverage_floor = min(max(0, int(daily_coverage_min_total or 0)), sum(deficits))
     deficits = _apply_daily_coverage_minimum(deficits, coverage_floor)
-    budget = int((task.pacing_config or {}).get("max_actions_per_hour") or 0)
-    quantities = allocate_message_budget(deficits, budget) if budget > 0 else deficits
+    hour_limit = _task_hour_limit(task)
+    budget = _remaining_current_hour_budget(session, task, hour_limit)
+    quantities = allocate_message_budget(deficits, budget) if hour_limit > 0 else deficits
     capped = [min(quantity, MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE) for quantity in quantities]
     return list(zip(messages, capped, strict=False))
+
+
+def _task_hour_limit(task: Task) -> int:
+    return max(0, int((task.pacing_config or {}).get("max_actions_per_hour") or 0))
+
+
+def _remaining_current_hour_budget(session: Session, task: Task, hour_limit: int) -> int:
+    if hour_limit <= 0:
+        return 0
+    used = _current_hour_comment_action_count(session, task)
+    return max(0, hour_limit - used)
+
+
+def _current_hour_comment_action_count(session: Session, task: Task) -> int:
+    hour_start = _now().replace(minute=0, second=0, microsecond=0)
+    hour_end = hour_start + timedelta(hours=1)
+    return int(
+        session.scalar(
+            select(func.count(Action.id)).where(
+                Action.tenant_id == task.tenant_id,
+                Action.task_id == task.id,
+                Action.task_type == "channel_comment",
+                Action.action_type == "post_comment",
+                Action.status.in_(CURRENT_HOUR_BUDGET_STATUSES),
+                or_(
+                    (Action.scheduled_at >= hour_start) & (Action.scheduled_at < hour_end),
+                    (Action.executed_at >= hour_start) & (Action.executed_at < hour_end),
+                ),
+            )
+        )
+        or 0
+    )
 
 
 def _apply_daily_coverage_minimum(deficits: list[int], minimum: int) -> list[int]:
