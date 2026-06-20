@@ -560,7 +560,13 @@ class TaskSettingsUpdate(TaskUpdate):
     comment_mode: Literal["comment", "reply", "mixed"] | None = None
     reply_to_message_ids: list[int] | None = None
     reply_min_per_message: int | None = Field(default=None, ge=0)
+    rule_set_id: int | None = None
+    rule_set_version_id: int | None = None
+    ai_model: str | None = None
     comment_style: Literal["relevant", "question", "praise", "discussion", "mixed"] | None = None
+    topic_hint: str | None = None
+    system_prompt_override: str | None = None
+    language: str | None = None
     max_comment_length: int | None = Field(default=None, ge=1)
     max_comments_per_account_per_hour: int | None = Field(default=None, ge=1, le=500)
 

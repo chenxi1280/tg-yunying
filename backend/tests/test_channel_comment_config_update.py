@@ -67,6 +67,41 @@ def test_channel_comment_config_update_clears_pending_comment_plan():
     assert remaining == []
 
 
+def test_channel_comment_config_update_allows_ai_model_switch():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-comment-model",
+            tenant_id=1,
+            name="频道评论",
+            type="channel_comment",
+            status="running",
+            type_config={
+                "target_channel_id": 6,
+                "target_comments_per_message": 80,
+                "message_scope": "dynamic_new",
+                "message_count": 10,
+            },
+        )
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=6, tenant_id=1, target_type="channel", tg_peer_id="-1006", title="频道"))
+        session.add(task)
+        session.commit()
+
+        updated = update_channel_comment_config(
+            session,
+            1,
+            task.id,
+            ChannelCommentTaskConfigUpdate(target_channel_id=6, ai_model="deepseek-v4-flash"),
+            "tester",
+        )
+
+    assert updated.type_config["ai_model"] == "deepseek-v4-flash"
+    assert updated.type_config["target_comments_per_message"] == 80
+
+
 def test_channel_comment_dispatch_detects_existing_success_limit():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
