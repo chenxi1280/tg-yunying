@@ -12,7 +12,7 @@ from app.config import Settings
 from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult, _resolve_telethon_target, _telethon_send_target
 from app.integrations.telegram.gateway import TelethonTelegramGateway
-from app.models import AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountSyncRecord, TgGroup, TgGroupAccount, VerificationTask, WorkerHeartbeat
+from app.models import AccountPool, AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
@@ -4943,6 +4943,40 @@ def test_operation_metrics_summary_uses_real_task_center_tables():
     assert next(item.value for item in summary.risk_control if item.key == "risk.duplicates") == 1
     assert any(item.category == "群风控" and "链接白名单 已配置" in item.detail for item in summary.risk_details)
     assert any(item.category == "任务限速" and "每小时 12" in item.detail for item in summary.risk_details)
+
+
+def test_operation_metrics_summary_reports_login_drop_rate_by_account_pool():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                AccountPool(id=11, tenant_id=1, name="青岛分组", description="", is_default=True),
+                AccountPool(id=12, tenant_id=1, name="深圳分组", description="", is_default=False),
+                TgAccount(id=101, tenant_id=1, pool_id=11, display_name="登录失败号", phone_masked="+861***0101", status="在线", session_ciphertext="s1"),
+                TgAccount(id=102, tenant_id=1, pool_id=11, display_name="普通受限号", phone_masked="+861***0102", status="受限", session_ciphertext="s2"),
+                TgAccount(id=201, tenant_id=1, pool_id=12, display_name="失效号", phone_masked="+861***0201", status="Session失效", session_ciphertext="s3"),
+                TgAccount(id=202, tenant_id=1, pool_id=12, display_name="主授权缺失号", phone_masked="+861***0202", status="在线"),
+                TgAccountAuthorization(tenant_id=1, account_id=102, role="primary", status="active", health_status="healthy", is_current=True, session_ciphertext="s2"),
+                TgLoginFlow(tenant_id=1, account_id=101, method="code", status="failed", failure_type="验证码没收到", failure_detail="登录验证码没收到"),
+            ]
+        )
+        session.commit()
+
+        summary = operation_metrics_summary(session, 1)
+
+    rates = {item.related_id: item for item in summary.account_pool_login_drop_rates}
+    assert rates["11"].title == "青岛分组"
+    assert rates["11"].status == "50.0%"
+    assert "登录问题 1/2" in rates["11"].detail
+    assert "登录失败 1" in rates["11"].detail
+    assert "普通受限号" not in rates["11"].detail
+    assert rates["12"].title == "深圳分组"
+    assert rates["12"].status == "100.0%"
+    assert "登录问题 2/2" in rates["12"].detail
+    assert "主授权不可用 1" in rates["12"].detail
 
 
 def test_rule_center_summary_reports_rule_conflicts_and_missing_bindings():

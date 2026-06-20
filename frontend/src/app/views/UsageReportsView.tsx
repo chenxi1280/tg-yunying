@@ -115,6 +115,7 @@ export default function UsageReportsView({ usageLedgers, usageSummary, currentUs
       {metricsError && <Alert className="form-alert" type="error" showIcon message={metricsError} />}
       <Card className="panel" title="运营数据总览" extra={<Button size="small" icon={<RefreshCcw size={16} />} loading={loadingMetrics} onClick={loadMetrics}>刷新</Button>}>
         <MetricSection title="账号数据" items={metrics?.accounts ?? []} />
+        <LoginDropRateSection rows={metrics?.account_pool_login_drop_rates ?? []} />
         <MetricSection title="目标数据" items={metrics?.targets ?? []} />
         <MetricSection title="消息发送数据" items={metrics?.messages ?? []} />
         <MetricSection title="频道互动数据" items={metrics?.channel_interactions ?? []} />
@@ -191,6 +192,19 @@ function MetricSection({ title, items }: { title: string; items: MetricBucket[] 
       <div className="stats-grid">
         {items.map((item) => (
           <StatCard key={item.key} label={item.label} value={item.value} detail={item.detail} icon={<Activity size={22} />} />
+        ))}
+      </div>
+    </Space>
+  );
+}
+
+function LoginDropRateSection({ rows }: { rows: OperationMetricDetail[] }) {
+  return (
+    <Space direction="vertical" size={8} style={{ width: '100%', marginBottom: 16 }}>
+      <Typography.Title level={5} style={{ margin: 0 }}>账号分组登录掉号比例</Typography.Title>
+      <div className="stats-grid">
+        {rows.map((item) => (
+          <StatCard key={item.key} label={item.title} value={item.status} detail={`登录问题账号：${item.detail}`} icon={<Activity size={22} />} />
         ))}
       </div>
     </Space>

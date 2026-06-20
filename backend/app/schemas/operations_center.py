@@ -378,6 +378,7 @@ class OperationMetricDetailOut(BaseModel):
 
 class OperationMetricsOut(BaseModel):
     accounts: list[MetricBucketOut] = Field(default_factory=list)
+    account_pool_login_drop_rates: list[OperationMetricDetailOut] = Field(default_factory=list)
     targets: list[MetricBucketOut] = Field(default_factory=list)
     messages: list[MetricBucketOut] = Field(default_factory=list)
     channel_interactions: list[MetricBucketOut] = Field(default_factory=list)

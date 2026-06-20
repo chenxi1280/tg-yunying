@@ -23,6 +23,7 @@ from app.schemas.operations_center import (
     RuleTestSimulationStepOut,
 )
 from app.services._common import _now, audit
+from app.services.operation_login_drop_rates import account_pool_login_drop_rates
 from app.services.rule_engine import apply_output_policy, evaluate_input_filter
 from app.services.material_rules import select_material_for_policy
 from app.services.task_center.executors.group_relay import apply_transform_rules, relay_filter_expression_reason, resolve_relay_target_ids
@@ -64,7 +65,6 @@ from app.services.operations_center_rule_sets import (
     rollback_rule_set_version,
     update_rule_set_config,
 )
-
 
 def relay_attribution_csv(session: Session, tenant_id: int, *, limit: int = 5000) -> str:
     output = StringIO()
@@ -329,6 +329,7 @@ def operation_metrics_summary(session: Session, tenant_id: int) -> OperationMetr
             _metric("accounts.abnormal", "异常账号", abnormal_accounts, "离线、受限、需重新登录或禁用"),
             _metric("accounts.health", "平均健康分", round(float(avg_health), 1), "账号健康分布均值"),
         ],
+        account_pool_login_drop_rates=account_pool_login_drop_rates(session, tenant_id),
         targets=[
             _metric("targets.total", "目标总数", total_targets, "已纳入运营目标中心"),
             _metric("targets.sendable", "可发送目标", sendable_targets, "当前标记为可发送"),

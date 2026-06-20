@@ -375,6 +375,7 @@ export type OperationMetricDetail = {
 
 export type OperationMetricsSummary = {
   accounts: MetricBucket[];
+  account_pool_login_drop_rates: OperationMetricDetail[];
   targets: MetricBucket[];
   messages: MetricBucket[];
   channel_interactions: MetricBucket[];

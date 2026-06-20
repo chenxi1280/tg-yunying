@@ -472,6 +472,16 @@ def test_admin_permission_modal_exposes_usage_export_permission():
     assert "'usage.export'" in source[source.index("'运营管理员'"):source.index("'账号添加专员'")]
 
 
+def test_usage_reports_show_account_pool_login_drop_rates():
+    source = (PROJECT_ROOT / "frontend/src/app/views/UsageReportsView.tsx").read_text()
+    types = (PROJECT_ROOT / "frontend/src/app/types/operations.ts").read_text()
+
+    assert "account_pool_login_drop_rates: OperationMetricDetail[]" in types
+    assert "账号分组登录掉号比例" in source
+    assert "metrics?.account_pool_login_drop_rates ?? []" in source
+    assert "登录问题账号" in source
+
+
 def test_materials_view_exposes_prd_detail_preview_usage_and_cache_actions():
     source = (PROJECT_ROOT / "frontend/src/app/views/MaterialsView.tsx").read_text()
 
