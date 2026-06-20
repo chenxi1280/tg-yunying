@@ -1494,6 +1494,27 @@ def test_confirmed_profile_batch_uses_preview_overrides_without_regenerating(mon
         assert batch.items[0].username_candidates == ["guoba_yangyu"]
 
 
+def test_ai_profile_parser_drops_english_last_name_from_generated_nickname():
+    raw = json.dumps(
+        {
+            "items": [
+                {
+                    "display_name": "锅巴洋芋",
+                    "first_name": "锅巴洋芋",
+                    "last_name": "Luis",
+                    "bio": "看到有意思的会回两句",
+                    "username_candidates": ["guoba_yangyu"],
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    items = account_security_service._parse_ai_profile_items(raw, 1, ProfileGenerationStrategy())
+
+    assert items[0]["last_name"] == ""
+
+
 def test_manual_required_or_missing_session_accounts_are_auto_skipped():
     with _session() as session:
         active = _seed_account(session)

@@ -201,7 +201,7 @@ export default function AccountsView({
           </Avatar>
           <Space orientation="vertical" size={0}>
             <Typography.Text strong>{account.display_name}</Typography.Text>
-            <Typography.Text type="secondary">@{account.username ?? '未设置'} / {accountPhone(account)}</Typography.Text>
+            <Typography.Text type="secondary">username：@{account.username ?? '未设置'} / {accountPhone(account)}</Typography.Text>
             <Typography.Text type="secondary">账号分组：{account.pool_name}</Typography.Text>
             <Typography.Text type="secondary">昵称：{[account.tg_first_name, account.tg_last_name].filter(Boolean).join(' ') || '未设置'}</Typography.Text>
           </Space>

@@ -57,6 +57,7 @@ from ..developer_apps import credentials_for_account
 
 
 USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
+ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
 SYSTEM_DISPLAY_NAME_RE = re.compile(r"^导入\d{4}-\d{2,4}-\d{3}$")
 GENERIC_DISPLAY_NAMES = {"", "托管账号", "新托管账号", "未命名账号"}
 PROFILE_AI_BASE_TIMEOUT_SECONDS = 45
@@ -1648,7 +1649,7 @@ def _parse_ai_profile_items(raw: str, count: int, strategy) -> list[dict[str, ob
             continue
         display_name = str(raw_item.get("display_name") or "").strip()[:80]
         first_name = str(raw_item.get("first_name") or display_name).strip()[:80]
-        last_name = str(raw_item.get("last_name") or "").strip()[:80]
+        last_name = _clean_ai_profile_last_name(raw_item.get("last_name"))
         bio = str(raw_item.get("bio") or "").strip()[:160] if strategy.bio_enabled else ""
         candidates_raw = raw_item.get("username_candidates") or []
         candidates = [str(candidate).strip().lstrip("@") for candidate in candidates_raw if isinstance(candidate, str)]
@@ -1676,6 +1677,13 @@ def _parse_ai_profile_items(raw: str, count: int, strategy) -> list[dict[str, ob
     if len(results) < count:
         raise RuntimeError(f"AI 生成资料不足：{len(results)}/{count}")
     return results
+
+
+def _clean_ai_profile_last_name(value: object) -> str:
+    text = str(value or "").strip()[:80]
+    if ASCII_LETTER_RE.search(text):
+        return ""
+    return text
 
 
 def _generate_profiles_from_local_pool(accounts: list[TgAccount], strategy) -> list[dict[str, object]]:
