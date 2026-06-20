@@ -98,7 +98,7 @@ def build_plan(session: Session, task: Task) -> int:
                 continue
         if not quantity:
             continue
-        reply_min = min(quantity, int(config.get("reply_min_per_message") or 0))
+        reply_min = _reply_minimum_for_mode(comment_mode, quantity, config)
         reply_target_pool = _message_reply_targets(session, task, channel.id, message)
         if reply_min > len(reply_target_pool):
             stats_inc(task, "reply_target_shortfall_count")
@@ -207,6 +207,12 @@ def _generate_minimum_reply_comments(
         stats_inc(task, "reply_candidate_shortfall_count")
         raise AiGenerationUnavailable("AI 引用评论候选不足，已跳过本轮")
     return contents, tokens
+
+
+def _reply_minimum_for_mode(comment_mode: str, quantity: int, config: dict) -> int:
+    if comment_mode not in {"reply", "mixed"}:
+        return 0
+    return min(quantity, int(config.get("reply_min_per_message") or 0))
 
 
 def _generate_normal_channel_comments(

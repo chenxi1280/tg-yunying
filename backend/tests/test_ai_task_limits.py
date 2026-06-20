@@ -1097,6 +1097,39 @@ def test_channel_comment_plans_minimum_auto_replies(monkeypatch):
     assert reply_actions[0].payload["reply_target_preview"] == "这个尺寸多少"
 
 
+def test_channel_comment_comment_mode_ignores_stale_reply_minimum(monkeypatch):
+    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
+        seeds = [
+            "敲门前那段细节还挺有画面感",
+            "蹦蹦跳跳这个反应写得很真实",
+            "后面节奏如果再展开一点会更好看",
+            "这种日常口吻比硬夸自然很多",
+        ]
+        return [f"{message_content}：{seeds[index % len(seeds)]}" for index in range(count)], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+    with _session() as session:
+        _add_tenant(session)
+        _add_channel(session, message_count=1, account_count=4)
+        task = _add_comment_task(session)
+        task.pacing_config = {"mode": "fixed", "max_actions_per_hour": 10, "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0}
+        task.type_config = {
+            **task.type_config,
+            "message_ids": [41],
+            "target_comments_per_message": 4,
+            "comment_mode": "comment",
+            "reply_min_per_message": 5,
+        }
+        session.commit()
+
+        created = build_channel_comment_plan(session, task)
+        actions = session.scalars(select(Action).where(Action.task_id == task.id)).all()
+
+    assert created == 4
+    assert len(actions) == 4
+    assert all(not action.payload["reply_to_message_id"] for action in actions)
+
+
 def test_channel_comment_does_not_reuse_reply_targets_when_pool_is_short(monkeypatch):
     def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
         return [f"普通评论 {index}" for index in range(count)], 0
@@ -1147,6 +1180,7 @@ def test_channel_comment_excludes_already_used_reply_targets_across_rounds(monke
             **task.type_config,
             "message_ids": [41],
             "target_comments_per_message": 2,
+            "comment_mode": "mixed",
             "reply_min_per_message": 1,
         }
         session.add(
@@ -1209,6 +1243,7 @@ def test_channel_comment_finds_unused_reply_target_beyond_initial_window(monkeyp
             **task.type_config,
             "message_ids": [41],
             "target_comments_per_message": 21,
+            "comment_mode": "mixed",
             "reply_min_per_message": 1,
         }
         for index in range(20):
@@ -1294,6 +1329,7 @@ def test_channel_comment_does_not_fill_filtered_reply_shortage_with_normal_comme
             **task.type_config,
             "message_ids": [41],
             "target_comments_per_message": 4,
+            "comment_mode": "mixed",
             "reply_min_per_message": 2,
             "rule_set_version_id": 92,
         }
