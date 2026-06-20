@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
@@ -248,6 +249,18 @@ def test_channel_comment_schema_defaults_task_total_limit_with_jitter():
 
     assert payload.max_total_comments == 80
     assert payload.max_total_comments_jitter == 0.2
+
+
+def test_channel_comment_total_limit_jitter_is_capped_at_thirty_percent():
+    with pytest.raises(Exception):
+        ChannelCommentTaskCreate(name="总上限抖动过大", target_channel_id=31, max_total_comments_jitter=0.31)
+
+
+def test_channel_comment_runtime_rejects_oversized_total_limit_jitter():
+    task = Task(id="oversized-comment-limit-jitter", tenant_id=1, name="超范围抖动", type="channel_comment", status="running", stats={})
+
+    with pytest.raises(ValueError, match="max_total_comments_jitter"):
+        channel_comment._resolved_total_comment_limit(task, {"max_total_comments": 80, "max_total_comments_jitter": 0.31})
 
 
 def test_channel_comment_legacy_config_uses_default_total_limit_jitter(monkeypatch):

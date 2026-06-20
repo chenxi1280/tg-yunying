@@ -7,6 +7,8 @@ type ChannelCommentTypeConfigProps = {
   ruleFields: React.ReactNode;
 };
 
+const MAX_TOTAL_COMMENT_JITTER = 0.3;
+
 export function ChannelViewTypeConfig() {
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
@@ -89,7 +91,7 @@ function ChannelCommentAdvancedFields() {
   return (
     <div className="form-grid">
       <Form.Item name="max_comments_per_account_per_hour" label="每号每小时评论上限"><InputNumber min={1} /></Form.Item>
-      <Form.Item name="max_total_comments_jitter" label="总评论上限随机抖动"><InputNumber min={0} max={1} step={0.01} /></Form.Item>
+      <Form.Item name="max_total_comments_jitter" label="总评论上限随机抖动"><InputNumber min={0} max={MAX_TOTAL_COMMENT_JITTER} step={0.01} /></Form.Item>
       <Form.Item name="system_prompt_override" label="System Prompt 覆盖"><Input.TextArea rows={3} /></Form.Item>
       <Form.Item name="max_comment_length" label="最大评论长度"><InputNumber min={1} /></Form.Item>
     </div>

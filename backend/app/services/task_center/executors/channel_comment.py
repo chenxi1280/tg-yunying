@@ -23,6 +23,7 @@ CHANNEL_COMMENT_SCENE = "channel_comment"
 MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE = 4
 DEFAULT_MAX_TOTAL_COMMENTS = 80
 DEFAULT_MAX_TOTAL_COMMENTS_JITTER = 0.2
+MAX_TOTAL_COMMENTS_JITTER = 0.3
 PROFILE_SYNCED_STATUS = "已同步"
 COMMENT_ACCOUNT_PROFILE_ERROR = "评论账号资料未初始化，请先在账号中心批量初始化中文昵称、username 和头像"
 CURRENT_HOUR_BUDGET_STATUSES = ("pending", "claiming", "executing", "success")
@@ -278,12 +279,19 @@ def _resolved_total_comment_limit(task: Task, config: dict) -> int:
     if existing > 0:
         return existing
     base = max(1, int(config.get("max_total_comments") or DEFAULT_MAX_TOTAL_COMMENTS))
-    jitter_config = config.get("max_total_comments_jitter")
-    jitter = float(DEFAULT_MAX_TOTAL_COMMENTS_JITTER if jitter_config is None else jitter_config)
+    jitter = _total_comment_limit_jitter(config)
     resolved = quantity_with_jitter(base, jitter)
     stats["max_total_comments_resolved"] = resolved
     task.stats = stats
     return resolved
+
+
+def _total_comment_limit_jitter(config: dict) -> float:
+    jitter_config = config.get("max_total_comments_jitter")
+    jitter = float(DEFAULT_MAX_TOTAL_COMMENTS_JITTER if jitter_config is None else jitter_config)
+    if jitter > MAX_TOTAL_COMMENTS_JITTER:
+        raise ValueError("max_total_comments_jitter 不能超过 0.3")
+    return max(0.0, jitter)
 
 
 def _total_comment_action_count(session: Session, task: Task, *, exclude_action_id: str | None = None) -> int:

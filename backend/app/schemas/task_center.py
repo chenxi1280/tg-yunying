@@ -15,6 +15,7 @@ ActionStatusValue = Literal["pending", "executing", "success", "failed", "skippe
 ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
 GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 60
 CHANNEL_COUNT_JITTER_DEFAULT = 0.2
+MAX_TOTAL_COMMENT_JITTER = 0.3
 
 
 class QuietHours(BaseModel):
@@ -331,7 +332,7 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     target_comments_per_message: int = Field(default=10, ge=1, le=1000)
     comment_count_jitter: float = Field(default=0.3, ge=0, le=1)
     max_total_comments: int = Field(default=80, ge=1, le=100000)
-    max_total_comments_jitter: float = Field(default=0.2, ge=0, le=1)
+    max_total_comments_jitter: float = Field(default=0.2, ge=0, le=MAX_TOTAL_COMMENT_JITTER)
     comment_mode: Literal["comment", "reply", "mixed"] = "comment"
     reply_to_message_ids: list[int] = Field(default_factory=list)
     reply_min_per_message: int = Field(default=0, ge=0)
@@ -560,7 +561,7 @@ class TaskSettingsUpdate(TaskUpdate):
     target_comments_per_message: int | None = Field(default=None, ge=1, le=1000)
     comment_count_jitter: float | None = Field(default=None, ge=0, le=1)
     max_total_comments: int | None = Field(default=None, ge=1, le=100000)
-    max_total_comments_jitter: float | None = Field(default=None, ge=0, le=1)
+    max_total_comments_jitter: float | None = Field(default=None, ge=0, le=MAX_TOTAL_COMMENT_JITTER)
     comment_mode: Literal["comment", "reply", "mixed"] | None = None
     reply_to_message_ids: list[int] | None = None
     reply_min_per_message: int | None = Field(default=None, ge=0)

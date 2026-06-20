@@ -263,6 +263,7 @@ def test_task_center_applies_ai_limit_recommendations_without_overwriting_manual
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    channel_config = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterChannelConfigSections.tsx").read_text()
 
     assert "recommended_limits" in types
     assert "applyAiLimitRecommendations(result)" in source
@@ -272,6 +273,8 @@ def test_task_center_applies_ai_limit_recommendations_without_overwriting_manual
     assert "target_comments_per_message" in source
     assert "max_total_comments" in source
     assert "max_total_comments_jitter" in source
+    assert "const MAX_TOTAL_COMMENT_JITTER = 0.3;" in channel_config
+    assert "max={MAX_TOTAL_COMMENT_JITTER}" in channel_config
     assert "max_comments_per_account_per_hour" in source
     assert "推荐数量" in wizard
     assert "recommended_limits" in wizard
