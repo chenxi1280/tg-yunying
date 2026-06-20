@@ -14,6 +14,7 @@ TaskStatusValue = Literal["draft", "pending", "running", "paused", "target_reach
 ActionStatusValue = Literal["pending", "executing", "success", "failed", "skipped"]
 ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
 GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 60
+CHANNEL_COUNT_JITTER_DEFAULT = 0.2
 
 
 class QuietHours(BaseModel):
@@ -289,7 +290,7 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
     task_daily_view_safety_cap: int | None = Field(default=None, ge=1, le=100000)
     max_views_per_account_per_day: int | None = Field(default=None, ge=1, le=10000)
     target_views_per_message: int | None = Field(default=None, ge=1, le=10000)
-    view_count_jitter: float = Field(default=0.2, ge=0, le=1)
+    view_count_jitter: float = Field(default=CHANNEL_COUNT_JITTER_DEFAULT, ge=0, le=1)
     execution_mode: Literal["distribute", "burst"] = "distribute"
 
     @model_validator(mode="after")
@@ -319,7 +320,7 @@ class ChannelViewConfig(ChannelMessageScopeConfig):
 class ChannelLikeConfig(ChannelMessageScopeConfig):
     message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "dynamic_new"
     target_likes_per_message: int = Field(default=50, ge=1, le=10000)
-    like_count_jitter: float = Field(default=0.3, ge=0, le=1)
+    like_count_jitter: float = Field(default=CHANNEL_COUNT_JITTER_DEFAULT, ge=0, le=1)
     reaction_type: Literal["random", "specific"] = "random"
     allowed_reactions: list[str] = Field(default_factory=lambda: ["👍"])
     max_likes_per_account_per_hour: int = Field(default=10, ge=1, le=1000)
