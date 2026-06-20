@@ -10,6 +10,7 @@ import {
   CREATE_AND_START_ENDPOINT,
   CREATE_ENDPOINT,
   GROUP_AI_HARD_HOURLY_MIN_MESSAGES,
+  CHANNEL_COUNT_JITTER_DEFAULT,
   TASK_TYPES,
   TYPE_LABEL,
   WIZARD_STEPS,
@@ -638,6 +639,7 @@ export default function TaskCenterView({
       message_active_days: values.message_active_days ?? 3,
       task_daily_view_safety_cap: values.task_daily_view_safety_cap ?? 500,
       max_views_per_account_per_day: values.max_views_per_account_per_day ?? 20,
+      view_count_jitter: values.view_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT,
       target_views_per_message: dailyTarget,
       execution_mode: values.execution_mode ?? 'distribute',
     };
@@ -817,7 +819,7 @@ export default function TaskCenterView({
       return { ...base, ...channelScopePayload(values), ...channelViewProductionPayload(values) };
     }
     if (taskType === 'channel_like') {
-      return { ...base, ...channelScopePayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
+      return { ...base, ...channelScopePayload(values), target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
     }
     return channelCommentPayload(values, base, true);
   }
@@ -879,7 +881,7 @@ export default function TaskCenterView({
       return { ...base, ...channelViewProductionPayload(values) };
     }
     if (type === 'channel_like') {
-      return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
+      return { ...base, target_likes_per_message: values.target_likes_per_message ?? 50, like_count_jitter: values.like_count_jitter ?? CHANNEL_COUNT_JITTER_DEFAULT, reaction_type: values.reaction_type ?? 'random', allowed_reactions: words(values.allowed_reactions || '👍'), max_likes_per_account_per_hour: values.max_likes_per_account_per_hour ?? 10 };
     }
     return channelCommentPayload(values, base, false);
   }
