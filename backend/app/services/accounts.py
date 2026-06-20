@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -59,6 +60,8 @@ ACCOUNT_AUTO_SYNC_SKIP_STATUSES = {
     AccountStatus.DISABLED.value,
 }
 LOGIN_START_FAILURE_MESSAGE = "登录初始化失败，请查看登录流水或联系管理员处理"
+ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
+CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +267,14 @@ def account_profile_snapshot(account: TgAccount) -> dict[str, str]:
         "tg_bio": account.tg_bio,
         "avatar_object_key": account.avatar_object_key,
     }
+
+
+def _remote_profile_names_for_storage(account: TgAccount, first_name: str, last_name: str) -> tuple[str, str, str, str]:
+    cleaned_first = (first_name or "").strip()
+    cleaned_last = (last_name or "").strip()
+    if cleaned_first and cleaned_last and CJK_RE.search(cleaned_first) and ASCII_LETTER_RE.search(cleaned_last):
+        return cleaned_first, "", cleaned_first, "远端姓含英文字母，后台展示已清理；远端资料需账号解冻后再同步。"
+    return cleaned_first, cleaned_last, account.display_name, ""
 
 
 def list_profile_sync_records(session: Session, account_id: int, limit: int = 20) -> list[TgAccountProfileSyncRecord]:
@@ -883,14 +894,16 @@ def sync_remote_profile(session: Session, account_id: int, actor: str) -> TgAcco
     account = _ensure_account_available(session.get(TgAccount, account_id))
     credentials = credentials_for_account(session, account)
     profile = gateway.pull_profile(account.id, account.session_ciphertext, credentials)
-    account.tg_first_name = profile.first_name
-    account.tg_last_name = profile.last_name
+    first_name, last_name, display_name, profile_note = _remote_profile_names_for_storage(account, profile.first_name, profile.last_name)
+    account.tg_first_name = first_name
+    account.tg_last_name = last_name
+    account.display_name = display_name
     account.tg_bio = profile.bio
     if profile.username:
         account.username = profile.username
     account.profile_synced_at = _now()
     account.profile_sync_status = "已同步"
-    account.profile_sync_error = ""
+    account.profile_sync_error = profile_note
     audit(session, tenant_id=account.tenant_id, actor=actor, action="拉取TG账号资料", target_type="tg_account", target_id=str(account.id))
     session.commit()
     session.refresh(account)

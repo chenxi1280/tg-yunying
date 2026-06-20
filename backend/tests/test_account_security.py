@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
 from app.integrations.telegram.contracts import AccountAuthorizationSnapshot as RemoteAuthorizationSnapshot
+from app.integrations.telegram.contracts import RemoteProfile
 from app.models import AiProvider, AccountProxy, AccountStatus, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot, TgVerificationCode
 from app.schemas import TgAccountCreate
 from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ManagedTwoFaRequest, ProfileGenerationStrategy
@@ -111,6 +112,26 @@ def _remote_cleanup_authorizations() -> list[RemoteAuthorizationSnapshot]:
             app_name="Telegram Desktop",
         ),
     ]
+
+
+def test_sync_remote_profile_cleans_chinese_first_english_last_for_storage(monkeypatch):
+    with _session() as session:
+        account = _seed_account(session)
+
+        monkeypatch.setattr(accounts_service, "credentials_for_account", lambda _session, _account: None)
+        monkeypatch.setattr(
+            accounts_service.gateway,
+            "pull_profile",
+            lambda *_args, **_kwargs: RemoteProfile(first_name="吃瓜群众甲", last_name="Roy", bio="围观中", username="chigua_jia"),
+        )
+
+        synced = accounts_service.sync_remote_profile(session, account.id, "tester")
+
+        assert synced.tg_first_name == "吃瓜群众甲"
+        assert synced.tg_last_name == ""
+        assert synced.display_name == "吃瓜群众甲"
+        assert synced.username == "chigua_jia"
+        assert "后台展示已清理" in synced.profile_sync_error
 
 
 def test_refresh_account_security_records_trusted_session_and_external_device():
