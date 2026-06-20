@@ -159,3 +159,56 @@ def test_channel_comment_dispatch_detects_existing_success_limit():
         )
 
         assert dispatcher._comment_success_limit_reached(session, current, payload)
+
+
+def test_channel_comment_dispatch_detects_task_total_limit():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-comment-total-cap",
+            tenant_id=1,
+            name="频道评论",
+            type="channel_comment",
+            status="running",
+            type_config={
+                "target_channel_id": 6,
+                "target_comments_per_message": 30,
+                "max_total_comments": 80,
+                "max_total_comments_jitter": 0,
+                "message_scope": "dynamic_new",
+                "message_count": 10,
+            },
+            stats={},
+        )
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(task)
+        for index in range(80):
+            session.add(
+                Action(
+                    id=f"counted-comment-{index}",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="channel_comment",
+                    action_type="post_comment",
+                    status="success",
+                    scheduled_at=now_value,
+                    payload={"channel_target_id": 6, "channel_message_id": 66, "message_id": 336},
+                )
+            )
+        current = Action(
+            id="pending-comment-total-over-cap",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="channel_comment",
+            action_type="post_comment",
+            status="pending",
+            scheduled_at=now_value,
+            payload={"channel_target_id": 6, "channel_message_id": 66, "message_id": 336},
+        )
+        session.add(current)
+        session.commit()
+
+        assert dispatcher._comment_total_limit_reached(session, current)

@@ -614,6 +614,11 @@ def _precheck_estimated_actions(session: Session, tenant_id: int, task_type: str
         per_message = int(config.get("target_likes_per_message") or 1)
     else:
         per_message = int(config.get("target_comments_per_message") or 1)
+        task_cap = int(config.get("max_total_comments") or 0)
+        estimated = message_count * per_message
+        if task_cap > 0:
+            estimated = min(estimated, task_cap)
+        return estimated, per_message
     return message_count * per_message, per_message
 
 

@@ -330,6 +330,8 @@ class ChannelCommentConfig(ChannelMessageScopeConfig):
     message_scope: Literal["all", "latest_n", "date_range", "specific", "dynamic_new"] = "dynamic_new"
     target_comments_per_message: int = Field(default=10, ge=1, le=1000)
     comment_count_jitter: float = Field(default=0.3, ge=0, le=1)
+    max_total_comments: int = Field(default=80, ge=1, le=100000)
+    max_total_comments_jitter: float = Field(default=0.3, ge=0, le=1)
     comment_mode: Literal["comment", "reply", "mixed"] = "comment"
     reply_to_message_ids: list[int] = Field(default_factory=list)
     reply_min_per_message: int = Field(default=0, ge=0)
@@ -557,6 +559,8 @@ class TaskSettingsUpdate(TaskUpdate):
 
     target_comments_per_message: int | None = Field(default=None, ge=1, le=1000)
     comment_count_jitter: float | None = Field(default=None, ge=0, le=1)
+    max_total_comments: int | None = Field(default=None, ge=1, le=100000)
+    max_total_comments_jitter: float | None = Field(default=None, ge=0, le=1)
     comment_mode: Literal["comment", "reply", "mixed"] | None = None
     reply_to_message_ids: list[int] | None = None
     reply_min_per_message: int | None = Field(default=None, ge=0)

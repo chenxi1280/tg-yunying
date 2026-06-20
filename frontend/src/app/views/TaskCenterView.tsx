@@ -661,6 +661,8 @@ export default function TaskCenterView({
       require_review: false,
     };
     if (values.target_comments_per_message != null) payload.target_comments_per_message = values.target_comments_per_message;
+    if (values.max_total_comments != null) payload.max_total_comments = values.max_total_comments;
+    if (values.max_total_comments_jitter != null) payload.max_total_comments_jitter = values.max_total_comments_jitter;
     if (values.max_comments_per_account_per_hour != null) payload.max_comments_per_account_per_hour = values.max_comments_per_account_per_hour;
     return payload;
   }

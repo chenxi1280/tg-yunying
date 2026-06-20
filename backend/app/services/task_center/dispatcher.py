@@ -36,6 +36,7 @@ from .account_pool import account_matches_current_shard, current_account_shard, 
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group
 from .executors.common import quantity_jitter_bounds
+from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
 from .payloads import DeleteMessagePayload, EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
@@ -1939,6 +1940,9 @@ def _dispatch_like(action: Action, account: TgAccount, credentials, session: Ses
 
 
 def _dispatch_comment(action: Action, account: TgAccount, credentials, session: Session, payload: PostCommentPayload) -> bool:
+    if _comment_total_limit_reached(session, action):
+        _skip(action, "comment_task_total_reached", "频道评论任务总上限已达到，跳过旧计划")
+        return True
     if _comment_success_limit_reached(session, action, payload):
         _skip(action, "comment_target_reached", "频道消息评论已达到当前上限，跳过旧计划")
         return True
@@ -1956,6 +1960,16 @@ def _dispatch_comment(action: Action, account: TgAccount, credentials, session: 
     result = gateway.reply_channel_message(account_id, channel_peer, message_id, content, session_ciphertext, credentials, reply_to_message_id=payload.reply_to_message_id)
     _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
     return True
+
+
+def _comment_total_limit_reached(session: Session, action: Action) -> bool:
+    task = session.get(Task, action.task_id)
+    if not task or task.type != "channel_comment":
+        return False
+    config = task.type_config if isinstance(task.type_config, dict) else {}
+    limit = _resolved_total_comment_limit(task, config)
+    used = _total_comment_action_count(session, task, exclude_action_id=action.id)
+    return used >= limit
 
 
 def _comment_success_limit_reached(session: Session, action: Action, payload: PostCommentPayload) -> bool:

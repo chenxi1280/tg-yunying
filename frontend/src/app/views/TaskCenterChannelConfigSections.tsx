@@ -46,10 +46,11 @@ export function ChannelCommentTypeConfig({ replyMinPerMessageRules, ruleFields }
     <Space direction="vertical" style={{ width: '100%' }}>
       <div style={{ gridColumn: '1 / -1' }}>
         <Alert type="info" showIcon message="AI 评论会按绑定规则集逐条做输出校验，单条失败不会废弃整批评论。" />
-        <Alert type="info" showIcon message="小时上限控制总量；每条评论/回复是累计目标，系统按差额补计划。" />
+        <Alert type="info" showIcon message="任务总评论上限控制生命周期总量；每条评论/回复是单条消息累计目标；小时上限只控制发送节奏。" />
       </div>
       <div className="form-grid">
         <div style={{ gridColumn: '1 / -1' }}>{ruleFields}</div>
+        <Form.Item name="max_total_comments" label="任务总评论上限"><InputNumber min={1} max={100000} /></Form.Item>
         <Form.Item name="target_comments_per_message" label="预计每条评论/回复"><InputNumber min={1} /></Form.Item>
         <Form.Item name="reply_min_per_message" label="每条最少引用回复数" dependencies={['target_comments_per_message']} rules={replyMinPerMessageRules}><InputNumber min={0} /></Form.Item>
         <Form.Item name="comment_style" label="评论方向"><Select options={[{ value: 'mixed', label: '混合' }, { value: 'relevant', label: '相关' }, { value: 'question', label: '提问' }, { value: 'praise', label: '正向' }, { value: 'discussion', label: '讨论' }]} /></Form.Item>
@@ -88,6 +89,7 @@ function ChannelCommentAdvancedFields() {
   return (
     <div className="form-grid">
       <Form.Item name="max_comments_per_account_per_hour" label="每号每小时评论上限"><InputNumber min={1} /></Form.Item>
+      <Form.Item name="max_total_comments_jitter" label="总评论上限随机抖动"><InputNumber min={0} max={1} step={0.01} /></Form.Item>
       <Form.Item name="system_prompt_override" label="System Prompt 覆盖"><Input.TextArea rows={3} /></Form.Item>
       <Form.Item name="max_comment_length" label="最大评论长度"><InputNumber min={1} /></Form.Item>
     </div>

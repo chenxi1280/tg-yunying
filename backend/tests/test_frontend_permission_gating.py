@@ -270,6 +270,8 @@ def test_task_center_applies_ai_limit_recommendations_without_overwriting_manual
     assert "max_actions_per_hour" in source
     assert "messages_per_round" in source
     assert "target_comments_per_message" in source
+    assert "max_total_comments" in source
+    assert "max_total_comments_jitter" in source
     assert "max_comments_per_account_per_hour" in source
     assert "推荐数量" in wizard
     assert "recommended_limits" in wizard

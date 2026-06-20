@@ -195,6 +195,8 @@ TYPE_SETTINGS_FIELDS = {
     "channel_comment": {
         "target_comments_per_message",
         "comment_count_jitter",
+        "max_total_comments",
+        "max_total_comments_jitter",
         "comment_mode",
         "reply_to_message_ids",
         "reply_min_per_message",

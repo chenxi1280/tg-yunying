@@ -21,9 +21,12 @@ from .common import add_tokens, adjust_for_account_hour_limit, channel_message_a
 
 CHANNEL_COMMENT_SCENE = "channel_comment"
 MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE = 4
+DEFAULT_MAX_TOTAL_COMMENTS = 80
+DEFAULT_MAX_TOTAL_COMMENTS_JITTER = 0.3
 PROFILE_SYNCED_STATUS = "已同步"
 COMMENT_ACCOUNT_PROFILE_ERROR = "评论账号资料未初始化，请先在账号中心批量初始化中文昵称、username 和头像"
 CURRENT_HOUR_BUDGET_STATUSES = ("pending", "claiming", "executing", "success")
+TOTAL_BUDGET_STATUSES = ("pending", "claiming", "executing", "success", "unknown_after_send")
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -66,6 +69,10 @@ def build_plan(session: Session, task: Task) -> int:
         task.last_error = COMMENT_ACCOUNT_PROFILE_ERROR if ready_accounts else "没有可用账号，等待账号恢复后继续执行"
         return 0
     coverage_remaining = daily_uncovered_account_count(session, task.id, ("post_comment",), accounts)
+    total_remaining = _remaining_total_comment_budget(session, task, config)
+    if total_remaining <= 0:
+        task.last_error = "任务评论总上限已达到，停止继续规划"
+        return 0
     actions: list[tuple[ChannelMessage, str, dict | None]] = []
     reply_min_by_message: dict[int, int] = {}
     requested_reply_targets = [int(item) for item in config.get("reply_to_message_ids") or [] if int(item or 0) > 0]
@@ -81,6 +88,7 @@ def build_plan(session: Session, task: Task) -> int:
         config,
         messages,
         daily_coverage_min_total=coverage_remaining,
+        total_remaining=total_remaining,
     ):
         if rule_version:
             context_text = "\n".join(
@@ -242,6 +250,7 @@ def _message_comment_quantities(
     messages: list[ChannelMessage],
     *,
     daily_coverage_min_total: int = 0,
+    total_remaining: int | None = None,
 ) -> list[tuple[ChannelMessage, int]]:
     managed_usernames = _tenant_account_usernames(session, task.tenant_id)
     deficits = [_message_comment_deficit(session, task, config, message, managed_usernames) for message in messages]
@@ -249,9 +258,45 @@ def _message_comment_quantities(
     deficits = _apply_daily_coverage_minimum(deficits, coverage_floor)
     hour_limit = _task_hour_limit(task)
     budget = _remaining_current_hour_budget(session, task, hour_limit)
-    quantities = allocate_message_budget(deficits, budget) if hour_limit > 0 else deficits
+    if total_remaining is not None:
+        total_budget = max(0, int(total_remaining or 0))
+        budget = min(budget, total_budget) if hour_limit > 0 else total_budget
+    quantities = allocate_message_budget(deficits, budget) if hour_limit > 0 or total_remaining is not None else deficits
     capped = [min(quantity, MAX_COMMENT_GENERATION_BATCH_PER_MESSAGE) for quantity in quantities]
     return list(zip(messages, capped, strict=False))
+
+
+def _remaining_total_comment_budget(session: Session, task: Task, config: dict) -> int:
+    limit = _resolved_total_comment_limit(task, config)
+    used = _total_comment_action_count(session, task)
+    return max(0, limit - used)
+
+
+def _resolved_total_comment_limit(task: Task, config: dict) -> int:
+    stats = dict(task.stats or {})
+    existing = int(stats.get("max_total_comments_resolved") or 0)
+    if existing > 0:
+        return existing
+    base = max(1, int(config.get("max_total_comments") or DEFAULT_MAX_TOTAL_COMMENTS))
+    jitter_config = config.get("max_total_comments_jitter")
+    jitter = float(DEFAULT_MAX_TOTAL_COMMENTS_JITTER if jitter_config is None else jitter_config)
+    resolved = quantity_with_jitter(base, jitter)
+    stats["max_total_comments_resolved"] = resolved
+    task.stats = stats
+    return resolved
+
+
+def _total_comment_action_count(session: Session, task: Task, *, exclude_action_id: str | None = None) -> int:
+    stmt = select(func.count(Action.id)).where(
+        Action.tenant_id == task.tenant_id,
+        Action.task_id == task.id,
+        Action.task_type == "channel_comment",
+        Action.action_type == "post_comment",
+        Action.status.in_(TOTAL_BUDGET_STATUSES),
+    )
+    if exclude_action_id:
+        stmt = stmt.where(Action.id != exclude_action_id)
+    return int(session.scalar(stmt) or 0)
 
 
 def _task_hour_limit(task: Task) -> int:

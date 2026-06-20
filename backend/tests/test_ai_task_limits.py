@@ -31,6 +31,7 @@ from app.schemas import (
 )
 from app.services.content_filters import ContentFilterResult
 from app.services.task_center import dispatcher
+from app.services.task_center.executors import channel_comment
 from app.services.task_center.ai_generator import AiGenerationUnavailable, generate_group_reply_messages
 from app.services.task_center.channel_membership import gate_channel_membership
 from app.services.task_center.dispatcher import claim_actions, dispatch_action
@@ -240,6 +241,78 @@ def test_reply_minimum_schema_fields_are_explicit_and_bounded():
             assert expected_field in str(exc)
         else:
             raise AssertionError(f"{expected_field} should be bounded by the total count")
+
+
+def test_channel_comment_schema_defaults_task_total_limit_with_jitter():
+    payload = ChannelCommentTaskCreate(name="默认总上限评论", target_channel_id=31)
+
+    assert payload.max_total_comments == 80
+    assert payload.max_total_comments_jitter == 0.3
+
+
+def test_channel_comment_legacy_config_uses_default_total_limit_jitter(monkeypatch):
+    captured: dict[str, float] = {}
+
+    def fake_quantity_with_jitter(quantity: int, jitter_ratio: float):
+        captured["quantity"] = quantity
+        captured["jitter_ratio"] = jitter_ratio
+        return 91
+
+    monkeypatch.setattr(channel_comment, "quantity_with_jitter", fake_quantity_with_jitter)
+    task = Task(id="legacy-comment-limit", tenant_id=1, name="旧评论任务", type="channel_comment", status="running", stats={})
+
+    resolved = channel_comment._resolved_total_comment_limit(task, {})
+
+    assert resolved == 91
+    assert captured == {"quantity": 80, "jitter_ratio": 0.3}
+    assert task.stats["max_total_comments_resolved"] == 91
+
+
+def test_channel_comment_planner_respects_task_total_comment_limit(monkeypatch):
+    def fake_generate_channel_comments(_session, _tenant_id, _config, *, count, message_content, target_label):
+        return [f"{message_content} 新评论 {index}" for index in range(count)], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.channel_comment.generate_channel_comments", fake_generate_channel_comments)
+    with _session() as session:
+        _add_tenant(session)
+        _add_channel(session, message_count=3, account_count=120)
+        task = _add_comment_task(session)
+        task.pacing_config = {
+            "mode": "fixed",
+            "max_actions_per_hour": 100,
+            "interval_seconds_min": 0,
+            "interval_seconds_max": 0,
+            "jitter_percent": 0,
+        }
+        task.type_config = {
+            **task.type_config,
+            "message_ids": [41, 42, 43],
+            "target_comments_per_message": 100,
+            "max_total_comments": 80,
+            "max_total_comments_jitter": 0,
+        }
+        session.add_all(
+            Action(
+                id=f"existing-total-comment-{index}",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="channel_comment",
+                action_type="post_comment",
+                account_id=101 + index,
+                status="success",
+                scheduled_at=NOW,
+                executed_at=NOW,
+                payload={"channel_message_id": 41 + (index % 3), "message_id": 9001 + (index % 3)},
+            )
+            for index in range(78)
+        )
+        session.commit()
+
+        created = build_channel_comment_plan(session, task)
+        total_actions = session.scalar(select(func.count(Action.id)).where(Action.task_id == task.id))
+
+    assert created == 2
+    assert total_actions == 80
 
 
 def test_group_reply_generation_does_not_fallback_without_ai_provider():
@@ -974,7 +1047,7 @@ def test_channel_comment_planner_uses_remaining_current_hour_budget(monkeypatch)
             "interval_seconds_max": 0,
             "jitter_percent": 0,
         }
-        task.type_config = {**task.type_config, "target_comments_per_message": 100}
+        task.type_config = {**task.type_config, "target_comments_per_message": 100, "max_total_comments": 1000, "max_total_comments_jitter": 0}
         existing_actions = [
             Action(
                 id=f"existing-current-hour-comment-{index}",
