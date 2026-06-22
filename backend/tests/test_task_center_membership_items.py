@@ -345,7 +345,7 @@ def test_membership_items_filtered_page_does_not_build_all_rows(monkeypatch) -> 
 
     assert total == 40
     assert len(rows) == 10
-    assert rows[0]["account_id"] == 90
+    assert rows[0]["account_id"] == 33
 
 
 def test_task_detail_is_read_only_summary_without_heavy_rows() -> None:

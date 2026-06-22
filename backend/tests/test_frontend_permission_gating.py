@@ -323,7 +323,7 @@ def test_task_center_membership_items_support_server_side_filters():
 def test_task_detail_opens_before_membership_page_load():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     membership_loader = source[source.index("async function loadMembershipForDetail"):source.index("\n  async function loadDetail")]
-    load_detail = source[source.index("async function loadDetail"):source.index("\n  async function fetchMembershipItems")]
+    load_detail = source[source.index("async function loadDetail(task"):source.index("\n  async function fetchMembershipItems")]
 
     assert "setDetail(taskDetail)" in load_detail
     assert load_detail.index("setDetail(taskDetail)") < load_detail.index("loadMembershipForDetail")

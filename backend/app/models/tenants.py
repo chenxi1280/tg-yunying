@@ -22,7 +22,7 @@ class Tenant(Base):
     admin_chat_id: Mapped[str] = mapped_column(String(120), default="")
     notify_ai_failures_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     group_rescue_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    group_rescue_admin_account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
+    group_rescue_admin_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     group_rescue_bot_username: Mapped[str] = mapped_column(String(120), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 

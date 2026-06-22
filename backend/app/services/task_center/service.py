@@ -294,10 +294,10 @@ def refresh_task_detail_stats(session: Session, tenant_id: int, task_id: str) ->
 
 
 def _task_summary_detail(session: Session, tenant_id: int, task: Task) -> dict[str, Any]:
-    stats = _stats_with_account_coverage(session, task, task.stats or empty_stats())
     task_summary = session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id, TaskRuntimeSummary.task_id == task.id))
     operation_plan_links = list(session.scalars(select(OperationPlanTaskLink).where(OperationPlanTaskLink.tenant_id == tenant_id, OperationPlanTaskLink.task_id == task.id)))
     membership_phase = _summary_membership_phase(session, task)
+    stats = _stats_with_account_coverage(session, task, _summary_stats(task, membership_phase))
     admission_phase = membership_admission_summary(session, task)
     task_payload = _task_payload(session, task, actions=[], include_detail_search=False)
     task_payload["runtime_stage"] = derive_task_runtime_stage(task, actions=[], membership_phase=membership_phase, summary=task_summary)
@@ -327,6 +327,25 @@ def _summary_membership_phase(session: Session, task: Task) -> dict[str, Any]:
     if stats and any(key.startswith("membership_") for key in stats):
         return _membership_phase(task, None)
     return _lightweight_membership_phase(session, task)
+
+
+def _summary_stats(task: Task, membership_phase: dict[str, Any]) -> dict[str, Any]:
+    stats = dict(task.stats or empty_stats())
+    if int(stats.get("total_actions") or 0) > 0:
+        return stats
+    total = int((membership_phase.get("summary") or {}).get("action_count") or 0)
+    if total <= 0:
+        return stats
+    stats.update(
+        {
+            "total_actions": total,
+            "success_count": int(membership_phase.get("success_count") or 0),
+            "failure_count": int(membership_phase.get("failed_count") or 0),
+            "pending_count": int(membership_phase.get("pending_account_count") or 0),
+            "executing_count": int(membership_phase.get("running_count") or 0),
+        }
+    )
+    return stats
 
 
 def _lightweight_membership_phase(session: Session, task: Task) -> dict[str, Any]:
@@ -863,7 +882,7 @@ def _list_membership_actions_page(
         session.scalars(
             select(Action)
             .where(*filters)
-            .order_by(Action.scheduled_at.desc(), Action.created_at.desc(), Action.account_id.asc())
+            .order_by(Action.scheduled_at.desc(), Action.account_id.asc(), Action.created_at.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         )

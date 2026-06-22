@@ -29,7 +29,6 @@ def upgrade() -> None:
         op.add_column("tenants", sa.Column("group_rescue_enabled", sa.Boolean(), nullable=False, server_default=sa.false()))
     if not _has_column("tenants", "group_rescue_admin_account_id"):
         op.add_column("tenants", sa.Column("group_rescue_admin_account_id", sa.Integer(), nullable=True))
-        op.create_foreign_key("fk_tenants_group_rescue_admin_account", "tenants", "tg_accounts", ["group_rescue_admin_account_id"], ["id"])
     if not _has_column("tenants", "group_rescue_bot_username"):
         op.add_column("tenants", sa.Column("group_rescue_bot_username", sa.String(length=120), nullable=False, server_default=""))
     if not _has_column("task_membership_admission_items", "permission_failure_count"):
@@ -55,7 +54,6 @@ def downgrade() -> None:
     if _has_column("tenants", "group_rescue_bot_username"):
         op.drop_column("tenants", "group_rescue_bot_username")
     if _has_column("tenants", "group_rescue_admin_account_id"):
-        op.drop_constraint("fk_tenants_group_rescue_admin_account", "tenants", type_="foreignkey")
         op.drop_column("tenants", "group_rescue_admin_account_id")
     if _has_column("tenants", "group_rescue_enabled"):
         op.drop_column("tenants", "group_rescue_enabled")
