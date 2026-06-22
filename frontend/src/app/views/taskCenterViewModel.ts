@@ -136,6 +136,21 @@ export function hardHourlyStats(task?: TaskCenterTask | null): TaskCenterStats |
   return enabled ? stats : null;
 }
 
+export function accountCoverageLabel(value?: TaskCenterTask | TaskCenterStats | null): string {
+  const stats = taskOrStats(value);
+  const coverage = stats?.account_coverage;
+  if (!coverage || Number(coverage.eligible_count ?? 0) <= 0) return '账号覆盖 -';
+  const covered = Number(coverage.covered_count ?? 0);
+  const eligible = Number(coverage.eligible_count ?? 0);
+  const percent = Number(coverage.coverage_percent ?? 0);
+  return `账号覆盖 ${covered}/${eligible}，${percent}%`;
+}
+
+function taskOrStats(value?: TaskCenterTask | TaskCenterStats | null): TaskCenterStats | null {
+  if (!value) return null;
+  return 'stats' in value ? value.stats : value;
+}
+
 export function errorMessage(error: unknown) {
   if (error instanceof ApiError) {
     if (error.status === 408) {

@@ -15,6 +15,7 @@ import {
   TYPE_LABEL,
   WIZARD_STEPS,
   accountDisplay,
+  accountCoverageLabel,
   actionContent,
   actionLabel,
   actionResult,
@@ -62,6 +63,13 @@ function TaskStatusBadge({ task, status }: { task?: TaskCenterTask; status?: str
 
 function ActionStatusBadge({ status }: { status?: string | null }) {
   return <StatusBadge status={status} label={actionStatusLabel(status)} />;
+}
+
+function localAccountCoverageLabel(actions: Array<{ account_id: number | null }>, total?: number | null): string {
+  const accountIds = actions.map((action) => action.account_id).filter((accountId): accountId is number => Boolean(accountId));
+  const covered = new Set(accountIds).size;
+  const expected = Number(total || actions.length || 0);
+  return expected > 0 ? `${covered}/${expected}` : '-';
 }
 
 function HardHourlyTaskSummary({ task }: { task: TaskCenterTask }) {
@@ -139,6 +147,7 @@ const TASK_CREATE_TIMEOUT_MS = 120_000;
 const MEMBERSHIP_PAGE_SIZE = 20;
 const TASK_GROUP_SELECT_WIDTH = 360;
 const TASK_GROUP_DROPDOWN_WIDTH = 480;
+const TASK_FORM_ACCOUNT_PAGE_SIZE = 200;
 const DEFAULT_MEMBERSHIP_FILTERS: MembershipFilters = { phase: 'all', manualRequired: 'all' };
 const GROUP_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'messages_per_round'];
 const COMMENT_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'target_comments_per_message', 'max_comments_per_account_per_hour'];
@@ -210,6 +219,9 @@ export default function TaskCenterView({
   const [messages, setMessages] = React.useState<ChannelMessage[]>([]);
   const [comments, setComments] = React.useState<ChannelMessageComment[]>([]);
   const [ruleSets, setRuleSets] = React.useState<RuleSet[]>([]);
+  const [taskAccounts, setTaskAccounts] = React.useState<Account[]>(accounts);
+  const [taskAccountPools, setTaskAccountPools] = React.useState<AccountPool[]>(accountPools);
+  const [taskPromptTemplates, setTaskPromptTemplates] = React.useState<PromptTemplate[]>(promptTemplates);
   const [schedulingSetting, setSchedulingSetting] = React.useState<SchedulingSetting | null>(null);
   const [detail, setDetail] = React.useState<TaskCenterDetail | null>(null);
   const [loading, setLoading] = React.useState(false);
@@ -248,8 +260,20 @@ export default function TaskCenterView({
   const targetChannelId = Form.useWatch('target_channel_id', form);
   const channelTargets = targets.filter((target) => target.target_type === 'channel');
   const groupTargets = targets.filter((target) => target.target_type === 'group');
-  const slangTemplates = promptTemplates.filter((template) => normalizePromptTemplateType(template.template_type) === 'AI黑话词表' && template.is_active);
+  const slangTemplates = taskPromptTemplates.filter((template) => normalizePromptTemplateType(template.template_type) === 'AI黑话词表' && template.is_active);
   const defaultSlangTemplateId = slangTemplates[0]?.id ?? null;
+
+  React.useEffect(() => {
+    if (accounts.length) setTaskAccounts(accounts);
+  }, [accounts]);
+
+  React.useEffect(() => {
+    if (accountPools.length) setTaskAccountPools(accountPools);
+  }, [accountPools]);
+
+  React.useEffect(() => {
+    if (promptTemplates.length) setTaskPromptTemplates(promptTemplates);
+  }, [promptTemplates]);
 
   async function load(nextTaskTypeFilter: TaskTypeFilter = taskTypeFilter) {
     const params = new URLSearchParams();
@@ -296,6 +320,35 @@ export default function TaskCenterView({
     return ruleSetData;
   }
 
+  function taskAccountListPath(page: number): string {
+    const params = new URLSearchParams({ page: String(page), page_size: String(TASK_FORM_ACCOUNT_PAGE_SIZE) });
+    return `/tg-accounts?${params.toString()}`;
+  }
+
+  async function loadTaskFormAccounts(): Promise<Account[]> {
+    const loaded: Account[] = [];
+    for (let page = 1; ; page += 1) {
+      const rows = await api<Account[]>(taskAccountListPath(page));
+      loaded.push(...rows);
+      if (rows.length < TASK_FORM_ACCOUNT_PAGE_SIZE) return loaded;
+    }
+  }
+
+  async function ensureAccounts() {
+    if (taskAccounts.length && taskAccountPools.length) return;
+    const [nextAccounts, nextPools] = await Promise.all([
+      taskAccounts.length ? taskAccounts : loadTaskFormAccounts(),
+      taskAccountPools.length ? taskAccountPools : api<AccountPool[]>('/account-pools'),
+    ]);
+    setTaskAccounts(nextAccounts);
+    setTaskAccountPools(nextPools);
+  }
+
+  async function ensurePromptTemplates() {
+    if (taskPromptTemplates.length) return;
+    setTaskPromptTemplates(await api<PromptTemplate[]>('/prompt-templates'));
+  }
+
   function applyDefaultRuleSet(loadedRuleSets: RuleSet[], type: TaskCenterTaskType = taskType) {
     const current = form.getFieldsValue(['rule_set_id', 'rule_set_version_id']);
     if (current.rule_set_id || current.rule_set_version_id) return;
@@ -306,7 +359,7 @@ export default function TaskCenterView({
   async function ensureTaskFormData(type: TaskCenterTaskType) {
     setSupportLoading(true);
     try {
-      const requests: Array<Promise<unknown>> = [ensureTargets()];
+      const requests: Array<Promise<unknown>> = [ensureTargets(), ensureAccounts(), ensurePromptTemplates()];
       if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(type)) requests.push(ensureRuleSets());
       if (type.startsWith('channel_')) requests.push(ensureMessages());
       if (type === 'channel_comment') requests.push(ensureComments());
@@ -1256,6 +1309,7 @@ export default function TaskCenterView({
       render: (_, task) => (
         <Space direction="vertical" size={0}>
           <Typography.Text>{task.stats?.success_count ?? 0}/{task.stats?.total_actions ?? 0} 成功，{task.stats?.failure_count ?? 0} 失败</Typography.Text>
+          <Typography.Text type="secondary">{accountCoverageLabel(task)}</Typography.Text>
           <HardHourlyTaskSummary task={task} />
           <MembershipTaskSummary task={task} />
         </Space>
@@ -1353,6 +1407,7 @@ export default function TaskCenterView({
     { title: '失败', dataIndex: 'failed_count', width: 80 },
     { title: '重复', dataIndex: 'duplicate_count', width: 80 },
     { title: '运行中', dataIndex: 'running_count', width: 90 },
+    { title: '账号覆盖', key: 'account_coverage', width: 100, render: (_, item) => localAccountCoverageLabel(item.actions, item.target_count) },
     { title: '缺口', dataIndex: 'capacity_shortfall', width: 80 },
     { title: '状态', dataIndex: 'subtask_status', width: 100, render: (value) => <TaskStatusBadge status={value} /> },
     { title: '账号', key: 'accounts', width: 220, render: (_, item) => Array.from(new Set(item.actions.map((action) => accountDisplay(detail, action.account_id)).filter(Boolean))).join('、') || '-' },
@@ -1366,6 +1421,7 @@ export default function TaskCenterView({
     { title: '成功', key: 'success', width: 80, render: (_, item) => item.stats.success ?? 0 },
     { title: '失败', key: 'failed', width: 80, render: (_, item) => item.stats.failed ?? 0 },
     { title: '运行中', key: 'pending', width: 90, render: (_, item) => (item.stats.pending ?? 0) + (item.stats.executing ?? 0) },
+    { title: '账号覆盖', key: 'account_coverage', width: 100, render: (_, item) => localAccountCoverageLabel(item.turns, item.stats.total ?? item.turns.length) },
   ];
 
   const aiTurnColumns: ColumnsType<TaskCenterDetail['ai_cycles'][number]['turns'][number]> = [
@@ -1534,7 +1590,7 @@ export default function TaskCenterView({
           {wizardStep === 2 && <WizardTypeConfig taskType={taskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={[]} targetChannelId={targetChannelId} messageScope={messageScope} messageIds={messageIds} />}
           {wizardStep === 3 && (
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
-              <WizardAccounts accountMode={accountMode} accounts={accounts} accountPools={accountPools} taskType={taskType} />
+              <WizardAccounts accountMode={accountMode} accounts={taskAccounts} accountPools={taskAccountPools} taskType={taskType} />
               <WizardOperationProfile form={form} values={formValues} taskType={taskType} />
               <Collapse
                 ghost
@@ -1554,7 +1610,7 @@ export default function TaskCenterView({
               />
             </Space>
           )}
-          {wizardStep === 4 && <WizardReview taskType={taskType} values={formValues} accounts={accounts} accountPools={accountPools} targets={targets} ruleSets={ruleSets} slangTemplates={slangTemplates} precheck={precheck} loading={precheckLoading} />}
+          {wizardStep === 4 && <WizardReview taskType={taskType} values={formValues} accounts={taskAccounts} accountPools={taskAccountPools} targets={targets} ruleSets={ruleSets} slangTemplates={slangTemplates} precheck={precheck} loading={precheckLoading} />}
           <Space className="modal-actions">
             <Button onClick={() => setModalOpen(false)}>取消</Button>
             <Button disabled={wizardStep === 0} onClick={() => setWizardStep((value) => Math.max(value - 1, 0))}>上一步</Button>
@@ -1583,7 +1639,7 @@ export default function TaskCenterView({
           <Typography.Title level={5}>类型参数</Typography.Title>
           <WizardTypeConfig taskType={(detail && !isSystemTask(detail.task) ? detail.task.type : taskType) as TaskCenterTaskType} ruleSets={ruleSets} slangTemplates={slangTemplates} comments={comments} relaySourceOptions={relaySourceOptions(detail)} targetChannelId={editTargetChannelId} messageScope={editMessageScope} messageIds={editMessageIds} />
           <Typography.Title level={5}>账号选择</Typography.Title>
-          <WizardAccounts accountMode={editAccountMode} accounts={accounts} accountPools={accountPools} taskType={editableTaskType} />
+          <WizardAccounts accountMode={editAccountMode} accounts={taskAccounts} accountPools={taskAccountPools} taskType={editableTaskType} />
           <Typography.Title level={5}>节奏策略</Typography.Title>
           <WizardOperationProfile form={editForm} values={editFormValues} taskType={editableTaskType} />
           {editShowsAiLimitRecommendation && (

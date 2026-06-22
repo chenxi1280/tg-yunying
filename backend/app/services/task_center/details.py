@@ -13,11 +13,13 @@ from .executors.group_ai_chat import account_profile_summaries
 from .executors.group_relay import relay_source_filter_reason
 from .fingerprints import content_fingerprint
 from .membership_recovery import classify_membership_recovery
+from .account_pool import task_account_coverage
 from app.services.task_runtime_stage import derive_task_runtime_stage
 
 
 def _task_payload(session: Session, task: Task, actions: list[Action] | None = None, *, include_detail_search: bool = True) -> dict[str, Any]:
     target_summary = _target_summary(session, task)
+    stats = _stats_with_account_coverage(session, task, task.stats or {})
     search_parts = [
         task.id,
         task.name,
@@ -58,13 +60,21 @@ def _task_payload(session: Session, task: Task, actions: list[Action] | None = N
         "pacing_config": task.pacing_config or {},
         "failure_policy": task.failure_policy or {},
         "type_config": task.type_config or {},
-        "stats": task.stats or {},
+        "stats": stats,
         "runtime_stage": derive_task_runtime_stage(task, actions=actions),
         "target_summary": target_summary,
         "search_text": " ".join(str(item) for item in search_parts if item),
         "created_at": task.created_at,
         "updated_at": task.updated_at,
     }
+
+
+def _stats_with_account_coverage(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, Any]:
+    result = dict(stats or {})
+    coverage = task_account_coverage(session, task)
+    if coverage:
+        result["account_coverage"] = coverage
+    return result
 
 
 def _target_summary(session: Session, task: Task) -> str:

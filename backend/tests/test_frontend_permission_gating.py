@@ -487,6 +487,60 @@ def test_usage_reports_show_account_pool_login_drop_rates():
     assert "登录问题账号" in source
 
 
+def test_app_snapshot_loads_only_current_view_resources():
+    refresh = (PROJECT_ROOT / "frontend/src/app/context/refresh.ts").read_text()
+    context = (PROJECT_ROOT / "frontend/src/app/context.tsx").read_text()
+
+    assert "const VIEW_RESOURCE_LOADERS" in refresh
+    assert "loadAccountsForPool(selectedPoolId)" not in refresh
+    assert "api<AuditLog[]>(auditQuery(auditFilters))" not in refresh
+    assert "api<ArchiveItem[]>('/archives')" not in refresh
+    assert "api<MessageTask[]>(`/message-send-tasks" not in refresh
+    assert "api<AiProvider[]>('/ai-providers')" not in refresh
+    assert "api<PromptTemplate[]>('/prompt-templates')" not in refresh
+    assert "api<TenantAiSetting>('/tenant-ai-settings')" not in refresh
+    assert "VIEW_RESOURCE_LOADERS[activeView]" in refresh
+    assert "}, [token, activeView, taskStatusFilter, selectedPoolId]);" in context
+
+
+def test_account_availability_summary_is_account_page_scoped():
+    accounts_view = (PROJECT_ROOT / "frontend/src/app/views/AccountsView.tsx").read_text()
+    refresh = (PROJECT_ROOT / "frontend/src/app/context/refresh.ts").read_text()
+
+    assert "if (!accounts.length) return;" in accounts_view
+    assert "const accountIds = accounts.map((account) => account.id).join(',');" in accounts_view
+    assert "}, [accountIds]);" in accounts_view
+    assert "'/tg-accounts/availability/summary'" not in refresh
+
+
+def test_task_center_loads_account_support_data_only_for_forms():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    refresh = (PROJECT_ROOT / "frontend/src/app/context/refresh.ts").read_text()
+
+    assert "async function ensureAccounts()" in source
+    assert "async function ensurePromptTemplates()" in source
+    assert "loadTaskFormAccounts()" in source
+    assert "ensureTargets(), ensureAccounts(), ensurePromptTemplates()" in source
+    assert "accounts={taskAccounts}" in source
+    assert "accountPools={taskAccountPools}" in source
+    assert "const [taskPromptTemplates, setTaskPromptTemplates]" in source
+    assert "taskManagement: async () => ({})" in refresh
+    assert "async function loadTaskPage" not in refresh
+    assert "loadAccountList(context.selectedPoolId)" not in refresh[refresh.index("const VIEW_RESOURCE_LOADERS"):]
+    assert "loadPromptTemplates()" not in refresh[refresh.index("const VIEW_RESOURCE_LOADERS"):]
+
+
+def test_core_pages_document_query_optimization_contract():
+    prd = (PROJECT_ROOT / "docs/tg-ops-platform-prd.md").read_text()
+    design = (PROJECT_ROOT / "docs/product-design.md").read_text()
+
+    for source in (prd, design):
+        assert "页面数据加载契约" in source
+        assert "当前页面必要数据" in source
+        assert "请求数减少至少 50%" in source
+        assert "按需下钻" in source
+
+
 def test_materials_view_exposes_prd_detail_preview_usage_and_cache_actions():
     source = (PROJECT_ROOT / "frontend/src/app/views/MaterialsView.tsx").read_text()
 
@@ -943,6 +997,20 @@ def test_task_center_list_groups_by_target_group_and_channel():
     assert "Table<TaskCenterTask>" in source
     assert "目标群聊" in source
     assert "关联频道" in source
+
+
+def test_task_center_shows_account_coverage_for_active_tasks():
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    modal = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+
+    assert "accountCoverageLabel" in view
+    assert "账号覆盖" in view
+    assert "今日账号参与覆盖" in modal
+    assert "export type TaskAccountCoverage" in types
+    assert "account_coverage?: TaskAccountCoverage" in types
+    assert "covered_count" in view_model
 
 
 def test_task_center_hides_delete_for_account_security_system_tasks():

@@ -50,7 +50,7 @@ from .channel_membership import (
 )
 from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims, recover_expired_hard_hourly_actions
 from .executors import build_task_plan
-from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _membership_accounts, _membership_items, _membership_phase, _message_groups, _relay_batches, _relay_recent_sources, _task_payload
+from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _membership_accounts, _membership_items, _membership_phase, _message_groups, _relay_batches, _relay_recent_sources, _stats_with_account_coverage, _task_payload
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
@@ -271,7 +271,7 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
         return _lightweight_membership_task_detail(session, tenant_id, task)
     actions = list_actions(session, tenant_id, task_id)
     business_actions = [action for action in actions if action.action_type not in {"ensure_channel_membership", "ensure_target_membership"}]
-    stats = refresh_task_stats(session, task)
+    stats = _stats_with_account_coverage(session, task, refresh_task_stats(session, task))
     task_summary = session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id, TaskRuntimeSummary.task_id == task.id))
     operation_plan_links = list(session.scalars(select(OperationPlanTaskLink).where(OperationPlanTaskLink.tenant_id == tenant_id, OperationPlanTaskLink.task_id == task.id)))
     membership_phase = _membership_phase(task, actions)

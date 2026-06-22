@@ -55,6 +55,14 @@ type ContentResourceSnapshot = {
   contentKeywordRules: ContentKeywordRule[];
 };
 
+type SnapshotPatch = Partial<Omit<AppSnapshot, 'me' | 'runtime'>>;
+type LoaderContext = {
+  me: CurrentUser;
+  selectedPoolId: number | '';
+  taskStatusFilter: string;
+  auditFilters: AuditFilters;
+};
+
 function accountListPath(selectedPoolId: number | '', page: number): string {
   const params = new URLSearchParams({
     page: String(page),
@@ -64,7 +72,7 @@ function accountListPath(selectedPoolId: number | '', page: number): string {
   return `/tg-accounts?${params.toString()}`;
 }
 
-async function loadAccountsForPool(selectedPoolId: number | ''): Promise<Account[]> {
+async function loadAccountList(selectedPoolId: number | ''): Promise<Account[]> {
   const accounts: Account[] = [];
   for (let page = FIRST_ACCOUNT_PAGE; ; page += 1) {
     const rows = await api<Account[]>(accountListPath(selectedPoolId, page));
@@ -86,13 +94,36 @@ export type AppSnapshot = {
   usageSummary: UsageSummary | null;
   aiProviders: AiProvider[];
   promptTemplates: PromptTemplate[];
-  tenantAiSetting: TenantAiSetting;
+  tenantAiSetting: TenantAiSetting | null;
   contentResources: ContentResourceSnapshot | null;
   groups: Group[];
   tasks: MessageTask[];
   archives: ArchiveItem[];
   audits: AuditLog[];
 };
+
+function emptySnapshot(me: CurrentUser, runtime: RuntimeConfig): AppSnapshot {
+  return {
+    me,
+    runtime,
+    overview: {} as Overview,
+    accountPools: [],
+    accounts: [],
+    developerApps: [],
+    tenants: [],
+    adminUsers: [],
+    usageLedgers: [],
+    usageSummary: null,
+    aiProviders: [],
+    promptTemplates: [],
+    tenantAiSetting: null,
+    contentResources: null,
+    groups: [],
+    tasks: [],
+    archives: [],
+    audits: [],
+  };
+}
 
 export async function loadContentResources(): Promise<ContentResourceSnapshot> {
   const results = await Promise.allSettled([
@@ -111,21 +142,104 @@ export async function loadContentResources(): Promise<ContentResourceSnapshot> {
   };
 }
 
-async function loadBaseSnapshotResults(selectedPoolId: number | '', taskStatusFilter: string, auditFilters: AuditFilters) {
-  return Promise.allSettled([
-    api<RuntimeConfig>('/config/runtime'),
-    api<Overview>('/overview'),
+async function loadAccountsPage(context: LoaderContext): Promise<SnapshotPatch> {
+  const [accountPools, accounts] = await Promise.all([
     api<AccountPool[]>('/account-pools'),
-    loadAccountsForPool(selectedPoolId),
-    api<Group[]>('/groups'),
-    api<MessageTask[]>(`/message-send-tasks${taskStatusFilter ? `?status=${encodeURIComponent(taskStatusFilter)}` : ''}`),
-    api<ArchiveItem[]>('/archives'),
-    api<AuditLog[]>(auditQuery(auditFilters)),
-    api<AiProvider[]>('/ai-providers'),
-    api<PromptTemplate[]>('/prompt-templates'),
-    api<TenantAiSetting>('/tenant-ai-settings'),
+    loadAccountList(context.selectedPoolId),
   ]);
+  return { accountPools, accounts };
 }
+
+function messageTaskPath(taskStatusFilter: string): string {
+  return `/message-send-tasks${taskStatusFilter ? `?status=${encodeURIComponent(taskStatusFilter)}` : ''}`;
+}
+
+async function loadMessageTasks(taskStatusFilter: string): Promise<MessageTask[]> {
+  return api<MessageTask[]>(messageTaskPath(taskStatusFilter));
+}
+
+function archiveListPath(): string {
+  return '/archives';
+}
+
+async function loadArchives(): Promise<ArchiveItem[]> {
+  return api<ArchiveItem[]>(archiveListPath());
+}
+
+function aiProvidersPath(): string {
+  return '/ai-providers';
+}
+
+async function loadAiProviders(): Promise<AiProvider[]> {
+  return api<AiProvider[]>(aiProvidersPath());
+}
+
+function promptTemplatesPath(): string {
+  return '/prompt-templates';
+}
+
+async function loadPromptTemplates(): Promise<PromptTemplate[]> {
+  return api<PromptTemplate[]>(promptTemplatesPath());
+}
+
+function tenantAiSettingPath(): string {
+  return '/tenant-ai-settings';
+}
+
+async function loadTenantAiSetting(): Promise<TenantAiSetting> {
+  return api<TenantAiSetting>(tenantAiSettingPath());
+}
+
+async function loadOverviewPage(): Promise<SnapshotPatch> {
+  return { overview: await api<Overview>('/overview') };
+}
+
+async function loadSystemPage(context: LoaderContext): Promise<SnapshotPatch> {
+  const [developerApps, tenants, adminUsers, aiProviders, promptTemplates, tenantAiSetting, contentResources, accounts] = await Promise.all([
+    hasPermission(context.me, 'system.view') ? api<DeveloperApp[]>('/developer-apps').catch(() => []) : [],
+    hasPermission(context.me, 'system.view') ? api<Tenant[]>('/tenants').catch(() => []) : [],
+    hasPermission(context.me, 'permissions.view') ? api<AdminUser[]>('/admin/users').catch(() => []) : [],
+    loadAiProviders().catch(() => []),
+    loadPromptTemplates().catch(() => []),
+    loadTenantAiSetting().catch(() => null),
+    loadContentResources(),
+    loadAccountList(context.selectedPoolId).catch(() => []),
+  ]);
+  return { developerApps, tenants, adminUsers, aiProviders, promptTemplates, tenantAiSetting, contentResources, accounts };
+}
+
+async function loadMessagePage(context: LoaderContext): Promise<SnapshotPatch> {
+  const [accounts, contentResources, tasks] = await Promise.all([
+    loadAccountList(context.selectedPoolId),
+    loadContentResources(),
+    loadMessageTasks(context.taskStatusFilter).catch(() => []),
+  ]);
+  return { accounts, contentResources, tasks };
+}
+
+async function loadGroupPage(): Promise<SnapshotPatch> {
+  const [groups, archives] = await Promise.all([
+    api<Group[]>('/groups').catch(() => []),
+    loadArchives().catch(() => []),
+  ]);
+  return { groups, archives };
+}
+
+async function loadAuditPage(context: LoaderContext): Promise<SnapshotPatch> {
+  return { audits: await api<AuditLog[]>(auditQuery(context.auditFilters)) };
+}
+
+const VIEW_RESOURCE_LOADERS: Record<string, (context: LoaderContext) => Promise<SnapshotPatch>> = {
+  overview: () => loadOverviewPage(),
+  accounts: loadAccountsPage,
+  messageSending: loadMessagePage,
+  materials: async () => ({ contentResources: await loadContentResources() }),
+  groupManagement: () => loadGroupPage(),
+  archives: async () => ({ archives: await loadArchives() }),
+  taskManagement: async () => ({}),
+  systemConfig: loadSystemPage,
+  audits: loadAuditPage,
+};
 
 export async function loadAppSnapshot({
   activeView,
@@ -139,30 +253,8 @@ export async function loadAppSnapshot({
   auditFilters: AuditFilters;
 }): Promise<AppSnapshot> {
   const me = await api<CurrentUser>('/auth/me');
-  const results = await loadBaseSnapshotResults(selectedPoolId, taskStatusFilter, auditFilters);
-  const contentResources = viewNeedsContentResources(activeView) ? await loadContentResources() : null;
-  const developerApps = hasPermission(me, 'system.view') ? await api<DeveloperApp[]>('/developer-apps').catch(() => [] as DeveloperApp[]) : [];
-  const tenants = hasPermission(me, 'system.view') ? await api<Tenant[]>('/tenants').catch(() => [] as Tenant[]) : [];
-  const adminUsers = hasPermission(me, 'permissions.view') ? await api<AdminUser[]>('/admin/users').catch(() => [] as AdminUser[]) : [];
-  if (results[3].status === 'rejected') throw results[3].reason;
-  return {
-    me,
-    runtime: settledValue(results[0], {} as RuntimeConfig),
-    overview: settledValue(results[1], {} as Overview),
-    accountPools: settledValue(results[2], [] as AccountPool[]),
-    accounts: results[3].value,
-    groups: settledValue(results[4], [] as Group[]),
-    tasks: settledValue(results[5], [] as MessageTask[]),
-    archives: settledValue(results[6], [] as ArchiveItem[]),
-    audits: settledValue(results[7], [] as AuditLog[]),
-    aiProviders: settledValue(results[8], [] as AiProvider[]),
-    promptTemplates: settledValue(results[9], [] as PromptTemplate[]),
-    tenantAiSetting: settledValue(results[10], {} as TenantAiSetting),
-    contentResources,
-    developerApps,
-    tenants,
-    adminUsers,
-    usageLedgers: [],
-    usageSummary: null,
-  };
+  const runtime = await api<RuntimeConfig>('/config/runtime').catch(() => ({} as RuntimeConfig));
+  const loader = VIEW_RESOURCE_LOADERS[activeView];
+  const patch = loader ? await loader({ me, selectedPoolId, taskStatusFilter, auditFilters }) : {};
+  return { ...emptySnapshot(me, runtime), ...patch };
 }

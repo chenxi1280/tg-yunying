@@ -5,7 +5,7 @@ import type { HardHourlyRecentBucket, TaskCenterAction, TaskCenterDetail, TaskCe
 import { DetailModal, StatusBadge } from '../components/shared';
 import { parseBeijingDate } from '../time';
 import { API_ORIGIN } from '../../shared/api/client';
-import { TYPE_LABEL, formatDateTime, formatHardHourlyBlockers, hardHourlyStats, hardHourlyStatusColor, hardHourlyStatusLabel, runtimeStage, statusLabel } from './taskCenterViewModel';
+import { TYPE_LABEL, accountCoverageLabel, formatDateTime, formatHardHourlyBlockers, hardHourlyStats, hardHourlyStatusColor, hardHourlyStatusLabel, runtimeStage, statusLabel } from './taskCenterViewModel';
 import { TaskMembershipPanel } from './TaskMembershipPanel';
 
 type DetailProfile = {
@@ -448,6 +448,7 @@ export function TaskCenterDetailModal({
                 ...(archivedSkippedCount > 0 ? [{ key: 'archived-skipped', label: '历史归档跳过', children: archivedSkippedCount }] : []),
                 { key: 'curve-now', label: '当前曲线', children: detailProfile ? `${String(detailProfile.hour).padStart(2, '0')}:00 ${detailProfile.intensity}${detail.task.type === 'group_ai_chat' ? ' 轮/小时' : ''}，${detailProfile.mode}运行` : '-' },
                 { key: 'curve-gap', label: '原因分解', children: `计划 ${detailPlannedTotal}，成功 ${detail.stats.success_count ?? 0}，失败 ${detail.stats.failure_count ?? 0}，跳过 ${effectiveSkippedCount}，待执行 ${plannedActions.length}` },
+                { key: 'account-coverage', label: '今日账号参与覆盖', children: accountCoverageLabel(detail.stats) },
                 { key: 'next', label: '下次运行', children: formatDateTime(detail.task.next_run_at) },
                 { key: 'summary-updated', label: '汇总更新', children: summaryUpdatedAt ? formatDateTime(summaryUpdatedAt) : '-' },
                 { key: 'summary-state', label: '汇总状态', children: !summaryUpdatedAt ? <Tag>暂无汇总</Tag> : summaryStale ? <Tag color="gold">可能延迟</Tag> : <Tag color="green">正常</Tag> },

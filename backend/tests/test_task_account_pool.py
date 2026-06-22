@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import AccountRuntimeSummary, AccountStatus, Action, Task, Tenant, TgAccount, TgAccountSecuritySnapshot
 from app.services._common import _now
-from app.services.task_center.account_pool import select_task_accounts
+from app.services.task_center.account_pool import select_task_accounts, task_account_coverage
 from app.services.task_center.channel_membership import candidate_accounts_for_config
 
 
@@ -272,6 +272,86 @@ def test_select_task_accounts_prioritizes_uncovered_daily_task_accounts():
         ]
 
     assert selected_ids == [3, 4]
+
+
+def test_task_account_coverage_counts_same_day_unique_task_accounts():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        for account_id in range(1, 7):
+            session.add(
+                TgAccount(
+                    id=account_id,
+                    tenant_id=1,
+                    display_name=f"账号{account_id}",
+                    phone_masked=str(account_id),
+                    status=AccountStatus.ACTIVE.value,
+                    health_score=95,
+                )
+            )
+        task = Task(
+            id="task-coverage-stats",
+            tenant_id=1,
+            name="覆盖统计任务",
+            type="group_ai_chat",
+            account_config={"selection_mode": "all", "max_concurrent": 2},
+        )
+        session.add(task)
+        now_value = _now()
+        session.add_all(
+            [
+                Action(
+                    id="today-pending",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=1,
+                    status="pending",
+                    scheduled_at=now_value,
+                ),
+                Action(
+                    id="today-success",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=2,
+                    status="success",
+                    executed_at=now_value,
+                ),
+                Action(
+                    id="old-success",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=3,
+                    status="success",
+                    executed_at=now_value - timedelta(days=1),
+                ),
+                Action(
+                    id="other-action-type",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="view_message",
+                    account_id=4,
+                    status="success",
+                    executed_at=now_value,
+                ),
+            ]
+        )
+        session.commit()
+
+        coverage = task_account_coverage(session, task)
+
+    assert coverage["covered_count"] == 2
+    assert coverage["eligible_count"] == 6
+    assert coverage["coverage_percent"] == 33
+    assert coverage["action_types"] == ["send_message"]
 
 
 def test_membership_candidates_include_all_active_config_accounts():

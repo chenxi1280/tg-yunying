@@ -11,6 +11,7 @@ from app.models import (
     AccountRuntimeSummary,
     AccountStatus,
     Action,
+    Task,
     TgAccount,
     TgAccountSecuritySnapshot,
     TgGroupAccount,
@@ -24,6 +25,12 @@ HEALTH_WEIGHT_MEDIUM = 55
 HEALTH_WEIGHT_LOW = 30
 LOW_HEALTH_PARTICIPATION_STEP = 4
 DAILY_COVERAGE_STATUSES = ("pending", "executing", "success")
+COVERAGE_ACTION_TYPES_BY_TASK_TYPE = {
+    "group_ai_chat": ("send_message",),
+    "channel_view": ("view_message",),
+    "channel_like": ("like_message",),
+    "channel_comment": ("post_comment",),
+}
 
 
 def select_task_accounts(
@@ -161,6 +168,49 @@ def daily_uncovered_account_count(
     if not covered_ids:
         return 0
     return sum(1 for account in accounts if account.id not in covered_ids)
+
+
+def task_account_coverage(session: Session, task: Task) -> dict[str, object]:
+    action_types = COVERAGE_ACTION_TYPES_BY_TASK_TYPE.get(task.type)
+    if not action_types:
+        return {}
+    accounts = _task_coverage_accounts(session, task)
+    eligible_ids = {int(account.id) for account in accounts}
+    eligible_count = len(eligible_ids)
+    covered_ids = _daily_covered_account_ids(session, task.id, action_types) & eligible_ids
+    covered_count = len(covered_ids)
+    coverage_rate = covered_count / eligible_count if eligible_count else 0
+    return {
+        "covered_count": covered_count,
+        "eligible_count": eligible_count,
+        "coverage_rate": coverage_rate,
+        "coverage_percent": round(coverage_rate * 100),
+        "action_types": list(action_types),
+        "statuses": list(DAILY_COVERAGE_STATUSES),
+    }
+
+
+def _task_coverage_accounts(session: Session, task: Task) -> list[TgAccount]:
+    stmt = _account_query(session, task.tenant_id, task.account_config or {}, enforce_shard=False)
+    if stmt is None:
+        return []
+    target_group_id = _task_coverage_target_group_id(task)
+    if target_group_id:
+        stmt = stmt.join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id).where(
+            TgGroupAccount.group_id == target_group_id,
+            TgGroupAccount.can_send.is_(True),
+        )
+    return _unique_accounts(session.scalars(stmt))
+
+
+def _task_coverage_target_group_id(task: Task) -> int | None:
+    if task.type != "group_ai_chat":
+        return None
+    try:
+        parsed_id = int((task.type_config or {}).get("target_group_id") or 0)
+    except (TypeError, ValueError):
+        return None
+    return parsed_id or None
 
 
 def _daily_covered_account_ids(
@@ -346,4 +396,11 @@ def apply_account_shard_filter(stmt):
     return stmt.where((TgAccount.id % total) == index)
 
 
-__all__ = ["account_matches_current_shard", "apply_account_shard_filter", "current_account_shard", "select_task_accounts"]
+__all__ = [
+    "account_matches_current_shard",
+    "apply_account_shard_filter",
+    "current_account_shard",
+    "daily_uncovered_account_count",
+    "select_task_accounts",
+    "task_account_coverage",
+]

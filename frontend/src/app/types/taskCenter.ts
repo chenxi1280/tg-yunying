@@ -25,7 +25,17 @@ export type HardHourlyRecentBucket = {
   blockers?: HardHourlyBlockers;
 };
 
+export type TaskAccountCoverage = {
+  covered_count: number;
+  eligible_count: number;
+  coverage_rate: number;
+  coverage_percent: number;
+  action_types: string[];
+  statuses: string[];
+};
+
 export type TaskCenterStats = Record<string, any> & {
+  account_coverage?: TaskAccountCoverage;
   hard_hourly_target_enabled?: boolean;
   hard_hourly_goal?: number | null;
   hard_hourly_bucket?: string | null;
@@ -232,7 +242,7 @@ export type TaskMembershipAdmissionItem = {
 export type TaskCenterDetail = {
   task: TaskCenterTask;
   actions: TaskCenterAction[];
-  stats: Record<string, any>;
+  stats: TaskCenterStats;
   task_runtime_summary?: TaskRuntimeSummary | null;
   operation_plan_links?: Array<{ id: number; plan_id: number; target_id: number | null; task_id: string; relation: string; status: string; created_at: string }>;
   accounts: Array<{ id: number; display_name: string; username: string | null; status: string }>;

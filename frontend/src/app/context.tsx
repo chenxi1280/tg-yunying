@@ -219,7 +219,7 @@ export function AppProvider({ children }: AppProviderProps) {
       setArchives(snapshot.archives);
       setAudits(snapshot.audits);
       setSelectedGroupId((current) => current ?? snapshot.groups[0]?.id ?? null);
-      setSelectedAiProviderId((current) => current || snapshot.tenantAiSetting.default_provider_id || snapshot.aiProviders[0]?.id || '');
+      setSelectedAiProviderId((current) => current || snapshot.tenantAiSetting?.default_provider_id || snapshot.aiProviders[0]?.id || '');
     } finally {
       setBusy('');
     }
@@ -266,7 +266,7 @@ export function AppProvider({ children }: AppProviderProps) {
       }
       setNotice(`后端未连接或接口异常：${error.message}`);
     });
-  }, [token, taskStatusFilter, selectedPoolId]);
+  }, [token, activeView, taskStatusFilter, selectedPoolId]);
 
   useEffect(() => {
     if (!token || !viewNeedsContentResources(activeView)) return;

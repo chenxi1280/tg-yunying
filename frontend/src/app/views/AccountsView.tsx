@@ -147,10 +147,12 @@ export default function AccountsView({
   const selectedAccounts = accounts.filter((account) => selectedAccountIds.includes(account.id));
   const incompleteProfiles = accounts.filter((account) => !account.avatar_object_key || !account.username || !account.tg_first_name);
   const unavailableBySummary = Array.from(availabilityByAccountId.values()).filter((item) => !item.send_available);
+  const accountIds = accounts.map((account) => account.id).join(',');
 
   React.useEffect(() => {
+    if (!accounts.length) return;
     void loadAvailability();
-  }, []);
+  }, [accountIds]);
 
   async function loadAvailability() {
     setAvailabilityLoading(true);
