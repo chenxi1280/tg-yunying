@@ -369,7 +369,7 @@ def test_channel_task_runs_membership_precondition_before_main_actions(monkeypat
         assert detail["membership_phase"]["current_phase"] == "已完成"
         assert detail["membership_phase"]["warnings"] == []
         membership_rows, _total = list_membership_items_page(session, 1, task.id, page=1, page_size=20)
-        assert {item["membership_status"] for item in membership_rows} >= {"already_joined", "joined"}
+        assert {item["phase"] for item in membership_rows} == {"ready"}
         assert all(item["completed_at"] for item in membership_rows)
 
 
