@@ -1940,6 +1940,7 @@ __all__ = [
     "generate_channel_comment_preview",
     "generate_group_ai_chat_preview",
     "get_task_detail",
+    "refresh_task_detail_stats",
     "list_ai_cycles_page",
     "list_action_attempts",
     "list_actions_page",
