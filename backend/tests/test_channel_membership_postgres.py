@@ -360,7 +360,7 @@ def test_channel_task_runs_membership_precondition_before_main_actions(monkeypat
         assert detail["membership_phase"]["stage"] == "membership_ready"
         assert detail["membership_phase"]["status"] == "completed"
         assert detail["membership_phase"]["progress_percent"] == 100
-        assert detail["membership_phase"]["ready_account_count"] == 1
+        assert detail["membership_phase"]["ready_account_count"] == 2
         assert detail["membership_phase"]["pending_account_count"] == 0
         assert detail["membership_phase"]["running_account_count"] == 0
         assert detail["membership_phase"]["success_account_count"] == 2

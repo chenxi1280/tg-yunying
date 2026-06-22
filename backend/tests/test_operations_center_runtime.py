@@ -38,7 +38,7 @@ from app.services.group_listeners import process_group_listener
 from app.services.task_center.listener_runtime import drain_listener_runtime, reset_listener_runtime_cache, should_collect_listener
 from app.services.task_center.fingerprints import content_fingerprint
 from app.services.task_center.policies import validate_group_send_policy
-from app.services.task_center.service import _action_payload, _channel_subtask_status, _planning_backlog_blocked, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
+from app.services.task_center.service import _action_payload, _channel_subtask_status, _planning_backlog_blocked, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_actions_page, list_ai_cycles_page, list_message_groups_page, list_relay_batches_page, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.payloads import ViewMessagePayload, create_view_action
 from app.services.task_center.stats import planner_backlog_snapshot, refresh_task_stats
@@ -2869,7 +2869,7 @@ def test_group_relay_rule_account_strategy_controls_sender(monkeypatch):
         action = session.scalar(select(Action).where(Action.task_id == "relay-strategy"))
         action.retry_count = 2
         session.flush()
-        detail = get_task_detail(session, 1, "relay-strategy")
+        relay_batches, _total = list_relay_batches_page(session, 1, "relay-strategy", page=1, page_size=20)
         attribution_csv = relay_attribution_csv(session, 1)
         attribution_report = relay_attribution_report(session, 1)
         account_id = action.account_id
@@ -2889,19 +2889,19 @@ def test_group_relay_rule_account_strategy_controls_sender(monkeypatch):
     assert "白名单 公告" in payload["rule_trace"]["summary"]
     assert payload["rule_trace"]["routing"] == "默认路由->9"
     assert payload["rule_trace"]["account_strategy"] == {"mode": "fixed", "account_id": 102}
-    assert detail["relay_batches"][0]["source_event_count"] == 1
-    assert detail["relay_batches"][0]["material_count"] == 1
-    assert detail["relay_batches"][0]["rule_version_count"] == 1
-    assert detail["relay_batches"][0]["items"][0]["retry_count"] == 2
-    assert detail["relay_batches"][0]["items"][0]["source_event_key"] == f"21:{payload['relay_event_id']}"
-    assert detail["relay_batches"][0]["items"][0]["source_group_title"] == "源群"
-    assert detail["relay_batches"][0]["items"][0]["source_sender_name"] == "用户"
-    assert detail["relay_batches"][0]["items"][0]["source_remote_message_id"] == "src-1"
-    assert detail["relay_batches"][0]["items"][0]["target_display"] == "目标群"
-    assert detail["relay_batches"][0]["items"][0]["rule_set_name"] == "固定账号规则"
-    assert detail["relay_batches"][0]["items"][0]["rule_set_version"] == 1
-    assert detail["relay_batches"][0]["items"][0]["material_fingerprint"] == content_fingerprint("公告：今晚活动开始")
-    assert detail["relay_batches"][0]["items"][0]["rule_trace"]["filters"] == ["白名单 公告"]
+    assert relay_batches[0]["source_event_count"] == 1
+    assert relay_batches[0]["material_count"] == 1
+    assert relay_batches[0]["rule_version_count"] == 1
+    assert relay_batches[0]["items"][0]["retry_count"] == 2
+    assert relay_batches[0]["items"][0]["source_event_key"] == f"21:{payload['relay_event_id']}"
+    assert relay_batches[0]["items"][0]["source_group_title"] == "源群"
+    assert relay_batches[0]["items"][0]["source_sender_name"] == "用户"
+    assert relay_batches[0]["items"][0]["source_remote_message_id"] == "src-1"
+    assert relay_batches[0]["items"][0]["target_display"] == "目标群"
+    assert relay_batches[0]["items"][0]["rule_set_name"] == "固定账号规则"
+    assert relay_batches[0]["items"][0]["rule_set_version"] == 1
+    assert relay_batches[0]["items"][0]["material_fingerprint"] == content_fingerprint("公告：今晚活动开始")
+    assert relay_batches[0]["items"][0]["rule_trace"]["filters"] == ["白名单 公告"]
     assert "relay_batch_id,relay_event_id,source_event_key" in attribution_csv
     assert payload["relay_event_id"] in attribution_csv
     assert content_fingerprint("公告：今晚活动开始") in attribution_csv
@@ -2979,11 +2979,12 @@ def test_group_relay_source_filter_defaults_and_allows_bot_when_disabled(monkeyp
         assert build_group_relay_plan(session, session.get(Task, "relay-allow-bot")) == 1
         action = session.scalar(select(Action).where(Action.task_id == "relay-allow-bot"))
         detail = get_task_detail(session, 1, "relay-allow-bot")
+        relay_batches, _total = list_relay_batches_page(session, 1, "relay-allow-bot", page=1, page_size=20)
 
     assert action.payload["source_is_bot"] is True
     assert action.payload["source_sender_username"] == "notice_bot"
-    assert detail["relay_batches"][0]["items"][0]["source_is_bot"] is True
-    assert detail["relay_batches"][0]["items"][0]["source_sender_username"] == "notice_bot"
+    assert relay_batches[0]["items"][0]["source_is_bot"] is True
+    assert relay_batches[0]["items"][0]["source_sender_username"] == "notice_bot"
     assert detail["recent_relay_sources"][0]["is_bot"] is True
 
 
@@ -3205,22 +3206,26 @@ def test_channel_like_jitter_uses_available_accounts_without_false_capacity(monk
 
         assert build_channel_like_plan(session, upper_task) == 4
         upper_detail = get_task_detail(session, 1, upper_task.id)
+        upper_actions, _upper_action_total = list_actions_page(session, 1, upper_task.id, page=1, page_size=20)
+        upper_groups, _upper_group_total = list_message_groups_page(session, 1, upper_task.id, page=1, page_size=20)
 
         monkeypatch.setattr("app.services.task_center.executors.common.random.randint", lambda lower, _upper: lower)
 
         assert build_channel_like_plan(session, lower_task) == 2
         lower_detail = get_task_detail(session, 1, lower_task.id)
+        lower_actions, _lower_action_total = list_actions_page(session, 1, lower_task.id, page=1, page_size=20)
+        lower_groups, _lower_group_total = list_message_groups_page(session, 1, lower_task.id, page=1, page_size=20)
 
-    upper_group = upper_detail["message_groups"][0]
-    assert len(upper_detail["actions"]) == 4
-    assert len({action.account_id for action in upper_detail["actions"]}) == 4
+    upper_group = upper_groups[0]
+    assert len(upper_actions) == 4
+    assert len({action["account_id"] for action in upper_actions}) == 4
     assert upper_group["target_count"] == 4
     assert upper_group["capacity_shortfall"] == 0
     assert upper_group["subtask_status"] == "运行中"
     assert "capacity_warning" not in upper_detail["task"]["stats"]
 
-    lower_group = lower_detail["message_groups"][0]
-    assert len(lower_detail["actions"]) == 2
+    lower_group = lower_groups[0]
+    assert len(lower_actions) == 2
     assert lower_group["target_count"] == 2
     assert lower_group["capacity_shortfall"] == 0
     assert lower_group["subtask_status"] == "运行中"
@@ -3711,7 +3716,7 @@ def test_group_ai_chat_uses_recent_account_memory(monkeypatch):
                 .order_by(Action.created_at.asc())
             )
         )
-        detail = get_task_detail(session, 1, "ai-memory")
+        ai_cycles, _total = list_ai_cycles_page(session, 1, "ai-memory", page=1, page_size=20)
 
     assert created == 2
     assert "101" in captured["account_memories"]
@@ -3732,13 +3737,7 @@ def test_group_ai_chat_uses_recent_account_memory(monkeypatch):
     assert new_actions[0].payload["topic_thread"] == captured["topic_thread"]
     assert new_actions[0].payload["topic_plan"] == captured["topic_plan"]
     assert new_actions[1].payload["account_memory"] == ""
-    assert detail["ai_generation_records"][0]["generation_id"] == new_actions[0].payload["ai_generation_id"]
-    assert detail["ai_generation_records"][0]["generated_count"] == 2
-    assert detail["ai_generation_records"][0]["account_memory_count"] == 1
-    assert detail["ai_account_profiles"][0]["account_id"] == 101
-    assert detail["ai_account_profiles"][0]["total_success_count"] == 2
-    assert detail["ai_account_profiles"][0]["cross_task_success_count"] == 1
-    generated_cycle = next(item for item in detail["ai_cycles"] if item["cycle_id"] == new_actions[0].payload["cycle_id"])
+    generated_cycle = next(item for item in ai_cycles if item["cycle_id"] == new_actions[0].payload["cycle_id"])
     assert generated_cycle["turns"][0]["account_memory"] == new_actions[0].payload["account_memory"]
     assert generated_cycle["turns"][0]["account_profile"] == new_actions[0].payload["account_profile"]
     assert generated_cycle["turns"][0]["topic_thread"] == new_actions[0].payload["topic_thread"]

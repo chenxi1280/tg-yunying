@@ -40,6 +40,24 @@ def skip_legacy_task_center_flow() -> None:
     pytest.skip("旧 Campaign/Operation 任务中心已下线，由 5 类型 task_center 测试覆盖")
 
 
+def task_detail_actions(client: TestClient, headers: dict[str, str], task_id: str) -> list[dict]:
+    response = client.get(f"/api/tasks/{task_id}/actions?page=1&page_size=200", headers=headers)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def task_detail_message_groups(client: TestClient, headers: dict[str, str], task_id: str) -> list[dict]:
+    response = client.get(f"/api/tasks/{task_id}/message-groups?page=1&page_size=100", headers=headers)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def task_detail_ai_cycles(client: TestClient, headers: dict[str, str], task_id: str) -> list[dict]:
+    response = client.get(f"/api/tasks/{task_id}/ai-cycles?page=1&page_size=100", headers=headers)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 @pytest.fixture(autouse=True)
 def cleanup_continuous_task_center_tasks():
     reset_listener_runtime_cache()
@@ -3285,7 +3303,8 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
         detail = client.get(f"/api/tasks/{task['id']}", headers=headers).json()
         assert detail["task"]["stats"]["total_actions"] >= 1
         assert detail["task"]["stats"]["success_count"] >= 1
-        assert detail["actions"][0]["action_type"] == "send_message"
+        actions = task_detail_actions(client, headers, task["id"] if isinstance(task, dict) else task_id)
+        assert actions[0]["action_type"] == "send_message"
         client.post(f"/api/tasks/{task['id']}/stop", headers=headers, json={"reason": "测试停止任务"})
 
 
@@ -3326,7 +3345,8 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert detail["task"]["status"] == "running"
         assert detail["task"]["stats"]["success_count"] >= 1
-        assert detail["actions"][0]["action_type"] == "send_message"
+        actions = task_detail_actions(client, headers, task_id)
+        assert actions[0]["action_type"] == "send_message"
 
 
 def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
@@ -3607,10 +3627,12 @@ def test_task_center_channel_view_like_comment_execute(monkeypatch):
             detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
             assert detail["task"]["status"] == "running"
             assert detail["task"]["stats"]["success_count"] >= 1
-            assert detail["accounts"][0]["display_name"] == account["display_name"]
-            assert detail["message_groups"][0]["channel_title"] == "pytest 频道增长目标"
-            assert detail["message_groups"][0]["content_preview"] == "频道增长消息"
-            assert detail["message_groups"][0]["stats"]["success"] >= 1
+            actions = task_detail_actions(client, headers, task_id)
+            message_groups = task_detail_message_groups(client, headers, task_id)
+            assert actions[0]["account_display_name"] == account["display_name"]
+            assert message_groups[0]["channel_title"] == "pytest 频道增长目标"
+            assert message_groups[0]["content_preview"] == "频道增长消息"
+            assert message_groups[0]["stats"]["success"] >= 1
         listed = client.get("/api/tasks", headers=headers).json()
         listed_channel_tasks = [item for item in listed if item["id"] in task_ids]
         assert listed_channel_tasks
@@ -3747,7 +3769,7 @@ def test_task_center_channel_like_and_view_cap_per_message_by_unique_accounts(mo
             client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
             client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"})
             detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-            rows = detail["actions"]
+            rows = task_detail_actions(client, headers, task_id)
             assert len(rows) == 2
             assert len({row["account_id"] for row in rows}) == 2
             assert "当前参与账号 2 个" in detail["task"]["stats"]["capacity_warning"]
@@ -3844,7 +3866,8 @@ def test_task_center_channel_comment_allows_multiple_replies_per_account(monkeyp
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert len(detail["actions"]) == 3
+        actions = task_detail_actions(client, headers, task_id)
+        assert len(actions) == 3
         assert detail["task"]["stats"]["total_actions"] == 3
 
 
@@ -4031,7 +4054,8 @@ def test_task_center_channel_view_and_comment_default_dynamic_new_keep_collectin
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert detail["task"]["status"] == "running"
         assert detail["task"]["last_error"] == ""
-        assert sorted(action["payload"]["message_id"] for action in detail["actions"] if action["action_type"] == action_type) == [5101, 5102]
+        actions = task_detail_actions(client, headers, task_id)
+        assert sorted(action["payload"]["message_id"] for action in actions if action["action_type"] == action_type) == [5101, 5102]
 
 
 def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatch):
@@ -4115,8 +4139,9 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert len(detail_after_reset["actions"]) == 1
-        assert detail_after_reset["actions"][0]["status"] == "failed"
+        actions_after_reset = task_detail_actions(client, headers, task_id)
+        assert len(actions_after_reset) == 1
+        assert actions_after_reset[0]["status"] == "failed"
         assert "reviews" not in detail_after_reset
         assert detail_after_reset["task"]["status"] == "running"
         assert detail_after_reset["task"]["stats"]["total_actions"] == 1
@@ -4125,8 +4150,9 @@ def test_task_center_reset_channel_like_rebuilds_from_latest_messages(monkeypatc
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert reactions[0] == 4101
         assert 4202 in reactions
-        assert len(detail["actions"]) == 2
-        assert any(action["payload"]["message_id"] == 4202 for action in detail["actions"])
+        actions = task_detail_actions(client, headers, task_id)
+        assert len(actions) == 2
+        assert any(action["payload"]["message_id"] == 4202 for action in actions)
         assert detail["task"]["stats"]["success_count"] == 1
 
 
@@ -4191,17 +4217,19 @@ def test_task_center_reset_channel_view_rebuilds_from_latest_messages(monkeypatc
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert len(detail_after_reset["actions"]) == 1
-        assert detail_after_reset["actions"][0]["status"] == "success"
+        actions_after_reset = task_detail_actions(client, headers, task_id)
+        assert len(actions_after_reset) == 1
+        assert actions_after_reset[0]["status"] == "success"
         assert "reviews" not in detail_after_reset
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert views[0] == 4301
         assert 4302 in views
-        assert len(detail["actions"]) == 2
-        assert all(action["action_type"] == "view_message" for action in detail["actions"])
-        assert any(action["payload"]["message_id"] == 4302 for action in detail["actions"])
+        actions = task_detail_actions(client, headers, task_id)
+        assert len(actions) == 2
+        assert all(action["action_type"] == "view_message" for action in actions)
+        assert any(action["payload"]["message_id"] == 4302 for action in actions)
         assert detail["task"]["stats"]["success_count"] == 2
 
 
@@ -4264,28 +4292,31 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
 
         drain_task_center(SessionLocal, 10)
         old_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert len(old_detail["actions"]) == 1
+        old_actions = task_detail_actions(client, headers, task_id)
+        assert len(old_actions) == 1
         assert "reviews" not in old_detail
-        assert old_detail["actions"][0]["payload"]["message_id"] == 4401
-        assert comments == [(4401, old_detail["actions"][0]["payload"]["comment_text"])]
+        assert old_actions[0]["payload"]["message_id"] == 4401
+        assert comments == [(4401, old_actions[0]["payload"]["comment_text"])]
 
         fetched_ids.append(4402)
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert len(detail_after_reset["actions"]) == 1
-        assert detail_after_reset["actions"][0]["status"] == "success"
+        actions_after_reset = task_detail_actions(client, headers, task_id)
+        assert len(actions_after_reset) == 1
+        assert actions_after_reset[0]["status"] == "success"
         assert "reviews" not in detail_after_reset
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert len(detail["actions"]) == 2
-        assert any(action["action_type"] == "post_comment" and action["payload"]["message_id"] == 4402 for action in detail["actions"])
+        actions = task_detail_actions(client, headers, task_id)
+        assert len(actions) == 2
+        assert any(action["action_type"] == "post_comment" and action["payload"]["message_id"] == 4402 for action in actions)
         assert "reviews" not in detail
 
         drain_task_center(SessionLocal, 10)
         final_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        new_action = next(action for action in detail["actions"] if action["payload"]["message_id"] == 4402)
+        new_action = next(action for action in actions if action["payload"]["message_id"] == 4402)
         assert comments[-1] == (4402, new_action["payload"]["comment_text"])
         assert final_detail["task"]["stats"]["success_count"] == 2
 
@@ -4332,20 +4363,22 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
 
         drain_task_center(SessionLocal, 10)
         initial_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        initial_action_count = len(initial_detail["actions"])
+        initial_action_count = len(task_detail_actions(client, headers, task_id))
         assert initial_action_count >= 1
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
-        post_reset_count = len(client.get(f"/api/tasks/{task_id}", headers=headers).json()["actions"])
+        post_reset_count = len(task_detail_actions(client, headers, task_id))
         assert post_reset_count >= 1
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        if len(detail["actions"]) <= post_reset_count:
+        actions = task_detail_actions(client, headers, task_id)
+        if len(actions) <= post_reset_count:
             drain_task_center(SessionLocal, 10)
             detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert len(detail["actions"]) > post_reset_count
-        cycle_ids = [str((action.get("payload") or {}).get("cycle_id") or "") for action in detail["actions"]]
+            actions = task_detail_actions(client, headers, task_id)
+        assert len(actions) > post_reset_count
+        cycle_ids = [str((action.get("payload") or {}).get("cycle_id") or "") for action in actions]
         assert any(cycle_id.endswith(":cycle:2") for cycle_id in cycle_ids)
 
 
