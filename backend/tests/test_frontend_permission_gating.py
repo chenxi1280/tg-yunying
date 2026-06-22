@@ -622,16 +622,21 @@ def test_telegram_profile_update_can_clear_last_name():
 
 def test_app_refresh_does_not_replace_accounts_with_empty_fallback_on_account_api_failure():
     source = (PROJECT_ROOT / "frontend/src/app/context/refresh.ts").read_text()
+    accounts_loader = source[source.index("async function loadAccountsPage"):source.index("function messageTaskPath")]
 
-    assert "if (results[3].status === 'rejected') throw results[3].reason" in source
-    assert "accounts: settledValue(results[3], [] as Account[])" not in source
+    assert "loadAccountList(context.selectedPoolId)" in accounts_loader
+    assert "loadAccountList(context.selectedPoolId).catch(() => [])" not in accounts_loader
+    assert "accounts: settledValue(" not in accounts_loader
 
 
 def test_navigation_does_not_reload_full_app_snapshot_for_self_loading_views():
     context = (PROJECT_ROOT / "frontend/src/app/context.tsx").read_text()
+    refresh = (PROJECT_ROOT / "frontend/src/app/context/refresh.ts").read_text()
 
     assert "}, [token, taskStatusFilter, selectedPoolId, activeView]);" not in context
-    assert "}, [token, taskStatusFilter, selectedPoolId]);" in context
+    assert "}, [token, activeView, taskStatusFilter, selectedPoolId]);" in context
+    assert "const loader = VIEW_RESOURCE_LOADERS[activeView];" in refresh
+    assert "taskManagement: async () => ({})" in refresh
     assert "refreshContentResourcesForActiveView" in context
 
 
