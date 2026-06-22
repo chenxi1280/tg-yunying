@@ -40,8 +40,11 @@ def skip_legacy_task_center_flow() -> None:
     pytest.skip("旧 Campaign/Operation 任务中心已下线，由 5 类型 task_center 测试覆盖")
 
 
-def task_detail_actions(client: TestClient, headers: dict[str, str], task_id: str) -> list[dict]:
-    response = client.get(f"/api/tasks/{task_id}/actions?page=1&page_size=200", headers=headers)
+def task_detail_actions(client: TestClient, headers: dict[str, str], task_id: str, action_type: str | None = None) -> list[dict]:
+    params = "page=1&page_size=200"
+    if action_type:
+        params = f"{params}&action_type={action_type}"
+    response = client.get(f"/api/tasks/{task_id}/actions?{params}", headers=headers)
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -3345,7 +3348,7 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert detail["task"]["status"] == "running"
         assert detail["task"]["stats"]["success_count"] >= 1
-        actions = task_detail_actions(client, headers, task_id)
+        actions = task_detail_actions(client, headers, task_id, action_type="send_message")
         assert actions[0]["action_type"] == "send_message"
 
 
@@ -3866,7 +3869,7 @@ def test_task_center_channel_comment_allows_multiple_replies_per_account(monkeyp
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        actions = task_detail_actions(client, headers, task_id)
+        actions = task_detail_actions(client, headers, task_id, action_type="post_comment")
         assert len(actions) == 3
         assert detail["task"]["stats"]["total_actions"] == 3
 

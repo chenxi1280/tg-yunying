@@ -18,7 +18,7 @@ from app.services.task_center import dispatcher
 from app.services.task_center.channel_membership import gate_channel_membership
 from app.services.task_center.dispatcher import dispatch_action
 from app.services.task_center.executors import build_task_plan
-from app.services.task_center.service import create_and_start_channel_view_task, get_task_detail, precheck_task_creation
+from app.services.task_center.service import create_and_start_channel_view_task, get_task_detail, list_membership_items_page, precheck_task_creation
 
 
 @pytest.fixture(autouse=True)
@@ -368,8 +368,9 @@ def test_channel_task_runs_membership_precondition_before_main_actions(monkeypat
         assert detail["membership_phase"]["blocked_account_count"] == 0
         assert detail["membership_phase"]["current_phase"] == "已完成"
         assert detail["membership_phase"]["warnings"] == []
-        assert {item["membership_status"] for item in detail["membership_accounts"]} >= {"already_joined", "joined"}
-        assert all(item["completed_at"] for item in detail["membership_accounts"])
+        membership_rows, _total = list_membership_items_page(session, 1, task.id, page=1, page_size=20)
+        assert {item["membership_status"] for item in membership_rows} >= {"already_joined", "joined"}
+        assert all(item["completed_at"] for item in membership_rows)
 
 
 def test_channel_task_blocks_main_actions_when_all_membership_fails(monkeypatch):
