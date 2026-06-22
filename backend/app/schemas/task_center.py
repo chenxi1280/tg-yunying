@@ -635,6 +635,8 @@ class ActionOut(ApiModel):
     task_type: str
     action_type: str
     account_id: int | None
+    account_display_name: str = ""
+    account_username: str | None = ""
     scheduled_at: datetime
     executed_at: datetime | None
     status: str

@@ -31,7 +31,7 @@ def test_alembic_versions_have_single_head():
             referenced.update(item for item in down_revision if item)
 
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0061_admission_delete_action"]
+    assert heads == ["0063_task_action_paging"]
 
 
 def test_backend_test_names_are_unique_per_file():

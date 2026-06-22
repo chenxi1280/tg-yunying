@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, Action, OperationTarget, Task, TaskMembershipAdmissionItem, TgAccount, TgGroup
+from app.models import AccountStatus, Action, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup
 from app.services._common import _now
+from app.services.task_center.group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, refresh_group_rescue_action, rescue_action_snapshot, trigger_group_rescue
 from app.services.task_center.membership_recovery import AUTO_RETRY_BUCKET, GROUP_ADMIN_BUCKET, classify_membership_recovery
 from app.services.task_center.payloads import DeleteMessagePayload, EnsureChannelMembershipPayload, SendMessagePayload, create_delete_action, create_membership_action, create_send_action
 from app.services.task_center.stats import empty_stats
@@ -109,11 +110,13 @@ def sync_membership_admission_items(session: Session, task: Task, now: datetime 
     membership_actions = _actions_by_id(session, [item.membership_action_id for item in items if item.membership_action_id])
     test_actions = _actions_by_id(session, [item.test_message_action_id for item in items if item.test_message_action_id])
     delete_actions = _actions_by_id(session, [item.delete_action_id for item in items if item.delete_action_id])
+    rescue_actions = _actions_by_id(session, [item.rescue_action_id for item in items if item.rescue_action_id])
     accounts = _accounts_by_id(session, [item.account_id for item in items])
     for item in items:
-        _sync_membership_item_if_done(item, membership_actions, accounts, timestamp)
+        _sync_membership_item_if_done(session, task, item, membership_actions, accounts, timestamp)
         _sync_test_message_item_if_done(item, test_actions, timestamp)
         _sync_delete_message_item_if_done(item, delete_actions, timestamp)
+        _sync_rescue_item_if_done(item, rescue_actions, timestamp)
     _refresh_snapshot_stats(task, items)
     session.flush()
 
@@ -123,6 +126,53 @@ def membership_admission_detail(session: Session, task: Task) -> tuple[dict, lis
     items = _items_for_task(session, task)
     accounts = _accounts_by_id(session, [item.account_id for item in items])
     return _admission_phase(items), [_admission_item_payload(item, accounts.get(item.account_id)) for item in items]
+
+
+def membership_admission_summary(session: Session, task: Task) -> dict:
+    if task.type != "group_membership_admission":
+        return {}
+    phase_counts = dict(
+        session.execute(
+            select(TaskMembershipAdmissionItem.phase, func.count(TaskMembershipAdmissionItem.id))
+            .where(TaskMembershipAdmissionItem.tenant_id == task.tenant_id, TaskMembershipAdmissionItem.task_id == task.id)
+            .group_by(TaskMembershipAdmissionItem.phase)
+        ).all()
+    )
+    total = sum(int(value or 0) for value in phase_counts.values())
+    manual_count = session.scalar(
+        select(func.count(TaskMembershipAdmissionItem.id)).where(
+            TaskMembershipAdmissionItem.tenant_id == task.tenant_id,
+            TaskMembershipAdmissionItem.task_id == task.id,
+            TaskMembershipAdmissionItem.manual_required.is_(True),
+        )
+    ) or 0
+    return _admission_phase_from_counts(phase_counts, int(manual_count), total)
+
+
+def list_membership_admission_items_page(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+) -> tuple[list[dict], int]:
+    task = session.get(Task, task_id)
+    if not task or task.tenant_id != tenant_id or task.type != "group_membership_admission":
+        raise ValueError("task not found")
+    filters = [TaskMembershipAdmissionItem.tenant_id == tenant_id, TaskMembershipAdmissionItem.task_id == task_id]
+    total = session.scalar(select(func.count(TaskMembershipAdmissionItem.id)).where(*filters)) or 0
+    items = list(
+        session.scalars(
+            select(TaskMembershipAdmissionItem)
+            .where(*filters)
+            .order_by(TaskMembershipAdmissionItem.account_id.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
+    accounts = _accounts_by_id(session, [item.account_id for item in items])
+    return [_admission_item_payload(item, accounts.get(item.account_id)) for item in items], int(total)
 
 def retry_membership_admission_item(session: Session, tenant_id: int, task_id: str, item_id: int) -> TaskMembershipAdmissionItem:
     task, item = _task_and_item(session, tenant_id, task_id, item_id)
@@ -151,6 +201,25 @@ def mark_membership_admission_manual_handled(session: Session, tenant_id: int, t
     _reset_item_for_retry(item, _now())
     _wake_task(task)
     _refresh_snapshot_stats(task, _items_for_task(session, task))
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def retry_membership_admission_rescue(session: Session, tenant_id: int, task_id: str, item_id: int) -> TaskMembershipAdmissionItem:
+    task, item = _task_and_item(session, tenant_id, task_id, item_id)
+    timestamp = _now()
+    if item.rescue_action_id:
+        action = session.get(Action, item.rescue_action_id)
+        if action:
+            _refresh_existing_rescue_action(session, task, item, action)
+            item.updated_at = timestamp
+            session.commit()
+            session.refresh(item)
+            return item
+    detail = item.failure_detail or item.failure_type or "手动重试群聊救援"
+    _maybe_trigger_item_rescue(session, task, item, detail)
+    item.updated_at = timestamp
     session.commit()
     session.refresh(item)
     return item
@@ -188,6 +257,9 @@ def _failure_export_row(item: TaskMembershipAdmissionItem, account: TgAccount | 
         "failure_detail": item.failure_detail,
         "test_message_id": item.test_message_id,
         "delete_status": item.delete_status,
+        "permission_failure_count": str(item.permission_failure_count or 0),
+        "rescue_status": item.rescue_status,
+        "rescue_failure_detail": item.rescue_failure_detail,
     }
 
 
@@ -202,6 +274,28 @@ def _reset_item_for_retry(item: TaskMembershipAdmissionItem, timestamp: datetime
     item.failure_detail = ""
     item.completed_at = None
     item.updated_at = timestamp
+
+
+def _refresh_existing_rescue_action(session: Session, task: Task, item: TaskMembershipAdmissionItem, action: Action) -> None:
+    target = session.get(OperationTarget, item.target_id)
+    group = _group_for_target(session, task, target) if target else None
+    if not group:
+        item.rescue_status = "unconfigured"
+        item.rescue_failure_detail = "救援配置缺失：目标群未同步到本地群表"
+        return
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    trigger_reason = str(payload.get("trigger_reason") or item.failure_detail or item.failure_type or "手动重试群聊救援")
+    result = refresh_group_rescue_action(
+        session,
+        task,
+        group,
+        action,
+        trigger_account_id=item.account_id,
+        trigger_reason=trigger_reason,
+        operation_target_id=item.target_id,
+    )
+    item.rescue_status = result.status
+    item.rescue_failure_detail = "" if result.action else result.detail
 
 
 def _wake_task(task: Task) -> None:
@@ -222,16 +316,30 @@ def _items_for_task(session: Session, task: Task) -> list[TaskMembershipAdmissio
 
 
 def _admission_phase(items: list[TaskMembershipAdmissionItem]) -> dict:
+    phase_counts = {
+        PHASE_PENDING: sum(1 for item in items if item.phase == PHASE_PENDING),
+        PHASE_JOINING: sum(1 for item in items if item.phase == PHASE_JOINING),
+        PHASE_TEST_MESSAGE_PENDING: sum(1 for item in items if item.phase == PHASE_TEST_MESSAGE_PENDING),
+        PHASE_TESTING_MESSAGE: sum(1 for item in items if item.phase == PHASE_TESTING_MESSAGE),
+        PHASE_COMPLETED: sum(1 for item in items if item.phase == PHASE_COMPLETED),
+        PHASE_FAILED: sum(1 for item in items if item.phase == PHASE_FAILED),
+    }
+    manual_count = sum(1 for item in items if item.manual_required)
+    return _admission_phase_from_counts(phase_counts, manual_count, len(items))
+
+
+def _admission_phase_from_counts(phase_counts: dict, manual_count: int, total: int) -> dict:
+    completed_count = int(phase_counts.get(PHASE_COMPLETED) or 0)
     return {
-        "snapshot_total": len(items),
-        "pending_count": sum(1 for item in items if item.phase == PHASE_PENDING),
-        "joining_count": sum(1 for item in items if item.phase == PHASE_JOINING),
-        "test_message_pending_count": sum(1 for item in items if item.phase == PHASE_TEST_MESSAGE_PENDING),
-        "testing_message_count": sum(1 for item in items if item.phase == PHASE_TESTING_MESSAGE),
-        "completed_count": sum(1 for item in items if item.phase == PHASE_COMPLETED),
-        "failed_count": sum(1 for item in items if item.phase == PHASE_FAILED),
-        "manual_required_count": sum(1 for item in items if item.manual_required),
-        "completed": bool(items) and all(item.phase == PHASE_COMPLETED for item in items),
+        "snapshot_total": total,
+        "pending_count": int(phase_counts.get(PHASE_PENDING) or 0),
+        "joining_count": int(phase_counts.get(PHASE_JOINING) or 0),
+        "test_message_pending_count": int(phase_counts.get(PHASE_TEST_MESSAGE_PENDING) or 0),
+        "testing_message_count": int(phase_counts.get(PHASE_TESTING_MESSAGE) or 0),
+        "completed_count": completed_count,
+        "failed_count": int(phase_counts.get(PHASE_FAILED) or 0),
+        "manual_required_count": manual_count,
+        "completed": bool(total) and completed_count == total,
     }
 
 
@@ -250,6 +358,10 @@ def _admission_item_payload(item: TaskMembershipAdmissionItem, account: TgAccoun
         "test_message_id": item.test_message_id,
         "delete_after_send": item.delete_after_send,
         "delete_status": item.delete_status,
+        "permission_failure_count": item.permission_failure_count,
+        "rescue_action_id": item.rescue_action_id,
+        "rescue_status": item.rescue_status,
+        "rescue_failure_detail": item.rescue_failure_detail,
         "failure_type": item.failure_type,
         "failure_detail": item.failure_detail,
         "manual_required": item.manual_required,
@@ -353,18 +465,25 @@ def _snapshot_account_ids(session: Session, task: Task) -> list[int]:
     group_ids = [int(item) for item in task.type_config.get("account_group_ids") or []]
     if not group_ids:
         raise ValueError("群聊准入任务缺少账号分组")
-    return list(
-        session.scalars(
-            select(TgAccount.id)
-            .where(
-                TgAccount.tenant_id == task.tenant_id,
-                TgAccount.deleted_at.is_(None),
-                TgAccount.status == AccountStatus.ACTIVE.value,
-                TgAccount.pool_id.in_(group_ids),
-            )
-            .order_by(TgAccount.id.asc())
+    rescue_admin_id = _rescue_admin_account_id(session, task.tenant_id)
+    stmt = (
+        select(TgAccount.id)
+        .where(
+            TgAccount.tenant_id == task.tenant_id,
+            TgAccount.deleted_at.is_(None),
+            TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.pool_id.in_(group_ids),
         )
+        .order_by(TgAccount.id.asc())
     )
+    if rescue_admin_id:
+        stmt = stmt.where(TgAccount.id != rescue_admin_id)
+    return list(session.scalars(stmt))
+
+
+def _rescue_admin_account_id(session: Session, tenant_id: int) -> int:
+    tenant = session.get(Tenant, tenant_id)
+    return int(tenant.group_rescue_admin_account_id or 0) if tenant else 0
 
 
 def _actions_by_id(session: Session, action_ids: list[str | None]) -> dict[str, Action]:
@@ -382,14 +501,18 @@ def _accounts_by_id(session: Session, account_ids: list[int]) -> dict[int, TgAcc
 
 
 def _sync_membership_item_if_done(
+    session: Session,
+    task: Task,
     item: TaskMembershipAdmissionItem,
     actions: dict[str, Action],
     accounts: dict[int, TgAccount],
     timestamp: datetime,
 ) -> None:
     action = actions.get(item.membership_action_id or "")
+    if item.phase != PHASE_JOINING:
+        return
     if action and action.status in MEMBERSHIP_DONE_STATUSES:
-        _sync_membership_item(item, action, accounts.get(item.account_id), timestamp)
+        _sync_membership_item(session, task, item, action, accounts.get(item.account_id), timestamp)
 
 
 def _sync_test_message_item_if_done(item: TaskMembershipAdmissionItem, actions: dict[str, Action], timestamp: datetime) -> None:
@@ -420,8 +543,19 @@ def _sync_delete_message_item_if_done(item: TaskMembershipAdmissionItem, actions
     item.updated_at = timestamp
 
 
-def _sync_membership_item(item: TaskMembershipAdmissionItem, action: Action, account: TgAccount | None, timestamp: datetime) -> None:
+def _sync_rescue_item_if_done(item: TaskMembershipAdmissionItem, actions: dict[str, Action], timestamp: datetime) -> None:
+    action = actions.get(item.rescue_action_id or "")
+    if not action or action.status not in {"success", "failed", "skipped"}:
+        return
+    status, detail = rescue_action_snapshot(action)
+    item.rescue_status = status
+    item.rescue_failure_detail = "" if action.status == "success" else detail
+    item.updated_at = timestamp
+
+
+def _sync_membership_item(session: Session, task: Task, item: TaskMembershipAdmissionItem, action: Action, account: TgAccount | None, timestamp: datetime) -> None:
     if _membership_action_success(action):
+        item.permission_failure_count = 0
         _mark_test_message_pending(item, timestamp)
         return
     recovery = classify_membership_recovery(
@@ -441,6 +575,8 @@ def _sync_membership_item(item: TaskMembershipAdmissionItem, action: Action, acc
     item.manual_required = bool(recovery.operator_required or recovery.account_replace_required)
     item.failure_type = recovery.bucket
     item.failure_detail = str((action.result or {}).get("error_message") or (action.result or {}).get("detail") or recovery.label)
+    if recovery.bucket == GROUP_ADMIN_BUCKET:
+        _maybe_trigger_item_rescue(session, task, item, item.failure_detail)
     item.updated_at = timestamp
 
 
@@ -453,6 +589,7 @@ def _mark_completed(item: TaskMembershipAdmissionItem, action: Action, timestamp
     item.failure_type = ""
     item.failure_detail = ""
     item.manual_required = False
+    item.permission_failure_count = 0
     item.completed_at = timestamp
     item.updated_at = timestamp
 
@@ -476,6 +613,23 @@ def _mark_pending_retry(item: TaskMembershipAdmissionItem, timestamp: datetime) 
     item.failure_type = ""
     item.failure_detail = ""
     item.updated_at = timestamp
+
+
+def _maybe_trigger_item_rescue(session: Session, task: Task, item: TaskMembershipAdmissionItem, detail: str) -> None:
+    item.permission_failure_count = int(item.permission_failure_count or 0) + 1
+    if item.permission_failure_count <= GROUP_RESCUE_FAILURE_THRESHOLD:
+        return
+    target = session.get(OperationTarget, item.target_id)
+    group = _group_for_target(session, task, target) if target else None
+    if not group:
+        item.rescue_status = "unconfigured"
+        item.rescue_failure_detail = "救援配置缺失：目标群未同步到本地群表"
+        return
+    result = trigger_group_rescue(session, task, group, trigger_account_id=item.account_id, trigger_reason=detail, operation_target_id=item.target_id)
+    item.rescue_status = result.status
+    item.rescue_failure_detail = "" if result.action else result.detail
+    if result.action:
+        item.rescue_action_id = result.action.id
 
 
 def _action_phase(action: Action) -> str:

@@ -9,7 +9,7 @@ from uuid import uuid4
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, Action, GroupAuthStatus, OperationTarget, Task, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, GroupAuthStatus, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
 
 from .account_pool import select_task_accounts
@@ -228,6 +228,9 @@ def candidate_accounts_for_config(session: Session, tenant_id: int, account_conf
         )
         .order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
     )
+    rescue_admin_id = _rescue_admin_account_id(session, tenant_id)
+    if rescue_admin_id:
+        stmt = stmt.where(TgAccount.id != rescue_admin_id)
     mode = account_config.get("selection_mode") or "all"
     if mode == "manual":
         account_ids = [int(item) for item in account_config.get("account_ids") or []]
@@ -246,6 +249,11 @@ def candidate_accounts_for_config(session: Session, tenant_id: int, account_conf
         else:
             stmt = stmt.where(TgAccount.pool_id == pool_id)
     return list(session.scalars(stmt)) if stmt is not None else []
+
+
+def _rescue_admin_account_id(session: Session, tenant_id: int) -> int:
+    tenant = session.get(Tenant, tenant_id)
+    return int(tenant.group_rescue_admin_account_id or 0) if tenant else 0
 
 
 def linked_channel_group(session: Session, channel: OperationTarget, *, create: bool, prefer_send_ready: bool = False) -> TgGroup | None:

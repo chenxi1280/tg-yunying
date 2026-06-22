@@ -35,8 +35,11 @@ from app.schemas import (
     ReviewQueueOut,
     ReviewRejectRequest,
     TaskDetailOut,
+    TaskAICycleOut,
+    TaskMessageGroupOut,
     TaskMembershipItemOut,
     TaskOut,
+    TaskRelayBatchOut,
     TaskActionReasonRequest,
     TaskPrecheckOut,
     TaskPrecheckRequest,
@@ -65,9 +68,13 @@ from app.services.task_center import (
     generate_channel_comment_preview,
     generate_group_ai_chat_preview,
     get_task_detail,
+    list_ai_cycles_page,
     list_actions_page,
     list_action_attempts,
+    list_membership_admission_items_page,
     list_membership_items_page,
+    list_message_groups_page,
+    list_relay_batches_page,
     list_reviews,
     mark_membership_admission_manual_handled,
     membership_admission_failure_rows,
@@ -78,8 +85,10 @@ from app.services.task_center import (
     reject_review,
     reset_task,
     resume_task,
+    refresh_task_detail_stats,
     retry_failed_membership_admission_items,
     retry_membership_admission_item,
+    retry_membership_admission_rescue,
     retry_task,
     start_task,
     stop_task,
@@ -95,6 +104,12 @@ from app.services.task_center import (
 
 router = APIRouter()
 legacy_review_router = APIRouter()
+
+
+def _set_page_headers(response: Response, total: int, page: int, page_size: int) -> None:
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Page"] = str(page)
+    response.headers["X-Page-Size"] = str(page_size)
 
 
 @router.post("/api/tasks/group-ai-chat", response_model=TaskOut)
@@ -355,7 +370,7 @@ def post_task_reset(task_id: str, payload: TaskActionReasonRequest, session: Ses
 @router.get("/api/tasks/{task_id}/stats")
 def get_task_stats(task_id: str, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
-        return get_task_detail(session, current_user.tenant_id or 1, task_id)["stats"]
+        return refresh_task_detail_stats(session, current_user.tenant_id or 1, task_id)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 
@@ -392,6 +407,57 @@ def get_task_actions(
     return rows
 
 
+@router.get("/api/tasks/{task_id}/ai-cycles", response_model=list[TaskAICycleOut])
+def get_task_ai_cycles(
+    task_id: str,
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        rows, total = list_ai_cycles_page(session, current_user.tenant_id or 1, task_id, page=page, page_size=page_size)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+    _set_page_headers(response, total, page, page_size)
+    return rows
+
+
+@router.get("/api/tasks/{task_id}/message-groups", response_model=list[TaskMessageGroupOut])
+def get_task_message_groups(
+    task_id: str,
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        rows, total = list_message_groups_page(session, current_user.tenant_id or 1, task_id, page=page, page_size=page_size)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+    _set_page_headers(response, total, page, page_size)
+    return rows
+
+
+@router.get("/api/tasks/{task_id}/relay-batches", response_model=list[TaskRelayBatchOut])
+def get_task_relay_batches(
+    task_id: str,
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        rows, total = list_relay_batches_page(session, current_user.tenant_id or 1, task_id, page=page, page_size=page_size)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+    _set_page_headers(response, total, page, page_size)
+    return rows
+
+
 @router.get("/api/tasks/{task_id}/membership-items", response_model=list[TaskMembershipItemOut])
 def get_task_membership_items(
     task_id: str,
@@ -422,6 +488,23 @@ def get_task_membership_items(
     response.headers["X-Total-Count"] = str(total)
     response.headers["X-Page"] = str(page)
     response.headers["X-Page-Size"] = str(page_size)
+    return rows
+
+
+@router.get("/api/tasks/{task_id}/membership-admission/items", response_model=list[dict])
+def get_task_membership_admission_items(
+    task_id: str,
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        rows, total = list_membership_admission_items_page(session, current_user.tenant_id or 1, task_id, page=page, page_size=page_size)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+    _set_page_headers(response, total, page, page_size)
     return rows
 
 
@@ -466,6 +549,20 @@ def post_membership_admission_manual_handled(
         raise not_found(str(exc)) from exc
 
 
+@router.post("/api/tasks/{task_id}/membership-admission/items/{item_id}/retry-rescue", response_model=TaskDetailOut)
+def post_membership_admission_rescue_retry(
+    task_id: str,
+    item_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        retry_membership_admission_rescue(session, current_user.tenant_id or 1, task_id, item_id)
+        return get_task_detail(session, current_user.tenant_id or 1, task_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
 @router.get("/api/tasks/{task_id}/membership-admission/failures.csv")
 def get_membership_admission_failures_csv(
     task_id: str,
@@ -476,7 +573,7 @@ def get_membership_admission_failures_csv(
         rows = membership_admission_failure_rows(session, current_user.tenant_id or 1, task_id)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
-    columns = ["account_id", "display_name", "username", "phase", "manual_required", "failure_type", "failure_detail", "test_message_id", "delete_status"]
+    columns = ["account_id", "display_name", "username", "phase", "manual_required", "failure_type", "failure_detail", "test_message_id", "delete_status", "permission_failure_count", "rescue_status", "rescue_failure_detail"]
     buffer = StringIO()
     writer = csv.DictWriter(buffer, fieldnames=columns)
     writer.writeheader()

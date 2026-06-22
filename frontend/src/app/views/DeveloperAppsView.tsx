@@ -111,6 +111,9 @@ export default function DeveloperAppsView({ developerApps, tenants, onCreateClic
             { key: 'task_quota', label: '任务配额', children: detailTenant.task_quota },
             { key: 'bot', label: 'Bot 配置', children: <StatusBadge status={detailTenant.telegram_bot_configured ? '已配置' : '未配置'} /> },
             { key: 'notify', label: 'AI 失败通知', children: detailTenant.notify_ai_failures_enabled ? '启用' : '关闭' },
+            { key: 'group_rescue_enabled', label: '群聊救援', children: detailTenant.group_rescue_enabled ? '启用' : '关闭' },
+            { key: 'group_rescue_account', label: '救援账号', children: detailTenant.group_rescue_admin_account_id ? `#${detailTenant.group_rescue_admin_account_id}` : '未配置' },
+            { key: 'group_rescue_bot', label: '救援机器人', children: detailTenant.group_rescue_bot_username || '未配置' },
           ]} />
         )}
       </Modal>

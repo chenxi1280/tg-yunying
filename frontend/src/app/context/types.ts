@@ -12,6 +12,17 @@ import type {
   ConfirmPayload, MessageSendBatchCreate, MessageSendTaskCreate, ModalState,
 } from '../types';
 
+export type TenantForm = {
+  id: number | null;
+  name: string;
+  plan_name: string;
+  account_quota: number;
+  task_quota: number;
+  group_rescue_enabled: boolean;
+  group_rescue_admin_account_id: number | null;
+  group_rescue_bot_username: string;
+};
+
 export interface AppState {
   // Auth state
   token: string;
@@ -188,8 +199,8 @@ export interface AppState {
   // Developer & AI forms
   developerAppForm: { id: number | null; app_name: string; api_id: string; api_hash: string; max_accounts: number; notes: string; is_active: boolean };
   setDeveloperAppForm: (form: { id: number | null; app_name: string; api_id: string; api_hash: string; max_accounts: number; notes: string; is_active: boolean }) => void;
-  tenantForm: { id: number | null; name: string; plan_name: string; account_quota: number; task_quota: number };
-  setTenantForm: (form: { id: number | null; name: string; plan_name: string; account_quota: number; task_quota: number }) => void;
+  tenantForm: TenantForm;
+  setTenantForm: (form: TenantForm) => void;
   aiProviderForm: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; is_active: boolean };
   setAiProviderForm: (form: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; is_active: boolean }) => void;
   promptTemplateForm: { id: number | null; name: string; template_type: string; content: string; is_active: boolean };

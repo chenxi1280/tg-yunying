@@ -50,17 +50,36 @@ from .channel_membership import (
 )
 from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims, recover_expired_hard_hourly_actions
 from .executors import build_task_plan
-from .details import _ai_account_profiles, _ai_cycles, _ai_generation_records, _channel_subtask_status, _detail_accounts, _membership_accounts, _membership_items, _membership_phase, _message_groups, _relay_batches, _relay_recent_sources, _stats_with_account_coverage, _task_payload
+from .details import (
+    _accounts_by_id,
+    _ai_account_profiles,
+    _ai_cycles,
+    _ai_generation_records,
+    _channel_subtask_status,
+    _groups_by_target_id,
+    _latest_attempts_by_action,
+    _membership_item_payload,
+    _membership_items,
+    _membership_phase,
+    _message_groups,
+    _relay_batches,
+    _relay_recent_sources,
+    _stats_with_account_coverage,
+    _task_payload,
+    _verification_tasks_by_group_account,
+)
 from .fingerprints import content_fingerprint
 from .heartbeat import record_worker_heartbeat
 from .listener_runtime import drain_listener_runtime, invalidate_listener_collect
 from .membership_fast_track import fast_track_pending_hard_hourly_memberships
 from .membership_admission import (
+    list_membership_admission_items_page,
     mark_membership_admission_manual_handled,
-    membership_admission_detail,
+    membership_admission_summary,
     membership_admission_failure_rows,
     retry_failed_membership_admission_items,
     retry_membership_admission_item,
+    retry_membership_admission_rescue,
 )
 from .membership_recovery_gate import recover_missing_hard_hourly_memberships
 from .review import expire_reviews
@@ -80,7 +99,6 @@ _retry_failed_actions = retry_failed_actions
 CHANNEL_COMMENT_SCENE = "channel_comment"
 GROUP_CHAT_SCENE = "group_chat"
 OPEN_PLAN_ACTION_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
-DEFERRED_MEMBERSHIP_DETAIL_TYPES = {"target_admission_retry"}
 MEMBERSHIP_SUCCESS_STATUSES = {"success", "skipped"}
 MEMBERSHIP_PENDING_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
 MEMBERSHIP_FAILURE_STATUSES = {"failed", "unknown_after_send"}
@@ -267,68 +285,48 @@ def get_task_detail(session: Session, tenant_id: int, task_id: str) -> dict[str,
     if is_profile_batch_task_id(task_id):
         return get_profile_batch_task_detail(session, tenant_id, task_id)
     task = _get_task(session, tenant_id, task_id)
-    if _defer_membership_detail_rows(task):
-        return _lightweight_membership_task_detail(session, tenant_id, task)
-    actions = list_actions(session, tenant_id, task_id)
-    business_actions = [action for action in actions if action.action_type not in {"ensure_channel_membership", "ensure_target_membership"}]
-    stats = _stats_with_account_coverage(session, task, refresh_task_stats(session, task))
+    return _task_summary_detail(session, tenant_id, task)
+
+
+def refresh_task_detail_stats(session: Session, tenant_id: int, task_id: str) -> dict[str, Any]:
+    task = _get_task(session, tenant_id, task_id)
+    return _stats_with_account_coverage(session, task, refresh_task_stats(session, task))
+
+
+def _task_summary_detail(session: Session, tenant_id: int, task: Task) -> dict[str, Any]:
+    stats = _stats_with_account_coverage(session, task, task.stats or empty_stats())
     task_summary = session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id, TaskRuntimeSummary.task_id == task.id))
     operation_plan_links = list(session.scalars(select(OperationPlanTaskLink).where(OperationPlanTaskLink.tenant_id == tenant_id, OperationPlanTaskLink.task_id == task.id)))
-    membership_phase = _membership_phase(task, actions)
-    membership_accounts = [] if _defer_membership_detail_rows(task) else _membership_accounts(session, actions)
-    admission_phase, admission_items = membership_admission_detail(session, task)
-    task_payload = _task_payload(session, task, actions=business_actions)
-    task_payload["runtime_stage"] = derive_task_runtime_stage(task, actions=actions, membership_phase=membership_phase, summary=task_summary)
-    return {
-        "task": task_payload,
-        "actions": _action_payloads_with_issue_rollup(session, tenant_id, business_actions),
-        "stats": stats,
-        "task_runtime_summary": task_summary,
-        "operation_plan_links": operation_plan_links,
-        "accounts": _detail_accounts(session, business_actions),
-        "membership_phase": membership_phase,
-        "membership_accounts": membership_accounts,
-        "membership_admission_phase": admission_phase,
-        "membership_admission_items": admission_items,
-        "message_groups": _message_groups(session, task, business_actions),
-        "ai_cycles": _ai_cycles(business_actions),
-        "ai_generation_records": _ai_generation_records(business_actions),
-        "ai_account_profiles": _ai_account_profiles(session, task, business_actions),
-        "relay_batches": _relay_batches(business_actions),
-        "recent_relay_sources": _relay_recent_sources(session, task),
-        "learning_profile_preview": _task_learning_profile_preview(session, task),
-    }
-
-
-def _defer_membership_detail_rows(task: Task) -> bool:
-    return task.type in DEFERRED_MEMBERSHIP_DETAIL_TYPES
-
-
-def _lightweight_membership_task_detail(session: Session, tenant_id: int, task: Task) -> dict[str, Any]:
-    task_summary = session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id, TaskRuntimeSummary.task_id == task.id))
-    operation_plan_links = list(session.scalars(select(OperationPlanTaskLink).where(OperationPlanTaskLink.tenant_id == tenant_id, OperationPlanTaskLink.task_id == task.id)))
-    membership_phase = _lightweight_membership_phase(session, task)
-    task_payload = _task_payload(session, task, actions=[])
+    membership_phase = _summary_membership_phase(session, task)
+    admission_phase = membership_admission_summary(session, task)
+    task_payload = _task_payload(session, task, actions=[], include_detail_search=False)
     task_payload["runtime_stage"] = derive_task_runtime_stage(task, actions=[], membership_phase=membership_phase, summary=task_summary)
     return {
         "task": task_payload,
         "actions": [],
-        "stats": _lightweight_membership_stats(task, membership_phase),
+        "stats": stats,
         "task_runtime_summary": task_summary,
         "operation_plan_links": operation_plan_links,
         "accounts": [],
         "membership_phase": membership_phase,
         "membership_accounts": [],
-        "membership_admission_phase": {},
+        "membership_admission_phase": admission_phase,
         "membership_admission_items": [],
         "message_groups": [],
         "ai_cycles": [],
         "ai_generation_records": [],
         "ai_account_profiles": [],
         "relay_batches": [],
-        "recent_relay_sources": [],
+        "recent_relay_sources": _relay_recent_sources(session, task) if task.type == "group_relay" else [],
         "learning_profile_preview": _task_learning_profile_preview(session, task),
     }
+
+
+def _summary_membership_phase(session: Session, task: Task) -> dict[str, Any]:
+    stats = task.stats if isinstance(task.stats, dict) else {}
+    if stats and any(key.startswith("membership_") for key in stats):
+        return _membership_phase(task, None)
+    return _lightweight_membership_phase(session, task)
 
 
 def _lightweight_membership_phase(session: Session, task: Task) -> dict[str, Any]:
@@ -365,21 +363,6 @@ def _lightweight_membership_phase(session: Session, task: Task) -> dict[str, Any
         "running_count": running,
         "success_count": success,
     }
-
-
-def _lightweight_membership_stats(task: Task, membership_phase: dict[str, Any]) -> dict[str, Any]:
-    stats = dict(task.stats or empty_stats())
-    total = int((membership_phase.get("summary") or {}).get("action_count") or 0)
-    stats.update(
-        {
-            "total_actions": total,
-            "success_count": int(membership_phase.get("success_count") or 0),
-            "failure_count": int(membership_phase.get("failed_count") or 0),
-            "pending_count": int(membership_phase.get("pending_account_count") or 0),
-            "executing_count": int(membership_phase.get("running_count") or 0),
-        }
-    )
-    return stats
 
 
 def _task_learning_profile_preview(session: Session, task: Task) -> dict[str, Any]:
@@ -670,8 +653,7 @@ def list_actions_page(
     sort_order: str = "desc",
 ) -> tuple[list[dict[str, Any]], int]:
     filters = [Action.tenant_id == tenant_id, Action.task_id == task_id]
-    if status:
-        filters.append(Action.status == status)
+    _append_action_status_filter(filters, status)
     if action_type:
         filters.append(Action.action_type == action_type)
     if account_id is not None:
@@ -699,6 +681,95 @@ def list_actions_page(
     return _action_payloads_with_issue_rollup(session, tenant_id, actions), int(total)
 
 
+def list_ai_cycles_page(session: Session, tenant_id: int, task_id: str, *, page: int = 1, page_size: int = 20) -> tuple[list[dict[str, Any]], int]:
+    cycle_id = Action.payload["cycle_id"].as_string()
+    actions, total = _list_actions_for_group_page(session, tenant_id, task_id, [cycle_id.is_not(None)], [cycle_id], page=page, page_size=page_size)
+    return _ai_cycles(actions), total
+
+
+def list_message_groups_page(session: Session, tenant_id: int, task_id: str, *, page: int = 1, page_size: int = 20) -> tuple[list[dict[str, Any]], int]:
+    task = _get_task(session, tenant_id, task_id)
+    channel_target_id = Action.payload["channel_target_id"].as_integer()
+    channel_message_id = Action.payload["channel_message_id"].as_integer()
+    message_id = Action.payload["message_id"].as_integer()
+    filters = [
+        message_id.is_not(None),
+        Action.payload["channel_id"].as_string().is_not(None),
+    ]
+    key_exprs = [channel_target_id, channel_message_id, message_id, Action.action_type]
+    actions, total = _list_actions_for_group_page(session, tenant_id, task_id, filters, key_exprs, page=page, page_size=page_size)
+    return _message_groups(session, task, actions), total
+
+
+def list_relay_batches_page(session: Session, tenant_id: int, task_id: str, *, page: int = 1, page_size: int = 20) -> tuple[list[dict[str, Any]], int]:
+    batch_id = Action.payload["relay_batch_id"].as_string()
+    actions, total = _list_actions_for_group_page(session, tenant_id, task_id, [batch_id.is_not(None)], [batch_id], page=page, page_size=page_size)
+    return _relay_batches(actions), total
+
+
+def _list_actions_for_group_page(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    extra_filters: list[Any],
+    key_exprs: list[Any],
+    *,
+    page: int,
+    page_size: int,
+) -> tuple[list[Action], int]:
+    _get_task(session, tenant_id, task_id)
+    filters = [Action.tenant_id == tenant_id, Action.task_id == task_id, *extra_filters]
+    page_keys, total = _group_page_keys(session, filters, key_exprs, page=page, page_size=page_size)
+    if not page_keys:
+        return [], total
+    key_filter = _group_key_filter(key_exprs, page_keys)
+    actions = list(
+        session.scalars(
+            select(Action)
+            .where(*filters, key_filter)
+            .order_by(Action.scheduled_at.desc(), Action.created_at.desc())
+        )
+    )
+    return actions, int(total)
+
+
+def _group_page_keys(session: Session, filters: list[Any], key_exprs: list[Any], *, page: int, page_size: int) -> tuple[list[tuple], int]:
+    labels = [expr.label(f"key_{index}") for index, expr in enumerate(key_exprs)]
+    grouped = (
+        select(*labels, func.max(Action.scheduled_at).label("latest_scheduled"), func.max(Action.created_at).label("latest_created"))
+        .where(*filters)
+        .group_by(*key_exprs)
+        .subquery()
+    )
+    total = session.scalar(select(func.count()).select_from(grouped)) or 0
+    rows = session.execute(
+        select(*[grouped.c[f"key_{index}"] for index in range(len(key_exprs))])
+        .order_by(grouped.c.latest_scheduled.desc(), grouped.c.latest_created.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return [tuple(row) for row in rows], int(total)
+
+
+def _group_key_filter(key_exprs: list[Any], keys: list[tuple]) -> Any:
+    return or_(*[and_(*[_value_matches(expr, value) for expr, value in zip(key_exprs, key, strict=True)]) for key in keys])
+
+
+def _value_matches(expr: Any, value: Any) -> Any:
+    return expr.is_(None) if value is None else expr == value
+
+
+def _append_action_status_filter(filters: list[Any], status: str | None) -> None:
+    if status == "planned":
+        filters.append(Action.status.in_(OPEN_PLAN_ACTION_STATUSES))
+        return
+    if status == "executed":
+        filters.append(Action.status.notin_(OPEN_PLAN_ACTION_STATUSES))
+        return
+    if status:
+        filters.append(Action.status == status)
+
+
 def list_membership_items_page(
     session: Session,
     tenant_id: int,
@@ -712,15 +783,100 @@ def list_membership_items_page(
     page_size: int = 50,
 ) -> tuple[list[dict[str, Any]], int]:
     task = _get_task(session, tenant_id, task_id)
-    actions = _list_membership_actions(session, tenant_id, task.id, status=status, account_id=account_id)
-    rows = _membership_items(session, task, actions)
-    if phase:
-        rows = [row for row in rows if row["phase"] == phase]
-    if manual_required is not None:
-        rows = [row for row in rows if row["manual_required"] == manual_required]
-    total = len(rows)
+    if phase is None and manual_required is None:
+        actions, total = _list_membership_actions_page(
+            session,
+            tenant_id,
+            task.id,
+            status=status,
+            account_id=account_id,
+            page=page,
+            page_size=page_size,
+        )
+        return _membership_page_payloads(session, task, actions), total
+    return _filtered_membership_items_page(
+        session,
+        task,
+        status=status,
+        account_id=account_id,
+        phase=phase,
+        manual_required=manual_required,
+        page=page,
+        page_size=page_size,
+    )
+
+
+def _filtered_membership_items_page(
+    session: Session,
+    task: Task,
+    *,
+    status: str | None,
+    account_id: int | None,
+    phase: str | None,
+    manual_required: bool | None,
+    page: int,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], int]:
+    chunk_size = max(page_size, 100)
+    action_page = 1
+    total_matches = 0
+    selected: list[dict[str, Any]] = []
     start = (page - 1) * page_size
-    return rows[start : start + page_size], total
+    while True:
+        actions, action_total = _list_membership_actions_page(
+            session, task.tenant_id, task.id, status=status, account_id=account_id, page=action_page, page_size=chunk_size
+        )
+        if not actions:
+            return selected, total_matches
+        for row in _membership_page_payloads(session, task, actions):
+            if not _membership_row_matches(row, phase, manual_required):
+                continue
+            if start <= total_matches < start + page_size:
+                selected.append(row)
+            total_matches += 1
+        if action_page * chunk_size >= action_total:
+            return selected, total_matches
+        action_page += 1
+
+
+def _membership_row_matches(row: dict[str, Any], phase: str | None, manual_required: bool | None) -> bool:
+    if phase and row.get("phase") != phase:
+        return False
+    if manual_required is not None and bool(row.get("manual_required")) != manual_required:
+        return False
+    return True
+
+
+def _list_membership_actions_page(
+    session: Session,
+    tenant_id: int,
+    task_id: str,
+    *,
+    status: str | None = None,
+    account_id: int | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> tuple[list[Action], int]:
+    filters = _membership_action_filters(tenant_id, task_id, status=status, account_id=account_id)
+    total = session.scalar(select(func.count(Action.id)).where(*filters)) or 0
+    rows = list(
+        session.scalars(
+            select(Action)
+            .where(*filters)
+            .order_by(Action.scheduled_at.desc(), Action.created_at.desc(), Action.account_id.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
+    return rows, int(total)
+
+
+def _membership_page_payloads(session: Session, task: Task, actions: list[Action]) -> list[dict[str, Any]]:
+    accounts = _accounts_by_id(session, actions)
+    groups = _groups_by_target_id(session, task.tenant_id, actions)
+    verifications = _verification_tasks_by_group_account(session, task.tenant_id, groups, actions)
+    attempts = _latest_attempts_by_action(session, actions)
+    return [_membership_item_payload(action, accounts, groups, verifications, attempts) for action in actions]
 
 
 def _list_membership_actions(
@@ -731,7 +887,18 @@ def _list_membership_actions(
     status: str | None = None,
     account_id: int | None = None,
 ) -> list[Action]:
-    filters = [
+    filters = _membership_action_filters(tenant_id, task_id, status=status, account_id=account_id)
+    return list(session.scalars(select(Action).where(*filters).order_by(Action.scheduled_at.desc(), Action.created_at.desc())))
+
+
+def _membership_action_filters(
+    tenant_id: int,
+    task_id: str,
+    *,
+    status: str | None = None,
+    account_id: int | None = None,
+) -> list[Any]:
+    filters: list[Any] = [
         Action.tenant_id == tenant_id,
         Action.task_id == task_id,
         Action.action_type.in_([TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]),
@@ -740,7 +907,7 @@ def _list_membership_actions(
         filters.append(Action.status == status)
     if account_id is not None:
         filters.append(Action.account_id == account_id)
-    return list(session.scalars(select(Action).where(*filters).order_by(Action.scheduled_at.desc(), Action.created_at.desc())))
+    return filters
 
 
 def list_action_attempts(session: Session, tenant_id: int, task_id: str, action_id: str) -> list[ExecutionAttempt]:
@@ -1539,6 +1706,8 @@ def _action_payloads_with_issue_rollup(session: Session, tenant_id: int, actions
         return []
     action_ids = [action.id for action in actions]
     task_ids = {action.task_id for action in actions}
+    account_ids = sorted({int(action.account_id) for action in actions if action.account_id})
+    accounts = {account.id: account for account in session.scalars(select(TgAccount).where(TgAccount.id.in_(account_ids)))} if account_ids else {}
     issues = list(
         session.scalars(
             select(OperationIssue).where(
@@ -1553,7 +1722,10 @@ def _action_payloads_with_issue_rollup(session: Session, tenant_id: int, actions
     for issue in issues:
         if issue.source_task_id and issue.failure_type:
             issue_by_task_failure.setdefault((issue.source_task_id, issue.failure_type), issue)
-    return [_action_payload(action, direct_issue.get(action.id) or issue_by_task_failure.get((action.task_id, _action_failure_type(action)))) for action in actions]
+    return [
+        _action_payload(action, direct_issue.get(action.id) or issue_by_task_failure.get((action.task_id, _action_failure_type(action))), accounts.get(int(action.account_id or 0)))
+        for action in actions
+    ]
 
 
 class _ActionPayload(dict):
@@ -1564,7 +1736,7 @@ class _ActionPayload(dict):
             raise AttributeError(key) from exc
 
 
-def _action_payload(action: Action, issue: OperationIssue | None = None) -> dict[str, Any]:
+def _action_payload(action: Action, issue: OperationIssue | None = None, account: TgAccount | None = None) -> dict[str, Any]:
     result = action.result or {}
     failure_type = _action_failure_type(action)
     failure_reason = _action_failure_reason(action)
@@ -1575,6 +1747,8 @@ def _action_payload(action: Action, issue: OperationIssue | None = None) -> dict
         "task_type": action.task_type,
         "action_type": action.action_type,
         "account_id": action.account_id,
+        "account_display_name": account.display_name if account else "",
+        "account_username": account.username if account else "",
         "scheduled_at": action.scheduled_at,
         "executed_at": action.executed_at,
         "status": action.status,
@@ -1766,10 +1940,14 @@ __all__ = [
     "generate_channel_comment_preview",
     "generate_group_ai_chat_preview",
     "get_task_detail",
+    "list_ai_cycles_page",
     "list_action_attempts",
     "list_actions_page",
     "list_actions",
+    "list_membership_admission_items_page",
     "list_membership_items_page",
+    "list_message_groups_page",
+    "list_relay_batches_page",
     "list_reviews",
     "list_tasks",
     "mark_membership_admission_manual_handled",
@@ -1783,6 +1961,7 @@ __all__ = [
     "reset_task",
     "retry_failed_membership_admission_items",
     "retry_membership_admission_item",
+    "retry_membership_admission_rescue",
     "retry_task",
     "start_task",
     "stop_task",

@@ -1,0 +1,434 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+
+import pytest
+from pydantic import ValidationError
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+
+from app.database import Base
+from app.integrations.telegram import DeveloperAppCredentials, OperationResult
+from app.integrations.telegram.gateway import TelethonTelegramGateway
+from app.models import AccountStatus, Action, FailureType, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup
+from app.schemas import TenantGroupRescueSettingsUpdate
+from app.services.task_center import dispatcher
+from app.services.task_center.account_pool import select_task_accounts
+from app.services.task_center.dispatcher import dispatch_action
+from app.services.task_center.group_rescue import permission_failure_count_for_send_action
+from app.services.task_center.membership_admission import lock_membership_admission_snapshot, sync_membership_admission_items
+from app.services.task_center.membership_admission import retry_membership_admission_rescue
+from app.services.tenants import group_rescue_settings_payload, update_group_rescue_settings
+
+
+NOW = datetime(2026, 6, 22, 10, 0, 0)
+
+
+def _session() -> Session:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    return Session(engine)
+
+
+def _seed_rescue_target(session: Session, *, configured: bool = True) -> None:
+    tenant = Tenant(id=1, name="默认运营空间")
+    if configured:
+        tenant.group_rescue_enabled = True
+        tenant.group_rescue_admin_account_id = 99
+        tenant.group_rescue_bot_username = "@guard_bot"
+    session.add(tenant)
+    session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-10021", title="目标群"))
+    session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-10021", title="目标群"))
+    session.add(TgAccount(id=11, tenant_id=1, display_name="普通账号", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"))
+    session.add(TgAccount(id=99, tenant_id=1, display_name="救援账号", phone_masked="99", status=AccountStatus.ACTIVE.value, session_ciphertext="session-99"))
+    session.add(Task(id="task-rescue", tenant_id=1, name="准入", type="group_membership_admission", status="running", type_config={"target_operation_target_id": 21}))
+    session.add(TaskMembershipAdmissionItem(tenant_id=1, task_id="task-rescue", account_id=11, target_id=21, phase="joining"))
+    session.commit()
+
+
+def test_group_rescue_settings_rejects_unavailable_admin_account() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=99, tenant_id=1, display_name="离线账号", phone_masked="99", status=AccountStatus.NEED_RELOGIN.value))
+        session.commit()
+
+        payload = TenantGroupRescueSettingsUpdate(
+            group_rescue_enabled=True,
+            group_rescue_admin_account_id=99,
+            group_rescue_bot_username="@guard_bot",
+        )
+
+        with pytest.raises(ValueError, match="救援管理员账号必须是在线账号"):
+            update_group_rescue_settings(session, 1, payload, "pytest")
+
+
+def test_group_rescue_settings_payload_exposes_admin_and_bot() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间", group_rescue_enabled=True, group_rescue_admin_account_id=99, group_rescue_bot_username="@guard_bot"))
+        session.add(TgAccount(id=99, tenant_id=1, display_name="救援账号", username="helper", phone_masked="99", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        session.commit()
+
+        payload = group_rescue_settings_payload(session.get(Tenant, 1), session)
+
+        assert payload["group_rescue_enabled"] is True
+        assert payload["group_rescue_bot_username"] == "@guard_bot"
+        assert payload["group_rescue_admin_account"]["id"] == 99
+        assert payload["group_rescue_admin_account"]["display_name"] == "救援账号"
+
+
+def test_group_rescue_admin_account_is_excluded_from_task_account_selection() -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+
+        all_accounts = select_task_accounts(session, 1, {"selection_mode": "all", "max_concurrent": 10})
+        manual_accounts = select_task_accounts(session, 1, {"selection_mode": "manual", "account_ids": [99, 11], "max_concurrent": 10})
+
+        assert [account.id for account in all_accounts] == [11]
+        assert [account.id for account in manual_accounts] == [11]
+
+
+def test_group_membership_admission_snapshot_excludes_rescue_admin_account() -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        for item in session.scalars(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == "task-rescue")):
+            session.delete(item)
+        session.get(TgAccount, 11).pool_id = 5
+        session.get(TgAccount, 99).pool_id = 5
+        task = session.get(Task, "task-rescue")
+        task.type_config = {"target_operation_target_id": 21, "account_group_ids": [5]}
+        session.commit()
+
+        items = lock_membership_admission_snapshot(session, task, now=NOW)
+
+        assert [item.account_id for item in items] == [11]
+
+
+def test_dispatch_skips_normal_actions_bound_to_rescue_admin_account(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        action = Action(
+            id="rescue-admin-send",
+            tenant_id=1,
+            task_id="task-rescue",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=99,
+            scheduled_at=NOW,
+            status="pending",
+            payload={"group_id": 7, "message_text": "不应该发送"},
+        )
+        session.add(action)
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *_args, **_kwargs: pytest.fail("rescue admin must not send normal messages"))
+
+        assert dispatch_action(session, action) is True
+
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "rescue_admin_reserved"
+
+
+def test_invite_group_bot_payload_requires_bot_username() -> None:
+    with pytest.raises(ValidationError, match="bot_username"):
+        dispatcher.validate_action_payload(
+            "invite_group_bot",
+            {"group_id": 7, "operation_target_id": 21, "group_peer_id": "-10021", "bot_username": ""},
+        )
+
+
+def test_dispatch_invite_group_bot_uses_configured_rescue_account(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        action = Action(
+            id="invite-bot",
+            tenant_id=1,
+            task_id="task-rescue",
+            task_type="group_membership_admission",
+            action_type="invite_group_bot",
+            account_id=99,
+            scheduled_at=NOW,
+            status="pending",
+            payload={
+                "group_id": 7,
+                "operation_target_id": 21,
+                "group_peer_id": "-10021",
+                "bot_username": "@guard_bot",
+                "trigger_account_id": 11,
+                "trigger_task_id": "task-rescue",
+                "trigger_reason": "permission_denied",
+            },
+        )
+        session.add(action)
+        session.commit()
+
+        calls: list[tuple[int, str, str]] = []
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+
+        def fake_invite(account_id, group_peer_id, bot_username, *_args, **_kwargs):  # noqa: ANN001
+            calls.append((account_id, group_peer_id, bot_username))
+            return OperationResult(True, "已处理", detail="bot_invited")
+
+        monkeypatch.setattr(dispatcher.gateway, "invite_bot_to_group", fake_invite)
+
+        assert dispatch_action(session, action) is True
+
+        assert calls == [(99, "-10021", "@guard_bot")]
+        assert action.status == "success"
+        assert action.result["rescue_status"] == "invite_success"
+
+
+def test_membership_permission_denied_over_threshold_creates_one_rescue_action() -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        task = session.get(Task, "task-rescue")
+        item = session.scalar(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == task.id))
+
+        for index in range(4):
+            action = Action(
+                id=f"membership-denied-{index}",
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="ensure_target_membership",
+                account_id=11,
+                scheduled_at=NOW,
+                status="skipped",
+                result={"membership_status": "permission_denied", "error_message": "群黑名单，无法发言"},
+            )
+            session.add(action)
+            item.membership_action_id = action.id
+            item.phase = "joining"
+            session.commit()
+            sync_membership_admission_items(session, task, now=NOW)
+
+        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_bot")).all()
+        session.refresh(item)
+
+        assert len(rescue_actions) == 1
+        assert rescue_actions[0].account_id == 99
+        assert rescue_actions[0].payload["bot_username"] == "@guard_bot"
+        assert item.permission_failure_count == 4
+        assert item.rescue_action_id == rescue_actions[0].id
+        assert item.rescue_status == "pending"
+
+
+def test_membership_sync_counts_same_permission_action_once() -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        task = session.get(Task, "task-rescue")
+        item = session.scalar(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == task.id))
+        action = Action(
+            id="membership-denied-once",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="ensure_target_membership",
+            account_id=11,
+            scheduled_at=NOW,
+            status="skipped",
+            result={"membership_status": "permission_denied", "error_message": "群黑名单，无法发言"},
+        )
+        session.add(action)
+        item.membership_action_id = action.id
+        item.phase = "joining"
+        session.commit()
+
+        for _ in range(4):
+            sync_membership_admission_items(session, task, now=NOW)
+            session.commit()
+
+        session.refresh(item)
+        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_bot")).all()
+        assert item.permission_failure_count == 1
+        assert rescue_actions == []
+
+
+def test_membership_rescue_missing_config_is_explicit_without_action() -> None:
+    with _session() as session:
+        _seed_rescue_target(session, configured=False)
+        task = session.get(Task, "task-rescue")
+        item = session.scalar(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == task.id))
+
+        for index in range(4):
+            action = Action(
+                id=f"membership-denied-missing-{index}",
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="ensure_target_membership",
+                account_id=11,
+                scheduled_at=NOW,
+                status="skipped",
+                result={"membership_status": "permission_denied", "error_message": "群黑名单，无法发言"},
+            )
+            session.add(action)
+            item.membership_action_id = action.id
+            item.phase = "joining"
+            session.commit()
+            sync_membership_admission_items(session, task, now=NOW)
+
+        session.refresh(item)
+
+        assert session.scalars(select(Action).where(Action.action_type == "invite_group_bot")).all() == []
+        assert item.permission_failure_count == 4
+        assert item.rescue_status == "unconfigured"
+        assert "救援配置缺失" in item.rescue_failure_detail
+
+
+def test_group_ai_permission_failure_count_uses_latest_consecutive_streak() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-ai-rescue", tenant_id=1, name="ai rescue", type="group_ai_chat", status="running"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="普通账号", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="目标群"))
+        for index in range(3):
+            session.add(
+                Action(
+                    id=f"old-denied-{index}",
+                    tenant_id=1,
+                    task_id="task-ai-rescue",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=11,
+                    scheduled_at=NOW - timedelta(minutes=10 + index),
+                    executed_at=NOW - timedelta(minutes=10 + index),
+                    status="failed",
+                    payload={"group_id": 7, "message_text": "old"},
+                    result={"error_code": FailureType.GROUP_PERMISSION_DENIED.value, "error_message": "群无权限"},
+                )
+            )
+        session.add(
+            Action(
+                id="success-breaks-streak",
+                tenant_id=1,
+                task_id="task-ai-rescue",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                scheduled_at=NOW - timedelta(minutes=1),
+                executed_at=NOW - timedelta(minutes=1),
+                status="success",
+                payload={"group_id": 7, "message_text": "ok"},
+                result={"success": True},
+            )
+        )
+        current = Action(
+            id="current-denied",
+            tenant_id=1,
+            task_id="task-ai-rescue",
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            scheduled_at=NOW,
+            executed_at=NOW,
+            status="failed",
+            payload={"group_id": 7, "message_text": "current"},
+            result={"error_code": FailureType.GROUP_PERMISSION_DENIED.value, "error_message": "群无权限"},
+        )
+        session.add(current)
+        session.commit()
+
+        assert permission_failure_count_for_send_action(session, current) == 1
+
+
+def test_retry_membership_rescue_requeues_failed_rescue_action() -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        item = session.scalar(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == "task-rescue"))
+        action = Action(
+            id="failed-rescue",
+            tenant_id=1,
+            task_id="task-rescue",
+            task_type="group_membership_admission",
+            action_type="invite_group_bot",
+            account_id=99,
+            scheduled_at=NOW,
+            status="failed",
+            payload={"group_id": 7, "operation_target_id": 21, "group_peer_id": "-10021", "bot_username": "@guard_bot"},
+            result={"rescue_status": "invite_failed", "error_message": "救援账号不是目标群管理员或没有邀请权限"},
+        )
+        session.add(action)
+        item.rescue_action_id = action.id
+        item.rescue_status = "invite_failed"
+        item.rescue_failure_detail = "救援账号不是目标群管理员或没有邀请权限"
+        session.commit()
+
+        retry_membership_admission_rescue(session, 1, "task-rescue", item.id)
+
+        session.refresh(action)
+        session.refresh(item)
+        assert action.status == "pending"
+        assert action.result["rescue_status"] == "pending"
+        assert item.rescue_status == "pending"
+        assert item.rescue_failure_detail == ""
+
+
+def test_retry_membership_rescue_uses_latest_global_config() -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        session.add(TgAccount(id=100, tenant_id=1, display_name="新救援账号", phone_masked="100", status=AccountStatus.ACTIVE.value, session_ciphertext="session-100"))
+        item = session.scalar(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == "task-rescue"))
+        action = Action(
+            id="old-failed-rescue",
+            tenant_id=1,
+            task_id="task-rescue",
+            task_type="group_membership_admission",
+            action_type="invite_group_bot",
+            account_id=99,
+            scheduled_at=NOW,
+            status="failed",
+            payload={"group_id": 7, "operation_target_id": 21, "group_peer_id": "-10021", "bot_username": "@old_bot", "trigger_account_id": 11},
+            result={"rescue_status": "invite_failed", "error_message": "旧配置失败"},
+        )
+        session.add(action)
+        item.rescue_action_id = action.id
+        item.rescue_status = "invite_failed"
+        tenant = session.get(Tenant, 1)
+        tenant.group_rescue_admin_account_id = 100
+        tenant.group_rescue_bot_username = "@new_bot"
+        session.commit()
+
+        retry_membership_admission_rescue(session, 1, "task-rescue", item.id)
+
+        session.refresh(action)
+        assert action.status == "pending"
+        assert action.account_id == 100
+        assert action.payload["bot_username"] == "@new_bot"
+        assert action.payload["trigger_account_id"] == 11
+
+
+def test_invite_bot_to_group_rejects_non_bot_username(monkeypatch) -> None:
+    gateway = TelethonTelegramGateway()
+
+    class FakeClient:
+        async def is_user_authorized(self) -> bool:
+            return True
+
+        async def get_entity(self, username: str):  # noqa: ANN001
+            assert username == "real_user"
+            return SimpleNamespace(bot=False)
+
+        async def __call__(self, _request):  # noqa: ANN001
+            return object()
+
+    async def fake_client(_credentials, _raw_session):  # noqa: ANN001
+        return FakeClient()
+
+    async def fake_target(_client, _peer_id, *, group_id=0):  # noqa: ANN001
+        return SimpleNamespace(id=7)
+
+    monkeypatch.setattr(gateway, "_get_or_create_client", fake_client)
+    monkeypatch.setattr("app.integrations.telegram.gateway.resolve_telethon_target", fake_target)
+
+    result = gateway._run(
+        gateway._invite_bot_to_group_async(
+            "raw-session",
+            "-1007",
+            "@real_user",
+            DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1),
+        )
+    )
+
+    assert result.ok is False
+    assert result.detail == "救援机器人 username 不是 Telegram bot"

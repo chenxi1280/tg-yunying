@@ -1088,9 +1088,45 @@ primary session 登录成功
 - 最近一次准备批次状态。
 - 失败账号的处理状态；运营目标页展示跨任务汇总和跳转入口，具体重试 / 复检 / 人工处理在对应任务详情准入抽屉中完成。
 
+### 3.4.1 群聊救援配置
+
+群聊救援用于处理群聊准入和 AI 活跃群中的账号级权限异常。系统只能使用已经具备目标群管理员或邀请权限的 TG 账号，不能自动把一个账号变成所有群的管理员。
+
+配置入口在“系统配置 / 开发者应用 / 运营空间配置”内，配置项包括：
+
+| 配置项 | 口径 |
+| --- | --- |
+| 启用状态 | 关闭时不创建救援 action，只暴露普通失败原因 |
+| 救援管理员账号 | 只能选择本运营空间在线、未删除且有可用 session 的 TG 账号 |
+| 救援机器人 username | 必须解析为 Telegram bot；如果解析到真人账号或目标不可访问，必须明确失败 |
+| 连续失败阈值 | v1 固定为 3，不开放前端修改 |
+
+救援管理员账号是专职处置账号。只要某账号被配置为 `group_rescue_admin_account_id`，普通任务账号选择、账号覆盖统计、群聊准入快照、频道关注前置、消息发送、频道浏览、点赞、评论和转发发送都不得把它当作可参与账号。历史上已经排到该账号的普通 action 必须在 dispatcher 入口明确跳过并记录 `rescue_admin_reserved`，只有 `invite_group_bot` 救援 action 可以使用该账号。
+
+触发规则：
+
+- 群聊准入任务按账号、任务、目标群统计真实准入动作的连续权限失败；同一个已完成 action 被详情刷新或调度同步多次时只能计数一次。
+- AI 活跃群按账号、任务、目标群统计最近 send action 的连续权限失败；中间出现一次成功发送或非权限类失败，连续计数必须断开。
+- 连续权限失败超过 3 次后，系统停止继续用该普通账号刷普通重试，并创建一个 `invite_group_bot` 救援 action。同一账号、同一任务、同一目标群只能存在一个未被替换的救援 action。
+- 未配置救援管理员账号、未配置 bot username、救援账号不可用、目标群未同步时，不创建假成功，任务详情必须显示“救援配置缺失”或真实阻塞原因。
+
+救援 action 规则：
+
+- 执行账号固定为全局救援管理员账号，不参与正式 AI 聊天内容。
+- payload 必须包含 `group_id`、`operation_target_id`、`group_peer_id`、`bot_username`、`trigger_account_id`、`trigger_task_id`、`trigger_reason`。
+- Telegram gateway 邀请前必须确认 `bot_username` 对应实体是 bot；缺少邀请权限、目标群不可访问、bot 无效、救援账号不是管理员都直接返回失败。
+- bot 已在群内按幂等成功处理，但普通账号仍必须重新验证 `can_send=true` 后才算恢复。
+- “重试救援”默认按当前全局救援配置重新生成或更新救援 action；运营修改救援账号或 bot username 后，重试必须使用最新配置，而不是复用旧 payload。
+
+任务详情展示：
+
+- 群聊准入任务账号明细展示权限失败次数、救援状态、救援 action id 和 Telegram 原始失败原因。
+- AI 活跃群 v1 在触发失败的 send action 和任务执行明细中展示救援状态；后续如需高频运营处理，应升级为账号-目标级救援状态投影，避免运营只在 action 明细中追溯。
+- 支持“重查该账号 / 人工已处理”“重试救援”“导出救援失败清单”。救援成功只表示机器人已邀请或已在群内，不表示普通账号准入成功。
+
 ---
 
-## 3.4.1 任务内目标输入
+## 3.4.2 任务内目标输入
 
 任务中心是新目标进入系统的主入口。创建任务时，目标步骤必须支持：
 
@@ -3028,10 +3064,10 @@ Listener 采集源群消息
 ```text
 用户从任务列表或运营异常进入任务详情
   -> GET /api/tasks/{task_id}
-      返回任务配置、目标、规则、账号摘要、membership_subtask、task_runtime_summary
+      返回任务配置、目标、规则、账号摘要、membership_subtask、task_runtime_summary、统计摘要和分页入口
   -> GET /api/tasks/{task_id}/membership-items?page=&phase=&manual_required=
       分页返回准入账号 item、阶段记录、验证摘要和可操作状态
-  -> GET /api/tasks/{task_id}/actions?page=&status=&type=&time_range=
+  -> GET /api/tasks/{task_id}/actions?page=&page_size=&status=&action_type=&time_range=
       分页返回 action 明细
   -> 用户展开某条 action
   -> GET /api/tasks/{task_id}/actions/{action_id}/attempts
@@ -3040,8 +3076,9 @@ Listener 采集源群消息
 
 任务详情下钻要求：
 
-- 详情顶部先展示任务状态和准入前置，再展示执行明细。
-- 准入前置账号明细必须分页；点击账号行打开二级抽屉后才能加载验证问题、AI / MiMo 答案和原始错误。
+- 详情顶部先展示任务状态、派生运行阶段、准入前置和统计摘要，再展示执行明细；首屏不能依赖全量 action、准入账号、AI cycle、relay batch 或 attempt 聚合。
+- `GET /api/tasks/{task_id}` 是只读首屏摘要路径，不得触发 `refresh_task_stats()`、汇总重算、执行事实修正或其他写库动作。
+- 准入前置账号明细必须由数据库分页和计数支撑；不能先全量构造 rows 再在内存里切片。点击账号行打开二级抽屉后才能加载验证问题、AI / MiMo 答案和原始错误。
 - Action 明细必须分页；默认按最近计划 / 最近执行时间倒序。
 - Attempt 明细默认折叠，只有展开 action 时加载。
 - 失败 action 必须显示 `failure_type`、运营人员可读原因、原始错误入口、是否上卷 `operation_issue`。

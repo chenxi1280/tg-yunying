@@ -82,6 +82,8 @@ export type TaskCenterAction = {
   task_type: string;
   action_type: string;
   account_id: number | null;
+  account_display_name?: string;
+  account_username?: string | null;
   scheduled_at: string;
   executed_at: string | null;
   status: string;
@@ -231,6 +233,10 @@ export type TaskMembershipAdmissionItem = {
   test_message_id: string;
   delete_after_send: boolean;
   delete_status: string;
+  permission_failure_count: number;
+  rescue_action_id: string | null;
+  rescue_status: string;
+  rescue_failure_detail: string;
   failure_type: string;
   failure_detail: string;
   manual_required: boolean;

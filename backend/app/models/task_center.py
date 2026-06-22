@@ -50,6 +50,9 @@ class Action(Base):
         Index("ix_actions_claim_expiry", "status", "claim_expires_at"),
         Index("ix_actions_lease_recovery", "lease_owner", "lease_expires_at"),
         Index("ix_actions_task_status", "task_id", "status", "executed_at"),
+        Index("ix_actions_task_schedule_page", "tenant_id", "task_id", "scheduled_at", "created_at"),
+        Index("ix_actions_task_status_schedule_page", "tenant_id", "task_id", "status", "scheduled_at", "created_at"),
+        Index("ix_actions_task_type_schedule_page", "tenant_id", "task_id", "action_type", "scheduled_at", "created_at"),
         Index(
             "uq_actions_executing_account",
             "account_id",
@@ -172,6 +175,10 @@ class TaskMembershipAdmissionItem(Base):
     failure_type: Mapped[str] = mapped_column(String(80), default="")
     failure_detail: Mapped[str] = mapped_column(Text, default="")
     manual_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    permission_failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    rescue_action_id: Mapped[str | None] = mapped_column(ForeignKey("actions.id"), nullable=True)
+    rescue_status: Mapped[str] = mapped_column(String(40), default="")
+    rescue_failure_detail: Mapped[str] = mapped_column(Text, default="")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

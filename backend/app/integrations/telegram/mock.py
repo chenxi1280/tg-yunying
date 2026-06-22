@@ -188,6 +188,22 @@ class TelegramGateway:
         link = f"https://t.me/+mockInvite{account_id}"
         return InviteLinkResult(True, detail=link, invite_link=link)
 
+    def invite_bot_to_group(
+        self,
+        account_id: int,
+        group_peer_id: str,
+        bot_username: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        if not group_peer_id:
+            return OperationResult(False, "失败", FailureType.PEER_INVALID.value, "缺少目标群")
+        if not bot_username:
+            return OperationResult(False, "失败", FailureType.PEER_INVALID.value, "缺少机器人 username")
+        if "no-admin" in group_peer_id.lower():
+            return OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "救援账号不是目标群管理员或没有邀请权限")
+        return OperationResult(True, "已处理", detail="bot_invited")
+
     def send_channel_reaction(
         self,
         account_id: int,

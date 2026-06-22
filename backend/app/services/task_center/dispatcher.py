@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from app.integrations.telegram import OperationResult, OutboundSegment
 from app.config import get_settings
-from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now, audit, gateway
 from app.services.account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery
 from app.services.account_capacity import account_capacity_decision
@@ -37,7 +37,8 @@ from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavail
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group
 from .executors.common import quantity_jitter_bounds
 from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
-from .payloads import DeleteMessagePayload, EnsureChannelMembershipPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
+from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, permission_failure_count_for_send_action, trigger_group_rescue
+from .payloads import DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupBotPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from . import runtime_resources as _runtime_resources
@@ -188,7 +189,11 @@ def dispatch_action(session: Session, action: Action) -> bool:
     if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
         return True
-    account = _account_after_global_policy(session, action, account, allow_reassign=action.status != "executing" and not _is_membership_action(action))
+    if _is_reserved_rescue_admin_action(session, action, account):
+        _skip(action, "rescue_admin_reserved", "救援管理员账号只允许执行群聊救援动作，不参与普通任务发送、点赞、评论或准入")
+        return True
+    can_reassign = action.status != "executing" and not _is_membership_action(action) and action.action_type != "invite_group_bot"
+    account = _account_after_global_policy(session, action, account, allow_reassign=can_reassign)
     if account is None:
         return True
     try:
@@ -202,6 +207,8 @@ def dispatch_action(session: Session, action: Action) -> bool:
             return _dispatch_send_message(session, action, account, credentials, payload)
         if action.action_type == "delete_message":
             return _dispatch_delete_message(session, action, account, credentials, payload)
+        if action.action_type == "invite_group_bot":
+            return _dispatch_invite_group_bot(session, action, account, credentials, payload)
         if action.action_type == "view_message":
             return _dispatch_view(action, account, credentials, session, payload)
         if action.action_type == "like_message":
@@ -220,6 +227,13 @@ def dispatch_action(session: Session, action: Action) -> bool:
         else:
             _fail(action, FailureType.UNKNOWN.value, str(exc))
         return True
+
+
+def _is_reserved_rescue_admin_action(session: Session, action: Action, account: TgAccount) -> bool:
+    if action.action_type == "invite_group_bot":
+        return False
+    tenant = session.get(Tenant, action.tenant_id)
+    return bool(tenant and tenant.group_rescue_admin_account_id and int(tenant.group_rescue_admin_account_id) == int(account.id))
 
 
 def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str] | None = None) -> list[Action]:
@@ -707,6 +721,28 @@ def _dispatch_delete_message(session: Session, action: Action, account: TgAccoun
     return True
 
 
+def _dispatch_invite_group_bot(session: Session, action: Action, account: TgAccount, credentials, payload: InviteGroupBotPayload) -> bool:
+    attempt = _begin_execution_attempt(session, action, account)
+    _mark_executing(action)
+    session.commit()
+    _mark_gateway_call_started(session, attempt)
+    result = gateway.invite_bot_to_group(
+        account.id,
+        payload.group_peer_id,
+        payload.bot_username,
+        account.session_ciphertext,
+        credentials,
+    )
+    _apply_rescue_invite_result(action, account, result, attempt=attempt)
+    return True
+
+
+def _apply_rescue_invite_result(action: Action, account: TgAccount, result: OperationResult, *, attempt: ExecutionAttempt | None) -> None:
+    _apply_operation_result(action, account, result.ok, result.failure_type, result.detail, attempt=attempt)
+    status = "invite_success" if result.ok else "invite_failed"
+    action.result = {**(action.result or {}), "rescue_status": status, "rescue_detail": result.detail or result.failure_type}
+
+
 def _dispatch_channel_membership(session: Session, action: Action, account: TgAccount, credentials, payload: EnsureChannelMembershipPayload) -> bool:
     lookup_ctx = MembershipDispatchContext(session, action, account, credentials, payload, None)
     payload, existing_group = _membership_existing_group_for_account(lookup_ctx)
@@ -1173,6 +1209,7 @@ def _recover_send_message_required_channel(
         failure_detail = recovered.detail or recovered.failure_type or detail
         _fail(action, send_result.failure_type, failure_detail, auto_check="失败", validation_stage="send_permission")
         action.result = {**(action.result or {}), **snapshot, "membership_status": "permission_denied"}
+        _maybe_trigger_send_permission_rescue(action, account, failure_detail)
     _finish_execution_attempt(attempt, action, failure_type=send_result.failure_type, detail=detail)
     _release_runtime_resources(action)
     return True
@@ -1337,10 +1374,12 @@ def _handle_group_send_permission_denied(
         return True
     if skip_on_failure or recovered.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
         _skip_membership_permission_denied(ctx.action, detail)
+        _maybe_trigger_send_permission_rescue(ctx.action, ctx.account, detail)
         _finish_execution_attempt(ctx.attempt, ctx.action, failure_type=recovered.failure_type, detail=detail)
         _release_runtime_resources(ctx.action)
         return True
     _apply_operation_result(ctx.action, ctx.account, False, recovered.failure_type, detail, attempt=ctx.attempt)
+    _maybe_trigger_send_permission_rescue(ctx.action, ctx.account, detail)
     return True
 
 
@@ -2171,6 +2210,7 @@ def _apply_send_result(action: Action, account: TgAccount, ok: bool, remote_id: 
             if not _defer_comment_membership_from_gateway_failure(action, account, detail or failure_type):
                 _mark_group_account_cannot_send(action, account, detail or failure_type)
                 _mark_channel_comment_account_cannot_send(action, account, detail or failure_type)
+                _maybe_trigger_send_permission_rescue(action, account, detail or failure_type)
         if failure_type in _COMMENT_THREAD_UNAVAILABLE_FAILURES:
             _close_unavailable_comment_thread(action, failure_type, detail or failure_type)
         if failure_type == FailureType.REACTION_UNAVAILABLE.value:
@@ -2199,6 +2239,25 @@ def _update_reply_result_stats(action: Action, ok: bool, failure_type: str) -> N
         stats["telegram_reply_failure_count"] = int(stats.get("telegram_reply_failure_count") or 0) + 1
         stats["last_reply_failure_type"] = failure_type
     task.stats = stats
+
+
+def _maybe_trigger_send_permission_rescue(action: Action, account: TgAccount, detail: str) -> None:
+    if action.task_type != "group_ai_chat":
+        return
+    from sqlalchemy.orm import object_session
+
+    session = object_session(action)
+    group = session.get(TgGroup, _action_group_id(action)) if session else None
+    task = session.get(Task, action.task_id) if session and action.task_id else None
+    if not group or not task:
+        return
+    if permission_failure_count_for_send_action(session, action) <= GROUP_RESCUE_FAILURE_THRESHOLD:
+        return
+    target_id = _payload_int(action.payload if isinstance(action.payload, dict) else {}, "operation_target_id")
+    result = trigger_group_rescue(session, task, group, trigger_account_id=account.id, trigger_reason=detail, operation_target_id=target_id or None)
+    action.result = {**(action.result or {}), "group_rescue_status": result.status, "group_rescue_detail": result.detail}
+    if result.action:
+        action.result = {**(action.result or {}), "group_rescue_action_id": result.action.id}
 
 
 def _update_reply_payload_error_stats(action: Action) -> None:

@@ -834,6 +834,71 @@ def test_group_permission_denied_marks_group_account_not_sendable(monkeypatch):
         assert link.permission_label == "群无权限或账号不可发言"
 
 
+def test_group_ai_chat_permission_denied_over_threshold_creates_rescue_action(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        tenant = Tenant(id=1, name="默认运营空间")
+        tenant.group_rescue_enabled = True
+        tenant.group_rescue_admin_account_id = 99
+        tenant.group_rescue_bot_username = "@guard_bot"
+        session.add(tenant)
+        session.add(Task(id="task-ai-rescue", tenant_id=1, name="ai rescue", type="group_ai_chat", status="running"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="普通账号", phone_masked="+861***0011", status="在线", session_ciphertext="session-11"))
+        session.add(TgAccount(id=99, tenant_id=1, display_name="救援账号", phone_masked="+861***0099", status="在线", session_ciphertext="session-99"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="已加入"))
+        for index in range(3):
+            session.add(
+                Action(
+                    id=f"previous-denied-{index}",
+                    tenant_id=1,
+                    task_id="task-ai-rescue",
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=11,
+                    status="failed",
+                    scheduled_at=now_value - timedelta(minutes=index + 1),
+                    payload={"group_id": 7, "message_text": "old", "review_approved": True},
+                    result={"success": False, "error_code": FailureType.GROUP_PERMISSION_DENIED.value, "error_message": "群黑名单，无法发言"},
+                )
+            )
+        session.add(
+            Action(
+                id="current-denied",
+                tenant_id=1,
+                task_id="task-ai-rescue",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"group_id": 7, "operation_target_id": 21, "message_text": "hello", "review_approved": True},
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            lambda *args, **kwargs: SendResult(False, failure_type=FailureType.GROUP_PERMISSION_DENIED.value, detail="群黑名单，无法发言"),
+        )
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+        assert dispatcher.dispatch_action(session, claimed) is True
+
+        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_bot")).all()
+        assert len(rescue_actions) == 1
+        assert rescue_actions[0].account_id == 99
+        assert rescue_actions[0].payload["trigger_account_id"] == 11
+        assert rescue_actions[0].payload["bot_username"] == "@guard_bot"
+        assert rescue_actions[0].payload["trigger_reason"] == "群黑名单，无法发言"
+
+
 def test_target_membership_requires_send_rechecks_existing_group_link(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

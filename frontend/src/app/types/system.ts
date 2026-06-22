@@ -79,6 +79,9 @@ export type Tenant = {
   admin_chat_id: string;
   notify_ai_failures_enabled: boolean;
   telegram_bot_configured: boolean;
+  group_rescue_enabled: boolean;
+  group_rescue_admin_account_id: number | null;
+  group_rescue_bot_username: string;
   created_at: string;
 };
 

@@ -71,6 +71,7 @@ class TaskCenterActionType(StrEnum):
     VIEW_MESSAGE = "view_message"
     LIKE_MESSAGE = "like_message"
     POST_COMMENT = "post_comment"
+    INVITE_GROUP_BOT = "invite_group_bot"
     ENSURE_TARGET_MEMBERSHIP = "ensure_target_membership"
     ENSURE_CHANNEL_MEMBERSHIP = "ensure_channel_membership"
 

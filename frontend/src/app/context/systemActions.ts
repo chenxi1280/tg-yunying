@@ -12,6 +12,7 @@ import type {
   TenantAiSetting,
   TokenLedger,
 } from '../types';
+import type { TenantForm } from './types';
 
 interface SystemActionParams {
   adminUserForm: AdminUserForm;
@@ -21,7 +22,7 @@ interface SystemActionParams {
   promptTemplateForm: { id: number | null; name: string; template_type: string; content: string; is_active: boolean };
   selectedAiProviderId: number | '';
   tenantAiSetting: TenantAiSetting | null;
-  tenantForm: { id: number | null; name: string; plan_name: string; account_quota: number; task_quota: number };
+  tenantForm: TenantForm;
   tokenAdjustmentForm: { delta_tokens: number; reason: string };
   closeModal: () => void;
   handleActionError: (error: unknown) => void;
@@ -87,6 +88,9 @@ export function createSystemActions(params: SystemActionParams) {
       plan_name: tenant.plan_name,
       account_quota: tenant.account_quota,
       task_quota: tenant.task_quota,
+      group_rescue_enabled: tenant.group_rescue_enabled,
+      group_rescue_admin_account_id: tenant.group_rescue_admin_account_id,
+      group_rescue_bot_username: tenant.group_rescue_bot_username || '',
     });
     params.setModal({ type: 'tenantEdit' });
   }
@@ -94,18 +98,32 @@ export function createSystemActions(params: SystemActionParams) {
   async function saveTenantQuota() {
     if (!params.tenantForm.id) return;
     params.setBusy('保存租户配额');
-    await api(`/tenants/${params.tenantForm.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        name: params.tenantForm.name,
-        plan_name: params.tenantForm.plan_name,
-        account_quota: params.tenantForm.account_quota,
-        task_quota: params.tenantForm.task_quota,
-      }),
-    });
-    params.closeModal();
-    params.showResult('租户配额已更新', `${params.tenantForm.name} 的账号和任务配额已保存。`);
-    await params.refresh();
+    try {
+      await api(`/tenants/${params.tenantForm.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: params.tenantForm.name,
+          plan_name: params.tenantForm.plan_name,
+          account_quota: params.tenantForm.account_quota,
+          task_quota: params.tenantForm.task_quota,
+        }),
+      });
+      await api(`/tenant-group-rescue-settings?tenant_id=${params.tenantForm.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          group_rescue_enabled: params.tenantForm.group_rescue_enabled,
+          group_rescue_admin_account_id: params.tenantForm.group_rescue_admin_account_id,
+          group_rescue_bot_username: params.tenantForm.group_rescue_bot_username,
+        }),
+      });
+      params.closeModal();
+      params.showResult('运营空间配置已更新', `${params.tenantForm.name} 的任务配额和群聊救援配置已保存。`);
+      await params.refresh();
+    } catch (error) {
+      params.handleActionError(error);
+    } finally {
+      params.setBusy('');
+    }
   }
 
   function openAdminUserEdit(user: AdminUser) {

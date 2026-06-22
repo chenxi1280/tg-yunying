@@ -371,7 +371,7 @@ def test_executor_build_plan_creates_test_messages_after_membership_success() ->
         assert item.test_message_action_id
 
 
-def test_task_detail_exposes_membership_admission_items() -> None:
+def test_task_detail_exposes_membership_admission_summary_without_items() -> None:
     with _session() as session:
         _seed_snapshot_data(session)
         task = create_and_start_group_membership_admission_task(session, 1, _admission_payload(account_group_ids=[1]), "tester")
@@ -383,11 +383,7 @@ def test_task_detail_exposes_membership_admission_items() -> None:
         items = detail["membership_admission_items"]
         assert phase["snapshot_total"] == 2
         assert phase["joining_count"] == 2
-        assert len(items) == 2
-        assert items[0]["account_id"] == 11
-        assert items[0]["phase"] == "joining"
-        assert items[0]["membership_action_id"]
-        assert items[0]["display_name"] == "账号11"
+        assert items == []
 
 
 def test_retry_membership_admission_item_resets_failed_state() -> None:

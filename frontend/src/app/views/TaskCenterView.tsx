@@ -37,7 +37,6 @@ import {
   hardHourlyStatusColor,
   hardHourlyStatusLabel,
   initialValuesForType,
-  isPlannedAction,
   normalizePromptTemplateType,
   operationProfileFromValues,
   operationTemplate,
@@ -143,12 +142,19 @@ type AiLimitRecommendationField = 'max_actions_per_hour' | 'messages_per_round' 
 type AiLimitTaskType = Extract<TaskCenterTaskType, 'group_ai_chat' | 'channel_comment'>;
 type MembershipPageState = { current: number; pageSize: number; total: number; loading: boolean };
 type MembershipFilters = { phase: string; manualRequired: string };
+type ActionPageKind = 'planned' | 'executed';
+type ActionPageState = { current: number; pageSize: number; total: number; loading: boolean };
+type DetailSectionKind = 'aiCycles' | 'messageGroups' | 'relayBatches' | 'admissionItems';
 const TASK_CREATE_TIMEOUT_MS = 120_000;
 const MEMBERSHIP_PAGE_SIZE = 20;
+const ACTION_PAGE_SIZE = 20;
+const DETAIL_SECTION_PAGE_SIZE = 20;
 const TASK_GROUP_SELECT_WIDTH = 360;
 const TASK_GROUP_DROPDOWN_WIDTH = 480;
 const TASK_FORM_ACCOUNT_PAGE_SIZE = 200;
 const DEFAULT_MEMBERSHIP_FILTERS: MembershipFilters = { phase: 'all', manualRequired: 'all' };
+const DEFAULT_ACTION_PAGE: ActionPageState = { current: 1, pageSize: ACTION_PAGE_SIZE, total: 0, loading: false };
+const DEFAULT_DETAIL_SECTION_PAGE: ActionPageState = { current: 1, pageSize: DETAIL_SECTION_PAGE_SIZE, total: 0, loading: false };
 const GROUP_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'messages_per_round'];
 const COMMENT_AI_RECOMMENDATION_FIELDS: AiLimitRecommendationField[] = ['max_actions_per_hour', 'target_comments_per_message', 'max_comments_per_account_per_hour'];
 
@@ -235,6 +241,14 @@ export default function TaskCenterView({
   const [dangerAction, setDangerAction] = React.useState<DangerousTaskState | null>(null);
   const [dangerReason, setDangerReason] = React.useState('');
   const [attemptDetail, setAttemptDetail] = React.useState<{ action: TaskCenterAction; attempts: TaskExecutionAttempt[]; loading: boolean } | null>(null);
+  const [plannedActionRows, setPlannedActionRows] = React.useState<TaskCenterAction[]>([]);
+  const [executedActionRows, setExecutedActionRows] = React.useState<TaskCenterAction[]>([]);
+  const [plannedActionPage, setPlannedActionPage] = React.useState<ActionPageState>(DEFAULT_ACTION_PAGE);
+  const [executedActionPage, setExecutedActionPage] = React.useState<ActionPageState>(DEFAULT_ACTION_PAGE);
+  const [aiCyclePage, setAiCyclePage] = React.useState<ActionPageState>(DEFAULT_DETAIL_SECTION_PAGE);
+  const [messageGroupPage, setMessageGroupPage] = React.useState<ActionPageState>(DEFAULT_DETAIL_SECTION_PAGE);
+  const [relayBatchPage, setRelayBatchPage] = React.useState<ActionPageState>(DEFAULT_DETAIL_SECTION_PAGE);
+  const [admissionItemPage, setAdmissionItemPage] = React.useState<ActionPageState>(DEFAULT_DETAIL_SECTION_PAGE);
   const [precheck, setPrecheck] = React.useState<TaskPrecheck | null>(null);
   const [precheckLoading, setPrecheckLoading] = React.useState(false);
   const [editRecommendation, setEditRecommendation] = React.useState<AiLimitRecommendation | null>(null);
@@ -249,6 +263,7 @@ export default function TaskCenterView({
   const [editForm] = Form.useForm();
   const appliedPrefillNonce = React.useRef<number | null>(null);
   const appliedFocusNonce = React.useRef<number | null>(null);
+  const activeDetailTaskId = React.useRef('');
   const accountMode = Form.useWatch('selection_mode', form) ?? 'all';
   const pacingMode = Form.useWatch('pacing_mode', form) ?? 'template';
   const editAccountMode = Form.useWatch('selection_mode', editForm) ?? 'all';
@@ -425,9 +440,15 @@ export default function TaskCenterView({
     if (!focusTask || appliedFocusNonce.current === focusTask.nonce) return;
     appliedFocusNonce.current = focusTask.nonce;
     setActionError('');
+    activeDetailTaskId.current = focusTask.taskId;
+    resetActionPages();
+    resetDetailSectionPages();
     fetchTaskDetail(focusTask.taskId)
       .then((taskDetail) => {
+        if (activeDetailTaskId.current !== taskDetail.task.id) return;
         setDetail(taskDetail);
+        loadActionPagesForDetail(taskDetail);
+        loadDetailSectionsForDetail(taskDetail);
         void loadMembershipForDetail(taskDetail, 1, MEMBERSHIP_PAGE_SIZE, DEFAULT_MEMBERSHIP_FILTERS);
       })
       .catch(() => setActionError(`读取任务 ${focusTask.taskId} 详情失败`))
@@ -436,6 +457,87 @@ export default function TaskCenterView({
 
   async function fetchTaskDetail(taskId: string) {
     return api<TaskCenterDetail>(`/tasks/${taskId}`);
+  }
+
+  function resetActionPages() {
+    setPlannedActionRows([]);
+    setExecutedActionRows([]);
+    setPlannedActionPage(DEFAULT_ACTION_PAGE);
+    setExecutedActionPage(DEFAULT_ACTION_PAGE);
+  }
+
+  function resetDetailSectionPages() {
+    setAiCyclePage(DEFAULT_DETAIL_SECTION_PAGE);
+    setMessageGroupPage(DEFAULT_DETAIL_SECTION_PAGE);
+    setRelayBatchPage(DEFAULT_DETAIL_SECTION_PAGE);
+    setAdmissionItemPage(DEFAULT_DETAIL_SECTION_PAGE);
+  }
+
+  function setDetailSectionPage(kind: DetailSectionKind, value: ActionPageState | ((current: ActionPageState) => ActionPageState)) {
+    const setters = {
+      aiCycles: setAiCyclePage,
+      messageGroups: setMessageGroupPage,
+      relayBatches: setRelayBatchPage,
+      admissionItems: setAdmissionItemPage,
+    };
+    setters[kind](value);
+  }
+
+  async function loadActionPage(taskId: string, kind: ActionPageKind, page: number, pageSize: number) {
+    const setRows = kind === 'planned' ? setPlannedActionRows : setExecutedActionRows;
+    const setPage = kind === 'planned' ? setPlannedActionPage : setExecutedActionPage;
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), status: kind });
+    setPage((current) => ({ ...current, current: page, pageSize, loading: true }));
+    try {
+      const response = await apiWithMeta<TaskCenterAction[]>(`/tasks/${taskId}/actions?${params.toString()}`);
+      if (activeDetailTaskId.current !== taskId) return;
+      const total = Number(response.headers.get('X-Total-Count') || response.data.length);
+      setRows(response.data);
+      setPage({ current: page, pageSize, total, loading: false });
+    } catch (error) {
+      if (activeDetailTaskId.current !== taskId) return;
+      setPage((current) => ({ ...current, loading: false }));
+      setActionError(`读取${kind === 'planned' ? '执行计划' : '执行记录'}失败：${errorMessage(error)}`);
+    }
+  }
+
+  function loadActionPagesForDetail(taskDetail: TaskCenterDetail) {
+    if (isSystemTask(taskDetail.task)) return;
+    void loadActionPage(taskDetail.task.id, 'planned', 1, ACTION_PAGE_SIZE);
+    void loadActionPage(taskDetail.task.id, 'executed', 1, ACTION_PAGE_SIZE);
+  }
+
+  async function loadDetailSectionPage(taskDetail: TaskCenterDetail, kind: DetailSectionKind, page: number, pageSize: number) {
+    const endpoints = {
+      aiCycles: 'ai-cycles',
+      messageGroups: 'message-groups',
+      relayBatches: 'relay-batches',
+      admissionItems: 'membership-admission/items',
+    };
+    const fields = {
+      aiCycles: 'ai_cycles',
+      messageGroups: 'message_groups',
+      relayBatches: 'relay_batches',
+      admissionItems: 'membership_admission_items',
+    } as const;
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    setDetailSectionPage(kind, (current) => ({ ...current, current: page, pageSize, loading: true }));
+    try {
+      const response = await apiWithMeta<any[]>(`/tasks/${taskDetail.task.id}/${endpoints[kind]}?${params.toString()}`);
+      const total = Number(response.headers.get('X-Total-Count') || response.data.length);
+      setDetail((current) => current && current.task.id === taskDetail.task.id ? { ...current, [fields[kind]]: response.data } : current);
+      setDetailSectionPage(kind, { current: page, pageSize, total, loading: false });
+    } catch (error) {
+      setDetailSectionPage(kind, (current) => ({ ...current, loading: false }));
+      setActionError(`读取详情分页失败：${errorMessage(error)}`);
+    }
+  }
+
+  function loadDetailSectionsForDetail(taskDetail: TaskCenterDetail) {
+    if (taskDetail.task.type === 'group_ai_chat') void loadDetailSectionPage(taskDetail, 'aiCycles', 1, DETAIL_SECTION_PAGE_SIZE);
+    if (['channel_view', 'channel_like', 'channel_comment'].includes(taskDetail.task.type)) void loadDetailSectionPage(taskDetail, 'messageGroups', 1, DETAIL_SECTION_PAGE_SIZE);
+    if (taskDetail.task.type === 'group_relay') void loadDetailSectionPage(taskDetail, 'relayBatches', 1, DETAIL_SECTION_PAGE_SIZE);
+    if (taskDetail.task.type === 'group_membership_admission') void loadDetailSectionPage(taskDetail, 'admissionItems', 1, DETAIL_SECTION_PAGE_SIZE);
   }
 
   async function loadMembershipForDetail(taskDetail: TaskCenterDetail, page: number, pageSize: number, filters: MembershipFilters = membershipFilters) {
@@ -457,9 +559,15 @@ export default function TaskCenterView({
   async function loadDetail(task: TaskCenterTask) {
     setMembershipFilters(DEFAULT_MEMBERSHIP_FILTERS);
     setActionError('');
+    activeDetailTaskId.current = task.id;
+    resetActionPages();
+    resetDetailSectionPages();
     try {
       const taskDetail = await fetchTaskDetail(task.id);
+      if (activeDetailTaskId.current !== task.id) return;
       setDetail(taskDetail);
+      loadActionPagesForDetail(taskDetail);
+      loadDetailSectionsForDetail(taskDetail);
       await loadMembershipForDetail(taskDetail, 1, membershipPage.pageSize, DEFAULT_MEMBERSHIP_FILTERS);
     } catch (error) {
       setActionError(`读取任务 ${task.id} 详情失败：${errorMessage(error)}`);
@@ -496,6 +604,16 @@ export default function TaskCenterView({
   function updateMembershipFilters(filters: MembershipFilters) {
     setMembershipFilters(filters);
     void loadMembershipPage(1, membershipPage.pageSize, filters);
+  }
+
+  function loadDetailActionPage(kind: ActionPageKind, page: number, pageSize: number) {
+    if (!detail || isSystemTask(detail.task)) return;
+    void loadActionPage(detail.task.id, kind, page, pageSize);
+  }
+
+  function loadDetailSection(kind: DetailSectionKind, page: number, pageSize: number) {
+    if (!detail || isSystemTask(detail.task)) return;
+    void loadDetailSectionPage(detail, kind, page, pageSize);
   }
 
   function isSystemTask(task: TaskCenterTask | null | undefined) {
@@ -1336,10 +1454,17 @@ export default function TaskCenterView({
     },
   ];
 
+  function actionAccountDisplay(action: TaskCenterAction): string {
+    if (action.account_display_name) {
+      return action.account_username ? `${action.account_display_name} / @${action.account_username}` : action.account_display_name;
+    }
+    return accountDisplay(detail, action.account_id);
+  }
+
   const planColumns: ColumnsType<TaskCenterAction> = [
     { title: '计划执行时间', dataIndex: 'scheduled_at', width: 190, render: (value) => formatDateTime(value) },
     { title: '动作', dataIndex: 'action_type', width: 120, render: (value) => actionLabel(value) },
-    { title: '账号', dataIndex: 'account_id', width: 170, render: (value) => accountDisplay(detail, value) },
+    { title: '账号', key: 'account', width: 170, render: (_, action) => actionAccountDisplay(action) },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <ActionStatusBadge status={value} /> },
     { title: '目标', key: 'target', width: 180, render: (_, action) => actionTarget(action) },
     { title: '引用回复', key: 'reply_target', width: 260, render: (_, action) => actionReplyTarget(action) },
@@ -1350,7 +1475,7 @@ export default function TaskCenterView({
     { title: '动作', dataIndex: 'action_type', width: 120, render: (value) => actionLabel(value) },
     { title: '计划执行时间', dataIndex: 'scheduled_at', width: 190, render: (value) => formatDateTime(value) },
     { title: '实际执行时间', dataIndex: 'executed_at', width: 190, render: (value) => formatDateTime(value) },
-    { title: '账号', dataIndex: 'account_id', width: 170, render: (value) => accountDisplay(detail, value) },
+    { title: '账号', key: 'account', width: 170, render: (_, action) => actionAccountDisplay(action) },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <ActionStatusBadge status={value} /> },
     { title: '目标', key: 'target', width: 180, render: (_, action) => actionTarget(action) },
     { title: '引用回复', key: 'reply_target', width: 260, render: (_, action) => actionReplyTarget(action) },
@@ -1410,7 +1535,7 @@ export default function TaskCenterView({
     { title: '账号覆盖', key: 'account_coverage', width: 100, render: (_, item) => localAccountCoverageLabel(item.actions, item.target_count) },
     { title: '缺口', dataIndex: 'capacity_shortfall', width: 80 },
     { title: '状态', dataIndex: 'subtask_status', width: 100, render: (value) => <TaskStatusBadge status={value} /> },
-    { title: '账号', key: 'accounts', width: 220, render: (_, item) => Array.from(new Set(item.actions.map((action) => accountDisplay(detail, action.account_id)).filter(Boolean))).join('、') || '-' },
+    { title: '账号', key: 'accounts', width: 220, render: (_, item) => Array.from(new Set(item.actions.map((action) => actionAccountDisplay(action)).filter(Boolean))).join('、') || '-' },
     { title: '最近错误', key: 'last_error', width: 220, render: (_, item) => item.stats.last_error || '-' },
   ];
 
@@ -1524,10 +1649,10 @@ export default function TaskCenterView({
   const editFormValues = Form.useWatch([], editForm) ?? {};
   const editableTaskType = detail && !isSystemTask(detail.task) ? detail.task.type as TaskCenterTaskType : taskType;
   const editShowsAiLimitRecommendation = isAiLimitTaskType(editableTaskType);
-  const plannedActions = detail?.actions.filter(isPlannedAction) ?? [];
-  const executedActions = detail?.actions.filter((action) => !isPlannedAction(action)) ?? [];
+  const plannedActions = plannedActionRows;
+  const executedActions = executedActionRows;
   const detailProfile = detail && !isSystemTask(detail.task) ? currentOperationProfile({ pacing_config: detail.task.pacing_config }) : null;
-  const detailPlannedTotal = (detail?.stats.total_actions ?? 0) + plannedActions.length;
+  const detailPlannedTotal = (detail?.stats.total_actions ?? 0) + plannedActionPage.total;
   const attemptDiagnosis = attemptDetail ? failureDiagnosis(attemptDetail.action) : null;
   const taskQuickGroups = buildTaskQuickGroups(table.filteredRows);
   const visibleTaskRows = filterTasksByQuickGroup(table.filteredRows, selectedTaskGroupId);
@@ -1667,6 +1792,14 @@ export default function TaskCenterView({
         supportLoading={supportLoading}
         plannedActions={plannedActions}
         executedActions={executedActions}
+        plannedActionLoading={plannedActionPage.loading}
+        executedActionLoading={executedActionPage.loading}
+        plannedActionPagination={plannedActionPage}
+        executedActionPagination={executedActionPage}
+        aiCyclePagination={aiCyclePage}
+        messageGroupPagination={messageGroupPage}
+        relayBatchPagination={relayBatchPage}
+        admissionItemPagination={admissionItemPage}
         detailProfile={detailProfile}
         detailPlannedTotal={detailPlannedTotal}
         membershipLoading={membershipPage.loading}
@@ -1682,6 +1815,9 @@ export default function TaskCenterView({
         messageColumns={messageColumns}
         planColumns={planColumns}
         recordColumns={recordColumns}
+        onPlannedActionPageChange={(page, pageSize) => loadDetailActionPage('planned', page, pageSize)}
+        onExecutedActionPageChange={(page, pageSize) => loadDetailActionPage('executed', page, pageSize)}
+        onDetailSectionPageChange={(kind, page, pageSize) => loadDetailSection(kind, page, pageSize)}
         onEditTask={(task) => void openEditTask(task)}
         onRefreshTask={(task) => void loadDetail(task)}
         onMembershipPageChange={(page, pageSize) => void loadMembershipPage(page, pageSize)}
@@ -1690,13 +1826,17 @@ export default function TaskCenterView({
         onResumeTask={(task) => void taskAction(task, 'resume')}
         admissionBusyId={busyId.startsWith('admission:') ? busyId.slice('admission:'.length) : ''}
         onRetryAdmissionItem={(item) => void membershipAdmissionAction(`/tasks/${detail?.task.id}/membership-admission/items/${item.id}/retry`, `retry:${item.id}`)}
+        onRetryAdmissionRescue={(item) => void membershipAdmissionAction(`/tasks/${detail?.task.id}/membership-admission/items/${item.id}/retry-rescue`, `rescue:${item.id}`)}
         onRetryFailedAdmissionItems={(task) => void membershipAdmissionAction(`/tasks/${task.id}/membership-admission/retry-failed`, 'retry-failed')}
         onMarkAdmissionManualHandled={(item) => void membershipAdmissionAction(`/tasks/${detail?.task.id}/membership-admission/items/${item.id}/manual-handled`, `manual:${item.id}`)}
         onExportAdmissionFailures={(task) => void downloadMembershipAdmissionFailures(task)}
         onClose={() => {
+          activeDetailTaskId.current = '';
           setDetail(null);
           setMembershipPage({ current: 1, pageSize: MEMBERSHIP_PAGE_SIZE, total: 0, loading: false });
           setMembershipFilters(DEFAULT_MEMBERSHIP_FILTERS);
+          resetActionPages();
+          resetDetailSectionPages();
         }}
       />
       <Modal

@@ -20,6 +20,7 @@ from app.schemas import (
     ReportOut,
     RuntimeConfigOut,
     TenantCreate,
+    TenantGroupRescueSettingsUpdate,
     TenantNotificationSettingsOut,
     TenantNotificationSettingsUpdate,
     TenantOut,
@@ -30,7 +31,9 @@ from app.services import (
     build_report,
     create_tenant,
     get_runtime_config,
+    group_rescue_settings_payload,
     notification_settings_payload,
+    update_group_rescue_settings,
     update_tenant,
     update_tenant_notification_settings,
 )
@@ -121,7 +124,7 @@ def get_tenant_notification_settings(
     tenant = session.get(Tenant, resolved_tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="tenant not found")
-    return notification_settings_payload(tenant)
+    return {**notification_settings_payload(tenant), **group_rescue_settings_payload(tenant, session)}
 
 
 @router.patch("/api/tenant-notification-settings", response_model=TenantNotificationSettingsOut)
@@ -134,6 +137,35 @@ def patch_tenant_notification_settings(
     resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
     try:
         return update_tenant_notification_settings(session, resolved_tenant_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/tenant-group-rescue-settings", response_model=TenantNotificationSettingsOut)
+def get_tenant_group_rescue_settings(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    tenant = session.get(Tenant, resolved_tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    return {**notification_settings_payload(tenant), **group_rescue_settings_payload(tenant, session)}
+
+
+@router.patch("/api/tenant-group-rescue-settings", response_model=TenantNotificationSettingsOut)
+def patch_tenant_group_rescue_settings(
+    payload: TenantGroupRescueSettingsUpdate,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        updated = update_group_rescue_settings(session, resolved_tenant_id, payload, current_user.name)
+        tenant = session.get(Tenant, resolved_tenant_id)
+        return {**notification_settings_payload(tenant), **updated}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

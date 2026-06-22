@@ -14,12 +14,31 @@ type DetailProfile = {
   mode: string;
 } | null;
 
+type DetailSectionKind = 'aiCycles' | 'messageGroups' | 'relayBatches' | 'admissionItems';
+type DetailPagination = { current: number; pageSize: number; total: number; loading?: boolean };
+
+const rescueStatusLabel = (status: string) => {
+  if (status === 'pending') return '已触发';
+  if (status === 'invite_success') return '邀请成功';
+  if (status === 'invite_failed') return '邀请失败';
+  if (status === 'unconfigured') return '救援配置缺失';
+  return '未触发';
+};
+
 interface TaskCenterDetailModalProps {
   detail: TaskCenterDetail | null;
   canManageTasks: boolean;
   supportLoading: boolean;
   plannedActions: TaskCenterAction[];
   executedActions: TaskCenterAction[];
+  plannedActionLoading: boolean;
+  executedActionLoading: boolean;
+  plannedActionPagination: { current: number; pageSize: number; total: number };
+  executedActionPagination: { current: number; pageSize: number; total: number };
+  aiCyclePagination: DetailPagination;
+  messageGroupPagination: DetailPagination;
+  relayBatchPagination: DetailPagination;
+  admissionItemPagination: DetailPagination;
   detailProfile: DetailProfile;
   detailPlannedTotal: number;
   membershipLoading: boolean;
@@ -35,6 +54,9 @@ interface TaskCenterDetailModalProps {
   messageColumns: ColumnsType<TaskCenterDetail['message_groups'][number]>;
   planColumns: ColumnsType<TaskCenterAction>;
   recordColumns: ColumnsType<TaskCenterAction>;
+  onPlannedActionPageChange: (page: number, pageSize: number) => void;
+  onExecutedActionPageChange: (page: number, pageSize: number) => void;
+  onDetailSectionPageChange: (kind: DetailSectionKind, page: number, pageSize: number) => void;
   onEditTask: (task: TaskCenterTask) => void;
   onRefreshTask: (task: TaskCenterTask) => void;
   onMembershipPageChange: (page: number, pageSize: number) => void;
@@ -43,6 +65,7 @@ interface TaskCenterDetailModalProps {
   onResumeTask: (task: TaskCenterTask) => void;
   admissionBusyId: string;
   onRetryAdmissionItem: (item: TaskCenterDetail['membership_admission_items'][number]) => void | Promise<void>;
+  onRetryAdmissionRescue: (item: TaskCenterDetail['membership_admission_items'][number]) => void | Promise<void>;
   onRetryFailedAdmissionItems: (task: TaskCenterTask) => void | Promise<void>;
   onMarkAdmissionManualHandled: (item: TaskCenterDetail['membership_admission_items'][number]) => void | Promise<void>;
   onExportAdmissionFailures: (task: TaskCenterTask) => void | Promise<void>;
@@ -122,6 +145,14 @@ export function TaskCenterDetailModal({
   supportLoading,
   plannedActions,
   executedActions,
+  plannedActionLoading,
+  executedActionLoading,
+  plannedActionPagination,
+  executedActionPagination,
+  aiCyclePagination,
+  messageGroupPagination,
+  relayBatchPagination,
+  admissionItemPagination,
   detailProfile,
   detailPlannedTotal,
   membershipLoading,
@@ -137,6 +168,9 @@ export function TaskCenterDetailModal({
   messageColumns,
   planColumns,
   recordColumns,
+  onPlannedActionPageChange,
+  onExecutedActionPageChange,
+  onDetailSectionPageChange,
   onEditTask,
   onRefreshTask,
   onMembershipPageChange,
@@ -145,6 +179,7 @@ export function TaskCenterDetailModal({
   onResumeTask,
   admissionBusyId,
   onRetryAdmissionItem,
+  onRetryAdmissionRescue,
   onRetryFailedAdmissionItems,
   onMarkAdmissionManualHandled,
   onExportAdmissionFailures,
@@ -220,7 +255,20 @@ export function TaskCenterDetailModal({
     { title: '测试消息', dataIndex: 'test_message_text', ellipsis: true, render: (value) => value || '-' },
     { title: '消息 ID', dataIndex: 'test_message_id', width: 120, render: (value) => value || '-' },
     { title: '删除', dataIndex: 'delete_status', width: 110, render: (value) => value || '-' },
+    { title: '权限失败', dataIndex: 'permission_failure_count', width: 100, render: (value) => value || 0 },
+    {
+      title: '救援状态',
+      key: 'rescue',
+      width: 150,
+      render: (_, item) => (
+        <Space direction="vertical" size={0}>
+          <Tag color={item.rescue_status === 'invite_success' ? 'green' : item.rescue_status === 'invite_failed' || item.rescue_status === 'unconfigured' ? 'red' : item.rescue_status ? 'blue' : 'default'}>{rescueStatusLabel(item.rescue_status)}</Tag>
+          {item.rescue_action_id && <Typography.Text type="secondary">{item.rescue_action_id.slice(0, 8)}</Typography.Text>}
+        </Space>
+      ),
+    },
     { title: '失败原因', key: 'failure', ellipsis: true, render: (_, item) => item.failure_detail || item.failure_type || '-' },
+    { title: '救援错误', dataIndex: 'rescue_failure_detail', ellipsis: true, render: (value) => value || '-' },
     { title: '完成时间', dataIndex: 'completed_at', width: 170, render: (value) => formatDateTime(value) },
     {
       title: '操作',
@@ -231,6 +279,9 @@ export function TaskCenterDetailModal({
           {canManageTasks && item.phase === 'failed' && (
             <Button size="small" loading={admissionBusyId === `retry:${item.id}`} onClick={() => onRetryAdmissionItem(item)}>重试</Button>
           )}
+          {canManageTasks && item.rescue_status && item.rescue_status !== 'invite_success' && (
+            <Button size="small" loading={admissionBusyId === `rescue:${item.id}`} onClick={() => onRetryAdmissionRescue(item)}>重试救援</Button>
+          )}
           {canManageTasks && item.manual_required && (
             <Button size="small" loading={admissionBusyId === `manual:${item.id}`} onClick={() => onMarkAdmissionManualHandled(item)}>已处理，重查</Button>
           )}
@@ -238,6 +289,9 @@ export function TaskCenterDetailModal({
       ),
     },
   ];
+  const admissionTotal = Number(detail?.membership_admission_phase?.snapshot_total ?? admissionItemPagination.total ?? 0);
+  const showAiTab = detail?.task.type === 'group_ai_chat';
+  const showTargetTab = detail ? ['group_relay', 'channel_view', 'channel_like', 'channel_comment'].includes(detail.task.type) : false;
   const detailTabs = detail ? [
     accountSecurityBatch ? {
       key: 'account-security-batch',
@@ -276,9 +330,9 @@ export function TaskCenterDetailModal({
         </Space>
       ),
     } : null,
-    detail.membership_admission_items.length > 0 ? {
+    admissionTotal > 0 ? {
       key: 'membership-admission',
-      label: `群聊准入 (${detail.membership_admission_items.length})`,
+      label: `群聊准入 (${admissionItemPagination.total || admissionTotal})`,
       children: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           <Descriptions
@@ -296,7 +350,8 @@ export function TaskCenterDetailModal({
             rowKey="id"
             columns={admissionColumns}
             dataSource={detail.membership_admission_items}
-            pagination={{ pageSize: 20 }}
+            loading={admissionItemPagination.loading}
+            pagination={{ ...admissionItemPagination, showSizeChanger: true, onChange: (page, pageSize) => onDetailSectionPageChange('admissionItems', page, pageSize) }}
             size="small"
             scroll={{ x: 1000 }}
           />
@@ -319,9 +374,9 @@ export function TaskCenterDetailModal({
         />
       ),
     } : null,
-    detail.ai_cycles.length > 0 ? {
+    showAiTab ? {
       key: 'ai-cycles',
-      label: `AI 活跃 ${detail.ai_cycles.length ? `(${detail.ai_cycles.length})` : ''}`,
+      label: `AI 活跃 ${aiCyclePagination.total ? `(${aiCyclePagination.total})` : ''}`,
       children: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           {detail.learning_profile_preview?.profile_scene && (
@@ -343,7 +398,8 @@ export function TaskCenterDetailModal({
             rowKey="cycle_id"
             columns={aiCycleColumns}
             dataSource={detail.ai_cycles}
-            pagination={false}
+            loading={aiCyclePagination.loading}
+            pagination={{ ...aiCyclePagination, showSizeChanger: true, onChange: (page, pageSize) => onDetailSectionPageChange('aiCycles', page, pageSize) }}
             scroll={{ x: 820 }}
             expandable={{
               expandedRowRender: (item) => <Table rowKey="action_id" columns={aiTurnColumns} dataSource={item.turns} pagination={false} size="small" scroll={{ x: 1540 }} />,
@@ -352,17 +408,18 @@ export function TaskCenterDetailModal({
         </Space>
       ),
     } : null,
-    (detail.relay_batches.length > 0 || detail.message_groups.length > 0 || detail.recent_relay_sources.length > 0) ? {
+    showTargetTab ? {
       key: 'targets',
       label: '目标明细',
       children: (
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          {detail.relay_batches.length > 0 && (
+          {detail.task.type === 'group_relay' && (
             <Table<TaskCenterDetail['relay_batches'][number]>
               rowKey="relay_batch_id"
               columns={relayBatchColumns}
               dataSource={detail.relay_batches}
-              pagination={false}
+              loading={relayBatchPagination.loading}
+              pagination={{ ...relayBatchPagination, showSizeChanger: true, onChange: (page, pageSize) => onDetailSectionPageChange('relayBatches', page, pageSize) }}
               scroll={{ x: 820 }}
               expandable={{
                 expandedRowRender: (item) => <Table rowKey="action_id" columns={relayItemColumns} dataSource={item.items} pagination={false} size="small" scroll={{ x: 2600 }} />,
@@ -379,12 +436,13 @@ export function TaskCenterDetailModal({
               scroll={{ x: 1020 }}
             />
           )}
-          {detail.message_groups.length > 0 && (
+          {['channel_view', 'channel_like', 'channel_comment'].includes(detail.task.type) && (
             <Table<TaskCenterDetail['message_groups'][number]>
               rowKey={(item) => `${item.channel_target_id ?? 'channel'}:${item.message_id ?? 'message'}`}
               columns={messageColumns}
               dataSource={detail.message_groups}
-              pagination={{ pageSize: 6 }}
+              loading={messageGroupPagination.loading}
+              pagination={{ ...messageGroupPagination, showSizeChanger: true, onChange: (page, pageSize) => onDetailSectionPageChange('messageGroups', page, pageSize) }}
               scroll={{ x: 1680 }}
               expandable={{
                 expandedRowRender: (item) => <Table<TaskCenterAction> rowKey="id" columns={recordColumns} dataSource={item.actions} pagination={false} size="small" scroll={{ x: 1680 }} />,
@@ -396,13 +454,13 @@ export function TaskCenterDetailModal({
     } : null,
     {
       key: 'plan',
-      label: `执行计划 (${plannedActions.length})`,
-      children: <Table<TaskCenterAction> rowKey="id" columns={planColumns} dataSource={plannedActions} pagination={{ pageSize: 8 }} scroll={{ x: 980 }} locale={{ emptyText: detail.task.last_error ? `暂未生成执行计划：${detail.task.last_error}` : `暂未生成执行计划，下次运行：${formatDateTime(detail.task.next_run_at)}` }} />,
+      label: `执行计划 (${plannedActionPagination.total})`,
+      children: <Table<TaskCenterAction> rowKey="id" columns={planColumns} dataSource={plannedActions} loading={plannedActionLoading} pagination={{ ...plannedActionPagination, showSizeChanger: true, onChange: onPlannedActionPageChange }} scroll={{ x: 980 }} locale={{ emptyText: detail.task.last_error ? `暂未生成执行计划：${detail.task.last_error}` : `暂未生成执行计划，下次运行：${formatDateTime(detail.task.next_run_at)}` }} />,
     },
     {
       key: 'records',
-      label: `执行记录 (${executedActions.length})`,
-      children: <Table<TaskCenterAction> rowKey="id" columns={recordColumns} dataSource={executedActions} pagination={{ pageSize: 8 }} scroll={{ x: 1680 }} locale={{ emptyText: '暂无已执行记录' }} />,
+      label: `执行记录 (${executedActionPagination.total})`,
+      children: <Table<TaskCenterAction> rowKey="id" columns={recordColumns} dataSource={executedActions} loading={executedActionLoading} pagination={{ ...executedActionPagination, showSizeChanger: true, onChange: onExecutedActionPageChange }} scroll={{ x: 1680 }} locale={{ emptyText: '暂无已执行记录' }} />,
     },
   ].filter(Boolean) as Array<{ key: string; label: React.ReactNode; children: React.ReactNode }> : [];
   return (
@@ -439,15 +497,15 @@ export function TaskCenterDetailModal({
                 { key: 'status', label: '状态', children: <StatusBadge status={currentStage?.stage_label || detail.task.status} label={currentStage?.stage_label || statusLabel(detail.task.status)} /> },
                 { key: 'runtime-stage', label: '运行阶段', children: currentStage?.reason || '-' },
                 { key: 'target', label: '目标', children: detail.task.target_summary || '-' },
-                { key: 'planned', label: '计划中', children: plannedActions.filter((action) => action.status === 'pending').length },
-                { key: 'executing', label: '执行中', children: detail.actions.filter((action) => action.status === 'executing').length },
+                { key: 'planned', label: '计划中', children: plannedActionPagination.total },
+                { key: 'executing', label: '执行中', children: plannedActions.filter((action) => action.status === 'executing').length },
                 { key: 'success', label: '已成功', children: detail.stats.success_count ?? 0 },
                 { key: 'failure', label: '失败', children: detail.stats.failure_count ?? 0 },
                 { key: 'skipped', label: '跳过', children: effectiveSkippedCount },
                 { key: 'total', label: '总动作', children: effectiveTotalActions },
                 ...(archivedSkippedCount > 0 ? [{ key: 'archived-skipped', label: '历史归档跳过', children: archivedSkippedCount }] : []),
                 { key: 'curve-now', label: '当前曲线', children: detailProfile ? `${String(detailProfile.hour).padStart(2, '0')}:00 ${detailProfile.intensity}${detail.task.type === 'group_ai_chat' ? ' 轮/小时' : ''}，${detailProfile.mode}运行` : '-' },
-                { key: 'curve-gap', label: '原因分解', children: `计划 ${detailPlannedTotal}，成功 ${detail.stats.success_count ?? 0}，失败 ${detail.stats.failure_count ?? 0}，跳过 ${effectiveSkippedCount}，待执行 ${plannedActions.length}` },
+                { key: 'curve-gap', label: '原因分解', children: `计划 ${detailPlannedTotal}，成功 ${detail.stats.success_count ?? 0}，失败 ${detail.stats.failure_count ?? 0}，跳过 ${effectiveSkippedCount}，待执行 ${plannedActionPagination.total}` },
                 { key: 'account-coverage', label: '今日账号参与覆盖', children: accountCoverageLabel(detail.stats) },
                 { key: 'next', label: '下次运行', children: formatDateTime(detail.task.next_run_at) },
                 { key: 'summary-updated', label: '汇总更新', children: summaryUpdatedAt ? formatDateTime(summaryUpdatedAt) : '-' },

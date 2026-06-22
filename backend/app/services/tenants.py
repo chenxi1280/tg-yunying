@@ -2,8 +2,8 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import MessageTask, Tenant, TgAccount
-from app.schemas import TenantNotificationSettingsUpdate, TenantUpdate
+from app.models import AccountStatus, MessageTask, Tenant, TgAccount
+from app.schemas import TenantGroupRescueSettingsUpdate, TenantNotificationSettingsUpdate, TenantUpdate
 from app.security import encrypt_secret
 
 from ._common import audit
@@ -72,7 +72,74 @@ def notification_settings_payload(tenant: Tenant) -> dict:
         "notify_ai_failures_enabled": tenant.notify_ai_failures_enabled,
         "admin_chat_id": tenant.admin_chat_id,
         "telegram_bot_configured": tenant.telegram_bot_configured,
+        **group_rescue_settings_payload(tenant, None),
     }
+
+
+def group_rescue_settings_payload(tenant: Tenant, session: Session | None) -> dict:
+    account_payload = None
+    account_id = tenant.group_rescue_admin_account_id
+    if session is not None and account_id:
+        account = session.get(TgAccount, account_id)
+        if account and account.tenant_id == tenant.id and account.deleted_at is None:
+            account_payload = {
+                "id": account.id,
+                "display_name": account.display_name,
+                "username": account.username,
+                "status": account.status,
+            }
+    return {
+        "group_rescue_enabled": bool(tenant.group_rescue_enabled),
+        "group_rescue_admin_account_id": account_id,
+        "group_rescue_bot_username": tenant.group_rescue_bot_username or "",
+        "group_rescue_admin_account": account_payload,
+    }
+
+
+def update_group_rescue_settings(
+    session: Session,
+    tenant_id: int,
+    payload: TenantGroupRescueSettingsUpdate,
+    actor: str,
+) -> dict:
+    tenant = session.get(Tenant, tenant_id)
+    if not tenant:
+        raise ValueError("tenant not found")
+    data = payload.model_dump(exclude_unset=True)
+    enabled = bool(data.get("group_rescue_enabled", tenant.group_rescue_enabled))
+    account_id = data.get("group_rescue_admin_account_id", tenant.group_rescue_admin_account_id)
+    bot_username = _normalized_bot_username(data.get("group_rescue_bot_username", tenant.group_rescue_bot_username))
+    if enabled:
+        _validate_group_rescue_account(session, tenant_id, account_id)
+        if not bot_username:
+            raise ValueError("救援机器人 username 必填")
+    tenant.group_rescue_enabled = enabled
+    tenant.group_rescue_admin_account_id = account_id
+    tenant.group_rescue_bot_username = bot_username
+    audit(session, tenant_id=tenant.id, actor=actor, action="更新群聊救援配置", target_type="tenant", target_id=str(tenant.id), detail=f"enabled={enabled}; account={account_id}; bot={bool(bot_username)}")
+    session.commit()
+    session.refresh(tenant)
+    return group_rescue_settings_payload(tenant, session)
+
+
+def _normalized_bot_username(value: str | None) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    return text if text.startswith("@") else f"@{text}"
+
+
+def _validate_group_rescue_account(session: Session, tenant_id: int, account_id: int | None) -> TgAccount:
+    if not account_id:
+        raise ValueError("救援管理员账号必填")
+    account = session.get(TgAccount, int(account_id))
+    if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
+        raise ValueError("救援管理员账号不存在")
+    if account.status != AccountStatus.ACTIVE.value:
+        raise ValueError("救援管理员账号必须是在线账号")
+    if not account.session_ciphertext:
+        raise ValueError("救援管理员账号必须有可用 session")
+    return account
 
 
 def update_tenant_notification_settings(
@@ -108,8 +175,10 @@ __all__ = [
     "create_tenant",
     "ensure_account_quota_available",
     "ensure_task_quota_available",
+    "group_rescue_settings_payload",
     "tenant_usage_snapshot",
     "notification_settings_payload",
     "update_tenant",
+    "update_group_rescue_settings",
     "update_tenant_notification_settings",
 ]

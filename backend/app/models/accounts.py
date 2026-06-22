@@ -100,7 +100,7 @@ class TgAccount(Base):
     deleted_by: Mapped[str] = mapped_column(String(100), default="")
     delete_reason: Mapped[str] = mapped_column(String(255), default="")
 
-    tenant: Mapped[Tenant] = relationship(back_populates="accounts")
+    tenant: Mapped[Tenant] = relationship(back_populates="accounts", foreign_keys=[tenant_id])
     groups: Mapped[list[TgGroupAccount]] = relationship(back_populates="account")
     contacts: Mapped[list[TgContact]] = relationship(back_populates="account")
     developer_app: Mapped[TelegramDeveloperApp | None] = relationship(back_populates="accounts")

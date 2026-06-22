@@ -101,6 +101,9 @@ export function defaultTenantForm() {
     plan_name: '',
     account_quota: 0,
     task_quota: 5000,
+    group_rescue_enabled: false,
+    group_rescue_admin_account_id: null as number | null,
+    group_rescue_bot_username: '',
   };
 }
 

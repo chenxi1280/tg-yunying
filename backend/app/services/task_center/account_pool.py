@@ -12,6 +12,7 @@ from app.models import (
     AccountStatus,
     Action,
     Task,
+    Tenant,
     TgAccount,
     TgAccountSecuritySnapshot,
     TgGroupAccount,
@@ -97,6 +98,9 @@ def _account_query(session: Session, tenant_id: int, account_config: dict, *, en
             TgAccount.id.asc(),
         )
     )
+    rescue_admin_id = _rescue_admin_account_id(session, tenant_id)
+    if rescue_admin_id:
+        stmt = stmt.where(TgAccount.id != rescue_admin_id)
     if enforce_shard:
         stmt = apply_account_shard_filter(stmt)
     mode = account_config.get("selection_mode") or "all"
@@ -108,6 +112,11 @@ def _account_query(session: Session, tenant_id: int, account_config: dict, *, en
         pool = session.get(AccountPool, int(pool_id)) if pool_id else None
         return stmt.where(TgAccount.pool_id == pool.id) if pool and pool.tenant_id == tenant_id else None
     return stmt
+
+
+def _rescue_admin_account_id(session: Session, tenant_id: int) -> int:
+    tenant = session.get(Tenant, tenant_id)
+    return int(tenant.group_rescue_admin_account_id or 0) if tenant else 0
 
 
 def _daily_coverage_ordered_query(stmt, task_id: str, action_types: tuple[str, ...]):

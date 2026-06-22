@@ -4,9 +4,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountStatus, Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, VerificationTask
+from app.models import AccountStatus, Action, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, VerificationTask
 from app.services._common import _now
 from app.services.task_center.dispatcher import _group_send_verification_action
+from app.services.task_center import service as task_center_service
+from app.services.task_center import membership_admission
 from app.services.task_center.service import get_task_detail, list_membership_items_page
 
 
@@ -246,6 +248,193 @@ def test_membership_items_page_is_not_capped_by_detail_action_limit() -> None:
 
         assert total == 505
         assert len(rows) == 5
+
+
+def test_membership_items_default_page_does_not_build_all_rows(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-membership-page", tenant_id=1, name="分页准入", type="group_ai_chat", status="running"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群"))
+        session.add_all(
+            [
+                TgAccount(
+                    id=account_id,
+                    tenant_id=1,
+                    display_name=f"账号{account_id}",
+                    phone_masked=f"+861***{account_id:04d}",
+                    status="在线",
+                    session_ciphertext=f"cipher-{account_id}",
+                )
+                for account_id in range(1, 121)
+            ]
+        )
+        session.add_all(
+            [
+                Action(
+                    id=f"paged-membership-{account_id}",
+                    tenant_id=1,
+                    task_id="task-membership-page",
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    account_id=account_id,
+                    status="pending",
+                    scheduled_at=now_value,
+                    payload={"channel_target_id": 21, "target_type": "group", "target_display": "目标群"},
+                )
+                for account_id in range(1, 121)
+            ]
+        )
+        session.commit()
+
+        def fail_full_projection(*_args, **_kwargs):
+            raise AssertionError("membership pagination must not build all rows before slicing")
+
+        monkeypatch.setattr(task_center_service, "_membership_items", fail_full_projection)
+
+        rows, total = list_membership_items_page(session, 1, "task-membership-page", page=2, page_size=25)
+
+    assert total == 120
+    assert len(rows) == 25
+    assert rows[0]["account_id"] == 26
+
+
+def test_membership_items_filtered_page_does_not_build_all_rows(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-filtered-membership-page", tenant_id=1, name="筛选准入", type="group_ai_chat", status="running"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群"))
+        session.add_all(
+            [
+                TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=f"+861***{account_id:04d}", status="在线")
+                for account_id in range(1, 121)
+            ]
+        )
+        session.add_all(
+            [
+                Action(
+                    id=f"filtered-membership-{account_id}",
+                    tenant_id=1,
+                    task_id="task-filtered-membership-page",
+                    task_type="group_ai_chat",
+                    action_type="ensure_target_membership",
+                    account_id=account_id,
+                    status="failed" if account_id % 3 == 0 else "pending",
+                    scheduled_at=now_value,
+                    payload={"channel_target_id": 21, "target_type": "group", "target_display": "目标群"},
+                    result={"error_message": "失败"} if account_id % 3 == 0 else {},
+                )
+                for account_id in range(1, 121)
+            ]
+        )
+        session.commit()
+
+        def fail_full_projection(*_args, **_kwargs):
+            raise AssertionError("filtered membership pagination must not build all rows before slicing")
+
+        monkeypatch.setattr(task_center_service, "_membership_items", fail_full_projection)
+
+        rows, total = list_membership_items_page(session, 1, "task-filtered-membership-page", phase="failed", page=2, page_size=10)
+
+    assert total == 40
+    assert len(rows) == 10
+    assert rows[0]["account_id"] == 90
+
+
+def test_task_detail_is_read_only_summary_without_heavy_rows() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            Task(
+                id="task-light-detail",
+                tenant_id=1,
+                name="轻量详情",
+                type="group_ai_chat",
+                status="running",
+                stats={"total_actions": 99, "success_count": 9, "custom_marker": "keep"},
+            )
+        )
+        session.add(
+            Action(
+                id="detail-heavy-action",
+                tenant_id=1,
+                task_id="task-light-detail",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=1,
+                status="success",
+                scheduled_at=now_value,
+                executed_at=now_value,
+                payload={"message_text": "should not be embedded in summary detail"},
+            )
+        )
+        session.commit()
+
+        detail = get_task_detail(session, 1, "task-light-detail")
+        task = session.get(Task, "task-light-detail")
+
+    assert detail["actions"] == []
+    assert detail["accounts"] == []
+    assert detail["message_groups"] == []
+    assert detail["ai_cycles"] == []
+    assert detail["relay_batches"] == []
+    assert detail["stats"]["total_actions"] == 99
+    assert detail["stats"]["custom_marker"] == "keep"
+    assert task is not None
+    assert task.stats["total_actions"] == 99
+    assert task.stats["custom_marker"] == "keep"
+
+
+def test_group_membership_admission_detail_returns_summary_without_items(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-admission-summary", tenant_id=1, name="群聊准入", type="group_membership_admission", status="running"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群"))
+        session.add_all(
+            [
+                TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=f"+861***{account_id:04d}", status="在线")
+                for account_id in range(1, 6)
+            ]
+        )
+        session.add_all(
+            [
+                TaskMembershipAdmissionItem(tenant_id=1, task_id="task-admission-summary", account_id=1, target_id=21, phase="completed"),
+                TaskMembershipAdmissionItem(tenant_id=1, task_id="task-admission-summary", account_id=2, target_id=21, phase="failed"),
+                TaskMembershipAdmissionItem(tenant_id=1, task_id="task-admission-summary", account_id=3, target_id=21, phase="pending"),
+                TaskMembershipAdmissionItem(tenant_id=1, task_id="task-admission-summary", account_id=4, target_id=21, phase="joining"),
+                TaskMembershipAdmissionItem(tenant_id=1, task_id="task-admission-summary", account_id=5, target_id=21, phase="pending", manual_required=True),
+            ]
+        )
+        session.commit()
+
+        def fail_full_admission_detail(*_args, **_kwargs):
+            raise AssertionError("task detail must not load every admission item")
+
+        monkeypatch.setattr(membership_admission, "_items_for_task", fail_full_admission_detail)
+
+        detail = get_task_detail(session, 1, "task-admission-summary")
+
+    assert detail["membership_admission_items"] == []
+    assert detail["membership_admission_phase"]["snapshot_total"] == 5
+    assert detail["membership_admission_phase"]["pending_count"] == 2
+    assert detail["membership_admission_phase"]["joining_count"] == 1
+    assert detail["membership_admission_phase"]["completed_count"] == 1
+    assert detail["membership_admission_phase"]["failed_count"] == 1
+    assert detail["membership_admission_phase"]["manual_required_count"] == 1
 
 
 def test_target_admission_retry_detail_defers_membership_rows_to_page_api() -> None:

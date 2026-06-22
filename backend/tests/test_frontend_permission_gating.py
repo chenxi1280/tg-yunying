@@ -231,6 +231,20 @@ def test_frontend_exposes_group_membership_admission_task_type():
     assert "delete_after_send" in wizard
 
 
+def test_frontend_tenant_group_rescue_save_handles_errors_and_clears_busy():
+    source = (PROJECT_ROOT / "frontend/src/app/context/systemActions.ts").read_text()
+    start = source.index("async function saveTenantQuota()")
+    end = source.index("function openAdminUserEdit", start)
+    body = source[start:end]
+
+    assert "/tenant-group-rescue-settings" in body
+    assert "try {" in body
+    assert "catch (error)" in body
+    assert "params.handleActionError(error)" in body
+    assert "finally" in body
+    assert "params.setBusy('')" in body
+
+
 def test_task_center_target_selects_support_searching():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()

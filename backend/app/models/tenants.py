@@ -21,9 +21,12 @@ class Tenant(Base):
     telegram_bot_token_ciphertext: Mapped[str] = mapped_column(Text, default="")
     admin_chat_id: Mapped[str] = mapped_column(String(120), default="")
     notify_ai_failures_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    group_rescue_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    group_rescue_admin_account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
+    group_rescue_bot_username: Mapped[str] = mapped_column(String(120), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
-    accounts: Mapped[list[TgAccount]] = relationship(back_populates="tenant")
+    accounts: Mapped[list[TgAccount]] = relationship(back_populates="tenant", foreign_keys="TgAccount.tenant_id")
     groups: Mapped[list[TgGroup]] = relationship(back_populates="tenant")
 
     @property

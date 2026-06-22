@@ -175,9 +175,30 @@ class EnsureChannelMembershipPayload(BaseModel):
     require_send: bool = False
 
 
+class InviteGroupBotPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group_id: int | None = None
+    operation_target_id: int | None = None
+    group_peer_id: str = Field(min_length=1)
+    bot_username: str = Field(min_length=1, max_length=120)
+    trigger_account_id: int | None = None
+    trigger_task_id: str = ""
+    trigger_reason: str = ""
+
+    @model_validator(mode="after")
+    def normalize_bot_username(self) -> "InviteGroupBotPayload":
+        value = self.bot_username.strip()
+        if not value:
+            raise ValueError("bot_username 不能为空")
+        self.bot_username = value if value.startswith("@") else f"@{value}"
+        return self
+
+
 PAYLOAD_MODELS = {
     "ensure_channel_membership": EnsureChannelMembershipPayload,
     "ensure_target_membership": EnsureChannelMembershipPayload,
+    "invite_group_bot": InviteGroupBotPayload,
     "delete_message": DeleteMessagePayload,
     "send_message": SendMessagePayload,
     "view_message": ViewMessagePayload,

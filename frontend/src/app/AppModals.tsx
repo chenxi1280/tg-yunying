@@ -128,6 +128,15 @@ export function AppModals() {
     || !developerAppForm.api_id
     || !canManageDeveloperApps
     || (modal.type === 'developerAppCreate' && developerAppForm.api_hash.length < 8);
+  const rescueAccountOptions = accounts
+    .filter((account) => account.status === '在线')
+    .map((account) => ({
+      value: account.id,
+      label: `${account.display_name || `账号 #${account.id}`} ${account.username ? `@${account.username}` : account.phone_masked}`,
+    }));
+  const tenantSaveDisabled = !tenantForm.name
+    || !tenantForm.plan_name
+    || (tenantForm.group_rescue_enabled && (!tenantForm.group_rescue_admin_account_id || !tenantForm.group_rescue_bot_username.trim()));
 
   function handleMaterialFileChange(files: File[] | null) {
     setMaterialFile(files);
@@ -172,15 +181,18 @@ export function AppModals() {
       )}
 
       {modal?.type === 'tenantEdit' && (
-        <Modal className="tg-modal medium" title="编辑运营空间配额" open width={640} onCancel={closeModal} footer={null} destroyOnHidden centered>
+        <Modal className="tg-modal medium" title="编辑运营空间配置" open width={640} onCancel={closeModal} footer={null} destroyOnHidden centered>
       <div className="modal-body">
           <div className="policy-grid">
             <label>运营空间名称<Input value={tenantForm.name} onChange={(event) => setTenantForm({ ...tenantForm, name: event.target.value })} /></label>
             <label>运行口径<Input value={tenantForm.plan_name} onChange={(event) => setTenantForm({ ...tenantForm, plan_name: event.target.value })} /></label>
             <label>账号上限<Input value="不限" disabled /></label>
             <label>任务配额<InputNumber min={0} value={tenantForm.task_quota} onChange={(value) => setTenantForm({ ...tenantForm, task_quota: Number(value ?? 0) })} /></label>
+            <Checkbox checked={tenantForm.group_rescue_enabled} onChange={(event) => setTenantForm({ ...tenantForm, group_rescue_enabled: event.target.checked })}>启用群聊救援</Checkbox>
+            <label>救援管理员账号<Select allowClear value={tenantForm.group_rescue_admin_account_id ?? undefined} onChange={(value) => setTenantForm({ ...tenantForm, group_rescue_admin_account_id: value ?? null })} options={rescueAccountOptions} /></label>
+            <label className="wide-field">救援机器人 username<Input value={tenantForm.group_rescue_bot_username} onChange={(event) => setTenantForm({ ...tenantForm, group_rescue_bot_username: event.target.value })} placeholder="@guard_bot" /></label>
           </div>
-          <FormActions submitLabel="保存配置" onCancel={closeModal} onSubmit={saveTenantQuota} loading={isActionPending(`tenant:${tenantForm.id ?? 'current'}:save`)} disabled={!tenantForm.name || !tenantForm.plan_name} />
+          <FormActions submitLabel="保存配置" onCancel={closeModal} onSubmit={saveTenantQuota} loading={isActionPending(`tenant:${tenantForm.id ?? 'current'}:save`)} disabled={tenantSaveDisabled} />
           </div>
         </Modal>
       )}

@@ -31,6 +31,9 @@ class TenantOut(ApiModel):
     admin_chat_id: str = ""
     notify_ai_failures_enabled: bool = False
     telegram_bot_configured: bool = False
+    group_rescue_enabled: bool = False
+    group_rescue_admin_account_id: int | None = None
+    group_rescue_bot_username: str = ""
     created_at: datetime
 
 
@@ -39,12 +42,22 @@ class TenantNotificationSettingsOut(BaseModel):
     notify_ai_failures_enabled: bool = False
     admin_chat_id: str = ""
     telegram_bot_configured: bool = False
+    group_rescue_enabled: bool = False
+    group_rescue_admin_account_id: int | None = None
+    group_rescue_bot_username: str = ""
+    group_rescue_admin_account: dict | None = None
 
 
 class TenantNotificationSettingsUpdate(BaseModel):
     notify_ai_failures_enabled: bool | None = None
     admin_chat_id: str | None = Field(default=None, max_length=120)
     telegram_bot_token: str | None = Field(default=None, max_length=300)
+
+
+class TenantGroupRescueSettingsUpdate(BaseModel):
+    group_rescue_enabled: bool | None = None
+    group_rescue_admin_account_id: int | None = Field(default=None, ge=1)
+    group_rescue_bot_username: str | None = Field(default=None, max_length=120)
 
 
 # ── Auth ──
@@ -291,7 +304,7 @@ class RuntimeConfigOut(BaseModel):
 
 
 __all__ = [
-    "TenantCreate", "TenantUpdate", "TenantOut", "TenantNotificationSettingsOut", "TenantNotificationSettingsUpdate",
+    "TenantCreate", "TenantUpdate", "TenantOut", "TenantNotificationSettingsOut", "TenantNotificationSettingsUpdate", "TenantGroupRescueSettingsUpdate",
     "AuthLoginRequest", "AuthRegisterRequest", "AuthChangePasswordRequest", "AuthUserOut", "AuthTokenOut",
     "CaptchaChallengeOut", "CaptchaVerifyRequest", "CaptchaVerifyOut",
     "SubscriptionRedeemRequest", "SubscriptionRedeemOut",
