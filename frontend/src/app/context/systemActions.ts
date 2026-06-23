@@ -14,6 +14,12 @@ import type {
 } from '../types';
 import type { TenantForm } from './types';
 
+type GroupRescueSettingsPayload = {
+  group_rescue_enabled: boolean;
+  group_rescue_admin_account_id: number | null;
+  group_rescue_bot_username: string;
+};
+
 interface SystemActionParams {
   adminUserForm: AdminUserForm;
   aiProviderForm: { id: number | null; provider_name: string; base_url: string; model_name: string; api_key: string; api_key_header: string; notes: string; is_active: boolean };
@@ -88,9 +94,6 @@ export function createSystemActions(params: SystemActionParams) {
       plan_name: tenant.plan_name,
       account_quota: tenant.account_quota,
       task_quota: tenant.task_quota,
-      group_rescue_enabled: tenant.group_rescue_enabled,
-      group_rescue_admin_account_id: tenant.group_rescue_admin_account_id,
-      group_rescue_bot_username: tenant.group_rescue_bot_username || '',
     });
     params.setModal({ type: 'tenantEdit' });
   }
@@ -108,16 +111,24 @@ export function createSystemActions(params: SystemActionParams) {
           task_quota: params.tenantForm.task_quota,
         }),
       });
-      await api(`/tenant-group-rescue-settings?tenant_id=${params.tenantForm.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          group_rescue_enabled: params.tenantForm.group_rescue_enabled,
-          group_rescue_admin_account_id: params.tenantForm.group_rescue_admin_account_id,
-          group_rescue_bot_username: params.tenantForm.group_rescue_bot_username,
-        }),
-      });
       params.closeModal();
-      params.showResult('运营空间配置已更新', `${params.tenantForm.name} 的任务配额和群聊救援配置已保存。`);
+      params.showResult('运营空间配置已更新', `${params.tenantForm.name} 的任务配额已保存。`);
+      await params.refresh();
+    } catch (error) {
+      params.handleActionError(error);
+    } finally {
+      params.setBusy('');
+    }
+  }
+
+  async function saveTenantGroupRescueSettings(tenantId: number, payload: GroupRescueSettingsPayload) {
+    params.setBusy('保存群聊救援配置');
+    try {
+      await api(`/tenant-group-rescue-settings?tenant_id=${tenantId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      });
+      params.showResult('群聊救援配置已保存', payload.group_rescue_enabled ? '救援配置已启用，专职处置账号不会参与普通任务。' : '群聊救援已关闭。');
       await params.refresh();
     } catch (error) {
       params.handleActionError(error);
@@ -388,6 +399,7 @@ export function createSystemActions(params: SystemActionParams) {
     checkDeveloperApp,
     openTenantEdit,
     saveTenantQuota,
+    saveTenantGroupRescueSettings,
     openAdminUserCreate,
     openAdminUserEdit,
     saveAdminUser,

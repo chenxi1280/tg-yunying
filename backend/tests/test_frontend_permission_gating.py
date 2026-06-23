@@ -231,18 +231,50 @@ def test_frontend_exposes_group_membership_admission_task_type():
     assert "delete_after_send" in wizard
 
 
-def test_frontend_tenant_group_rescue_save_handles_errors_and_clears_busy():
+def test_frontend_tenant_group_rescue_save_is_separate_from_quota_save():
     source = (PROJECT_ROOT / "frontend/src/app/context/systemActions.ts").read_text()
-    start = source.index("async function saveTenantQuota()")
-    end = source.index("function openAdminUserEdit", start)
-    body = source[start:end]
+    quota_start = source.index("async function saveTenantQuota()")
+    rescue_start = source.index("async function saveTenantGroupRescueSettings")
+    rescue_end = source.index("function openAdminUserEdit", rescue_start)
+    quota_body = source[quota_start:rescue_start]
+    rescue_body = source[rescue_start:rescue_end]
 
-    assert "/tenant-group-rescue-settings" in body
-    assert "try {" in body
-    assert "catch (error)" in body
-    assert "params.handleActionError(error)" in body
-    assert "finally" in body
-    assert "params.setBusy('')" in body
+    assert "/tenant-group-rescue-settings" not in quota_body
+    assert "/tenant-group-rescue-settings" in rescue_body
+    assert "保存群聊救援配置" in rescue_body
+    assert "try {" in rescue_body
+    assert "catch (error)" in rescue_body
+    assert "params.handleActionError(error)" in rescue_body
+    assert "finally" in rescue_body
+    assert "params.setBusy('')" in rescue_body
+
+
+def test_tenant_edit_modal_does_not_embed_group_rescue_form():
+    source = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
+    start = source.index("modal?.type === 'tenantEdit'")
+    end = source.index("modal?.type === 'adminUserEdit'", start)
+    tenant_modal = source[start:end]
+
+    assert "启用群聊救援" not in tenant_modal
+    assert "救援管理员账号" not in tenant_modal
+    assert "救援机器人 username" not in tenant_modal
+
+
+def test_system_config_exposes_group_rescue_entry_on_developer_apps_tab():
+    system_config = (PROJECT_ROOT / "frontend/src/app/views/SystemConfigView.tsx").read_text()
+    developer_apps = (PROJECT_ROOT / "frontend/src/app/views/DeveloperAppsView.tsx").read_text()
+
+    assert "showTenants={false}" in system_config
+    assert "accounts={accounts}" in system_config
+    assert "onSaveGroupRescueSettings={onSaveGroupRescueSettings}" in system_config
+    assert "canManageGroupRescue={hasPermission(currentUser, 'system.manage')}" in system_config
+    assert "群聊救援配置" in developer_apps
+    assert "保存群聊救援配置" in developer_apps
+    assert "救援管理员账号" in developer_apps
+    assert "救援机器人 username" in developer_apps
+    assert "group_rescue_admin_account_id" in developer_apps
+    rescue_card = developer_apps[developer_apps.index("function GroupRescueConfigCard"):developer_apps.index("export default function DeveloperAppsView")]
+    assert "onEditTenant(tenant)" not in rescue_card
 
 
 def test_task_center_target_selects_support_searching():

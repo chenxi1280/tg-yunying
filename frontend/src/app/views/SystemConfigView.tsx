@@ -41,6 +41,11 @@ interface Props {
   onCheckDeveloperApp: (app: DeveloperApp) => void;
   onToggleDeveloperApp: (app: DeveloperApp) => void;
   onEditTenant: (tenant: Tenant) => void;
+  onSaveGroupRescueSettings: (tenantId: number, payload: {
+    group_rescue_enabled: boolean;
+    group_rescue_admin_account_id: number | null;
+    group_rescue_bot_username: string;
+  }) => Promise<void>;
   onCreateAdminUser: () => void;
   onEditAdminUser: (user: AdminUser) => void;
   onCreateAiProvider: () => void;
@@ -82,6 +87,7 @@ export default function SystemConfigView({
   onCheckDeveloperApp,
   onToggleDeveloperApp,
   onEditTenant,
+  onSaveGroupRescueSettings,
   onCreateAdminUser,
   onEditAdminUser,
   onCreateAiProvider,
@@ -114,6 +120,7 @@ export default function SystemConfigView({
             <DeveloperAppsView
               developerApps={developerApps}
               tenants={tenants}
+              accounts={accounts}
               showTenants={false}
               canManageDeveloperApps={hasPermission(currentUser, 'developer_apps.manage')}
               onCreateClick={onCreateDeveloperApp}
@@ -121,6 +128,8 @@ export default function SystemConfigView({
               onCheck={onCheckDeveloperApp}
               onToggle={onToggleDeveloperApp}
               onEditTenant={onEditTenant}
+              onSaveGroupRescueSettings={onSaveGroupRescueSettings}
+              canManageGroupRescue={hasPermission(currentUser, 'system.manage')}
               onOpenConfirm={onOpenConfirm}
               isActionPending={isActionPending}
             />

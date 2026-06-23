@@ -178,7 +178,7 @@ function AppShell() {
     authorizeSelectedGroup, createArchive, saveGroupPolicy,
     openArchiveDetail, exportArchive, rerunArchive,
     createDeveloperApp, openDeveloperAppEdit, toggleDeveloperApp, checkDeveloperApp,
-    openTenantEdit, saveTenantQuota, openAdminUserCreate, openAdminUserEdit,
+    openTenantEdit, saveTenantQuota, saveTenantGroupRescueSettings, openAdminUserCreate, openAdminUserEdit,
     createAiProvider, openAiProviderEdit, toggleAiProvider, checkAiProvider,
     saveTenantAiSetting,
     createPromptTemplate, createMaterial,
@@ -499,6 +499,7 @@ function AppShell() {
               onCheckDeveloperApp={checkDeveloperApp}
               onToggleDeveloperApp={toggleDeveloperApp}
               onEditTenant={openTenantEdit}
+              onSaveGroupRescueSettings={saveTenantGroupRescueSettings}
               onCreateAdminUser={openAdminUserCreate}
               onEditAdminUser={openAdminUserEdit}
               onCreateAiProvider={() => setModal({ type: 'aiProviderCreate' })}

@@ -18,9 +18,6 @@ export type TenantForm = {
   plan_name: string;
   account_quota: number;
   task_quota: number;
-  group_rescue_enabled: boolean;
-  group_rescue_admin_account_id: number | null;
-  group_rescue_bot_username: string;
 };
 
 export interface AppState {
@@ -322,6 +319,11 @@ export interface AppState {
   checkDeveloperApp: (app: DeveloperApp) => Promise<void>;
   openTenantEdit: (tenant: Tenant) => void;
   saveTenantQuota: () => Promise<void>;
+  saveTenantGroupRescueSettings: (tenantId: number, payload: {
+    group_rescue_enabled: boolean;
+    group_rescue_admin_account_id: number | null;
+    group_rescue_bot_username: string;
+  }) => Promise<void>;
   openAdminUserEdit: (user: AdminUser) => void;
   openAdminUserCreate: () => void;
   saveAdminUser: () => Promise<void>;
