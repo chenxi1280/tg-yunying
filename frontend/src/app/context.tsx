@@ -48,7 +48,7 @@ import { createMessageActions } from './context/messageActions';
 import { createModalStateActions } from './context/modalState';
 import { createSystemActions } from './context/systemActions';
 import { EMPTY_ACCOUNT_LOGIN_FORM, defaultAccountCreateForm, defaultAccountPoolForm, defaultAdminUserForm, defaultAiProviderForm, defaultAuditFilters, defaultCloneForm, defaultDeveloperAppForm, defaultDirectMessageForm, defaultGroupPolicy, defaultKeywordRuleForm, defaultMaterialForm, defaultProfileForm, defaultPromptTemplateForm, defaultTenantForm } from './context/defaults';
-import { loadAppSnapshot, loadContentResources, viewNeedsContentResources } from './context/refresh';
+import { loadAppSnapshot } from './context/refresh';
 
 const AppContext = createContext<AppState | null>(null);
 export function useAppContext(): AppState {
@@ -193,48 +193,38 @@ export function AppProvider({ children }: AppProviderProps) {
     setBusy('刷新数据');
     try {
       const snapshot = await loadAppSnapshot({ activeView, selectedPoolId, taskStatusFilter, auditFilters });
+      const isSystemConfigSnapshot = activeView === 'systemConfig';
       setCurrentUser(snapshot.me);
       setRuntime(snapshot.runtime);
       setOverview(snapshot.overview);
-      setAccountPools(snapshot.accountPools);
-      setAccounts(snapshot.accounts);
+      if (!isSystemConfigSnapshot) {
+        setAccountPools(snapshot.accountPools);
+        setAccounts(snapshot.accounts);
+      }
       setDeveloperApps(snapshot.developerApps);
       setTenants(snapshot.tenants);
-      setAdminUsers(snapshot.adminUsers);
-      setSelectedAdminUserId((current) => current ?? snapshot.adminUsers[0]?.id ?? null);
-      setUsageLedgers(snapshot.usageLedgers);
-      setUsageSummary(snapshot.usageSummary);
-      setAiProviders(snapshot.aiProviders);
-      setPromptTemplates(snapshot.promptTemplates);
-      setTenantAiSetting(snapshot.tenantAiSetting);
-      if (snapshot.contentResources) {
-        setMaterials(snapshot.contentResources.materials);
-        setMaterialCacheHealth(snapshot.contentResources.materialCacheHealth);
-        setMaterialCacheConfig(snapshot.contentResources.materialCacheConfig);
-        setMaterialImports(snapshot.contentResources.materialImports);
-        setContentKeywordRules(snapshot.contentResources.contentKeywordRules);
+      if (!isSystemConfigSnapshot) {
+        setAdminUsers(snapshot.adminUsers);
+        setSelectedAdminUserId((current) => current ?? snapshot.adminUsers[0]?.id ?? null);
+        setUsageLedgers(snapshot.usageLedgers);
+        setUsageSummary(snapshot.usageSummary);
+        setAiProviders(snapshot.aiProviders);
+        setPromptTemplates(snapshot.promptTemplates);
+        setTenantAiSetting(snapshot.tenantAiSetting);
+        if (snapshot.contentResources) {
+          setMaterials(snapshot.contentResources.materials);
+          setMaterialCacheHealth(snapshot.contentResources.materialCacheHealth);
+          setMaterialCacheConfig(snapshot.contentResources.materialCacheConfig);
+          setMaterialImports(snapshot.contentResources.materialImports);
+          setContentKeywordRules(snapshot.contentResources.contentKeywordRules);
+        }
+        setGroups(snapshot.groups);
+        setTasks(snapshot.tasks);
+        setArchives(snapshot.archives);
+        setAudits(snapshot.audits);
+        setSelectedGroupId((current) => current ?? snapshot.groups[0]?.id ?? null);
+        setSelectedAiProviderId((current) => current || snapshot.tenantAiSetting?.default_provider_id || snapshot.aiProviders[0]?.id || '');
       }
-      setGroups(snapshot.groups);
-      setTasks(snapshot.tasks);
-      setArchives(snapshot.archives);
-      setAudits(snapshot.audits);
-      setSelectedGroupId((current) => current ?? snapshot.groups[0]?.id ?? null);
-      setSelectedAiProviderId((current) => current || snapshot.tenantAiSetting?.default_provider_id || snapshot.aiProviders[0]?.id || '');
-    } finally {
-      setBusy('');
-    }
-  }
-
-  async function refreshContentResourcesForActiveView() {
-    if (!viewNeedsContentResources(activeView)) return;
-    setBusy('刷新资源');
-    try {
-      const resources = await loadContentResources();
-      setMaterials(resources.materials);
-      setMaterialCacheHealth(resources.materialCacheHealth);
-      setMaterialCacheConfig(resources.materialCacheConfig);
-      setMaterialImports(resources.materialImports);
-      setContentKeywordRules(resources.contentKeywordRules);
     } finally {
       setBusy('');
     }
@@ -267,17 +257,6 @@ export function AppProvider({ children }: AppProviderProps) {
       setNotice(`后端未连接或接口异常：${error.message}`);
     });
   }, [token, activeView, taskStatusFilter, selectedPoolId]);
-
-  useEffect(() => {
-    if (!token || !viewNeedsContentResources(activeView)) return;
-    refreshContentResourcesForActiveView().catch((error) => {
-      if (isAuthExpiredError(error)) {
-        expireAdminSession();
-        return;
-      }
-      setNotice(`资源数据读取异常：${error.message}`);
-    });
-  }, [token, activeView]);
 
   const { showResult, errorMessage, handleActionError, closeModal, openConfirm } = createModalStateActions({
     message,

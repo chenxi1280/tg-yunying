@@ -646,12 +646,18 @@ def test_app_refresh_does_not_replace_accounts_with_empty_fallback_on_account_ap
 def test_navigation_does_not_reload_full_app_snapshot_for_self_loading_views():
     context = (PROJECT_ROOT / "frontend/src/app/context.tsx").read_text()
     refresh = (PROJECT_ROOT / "frontend/src/app/context/refresh.ts").read_text()
+    shell = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
+    system_loader = refresh[refresh.index("async function loadSystemPage"):refresh.index("async function loadMessagePage")]
 
     assert "}, [token, taskStatusFilter, selectedPoolId, activeView]);" not in context
     assert "}, [token, activeView, taskStatusFilter, selectedPoolId]);" in context
     assert "const loader = VIEW_RESOURCE_LOADERS[activeView];" in refresh
     assert "taskManagement: async () => ({})" in refresh
-    assert "refreshContentResourcesForActiveView" in context
+    assert "refreshContentResourcesForActiveView" not in context
+    assert "loadAccountList(context.selectedPoolId)" not in system_loader
+    assert "loadContentResources()" not in system_loader
+    assert "loadSystemConfigTabData(systemConfigTab)" in shell
+    assert "page_size=${SYSTEM_CONFIG_ACCOUNT_OPTION_LIMIT}" in shell
 
 
 def test_auth_expired_api_errors_force_relogin_without_failure_modal():

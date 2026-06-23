@@ -14,11 +14,30 @@ import { Alert, App as AntdApp, Button, Card, Form, Input, Layout, Menu, Space, 
 import { useLocation } from 'react-router-dom';
 import { AppProvider, useAppContext } from './context';
 import { VIEW_ROUTES } from './routes';
-import type { ChannelMessage, MessageSendingPrefill, OperationTarget, TaskCenterPrefill, TaskCenterTaskType } from './types';
+import type {
+  Account,
+  AdminUser,
+  AiProvider,
+  ChannelMessage,
+  ContentKeywordRule,
+  DeveloperApp,
+  Material,
+  MaterialCacheConfig,
+  MaterialCacheHealth,
+  MaterialImportResult,
+  MessageSendingPrefill,
+  OperationTarget,
+  PromptTemplate,
+  TaskCenterPrefill,
+  TaskCenterTaskType,
+  Tenant,
+  TenantAiSetting,
+} from './types';
 import { api } from '../shared/api/client';
 import { canView, hasPermission } from './utils';
 
 const { Header, Sider, Content } = Layout;
+const SYSTEM_CONFIG_ACCOUNT_OPTION_LIMIT = 100;
 
 const AppModals = React.lazy(() => import('./AppModals').then((module) => ({ default: module.AppModals })));
 const OverviewView = React.lazy(() => import('./views/OverviewView'));
@@ -122,11 +141,13 @@ function AppShell() {
     captchaToken, captchaError, captchaLoading, refreshCaptchaChallenge,
     activeView, goToView, busy, notice, setNotice, isActionPending,
     runtime, overview,
-    accountPools, selectedPoolId, setSelectedPoolId, accounts, selectedPool,
-    developerApps, tenants, adminUsers, groups, selectedGroup, selectedGroupId, setSelectedGroupId,
+    accountPools, selectedPoolId, setSelectedPoolId, accounts, setAccounts, selectedPool,
+    developerApps, setDeveloperApps, tenants, setTenants, adminUsers, setAdminUsers, groups, selectedGroup, selectedGroupId, setSelectedGroupId,
     tasks,
     archives, archiveDetail, audits, auditFilters, setAuditFilters, groupDetail,
-    aiProviders, promptTemplates, tenantAiSetting, setTenantAiSetting, materials, materialCacheHealth, materialCacheConfig, materialImports, contentKeywordRules,
+    aiProviders, setAiProviders, promptTemplates, setPromptTemplates, tenantAiSetting, setTenantAiSetting, selectedAiProviderId, setSelectedAiProviderId,
+    materials, setMaterials, materialCacheHealth, setMaterialCacheHealth, materialCacheConfig, setMaterialCacheConfig,
+    materialImports, setMaterialImports, contentKeywordRules, setContentKeywordRules,
     usageLedgers, usageSummary,
     accountDetail, accountDetailTab, setAccountDetailTab,
     accountPoolDetail, poolDirectAccountId, setPoolDirectAccountId,
@@ -167,6 +188,68 @@ function AppShell() {
   } = ctx;
 
   const nav = currentUser ? SHELL_NAV_ITEMS.filter(([viewId]) => canView(currentUser, viewId)) : SHELL_NAV_ITEMS;
+
+  const loadDeveloperConfig = React.useCallback(async () => {
+    const [apps, tenantRows] = await Promise.all([
+      api<DeveloperApp[]>('/developer-apps'),
+      api<Tenant[]>('/tenants'),
+    ]);
+    setDeveloperApps(apps);
+    setTenants(tenantRows);
+  }, [setDeveloperApps, setTenants]);
+
+  const loadAiProviderConfig = React.useCallback(async () => {
+    const [providers, setting] = await Promise.all([
+      api<AiProvider[]>('/ai-providers'),
+      api<TenantAiSetting>('/tenant-ai-settings'),
+    ]);
+    setAiProviders(providers);
+    setTenantAiSetting(setting);
+    if (!selectedAiProviderId) setSelectedAiProviderId(setting?.default_provider_id || providers[0]?.id || '');
+  }, [selectedAiProviderId, setAiProviders, setSelectedAiProviderId, setTenantAiSetting]);
+
+  const loadResourceConfig = React.useCallback(async () => {
+    const accountPath = `/tg-accounts?page=1&page_size=${SYSTEM_CONFIG_ACCOUNT_OPTION_LIMIT}&status=${encodeURIComponent('在线')}`;
+    const [templates, materialRows, health, config, imports, rules, accountRows] = await Promise.all([
+      api<PromptTemplate[]>('/prompt-templates'),
+      hasPermission(currentUser, 'materials.view') ? api<Material[]>('/materials') : Promise.resolve([]),
+      api<MaterialCacheHealth>('/materials/cache/health'),
+      api<MaterialCacheConfig>('/materials/cache/config'),
+      hasPermission(currentUser, 'materials.view') ? api<MaterialImportResult[]>('/material-imports') : Promise.resolve([]),
+      api<ContentKeywordRule[]>('/content-keyword-rules'),
+      hasPermission(currentUser, 'accounts.view') ? api<Account[]>(accountPath) : Promise.resolve([]),
+    ]);
+    setPromptTemplates(templates);
+    setMaterials(materialRows);
+    setMaterialCacheHealth(health);
+    setMaterialCacheConfig(config);
+    setMaterialImports(imports);
+    setContentKeywordRules(rules);
+    setAccounts(accountRows);
+  }, [currentUser, setAccounts, setContentKeywordRules, setMaterialCacheConfig, setMaterialCacheHealth, setMaterialImports, setMaterials, setPromptTemplates]);
+
+  const loadSystemConfigTabData = React.useCallback(async (tab: string) => {
+    if (!currentUser || activeView !== 'systemConfig') return;
+    if (tab === 'developer-apps') return loadDeveloperConfig();
+    if (tab === 'admin-users' && hasPermission(currentUser, 'permissions.view')) return setAdminUsers(await api<AdminUser[]>('/admin/users'));
+    if (tab === 'ai-providers') return loadAiProviderConfig();
+    if (tab === 'ai-slang') return setPromptTemplates(await api<PromptTemplate[]>('/prompt-templates'));
+    if (tab === 'resources') return loadResourceConfig();
+  }, [activeView, currentUser, loadAiProviderConfig, loadDeveloperConfig, loadResourceConfig, setAdminUsers, setPromptTemplates]);
+
+  React.useEffect(() => {
+    if (!token || activeView !== 'systemConfig') return;
+    loadSystemConfigTabData(systemConfigTab).catch((error) => {
+      setNotice(`系统设置数据读取异常：${error instanceof Error ? error.message : String(error)}`);
+    });
+  }, [activeView, loadSystemConfigTabData, setNotice, systemConfigTab, token]);
+
+  async function refreshCurrentView() {
+    await refresh();
+    if (activeView === 'systemConfig') {
+      await loadSystemConfigTabData(systemConfigTab);
+    }
+  }
 
   React.useEffect(() => {
     if (!notice) return;
@@ -361,7 +444,7 @@ function AppShell() {
           <Space className="top-actions">
             {busy && <Typography.Text className="busy">{busy}...</Typography.Text>}
             <Tooltip title="刷新当前数据">
-              <Button aria-label="刷新当前数据" icon={<RefreshCcw size={18} />} loading={isActionPending('app:refresh')} onClick={() => refresh()} />
+              <Button aria-label="刷新当前数据" icon={<RefreshCcw size={18} />} loading={isActionPending('app:refresh')} onClick={() => refreshCurrentView()} />
             </Tooltip>
             <Button icon={<LockKeyhole size={16} />} onClick={logout}>退出</Button>
           </Space>
@@ -462,7 +545,7 @@ function AppShell() {
               onEditMaterial={openMaterialEdit}
               onCreateKeywordRule={() => setModal({ type: 'keywordRuleCreate' })}
               onEditKeywordRule={openContentKeywordRuleEdit}
-              onSavedMaterialCacheConfig={refresh}
+              onSavedMaterialCacheConfig={() => loadSystemConfigTabData('resources')}
               onOpenConfirm={openConfirm}
               isActionPending={isActionPending}
             />

@@ -39,13 +39,8 @@ function settledValue<T>(result: PromiseSettledResult<T>, fallback: T): T {
   return result.status === 'fulfilled' ? result.value : fallback;
 }
 
-const CONTENT_RESOURCE_VIEWS = new Set(['materials', 'messageSending', 'systemConfig']);
 const ACCOUNT_SNAPSHOT_PAGE_SIZE = 200;
 const FIRST_ACCOUNT_PAGE = 1;
-
-export function viewNeedsContentResources(activeView: string): boolean {
-  return CONTENT_RESOURCE_VIEWS.has(activeView);
-}
 
 type ContentResourceSnapshot = {
   materials: Material[];
@@ -166,46 +161,16 @@ async function loadArchives(): Promise<ArchiveItem[]> {
   return api<ArchiveItem[]>(archiveListPath());
 }
 
-function aiProvidersPath(): string {
-  return '/ai-providers';
-}
-
-async function loadAiProviders(): Promise<AiProvider[]> {
-  return api<AiProvider[]>(aiProvidersPath());
-}
-
-function promptTemplatesPath(): string {
-  return '/prompt-templates';
-}
-
-async function loadPromptTemplates(): Promise<PromptTemplate[]> {
-  return api<PromptTemplate[]>(promptTemplatesPath());
-}
-
-function tenantAiSettingPath(): string {
-  return '/tenant-ai-settings';
-}
-
-async function loadTenantAiSetting(): Promise<TenantAiSetting> {
-  return api<TenantAiSetting>(tenantAiSettingPath());
-}
-
 async function loadOverviewPage(): Promise<SnapshotPatch> {
   return { overview: await api<Overview>('/overview') };
 }
 
 async function loadSystemPage(context: LoaderContext): Promise<SnapshotPatch> {
-  const [developerApps, tenants, adminUsers, aiProviders, promptTemplates, tenantAiSetting, contentResources, accounts] = await Promise.all([
+  const [developerApps, tenants] = await Promise.all([
     hasPermission(context.me, 'system.view') ? api<DeveloperApp[]>('/developer-apps').catch(() => []) : [],
     hasPermission(context.me, 'system.view') ? api<Tenant[]>('/tenants').catch(() => []) : [],
-    hasPermission(context.me, 'permissions.view') ? api<AdminUser[]>('/admin/users').catch(() => []) : [],
-    loadAiProviders().catch(() => []),
-    loadPromptTemplates().catch(() => []),
-    loadTenantAiSetting().catch(() => null),
-    loadContentResources(),
-    loadAccountList(context.selectedPoolId).catch(() => []),
   ]);
-  return { developerApps, tenants, adminUsers, aiProviders, promptTemplates, tenantAiSetting, contentResources, accounts };
+  return { developerApps, tenants };
 }
 
 async function loadMessagePage(context: LoaderContext): Promise<SnapshotPatch> {
