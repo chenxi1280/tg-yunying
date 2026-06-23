@@ -195,10 +195,31 @@ class InviteGroupBotPayload(BaseModel):
         return self
 
 
+class InviteGroupAccountPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    group_id: int | None = None
+    operation_target_id: int | None = None
+    group_peer_id: str = Field(min_length=1)
+    target_account_id: int = Field(ge=1)
+    target_account_ref: str = Field(min_length=1, max_length=160)
+    trigger_account_id: int | None = None
+    trigger_task_id: str = ""
+    trigger_reason: str = ""
+
+    @model_validator(mode="after")
+    def normalize_target_ref(self) -> "InviteGroupAccountPayload":
+        self.target_account_ref = self.target_account_ref.strip()
+        if not self.target_account_ref:
+            raise ValueError("target_account_ref 不能为空")
+        return self
+
+
 PAYLOAD_MODELS = {
     "ensure_channel_membership": EnsureChannelMembershipPayload,
     "ensure_target_membership": EnsureChannelMembershipPayload,
     "invite_group_bot": InviteGroupBotPayload,
+    "invite_group_account": InviteGroupAccountPayload,
     "delete_message": DeleteMessagePayload,
     "send_message": SendMessagePayload,
     "view_message": ViewMessagePayload,

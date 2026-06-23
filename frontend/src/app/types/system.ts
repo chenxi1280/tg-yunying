@@ -81,7 +81,6 @@ export type Tenant = {
   telegram_bot_configured: boolean;
   group_rescue_enabled: boolean;
   group_rescue_admin_account_id: number | null;
-  group_rescue_bot_username: string;
   created_at: string;
 };
 

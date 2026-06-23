@@ -36,11 +36,10 @@ def _seed_rescue_target(session: Session, *, configured: bool = True) -> None:
     if configured:
         tenant.group_rescue_enabled = True
         tenant.group_rescue_admin_account_id = 99
-        tenant.group_rescue_bot_username = "@guard_bot"
     session.add(tenant)
     session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-10021", title="目标群"))
     session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-10021", title="目标群"))
-    session.add(TgAccount(id=11, tenant_id=1, display_name="普通账号", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"))
+    session.add(TgAccount(id=11, tenant_id=1, display_name="普通账号", username="normal_user", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"))
     session.add(TgAccount(id=99, tenant_id=1, display_name="救援账号", phone_masked="99", status=AccountStatus.ACTIVE.value, session_ciphertext="session-99"))
     session.add(Task(id="task-rescue", tenant_id=1, name="准入", type="group_membership_admission", status="running", type_config={"target_operation_target_id": 21}))
     session.add(TaskMembershipAdmissionItem(tenant_id=1, task_id="task-rescue", account_id=11, target_id=21, phase="joining"))
@@ -56,23 +55,21 @@ def test_group_rescue_settings_rejects_unavailable_admin_account() -> None:
         payload = TenantGroupRescueSettingsUpdate(
             group_rescue_enabled=True,
             group_rescue_admin_account_id=99,
-            group_rescue_bot_username="@guard_bot",
         )
 
         with pytest.raises(ValueError, match="救援管理员账号必须是在线账号"):
             update_group_rescue_settings(session, 1, payload, "pytest")
 
 
-def test_group_rescue_settings_payload_exposes_admin_and_bot() -> None:
+def test_group_rescue_settings_payload_exposes_admin_account() -> None:
     with _session() as session:
-        session.add(Tenant(id=1, name="默认运营空间", group_rescue_enabled=True, group_rescue_admin_account_id=99, group_rescue_bot_username="@guard_bot"))
+        session.add(Tenant(id=1, name="默认运营空间", group_rescue_enabled=True, group_rescue_admin_account_id=99))
         session.add(TgAccount(id=99, tenant_id=1, display_name="救援账号", username="helper", phone_masked="99", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
         session.commit()
 
         payload = group_rescue_settings_payload(session.get(Tenant, 1), session)
 
         assert payload["group_rescue_enabled"] is True
-        assert payload["group_rescue_bot_username"] == "@guard_bot"
         assert payload["group_rescue_admin_account"]["id"] == 99
         assert payload["group_rescue_admin_account"]["display_name"] == "救援账号"
 
@@ -129,23 +126,23 @@ def test_dispatch_skips_normal_actions_bound_to_rescue_admin_account(monkeypatch
         assert action.result["error_code"] == "rescue_admin_reserved"
 
 
-def test_invite_group_bot_payload_requires_bot_username() -> None:
-    with pytest.raises(ValidationError, match="bot_username"):
+def test_invite_group_account_payload_requires_target_account_ref() -> None:
+    with pytest.raises(ValidationError, match="target_account_ref"):
         dispatcher.validate_action_payload(
-            "invite_group_bot",
-            {"group_id": 7, "operation_target_id": 21, "group_peer_id": "-10021", "bot_username": ""},
+            "invite_group_account",
+            {"group_id": 7, "operation_target_id": 21, "group_peer_id": "-10021", "target_account_id": 11, "target_account_ref": ""},
         )
 
 
-def test_dispatch_invite_group_bot_uses_configured_rescue_account(monkeypatch) -> None:
+def test_dispatch_invite_group_account_uses_configured_rescue_account(monkeypatch) -> None:
     with _session() as session:
         _seed_rescue_target(session)
         action = Action(
-            id="invite-bot",
+            id="invite-account",
             tenant_id=1,
             task_id="task-rescue",
             task_type="group_membership_admission",
-            action_type="invite_group_bot",
+            action_type="invite_group_account",
             account_id=99,
             scheduled_at=NOW,
             status="pending",
@@ -153,7 +150,8 @@ def test_dispatch_invite_group_bot_uses_configured_rescue_account(monkeypatch) -
                 "group_id": 7,
                 "operation_target_id": 21,
                 "group_peer_id": "-10021",
-                "bot_username": "@guard_bot",
+                "target_account_id": 11,
+                "target_account_ref": "@normal_user",
                 "trigger_account_id": 11,
                 "trigger_task_id": "task-rescue",
                 "trigger_reason": "permission_denied",
@@ -165,15 +163,15 @@ def test_dispatch_invite_group_bot_uses_configured_rescue_account(monkeypatch) -
         calls: list[tuple[int, str, str]] = []
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
 
-        def fake_invite(account_id, group_peer_id, bot_username, *_args, **_kwargs):  # noqa: ANN001
-            calls.append((account_id, group_peer_id, bot_username))
-            return OperationResult(True, "已处理", detail="bot_invited")
+        def fake_invite(account_id, group_peer_id, target_account_ref, *_args, **_kwargs):  # noqa: ANN001
+            calls.append((account_id, group_peer_id, target_account_ref))
+            return OperationResult(True, "已处理", detail="account_invited")
 
-        monkeypatch.setattr(dispatcher.gateway, "invite_bot_to_group", fake_invite)
+        monkeypatch.setattr(dispatcher.gateway, "invite_account_to_group", fake_invite)
 
         assert dispatch_action(session, action) is True
 
-        assert calls == [(99, "-10021", "@guard_bot")]
+        assert calls == [(99, "-10021", "@normal_user")]
         assert action.status == "success"
         assert action.result["rescue_status"] == "invite_success"
 
@@ -202,12 +200,13 @@ def test_membership_permission_denied_over_threshold_creates_one_rescue_action()
             session.commit()
             sync_membership_admission_items(session, task, now=NOW)
 
-        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_bot")).all()
+        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_account")).all()
         session.refresh(item)
 
         assert len(rescue_actions) == 1
         assert rescue_actions[0].account_id == 99
-        assert rescue_actions[0].payload["bot_username"] == "@guard_bot"
+        assert rescue_actions[0].payload["target_account_id"] == 11
+        assert rescue_actions[0].payload["target_account_ref"] == "@normal_user"
         assert item.permission_failure_count == 4
         assert item.rescue_action_id == rescue_actions[0].id
         assert item.rescue_status == "pending"
@@ -239,7 +238,7 @@ def test_membership_sync_counts_same_permission_action_once() -> None:
             session.commit()
 
         session.refresh(item)
-        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_bot")).all()
+        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_account")).all()
         assert item.permission_failure_count == 1
         assert rescue_actions == []
 
@@ -270,7 +269,7 @@ def test_membership_rescue_missing_config_is_explicit_without_action() -> None:
 
         session.refresh(item)
 
-        assert session.scalars(select(Action).where(Action.action_type == "invite_group_bot")).all() == []
+        assert session.scalars(select(Action).where(Action.action_type == "invite_group_account")).all() == []
         assert item.permission_failure_count == 4
         assert item.rescue_status == "unconfigured"
         assert "救援配置缺失" in item.rescue_failure_detail
@@ -341,11 +340,11 @@ def test_retry_membership_rescue_requeues_failed_rescue_action() -> None:
             tenant_id=1,
             task_id="task-rescue",
             task_type="group_membership_admission",
-            action_type="invite_group_bot",
+            action_type="invite_group_account",
             account_id=99,
             scheduled_at=NOW,
             status="failed",
-            payload={"group_id": 7, "operation_target_id": 21, "group_peer_id": "-10021", "bot_username": "@guard_bot"},
+            payload={"group_id": 7, "operation_target_id": 21, "group_peer_id": "-10021", "target_account_id": 11, "target_account_ref": "@normal_user"},
             result={"rescue_status": "invite_failed", "error_message": "救援账号不是目标群管理员或没有邀请权限"},
         )
         session.add(action)
@@ -374,11 +373,11 @@ def test_retry_membership_rescue_uses_latest_global_config() -> None:
             tenant_id=1,
             task_id="task-rescue",
             task_type="group_membership_admission",
-            action_type="invite_group_bot",
+            action_type="invite_group_account",
             account_id=99,
             scheduled_at=NOW,
             status="failed",
-            payload={"group_id": 7, "operation_target_id": 21, "group_peer_id": "-10021", "bot_username": "@old_bot", "trigger_account_id": 11},
+            payload={"group_id": 7, "operation_target_id": 21, "group_peer_id": "-10021", "target_account_id": 11, "target_account_ref": "@old_user", "trigger_account_id": 11},
             result={"rescue_status": "invite_failed", "error_message": "旧配置失败"},
         )
         session.add(action)
@@ -386,7 +385,6 @@ def test_retry_membership_rescue_uses_latest_global_config() -> None:
         item.rescue_status = "invite_failed"
         tenant = session.get(Tenant, 1)
         tenant.group_rescue_admin_account_id = 100
-        tenant.group_rescue_bot_username = "@new_bot"
         session.commit()
 
         retry_membership_admission_rescue(session, 1, "task-rescue", item.id)
@@ -394,11 +392,11 @@ def test_retry_membership_rescue_uses_latest_global_config() -> None:
         session.refresh(action)
         assert action.status == "pending"
         assert action.account_id == 100
-        assert action.payload["bot_username"] == "@new_bot"
+        assert action.payload["target_account_ref"] == "@normal_user"
         assert action.payload["trigger_account_id"] == 11
 
 
-def test_invite_bot_to_group_rejects_non_bot_username(monkeypatch) -> None:
+def test_invite_account_to_group_reports_unresolvable_account(monkeypatch) -> None:
     gateway = TelethonTelegramGateway()
 
     class FakeClient:
@@ -406,8 +404,8 @@ def test_invite_bot_to_group_rejects_non_bot_username(monkeypatch) -> None:
             return True
 
         async def get_entity(self, username: str):  # noqa: ANN001
-            assert username == "real_user"
-            return SimpleNamespace(bot=False)
+            assert username == "missing_user"
+            raise ValueError("Could not find the input entity")
 
         async def __call__(self, _request):  # noqa: ANN001
             return object()
@@ -422,13 +420,13 @@ def test_invite_bot_to_group_rejects_non_bot_username(monkeypatch) -> None:
     monkeypatch.setattr("app.integrations.telegram.gateway.resolve_telethon_target", fake_target)
 
     result = gateway._run(
-        gateway._invite_bot_to_group_async(
+        gateway._invite_account_to_group_async(
             "raw-session",
             "-1007",
-            "@real_user",
+            "@missing_user",
             DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1),
         )
     )
 
     assert result.ok is False
-    assert result.detail == "救援机器人 username 不是 Telegram bot"
+    assert result.detail == "被救援账号无法解析或目标群不可访问"

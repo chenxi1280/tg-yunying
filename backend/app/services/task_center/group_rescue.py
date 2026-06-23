@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, Action, Task, Tenant, TgAccount, TgGroup
 from app.services._common import _now
-from app.services.task_center.payloads import InviteGroupBotPayload
+from app.services.task_center.payloads import InviteGroupAccountPayload
 
 
 GROUP_RESCUE_FAILURE_THRESHOLD = 3
@@ -68,7 +68,10 @@ def trigger_group_rescue(
     existing = _existing_rescue_action(session, task, group, trigger_account_id)
     if existing:
         return GroupRescueResult(_action_rescue_status(existing), _action_rescue_detail(existing), existing)
-    action = _create_rescue_action(session, tenant, task, group, trigger_account_id, trigger_reason, operation_target_id)
+    try:
+        action = _create_rescue_action(session, tenant, task, group, trigger_account_id, trigger_reason, operation_target_id)
+    except ValueError as exc:
+        return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, str(exc))
     return GroupRescueResult(RESCUE_STATUS_PENDING, "已创建群聊救援动作", action)
 
 
@@ -92,8 +95,12 @@ def refresh_group_rescue_action(
     config_error = _rescue_config_error(session, tenant)
     if config_error:
         return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, config_error)
-    payload = _rescue_payload(tenant, task, group, trigger_account_id, trigger_reason, operation_target_id)
+    try:
+        payload = _rescue_payload(session, tenant, task, group, trigger_account_id, trigger_reason, operation_target_id)
+    except ValueError as exc:
+        return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, str(exc))
     action.account_id = tenant.group_rescue_admin_account_id
+    action.action_type = "invite_group_account"
     action.payload = payload.model_dump(mode="json")
     action.status = "pending"
     action.scheduled_at = _now()
@@ -116,12 +123,12 @@ def _create_rescue_action(
     trigger_reason: str,
     operation_target_id: int | None,
 ) -> Action:
-    payload = _rescue_payload(tenant, task, group, trigger_account_id, trigger_reason, operation_target_id)
+    payload = _rescue_payload(session, tenant, task, group, trigger_account_id, trigger_reason, operation_target_id)
     action = Action(
         tenant_id=task.tenant_id,
         task_id=task.id,
         task_type=task.type,
-        action_type="invite_group_bot",
+        action_type="invite_group_account",
         account_id=tenant.group_rescue_admin_account_id,
         scheduled_at=_now(),
         status="pending",
@@ -134,18 +141,23 @@ def _create_rescue_action(
 
 
 def _rescue_payload(
+    session: Session,
     tenant: Tenant,
     task: Task,
     group: TgGroup,
     trigger_account_id: int,
     trigger_reason: str,
     operation_target_id: int | None,
-) -> InviteGroupBotPayload:
-    return InviteGroupBotPayload(
+) -> InviteGroupAccountPayload:
+    target_account_ref = _target_account_invite_ref(session, tenant, trigger_account_id)
+    if not target_account_ref:
+        raise ValueError("被救援账号缺少 username 或手机号，无法邀请入群")
+    return InviteGroupAccountPayload(
         group_id=group.id,
         operation_target_id=operation_target_id,
         group_peer_id=group.tg_peer_id,
-        bot_username=tenant.group_rescue_bot_username,
+        target_account_id=trigger_account_id,
+        target_account_ref=target_account_ref,
         trigger_account_id=trigger_account_id,
         trigger_task_id=task.id,
         trigger_reason=trigger_reason,
@@ -154,7 +166,11 @@ def _rescue_payload(
 
 def _existing_rescue_action(session: Session, task: Task, group: TgGroup, trigger_account_id: int) -> Action | None:
     rows = session.scalars(
-        select(Action).where(Action.tenant_id == task.tenant_id, Action.task_id == task.id, Action.action_type == "invite_group_bot")
+        select(Action).where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_id == task.id,
+            Action.action_type.in_(["invite_group_account", "invite_group_bot"]),
+        )
     )
     for row in rows:
         payload = row.payload if isinstance(row.payload, dict) else {}
@@ -168,14 +184,21 @@ def _rescue_config_error(session: Session, tenant: Tenant | None) -> str:
         return "救援配置缺失：未启用群聊救援"
     if not tenant.group_rescue_admin_account_id:
         return "救援配置缺失：未选择救援管理员账号"
-    if not (tenant.group_rescue_bot_username or "").strip():
-        return "救援配置缺失：未配置救援机器人 username"
     account = session.get(TgAccount, tenant.group_rescue_admin_account_id)
     if not account or account.tenant_id != tenant.id or account.deleted_at is not None:
         return "救援配置缺失：救援管理员账号不存在"
     if account.status != AccountStatus.ACTIVE.value or not account.session_ciphertext:
         return "救援配置缺失：救援管理员账号不可用"
     return ""
+
+
+def _target_account_invite_ref(session: Session, tenant: Tenant, account_id: int) -> str:
+    account = session.get(TgAccount, account_id)
+    if not account or account.tenant_id != tenant.id or account.deleted_at is not None:
+        return ""
+    if account.username:
+        return f"@{account.username.lstrip('@')}"
+    return account.phone_number or ""
 
 
 def _is_group_permission_failure(action: Action, group_id: int) -> bool:

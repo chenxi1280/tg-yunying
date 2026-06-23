@@ -33,7 +33,6 @@ class TenantOut(ApiModel):
     telegram_bot_configured: bool = False
     group_rescue_enabled: bool = False
     group_rescue_admin_account_id: int | None = None
-    group_rescue_bot_username: str = ""
     created_at: datetime
 
 
@@ -44,7 +43,6 @@ class TenantNotificationSettingsOut(BaseModel):
     telegram_bot_configured: bool = False
     group_rescue_enabled: bool = False
     group_rescue_admin_account_id: int | None = None
-    group_rescue_bot_username: str = ""
     group_rescue_admin_account: dict | None = None
 
 
@@ -57,7 +55,6 @@ class TenantNotificationSettingsUpdate(BaseModel):
 class TenantGroupRescueSettingsUpdate(BaseModel):
     group_rescue_enabled: bool | None = None
     group_rescue_admin_account_id: int | None = Field(default=None, ge=1)
-    group_rescue_bot_username: str | None = Field(default=None, max_length=120)
 
 
 # ── Auth ──

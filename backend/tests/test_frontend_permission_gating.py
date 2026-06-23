@@ -260,21 +260,23 @@ def test_tenant_edit_modal_does_not_embed_group_rescue_form():
     assert "救援机器人 username" not in tenant_modal
 
 
-def test_system_config_exposes_group_rescue_entry_on_developer_apps_tab():
+def test_system_config_exposes_group_rescue_as_top_level_tab():
     system_config = (PROJECT_ROOT / "frontend/src/app/views/SystemConfigView.tsx").read_text()
+    rescue_view = (PROJECT_ROOT / "frontend/src/app/views/GroupRescueSettingsView.tsx").read_text()
     developer_apps = (PROJECT_ROOT / "frontend/src/app/views/DeveloperAppsView.tsx").read_text()
 
     assert "showTenants={false}" in system_config
-    assert "accounts={accounts}" in system_config
+    assert "key: 'group-rescue'" in system_config
+    assert "label: '群聊救援配置'" in system_config
+    assert "<GroupRescueSettingsView" in system_config
     assert "onSaveGroupRescueSettings={onSaveGroupRescueSettings}" in system_config
     assert "canManageGroupRescue={hasPermission(currentUser, 'system.manage')}" in system_config
-    assert "群聊救援配置" in developer_apps
-    assert "保存群聊救援配置" in developer_apps
-    assert "救援管理员账号" in developer_apps
-    assert "救援机器人 username" in developer_apps
-    assert "group_rescue_admin_account_id" in developer_apps
-    rescue_card = developer_apps[developer_apps.index("function GroupRescueConfigCard"):developer_apps.index("export default function DeveloperAppsView")]
-    assert "onEditTenant(tenant)" not in rescue_card
+    assert "群聊救援配置" not in developer_apps
+    assert "保存群聊救援配置" in rescue_view
+    assert "救援管理员账号" in rescue_view
+    assert "救援机器人 username" not in rescue_view
+    assert "api<Account[]>(`/tg-accounts?${params.toString()}`)" in rescue_view
+    assert "status: '在线'" in rescue_view
 
 
 def test_task_center_target_selects_support_searching():

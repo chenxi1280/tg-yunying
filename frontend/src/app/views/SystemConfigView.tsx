@@ -17,6 +17,7 @@ import type {
 } from '../types';
 import AISettingsView from './AISettingsView';
 import DeveloperAppsView from './DeveloperAppsView';
+import GroupRescueSettingsView from './GroupRescueSettingsView';
 import { hasPermission } from '../utils';
 
 interface Props {
@@ -44,7 +45,6 @@ interface Props {
   onSaveGroupRescueSettings: (tenantId: number, payload: {
     group_rescue_enabled: boolean;
     group_rescue_admin_account_id: number | null;
-    group_rescue_bot_username: string;
   }) => Promise<void>;
   onCreateAdminUser: () => void;
   onEditAdminUser: (user: AdminUser) => void;
@@ -120,7 +120,6 @@ export default function SystemConfigView({
             <DeveloperAppsView
               developerApps={developerApps}
               tenants={tenants}
-              accounts={accounts}
               showTenants={false}
               canManageDeveloperApps={hasPermission(currentUser, 'developer_apps.manage')}
               onCreateClick={onCreateDeveloperApp}
@@ -128,9 +127,20 @@ export default function SystemConfigView({
               onCheck={onCheckDeveloperApp}
               onToggle={onToggleDeveloperApp}
               onEditTenant={onEditTenant}
+              onOpenConfirm={onOpenConfirm}
+              isActionPending={isActionPending}
+            />
+          ),
+        },
+        {
+          key: 'group-rescue',
+          label: '群聊救援配置',
+          children: (
+            <GroupRescueSettingsView
+              tenants={tenants}
+              initialAccounts={accounts}
               onSaveGroupRescueSettings={onSaveGroupRescueSettings}
               canManageGroupRescue={hasPermission(currentUser, 'system.manage')}
-              onOpenConfirm={onOpenConfirm}
               isActionPending={isActionPending}
             />
           ),

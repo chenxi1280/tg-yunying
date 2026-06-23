@@ -17,7 +17,6 @@ import type { TenantForm } from './types';
 type GroupRescueSettingsPayload = {
   group_rescue_enabled: boolean;
   group_rescue_admin_account_id: number | null;
-  group_rescue_bot_username: string;
 };
 
 interface SystemActionParams {

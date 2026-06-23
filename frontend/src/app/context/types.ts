@@ -322,7 +322,6 @@ export interface AppState {
   saveTenantGroupRescueSettings: (tenantId: number, payload: {
     group_rescue_enabled: boolean;
     group_rescue_admin_account_id: number | null;
-    group_rescue_bot_username: string;
   }) => Promise<void>;
   openAdminUserEdit: (user: AdminUser) => void;
   openAdminUserCreate: () => void;

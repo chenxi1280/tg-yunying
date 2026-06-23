@@ -38,7 +38,7 @@ from .channel_membership import account_satisfies_authorized_target, linked_chan
 from .executors.common import quantity_jitter_bounds
 from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, permission_failure_count_for_send_action, trigger_group_rescue
-from .payloads import DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupBotPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
+from .payloads import DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, InviteGroupBotPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from . import runtime_resources as _runtime_resources
@@ -192,7 +192,7 @@ def dispatch_action(session: Session, action: Action) -> bool:
     if _is_reserved_rescue_admin_action(session, action, account):
         _skip(action, "rescue_admin_reserved", "救援管理员账号只允许执行群聊救援动作，不参与普通任务发送、点赞、评论或准入")
         return True
-    can_reassign = action.status != "executing" and not _is_membership_action(action) and action.action_type != "invite_group_bot"
+    can_reassign = action.status != "executing" and not _is_membership_action(action) and action.action_type not in {"invite_group_bot", "invite_group_account"}
     account = _account_after_global_policy(session, action, account, allow_reassign=can_reassign)
     if account is None:
         return True
@@ -209,6 +209,8 @@ def dispatch_action(session: Session, action: Action) -> bool:
             return _dispatch_delete_message(session, action, account, credentials, payload)
         if action.action_type == "invite_group_bot":
             return _dispatch_invite_group_bot(session, action, account, credentials, payload)
+        if action.action_type == "invite_group_account":
+            return _dispatch_invite_group_account(session, action, account, credentials, payload)
         if action.action_type == "view_message":
             return _dispatch_view(action, account, credentials, session, payload)
         if action.action_type == "like_message":
@@ -230,7 +232,7 @@ def dispatch_action(session: Session, action: Action) -> bool:
 
 
 def _is_reserved_rescue_admin_action(session: Session, action: Action, account: TgAccount) -> bool:
-    if action.action_type == "invite_group_bot":
+    if action.action_type in {"invite_group_bot", "invite_group_account"}:
         return False
     tenant = session.get(Tenant, action.tenant_id)
     return bool(tenant and tenant.group_rescue_admin_account_id and int(tenant.group_rescue_admin_account_id) == int(account.id))
@@ -730,6 +732,22 @@ def _dispatch_invite_group_bot(session: Session, action: Action, account: TgAcco
         account.id,
         payload.group_peer_id,
         payload.bot_username,
+        account.session_ciphertext,
+        credentials,
+    )
+    _apply_rescue_invite_result(action, account, result, attempt=attempt)
+    return True
+
+
+def _dispatch_invite_group_account(session: Session, action: Action, account: TgAccount, credentials, payload: InviteGroupAccountPayload) -> bool:
+    attempt = _begin_execution_attempt(session, action, account)
+    _mark_executing(action)
+    session.commit()
+    _mark_gateway_call_started(session, attempt)
+    result = gateway.invite_account_to_group(
+        account.id,
+        payload.group_peer_id,
+        payload.target_account_ref,
         account.session_ciphertext,
         credentials,
     )

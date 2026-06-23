@@ -260,6 +260,15 @@ def _invite_bot_error_detail(detail: str) -> str:
     return detail
 
 
+def _invite_account_error_detail(detail: str) -> str:
+    normalized = detail.lower()
+    if "admin" in normalized or "permission" in normalized or "forbidden" in normalized or "无权限" in detail:
+        return "救援账号不是目标群管理员或没有邀请权限"
+    if "username" in normalized or "phone" in normalized or "could not find" in normalized or "目标实体无法解析" in detail:
+        return "被救援账号无法解析或目标群不可访问"
+    return detail
+
+
 def _linked_chat_from_full_channel(full: Any, linked_id: int) -> Any | None:
     for chat in getattr(full, "chats", []) or []:
         chat_id = getattr(chat, "id", None)
@@ -1092,6 +1101,33 @@ class TelethonTelegramGateway(TelegramGateway):
             detail = _invite_bot_error_detail(mapped.detail or str(exc))
             return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, detail)
 
+    async def _invite_account_to_group_async(
+        self,
+        session_ciphertext: str | None,
+        group_peer_id: str,
+        target_account_ref: str,
+        credentials: DeveloperAppCredentials,
+    ) -> OperationResult:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "账号没有可用 session")
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "session 已失效")
+        try:
+            from telethon import functions
+
+            target = await resolve_telethon_target(client, group_peer_id, group_id=0)
+            user = await client.get_entity(target_account_ref.strip().lstrip("@"))
+            await client(functions.channels.InviteToChannelRequest(channel=target, users=[user]))
+            return OperationResult(True, "已处理", detail="account_invited")
+        except Exception as exc:
+            if _is_bot_already_in_group(exc):
+                return OperationResult(True, "已处理", detail="account_already_present")
+            mapped = self._map_send_error(exc)
+            detail = _invite_account_error_detail(mapped.detail or str(exc))
+            return OperationResult(False, "失败", mapped.failure_type or FailureType.UNKNOWN.value, detail)
+
     def invite_bot_to_group(
         self,
         account_id: int,
@@ -1105,6 +1141,23 @@ class TelethonTelegramGateway(TelegramGateway):
                 session_ciphertext,
                 group_peer_id,
                 bot_username,
+                self._usable_credentials(credentials),
+            )
+        )
+
+    def invite_account_to_group(
+        self,
+        account_id: int,
+        group_peer_id: str,
+        target_account_ref: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        return self._run(
+            self._invite_account_to_group_async(
+                session_ciphertext,
+                group_peer_id,
+                target_account_ref,
                 self._usable_credentials(credentials),
             )
         )

@@ -843,10 +843,9 @@ def test_group_ai_chat_permission_denied_over_threshold_creates_rescue_action(mo
         tenant = Tenant(id=1, name="默认运营空间")
         tenant.group_rescue_enabled = True
         tenant.group_rescue_admin_account_id = 99
-        tenant.group_rescue_bot_username = "@guard_bot"
         session.add(tenant)
         session.add(Task(id="task-ai-rescue", tenant_id=1, name="ai rescue", type="group_ai_chat", status="running"))
-        session.add(TgAccount(id=11, tenant_id=1, display_name="普通账号", phone_masked="+861***0011", status="在线", session_ciphertext="session-11"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="普通账号", username="normal_user", phone_masked="+861***0011", status="在线", session_ciphertext="session-11"))
         session.add(TgAccount(id=99, tenant_id=1, display_name="救援账号", phone_masked="+861***0099", status="在线", session_ciphertext="session-99"))
         session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
@@ -891,11 +890,11 @@ def test_group_ai_chat_permission_denied_over_threshold_creates_rescue_action(mo
         [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
         assert dispatcher.dispatch_action(session, claimed) is True
 
-        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_bot")).all()
+        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_account")).all()
         assert len(rescue_actions) == 1
         assert rescue_actions[0].account_id == 99
         assert rescue_actions[0].payload["trigger_account_id"] == 11
-        assert rescue_actions[0].payload["bot_username"] == "@guard_bot"
+        assert rescue_actions[0].payload["target_account_ref"] == "@normal_user"
         assert rescue_actions[0].payload["trigger_reason"] == "群黑名单，无法发言"
 
 

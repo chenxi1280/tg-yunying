@@ -1,30 +1,20 @@
 import React from 'react';
-import { Button, Card, Checkbox, Descriptions, Empty, Input, Modal, Select, Space, Typography } from 'antd';
-import type { Account, DeveloperApp, Tenant } from '../types';
+import { Button, Card, Descriptions, Empty, Modal, Space, Typography } from 'antd';
+import type { DeveloperApp, Tenant } from '../types';
 import { StatusBadge, Badge } from '../components/shared';
 import { statusAccent } from '../utils';
 import { formatBeijingDateTime } from '../time';
 
-const RESCUE_FAILURE_THRESHOLD = 3;
-type GroupRescueSettingsPayload = {
-  group_rescue_enabled: boolean;
-  group_rescue_admin_account_id: number | null;
-  group_rescue_bot_username: string;
-};
-
 interface Props {
   developerApps: DeveloperApp[];
   tenants: Tenant[];
-  accounts: Account[];
   onCreateClick: () => void;
   onEdit: (app: DeveloperApp) => void;
   onCheck: (app: DeveloperApp) => void;
   onToggle: (app: DeveloperApp) => void;
   onEditTenant: (tenant: Tenant) => void;
-  onSaveGroupRescueSettings: (tenantId: number, payload: GroupRescueSettingsPayload) => Promise<void>;
   showTenants?: boolean;
   canManageDeveloperApps?: boolean;
-  canManageGroupRescue?: boolean;
   isActionPending: (key: string) => boolean;
   onOpenConfirm: (payload: {
     title: string;
@@ -35,74 +25,12 @@ interface Props {
   }) => void;
 }
 
-function rescueAccountLabel(tenant: Tenant, accounts: Account[]) {
-  if (!tenant.group_rescue_admin_account_id) return '未配置';
-  const account = accounts.find((item) => item.id === tenant.group_rescue_admin_account_id);
-  if (!account) return `#${tenant.group_rescue_admin_account_id}`;
-  const name = account.display_name || account.username || account.phone_masked || `账号 #${account.id}`;
-  return `${name} (#${account.id})`;
-}
-
-function TenantGroupRescueCard({ tenant, accounts, canManage, isActionPending, onSave }: {
-  tenant: Tenant;
-  accounts: Account[];
-  canManage: boolean;
-  isActionPending: Props['isActionPending'];
-  onSave: Props['onSaveGroupRescueSettings'];
-}) {
-  const [enabled, setEnabled] = React.useState(tenant.group_rescue_enabled);
-  const [adminAccountId, setAdminAccountId] = React.useState<number | null>(tenant.group_rescue_admin_account_id);
-  const [botUsername, setBotUsername] = React.useState(tenant.group_rescue_bot_username || '');
-  const accountOptions = accounts
-    .filter((account) => account.status === '在线' && !account.deleted_at)
-    .map((account) => ({
-      value: account.id,
-      label: `${account.display_name || `账号 #${account.id}`} ${account.username ? `@${account.username}` : account.phone_masked}`,
-    }));
-  const saveDisabled = !canManage || (enabled && (!adminAccountId || !botUsername.trim()));
-  React.useEffect(() => {
-    setEnabled(tenant.group_rescue_enabled);
-    setAdminAccountId(tenant.group_rescue_admin_account_id);
-    setBotUsername(tenant.group_rescue_bot_username || '');
-  }, [tenant.id, tenant.group_rescue_enabled, tenant.group_rescue_admin_account_id, tenant.group_rescue_bot_username]);
-  return (
-    <Card className="developer-card status-accent neutral" size="small" title={tenant.name} extra={<Badge tone={enabled ? 'positive' : 'neutral'}>{enabled ? '已启用' : '关闭'}</Badge>}>
-      <div className="policy-grid">
-        <Checkbox disabled={!canManage} checked={enabled} onChange={(event) => setEnabled(event.target.checked)}>启用群聊救援</Checkbox>
-        <label>救援管理员账号<Select<number> allowClear disabled={!canManage} value={adminAccountId ?? undefined} onChange={(value) => setAdminAccountId(value ?? null)} options={accountOptions} placeholder="选择在线 TG 账号" /></label>
-        <label className="wide-field">救援机器人 username<Input disabled={!canManage} value={botUsername} onChange={(event) => setBotUsername(event.target.value)} placeholder="@guard_bot" /></label>
-      </div>
-      <Typography.Paragraph type="secondary">连续失败阈值固定为 {RESCUE_FAILURE_THRESHOLD} 次；该账号只做救援处置，不参与发送、点赞、评论等普通任务。</Typography.Paragraph>
-      <Button size="small" type="primary" disabled={saveDisabled} loading={isActionPending(`tenant:${tenant.id}:group-rescue:save`)} onClick={() => onSave(tenant.id, {
-        group_rescue_enabled: enabled,
-        group_rescue_admin_account_id: adminAccountId,
-        group_rescue_bot_username: botUsername.trim(),
-      })}>保存群聊救援配置</Button>
-    </Card>
-  );
-}
-
-function GroupRescueConfigCard({ tenants, accounts, canManageGroupRescue, isActionPending, onSaveGroupRescueSettings }: Pick<Props, 'tenants' | 'accounts' | 'canManageGroupRescue' | 'isActionPending' | 'onSaveGroupRescueSettings'>) {
-  if (!tenants.length) return null;
-  return (
-    <Card className="panel" title="群聊救援配置" extra={<Typography.Text type="secondary">运营空间全局生效</Typography.Text>}>
-      <div className="cards-grid developer-grid">
-        {tenants.map((tenant) => (
-          <TenantGroupRescueCard key={tenant.id} tenant={tenant} accounts={accounts} canManage={Boolean(canManageGroupRescue)} isActionPending={isActionPending} onSave={onSaveGroupRescueSettings} />
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-export default function DeveloperAppsView({ developerApps, tenants, accounts, onCreateClick, onEdit, onCheck, onToggle, onEditTenant, onSaveGroupRescueSettings, showTenants = true, canManageDeveloperApps = false, canManageGroupRescue = false, isActionPending, onOpenConfirm }: Props) {
+export default function DeveloperAppsView({ developerApps, tenants, onCreateClick, onEdit, onCheck, onToggle, onEditTenant, showTenants = true, canManageDeveloperApps = false, isActionPending, onOpenConfirm }: Props) {
   const [detailApp, setDetailApp] = React.useState<DeveloperApp | null>(null);
   const [detailTenant, setDetailTenant] = React.useState<Tenant | null>(null);
 
   return (
     <>
-      <GroupRescueConfigCard tenants={tenants} accounts={accounts} canManageGroupRescue={canManageGroupRescue} isActionPending={isActionPending} onSaveGroupRescueSettings={onSaveGroupRescueSettings} />
-
       <Card
         className="panel"
         title="开发者应用池"
@@ -185,7 +113,6 @@ export default function DeveloperAppsView({ developerApps, tenants, accounts, on
             { key: 'notify', label: 'AI 失败通知', children: detailTenant.notify_ai_failures_enabled ? '启用' : '关闭' },
             { key: 'group_rescue_enabled', label: '群聊救援', children: detailTenant.group_rescue_enabled ? '启用' : '关闭' },
             { key: 'group_rescue_account', label: '救援账号', children: detailTenant.group_rescue_admin_account_id ? `#${detailTenant.group_rescue_admin_account_id}` : '未配置' },
-            { key: 'group_rescue_bot', label: '救援机器人', children: detailTenant.group_rescue_bot_username || '未配置' },
           ]} />
         )}
       </Modal>

@@ -91,7 +91,6 @@ def group_rescue_settings_payload(tenant: Tenant, session: Session | None) -> di
     return {
         "group_rescue_enabled": bool(tenant.group_rescue_enabled),
         "group_rescue_admin_account_id": account_id,
-        "group_rescue_bot_username": tenant.group_rescue_bot_username or "",
         "group_rescue_admin_account": account_payload,
     }
 
@@ -108,25 +107,14 @@ def update_group_rescue_settings(
     data = payload.model_dump(exclude_unset=True)
     enabled = bool(data.get("group_rescue_enabled", tenant.group_rescue_enabled))
     account_id = data.get("group_rescue_admin_account_id", tenant.group_rescue_admin_account_id)
-    bot_username = _normalized_bot_username(data.get("group_rescue_bot_username", tenant.group_rescue_bot_username))
     if enabled:
         _validate_group_rescue_account(session, tenant_id, account_id)
-        if not bot_username:
-            raise ValueError("救援机器人 username 必填")
     tenant.group_rescue_enabled = enabled
     tenant.group_rescue_admin_account_id = account_id
-    tenant.group_rescue_bot_username = bot_username
-    audit(session, tenant_id=tenant.id, actor=actor, action="更新群聊救援配置", target_type="tenant", target_id=str(tenant.id), detail=f"enabled={enabled}; account={account_id}; bot={bool(bot_username)}")
+    audit(session, tenant_id=tenant.id, actor=actor, action="更新群聊救援配置", target_type="tenant", target_id=str(tenant.id), detail=f"enabled={enabled}; account={account_id}")
     session.commit()
     session.refresh(tenant)
     return group_rescue_settings_payload(tenant, session)
-
-
-def _normalized_bot_username(value: str | None) -> str:
-    text = (value or "").strip()
-    if not text:
-        return ""
-    return text if text.startswith("@") else f"@{text}"
 
 
 def _validate_group_rescue_account(session: Session, tenant_id: int, account_id: int | None) -> TgAccount:
