@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 from sqlalchemy import create_engine
+from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
@@ -108,6 +109,38 @@ def test_metrics_drain_does_not_rebuild_all_runtime_summaries() -> None:
 
     with SessionFactory() as session:
         assert session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.task_id == "task-unrelated-summary")) is None
+
+
+def test_metrics_drain_uses_index_friendly_counts() -> None:
+    SessionFactory = _session_factory()
+    statements: list[str] = []
+
+    event.listen(
+        SessionFactory.kw["bind"],
+        "before_cursor_execute",
+        lambda _conn, _cursor, statement, _parameters, _context, _executemany: statements.append(statement),
+    )
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            Action(
+                id="action-metrics-count",
+                tenant_id=1,
+                task_id="task-metrics-count",
+                task_type="channel_view",
+                action_type="view_post",
+                status="success",
+                scheduled_at=_now(),
+                executed_at=_now(),
+            )
+        )
+        session.commit()
+
+    assert service.drain_task_metrics(SessionFactory, 5) >= 1
+
+    metric_count_statements = [statement.lower() for statement in statements if "from actions" in statement.lower()]
+    assert metric_count_statements
+    assert all("count(actions.id)" not in statement for statement in metric_count_statements)
 
 
 def test_dispatcher_role_claims_and_dispatches_without_listener(monkeypatch):

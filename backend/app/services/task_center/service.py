@@ -1207,18 +1207,19 @@ def drain_task_metrics(session_factory, limit: int = 100) -> int:
     rows: list[RuntimeMetricSnapshot] = []
     with session_factory() as session:
         record_worker_heartbeat(session, process_type="metrics", metadata={"limit": limit})
-        statuses = dict(session.execute(select(Action.status, func.count(Action.id)).group_by(Action.status)).all())
+        statuses = dict(session.execute(select(Action.status, func.count()).select_from(Action).group_by(Action.status)).all())
         oldest_pending = session.scalar(select(func.min(Action.scheduled_at)).where(Action.status == "pending"))
         oldest_pending_age = int((now_value - _naive_datetime(oldest_pending)).total_seconds()) if oldest_pending else 0
         minute_cutoff = now_value - timedelta(minutes=1)
         recent_statuses = dict(
             session.execute(
-                select(Action.status, func.count(Action.id))
+                select(Action.status, func.count())
+                .select_from(Action)
                 .where(Action.executed_at >= minute_cutoff)
                 .group_by(Action.status)
             ).all()
         )
-        created_last_minute = session.scalar(select(func.count(Action.id)).where(Action.created_at >= minute_cutoff)) or 0
+        created_last_minute = session.scalar(select(func.count()).select_from(Action).where(Action.created_at >= minute_cutoff)) or 0
         heartbeat_cutoff = now_value - timedelta(minutes=2)
         active_workers = session.scalar(select(func.count(WorkerHeartbeat.worker_id)).where(WorkerHeartbeat.last_seen_at >= heartbeat_cutoff)) or 0
         stale_workers = session.scalar(select(func.count(WorkerHeartbeat.worker_id)).where(WorkerHeartbeat.last_seen_at < heartbeat_cutoff)) or 0
