@@ -223,8 +223,8 @@ def _occupied_count(
     ]
     if exclude_message_task_id:
         message_filters.append(MessageTask.id != exclude_message_task_id)
-    action_count = session.scalar(select(func.count(Action.id)).where(*action_filters)) or 0
-    message_count = session.scalar(select(func.count(MessageTask.id)).where(*message_filters)) or 0
+    action_count = session.scalar(select(func.count()).select_from(Action).where(*action_filters)) or 0
+    message_count = session.scalar(select(func.count()).select_from(MessageTask).where(*message_filters)) or 0
     total = int(action_count) + int(message_count)
     if cache:
         cache.occupied_counts[cache_key] = total

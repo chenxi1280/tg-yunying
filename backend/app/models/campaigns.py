@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -74,7 +74,16 @@ class AiDraft(Base):
 
 class MessageTask(Base):
     __tablename__ = "message_tasks"
-    __table_args__ = (UniqueConstraint("idempotency_key"),)
+    __table_args__ = (
+        UniqueConstraint("idempotency_key"),
+        Index(
+            "ix_message_tasks_account_occupied_at",
+            "tenant_id",
+            text("(coalesce(account_id, preferred_account_id))"),
+            "status",
+            text("(coalesce(sent_at, scheduled_at))"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))

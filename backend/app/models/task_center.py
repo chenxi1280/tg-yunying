@@ -52,6 +52,7 @@ class Action(Base):
         Index("ix_actions_task_status", "task_id", "status", "executed_at"),
         Index("ix_actions_executed_at_status", "executed_at", "status"),
         Index("ix_actions_created_at", "created_at"),
+        Index("ix_actions_account_occupied_at", "tenant_id", "account_id", "status", text("(coalesce(executed_at, scheduled_at))")),
         Index("ix_actions_task_schedule_page", "tenant_id", "task_id", "scheduled_at", "created_at"),
         Index("ix_actions_task_status_schedule_page", "tenant_id", "task_id", "status", "scheduled_at", "created_at"),
         Index("ix_actions_task_type_schedule_page", "tenant_id", "task_id", "action_type", "scheduled_at", "created_at"),

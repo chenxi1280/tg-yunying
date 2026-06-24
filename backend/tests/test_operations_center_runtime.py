@@ -789,6 +789,45 @@ def test_account_capacity_counts_task_center_and_message_send_records():
     assert decision.reason_code == "account_hour_limit"
 
 
+def test_account_capacity_uses_index_friendly_counts():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    statements: list[str] = []
+    event.listen(
+        engine,
+        "before_cursor_execute",
+        lambda _conn, _cursor, statement, _parameters, _context, _executemany: statements.append(statement),
+    )
+
+    with Session(engine) as session:
+        now_value = datetime.now(UTC).replace(tzinfo=None)
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=2, default_account_day_limit=10))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="发送号", phone_masked="11", status=AccountStatus.ACTIVE.value))
+        session.add(Task(id="task-capacity", tenant_id=1, name="容量", type="group_ai_chat", status="running"))
+        session.add(
+            Action(
+                id="action-success",
+                tenant_id=1,
+                task_id="task-capacity",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                status="success",
+                scheduled_at=now_value,
+                executed_at=now_value,
+            )
+        )
+        session.add(MessageTask(tenant_id=1, account_id=11, content="排队消息", status=TaskStatus.QUEUED.value, scheduled_at=now_value, idempotency_key="queued-11"))
+        session.commit()
+        account_capacity_decision(session, tenant_id=1, account_id=11, scheduled_at=now_value)
+
+    count_statements = [statement.lower() for statement in statements if "count(" in statement.lower()]
+    assert count_statements
+    assert all("count(actions.id)" not in statement for statement in count_statements)
+    assert all("count(message_tasks.id)" not in statement for statement in count_statements)
+
+
 def test_account_capacity_normalizes_aware_last_occupied_for_reservation_cooldown(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
