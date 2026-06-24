@@ -98,6 +98,31 @@ def test_existing_manual_verification_task_upgrades_to_auto_action():
     assert task.target_display == "青岛师范学院"
 
 
+def test_existing_auto_verification_task_refreshes_stale_target_ref_reason():
+    task = VerificationTask(
+        detected_reason="群无权限或账号不可发言",
+        suggested_action="关注频道",
+        status="失败",
+        failure_detail="目标实体无法解析，请重新同步账号群聊/运营目标后再试",
+        handled_at=datetime(2026, 6, 15, 12, 0),
+        target_peer_id="-1003583171851",
+        target_display="天津音乐学院",
+    )
+
+    _upgrade_existing_verification_task(
+        task,
+        "群无权限或账号不可发言",
+        "识别图形验证码",
+        "-1003583171851",
+        "天津音乐学院",
+    )
+
+    assert task.suggested_action == "识别图形验证码"
+    assert task.status == "待处理"
+    assert task.failure_detail == ""
+    assert task.handled_at is None
+
+
 def test_confirm_verification_task_runs_auto_image_for_manual_required(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

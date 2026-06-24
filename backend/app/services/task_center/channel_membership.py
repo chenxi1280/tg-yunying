@@ -457,6 +457,8 @@ def _reactivate_auto_verification_memberships(
     group = linked_channel_group(session, channel, create=False, prefer_send_ready=require_send)
     if not group:
         return 0
+    if _has_sufficient_hard_hourly_membership_capacity(session, task, channel, group, candidates, require_send=require_send):
+        return 0
     latest_actions = _membership_actions_by_account(session, channel.id, task_id=task.id)
     candidate_ids = {int(account.id) for account in candidates}
     failed_actions = [
@@ -481,6 +483,24 @@ def _reactivate_auto_verification_memberships(
     if rows:
         session.bulk_insert_mappings(Action, rows)
     return created
+
+
+def _has_sufficient_hard_hourly_membership_capacity(
+    session: Session,
+    task: Task,
+    channel: OperationTarget,
+    group: TgGroup,
+    candidates: list[TgAccount],
+    *,
+    require_send: bool,
+) -> bool:
+    if not _hard_hourly_membership_fast_track_enabled(task):
+        return False
+    required = int((task.type_config or {}).get("hourly_min_messages") or 0)
+    if required <= 0:
+        return False
+    ready_ids = _ready_membership_account_ids(session, task, channel, group, candidates, require_send=require_send)
+    return len(ready_ids) >= required
 
 
 def _membership_recovery_retry_reason(

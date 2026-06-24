@@ -757,9 +757,9 @@ def _upgrade_existing_verification_task(
     target_peer_id: str,
     target_display: str,
 ) -> None:
-    if task.can_auto_resolve:
-        return
     if suggested_action in MANUAL_VERIFICATION_ACTIONS:
+        return
+    if task.can_auto_resolve and _verification_task_matches(task, detected_reason, suggested_action, target_peer_id, target_display):
         return
     task.detected_reason = detected_reason or task.detected_reason
     task.suggested_action = suggested_action
@@ -768,6 +768,21 @@ def _upgrade_existing_verification_task(
     task.status = "待处理"
     task.failure_detail = ""
     task.handled_at = None
+
+
+def _verification_task_matches(
+    task: VerificationTask,
+    detected_reason: str,
+    suggested_action: str,
+    target_peer_id: str,
+    target_display: str,
+) -> bool:
+    return (
+        (not detected_reason or task.detected_reason == detected_reason)
+        and task.suggested_action == suggested_action
+        and (not target_peer_id or task.target_peer_id == target_peer_id)
+        and (not target_display or task.target_display == target_display)
+    )
 
 
 def _verification_action_for_group_restriction(detail: str) -> str:

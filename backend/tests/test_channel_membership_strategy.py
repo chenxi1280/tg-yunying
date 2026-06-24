@@ -183,6 +183,59 @@ def test_reactivate_memberships_does_not_retry_account_unavailable() -> None:
     assert retry_count == 0
 
 
+def test_hard_hourly_reactivation_skips_permission_failures_when_capacity_is_ready() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    old_value = _now() - timedelta(minutes=10)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        channel = OperationTarget(id=904, tenant_id=1, target_type="group", tg_peer_id="-100904", title="天津", auth_status="已授权运营", can_send=True)
+        group = TgGroup(id=804, tenant_id=1, tg_peer_id="-100904", title="天津", auth_status="已授权运营", can_send=True)
+        task = Task(
+            id="task-hard-hourly-capacity-ready",
+            tenant_id=1,
+            name="天津",
+            type="group_ai_chat",
+            status="running",
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 1},
+        )
+        ready = TgAccount(id=21, tenant_id=1, display_name="可发言", phone_masked="21", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
+        failed = TgAccount(id=22, tenant_id=1, display_name="失败", phone_masked="22", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
+        action = Action(
+            id="membership-permission-denied",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="ensure_target_membership",
+            account_id=failed.id,
+            status="skipped",
+            scheduled_at=old_value,
+            executed_at=old_value,
+            payload={"channel_id": "-100904", "channel_target_id": channel.id, "target_type": "group", "target_display": "天津", "require_send": True},
+            result={"error_code": "membership_permission_denied", "membership_status": "permission_denied"},
+        )
+        verification = VerificationTask(
+            id=9040,
+            tenant_id=1,
+            account_id=failed.id,
+            group_id=group.id,
+            verification_type="群发言权限",
+            detected_reason="群无权限或账号不可发言",
+            suggested_action="识别图形验证码",
+            status="失败",
+            handled_at=old_value,
+        )
+        session.add_all([channel, group, task, ready, failed, TgGroupAccount(tenant_id=1, group_id=group.id, account_id=ready.id, can_send=True), action, verification])
+        session.commit()
+
+        created = _reactivate_auto_verification_memberships(session, task, channel, [ready, failed], require_send=True)
+        retry_count = session.query(Action).filter(Action.task_id == task.id, Action.status == "pending").count()
+
+    assert created == 0
+    assert retry_count == 0
+
+
 def test_reactivate_memberships_requeues_stale_target_reference() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
