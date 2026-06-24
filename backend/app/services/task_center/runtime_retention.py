@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, DailyRuntimeStat, ExecutionAttempt, ReviewQueue, RuntimeCleanupAudit
+from app.models import Action, DailyRuntimeStat, ExecutionAttempt, ReviewQueue, RuntimeCleanupAudit, RuntimeMetricSnapshot
 from app.services._common import _now
 
 
@@ -53,6 +53,29 @@ def cleanup_runtime_details(session: Session, *, retention_days: int = 5, today:
         )
     )
     return len(action_ids) + int(attempt_count or 0) + int(review_count or 0)
+
+
+def cleanup_runtime_metric_snapshots(
+    session: Session,
+    *,
+    retention_days: int = 7,
+    today: date | None = None,
+    batch_size: int = 10000,
+) -> int:
+    retention_days = max(1, int(retention_days or 7))
+    batch_size = max(1, int(batch_size or 10000))
+    today = today or _now().date()
+    cutoff_date = today - timedelta(days=retention_days)
+    cutoff_dt = datetime.combine(cutoff_date, datetime.min.time())
+    ids = (
+        select(RuntimeMetricSnapshot.id)
+        .where(RuntimeMetricSnapshot.captured_at < cutoff_dt)
+        .order_by(RuntimeMetricSnapshot.captured_at.asc(), RuntimeMetricSnapshot.id.asc())
+        .limit(batch_size)
+        .subquery()
+    )
+    result = session.execute(delete(RuntimeMetricSnapshot).where(RuntimeMetricSnapshot.id.in_(select(ids.c.id))))
+    return int(result.rowcount or 0)
 
 
 def _summarize_actions(actions: list[Action]) -> dict[tuple[date, str, str, str], int]:

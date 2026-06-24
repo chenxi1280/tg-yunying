@@ -143,6 +143,31 @@ def test_metrics_drain_uses_index_friendly_counts() -> None:
     assert all("count(actions.id)" not in statement for statement in metric_count_statements)
 
 
+def test_runtime_metric_retention_deletes_old_snapshots_in_batches() -> None:
+    from app.services.task_center.runtime_retention import cleanup_runtime_metric_snapshots
+
+    SessionFactory = _session_factory()
+    old_at = datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
+    fresh_at = datetime(2026, 6, 24, 9, 0, tzinfo=UTC)
+    with SessionFactory() as session:
+        session.add_all(
+            [
+                RuntimeMetricSnapshot(id="metric-old-1", captured_at=old_at, metric_name="worker.active.count", metric_value=1),
+                RuntimeMetricSnapshot(id="metric-old-2", captured_at=old_at + timedelta(seconds=1), metric_name="worker.stale.count", metric_value=2),
+                RuntimeMetricSnapshot(id="metric-fresh", captured_at=fresh_at, metric_name="worker.active.count", metric_value=3),
+            ]
+        )
+        session.commit()
+
+        deleted = cleanup_runtime_metric_snapshots(session, retention_days=7, today=fresh_at.date(), batch_size=1)
+        session.commit()
+
+        remaining_ids = set(session.scalars(select(RuntimeMetricSnapshot.id)))
+
+    assert deleted == 1
+    assert remaining_ids == {"metric-old-2", "metric-fresh"}
+
+
 def test_dispatcher_role_claims_and_dispatches_without_listener(monkeypatch):
     SessionFactory = _session_factory()
     now_value = _now()

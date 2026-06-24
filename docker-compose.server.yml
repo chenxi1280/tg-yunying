@@ -221,10 +221,12 @@ services:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-metrics
     restart: unless-stopped
-    command: ["python", "-m", "app.worker", "--role", "metrics", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${WORKER_INTERVAL_SECONDS:-10.0}"]
+    command: ["python", "-m", "app.worker", "--role", "metrics", "--limit", "${WORKER_DRAIN_LIMIT:-100}", "--interval", "${METRICS_WORKER_INTERVAL_SECONDS:-10.0}"]
     environment:
       <<: *backend-env
       WORKER_ROLE: metrics
+      METRICS_WORKER_INTERVAL_SECONDS: ${METRICS_WORKER_INTERVAL_SECONDS:-10.0}
+      WORKER_INTERVAL_SECONDS: ${METRICS_WORKER_INTERVAL_SECONDS:-10.0}
     volumes:
       - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
     depends_on:

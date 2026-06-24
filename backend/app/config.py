@@ -143,6 +143,8 @@ class Settings:
     task_type_token_weights: str = os.getenv("TASK_TYPE_TOKEN_WEIGHTS", "group_ai_chat=2,group_relay=1,channel_view=1,channel_like=1,channel_comment=1,message_send=1")
     enable_runtime_retention_cleanup: bool = _bool_env("ENABLE_RUNTIME_RETENTION_CLEANUP", os.getenv("APP_ENV") == "production")
     runtime_detail_retention_days: int = int(os.getenv("RUNTIME_DETAIL_RETENTION_DAYS", "5"))
+    runtime_metric_retention_days: int = int(os.getenv("RUNTIME_METRIC_RETENTION_DAYS", "7"))
+    runtime_metric_retention_batch_size: int = int(os.getenv("RUNTIME_METRIC_RETENTION_BATCH_SIZE", "10000"))
     auto_migrate_on_start: bool = _bool_env("AUTO_MIGRATE_ON_START", False)
     seed_demo_data: bool = _bool_env("SEED_DEMO_DATA", False)
     seed_tg_developer_app_from_env: bool = _bool_env("SEED_TG_DEVELOPER_APP_FROM_ENV", False)

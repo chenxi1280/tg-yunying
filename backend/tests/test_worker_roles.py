@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -85,6 +86,14 @@ def test_worker_main_once_accepts_role(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "role=metrics" in out
     assert "processed=8" in out
+
+
+def test_server_compose_metrics_worker_uses_dedicated_interval():
+    compose = Path("docker-compose.server.yml").read_text()
+    metrics_block = compose.split("worker-metrics:", 1)[1].split("networks:", 1)[0]
+
+    assert "METRICS_WORKER_INTERVAL_SECONDS" in metrics_block
+    assert "${WORKER_INTERVAL_SECONDS:-10.0}" not in metrics_block
 
 
 def test_worker_main_healthcheck_uses_role_heartbeat(monkeypatch):
