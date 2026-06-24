@@ -393,16 +393,35 @@ def check_ai_provider(session: Session, provider_id: int, actor: str) -> AiProvi
         raise ValueError("ai provider not found")
     provider.last_check_at = _now()
     if not provider.is_active:
-        provider.health_status = AiProviderHealthStatus.DISABLED.value
-        provider.last_error = "AI供应商已禁用"
-    else:
-        try:
-            ok, detail = ai_gateway.check(ai_provider_credentials(provider))
-            provider.health_status = AiProviderHealthStatus.HEALTHY.value if ok else AiProviderHealthStatus.UNHEALTHY.value
-            provider.last_error = "" if ok and "warning" not in detail.lower() else detail
-        except Exception as exc:  # noqa: BLE001 - shown to operator.
-            provider.health_status = AiProviderHealthStatus.UNHEALTHY.value
-            provider.last_error = str(exc)
+        return _save_ai_provider_check_result(session, provider, actor, AiProviderHealthStatus.DISABLED.value, "AI供应商已禁用")
+    try:
+        credentials = ai_provider_credentials(provider)
+    except Exception as exc:  # noqa: BLE001 - shown to operator.
+        return _save_ai_provider_check_result(session, provider, actor, AiProviderHealthStatus.UNHEALTHY.value, str(exc))
+    session.rollback()
+    try:
+        ok, detail = ai_gateway.check(credentials)
+        health_status = AiProviderHealthStatus.HEALTHY.value if ok else AiProviderHealthStatus.UNHEALTHY.value
+        last_error = "" if ok and "warning" not in detail.lower() else detail
+    except Exception as exc:  # noqa: BLE001 - shown to operator.
+        health_status = AiProviderHealthStatus.UNHEALTHY.value
+        last_error = str(exc)
+    provider = session.get(AiProvider, provider_id)
+    if not provider:
+        raise ValueError("ai provider not found")
+    return _save_ai_provider_check_result(session, provider, actor, health_status, last_error)
+
+
+def _save_ai_provider_check_result(
+    session: Session,
+    provider: AiProvider,
+    actor: str,
+    health_status: str,
+    last_error: str,
+) -> AiProvider:
+    provider.last_check_at = _now()
+    provider.health_status = health_status
+    provider.last_error = last_error
     provider.updated_at = _now()
     audit(session, tenant_id=None, actor=actor, action="检查AI供应商", target_type="ai_provider", target_id=str(provider.id), detail=provider.health_status)
     session.commit()
