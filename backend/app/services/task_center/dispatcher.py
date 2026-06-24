@@ -37,8 +37,8 @@ from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavail
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group
 from .executors.common import quantity_jitter_bounds
 from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
-from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, permission_failure_count_for_send_action, trigger_group_rescue
-from .payloads import DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, InviteGroupBotPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
+from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
+from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
 from . import runtime_resources as _runtime_resources
@@ -185,6 +185,8 @@ def dispatch_action(session: Session, action: Action) -> bool:
         return False
     if _skip_expired_hard_hourly_action(session, action):
         return True
+    if action.action_type == "invite_group_bot" and not _migrate_deprecated_group_rescue_action(session, action):
+        return True
     account = session.get(TgAccount, action.account_id) if action.account_id else None
     if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
@@ -207,8 +209,6 @@ def dispatch_action(session: Session, action: Action) -> bool:
             return _dispatch_send_message(session, action, account, credentials, payload)
         if action.action_type == "delete_message":
             return _dispatch_delete_message(session, action, account, credentials, payload)
-        if action.action_type == "invite_group_bot":
-            return _dispatch_invite_group_bot(session, action, account, credentials, payload)
         if action.action_type == "invite_group_account":
             return _dispatch_invite_group_account(session, action, account, credentials, payload)
         if action.action_type == "view_message":
@@ -236,6 +236,53 @@ def _is_reserved_rescue_admin_action(session: Session, action: Action, account: 
         return False
     tenant = session.get(Tenant, action.tenant_id)
     return bool(tenant and tenant.group_rescue_admin_account_id and int(tenant.group_rescue_admin_account_id) == int(account.id))
+
+
+def _migrate_deprecated_group_rescue_action(session: Session, action: Action) -> bool:
+    try:
+        payload = validate_action_payload(action.action_type, action.payload or {})
+    except (ValidationError, ValueError) as exc:
+        _fail(action, FailureType.UNKNOWN.value, payload_error_message(exc), validation_stage="rescue")
+        return False
+    if not isinstance(payload, DeprecatedGroupRescuePayload):
+        _fail(action, FailureType.UNKNOWN.value, "旧群聊救援动作格式异常", validation_stage="rescue")
+        return False
+    task = session.get(Task, action.task_id) if action.task_id else None
+    group = _deprecated_group_rescue_group(session, action, payload)
+    if not task or not group:
+        _fail(action, FailureType.PEER_INVALID.value, "旧群聊救援动作缺少目标群，无法迁移为账号邀请救援", validation_stage="rescue")
+        return False
+    if not payload.trigger_account_id:
+        _fail(action, FailureType.ACCOUNT_UNAVAILABLE.value, "旧群聊救援动作缺少触发账号，无法迁移为账号邀请救援", validation_stage="rescue")
+        return False
+    result = refresh_group_rescue_action(
+        session=session,
+        task=task,
+        group=group,
+        action=action,
+        trigger_account_id=payload.trigger_account_id,
+        trigger_reason=payload.trigger_reason or "旧群聊救援动作迁移",
+        operation_target_id=payload.operation_target_id,
+    )
+    if not result.action:
+        _fail(action, FailureType.UNKNOWN.value, result.detail or "旧群聊救援动作迁移失败", validation_stage="rescue")
+        return False
+    return True
+
+
+def _deprecated_group_rescue_group(session: Session, action: Action, payload: DeprecatedGroupRescuePayload) -> TgGroup | None:
+    if payload.group_id:
+        group = session.get(TgGroup, payload.group_id)
+        if group and group.tenant_id == action.tenant_id:
+            return group
+    peer_id = payload.group_peer_id.strip()
+    if payload.operation_target_id:
+        target = session.get(OperationTarget, payload.operation_target_id)
+        if target and target.tenant_id == action.tenant_id:
+            peer_id = peer_id or target.tg_peer_id
+    if not peer_id:
+        return None
+    return session.scalar(select(TgGroup).where(TgGroup.tenant_id == action.tenant_id, TgGroup.tg_peer_id == peer_id))
 
 
 def due_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[str] | None = None) -> list[Action]:
@@ -720,22 +767,6 @@ def _dispatch_delete_message(session: Session, action: Action, account: TgAccoun
         credentials,
     )
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail, attempt=attempt)
-    return True
-
-
-def _dispatch_invite_group_bot(session: Session, action: Action, account: TgAccount, credentials, payload: InviteGroupBotPayload) -> bool:
-    attempt = _begin_execution_attempt(session, action, account)
-    _mark_executing(action)
-    session.commit()
-    _mark_gateway_call_started(session, attempt)
-    result = gateway.invite_bot_to_group(
-        account.id,
-        payload.group_peer_id,
-        payload.bot_username,
-        account.session_ciphertext,
-        credentials,
-    )
-    _apply_rescue_invite_result(action, account, result, attempt=attempt)
     return True
 
 

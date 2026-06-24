@@ -176,6 +176,73 @@ def test_dispatch_invite_group_account_uses_configured_rescue_account(monkeypatc
         assert action.result["rescue_status"] == "invite_success"
 
 
+def test_dispatch_deprecated_group_rescue_action_migrates_to_account_invite(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        action = Action(
+            id="old-invite",
+            tenant_id=1,
+            task_id="task-rescue",
+            task_type="group_membership_admission",
+            action_type="invite_group_bot",
+            account_id=99,
+            scheduled_at=NOW,
+            status="pending",
+            payload={
+                "group_id": 7,
+                "operation_target_id": 21,
+                "group_peer_id": "-10021",
+                "bot_username": "@old_guard",
+                "trigger_account_id": 11,
+                "trigger_task_id": "task-rescue",
+                "trigger_reason": "permission_denied",
+            },
+        )
+        session.add(action)
+        session.commit()
+
+        calls: list[tuple[int, str, str]] = []
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+
+        def fake_invite(account_id, group_peer_id, target_account_ref, *_args, **_kwargs):  # noqa: ANN001
+            calls.append((account_id, group_peer_id, target_account_ref))
+            return OperationResult(True, "已处理", detail="account_invited")
+
+        monkeypatch.setattr(dispatcher.gateway, "invite_account_to_group", fake_invite)
+
+        assert dispatch_action(session, action) is True
+
+        assert action.action_type == "invite_group_account"
+        assert action.payload["target_account_ref"] == "@normal_user"
+        assert calls == [(99, "-10021", "@normal_user")]
+        assert action.status == "success"
+        assert "bot" not in str(action.result).lower()
+
+
+def test_dispatch_deprecated_group_rescue_without_trigger_account_fails_cleanly() -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        action = Action(
+            id="old-invite-missing-trigger",
+            tenant_id=1,
+            task_id="task-rescue",
+            task_type="group_membership_admission",
+            action_type="invite_group_bot",
+            account_id=99,
+            scheduled_at=NOW,
+            status="pending",
+            payload={"group_id": 7, "operation_target_id": 21, "group_peer_id": "-10021", "bot_username": "@old_guard"},
+        )
+        session.add(action)
+        session.commit()
+
+        assert dispatch_action(session, action) is True
+
+        assert action.status == "failed"
+        assert action.result["error_message"] == "旧群聊救援动作缺少触发账号，无法迁移为账号邀请救援"
+        assert "机器人" not in str(action.result)
+
+
 def test_membership_permission_denied_over_threshold_creates_one_rescue_action() -> None:
     with _session() as session:
         _seed_rescue_target(session)
