@@ -89,7 +89,8 @@ def test_worker_main_once_accepts_role(monkeypatch, capsys):
 
 
 def test_server_compose_metrics_worker_uses_dedicated_interval():
-    compose = Path("docker-compose.server.yml").read_text()
+    compose_path = Path(__file__).resolve().parents[2] / "docker-compose.server.yml"
+    compose = compose_path.read_text()
     metrics_block = compose.split("worker-metrics:", 1)[1].split("networks:", 1)[0]
 
     assert "METRICS_WORKER_INTERVAL_SECONDS" in metrics_block
