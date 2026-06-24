@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -262,7 +262,7 @@ def resolve_message_task_issues_if_recovered(session: Session, task: MessageTask
 
 
 def refresh_target_summary(session: Session, tenant_id: int, target_id: int) -> TargetRuntimeSummary:
-    rows = list(session.scalars(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id, TaskRuntimeSummary.target_id == target_id)))
+    rows = _active_task_summary_rows(session, tenant_id, target_id)
     task_ids = [row.task_id for row in rows]
     open_issue_count = session.scalar(select(func.count(OperationIssue.id)).where(OperationIssue.tenant_id == tenant_id, OperationIssue.target_id == target_id, OperationIssue.status == "open")) or 0
     failed_action_count = sum(int(row.failed_count or 0) for row in rows)
@@ -432,32 +432,88 @@ def resolve_operation_issue(session: Session, tenant_id: int, issue_id: str, rea
     return issue
 
 
-def _resolve_task_issues_if_recovered(session: Session, task: Task) -> None:
-    now_value = _now()
+def clear_task_runtime_artifacts(session: Session, task: Task, reason: str = "", actor: str = "system") -> int:
+    summary = session.scalar(
+        select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == task.tenant_id, TaskRuntimeSummary.task_id == task.id)
+    )
+    if summary:
+        session.delete(summary)
+    resolved_count = resolve_task_operation_issues(
+        session,
+        task,
+        reason or "任务删除后自动解决关联告警",
+        actor=actor,
+    )
+    target_id = _task_target_id(task)
+    if target_id:
+        refresh_target_summary(session, task.tenant_id, target_id)
+    return resolved_count
+
+
+def resolve_task_operation_issues(session: Session, task: Task, reason: str = "", actor: str = "system") -> int:
+    issues = _task_linked_open_issues(session, task)
+    resolved_targets: set[int] = set()
+    resolved_count = 0
+    for issue in issues:
+        if _issue_has_unresolved_task_sources(session, issue):
+            continue
+        _mark_issue_auto_resolved(session, issue, reason or "任务恢复后未发现失败执行项", actor)
+        resolved_count += 1
+        if issue.target_id:
+            resolved_targets.add(issue.target_id)
+    for target_id in resolved_targets:
+        refresh_target_summary(session, task.tenant_id, target_id)
+    return resolved_count
+
+
+def reconcile_stale_operation_issues(session: Session, tenant_id: int) -> int:
     issues = list(
         session.scalars(
-            select(OperationIssue).where(
-                OperationIssue.tenant_id == task.tenant_id,
-                OperationIssue.source_task_id == task.id,
-                OperationIssue.status == "open",
+            select(OperationIssue).where(OperationIssue.tenant_id == tenant_id, OperationIssue.status == "open")
+        )
+    )
+    resolved_count = 0
+    refreshed_targets: set[int] = set()
+    for issue in issues:
+        if not _issue_has_task_runtime_source(session, issue):
+            continue
+        if _issue_has_unresolved_task_sources(session, issue):
+            _refresh_issue_representative(session, issue)
+            continue
+        _mark_issue_auto_resolved(session, issue, "未发现仍未恢复的活动任务或动作来源", "system")
+        resolved_count += 1
+        if issue.target_id:
+            refreshed_targets.add(issue.target_id)
+    for target_id in refreshed_targets:
+        refresh_target_summary(session, tenant_id, target_id)
+    return resolved_count
+
+
+def _resolve_task_issues_if_recovered(session: Session, task: Task) -> None:
+    resolve_task_operation_issues(session, task, "任务恢复后未发现失败执行项")
+
+
+def cleanup_stale_task_runtime_summaries(session: Session, tenant_id: int) -> int:
+    stale_rows = list(
+        session.scalars(
+            select(TaskRuntimeSummary)
+            .outerjoin(Task, Task.id == TaskRuntimeSummary.task_id)
+            .where(
+                TaskRuntimeSummary.tenant_id == tenant_id,
+                or_(Task.id.is_(None), Task.deleted_at.is_not(None)),
             )
         )
     )
-    for issue in issues:
-        issue.status = "resolved"
-        issue.resolved_at = now_value
-        issue.updated_at = now_value
-        issue.summary = {
-            **(issue.summary or {}),
-            "resolve_reason": "任务恢复后未发现失败执行项",
-            "resolved_by": "system",
-            "auto_resolved": True,
-        }
-        audit(session, tenant_id=task.tenant_id, actor="system", action="自动解决运营异常", target_type="operation_issue", target_id=issue.id, detail="任务恢复后未发现失败执行项")
+    for summary in stale_rows:
+        session.delete(summary)
+    return len(stale_rows)
 
 
 def rebuild_runtime_summaries(session: Session, tenant_id: int, scope: str = "all") -> dict[str, int]:
     result = {"tasks": 0, "targets": 0, "accounts": 0}
+    if scope in {"all", "tasks", "targets"}:
+        cleanup_stale_task_runtime_summaries(session, tenant_id)
+        reconcile_stale_operation_issues(session, tenant_id)
     if scope in {"all", "tasks"}:
         for task in session.scalars(select(Task).where(Task.tenant_id == tenant_id, Task.deleted_at.is_(None))):
             refresh_task_summary(session, task)
@@ -492,7 +548,7 @@ def operation_center_overview(session: Session, tenant_id: int) -> dict[str, Any
     open_issues = list(session.scalars(select(OperationIssue).where(OperationIssue.tenant_id == tenant_id, OperationIssue.status == "open")))
     latest_values = [
         session.scalar(select(func.max(TargetRuntimeSummary.updated_at)).where(TargetRuntimeSummary.tenant_id == tenant_id)),
-        session.scalar(select(func.max(TaskRuntimeSummary.updated_at)).where(TaskRuntimeSummary.tenant_id == tenant_id)),
+        session.scalar(_active_task_summary_select(tenant_id, func.max(TaskRuntimeSummary.updated_at))),
         session.scalar(select(func.max(AccountRuntimeSummary.updated_at)).where(AccountRuntimeSummary.tenant_id == tenant_id)),
         session.scalar(select(func.max(OperationIssue.updated_at)).where(OperationIssue.tenant_id == tenant_id)),
     ]
@@ -501,13 +557,12 @@ def operation_center_overview(session: Session, tenant_id: int) -> dict[str, Any
     for issue in open_issues:
         affected_accounts.update(int(item) for item in (issue.affected_account_ids or []) if item)
     running_task_count = session.scalar(
-        select(func.count(TaskRuntimeSummary.id)).where(
-            TaskRuntimeSummary.tenant_id == tenant_id,
+        _active_task_summary_select(tenant_id, func.count(TaskRuntimeSummary.id)).where(
             TaskRuntimeSummary.task_status.in_({"pending", "running", "wrapping_up"}),
         )
     ) or 0
     failed_action_count = session.scalar(
-        select(func.coalesce(func.sum(TaskRuntimeSummary.failed_count), 0)).where(TaskRuntimeSummary.tenant_id == tenant_id)
+        _active_task_summary_select(tenant_id, func.coalesce(func.sum(TaskRuntimeSummary.failed_count), 0))
     ) or 0
     return {
         "tenant_id": tenant_id,
@@ -637,6 +692,23 @@ def ignore_operation_issue(session: Session, tenant_id: int, issue_id: str, acto
     if issue.target_id:
         refresh_target_summary(session, tenant_id, issue.target_id)
     return issue
+
+
+def _active_task_summary_select(tenant_id: int, *columns: Any):
+    return (
+        select(*columns)
+        .select_from(TaskRuntimeSummary)
+        .join(Task, Task.id == TaskRuntimeSummary.task_id)
+        .where(TaskRuntimeSummary.tenant_id == tenant_id, Task.deleted_at.is_(None))
+    )
+
+
+def _active_task_summary_rows(session: Session, tenant_id: int, target_id: int) -> list[TaskRuntimeSummary]:
+    return list(
+        session.scalars(
+            _active_task_summary_select(tenant_id, TaskRuntimeSummary).where(TaskRuntimeSummary.target_id == target_id)
+        )
+    )
 
 
 def _get_or_create_task_summary(session: Session, tenant_id: int, task_id: str) -> TaskRuntimeSummary:
@@ -817,6 +889,145 @@ def _issue_account_count(session: Session, tenant_id: int, issue_id: str) -> int
         )
         or 0
     )
+
+
+def _task_linked_open_issues(session: Session, task: Task) -> list[OperationIssue]:
+    issue_ids = set(
+        session.scalars(
+            select(OperationIssue.id).where(
+                OperationIssue.tenant_id == task.tenant_id,
+                OperationIssue.source_task_id == task.id,
+                OperationIssue.status == "open",
+            )
+        )
+    )
+    action_ids = list(session.scalars(select(Action.id).where(Action.tenant_id == task.tenant_id, Action.task_id == task.id)))
+    source_clauses = [(OperationIssueSource.source_type == "task") & (OperationIssueSource.source_id == task.id)]
+    if action_ids:
+        source_clauses.append(
+            (OperationIssueSource.source_type == "action") & OperationIssueSource.source_id.in_(action_ids)
+        )
+    issue_ids.update(
+        session.scalars(
+            select(OperationIssueSource.issue_id).where(
+                OperationIssueSource.tenant_id == task.tenant_id,
+                or_(*source_clauses),
+            )
+        )
+    )
+    if not issue_ids:
+        return []
+    return list(session.scalars(select(OperationIssue).where(OperationIssue.id.in_(issue_ids), OperationIssue.status == "open")))
+
+
+def _issue_has_unresolved_task_sources(session: Session, issue: OperationIssue) -> bool:
+    action_source_ids = _issue_source_ids(session, issue.tenant_id, issue.id, "action")
+    if action_source_ids:
+        return _has_active_unresolved_actions(session, issue.tenant_id, action_source_ids)
+    task_source_ids = set(_issue_source_ids(session, issue.tenant_id, issue.id, "task"))
+    if issue.source_task_id:
+        task_source_ids.add(issue.source_task_id)
+    return _has_active_unresolved_task_actions(session, issue.tenant_id, task_source_ids)
+
+
+def _issue_has_task_runtime_source(session: Session, issue: OperationIssue) -> bool:
+    if issue.source_task_id:
+        return True
+    return bool(
+        session.scalar(
+            select(OperationIssueSource.id)
+            .where(
+                OperationIssueSource.tenant_id == issue.tenant_id,
+                OperationIssueSource.issue_id == issue.id,
+                OperationIssueSource.source_type.in_({"task", "action"}),
+            )
+            .limit(1)
+        )
+    )
+
+
+def _refresh_issue_representative(session: Session, issue: OperationIssue) -> None:
+    action = _active_issue_representative_action(session, issue)
+    if not action:
+        return
+    issue.source_task_id = action.task_id
+    issue.representative_action_id = action.id
+    issue.failure_reason = _failure_reason(action)
+    issue.return_to = _issue_return_to(issue, source_task_id=action.task_id, representative_action_id=action.id)
+    issue.updated_at = _now()
+
+
+def _active_issue_representative_action(session: Session, issue: OperationIssue) -> Action | None:
+    action_source_ids = _issue_source_ids(session, issue.tenant_id, issue.id, "action")
+    if not action_source_ids:
+        return None
+    return session.scalar(
+        select(Action)
+        .join(Task, Task.id == Action.task_id)
+        .where(
+            Action.tenant_id == issue.tenant_id,
+            Action.id.in_(action_source_ids),
+            Action.status.in_(UNRESOLVED_FAILURE_STATUSES),
+            Task.deleted_at.is_(None),
+        )
+        .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
+        .limit(1)
+    )
+
+
+def _issue_source_ids(session: Session, tenant_id: int, issue_id: str, source_type: str) -> list[str]:
+    return list(
+        session.scalars(
+            select(OperationIssueSource.source_id).where(
+                OperationIssueSource.tenant_id == tenant_id,
+                OperationIssueSource.issue_id == issue_id,
+                OperationIssueSource.source_type == source_type,
+            )
+        )
+    )
+
+
+def _has_active_unresolved_actions(session: Session, tenant_id: int, action_ids: list[str]) -> bool:
+    return bool(
+        session.scalar(
+            select(Action.id)
+            .join(Task, Task.id == Action.task_id)
+            .where(
+                Action.tenant_id == tenant_id,
+                Action.id.in_(action_ids),
+                Action.status.in_(UNRESOLVED_FAILURE_STATUSES),
+                Task.deleted_at.is_(None),
+            )
+            .limit(1)
+        )
+    )
+
+
+def _has_active_unresolved_task_actions(session: Session, tenant_id: int, task_ids: set[str]) -> bool:
+    if not task_ids:
+        return False
+    return bool(
+        session.scalar(
+            select(Action.id)
+            .join(Task, Task.id == Action.task_id)
+            .where(
+                Action.tenant_id == tenant_id,
+                Action.task_id.in_(task_ids),
+                Action.status.in_(UNRESOLVED_FAILURE_STATUSES),
+                Task.deleted_at.is_(None),
+            )
+            .limit(1)
+        )
+    )
+
+
+def _mark_issue_auto_resolved(session: Session, issue: OperationIssue, reason: str, actor: str) -> None:
+    now_value = _now()
+    issue.status = "resolved"
+    issue.resolved_at = now_value
+    issue.updated_at = now_value
+    issue.summary = {**(issue.summary or {}), "resolve_reason": reason, "resolved_by": actor, "auto_resolved": True}
+    audit(session, tenant_id=issue.tenant_id, actor=actor, action="自动解决运营异常", target_type="operation_issue", target_id=issue.id, detail=reason)
 
 
 def _issue_has_failed_message_task_source(session: Session, tenant_id: int, issue_id: str) -> bool:
@@ -1325,6 +1536,8 @@ def _failed_action_payload(action: Action, task: Task | None) -> dict[str, Any]:
 __all__ = [
     "acknowledge_operation_issue",
     "claim_operation_issue",
+    "cleanup_stale_task_runtime_summaries",
+    "clear_task_runtime_artifacts",
     "get_operation_issue_detail",
     "rebuild_runtime_summaries",
     "get_account_runtime_summary",
@@ -1336,7 +1549,9 @@ __all__ = [
     "refresh_account_summary",
     "refresh_target_summary",
     "refresh_task_summary",
+    "reconcile_stale_operation_issues",
     "resolve_operation_issue",
+    "resolve_task_operation_issues",
     "resolve_message_task_issues_if_recovered",
     "rollup_message_task_failure",
     "upsert_operation_issue",

@@ -2,10 +2,11 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, AccountStatus, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, Task, Tenant, TgAccount
+from app.models import Action, AccountStatus, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, Task, TaskRuntimeSummary, Tenant, TgAccount
 from app.models.enums import FailureType
 from app.services._common import _now
-from app.services.runtime_summary import acknowledge_operation_issue, claim_operation_issue, get_operation_issue_detail, list_operation_issues, refresh_task_summary
+from app.services.runtime_summary import acknowledge_operation_issue, claim_operation_issue, get_operation_issue_detail, list_operation_issues, reconcile_stale_operation_issues, refresh_task_summary
+from app.services.task_center.service import delete_task
 
 
 def _sqlite_session() -> Session:
@@ -73,6 +74,96 @@ def test_failed_task_summary_opens_and_resolves_operation_issue() -> None:
 
         assert list_operation_issues(session, 1, status="open") == []
         assert issue.status == "resolved"
+
+
+def test_delete_task_resolves_linked_operation_issue_and_runtime_summary() -> None:
+    now = _now()
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=23, tenant_id=1, target_type="group", tg_peer_id="-10023", title="群", can_send=True))
+        session.add(TgAccount(id=12, tenant_id=1, display_name="账号", phone_masked="12", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        session.add(
+            Task(
+                id="task-delete-issue",
+                tenant_id=1,
+                name="群发任务",
+                type="group_ai_chat",
+                status="running",
+                account_config={"account_ids": [12]},
+                type_config={"target_operation_target_id": 23},
+            )
+        )
+        session.add(
+            Action(
+                id="action-delete-failed",
+                tenant_id=1,
+                task_id="task-delete-issue",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=12,
+                status="failed",
+                scheduled_at=now,
+                executed_at=now,
+                result={"failure_type": FailureType.ACCOUNT_UNAVAILABLE.value, "failure_detail": "账号不可用"},
+            )
+        )
+        session.commit()
+
+        refresh_task_summary(session, session.get(Task, "task-delete-issue"))
+        issue = session.scalar(select(OperationIssue).where(OperationIssue.source_task_id == "task-delete-issue"))
+        assert issue.status == "open"
+        assert session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.task_id == "task-delete-issue")) is not None
+
+        delete_task(session, 1, "task-delete-issue", "tester", "清理失败任务")
+        session.refresh(issue)
+
+        assert issue.status == "resolved"
+        assert session.scalar(select(TaskRuntimeSummary).where(TaskRuntimeSummary.task_id == "task-delete-issue")) is None
+        assert list_operation_issues(session, 1, status="open") == []
+
+
+def test_reconcile_stale_operation_issues_resolves_deleted_task_source() -> None:
+    now = _now()
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=24, tenant_id=1, target_type="group", tg_peer_id="-10024", title="群", can_send=True))
+        session.add(
+            Task(
+                id="task-stale-issue",
+                tenant_id=1,
+                name="残留任务",
+                type="group_ai_chat",
+                status="running",
+                type_config={"target_operation_target_id": 24},
+            )
+        )
+        session.add(
+            Action(
+                id="action-stale-issue",
+                tenant_id=1,
+                task_id="task-stale-issue",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                status="failed",
+                scheduled_at=now,
+                executed_at=now,
+                result={"failure_type": FailureType.UNKNOWN.value, "failure_detail": "UNKNOWN"},
+            )
+        )
+        session.commit()
+
+        refresh_task_summary(session, session.get(Task, "task-stale-issue"))
+        issue = session.scalar(select(OperationIssue).where(OperationIssue.source_task_id == "task-stale-issue"))
+        task = session.get(Task, "task-stale-issue")
+        task.status = "deleted"
+        task.deleted_at = now
+        session.commit()
+
+        assert reconcile_stale_operation_issues(session, 1) == 1
+        session.refresh(issue)
+
+        assert issue.status == "resolved"
+        assert list_operation_issues(session, 1, status="open") == []
 
 
 def test_acknowledge_operation_issue_moves_issue_out_of_open_status() -> None:

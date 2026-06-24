@@ -92,6 +92,7 @@ from .utils import as_int as _as_int, as_int_list as _as_int_list
 from .runtime_retention import cleanup_runtime_details, cleanup_runtime_metric_snapshots_if_due
 from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.source_media import WAITING_MATERIAL_CACHE, expire_waiting_source_media_actions, wake_waiting_actions_for_source_media
+from app.services.runtime_summary import clear_task_runtime_artifacts, reconcile_stale_operation_issues
 
 _empty_stats = empty_stats
 _next_run_after_task = next_run_after_task
@@ -277,7 +278,11 @@ def list_tasks(session: Session, tenant_id: int, task_type: str | None = None, s
 
 
 def _task_runtime_summaries(session: Session, tenant_id: int) -> dict[str, TaskRuntimeSummary]:
-    rows = session.scalars(select(TaskRuntimeSummary).where(TaskRuntimeSummary.tenant_id == tenant_id))
+    rows = session.scalars(
+        select(TaskRuntimeSummary)
+        .join(Task, Task.id == TaskRuntimeSummary.task_id)
+        .where(TaskRuntimeSummary.tenant_id == tenant_id, Task.deleted_at.is_(None))
+    )
     return {summary.task_id: summary for summary in rows}
 
 
@@ -582,13 +587,14 @@ def delete_task(session: Session, tenant_id: int, task_id: str, actor: str, reas
         action.status = "skipped"
         action.result = {"success": False, "error_code": "task_deleted", "error_message": "任务已删除"}
         action.executed_at = now
+    refresh_task_stats(session, task)
     task.status = "deleted"
     task.next_run_at = None
     task.deleted_at = now
     task.deleted_by = actor
     task.delete_reason = reason
     task.updated_at = now
-    refresh_task_stats(session, task)
+    clear_task_runtime_artifacts(session, task, reason="任务删除后自动解决关联告警", actor=actor)
     audit(session, tenant_id=tenant_id, actor=actor, action="删除任务中心任务", target_type="task", target_id=task.id, detail=reason)
     session.commit()
 
@@ -1257,6 +1263,8 @@ def drain_task_metrics(session_factory, limit: int = 100) -> int:
                 )
             )
         session.add_all(rows)
+        for tenant_id in session.scalars(select(OperationIssue.tenant_id).where(OperationIssue.status == "open").distinct()):
+            reconcile_stale_operation_issues(session, int(tenant_id))
         session.commit()
     return len(rows)
 

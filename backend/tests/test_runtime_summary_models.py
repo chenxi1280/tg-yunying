@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, AccountStatus, OperationTarget, Task, Tenant, TgAccount, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
+from app.models import Action, AccountStatus, OperationTarget, Task, TaskRuntimeSummary, Tenant, TgAccount, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot
 from app.models.enums import FailureType
 from app.services._common import _now
 from app.services.runtime_summary import refresh_account_summary, refresh_target_summary, refresh_task_summary
@@ -357,3 +357,40 @@ def test_target_summary_does_not_match_target_id_by_json_substring() -> None:
 
         assert summary.failed_action_count == 0
         assert summary.latest_failure_at is None
+
+
+def test_target_summary_ignores_deleted_task_runtime_summary() -> None:
+    now = _now()
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=24, tenant_id=1, target_type="group", tg_peer_id="-10024", title="群", can_send=True))
+        session.add(
+            Task(
+                id="task-deleted-summary",
+                tenant_id=1,
+                name="已删任务",
+                type="group_ai_chat",
+                status="deleted",
+                deleted_at=now,
+                type_config={"target_operation_target_id": 24},
+            )
+        )
+        session.add(
+            TaskRuntimeSummary(
+                tenant_id=1,
+                task_id="task-deleted-summary",
+                target_id=24,
+                task_status="running",
+                planned_count=20,
+                failed_count=7,
+                pending_count=5,
+                oldest_pending_at=now - timedelta(days=10),
+            )
+        )
+        session.commit()
+
+        summary = refresh_target_summary(session, 1, 24)
+
+        assert summary.failed_action_count == 0
+        assert summary.affected_task_count == 0
+        assert summary.summary["task_count"] == 0
