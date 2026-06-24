@@ -29,7 +29,15 @@ HARD_HOURLY_AUTO_VERIFICATION_RETRY_SECONDS = 300
 HARD_HOURLY_MEMBERSHIP_RETRY_SECONDS = 300
 AUTO_VERIFICATION_RETRY_STATUSES = {"待处理", "失败", "需人工处理"}
 REQUIRED_CHANNEL_RETRY_MARKERS = ("需要关注", "关注我们的频道", "t.me/", "telegram.me/", "required channel")
-TARGET_REF_RETRY_MARKERS = ("no user has", "could not find the input entity", "cannot find any entity", "目标实体无法解析", "目标群无效", "目标无效")
+TARGET_REF_RETRY_MARKERS = (
+    "no user has",
+    "could not find the input entity",
+    "cannot find any entity",
+    "cannot cast inputpeeruser to any kind of inputchannel",
+    "目标实体无法解析",
+    "目标群无效",
+    "目标无效",
+)
 
 
 @dataclass(frozen=True)

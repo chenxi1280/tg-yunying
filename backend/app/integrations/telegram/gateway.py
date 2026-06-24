@@ -807,7 +807,11 @@ class TelethonTelegramGateway(TelegramGateway):
         from telethon import errors
 
         detail = str(exc) or exc.__class__.__name__
-        if "Could not find the input entity" in detail:
+        invalid_entity_markers = (
+            "Could not find the input entity",
+            "Cannot cast InputPeerUser to any kind of InputChannel",
+        )
+        if any(marker in detail for marker in invalid_entity_markers):
             return SendResult(False, failure_type=FailureType.PEER_INVALID.value, detail="目标实体无法解析，请重新同步账号群聊/运营目标后再试")
         comment_thread_markers = (
             "GetDiscussionMessageRequest",

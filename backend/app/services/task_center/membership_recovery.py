@@ -16,7 +16,15 @@ _REQUIRED_CHANNEL_MARKERS = ("需要关注", "关注我们的频道", "t.me/", "
 _CAPTCHA_MARKERS = ("图形验证码", "验证码", "captcha", "识别图形")
 _GROUP_ADMIN_MARKERS = ("管理员解除", "群内由管理员", "被禁言", "ban", "mute", "无发言权限", "群限制")
 _UNAVAILABLE_MARKERS = ("frozen account", "frozen accounts", "not available for frozen", "账号不可用", "session", "重新登录")
-_TARGET_REF_MARKERS = ("no user has", "could not find the input entity", "cannot find any entity", "目标实体无法解析", "目标群无效", "目标无效")
+_TARGET_REF_MARKERS = (
+    "no user has",
+    "could not find the input entity",
+    "cannot find any entity",
+    "cannot cast inputpeeruser to any kind of inputchannel",
+    "目标实体无法解析",
+    "目标群无效",
+    "目标无效",
+)
 
 
 @dataclass(frozen=True)

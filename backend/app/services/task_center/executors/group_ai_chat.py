@@ -26,6 +26,7 @@ from app.services.material_rules import select_material_for_policy
 from ..account_pool import daily_uncovered_account_count, select_task_accounts
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages, generate_group_reply_messages
 from ..channel_membership import gate_channel_membership
+from ..config_normalization import normalize_operation_target_references
 from ..fingerprints import fingerprint_exists, remember_fingerprint
 from ..hard_hourly import current_progress, enabled as hard_hourly_enabled, hard_schedule_times, mark_plan_result
 from ..listener_runtime import should_collect_listener
@@ -72,6 +73,7 @@ RECENT_CYCLE_SCAN_LIMIT = 200
 
 def build_plan(session: Session, task: Task) -> int:
     config = {**(task.type_config or {}), "pacing_config": task.pacing_config or {}}
+    config = _canonicalized_task_config(session, task, config)
     hard_progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
     hard_progress = hard_progress if int(hard_progress.get("deficit") or 0) > 0 else {}
     rule_version = bound_rule_version(session, task)
@@ -393,6 +395,13 @@ def build_plan(session: Session, task: Task) -> int:
         mark_plan_result(task, hard_progress, created, hard_blockers or None)
     stats_inc(task, "total_rounds")
     return created
+
+
+def _canonicalized_task_config(session: Session, task: Task, config: dict) -> dict:
+    normalized = normalize_operation_target_references(session, task.tenant_id, task.type, config)
+    if normalized != config:
+        task.type_config = {key: value for key, value in normalized.items() if key != "pacing_config"}
+    return normalized
 
 
 def _reply_targets_for_plan(

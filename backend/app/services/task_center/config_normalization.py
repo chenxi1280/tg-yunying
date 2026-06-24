@@ -180,8 +180,8 @@ def _group_for_operation_target(session: Session, tenant_id: int, target_id: int
 def _canonical_group_target(session: Session, tenant_id: int, target: OperationTarget) -> OperationTarget:
     if _has_stable_group_reference(target):
         return target
-    title = str(target.title or "").strip()
-    if not title:
+    filters = _canonical_group_target_filters(target)
+    if not filters:
         return target
     candidates = list(
         session.scalars(
@@ -190,7 +190,7 @@ def _canonical_group_target(session: Session, tenant_id: int, target: OperationT
                 OperationTarget.tenant_id == tenant_id,
                 OperationTarget.target_type == "group",
                 OperationTarget.id != target.id,
-                OperationTarget.title == title,
+                or_(*filters),
                 OperationTarget.can_send.is_(True),
                 OperationTarget.auth_status == GroupAuthStatus.AUTHORIZED.value,
             )
@@ -199,6 +199,29 @@ def _canonical_group_target(session: Session, tenant_id: int, target: OperationT
     )
     stable_candidates = [candidate for candidate in candidates if _has_stable_group_reference(candidate)]
     return stable_candidates[0] if stable_candidates else target
+
+
+def _canonical_group_target_filters(target: OperationTarget) -> list[Any]:
+    filters: list[Any] = []
+    title = str(target.title or "").strip()
+    if title:
+        filters.append(OperationTarget.title == title)
+    refs = _target_public_refs(target)
+    if refs:
+        filters.append(OperationTarget.username.in_(refs))
+        filters.append(OperationTarget.tg_peer_id.in_(refs))
+    return filters
+
+
+def _target_public_refs(target: OperationTarget) -> list[str]:
+    values = [target.username, target.tg_peer_id]
+    refs: list[str] = []
+    for value in values:
+        ref = str(value or "").strip().lstrip("@")
+        if not ref or _is_stable_telegram_peer(ref) or _looks_like_join_link(ref):
+            continue
+        refs.append(ref)
+    return list(dict.fromkeys(refs))
 
 
 def _has_stable_group_reference(target: OperationTarget) -> bool:

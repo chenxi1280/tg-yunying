@@ -92,6 +92,7 @@ _PEER_REF_INVALID_MARKERS = (
     "no user has",
     "could not find the input entity",
     "cannot find any entity",
+    "cannot cast inputpeeruser to any kind of inputchannel",
     "目标实体无法解析",
     "目标群无效",
     "目标无效",

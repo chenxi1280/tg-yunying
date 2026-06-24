@@ -2752,6 +2752,40 @@ def test_membership_prefers_stable_peer_before_username_for_send_required_join(m
         assert session.get(Action, "action-membership").status == "success"
 
 
+def test_group_ai_build_plan_canonicalizes_duplicate_username_target_before_membership_gate(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=485, tenant_id=1, title="天津", target_type="group", tg_peer_id="-1003583171851", username="zzjinli", can_send=True, auth_status="已授权运营"))
+        session.add(OperationTarget(id=1251, tenant_id=1, title="zzjinli", target_type="group", tg_peer_id="zzjinli", username="zzjinli", can_send=True, auth_status="已授权运营"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
+        task = Task(
+            id="8ab323c9-tianjin",
+            tenant_id=1,
+            name="天津",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"target_operation_target_id": 1251},
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+
+        assert group_ai_chat.build_plan(session, task) == 1
+        action = session.scalar(select(Action).where(Action.task_id == task.id, Action.action_type == "ensure_target_membership"))
+
+    assert task.type_config["target_operation_target_id"] == 485
+    assert task.type_config["target_group_name"] == "天津"
+    assert action.payload["channel_target_id"] == 485
+    assert action.payload["channel_id"] == "-1003583171851"
+    assert action.payload["target_username"] == "zzjinli"
+
+
 def test_retry_failed_only_requeues_unknown_after_send_actions():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

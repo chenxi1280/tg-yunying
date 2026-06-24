@@ -17,6 +17,7 @@ from app.services.task_center.channel_membership import (
     channel_membership_summary,
     gate_channel_membership,
 )
+from app.services.task_center.membership_recovery import AUTO_RETRY_BUCKET, classify_membership_recovery
 from app.services.task_center.payloads import EnsureChannelMembershipPayload
 from app.services.task_center.targets import group_from_reference
 
@@ -229,6 +230,28 @@ def test_group_send_verification_prioritizes_button_channel_follow() -> None:
     assert dispatcher._group_send_verification_action(detail) == "关注频道"
     assert dispatcher._group_send_verification_action("群无权限或账号不可发言：需要点击按钮完成验证") == "点击按钮"
     assert dispatcher._group_send_verification_action("群无权限或账号不可发言") == "识别图形验证码"
+
+
+def test_input_peer_user_cast_error_is_retryable_peer_ref_failure() -> None:
+    result = OperationResult(False, "失败", "未知错误", "Cannot cast InputPeerUser to any kind of InputChannel.")
+
+    assert dispatcher._membership_peer_ref_invalid(result) is True
+
+
+def test_input_peer_user_cast_error_is_membership_target_ref_retry() -> None:
+    recovery = classify_membership_recovery(
+        phase="failed",
+        account_status=AccountStatus.ACTIVE.value,
+        action_status="failed",
+        failure_type="未知错误",
+        failure_detail="Cannot cast InputPeerUser to any kind of InputChannel.",
+        verification_action="",
+        verification_status="",
+        can_auto_resolve=False,
+    )
+
+    assert recovery.bucket == AUTO_RETRY_BUCKET
+    assert recovery.auto_retryable is True
 
 
 def test_group_send_permission_follows_multiple_required_channels(monkeypatch) -> None:
