@@ -1313,6 +1313,45 @@ def test_hard_hourly_future_pending_covers_planning_deficit_only(monkeypatch):
     assert needs_more is True
 
 
+def test_hard_hourly_refresh_clears_stale_blockers_when_future_actions_are_on_time(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-stale-blocker",
+            tenant_id=1,
+            name="硬目标陈旧阻塞",
+            type="group_ai_chat",
+            status="running",
+            type_config={
+                "target_group_id": 7,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 4,
+                "hard_hourly_strategy": "force_planning",
+            },
+            stats={"hard_hourly_last_blockers": {"dispatcher_lag": 1}},
+        )
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                task,
+                _send_action("ok", task, "success", executed_at=datetime(2026, 6, 7, 20, 5)),
+                _send_action("future", task, "pending", account_id=101, scheduled_at=datetime(2026, 6, 7, 20, 40)),
+            ]
+        )
+        session.commit()
+
+        stats = refresh_task_stats(session, task)
+
+    assert stats["hard_hourly_overdue_open_count"] == 0
+    assert stats["hard_hourly_status"] == "catching_up"
+    assert "hard_hourly_last_blockers" not in stats
+
+
 def test_hard_hourly_future_open_over_account_capacity_stays_visible_without_covering_deficit(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

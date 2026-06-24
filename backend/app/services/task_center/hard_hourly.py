@@ -69,7 +69,7 @@ def hard_hourly_stats(session: Session, task: Task, now: datetime, current_stats
     bucket_start, bucket_end = hour_bounds(task, now)
     buckets = _recent_buckets(session, task, now_local, bucket_start)
     current = buckets[-1]
-    last_blockers = dict(current.get("blockers") or current_stats.get("hard_hourly_last_blockers") or {})
+    last_blockers = dict(current.get("blockers") or {})
     status = _current_status(current, now_local, bucket_end, last_blockers)
     updated = dict(current_stats)
     updated.update(_current_stat_values(task, now_local, current, status))
