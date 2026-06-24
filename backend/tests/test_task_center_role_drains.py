@@ -9,7 +9,7 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
-from app.models import AccountStatus, Action, RuntimeMetricSnapshot, Task, TaskRuntimeSummary, Tenant, TgAccount, WorkerHeartbeat
+from app.models import AccountStatus, Action, RuntimeCleanupAudit, RuntimeMetricSnapshot, Task, TaskRuntimeSummary, Tenant, TgAccount, WorkerHeartbeat
 from app.schemas.task_center import TaskSettingsUpdate
 from app.services._common import _now
 from app.services.task_center import dispatcher, service
@@ -166,6 +166,46 @@ def test_runtime_metric_retention_deletes_old_snapshots_in_batches() -> None:
 
     assert deleted == 1
     assert remaining_ids == {"metric-old-2", "metric-fresh"}
+
+
+def test_runtime_metric_retention_runs_only_when_due() -> None:
+    from app.services.task_center.runtime_retention import cleanup_runtime_metric_snapshots_if_due
+
+    SessionFactory = _session_factory()
+    old_at = datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
+    now_value = datetime(2026, 6, 24, 9, 0, tzinfo=UTC)
+    with SessionFactory() as session:
+        session.add_all(
+            [
+                RuntimeMetricSnapshot(id="metric-old-due", captured_at=old_at, metric_name="worker.active.count", metric_value=1),
+                RuntimeMetricSnapshot(id="metric-old-skip", captured_at=old_at + timedelta(seconds=1), metric_name="worker.stale.count", metric_value=2),
+            ]
+        )
+        session.commit()
+
+        first_deleted = cleanup_runtime_metric_snapshots_if_due(
+            session,
+            retention_days=7,
+            batch_size=1,
+            interval_seconds=300,
+            now_value=now_value,
+        )
+        second_deleted = cleanup_runtime_metric_snapshots_if_due(
+            session,
+            retention_days=7,
+            batch_size=1,
+            interval_seconds=300,
+            now_value=now_value + timedelta(seconds=60),
+        )
+        session.commit()
+
+        remaining_ids = set(session.scalars(select(RuntimeMetricSnapshot.id)))
+        audit_count = session.query(RuntimeCleanupAudit).count()
+
+    assert first_deleted == 1
+    assert second_deleted == 0
+    assert remaining_ids == {"metric-old-skip"}
+    assert audit_count == 1
 
 
 def test_dispatcher_role_claims_and_dispatches_without_listener(monkeypatch):

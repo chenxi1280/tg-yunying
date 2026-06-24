@@ -89,7 +89,7 @@ from .profile_batch_projection import delete_profile_batch_task, get_profile_bat
 from app.services.task_runtime_stage import derive_task_runtime_stage
 from .stats import clear_planner_backlog_stats, empty_stats, next_run_after_task, planner_backlog_snapshot, refresh_task_stats, retry_failed_actions
 from .utils import as_int as _as_int, as_int_list as _as_int_list
-from .runtime_retention import cleanup_runtime_details, cleanup_runtime_metric_snapshots
+from .runtime_retention import cleanup_runtime_details, cleanup_runtime_metric_snapshots_if_due
 from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.source_media import WAITING_MATERIAL_CACHE, expire_waiting_source_media_actions, wake_waiting_actions_for_source_media
 
@@ -1080,10 +1080,11 @@ def _drain_task_recovery(session_factory, *, limit: int, process_type: str | Non
         settings = get_settings()
         if settings.enable_runtime_retention_cleanup:
             processed += cleanup_runtime_details(session, retention_days=settings.runtime_detail_retention_days)
-            processed += cleanup_runtime_metric_snapshots(
+            processed += cleanup_runtime_metric_snapshots_if_due(
                 session,
                 retention_days=settings.runtime_metric_retention_days,
                 batch_size=settings.runtime_metric_retention_batch_size,
+                interval_seconds=settings.runtime_metric_cleanup_interval_seconds,
             )
         processed += expire_waiting_source_media_actions(session, limit=max(10, limit))
         tenant_ids = list(session.scalars(select(Action.tenant_id).where(Action.status == WAITING_MATERIAL_CACHE).distinct()))

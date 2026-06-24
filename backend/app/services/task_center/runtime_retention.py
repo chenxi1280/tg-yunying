@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.models import Action, DailyRuntimeStat, ExecutionAttempt, ReviewQueue, RuntimeCleanupAudit, RuntimeMetricSnapshot
 from app.services._common import _now
 
+RUNTIME_METRIC_CLEANUP_KIND = "runtime_metric_snapshots"
+
 
 def cleanup_runtime_details(session: Session, *, retention_days: int = 5, today: date | None = None) -> int:
     """Roll runtime detail tables forward while keeping daily totals.
@@ -76,6 +78,58 @@ def cleanup_runtime_metric_snapshots(
     )
     result = session.execute(delete(RuntimeMetricSnapshot).where(RuntimeMetricSnapshot.id.in_(select(ids.c.id))))
     return int(result.rowcount or 0)
+
+
+def cleanup_runtime_metric_snapshots_if_due(
+    session: Session,
+    *,
+    retention_days: int = 3,
+    batch_size: int = 20000,
+    interval_seconds: int = 60,
+    now_value: datetime | None = None,
+) -> int:
+    now_value = now_value or _now()
+    latest = _latest_runtime_metric_cleanup_at(session)
+    if latest is not None and _elapsed_seconds(latest, now_value) < max(1, int(interval_seconds or 60)):
+        return 0
+    deleted = cleanup_runtime_metric_snapshots(
+        session,
+        retention_days=retention_days,
+        today=now_value.date(),
+        batch_size=batch_size,
+    )
+    session.add(
+        RuntimeCleanupAudit(
+            cleanup_date=now_value.date(),
+            status_counts={},
+            deleted_counts={RUNTIME_METRIC_CLEANUP_KIND: deleted},
+            summary={
+                "cleanup_kind": RUNTIME_METRIC_CLEANUP_KIND,
+                "retention_days": max(1, int(retention_days or 3)),
+                "batch_size": max(1, int(batch_size or 20000)),
+                "interval_seconds": max(1, int(interval_seconds or 60)),
+            },
+            created_at=now_value,
+        )
+    )
+    return deleted
+
+
+def _latest_runtime_metric_cleanup_at(session: Session) -> datetime | None:
+    return session.scalar(
+        select(RuntimeCleanupAudit.created_at)
+        .where(RuntimeCleanupAudit.summary["cleanup_kind"].as_string() == RUNTIME_METRIC_CLEANUP_KIND)
+        .order_by(RuntimeCleanupAudit.created_at.desc())
+        .limit(1)
+    )
+
+
+def _elapsed_seconds(start: datetime, end: datetime) -> float:
+    if start.tzinfo is None and end.tzinfo is not None:
+        start = start.replace(tzinfo=end.tzinfo)
+    if end.tzinfo is None and start.tzinfo is not None:
+        end = end.replace(tzinfo=start.tzinfo)
+    return (end - start).total_seconds()
 
 
 def _summarize_actions(actions: list[Action]) -> dict[tuple[date, str, str, str], int]:
