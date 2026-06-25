@@ -690,6 +690,44 @@ jobs:
               },
               'hard_due_sample': due_sample,
           }
+          tianjin_row = next((row for row in rows if row.get('name') == '天津'), None)
+          if tianjin_row:
+              compact = {
+                  'task_id': tianjin_row.get('task_id'),
+                  'status': tianjin_row.get('status'),
+                  'membership_stage': tianjin_row.get('membership_stage'),
+                  'joined': tianjin_row.get('joined'),
+                  'need_join': tianjin_row.get('need_join'),
+                  'failed_join': tianjin_row.get('failed_join'),
+                  'hard_status': tianjin_row.get('hard_status'),
+                  'deficit': tianjin_row.get('deficit'),
+                  'action_counts': tianjin_row.get('action_counts'),
+                  'type_status_counts': tianjin_row.get('type_status_counts'),
+              }
+              print('TIANJIN_COMPACT_SUMMARY=' + json.dumps(compact, ensure_ascii=False, sort_keys=True), flush=True)
+              rescue_counts = []
+              with SessionLocal() as compact_session:
+                  for account_id, status, rescue_status, error_code, count in compact_session.execute(
+                      select(
+                          Action.account_id,
+                          Action.status,
+                          Action.result['rescue_status'].as_string(),
+                          Action.result['error_code'].as_string(),
+                          func.count(Action.id),
+                      )
+                      .where(Action.task_id == TASKS['天津'], Action.action_type == 'invite_group_account')
+                      .where(Action.scheduled_at >= inspection_since)
+                      .group_by(Action.account_id, Action.status, Action.result['rescue_status'].as_string(), Action.result['error_code'].as_string())
+                      .order_by(func.count(Action.id).desc(), Action.account_id.asc())
+                  ).all():
+                      rescue_counts.append({
+                          'account_id': account_id,
+                          'status': status,
+                          'rescue_status': rescue_status,
+                          'error_code': error_code,
+                          'count': int(count),
+                      })
+              print('TIANJIN_RESCUE_COMPACT_COUNTS=' + json.dumps(rescue_counts, ensure_ascii=False, sort_keys=True), flush=True)
           print('AI_HOURLY_TASK_VOLUME_SUMMARY=' + json.dumps(summary, ensure_ascii=False, sort_keys=True), flush=True)
           for row in rows:
               print('AI_HOURLY_TASK_VOLUME_TASK=' + json.dumps(row, ensure_ascii=False, sort_keys=True), flush=True)
