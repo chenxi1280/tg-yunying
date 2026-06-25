@@ -710,11 +710,13 @@ jobs:
                   counts = Counter()
                   for action in actions:
                       result = action.result if isinstance(action.result, dict) else {}
+                      detail = str(result.get('rescue_detail') or result.get('error_message') or result.get('detail') or '')[:180]
                       key = (
                           action.account_id,
                           action.status,
                           result.get('rescue_status'),
                           result.get('error_code'),
+                          detail,
                       )
                       counts[key] += 1
                   return [
@@ -724,9 +726,10 @@ jobs:
                           'status': status,
                           'rescue_status': rescue_status,
                           'error_code': error_code,
+                          'detail': detail,
                           'count': int(count),
                       }
-                      for (account_id, status, rescue_status, error_code), count in counts.most_common()
+                      for (account_id, status, rescue_status, error_code, detail), count in counts.most_common()
                   ]
               with SessionLocal() as compact_session:
                   scheduled_actions = list(compact_session.scalars(
