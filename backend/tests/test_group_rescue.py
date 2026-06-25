@@ -457,6 +457,15 @@ def test_dispatch_membership_waiting_approval_flood_wait_defers_retry(monkeypatc
         assert action.result["membership_status"] == "rate_limited"
         assert action.result["membership_rate_limit_source"] == "join_request_approval"
         assert action.result["retry_after_seconds"] == 120
+        assert task.stats["membership_admin_rate_limit_source"] == "join_request_approval"
+
+        next_action = _group_ai_membership_action("membership-waiting-approval-flood-next", task)
+        session.add(next_action)
+        session.commit()
+        assert dispatch_action(session, next_action) is True
+        assert next_action.status == "pending"
+        assert next_action.result["membership_status"] == "rate_limited"
+        assert next_action.result["membership_rate_limit_source"] == "join_request_approval"
 
 
 def test_dispatch_membership_waiting_approval_falls_back_to_invite_link(monkeypatch) -> None:

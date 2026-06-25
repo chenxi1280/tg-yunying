@@ -159,6 +159,14 @@ class MembershipDispatchContext:
 
 
 @dataclass(frozen=True)
+class MembershipRateLimit:
+    retry_at: datetime
+    detail: str
+    source: str
+    retry_after: int
+
+
+@dataclass(frozen=True)
 class PreSendRequiredChannelContext:
     session: Session
     action: Action
@@ -1593,6 +1601,8 @@ def _handle_group_send_permission_denied(
         ctx.action.result = {**(ctx.action.result or {}), "membership_status": membership_status, "prerequisite_channel_followed": True}
         return True
     detail = recovered.detail or recovered.failure_type
+    if _defer_existing_membership_admin_rate_limit(ctx):
+        return True
     approved = _try_admin_approve_join_request(ctx, detail)
     if approved.ok:
         _apply_operation_result(ctx.action, ctx.account, True, "", approved.detail or "join_request_approved", attempt=ctx.attempt)
@@ -1657,15 +1667,68 @@ def _defer_membership_admin_rate_limit(ctx: MembershipDispatchContext, result: O
     detail = result.detail or result.failure_type or ""
     if result.failure_type != FailureType.FLOOD_WAIT.value and "floodwait" not in detail.lower():
         return False
-    ctx.action.result = {**(ctx.action.result or {}), "membership_rate_limit_source": source}
-    _apply_operation_result(ctx.action, ctx.account, False, FailureType.FLOOD_WAIT.value, detail, attempt=ctx.attempt)
+    retry_after = _retry_after_seconds(detail)
+    retry_at = _now() + timedelta(seconds=retry_after)
+    _record_task_membership_admin_rate_limit(ctx, retry_at, detail, source)
+    _defer_membership_rate_limit_until(ctx, MembershipRateLimit(retry_at, detail, source, retry_after))
+    return True
+
+
+def _defer_existing_membership_admin_rate_limit(ctx: MembershipDispatchContext) -> bool:
+    task = ctx.session.get(Task, ctx.action.task_id) if ctx.action.task_id else None
+    retry_at = _task_membership_admin_rate_limited_until(task)
+    if not retry_at or retry_at <= _now():
+        return False
+    stats = task.stats or {}
+    detail = str(stats.get("membership_admin_rate_limit_detail") or "Telegram 管理员操作触发 FloodWait，已延后重试")
+    source = str(stats.get("membership_admin_rate_limit_source") or "task_membership_admin_rate_limit")
+    retry_after = max(1, int((retry_at - _now()).total_seconds()))
+    _defer_membership_rate_limit_until(ctx, MembershipRateLimit(retry_at, detail, source, retry_after))
+    return True
+
+
+def _record_task_membership_admin_rate_limit(ctx: MembershipDispatchContext, retry_at: datetime, detail: str, source: str) -> None:
+    task = ctx.session.get(Task, ctx.action.task_id) if ctx.action.task_id else None
+    if not task:
+        return
+    stats = dict(task.stats or {})
+    stats["membership_admin_rate_limited_until"] = retry_at.isoformat()
+    stats["membership_admin_rate_limit_detail"] = detail
+    stats["membership_admin_rate_limit_source"] = source
+    task.stats = stats
+
+
+def _task_membership_admin_rate_limited_until(task: Task | None) -> datetime | None:
+    if not task:
+        return None
+    raw = str((task.stats or {}).get("membership_admin_rate_limited_until") or "")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _defer_membership_rate_limit_until(ctx: MembershipDispatchContext, limit: MembershipRateLimit) -> None:
+    ctx.action.status = "pending"
+    ctx.action.scheduled_at = limit.retry_at
+    ctx.action.executed_at = None
+    _clear_action_lease(ctx.action)
+    _release_runtime_resources(ctx.action)
     ctx.action.result = {
         **(ctx.action.result or {}),
-        "membership_status": "rate_limited",
-        "membership_rate_limit_source": source,
+        "success": False,
+        "error_code": FailureType.FLOOD_WAIT.value,
+        "error_message": limit.detail,
+        "auto_check": "延后",
         "validation_stage": "membership_admin_rate_limit",
+        "membership_status": "rate_limited",
+        "membership_rate_limit_source": limit.source,
+        "retry_after_seconds": limit.retry_after,
+        "next_retry_at": limit.retry_at.isoformat(),
     }
-    return True
+    _finish_execution_attempt(ctx.attempt, ctx.action, failure_type=FailureType.FLOOD_WAIT.value, detail=limit.detail)
 
 
 def _tenant_rescue_admin(session: Session, tenant_id: int) -> TgAccount | None:
