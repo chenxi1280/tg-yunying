@@ -435,6 +435,45 @@ def test_group_ai_membership_permission_denied_refreshes_stale_failed_rescue_act
         assert action.result["group_rescue_action_id"] == "old-ai-rescue"
 
 
+def test_group_ai_membership_permission_denied_refreshes_legacy_non_mutual_rescue_action(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        task = Task(id="task-ai-refresh-non-mutual", tenant_id=1, name="AI 群聊", type="group_ai_chat", status="running")
+        action = _group_ai_membership_action("ai-membership-denied-non-mutual", task)
+        old_rescue = Action(
+            id="old-non-mutual-rescue",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="invite_group_account",
+            account_id=99,
+            scheduled_at=NOW - timedelta(minutes=10),
+            status="failed",
+            payload={
+                "group_id": 7,
+                "operation_target_id": 21,
+                "group_peer_id": "-10021",
+                "target_account_id": 11,
+                "target_account_ref": "@normal_user",
+                "trigger_account_id": 11,
+            },
+            result={"rescue_status": "invite_failed", "error_message": "The provided user is not a mutual contact"},
+        )
+        session.add_all([task, old_rescue, action])
+        session.commit()
+        _patch_group_membership_denied(monkeypatch)
+
+        assert dispatch_action(session, action) is True
+
+        session.commit()
+        session.refresh(old_rescue)
+        assert old_rescue.status == "pending"
+        assert old_rescue.account_id == 99
+        assert old_rescue.payload["target_account_ref"] == "@normal_user"
+        assert old_rescue.result["rescue_status"] == "pending"
+        assert action.result["group_rescue_action_id"] == "old-non-mutual-rescue"
+
+
 def test_membership_sync_counts_same_permission_action_once() -> None:
     with _session() as session:
         _seed_rescue_target(session)

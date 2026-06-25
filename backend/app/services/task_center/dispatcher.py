@@ -2412,6 +2412,9 @@ def _maybe_trigger_send_permission_rescue(action: Action, account: TgAccount, de
 def _record_group_rescue_result(action: Action, result) -> None:
     action.result = {**(action.result or {}), "group_rescue_status": result.status, "group_rescue_detail": result.detail}
     if result.action:
+        if result.status == "pending":
+            result.action.status = "pending"
+            result.action.result = {"rescue_status": "pending"}
         action.result = {**(action.result or {}), "group_rescue_action_id": result.action.id}
 
 

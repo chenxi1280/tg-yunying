@@ -200,7 +200,15 @@ def _rescue_action_needs_refresh(session: Session, tenant: Tenant, action: Actio
     if int(action.account_id or 0) != int(tenant.group_rescue_admin_account_id or 0):
         return True
     payload = action.payload if isinstance(action.payload, dict) else {}
-    return str(payload.get("target_account_ref") or "") != _target_account_invite_ref(session, tenant, trigger_account_id)
+    if str(payload.get("target_account_ref") or "") != _target_account_invite_ref(session, tenant, trigger_account_id):
+        return True
+    return _is_legacy_non_mutual_contact_failure(action)
+
+
+def _is_legacy_non_mutual_contact_failure(action: Action) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    detail = " ".join(str(result.get(key) or "") for key in ("rescue_detail", "error_message", "detail"))
+    return action.status == "failed" and "not a mutual contact" in detail.lower()
 
 
 def _rescue_config_error(session: Session, tenant: Tenant | None) -> str:
