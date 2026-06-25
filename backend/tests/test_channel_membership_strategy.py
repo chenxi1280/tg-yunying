@@ -183,7 +183,7 @@ def test_reactivate_memberships_does_not_retry_account_unavailable() -> None:
     assert retry_count == 0
 
 
-def test_hard_hourly_reactivation_skips_permission_failures_when_capacity_is_ready() -> None:
+def test_hard_hourly_reactivation_repairs_auto_verification_failures_when_capacity_is_ready() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     old_value = _now() - timedelta(minutes=10)
@@ -232,8 +232,8 @@ def test_hard_hourly_reactivation_skips_permission_failures_when_capacity_is_rea
         created = _reactivate_auto_verification_memberships(session, task, channel, [ready, failed], require_send=True)
         retry_count = session.query(Action).filter(Action.task_id == task.id, Action.status == "pending").count()
 
-    assert created == 0
-    assert retry_count == 0
+    assert created == 1
+    assert retry_count == 1
 
 
 def test_reactivate_memberships_requeues_stale_target_reference() -> None:
