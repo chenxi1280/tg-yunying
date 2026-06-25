@@ -388,6 +388,37 @@ def pending_action_samples(session, task):
     return samples
 
 
+def invite_action_samples(session, task):
+    samples = []
+    for action in session.scalars(
+        select(Action)
+        .where(Action.task_id == task.id, Action.action_type == "invite_group_account")
+        .order_by(Action.scheduled_at.asc().nullsfirst(), Action.created_at.desc())
+        .limit(30)
+    ):
+        result = action.result if isinstance(action.result, dict) else {}
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        samples.append(
+            {
+                "action_id": action.id,
+                "status": action.status,
+                "account_id": action.account_id,
+                "target_account_id": payload.get("target_account_id"),
+                "trigger_account_id": payload.get("trigger_account_id"),
+                "scheduled_at": iso(action.scheduled_at),
+                "executed_at": iso(action.executed_at),
+                "error_code": result.get("error_code"),
+                "error_message": str(result.get("error_message") or "")[:220],
+                "account_policy_action": result.get("account_policy_action"),
+                "rescue_status": result.get("rescue_status"),
+                "rescue_detail": str(result.get("rescue_detail") or "")[:220],
+                "claim_released_reason": result.get("claim_released_reason"),
+                "runtime_resource_reason": result.get("runtime_resource_reason"),
+            }
+        )
+    return samples
+
+
 def worker_counts(session, cutoff):
     return {
         str(process_type): int(count)
@@ -462,6 +493,7 @@ def main():
             "latest_error_samples": action_error_samples(session, latest_task) if latest_task else [],
             "latest_pending_window": pending_action_window(session, latest_task) if latest_task else {},
             "latest_pending_samples": pending_action_samples(session, latest_task) if latest_task else [],
+            "latest_invite_group_account_samples": invite_action_samples(session, latest_task) if latest_task else [],
         }
         metrics = {
             "captured_at": captured_at,
