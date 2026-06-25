@@ -958,6 +958,8 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
             return True
         result = rescued
     result_detail = _membership_result_detail(result)
+    if result.failure_type == FailureType.FLOOD_WAIT.value:
+        _maybe_trigger_membership_rate_limit_rescue(runtime_ctx, result_detail)
     failure_type = _classify_membership_failure(result.failure_type, result_detail)
     _apply_operation_result(action, account, result.ok, failure_type, result_detail, attempt=attempt)
     if result.ok:
@@ -1797,6 +1799,16 @@ def _skip_membership_permission_denied(action: Action, detail: str) -> None:
 def _maybe_trigger_membership_permission_rescue(ctx: MembershipDispatchContext, detail: str) -> None:
     if ctx.action.task_type != "group_ai_chat" or ctx.payload.target_type != "group":
         return
+    _trigger_membership_group_rescue(ctx, detail)
+
+
+def _maybe_trigger_membership_rate_limit_rescue(ctx: MembershipDispatchContext, detail: str) -> None:
+    if ctx.payload.target_type != "group":
+        return
+    _trigger_membership_group_rescue(ctx, detail)
+
+
+def _trigger_membership_group_rescue(ctx: MembershipDispatchContext, detail: str) -> None:
     task = ctx.session.get(Task, ctx.action.task_id) if ctx.action.task_id else None
     target = ctx.session.get(OperationTarget, ctx.payload.channel_target_id)
     if not task or not target or target.tenant_id != ctx.action.tenant_id:

@@ -560,6 +560,37 @@ def test_dispatch_membership_permission_denied_lifts_restriction_with_rescue_adm
         assert action.result["membership_status"] == "joined"
 
 
+def test_dispatch_membership_floodwait_creates_rescue_action(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        task = session.get(Task, "task-rescue")
+        action = _group_ai_membership_action("membership-floodwait-rescue", task)
+        session.add(action)
+        session.commit()
+
+        limited = ChannelMembershipResult(
+            False,
+            "失败",
+            FailureType.FLOOD_WAIT.value,
+            "FloodWait 40802 秒",
+            "rate_limited",
+        )
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *_args, **_kwargs: limited)
+
+        assert dispatch_action(session, action) is True
+
+        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_account")).all()
+        assert action.status == "pending"
+        assert action.result["error_code"] == FailureType.FLOOD_WAIT.value
+        assert action.result["group_rescue_status"] == "pending"
+        assert len(rescue_actions) == 1
+        assert rescue_actions[0].account_id == 99
+        assert rescue_actions[0].payload["target_account_id"] == 11
+        assert rescue_actions[0].payload["target_account_ref"] == "@normal_user"
+        assert rescue_actions[0].payload["trigger_reason"] == "FloodWait 40802 秒"
+
+
 def test_dispatch_membership_private_group_lifts_restriction_and_joins(monkeypatch) -> None:
     with _session() as session:
         _seed_rescue_target(session)
