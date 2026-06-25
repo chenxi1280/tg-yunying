@@ -204,6 +204,55 @@ def action_error_samples(session, task):
     return samples
 
 
+def pending_action_window(session, task):
+    row = session.execute(
+        select(
+            func.count(Action.id),
+            func.min(Action.scheduled_at),
+            func.max(Action.scheduled_at),
+        ).where(Action.task_id == task.id, Action.status == "pending")
+    ).one()
+    count, earliest, latest = row
+    now = datetime.utcnow()
+    due_count = session.scalar(
+        select(func.count(Action.id)).where(
+            Action.task_id == task.id,
+            Action.status == "pending",
+            Action.scheduled_at <= now,
+        )
+    )
+    return {
+        "count": int(count or 0),
+        "due_count": int(due_count or 0),
+        "earliest_scheduled_at": iso(earliest),
+        "latest_scheduled_at": iso(latest),
+    }
+
+
+def pending_action_samples(session, task):
+    samples = []
+    for action in session.scalars(
+        select(Action)
+        .where(Action.task_id == task.id, Action.status == "pending")
+        .order_by(Action.scheduled_at.asc().nullsfirst(), Action.created_at.desc())
+        .limit(8)
+    ):
+        result = action.result if isinstance(action.result, dict) else {}
+        samples.append(
+            {
+                "action_id": action.id,
+                "account_id": action.account_id,
+                "scheduled_at": iso(action.scheduled_at),
+                "error_code": result.get("error_code"),
+                "membership_status": result.get("membership_status"),
+                "membership_rate_limit_source": result.get("membership_rate_limit_source"),
+                "retry_after_seconds": result.get("retry_after_seconds"),
+                "next_retry_at": result.get("next_retry_at"),
+            }
+        )
+    return samples
+
+
 def worker_counts(session, cutoff):
     return {
         str(process_type): int(count)
@@ -227,6 +276,8 @@ def task_summary(task):
         "pending_count": stats.get("pending_count"),
         "failed_count": stats.get("failed_count"),
         "success_count": stats.get("success_count"),
+        "membership_admin_rate_limited_until": stats.get("membership_admin_rate_limited_until"),
+        "membership_admin_rate_limit_source": stats.get("membership_admin_rate_limit_source"),
     }
 
 
@@ -274,6 +325,8 @@ def main():
             "latest_action_counts": action_counts(session, latest_task) if latest_task else [],
             "latest_error_counts": action_error_counts(session, latest_task) if latest_task else [],
             "latest_error_samples": action_error_samples(session, latest_task) if latest_task else [],
+            "latest_pending_window": pending_action_window(session, latest_task) if latest_task else {},
+            "latest_pending_samples": pending_action_samples(session, latest_task) if latest_task else [],
         }
         metrics = {
             "captured_at": captured_at,
