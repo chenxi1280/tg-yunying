@@ -34,7 +34,7 @@ from app.timezone import BEIJING_TZ
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
-from .channel_membership import account_satisfies_authorized_target, linked_channel_group
+from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
 from .executors.common import quantity_jitter_bounds
 from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
@@ -167,6 +167,14 @@ class PreSendRequiredChannelContext:
     group: TgGroup
     link: TgGroupAccount
     payload: SendMessagePayload
+
+
+@dataclass(frozen=True)
+class InviteGroupAccountContext:
+    session: Session
+    account: TgAccount
+    credentials: object
+    payload: InviteGroupAccountPayload
 
 
 def _reserve_runtime_resources(action: Action) -> bool:
@@ -817,8 +825,48 @@ def _dispatch_invite_group_account(session: Session, action: Action, account: Tg
         account.session_ciphertext,
         credentials,
     )
+    if not result.ok and _requires_invite_link_join(result):
+        result = _invite_group_account_with_link(InviteGroupAccountContext(session, account, credentials, payload))
+    if result.ok:
+        _mark_rescued_group_account_joined(session, action, payload)
     _apply_rescue_invite_result(action, account, result, attempt=attempt)
     return True
+
+
+def _requires_invite_link_join(result: OperationResult) -> bool:
+    detail = f"{result.failure_type or ''} {result.detail or ''}".lower()
+    return "not a mutual contact" in detail or "not mutual contact" in detail
+
+
+def _invite_group_account_with_link(ctx: InviteGroupAccountContext) -> OperationResult:
+    target = ctx.session.get(TgAccount, ctx.payload.target_account_id or 0)
+    if not target or target.status != AccountStatus.ACTIVE.value or not target.session_ciphertext:
+        return OperationResult(False, "失败", FailureType.ACCOUNT_UNAVAILABLE.value, "被救援账号不可用，无法通过邀请链接入群")
+    link = gateway.export_group_invite_link(ctx.account.id, ctx.payload.group_peer_id, ctx.account.session_ciphertext, ctx.credentials)
+    if not link.ok or not link.invite_link:
+        return OperationResult(False, "失败", link.failure_type or "invite_link_export_failed", link.detail or "管理员导出邀请链接失败")
+    joined = gateway.ensure_channel_membership(
+        target.id,
+        ctx.payload.group_peer_id,
+        target.session_ciphertext,
+        ctx.credentials,
+        invite_link=link.invite_link,
+    )
+    if not joined.ok:
+        return OperationResult(False, "失败", joined.failure_type or FailureType.UNKNOWN.value, joined.detail or "被救援账号通过邀请链接入群失败")
+    return OperationResult(True, "已处理", detail=f"invite_link_{joined.membership_status or 'joined'}")
+
+
+def _mark_rescued_group_account_joined(session: Session, action: Action, payload: InviteGroupAccountPayload) -> None:
+    if not payload.operation_target_id or not payload.target_account_id:
+        return
+    mark_channel_membership_joined(
+        session,
+        action.tenant_id,
+        payload.operation_target_id,
+        payload.target_account_id,
+        permission_label="群聊救援已入群",
+    )
 
 
 def _apply_rescue_invite_result(action: Action, account: TgAccount, result: OperationResult, *, attempt: ExecutionAttempt | None) -> None:

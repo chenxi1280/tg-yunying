@@ -9,9 +9,9 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.integrations.telegram import DeveloperAppCredentials, OperationResult
+from app.integrations.telegram import ChannelMembershipResult, DeveloperAppCredentials, InviteLinkResult, OperationResult
 from app.integrations.telegram.gateway import TelethonTelegramGateway
-from app.models import AccountStatus, Action, FailureType, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup
+from app.models import AccountStatus, Action, FailureType, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.schemas import TenantGroupRescueSettingsUpdate
 from app.services.task_center import dispatcher
 from app.services.task_center.account_pool import select_task_accounts
@@ -205,6 +205,65 @@ def test_dispatch_invite_group_account_refreshes_stale_configured_rescue_account
         assert action.account_id == 100
         assert action.status == "success"
         assert action.result["rescue_status"] == "invite_success"
+        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.group_id == 7, TgGroupAccount.account_id == 11))
+        assert link is not None
+        assert link.can_send is True
+
+
+def test_dispatch_invite_group_account_joins_with_admin_invite_link_for_non_mutual_contact(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        action = Action(
+            id="invite-link-account",
+            tenant_id=1,
+            task_id="task-rescue",
+            task_type="group_membership_admission",
+            action_type="invite_group_account",
+            account_id=99,
+            scheduled_at=NOW,
+            status="pending",
+            payload={
+                "group_id": 7,
+                "operation_target_id": 21,
+                "group_peer_id": "-10021",
+                "target_account_id": 11,
+                "target_account_ref": "@normal_user",
+                "trigger_account_id": 11,
+                "trigger_task_id": "task-rescue",
+                "trigger_reason": "permission_denied",
+            },
+        )
+        session.add(action)
+        session.commit()
+
+        calls: list[tuple[str, int, str]] = []
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "invite_account_to_group",
+            lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.UNKNOWN.value, "The provided user is not a mutual contact"),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "export_group_invite_link",
+            lambda account_id, group_peer_id, *_args, **_kwargs: calls.append(("export", account_id, group_peer_id)) or InviteLinkResult(True, "已处理", invite_link="https://t.me/+abc"),
+        )
+
+        def fake_join(account_id, group_peer_id, *_args, invite_link="", **_kwargs):  # noqa: ANN001
+            calls.append(("join", account_id, invite_link))
+            return ChannelMembershipResult(True, detail="joined", membership_status="joined")
+
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", fake_join)
+
+        assert dispatch_action(session, action) is True
+
+        assert calls == [("export", 99, "-10021"), ("join", 11, "https://t.me/+abc")]
+        assert action.status == "success"
+        assert action.result["rescue_status"] == "invite_success"
+        assert action.result["rescue_detail"] == "invite_link_joined"
+        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.group_id == 7, TgGroupAccount.account_id == 11))
+        assert link is not None
+        assert link.permission_label == "群聊救援已入群"
 
 
 def test_dispatch_deprecated_group_rescue_action_migrates_to_account_invite(monkeypatch) -> None:
