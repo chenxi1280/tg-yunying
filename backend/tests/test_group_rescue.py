@@ -266,6 +266,62 @@ def test_dispatch_invite_group_account_joins_with_admin_invite_link_for_non_mutu
         assert link.permission_label == "群聊救援已入群"
 
 
+def test_dispatch_invite_group_account_classifies_unusable_invite_link(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        action = Action(
+            id="invite-link-expired-account",
+            tenant_id=1,
+            task_id="task-rescue",
+            task_type="group_membership_admission",
+            action_type="invite_group_account",
+            account_id=99,
+            scheduled_at=NOW,
+            status="pending",
+            payload={
+                "group_id": 7,
+                "operation_target_id": 21,
+                "group_peer_id": "-10021",
+                "target_account_id": 11,
+                "target_account_ref": "@normal_user",
+                "trigger_account_id": 11,
+                "trigger_task_id": "task-rescue",
+                "trigger_reason": "permission_denied",
+            },
+        )
+        session.add(action)
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "invite_account_to_group",
+            lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.UNKNOWN.value, "The provided user is not a mutual contact"),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "export_group_invite_link",
+            lambda *_args, **_kwargs: InviteLinkResult(True, "已处理", invite_link="https://t.me/+abc"),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "ensure_channel_membership",
+            lambda *_args, **_kwargs: ChannelMembershipResult(
+                False,
+                "失败",
+                FailureType.UNKNOWN.value,
+                "The chat the user tried to join has expired and is not valid anymore",
+                "failed",
+            ),
+        )
+
+        assert dispatch_action(session, action) is True
+
+        assert action.status == "failed"
+        assert action.result["error_code"] == "target_invite_link_unusable"
+        assert "疑似账号被群限制" in action.result["rescue_detail"]
+
+
 def test_dispatch_deprecated_group_rescue_action_migrates_to_account_invite(monkeypatch) -> None:
     with _session() as session:
         _seed_rescue_target(session)

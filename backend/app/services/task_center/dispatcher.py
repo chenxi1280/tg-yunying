@@ -853,8 +853,16 @@ def _invite_group_account_with_link(ctx: InviteGroupAccountContext) -> Operation
         invite_link=link.invite_link,
     )
     if not joined.ok:
-        return OperationResult(False, "失败", joined.failure_type or FailureType.UNKNOWN.value, joined.detail or "被救援账号通过邀请链接入群失败")
+        return _rescue_invite_link_join_failure(joined.detail, joined.failure_type)
     return OperationResult(True, "已处理", detail=f"invite_link_{joined.membership_status or 'joined'}")
+
+
+def _rescue_invite_link_join_failure(detail: str, failure_type: str = "") -> OperationResult:
+    text = detail or "被救援账号通过邀请链接入群失败"
+    normalized = text.lower()
+    if "expired" in normalized and "not valid" in normalized:
+        return OperationResult(False, "失败", "target_invite_link_unusable", f"邀请链接对目标账号不可用，疑似账号被群限制或群邀请策略拒绝：{text}")
+    return OperationResult(False, "失败", failure_type or FailureType.UNKNOWN.value, text)
 
 
 def _mark_rescued_group_account_joined(session: Session, action: Action, payload: InviteGroupAccountPayload) -> None:
