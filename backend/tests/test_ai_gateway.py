@@ -19,7 +19,7 @@ from app.ai_gateway import (
 )
 from app.database import Base
 from app.integrations.telegram import DeveloperAppCredentials
-from app.integrations.telegram.gateway import TelethonTelegramGateway, _permission_detail_from_context_rows, _verification_message_text
+from app.integrations.telegram.gateway import TelethonTelegramGateway, _first_message_with_buttons, _permission_detail_from_context_rows, _verification_message_text
 from app.models import AiProvider, FailureType, Tenant, TenantAiSetting
 from app.security import encrypt_secret
 from app.services.task_center.ai_generator import (
@@ -93,6 +93,13 @@ def test_verification_message_text_preserves_button_urls_for_auto_follow():
 
     assert "天津音乐学院报告频道" in text
     assert "https://t.me/tj_report" in text
+
+
+def test_first_message_with_buttons_scans_recent_context():
+    without_buttons = SimpleNamespace(id=9, buttons=None)
+    with_buttons = SimpleNamespace(id=8, buttons=[[SimpleNamespace(text="开始验证")]])
+
+    assert _first_message_with_buttons([without_buttons, with_buttons]) is with_buttons
 
 
 def test_probe_permission_denied_uses_recent_context_detail(monkeypatch):

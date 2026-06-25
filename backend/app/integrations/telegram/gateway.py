@@ -75,6 +75,13 @@ def _button_url(button: Any) -> str:
     return ""
 
 
+def _first_message_with_buttons(messages: Any) -> Any | None:
+    for message in messages or []:
+        if getattr(message, "buttons", None):
+            return message
+    return None
+
+
 def _verification_message_text(message: Any) -> str:
     parts: list[str] = []
     text = (getattr(message, "message", "") or "").strip()
@@ -1651,12 +1658,13 @@ class TelethonTelegramGateway(TelegramGateway):
                 await client(functions.channels.JoinChannelRequest(channel=entity))
                 return OperationResult(True, "已处理", detail="已完成频道关注")
             if action == "点击按钮" and target is not None:
-                messages = await client.get_messages(target, limit=1)
-                message = messages[0] if messages else None
+                messages = await client.get_messages(target, limit=VERIFICATION_CONTEXT_DEFAULT_LIMIT)
+                message = _first_message_with_buttons(messages)
                 if not message or not getattr(message, "buttons", None):
                     return OperationResult(False, "需人工处理", "复杂验证", "未找到可自动点击的按钮")
                 await message.click(0)
-                return OperationResult(True, "已处理", detail="已点击首个验证按钮")
+                message_id = str(getattr(message, "id", "") or "")
+                return OperationResult(True, "已处理", detail=f"已点击首个验证按钮 message_id={message_id}".strip())
             if action == "发送验证回复" and target is not None:
                 await client.send_message(target, "/start")
                 return OperationResult(True, "已处理", detail="已发送验证回复")
