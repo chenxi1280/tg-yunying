@@ -853,14 +853,45 @@ def _invite_group_account_with_link(ctx: InviteGroupAccountContext) -> Operation
         invite_link=link.invite_link,
     )
     if not joined.ok:
+        if _invite_link_unusable(joined.detail):
+            return _retry_invite_group_account_after_lifting_restrictions(ctx, target, joined.detail)
         return _rescue_invite_link_join_failure(joined.detail, joined.failure_type)
     return OperationResult(True, "已处理", detail=f"invite_link_{joined.membership_status or 'joined'}")
 
 
+def _retry_invite_group_account_after_lifting_restrictions(ctx: InviteGroupAccountContext, target: TgAccount, first_detail: str) -> OperationResult:
+    lifted = gateway.lift_group_account_restrictions(
+        ctx.account.id,
+        ctx.payload.group_peer_id,
+        ctx.payload.target_account_ref,
+        ctx.account.session_ciphertext,
+        ctx.credentials,
+    )
+    if not lifted.ok:
+        return OperationResult(False, "失败", lifted.failure_type or "target_group_restriction_unresolved", f"管理员解除目标账号群限制失败：{lifted.detail or lifted.failure_type}")
+    link = gateway.export_group_invite_link(ctx.account.id, ctx.payload.group_peer_id, ctx.account.session_ciphertext, ctx.credentials)
+    if not link.ok or not link.invite_link:
+        return OperationResult(False, "失败", link.failure_type or "invite_link_export_failed", f"解除限制后导出邀请链接失败：{link.detail or link.failure_type}")
+    joined = gateway.ensure_channel_membership(
+        target.id,
+        ctx.payload.group_peer_id,
+        target.session_ciphertext,
+        ctx.credentials,
+        invite_link=link.invite_link,
+    )
+    if joined.ok:
+        return OperationResult(True, "已处理", detail=f"unban_invite_link_{joined.membership_status or 'joined'}")
+    return _rescue_invite_link_join_failure(joined.detail or first_detail, joined.failure_type)
+
+
+def _invite_link_unusable(detail: str) -> bool:
+    normalized = str(detail or "").lower()
+    return "expired" in normalized and "not valid" in normalized
+
+
 def _rescue_invite_link_join_failure(detail: str, failure_type: str = "") -> OperationResult:
     text = detail or "被救援账号通过邀请链接入群失败"
-    normalized = text.lower()
-    if "expired" in normalized and "not valid" in normalized:
+    if _invite_link_unusable(text):
         return OperationResult(False, "失败", "target_invite_link_unusable", f"邀请链接对目标账号不可用，疑似账号被群限制或群邀请策略拒绝：{text}")
     return OperationResult(False, "失败", failure_type or FailureType.UNKNOWN.value, text)
 

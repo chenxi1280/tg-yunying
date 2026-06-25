@@ -305,6 +305,11 @@ def test_dispatch_invite_group_account_classifies_unusable_invite_link(monkeypat
         )
         monkeypatch.setattr(
             dispatcher.gateway,
+            "lift_group_account_restrictions",
+            lambda *_args, **_kwargs: OperationResult(True, "已处理", detail="account_restrictions_lifted"),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
             "ensure_channel_membership",
             lambda *_args, **_kwargs: ChannelMembershipResult(
                 False,
@@ -320,6 +325,67 @@ def test_dispatch_invite_group_account_classifies_unusable_invite_link(monkeypat
         assert action.status == "failed"
         assert action.result["error_code"] == "target_invite_link_unusable"
         assert "疑似账号被群限制" in action.result["rescue_detail"]
+
+
+def test_dispatch_invite_group_account_lifts_restriction_then_joins(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        action = Action(
+            id="invite-link-restricted-account",
+            tenant_id=1,
+            task_id="task-rescue",
+            task_type="group_membership_admission",
+            action_type="invite_group_account",
+            account_id=99,
+            scheduled_at=NOW,
+            status="pending",
+            payload={
+                "group_id": 7,
+                "operation_target_id": 21,
+                "group_peer_id": "-10021",
+                "target_account_id": 11,
+                "target_account_ref": "@normal_user",
+                "trigger_account_id": 11,
+                "trigger_task_id": "task-rescue",
+                "trigger_reason": "permission_denied",
+            },
+        )
+        session.add(action)
+        session.commit()
+
+        calls: list[tuple[str, int | str, str]] = []
+        join_results = [
+            ChannelMembershipResult(False, "失败", FailureType.UNKNOWN.value, "The chat the user tried to join has expired and is not valid anymore", "failed"),
+            ChannelMembershipResult(True, detail="joined", membership_status="joined"),
+        ]
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "invite_account_to_group",
+            lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.UNKNOWN.value, "The provided user is not a mutual contact"),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "export_group_invite_link",
+            lambda *_args, **_kwargs: InviteLinkResult(True, "已处理", invite_link="https://t.me/+fresh"),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "lift_group_account_restrictions",
+            lambda account_id, group_peer_id, target_ref, *_args, **_kwargs: calls.append(("lift", account_id, target_ref)) or OperationResult(True, "已处理", detail="account_restrictions_lifted"),
+        )
+
+        def fake_join(account_id, _group_peer_id, *_args, invite_link="", **_kwargs):  # noqa: ANN001
+            calls.append(("join", account_id, invite_link))
+            return join_results.pop(0)
+
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", fake_join)
+
+        assert dispatch_action(session, action) is True
+
+        assert calls == [("join", 11, "https://t.me/+fresh"), ("lift", 99, "@normal_user"), ("join", 11, "https://t.me/+fresh")]
+        assert action.status == "success"
+        assert action.result["rescue_detail"] == "unban_invite_link_joined"
 
 
 def test_dispatch_deprecated_group_rescue_action_migrates_to_account_invite(monkeypatch) -> None:
@@ -783,3 +849,43 @@ def test_export_group_invite_link_creates_rescue_titled_link(monkeypatch) -> Non
     assert result.ok is True
     assert result.invite_link == "https://t.me/+freshInvite"
     assert getattr(seen_requests[0], "title") == "tg-yunying-rescue-515"
+
+
+def test_lift_group_account_restrictions_uses_admin_edit_banned_request(monkeypatch) -> None:
+    gateway = TelethonTelegramGateway()
+    seen_requests: list[object] = []
+
+    class FakeClient:
+        async def is_user_authorized(self) -> bool:
+            return True
+
+        async def get_entity(self, username: str):  # noqa: ANN001
+            assert username == "normal_user"
+            return SimpleNamespace(id=11)
+
+        async def __call__(self, request):  # noqa: ANN001
+            seen_requests.append(request)
+            return object()
+
+    async def fake_client(_credentials, _raw_session):  # noqa: ANN001
+        return FakeClient()
+
+    async def fake_target(_client, _peer_id, *, group_id=0):  # noqa: ANN001
+        return SimpleNamespace(id=7)
+
+    monkeypatch.setattr(gateway, "_get_or_create_client", fake_client)
+    monkeypatch.setattr("app.integrations.telegram.gateway.resolve_telethon_target", fake_target)
+
+    result = gateway._run(
+        gateway._lift_group_account_restrictions_async(
+            "raw-session",
+            "-1007",
+            "@normal_user",
+            DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1),
+        )
+    )
+
+    assert result.ok is True
+    assert seen_requests
+    assert seen_requests[0].banned_rights.view_messages is False
+    assert seen_requests[0].banned_rights.send_messages is False
