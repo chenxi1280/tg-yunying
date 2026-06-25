@@ -40,13 +40,17 @@ def _candidate_tasks(session: Session, *, limit: int) -> list[Task]:
 def _should_recover_task(session: Session, task: Task) -> bool:
     return (
         hard_hourly_enabled(task)
-        and _membership_need_join_count(task.stats or {}) > 0
+        and _membership_recovery_pending_count(task.stats or {}) > 0
     )
 
 
-def _membership_need_join_count(stats: dict[str, Any]) -> int:
+def _membership_recovery_pending_count(stats: dict[str, Any]) -> int:
+    return _stats_int(stats, "membership_need_join_count") + _stats_int(stats, "membership_failed_count")
+
+
+def _stats_int(stats: dict[str, Any], key: str) -> int:
     try:
-        return int(stats.get("membership_need_join_count") or 0)
+        return int(stats.get(key) or 0)
     except (TypeError, ValueError):
         return 0
 
