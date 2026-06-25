@@ -18,6 +18,11 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      sync_tianjin_remote_admin_links:
+        description: Sync local group-account links for Telegram admins found in Tianjin
+        required: false
+        default: false
+        type: boolean
       force_cancel_in_progress:
         description: Explicitly cancel a stuck in-progress Deploy Production run before this manual run
         required: false
@@ -378,6 +383,15 @@ jobs:
               }
               print('TIANJIN_ADMISSION_RETRY=' + json.dumps(compact, ensure_ascii=False, sort_keys=True), flush=True)
           PY
+
+      - name: Sync Tianjin remote admin links
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sync_tianjin_remote_admin_links }}
+        run: |
+          set -euo pipefail
+          echo "TIANJIN_REMOTE_ADMIN_LINK_SYNC_START"
+          ssh silicon-valley-production-server 'timeout 90 docker exec -i tgyunying-backend python -' \
+            < .github/scripts/tianjin_sync_remote_admin_links.py
+          echo "TIANJIN_REMOTE_ADMIN_LINK_SYNC_END"
 
       - name: Inspect Tianjin admission state
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tianjin_diagnostics }}
