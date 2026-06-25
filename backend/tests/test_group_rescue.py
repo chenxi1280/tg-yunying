@@ -513,6 +513,53 @@ def test_dispatch_membership_waiting_approval_falls_back_to_invite_link(monkeypa
         assert action.result["membership_status"] == "joined"
 
 
+def test_dispatch_membership_permission_denied_lifts_restriction_with_rescue_admin(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        task = session.get(Task, "task-rescue")
+        action = _group_ai_membership_action("membership-admin-lift", task)
+        session.add(action)
+        session.commit()
+
+        calls: list[tuple[str, int, str]] = []
+        denied = ChannelMembershipResult(
+            False,
+            "失败",
+            FailureType.GROUP_PERMISSION_DENIED.value,
+            "群无权限或账号不可发言",
+            "failed",
+        )
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        join_results = [denied, ChannelMembershipResult(True, "已处理", "", "joined", "joined")]
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *_args, **_kwargs: join_results.pop(0))
+        monkeypatch.setattr(dispatcher, "_recover_group_send_permission_with_linked_channel", lambda *_args, **_kwargs: denied)
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "lift_group_account_restrictions",
+            lambda account_id, group_peer_id, target_ref, *_args, **_kwargs: calls.append(("lift", account_id, target_ref))
+            or OperationResult(True, "已处理", detail="account_restrictions_lifted"),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "export_group_invite_link",
+            lambda *_args, **_kwargs: InviteLinkResult(True, detail="https://t.me/+fresh", invite_link="https://t.me/+fresh"),
+        )
+        monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(True, "已处理", detail="可发言"))
+
+        def fake_join(account_id, _group_peer_id, *_args, **kwargs):  # noqa: ANN001
+            calls.append(("join", account_id, kwargs.get("invite_link") or ""))
+            return join_results.pop(0)
+
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", fake_join)
+
+        assert dispatch_action(session, action) is True
+
+        assert calls == [("join", 11, ""), ("lift", 99, "@normal_user"), ("join", 11, "https://t.me/+fresh")]
+        assert action.status == "success"
+        assert action.result["admin_restriction_lifted"] is True
+        assert action.result["membership_status"] == "joined"
+
+
 def test_dispatch_membership_private_group_lifts_restriction_and_joins(monkeypatch) -> None:
     with _session() as session:
         _seed_rescue_target(session)

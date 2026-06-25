@@ -1630,6 +1630,12 @@ def _handle_group_send_permission_denied(
         return True
     if _defer_membership_admin_rate_limit(ctx, link_joined, "join_request_link_join"):
         return True
+    admin_lifted = _try_admin_lift_restriction_and_join(ctx, detail)
+    if admin_lifted.ok:
+        _apply_group_send_admin_lift_result(ctx, admin_lifted, membership_status)
+        return True
+    if _defer_membership_admin_rate_limit(ctx, admin_lifted, "group_restriction_lift"):
+        return True
     verification = _record_group_send_permission_denied(ctx.session, ctx.action, ctx.account, ctx.payload, detail)
     if _auto_verify_and_apply_group_send(ctx, verification, membership_status=membership_status):
         return True
@@ -1641,6 +1647,15 @@ def _handle_group_send_permission_denied(
         return True
     _apply_operation_result(ctx.action, ctx.account, False, recovered.failure_type, detail, attempt=ctx.attempt)
     return True
+
+
+def _apply_group_send_admin_lift_result(ctx: MembershipDispatchContext, result: OperationResult, membership_status: str) -> None:
+    _apply_operation_result(ctx.action, ctx.account, True, "", result.detail or "admin_restriction_lifted", attempt=ctx.attempt)
+    ctx.action.result = {
+        **(ctx.action.result or {}),
+        "membership_status": membership_status,
+        "admin_restriction_lifted": True,
+    }
 
 
 def _try_admin_approve_join_request(ctx: MembershipDispatchContext, detail: str) -> OperationResult:
