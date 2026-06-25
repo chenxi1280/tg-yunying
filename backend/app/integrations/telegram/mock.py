@@ -370,6 +370,16 @@ class TelegramGateway:
     ) -> OperationResult:
         return OperationResult(True, "已处理", detail=f"mock 已解除 {target_account_ref} 的群限制")
 
+    def approve_group_join_request(
+        self,
+        account_id: int,
+        group_peer_id: str,
+        target_account_ref: str,
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+    ) -> OperationResult:
+        return OperationResult(True, "已处理", detail=f"mock 已审批 {target_account_ref} 的入群申请")
+
     def update_profile(
         self,
         session_ciphertext: str | None,

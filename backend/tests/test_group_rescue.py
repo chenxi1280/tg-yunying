@@ -388,6 +388,40 @@ def test_dispatch_invite_group_account_lifts_restriction_then_joins(monkeypatch)
         assert action.result["rescue_detail"] == "unban_invite_link_joined"
 
 
+def test_dispatch_membership_waiting_approval_uses_rescue_admin(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        task = session.get(Task, "task-rescue")
+        action = _group_ai_membership_action("membership-waiting-approval", task)
+        session.add(action)
+        session.commit()
+
+        calls: list[tuple[str, int, str]] = []
+        waiting = ChannelMembershipResult(
+            False,
+            "失败",
+            FailureType.GROUP_PERMISSION_DENIED.value,
+            "已提交入群申请，等待审批后才能发言",
+            "failed",
+        )
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *_args, **_kwargs: waiting)
+        monkeypatch.setattr(dispatcher, "_recover_group_send_permission_with_linked_channel", lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, waiting.detail))
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "approve_group_join_request",
+            lambda account_id, group_peer_id, target_ref, *_args, **_kwargs: calls.append(("approve", account_id, target_ref)) or OperationResult(True, "已处理", detail="join_request_approved"),
+        )
+        monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(True, "已处理", detail="可发言"))
+
+        assert dispatch_action(session, action) is True
+
+        assert calls == [("approve", 99, "@normal_user")]
+        assert action.status == "success"
+        assert action.result["join_request_approved"] is True
+        assert action.result["membership_status"] == "joined"
+
+
 def test_dispatch_deprecated_group_rescue_action_migrates_to_account_invite(monkeypatch) -> None:
     with _session() as session:
         _seed_rescue_target(session)
@@ -889,3 +923,42 @@ def test_lift_group_account_restrictions_uses_admin_edit_banned_request(monkeypa
     assert seen_requests
     assert seen_requests[0].banned_rights.view_messages is False
     assert seen_requests[0].banned_rights.send_messages is False
+
+
+def test_approve_group_join_request_uses_approved_join_request(monkeypatch) -> None:
+    gateway = TelethonTelegramGateway()
+    seen_requests: list[object] = []
+
+    class FakeClient:
+        async def is_user_authorized(self) -> bool:
+            return True
+
+        async def get_entity(self, username: str):  # noqa: ANN001
+            assert username == "normal_user"
+            return SimpleNamespace(id=11)
+
+        async def __call__(self, request):  # noqa: ANN001
+            seen_requests.append(request)
+            return object()
+
+    async def fake_client(_credentials, _raw_session):  # noqa: ANN001
+        return FakeClient()
+
+    async def fake_target(_client, _peer_id, *, group_id=0):  # noqa: ANN001
+        return SimpleNamespace(id=7)
+
+    monkeypatch.setattr(gateway, "_get_or_create_client", fake_client)
+    monkeypatch.setattr("app.integrations.telegram.gateway.resolve_telethon_target", fake_target)
+
+    result = gateway._run(
+        gateway._approve_group_join_request_async(
+            "raw-session",
+            "-1007",
+            "@normal_user",
+            DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1),
+        )
+    )
+
+    assert result.ok is True
+    assert seen_requests
+    assert seen_requests[0].approved is True

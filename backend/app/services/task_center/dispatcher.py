@@ -1541,6 +1541,11 @@ def _handle_group_send_permission_denied(
         ctx.action.result = {**(ctx.action.result or {}), "membership_status": membership_status, "prerequisite_channel_followed": True}
         return True
     detail = recovered.detail or recovered.failure_type
+    approved = _try_admin_approve_join_request(ctx, detail)
+    if approved.ok:
+        _apply_operation_result(ctx.action, ctx.account, True, "", approved.detail or "join_request_approved", attempt=ctx.attempt)
+        ctx.action.result = {**(ctx.action.result or {}), "membership_status": membership_status, "join_request_approved": True}
+        return True
     verification = _record_group_send_permission_denied(ctx.session, ctx.action, ctx.account, ctx.payload, detail)
     if _auto_verify_and_apply_group_send(ctx, verification, membership_status=membership_status):
         return True
@@ -1552,6 +1557,41 @@ def _handle_group_send_permission_denied(
         return True
     _apply_operation_result(ctx.action, ctx.account, False, recovered.failure_type, detail, attempt=ctx.attempt)
     return True
+
+
+def _try_admin_approve_join_request(ctx: MembershipDispatchContext, detail: str) -> OperationResult:
+    if "已提交入群申请" not in str(detail or ""):
+        return OperationResult(False, "未执行", "", "不是入群申请审批场景")
+    admin = _tenant_rescue_admin(ctx.session, ctx.action.tenant_id)
+    if not admin:
+        return OperationResult(False, "需人工处理", FailureType.ACCOUNT_UNAVAILABLE.value, "未配置可用救援管理员账号")
+    target_ref = _account_invite_ref(ctx.account)
+    if not target_ref:
+        return OperationResult(False, "需人工处理", FailureType.ACCOUNT_UNAVAILABLE.value, "目标账号缺少 username 或手机号，无法审批入群申请")
+    credentials = credentials_for_account(ctx.session, admin)
+    approved = gateway.approve_group_join_request(admin.id, ctx.payload.channel_id, target_ref, admin.session_ciphertext, credentials)
+    ctx.action.result = {**(ctx.action.result or {}), "join_request_approval_detail": approved.detail or approved.failure_type}
+    if not approved.ok:
+        return approved
+    reprobe = gateway.probe_target_capabilities(ctx.account.id, ctx.payload.channel_id, ctx.payload.target_type, ctx.account.session_ciphertext, ctx.credentials)
+    if not reprobe.ok:
+        return OperationResult(False, "失败", reprobe.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, reprobe.detail or "入群申请已审批但目标仍不可发言")
+    _record_group_send_permission_allowed(ctx.session, ctx.action, ctx.account, ctx.payload)
+    return OperationResult(True, "已处理", detail=approved.detail or reprobe.detail or "join_request_approved")
+
+
+def _tenant_rescue_admin(session: Session, tenant_id: int) -> TgAccount | None:
+    tenant = session.get(Tenant, tenant_id)
+    account = session.get(TgAccount, tenant.group_rescue_admin_account_id) if tenant and tenant.group_rescue_admin_account_id else None
+    if not account or account.status != AccountStatus.ACTIVE.value or not account.session_ciphertext:
+        return None
+    return account
+
+
+def _account_invite_ref(account: TgAccount) -> str:
+    if account.username:
+        return f"@{account.username.lstrip('@')}"
+    return account.phone_number or ""
 
 
 def _group_send_permission_needs_linked_channel(detail: str) -> bool:
