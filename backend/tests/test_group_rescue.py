@@ -422,6 +422,51 @@ def test_dispatch_membership_waiting_approval_uses_rescue_admin(monkeypatch) -> 
         assert action.result["membership_status"] == "joined"
 
 
+def test_dispatch_membership_waiting_approval_falls_back_to_invite_link(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        task = session.get(Task, "task-rescue")
+        action = _group_ai_membership_action("membership-waiting-approval-link", task)
+        session.add(action)
+        session.commit()
+
+        calls: list[tuple[str, int, str]] = []
+        waiting = ChannelMembershipResult(
+            False,
+            "失败",
+            FailureType.GROUP_PERMISSION_DENIED.value,
+            "已提交入群申请，等待审批后才能发言",
+            "failed",
+        )
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *_args, **_kwargs: waiting)
+        monkeypatch.setattr(dispatcher, "_recover_group_send_permission_with_linked_channel", lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, waiting.detail))
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "approve_group_join_request",
+            lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.UNKNOWN.value, "join request not found"),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "lift_group_account_restrictions",
+            lambda account_id, group_peer_id, target_ref, *_args, **_kwargs: calls.append(("lift", account_id, target_ref)) or OperationResult(True, "已处理", detail="account_restrictions_lifted"),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "export_group_invite_link",
+            lambda *_args, **_kwargs: InviteLinkResult(True, detail="https://t.me/+fresh", invite_link="https://t.me/+fresh"),
+        )
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *_args, **kwargs: ChannelMembershipResult(True, "已处理", "", "joined", "joined") if kwargs.get("invite_link") else waiting)
+        monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(True, "已处理", detail="可发言"))
+
+        assert dispatch_action(session, action) is True
+
+        assert calls == [("lift", 99, "@normal_user")]
+        assert action.status == "success"
+        assert action.result["join_request_link_joined"] is True
+        assert action.result["membership_status"] == "joined"
+
+
 def test_dispatch_membership_private_group_lifts_restriction_and_joins(monkeypatch) -> None:
     with _session() as session:
         _seed_rescue_target(session)

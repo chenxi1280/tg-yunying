@@ -1598,6 +1598,11 @@ def _handle_group_send_permission_denied(
         _apply_operation_result(ctx.action, ctx.account, True, "", approved.detail or "join_request_approved", attempt=ctx.attempt)
         ctx.action.result = {**(ctx.action.result or {}), "membership_status": membership_status, "join_request_approved": True}
         return True
+    link_joined = _try_admin_link_join_after_approval_failure(ctx, detail)
+    if link_joined.ok:
+        _apply_operation_result(ctx.action, ctx.account, True, "", link_joined.detail or "join_request_link_joined", attempt=ctx.attempt)
+        ctx.action.result = {**(ctx.action.result or {}), "membership_status": membership_status, "join_request_link_joined": True}
+        return True
     verification = _record_group_send_permission_denied(ctx.session, ctx.action, ctx.account, ctx.payload, detail)
     if _auto_verify_and_apply_group_send(ctx, verification, membership_status=membership_status):
         return True
@@ -1612,7 +1617,7 @@ def _handle_group_send_permission_denied(
 
 
 def _try_admin_approve_join_request(ctx: MembershipDispatchContext, detail: str) -> OperationResult:
-    if "已提交入群申请" not in str(detail or ""):
+    if not _waiting_for_join_request_approval(detail):
         return OperationResult(False, "未执行", "", "不是入群申请审批场景")
     admin = _tenant_rescue_admin(ctx.session, ctx.action.tenant_id)
     if not admin:
@@ -1630,6 +1635,18 @@ def _try_admin_approve_join_request(ctx: MembershipDispatchContext, detail: str)
         return OperationResult(False, "失败", reprobe.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, reprobe.detail or "入群申请已审批但目标仍不可发言")
     _record_group_send_permission_allowed(ctx.session, ctx.action, ctx.account, ctx.payload)
     return OperationResult(True, "已处理", detail=approved.detail or reprobe.detail or "join_request_approved")
+
+
+def _try_admin_link_join_after_approval_failure(ctx: MembershipDispatchContext, detail: str) -> OperationResult:
+    if not _waiting_for_join_request_approval(detail):
+        return OperationResult(False, "未执行", "", "不是入群申请审批场景")
+    result = _try_admin_lift_restriction_and_join(ctx, detail)
+    ctx.action.result = {**(ctx.action.result or {}), "join_request_link_join_detail": result.detail or result.failure_type}
+    return result
+
+
+def _waiting_for_join_request_approval(detail: str) -> bool:
+    return "已提交入群申请" in str(detail or "")
 
 
 def _tenant_rescue_admin(session: Session, tenant_id: int) -> TgAccount | None:
