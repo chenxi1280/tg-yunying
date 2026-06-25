@@ -162,9 +162,11 @@ def test_invite_group_account_payload_requires_target_account_ref() -> None:
         )
 
 
-def test_dispatch_invite_group_account_uses_configured_rescue_account(monkeypatch) -> None:
+def test_dispatch_invite_group_account_refreshes_stale_configured_rescue_account(monkeypatch) -> None:
     with _session() as session:
         _seed_rescue_target(session)
+        session.add(TgAccount(id=100, tenant_id=1, display_name="新救援账号", phone_masked="100", status=AccountStatus.ACTIVE.value, session_ciphertext="session-100"))
+        session.get(Tenant, 1).group_rescue_admin_account_id = 100
         action = Action(
             id="invite-account",
             tenant_id=1,
@@ -179,7 +181,7 @@ def test_dispatch_invite_group_account_uses_configured_rescue_account(monkeypatc
                 "operation_target_id": 21,
                 "group_peer_id": "-10021",
                 "target_account_id": 11,
-                "target_account_ref": "@normal_user",
+                "target_account_ref": "@old_user",
                 "trigger_account_id": 11,
                 "trigger_task_id": "task-rescue",
                 "trigger_reason": "permission_denied",
@@ -199,7 +201,8 @@ def test_dispatch_invite_group_account_uses_configured_rescue_account(monkeypatc
 
         assert dispatch_action(session, action) is True
 
-        assert calls == [(99, "-10021", "@normal_user")]
+        assert calls == [(100, "-10021", "@normal_user")]
+        assert action.account_id == 100
         assert action.status == "success"
         assert action.result["rescue_status"] == "invite_success"
 

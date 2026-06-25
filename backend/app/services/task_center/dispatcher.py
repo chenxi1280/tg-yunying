@@ -188,6 +188,8 @@ def dispatch_action(session: Session, action: Action) -> bool:
         return True
     if action.action_type == "invite_group_bot" and not _migrate_deprecated_group_rescue_action(session, action):
         return True
+    if action.action_type == "invite_group_account" and not _refresh_stale_invite_group_account_action(session, action):
+        return True
     account = session.get(TgAccount, action.account_id) if action.account_id else None
     if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
@@ -267,6 +269,38 @@ def _migrate_deprecated_group_rescue_action(session: Session, action: Action) ->
     )
     if not result.action:
         _fail(action, FailureType.UNKNOWN.value, result.detail or "旧群聊救援动作迁移失败", validation_stage="rescue")
+        return False
+    return True
+
+
+def _refresh_stale_invite_group_account_action(session: Session, action: Action) -> bool:
+    try:
+        payload = validate_action_payload(action.action_type, action.payload or {})
+    except (ValidationError, ValueError) as exc:
+        _fail(action, FailureType.UNKNOWN.value, payload_error_message(exc), validation_stage="rescue")
+        return False
+    tenant = session.get(Tenant, action.tenant_id)
+    if not tenant or not tenant.group_rescue_admin_account_id:
+        _fail(action, FailureType.UNKNOWN.value, "救援配置缺失：未选择救援管理员账号", validation_stage="rescue")
+        return False
+    if int(action.account_id or 0) == int(tenant.group_rescue_admin_account_id):
+        return True
+    task = session.get(Task, action.task_id) if action.task_id else None
+    group = session.get(TgGroup, payload.group_id) if payload.group_id else None
+    if not task or not group:
+        _fail(action, FailureType.PEER_INVALID.value, "群聊救援动作缺少目标群，无法刷新执行账号", validation_stage="rescue")
+        return False
+    result = refresh_group_rescue_action(
+        session=session,
+        task=task,
+        group=group,
+        action=action,
+        trigger_account_id=payload.trigger_account_id or payload.target_account_id,
+        trigger_reason=payload.trigger_reason or "刷新群聊救援执行账号",
+        operation_target_id=payload.operation_target_id,
+    )
+    if not result.action:
+        _fail(action, FailureType.UNKNOWN.value, result.detail or "群聊救援执行账号刷新失败", validation_stage="rescue")
         return False
     return True
 
