@@ -233,6 +233,50 @@ def test_dispatch_invite_group_account_bypasses_generic_account_capacity(monkeyp
         assert action.result["rescue_status"] == "invite_success"
 
 
+def test_dispatch_invite_group_account_records_rescue_admin_floodwait(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        action = _rescue_invite_action("rescue-invite-floodwait")
+        session.add(action)
+        session.commit()
+        limited = OperationResult(False, "失败", FailureType.FLOOD_WAIT.value, "FloodWait 123 秒")
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "invite_account_to_group", lambda *_args, **_kwargs: limited)
+
+        assert dispatch_action(session, action) is True
+
+        task = session.get(Task, "task-rescue")
+        assert action.status == "pending"
+        assert action.result["error_code"] == FailureType.FLOOD_WAIT.value
+        assert action.result["rescue_status"] == "invite_failed"
+        assert task.stats["group_rescue_admin_rate_limit_detail"] == "FloodWait 123 秒"
+        assert task.stats["group_rescue_admin_rate_limited_until"]
+
+
+def test_dispatch_invite_group_account_defers_existing_rescue_admin_floodwait(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        action = _rescue_invite_action("rescue-invite-existing-floodwait")
+        task = session.get(Task, "task-rescue")
+        retry_at = dispatcher._now() + timedelta(minutes=10)
+        task.stats = {
+            "group_rescue_admin_rate_limited_until": retry_at.isoformat(),
+            "group_rescue_admin_rate_limit_detail": "FloodWait 600 秒",
+        }
+        session.add(action)
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "invite_account_to_group", lambda *_args, **_kwargs: pytest.fail("must not call Telegram during rescue admin FloodWait"))
+
+        assert dispatch_action(session, action) is True
+
+        assert action.status == "pending"
+        assert action.scheduled_at == retry_at
+        assert action.result["error_code"] == FailureType.FLOOD_WAIT.value
+        assert action.result["validation_stage"] == "group_rescue_admin_rate_limit"
+        assert action.result["rescue_status"] == "invite_rate_limited"
+
+
 def test_dispatch_invite_group_account_refreshes_stale_configured_rescue_account(monkeypatch) -> None:
     with _session() as session:
         _seed_rescue_target(session)

@@ -839,6 +839,8 @@ def _dispatch_delete_message(session: Session, action: Action, account: TgAccoun
 
 
 def _dispatch_invite_group_account(session: Session, action: Action, account: TgAccount, credentials, payload: InviteGroupAccountPayload) -> bool:
+    if _defer_existing_group_rescue_admin_rate_limit(session, action):
+        return True
     attempt = _begin_execution_attempt(session, action, account)
     _mark_executing(action)
     session.commit()
@@ -935,8 +937,58 @@ def _mark_rescued_group_account_joined(session: Session, action: Action, payload
 
 def _apply_rescue_invite_result(action: Action, account: TgAccount, result: OperationResult, *, attempt: ExecutionAttempt | None) -> None:
     _apply_operation_result(action, account, result.ok, result.failure_type, result.detail, attempt=attempt)
+    _record_group_rescue_admin_rate_limit(action, result)
     status = "invite_success" if result.ok else "invite_failed"
     action.result = {**(action.result or {}), "rescue_status": status, "rescue_detail": result.detail or result.failure_type}
+
+
+def _record_group_rescue_admin_rate_limit(action: Action, result: OperationResult) -> None:
+    detail = result.detail or result.failure_type or ""
+    if result.failure_type != FailureType.FLOOD_WAIT.value and "floodwait" not in detail.lower():
+        return
+    retry_after = _retry_after_seconds(detail)
+    if retry_after <= 0:
+        return
+    from sqlalchemy.orm import object_session
+
+    session = object_session(action)
+    task = session.get(Task, action.task_id) if session and action.task_id else None
+    if not task:
+        return
+    retry_at = _now() + timedelta(seconds=retry_after)
+    stats = dict(task.stats or {})
+    stats["group_rescue_admin_rate_limited_until"] = retry_at.isoformat()
+    stats["group_rescue_admin_rate_limit_detail"] = detail
+    task.stats = stats
+
+
+def _defer_existing_group_rescue_admin_rate_limit(session: Session, action: Action) -> bool:
+    task = session.get(Task, action.task_id) if action.task_id else None
+    retry_at = _task_group_rescue_admin_rate_limited_until(task)
+    if not retry_at or retry_at <= _now():
+        return False
+    stats = task.stats or {}
+    detail = str(stats.get("group_rescue_admin_rate_limit_detail") or "Telegram 救援管理员触发 FloodWait，已延后重试")
+    _defer(action, retry_at, FailureType.FLOOD_WAIT.value, detail)
+    action.result = {
+        **(action.result or {}),
+        "validation_stage": "group_rescue_admin_rate_limit",
+        "rescue_status": "invite_rate_limited",
+        "rescue_detail": detail,
+        "retry_after_seconds": max(1, int((retry_at - _now()).total_seconds())),
+        "next_retry_at": retry_at.isoformat(),
+    }
+    return True
+
+
+def _task_group_rescue_admin_rate_limited_until(task: Task | None) -> datetime | None:
+    raw = str((task.stats or {}).get("group_rescue_admin_rate_limited_until") if task else "")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
 
 
 def _dispatch_channel_membership(session: Session, action: Action, account: TgAccount, credentials, payload: EnsureChannelMembershipPayload) -> bool:
