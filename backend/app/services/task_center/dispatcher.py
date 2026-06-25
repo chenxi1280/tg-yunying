@@ -571,12 +571,14 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
         }
         action.account_id = replacement.id
         return True
+    detail = decision.reason or "账号全局限额或冷却中，已延后执行"
     _defer(
         action,
         decision.defer_until or (_now() + timedelta(seconds=60)),
         "global_account_policy",
-        decision.reason or "账号全局限额或冷却中，已延后执行",
+        detail,
     )
+    _maybe_trigger_deferred_membership_rescue(session, action, account, detail)
     return False
 
 
@@ -1805,6 +1807,19 @@ def _maybe_trigger_membership_permission_rescue(ctx: MembershipDispatchContext, 
 def _maybe_trigger_membership_rate_limit_rescue(ctx: MembershipDispatchContext, detail: str) -> None:
     if ctx.payload.target_type != "group":
         return
+    _trigger_membership_group_rescue(ctx, detail)
+
+
+def _maybe_trigger_deferred_membership_rescue(session: Session, action: Action, account: TgAccount, detail: str) -> None:
+    if not _is_membership_action(action):
+        return
+    try:
+        payload = validate_action_payload(action.action_type, action.payload or {})
+    except ValidationError:
+        return
+    if not isinstance(payload, EnsureChannelMembershipPayload) or payload.target_type != "group":
+        return
+    ctx = MembershipDispatchContext(session, action, account, object(), payload, None)
     _trigger_membership_group_rescue(ctx, detail)
 
 
@@ -3093,12 +3108,14 @@ def _account_after_global_policy(session: Session, action: Action, account: TgAc
         }
         action.account_id = replacement.id
         return replacement
+    detail = decision.reason or "账号全局限额或冷却中，已延后执行"
     _defer(
         action,
         decision.defer_until or (_now() + timedelta(seconds=60)),
         "global_account_policy",
-        decision.reason or "账号全局限额或冷却中，已延后执行",
+        detail,
     )
+    _maybe_trigger_deferred_membership_rescue(session, action, account, detail)
     return None
 
 

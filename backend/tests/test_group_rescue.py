@@ -13,6 +13,7 @@ from app.integrations.telegram import ChannelMembershipResult, DeveloperAppCrede
 from app.integrations.telegram.gateway import TelethonTelegramGateway
 from app.models import AccountStatus, Action, FailureType, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, TgGroupAccount
 from app.schemas import TenantGroupRescueSettingsUpdate
+from app.services.account_capacity import AccountCapacityDecision
 from app.services.task_center import dispatcher
 from app.services.task_center.account_pool import select_task_accounts
 from app.services.task_center.dispatcher import dispatch_action
@@ -589,6 +590,33 @@ def test_dispatch_membership_floodwait_creates_rescue_action(monkeypatch) -> Non
         assert rescue_actions[0].payload["target_account_id"] == 11
         assert rescue_actions[0].payload["target_account_ref"] == "@normal_user"
         assert rescue_actions[0].payload["trigger_reason"] == "FloodWait 40802 秒"
+
+
+def test_dispatch_membership_global_cooldown_creates_rescue_action(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        task = session.get(Task, "task-rescue")
+        action = _group_ai_membership_action("membership-cooldown-rescue", task)
+        session.add(action)
+        session.commit()
+
+        monkeypatch.setattr(
+            dispatcher,
+            "account_capacity_decision",
+            lambda *_args, **_kwargs: AccountCapacityDecision(False, NOW + timedelta(minutes=5), "account_cooldown", "账号全局冷却中"),
+        )
+
+        assert dispatch_action(session, action) is True
+
+        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_account")).all()
+        assert action.status == "pending"
+        assert action.result["error_code"] == "global_account_policy"
+        assert action.result["group_rescue_status"] == "pending"
+        assert len(rescue_actions) == 1
+        assert rescue_actions[0].account_id == 99
+        assert rescue_actions[0].payload["target_account_id"] == 11
+        assert rescue_actions[0].payload["target_account_ref"] == "@normal_user"
+        assert rescue_actions[0].payload["trigger_reason"] == "账号全局冷却中"
 
 
 def test_dispatch_membership_private_group_lifts_restriction_and_joins(monkeypatch) -> None:
