@@ -422,6 +422,43 @@ def test_dispatch_membership_waiting_approval_uses_rescue_admin(monkeypatch) -> 
         assert action.result["membership_status"] == "joined"
 
 
+def test_dispatch_membership_waiting_approval_flood_wait_defers_retry(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        task = session.get(Task, "task-rescue")
+        action = _group_ai_membership_action("membership-waiting-approval-flood", task)
+        session.add(action)
+        session.commit()
+
+        waiting = ChannelMembershipResult(
+            False,
+            "失败",
+            FailureType.GROUP_PERMISSION_DENIED.value,
+            "已提交入群申请，等待审批后才能发言",
+            "failed",
+        )
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *_args, **_kwargs: waiting)
+        monkeypatch.setattr(dispatcher, "_recover_group_send_permission_with_linked_channel", lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, waiting.detail))
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "approve_group_join_request",
+            lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.FLOOD_WAIT.value, "FloodWait 120 秒"),
+        )
+        monkeypatch.setattr(dispatcher.gateway, "lift_group_account_restrictions", lambda *_args, **_kwargs: pytest.fail("FloodWait must stop fallback rescue calls"))
+
+        before = dispatcher._now()
+        assert dispatch_action(session, action) is True
+
+        assert action.status == "pending"
+        assert action.executed_at is None
+        assert action.scheduled_at >= before + timedelta(seconds=120)
+        assert action.result["error_code"] == FailureType.FLOOD_WAIT.value
+        assert action.result["membership_status"] == "rate_limited"
+        assert action.result["membership_rate_limit_source"] == "join_request_approval"
+        assert action.result["retry_after_seconds"] == 120
+
+
 def test_dispatch_membership_waiting_approval_falls_back_to_invite_link(monkeypatch) -> None:
     with _session() as session:
         _seed_rescue_target(session)

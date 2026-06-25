@@ -1598,10 +1598,14 @@ def _handle_group_send_permission_denied(
         _apply_operation_result(ctx.action, ctx.account, True, "", approved.detail or "join_request_approved", attempt=ctx.attempt)
         ctx.action.result = {**(ctx.action.result or {}), "membership_status": membership_status, "join_request_approved": True}
         return True
+    if _defer_membership_admin_rate_limit(ctx, approved, "join_request_approval"):
+        return True
     link_joined = _try_admin_link_join_after_approval_failure(ctx, detail)
     if link_joined.ok:
         _apply_operation_result(ctx.action, ctx.account, True, "", link_joined.detail or "join_request_link_joined", attempt=ctx.attempt)
         ctx.action.result = {**(ctx.action.result or {}), "membership_status": membership_status, "join_request_link_joined": True}
+        return True
+    if _defer_membership_admin_rate_limit(ctx, link_joined, "join_request_link_join"):
         return True
     verification = _record_group_send_permission_denied(ctx.session, ctx.action, ctx.account, ctx.payload, detail)
     if _auto_verify_and_apply_group_send(ctx, verification, membership_status=membership_status):
@@ -1647,6 +1651,21 @@ def _try_admin_link_join_after_approval_failure(ctx: MembershipDispatchContext, 
 
 def _waiting_for_join_request_approval(detail: str) -> bool:
     return "已提交入群申请" in str(detail or "")
+
+
+def _defer_membership_admin_rate_limit(ctx: MembershipDispatchContext, result: OperationResult, source: str) -> bool:
+    detail = result.detail or result.failure_type or ""
+    if result.failure_type != FailureType.FLOOD_WAIT.value and "floodwait" not in detail.lower():
+        return False
+    ctx.action.result = {**(ctx.action.result or {}), "membership_rate_limit_source": source}
+    _apply_operation_result(ctx.action, ctx.account, False, FailureType.FLOOD_WAIT.value, detail, attempt=ctx.attempt)
+    ctx.action.result = {
+        **(ctx.action.result or {}),
+        "membership_status": "rate_limited",
+        "membership_rate_limit_source": source,
+        "validation_stage": "membership_admin_rate_limit",
+    }
+    return True
 
 
 def _tenant_rescue_admin(session: Session, tenant_id: int) -> TgAccount | None:
