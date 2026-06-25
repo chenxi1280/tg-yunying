@@ -46,6 +46,34 @@ def _seed_rescue_target(session: Session, *, configured: bool = True) -> None:
     session.commit()
 
 
+def _patch_group_membership_denied(monkeypatch) -> None:
+    denied = OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "群无权限或账号不可发言")
+    monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", lambda *_args, **_kwargs: denied)
+    monkeypatch.setattr(dispatcher, "_recover_group_send_permission_with_linked_channel", lambda *_args, **_kwargs: denied)
+    monkeypatch.setattr(dispatcher, "_auto_verify_and_apply_group_send", lambda *_args, **_kwargs: False)
+
+
+def _group_ai_membership_action(action_id: str, task: Task) -> Action:
+    return Action(
+        id=action_id,
+        tenant_id=1,
+        task_id=task.id,
+        task_type=task.type,
+        action_type="ensure_target_membership",
+        account_id=11,
+        scheduled_at=NOW,
+        status="pending",
+        payload={
+            "channel_id": "-10021",
+            "channel_target_id": 21,
+            "target_type": "group",
+            "target_display": "目标群",
+            "require_send": True,
+        },
+    )
+
+
 def test_group_rescue_settings_rejects_unavailable_admin_account() -> None:
     with _session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -283,38 +311,11 @@ def test_group_ai_membership_permission_denied_creates_rescue_action(monkeypatch
     with _session() as session:
         _seed_rescue_target(session)
         task = Task(id="task-ai-membership-rescue", tenant_id=1, name="AI 群聊", type="group_ai_chat", status="running")
-        action = Action(
-            id="ai-membership-denied",
-            tenant_id=1,
-            task_id=task.id,
-            task_type=task.type,
-            action_type="ensure_target_membership",
-            account_id=11,
-            scheduled_at=NOW,
-            status="pending",
-            payload={
-                "channel_id": "-10021",
-                "channel_target_id": 21,
-                "target_type": "group",
-                "target_display": "目标群",
-                "require_send": True,
-            },
-        )
+        action = _group_ai_membership_action("ai-membership-denied", task)
         session.add(task)
         session.add(action)
         session.commit()
-        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
-        monkeypatch.setattr(
-            dispatcher.gateway,
-            "ensure_channel_membership",
-            lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "群无权限或账号不可发言"),
-        )
-        monkeypatch.setattr(
-            dispatcher,
-            "_recover_group_send_permission_with_linked_channel",
-            lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "群无权限或账号不可发言"),
-        )
-        monkeypatch.setattr(dispatcher, "_auto_verify_and_apply_group_send", lambda *_args, **_kwargs: False)
+        _patch_group_membership_denied(monkeypatch)
 
         assert dispatch_action(session, action) is True
 
@@ -326,6 +327,50 @@ def test_group_ai_membership_permission_denied_creates_rescue_action(monkeypatch
         assert rescue_actions[0].payload["target_account_id"] == 11
         assert rescue_actions[0].payload["target_account_ref"] == "@normal_user"
         assert rescue_actions[0].payload["trigger_reason"] == "群无权限或账号不可发言"
+
+
+def test_group_ai_membership_permission_denied_refreshes_stale_failed_rescue_action(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        session.add(TgAccount(id=100, tenant_id=1, display_name="新救援账号", phone_masked="100", status=AccountStatus.ACTIVE.value, session_ciphertext="session-100"))
+        tenant = session.get(Tenant, 1)
+        tenant.group_rescue_admin_account_id = 100
+        task = Task(id="task-ai-refresh-rescue", tenant_id=1, name="AI 群聊", type="group_ai_chat", status="running")
+        action = _group_ai_membership_action("ai-membership-denied-refresh", task)
+        old_rescue = Action(
+            id="old-ai-rescue",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="invite_group_account",
+            account_id=99,
+            scheduled_at=NOW - timedelta(minutes=10),
+            status="failed",
+            payload={
+                "group_id": 7,
+                "operation_target_id": 21,
+                "group_peer_id": "-10021",
+                "target_account_id": 11,
+                "target_account_ref": "@old_user",
+                "trigger_account_id": 11,
+            },
+            result={"rescue_status": "invite_failed", "error_message": "旧救援账号无权限"},
+        )
+        session.add_all([task, old_rescue, action])
+        session.commit()
+        _patch_group_membership_denied(monkeypatch)
+
+        assert dispatch_action(session, action) is True
+
+        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_account")).all()
+        session.refresh(old_rescue)
+        assert len(rescue_actions) == 1
+        assert old_rescue.status == "pending"
+        assert old_rescue.account_id == 100
+        assert old_rescue.payload["target_account_ref"] == "@normal_user"
+        assert old_rescue.result["rescue_status"] == "pending"
+        assert action.result["group_rescue_status"] == "pending"
+        assert action.result["group_rescue_action_id"] == "old-ai-rescue"
 
 
 def test_membership_sync_counts_same_permission_action_once() -> None:

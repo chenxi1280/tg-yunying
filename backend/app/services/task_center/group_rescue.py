@@ -16,6 +16,7 @@ RESCUE_STATUS_UNCONFIGURED = "unconfigured"
 RESCUE_STATUS_PENDING = "pending"
 RESCUE_STATUS_INVITE_SUCCESS = "invite_success"
 RESCUE_STATUS_INVITE_FAILED = "invite_failed"
+REFRESHABLE_RESCUE_ACTION_STATUSES = {"failed", "skipped"}
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,16 @@ def trigger_group_rescue(
         return GroupRescueResult(RESCUE_STATUS_UNCONFIGURED, config_error)
     existing = _existing_rescue_action(session, task, group, trigger_account_id)
     if existing:
+        if _rescue_action_needs_refresh(session, tenant, existing, trigger_account_id):
+            return refresh_group_rescue_action(
+                session,
+                task,
+                group,
+                existing,
+                trigger_account_id=trigger_account_id,
+                trigger_reason=trigger_reason,
+                operation_target_id=operation_target_id,
+            )
         return GroupRescueResult(_action_rescue_status(existing), _action_rescue_detail(existing), existing)
     try:
         action = _create_rescue_action(session, tenant, task, group, trigger_account_id, trigger_reason, operation_target_id)
@@ -166,17 +177,30 @@ def _rescue_payload(
 
 def _existing_rescue_action(session: Session, task: Task, group: TgGroup, trigger_account_id: int) -> Action | None:
     rows = session.scalars(
-        select(Action).where(
+        select(Action)
+        .where(
             Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             Action.action_type.in_(["invite_group_account", "invite_group_bot"]),
         )
+        .order_by(Action.created_at.desc())
     )
     for row in rows:
         payload = row.payload if isinstance(row.payload, dict) else {}
         if _payload_int(payload, "group_id") == group.id and _payload_int(payload, "trigger_account_id") == trigger_account_id:
             return row
     return None
+
+
+def _rescue_action_needs_refresh(session: Session, tenant: Tenant, action: Action, trigger_account_id: int) -> bool:
+    if action.status not in REFRESHABLE_RESCUE_ACTION_STATUSES:
+        return False
+    if action.action_type != "invite_group_account":
+        return True
+    if int(action.account_id or 0) != int(tenant.group_rescue_admin_account_id or 0):
+        return True
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return str(payload.get("target_account_ref") or "") != _target_account_invite_ref(session, tenant, trigger_account_id)
 
 
 def _rescue_config_error(session: Session, tenant: Tenant | None) -> str:
