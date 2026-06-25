@@ -784,11 +784,58 @@ jobs:
                       .order_by(Action.executed_at.desc(), Action.created_at.desc())
                       .limit(200)
                   ))
+                  admission_tasks = [
+                      task
+                      for task in compact_session.scalars(
+                          select(Task)
+                          .where(Task.tenant_id == 1, Task.type == 'target_admission_retry')
+                          .order_by(Task.created_at.desc())
+                          .limit(10)
+                      )
+                      if int((task.type_config or {}).get('target_operation_target_id') or 0) == 485
+                  ][:3]
+                  latest_admission = admission_tasks[0] if admission_tasks else None
+                  admission_actions = list(compact_session.scalars(
+                      select(Action)
+                      .where(Action.task_id == latest_admission.id)
+                      .order_by(Action.executed_at.desc().nullslast(), Action.scheduled_at.desc(), Action.created_at.desc())
+                      .limit(400)
+                  )) if latest_admission else []
               rescue_counts = [
                   *rescue_count_rows(scheduled_actions, 'scheduled_2h'),
                   *rescue_count_rows(executed_actions, 'executed_20m'),
               ]
               print('TIANJIN_RESCUE_COMPACT_COUNTS=' + json.dumps(rescue_counts, ensure_ascii=False, sort_keys=True), flush=True)
+              admission_counts = Counter((action.action_type, action.status) for action in admission_actions)
+              admission_error_counts = Counter(
+                  (
+                      action.status,
+                      (action.result or {}).get('error_code'),
+                      str((action.result or {}).get('error_message') or (action.result or {}).get('detail') or '')[:180],
+                  )
+                  for action in admission_actions
+                  if action.status in {'failed', 'skipped', 'unknown_after_send'}
+              )
+              admission_compact = {
+                  'tasks': [
+                      {
+                          'id': task.id,
+                          'status': task.status,
+                          'created_at': iso(task.created_at),
+                          'queued_account_count': (task.stats or {}).get('queued_account_count'),
+                      }
+                      for task in admission_tasks
+                  ],
+                  'latest_action_counts': [
+                      {'action_type': action_type, 'status': status, 'count': int(count)}
+                      for (action_type, status), count in admission_counts.most_common()
+                  ],
+                  'latest_error_counts': [
+                      {'status': status, 'error_code': error_code, 'detail': detail, 'count': int(count)}
+                      for (status, error_code, detail), count in admission_error_counts.most_common()
+                  ],
+              }
+              print('TIANJIN_ADMISSION_RETRY_COMPACT=' + json.dumps(admission_compact, ensure_ascii=False, sort_keys=True), flush=True)
           print('AI_HOURLY_TASK_VOLUME_SUMMARY=' + json.dumps(summary, ensure_ascii=False, sort_keys=True), flush=True)
           for row in rows:
               print('AI_HOURLY_TASK_VOLUME_TASK=' + json.dumps(row, ensure_ascii=False, sort_keys=True), flush=True)
