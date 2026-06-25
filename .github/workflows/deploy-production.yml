@@ -346,7 +346,7 @@ jobs:
 
           from app.config import get_settings
           from app.database import SessionLocal
-          from app.models import Action, Task, VerificationTask, WorkerHeartbeat
+          from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask, WorkerHeartbeat
           from app.services.task_center.service import _hard_hourly_due_candidate, _hard_hourly_wake_query
           from app.services.task_center.stats import planner_backlog_snapshot
 
@@ -361,6 +361,37 @@ jobs:
           inspection_since = now_local - timedelta(hours=2)
           def iso(value):
               return value.isoformat() if value else None
+
+          def account_snapshot(account):
+              if not account:
+                  return None
+              return {
+                  'id': account.id,
+                  'display_name': account.display_name,
+                  'username': account.username,
+                  'phone_masked': account.phone_masked,
+                  'status': account.status,
+                  'deleted_at': iso(account.deleted_at),
+                  'has_session': bool(account.session_ciphertext),
+              }
+
+          def group_account_snapshot(session, group_id, account_id):
+              if not group_id or not account_id:
+                  return None
+              link = session.scalar(
+                  select(TgGroupAccount).where(
+                      TgGroupAccount.group_id == group_id,
+                      TgGroupAccount.account_id == account_id,
+                  )
+              )
+              if not link:
+                  return None
+              return {
+                  'permission_label': link.permission_label,
+                  'can_send': bool(link.can_send),
+                  'is_listener': bool(link.is_listener),
+                  'last_sent_at': iso(link.last_sent_at),
+              }
 
           def due_entry(rank, sort_key, task):
               next_check = sort_key[0]
@@ -665,6 +696,61 @@ jobs:
           tianjin_id = TASKS['天津']
           with SessionLocal() as session:
               print('TIANJIN_RESCUE_ACTIONS_START', flush=True)
+              task = session.get(Task, tianjin_id)
+              tenant = session.get(Tenant, task.tenant_id) if task else None
+              admin = session.get(TgAccount, tenant.group_rescue_admin_account_id) if tenant and tenant.group_rescue_admin_account_id else None
+              context = {
+                  'task': {
+                      'id': task.id,
+                      'name': task.name,
+                      'tenant_id': task.tenant_id,
+                      'status': task.status,
+                      'deleted_at': iso(task.deleted_at),
+                  } if task else None,
+                  'tenant': {
+                      'id': tenant.id,
+                      'name': tenant.name,
+                      'group_rescue_enabled': bool(tenant.group_rescue_enabled),
+                      'group_rescue_admin_account_id': tenant.group_rescue_admin_account_id,
+                  } if tenant else None,
+                  'configured_rescue_admin': account_snapshot(admin),
+              }
+              print('TIANJIN_RESCUE_CONTEXT=' + json.dumps(context, ensure_ascii=False, sort_keys=True), flush=True)
+              if task:
+                  target_rows = session.scalars(
+                      select(OperationTarget)
+                      .where(OperationTarget.tenant_id == task.tenant_id)
+                      .where(
+                          (OperationTarget.tg_peer_id.in_(('-1003583171851', 'zzjinli')))
+                          | (OperationTarget.username == 'zzjinli')
+                          | (OperationTarget.title.ilike('%天津%'))
+                      )
+                      .order_by(OperationTarget.id.asc())
+                  ).all()
+                  for target in target_rows:
+                      print('TIANJIN_OPERATION_TARGET=' + json.dumps({
+                          'id': target.id,
+                          'title': target.title,
+                          'tg_peer_id': target.tg_peer_id,
+                          'username': target.username,
+                          'auth_status': target.auth_status,
+                          'can_send': bool(target.can_send),
+                          'last_sync_at': iso(target.last_sync_at),
+                      }, ensure_ascii=False, sort_keys=True), flush=True)
+                  group_rows = session.scalars(
+                      select(TgGroup)
+                      .where(TgGroup.tenant_id == task.tenant_id)
+                      .where((TgGroup.tg_peer_id == '-1003583171851') | (TgGroup.title.ilike('%天津%')))
+                      .order_by(TgGroup.id.asc())
+                  ).all()
+                  for group in group_rows:
+                      print('TIANJIN_TG_GROUP=' + json.dumps({
+                          'id': group.id,
+                          'title': group.title,
+                          'tg_peer_id': group.tg_peer_id,
+                          'auth_status': group.auth_status,
+                          'can_send': bool(group.can_send),
+                      }, ensure_ascii=False, sort_keys=True), flush=True)
               for action in session.scalars(
                   select(Action)
                   .where(Action.task_id == tianjin_id, Action.action_type == 'invite_group_account')
@@ -674,13 +760,41 @@ jobs:
               ):
                   payload = action.payload or {}
                   result = action.result or {}
+                  executor = session.get(TgAccount, action.account_id) if action.account_id else None
+                  target_account_id = payload.get('target_account_id')
+                  target_account = session.get(TgAccount, target_account_id) if target_account_id else None
+                  group_id = payload.get('group_id')
+                  group = session.get(TgGroup, group_id) if group_id else None
+                  operation_target_id = payload.get('operation_target_id')
+                  operation_target = session.get(OperationTarget, operation_target_id) if operation_target_id else None
                   item = {
                       'id': action.id,
                       'status': action.status,
                       'account_id': action.account_id,
+                      'executor_account': account_snapshot(executor),
+                      'executor_group_link': group_account_snapshot(session, group_id, action.account_id),
                       'target_account_id': payload.get('target_account_id'),
+                      'target_account': account_snapshot(target_account),
                       'target_account_ref': str(payload.get('target_account_ref') or '')[:120],
                       'trigger_account_id': payload.get('trigger_account_id'),
+                      'group_id': group_id,
+                      'group': {
+                          'id': group.id,
+                          'title': group.title,
+                          'tg_peer_id': group.tg_peer_id,
+                          'auth_status': group.auth_status,
+                          'can_send': bool(group.can_send),
+                      } if group else None,
+                      'operation_target_id': operation_target_id,
+                      'operation_target': {
+                          'id': operation_target.id,
+                          'title': operation_target.title,
+                          'tg_peer_id': operation_target.tg_peer_id,
+                          'username': operation_target.username,
+                          'auth_status': operation_target.auth_status,
+                          'can_send': bool(operation_target.can_send),
+                      } if operation_target else None,
+                      'group_peer_id': payload.get('group_peer_id'),
                       'scheduled_at': iso(action.scheduled_at),
                       'executed_at': iso(action.executed_at),
                       'rescue_status': result.get('rescue_status'),
