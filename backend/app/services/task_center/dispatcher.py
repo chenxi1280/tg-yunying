@@ -1326,7 +1326,7 @@ def _recover_group_send_permission_with_linked_channel(
         return probe_result
     if not _auto_follow_required_channel_enabled(session, action):
         return probe_result
-    required_channels = _required_channel_refs(detail)
+    required_channels = required_channel_references(detail)
     if required_channels:
         return _follow_required_channels_and_reprobe(
             session,
@@ -2126,7 +2126,7 @@ def _required_channels_from_verification_context(ctx: MembershipDispatchContext,
         ctx.credentials,
         reader_candidates=readers,
     )
-    return _required_channel_refs(_verification_context_text(read_result.context))
+    return required_channel_references(_verification_context_text(read_result.context))
 
 
 def _try_context_verification_fallback(ctx: MembershipDispatchContext, verification_task, image_result):
@@ -2134,7 +2134,7 @@ def _try_context_verification_fallback(ctx: MembershipDispatchContext, verificat
     if not context_text:
         return None
     payload = _verification_probe_payload(ctx.payload, verification_task)
-    required_channels = _required_channel_refs(context_text)
+    required_channels = required_channel_references(context_text)
     if required_channels and _auto_follow_required_channel_enabled(ctx.session, ctx.action):
         verification_task.suggested_action = "关注频道"
         followed = _follow_required_channels_and_reprobe(
@@ -2200,10 +2200,6 @@ def _try_auto_follow_from_button_links(ctx: MembershipDispatchContext, verificat
         retry_target_membership=ctx.action.action_type in MEMBERSHIP_ACTION_TYPES,
     )
     return _apply_context_fallback_result(ctx, verification_task, payload, followed)
-
-
-def _required_channel_refs(detail: str) -> list[str]:
-    return _explicit_telegram_link_refs(detail) or required_channel_references(detail)
 
 
 def _explicit_telegram_link_refs(detail: str) -> list[str]:
