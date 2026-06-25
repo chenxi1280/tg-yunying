@@ -37,7 +37,7 @@ from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavail
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
 from .executors.common import quantity_jitter_bounds
 from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
-from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
+from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
 from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
@@ -965,10 +965,18 @@ def _record_group_rescue_admin_rate_limit(action: Action, result: OperationResul
 def _defer_existing_group_rescue_admin_rate_limit(session: Session, action: Action) -> bool:
     task = session.get(Task, action.task_id) if action.task_id else None
     retry_at = _task_group_rescue_admin_rate_limited_until(task)
+    if (not retry_at or retry_at <= _now()) and task:
+        inferred = infer_rescue_admin_rate_limit(session, task, action.account_id)
+        if inferred:
+            retry_at, detail = inferred
+        else:
+            detail = ""
+    else:
+        detail = ""
     if not retry_at or retry_at <= _now():
         return False
     stats = task.stats or {}
-    detail = str(stats.get("group_rescue_admin_rate_limit_detail") or "Telegram 救援管理员触发 FloodWait，已延后重试")
+    detail = detail or str(stats.get("group_rescue_admin_rate_limit_detail") or "Telegram 救援管理员触发 FloodWait，已延后重试")
     _defer(action, retry_at, FailureType.FLOOD_WAIT.value, detail)
     action.result = {
         **(action.result or {}),

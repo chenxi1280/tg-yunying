@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, Action, Task, Tenant, TgAccount, TgGroup
+from app.models import AccountStatus, Action, FailureType, Task, Tenant, TgAccount, TgGroup
 from app.services._common import _now
 from app.services.task_center.payloads import InviteGroupAccountPayload
 
@@ -90,6 +90,29 @@ def rescue_action_snapshot(action: Action | None) -> tuple[str, str]:
     if not action:
         return "", ""
     return _action_rescue_status(action), _action_rescue_detail(action)
+
+
+def infer_rescue_admin_rate_limit(session: Session, task: Task, account_id: int | None) -> tuple[datetime, str] | None:
+    if not account_id:
+        return None
+    rows = session.scalars(
+        select(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.action_type == "invite_group_account",
+            Action.account_id == account_id,
+            Action.status == "pending",
+            Action.scheduled_at > _now(),
+        )
+        .order_by(Action.scheduled_at.asc())
+        .limit(25)
+    )
+    for action in rows:
+        if _action_has_floodwait_result(action):
+            detail = _action_result_detail(action)
+            _record_rescue_admin_rate_limit(task, action.scheduled_at, detail)
+            return action.scheduled_at, detail
+    return None
 
 
 def refresh_group_rescue_action(
@@ -209,6 +232,24 @@ def _is_legacy_non_mutual_contact_failure(action: Action) -> bool:
     result = action.result if isinstance(action.result, dict) else {}
     detail = " ".join(str(result.get(key) or "") for key in ("rescue_detail", "error_message", "detail"))
     return action.status == "failed" and "not a mutual contact" in detail.lower()
+
+
+def _action_has_floodwait_result(action: Action) -> bool:
+    result = action.result if isinstance(action.result, dict) else {}
+    error_code = str(result.get("error_code") or "")
+    return error_code == FailureType.FLOOD_WAIT.value or "floodwait" in _action_result_detail(action).lower()
+
+
+def _action_result_detail(action: Action) -> str:
+    result = action.result if isinstance(action.result, dict) else {}
+    return str(result.get("error_message") or result.get("rescue_detail") or result.get("error_code") or "")
+
+
+def _record_rescue_admin_rate_limit(task: Task, retry_at: datetime, detail: str) -> None:
+    stats = dict(task.stats or {})
+    stats["group_rescue_admin_rate_limited_until"] = retry_at.isoformat()
+    stats["group_rescue_admin_rate_limit_detail"] = detail
+    task.stats = stats
 
 
 def _rescue_config_error(session: Session, tenant: Tenant | None) -> str:

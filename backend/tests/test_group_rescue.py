@@ -277,6 +277,30 @@ def test_dispatch_invite_group_account_defers_existing_rescue_admin_floodwait(mo
         assert action.result["rescue_status"] == "invite_rate_limited"
 
 
+def test_dispatch_invite_group_account_infers_rescue_admin_floodwait_from_pending_actions(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        action = _rescue_invite_action("rescue-invite-inferred-floodwait")
+        limited = _rescue_invite_action("rescue-invite-future-floodwait")
+        retry_at = dispatcher._now() + timedelta(minutes=10)
+        limited.scheduled_at = retry_at
+        limited.result = {"error_code": FailureType.FLOOD_WAIT.value, "error_message": "FloodWait 600 秒"}
+        session.add_all([action, limited])
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "invite_account_to_group", lambda *_args, **_kwargs: pytest.fail("must reuse pending FloodWait evidence"))
+
+        assert dispatch_action(session, action) is True
+
+        task = session.get(Task, "task-rescue")
+        assert action.status == "pending"
+        assert action.scheduled_at == retry_at
+        assert action.result["error_code"] == FailureType.FLOOD_WAIT.value
+        assert action.result["validation_stage"] == "group_rescue_admin_rate_limit"
+        assert action.result["rescue_status"] == "invite_rate_limited"
+        assert task.stats["group_rescue_admin_rate_limited_until"] == retry_at.isoformat()
+
+
 def test_dispatch_invite_group_account_refreshes_stale_configured_rescue_account(monkeypatch) -> None:
     with _session() as session:
         _seed_rescue_target(session)
