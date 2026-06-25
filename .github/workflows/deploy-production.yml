@@ -23,6 +23,11 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      run_tianjin_blocked_account_diagnostics:
+        description: Run production diagnostics for blocked Tianjin account 84
+        required: false
+        default: false
+        type: boolean
       force_cancel_in_progress:
         description: Explicitly cancel a stuck in-progress Deploy Production run before this manual run
         required: false
@@ -392,6 +397,15 @@ jobs:
           ssh silicon-valley-production-server 'timeout 90 docker exec -i tgyunying-backend python -' \
             < .github/scripts/tianjin_sync_remote_admin_links.py
           echo "TIANJIN_REMOTE_ADMIN_LINK_SYNC_END"
+
+      - name: Diagnose Tianjin blocked account
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tianjin_blocked_account_diagnostics }}
+        run: |
+          set -euo pipefail
+          echo "TIANJIN_BLOCKED_ACCOUNT_DIAGNOSTICS_START"
+          ssh silicon-valley-production-server 'timeout 90 docker exec -i tgyunying-backend python -' \
+            < .github/scripts/tianjin_blocked_account_diagnostics.py
+          echo "TIANJIN_BLOCKED_ACCOUNT_DIAGNOSTICS_END"
 
       - name: Inspect Tianjin admission state
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tianjin_diagnostics }}
