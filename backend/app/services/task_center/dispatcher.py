@@ -1326,7 +1326,7 @@ def _recover_group_send_permission_with_linked_channel(
         return probe_result
     if not _auto_follow_required_channel_enabled(session, action):
         return probe_result
-    required_channels = required_channel_references(detail)
+    required_channels = _required_channel_refs(detail)
     if required_channels:
         return _follow_required_channels_and_reprobe(
             session,
@@ -1991,6 +1991,10 @@ def _try_auto_group_send_verification(ctx: MembershipDispatchContext, verificati
         return _try_auto_text_verification(ctx, verification_task)
     if verification_task.suggested_action == "关注频道":
         return _try_auto_follow_verification(ctx, verification_task)
+    if verification_task.suggested_action == "点击按钮":
+        followed = _try_auto_follow_from_button_links(ctx, verification_task)
+        if followed is not None:
+            return followed
     result = gateway.resolve_verification_task(
         ctx.account.id,
         verification_task.suggested_action,
@@ -2122,7 +2126,7 @@ def _required_channels_from_verification_context(ctx: MembershipDispatchContext,
         ctx.credentials,
         reader_candidates=readers,
     )
-    return required_channel_references(_verification_context_text(read_result.context))
+    return _required_channel_refs(_verification_context_text(read_result.context))
 
 
 def _try_context_verification_fallback(ctx: MembershipDispatchContext, verification_task, image_result):
@@ -2130,7 +2134,7 @@ def _try_context_verification_fallback(ctx: MembershipDispatchContext, verificat
     if not context_text:
         return None
     payload = _verification_probe_payload(ctx.payload, verification_task)
-    required_channels = required_channel_references(context_text)
+    required_channels = _required_channel_refs(context_text)
     if required_channels and _auto_follow_required_channel_enabled(ctx.session, ctx.action):
         verification_task.suggested_action = "关注频道"
         followed = _follow_required_channels_and_reprobe(
@@ -2178,6 +2182,38 @@ def _context_requires_button_click(context_text: str) -> bool:
     return any(marker.lower() in normalized for marker in _GROUP_SEND_BUTTON_VERIFICATION_MARKERS)
 
 
+def _try_auto_follow_from_button_links(ctx: MembershipDispatchContext, verification_task):
+    refs = _explicit_telegram_link_refs(_auto_follow_detail_text(ctx.action, verification_task))
+    if not refs or not _auto_follow_required_channel_enabled(ctx.session, ctx.action):
+        return None
+    verification_task.suggested_action = "关注频道"
+    payload = _verification_probe_payload(ctx.payload, verification_task)
+    probe_result = OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, verification_task.detected_reason)
+    followed = _follow_required_channels_and_reprobe(
+        ctx.session,
+        ctx.action,
+        ctx.account,
+        ctx.credentials,
+        payload,
+        probe_result,
+        refs,
+        retry_target_membership=ctx.action.action_type in MEMBERSHIP_ACTION_TYPES,
+    )
+    return _apply_context_fallback_result(ctx, verification_task, payload, followed)
+
+
+def _required_channel_refs(detail: str) -> list[str]:
+    return _explicit_telegram_link_refs(detail) or required_channel_references(detail)
+
+
+def _explicit_telegram_link_refs(detail: str) -> list[str]:
+    refs: list[str] = []
+    text = detail or ""
+    refs.extend(match.group("username") for match in re.finditer(r"(?:https?://)?(?:t\.me|telegram\.me)/(?!joinchat/|\+)(?P<username>[A-Za-z0-9_]{4,})", text))
+    refs.extend(match.group(0) for match in re.finditer(r"(?:https?://)?(?:t\.me|telegram\.me)/(?:joinchat/|\+)[A-Za-z0-9_-]{8,}", text))
+    return list(dict.fromkeys(refs))
+
+
 def _apply_context_fallback_result(
     ctx: MembershipDispatchContext,
     verification_task,
@@ -2222,6 +2258,8 @@ def _group_send_verification_action(detail: str) -> str:
     if any(marker.lower() in normalized for marker in _GROUP_SEND_TEXT_VERIFICATION_MARKERS):
         return "发送验证回复"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS):
+        return "关注频道"
+    if _explicit_telegram_link_refs(detail):
         return "关注频道"
     if any(marker.lower() in normalized for marker in _GROUP_SEND_BUTTON_VERIFICATION_MARKERS):
         return "点击按钮"

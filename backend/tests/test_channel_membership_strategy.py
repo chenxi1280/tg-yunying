@@ -504,6 +504,59 @@ def test_auto_follow_verification_uses_action_error_button_links_before_linked_c
     assert action.result["target_membership_retried_after_required_channel"] is True
 
 
+def test_button_verification_with_tme_links_auto_follows_links_not_ad_mentions(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    followed: list[str] = []
+
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.ensure_channel_membership",
+        lambda _account_id, channel_ref, *_args, **_kwargs: followed.append(channel_ref) or OperationResult(True, "已处理", detail="已加入"),
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.probe_target_capabilities",
+        lambda *_args, **_kwargs: OperationResult(True, detail="复检可发言"),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(id=815, tenant_id=1, tg_peer_id="-100815", title="天津音乐学院", group_type="supergroup", auth_status="已授权运营", can_send=False)
+        target = OperationTarget(id=915, tenant_id=1, target_type="group", tg_peer_id="-100815", title="天津音乐学院", auth_status="只读", can_send=False)
+        task = Task(id="task-button-link-follow", tenant_id=1, name="按钮链接关注", type="group_ai_chat", status="running", type_config={"auto_follow_required_channel": True})
+        account = TgAccount(id=45, tenant_id=1, display_name="账号45", phone_masked="45", status="在线", session_ciphertext="session")
+        action = Action(id="membership-button-link-follow", tenant_id=1, task_id=task.id, task_type="group_ai_chat", action_type="ensure_target_membership", account_id=45)
+        verification = VerificationTask(
+            tenant_id=1,
+            account_id=45,
+            group_id=group.id,
+            verification_type="群发言权限",
+            detected_reason="群无权限或账号不可发言：广告 @xiaodongli0733 [按钮：车库 (https://t.me/qiyue201) / 报告频道 (https://t.me/ttyyxybg)]",
+            suggested_action="点击按钮",
+            target_peer_id=group.tg_peer_id,
+            target_display=group.title,
+            status="待处理",
+        )
+        session.add_all([group, target, task, account, action, verification, TgGroupAccount(tenant_id=1, group_id=group.id, account_id=account.id, can_send=False)])
+        session.commit()
+
+        result = dispatcher._try_auto_group_send_verification(
+            dispatcher.MembershipDispatchContext(
+                session,
+                action,
+                account,
+                object(),
+                EnsureChannelMembershipPayload(channel_id=group.tg_peer_id, channel_target_id=target.id, target_type="group", target_display=group.title, require_send=True),
+                None,
+            ),
+            verification,
+        )
+
+    assert result.ok is True
+    assert followed == ["qiyue201", "ttyyxybg", "-100815"]
+    assert verification.suggested_action == "关注频道"
+    assert verification.status == "已处理"
+
+
 def test_membership_summary_uses_send_ready_title_group_when_target_peer_is_stale() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
