@@ -75,6 +75,27 @@ def _group_ai_membership_action(action_id: str, task: Task) -> Action:
     )
 
 
+def _rescue_invite_action(action_id: str) -> Action:
+    return Action(
+        id=action_id,
+        tenant_id=1,
+        task_id="task-rescue",
+        task_type="group_membership_admission",
+        action_type="invite_group_account",
+        account_id=99,
+        scheduled_at=NOW,
+        status="pending",
+        payload={
+            "group_id": 7,
+            "operation_target_id": 21,
+            "group_peer_id": "-10021",
+            "target_account_id": 11,
+            "target_account_ref": "@normal_user",
+            "trigger_account_id": 11,
+        },
+    )
+
+
 def test_group_rescue_settings_rejects_unavailable_admin_account() -> None:
     with _session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -161,6 +182,55 @@ def test_invite_group_account_payload_requires_target_account_ref() -> None:
             "invite_group_account",
             {"group_id": 7, "operation_target_id": 21, "group_peer_id": "-10021", "target_account_id": 11, "target_account_ref": ""},
         )
+
+
+def test_claim_invite_group_account_bypasses_generic_account_capacity(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        action = _rescue_invite_action("claim-rescue-invite")
+        session.add(action)
+        session.commit()
+        monkeypatch.setattr(
+            dispatcher,
+            "account_capacity_decision",
+            lambda *_args, **_kwargs: AccountCapacityDecision(False, NOW + timedelta(minutes=5), "account_cooldown", "账号全局冷却中"),
+        )
+        monkeypatch.setattr(dispatcher, "_reserve_runtime_resources", lambda _action: True)
+
+        [claimed] = dispatcher.claim_actions(session, limit=1)
+
+        assert claimed.id == action.id
+        assert action.status == "executing"
+        assert action.result["account_policy_action"] == "group_rescue_capacity_override"
+        assert action.result.get("error_code") != "global_account_policy"
+
+
+def test_dispatch_invite_group_account_bypasses_generic_account_capacity(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        action = _rescue_invite_action("dispatch-rescue-invite")
+        session.add(action)
+        session.commit()
+        calls: list[tuple[int, str, str]] = []
+        monkeypatch.setattr(
+            dispatcher,
+            "account_capacity_decision",
+            lambda *_args, **_kwargs: AccountCapacityDecision(False, NOW + timedelta(minutes=5), "account_cooldown", "账号全局冷却中"),
+        )
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+
+        def fake_invite(account_id, group_peer_id, target_account_ref, *_args, **_kwargs):  # noqa: ANN001
+            calls.append((account_id, group_peer_id, target_account_ref))
+            return OperationResult(True, "已处理", detail="account_invited")
+
+        monkeypatch.setattr(dispatcher.gateway, "invite_account_to_group", fake_invite)
+
+        assert dispatch_action(session, action) is True
+
+        assert calls == [(99, "-10021", "@normal_user")]
+        assert action.status == "success"
+        assert action.result["account_policy_action"] == "group_rescue_capacity_override"
+        assert action.result["rescue_status"] == "invite_success"
 
 
 def test_dispatch_invite_group_account_refreshes_stale_configured_rescue_account(monkeypatch) -> None:

@@ -544,6 +544,9 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
         }
         action.account_id = replacement.id
         return True
+    if _is_group_rescue_action(action):
+        _record_group_rescue_capacity_override(action)
+        return True
     if _is_hard_hourly_membership_action(session, action):
         return True
     if _is_hard_hourly_send_action(action):
@@ -584,6 +587,18 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
 
 def _is_membership_action(action: Action) -> bool:
     return action.action_type in MEMBERSHIP_ACTION_TYPES
+
+
+def _is_group_rescue_action(action: Action) -> bool:
+    return action.action_type == "invite_group_account"
+
+
+def _record_group_rescue_capacity_override(action: Action) -> None:
+    action.result = {
+        **(action.result or {}),
+        "account_policy_action": "group_rescue_capacity_override",
+        "account_policy_reason": "rescue_admin_invite",
+    }
 
 
 def _is_hard_hourly_membership_action(session: Session, action: Action) -> bool:
@@ -3081,6 +3096,9 @@ def _defer(action: Action, scheduled_at, code: str, detail: str) -> None:
 
 
 def _account_after_global_policy(session: Session, action: Action, account: TgAccount, *, allow_reassign: bool = True) -> TgAccount | None:
+    if _is_group_rescue_action(action):
+        _record_group_rescue_capacity_override(action)
+        return account
     if _is_hard_hourly_membership_action(session, action):
         return account
     if _is_hard_hourly_send_action(action):
