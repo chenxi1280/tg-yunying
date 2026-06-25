@@ -84,6 +84,44 @@ def test_planner_refreshes_heartbeat_between_due_tasks(monkeypatch):
     assert heartbeat_calls.count("planner") >= 3
 
 
+def test_target_admission_retry_planner_keeps_pending_membership_actions() -> None:
+    SessionFactory = _session_factory()
+    now_value = _now()
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            Task(
+                id="task-admission-retry-planner",
+                tenant_id=1,
+                name="准入重试",
+                type="target_admission_retry",
+                status="running",
+                next_run_at=now_value - timedelta(seconds=1),
+                stats={},
+            )
+        )
+        session.add(
+            Action(
+                id="action-admission-retry-pending",
+                tenant_id=1,
+                task_id="task-admission-retry-planner",
+                task_type="target_admission_retry",
+                action_type="ensure_target_membership",
+                status="pending",
+                scheduled_at=now_value,
+            )
+        )
+        session.commit()
+
+    service.drain_task_planner(SessionFactory, 5)
+
+    with SessionFactory() as session:
+        task = session.get(Task, "task-admission-retry-planner")
+        assert task.status == "running"
+        assert task.stats["total_actions"] == 1
+        assert task.stats["pending_count"] == 1
+
+
 def test_metrics_drain_does_not_rebuild_all_runtime_summaries() -> None:
     SessionFactory = _session_factory()
     now_value = _now()

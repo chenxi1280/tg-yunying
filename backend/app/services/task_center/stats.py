@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -47,7 +47,7 @@ def next_run_after_task(task: Task):
 
 def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
     session.flush()
-    business_filter = Action.action_type.notin_(BUSINESS_MEMBERSHIP_ACTION_TYPES)
+    business_filter = _stats_action_filter(task)
     rows = session.execute(select(Action.status, func.count(Action.id)).where(Action.task_id == task.id, business_filter).group_by(Action.status)).all()
     counts = {str(status): int(count) for status, count in rows}
     raw_skipped_count = counts.get("skipped", 0)
@@ -80,6 +80,12 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
 
     refresh_task_summary(session, task)
     return stats
+
+
+def _stats_action_filter(task: Task):
+    if task.type == "target_admission_retry":
+        return true()
+    return Action.action_type.notin_(BUSINESS_MEMBERSHIP_ACTION_TYPES)
 
 
 def planner_backlog_snapshot(session: Session, task: Task) -> dict[str, int | bool]:
