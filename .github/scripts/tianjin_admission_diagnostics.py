@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 
 from app.database import SessionLocal
-from app.models import Action, OperationTarget, Task, TgAccount, TgGroup, TgGroupAccount, WorkerHeartbeat
+from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, WorkerHeartbeat
 from app.models.enums import AccountStatus
 
 
@@ -36,6 +36,69 @@ def account_row(account, link=None, *, missing_link=False):
         "permission_label": link.permission_label if link else "",
         "missing_link": missing_link,
     }
+
+
+def account_group_link(session, group, account_id):
+    return session.scalar(
+        select(TgGroupAccount).where(
+            TgGroupAccount.tenant_id == TENANT_ID,
+            TgGroupAccount.group_id == group.id,
+            TgGroupAccount.account_id == account_id,
+        )
+    )
+
+
+def account_group_row(session, group, account):
+    link = account_group_link(session, group, account.id)
+    return account_row(account, link, missing_link=link is None)
+
+
+def group_rescue_summary(session, group):
+    tenant = session.get(Tenant, TENANT_ID)
+    account = session.get(TgAccount, tenant.group_rescue_admin_account_id) if tenant and tenant.group_rescue_admin_account_id else None
+    return {
+        "enabled": bool(tenant and tenant.group_rescue_enabled),
+        "admin_account_id": tenant.group_rescue_admin_account_id if tenant else None,
+        "admin_account": account_group_row(session, group, account) if account else None,
+    }
+
+
+def explicit_rescue_candidate(session, group):
+    account = session.scalar(
+        select(TgAccount).where(
+            TgAccount.tenant_id == TENANT_ID,
+            TgAccount.deleted_at.is_(None),
+            TgAccount.username == "settingbother",
+        )
+    )
+    if not account:
+        account = session.scalar(
+            select(TgAccount).where(
+                TgAccount.tenant_id == TENANT_ID,
+                TgAccount.deleted_at.is_(None),
+                TgAccount.display_name == "管理",
+            )
+        )
+    return account_group_row(session, group, account) if account else None
+
+
+def rescue_candidate_samples(session, group):
+    rows = session.execute(
+        select(TgAccount, TgGroupAccount)
+        .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
+        .where(
+            TgAccount.tenant_id == TENANT_ID,
+            TgAccount.status == ACTIVE_STATUS,
+            TgAccount.deleted_at.is_(None),
+            TgAccount.session_ciphertext.is_not(None),
+            TgGroupAccount.tenant_id == TENANT_ID,
+            TgGroupAccount.group_id == group.id,
+            TgGroupAccount.can_send.is_(True),
+        )
+        .order_by(TgAccount.id.asc())
+        .limit(12)
+    )
+    return [account_row(account, link) for account, link in rows]
 
 
 def action_error_key(action):
@@ -337,6 +400,9 @@ def main():
             "worker_counts": worker_counts(session, heartbeat_cutoff),
         }
         summary = target_summary(target, group, metrics)
+        summary["group_rescue"] = group_rescue_summary(session, group)
+        summary["explicit_rescue_candidate"] = explicit_rescue_candidate(session, group)
+        summary["rescue_candidate_samples"] = rescue_candidate_samples(session, group)
         print("TIANJIN_LIGHT_SUMMARY=" + json.dumps(summary, ensure_ascii=False, sort_keys=True), flush=True)
         print("TIANJIN_ADMISSION_RETRY_COMPACT=" + json.dumps(retry, ensure_ascii=False, sort_keys=True), flush=True)
         print("TIANJIN_FAILED_ACCOUNTS=" + json.dumps(failed_accounts, ensure_ascii=False, sort_keys=True), flush=True)
