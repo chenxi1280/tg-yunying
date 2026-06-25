@@ -173,6 +173,37 @@ def action_error_counts(session, task):
     ]
 
 
+def action_error_samples(session, task):
+    samples = []
+    for action in session.scalars(
+        select(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.status.in_(("failed", "skipped", "unknown_after_send")),
+        )
+        .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
+        .limit(20)
+    ):
+        result = action.result if isinstance(action.result, dict) else {}
+        samples.append(
+            {
+                "action_id": action.id,
+                "account_id": action.account_id,
+                "status": action.status,
+                "error_code": result.get("error_code"),
+                "error_message": str(result.get("error_message") or "")[:220],
+                "membership_peer_ref": result.get("membership_peer_ref"),
+                "membership_fallback_ref": result.get("membership_fallback_ref"),
+                "membership_attempted_refs": result.get("membership_attempted_refs") or [],
+                "join_request_approval_detail": result.get("join_request_approval_detail"),
+                "join_request_link_join_detail": result.get("join_request_link_join_detail"),
+                "admin_restriction_lift_detail": result.get("admin_restriction_lift_detail"),
+                "verification_task_id": result.get("verification_task_id"),
+            }
+        )
+    return samples
+
+
 def worker_counts(session, cutoff):
     return {
         str(process_type): int(count)
@@ -242,6 +273,7 @@ def main():
             "tasks": [task_summary(task) for task in tasks],
             "latest_action_counts": action_counts(session, latest_task) if latest_task else [],
             "latest_error_counts": action_error_counts(session, latest_task) if latest_task else [],
+            "latest_error_samples": action_error_samples(session, latest_task) if latest_task else [],
         }
         metrics = {
             "captured_at": captured_at,
