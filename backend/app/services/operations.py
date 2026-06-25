@@ -977,6 +977,7 @@ def _create_admission_retry_task(session: Session, tenant_id: int, target: Opera
         status="running",
         account_config={"account_ids": [account.id for account in accounts]},
         type_config={"target_operation_target_id": target.id, "target_type": target.target_type},
+        failure_policy={"max_retries": 1, "retry_delay_seconds": 30, "retry_backoff": "none"},
         stats={"admission_retry_reason": reason, "created_by": actor, "queued_account_count": len(accounts)},
     )
     session.add(task)

@@ -18,6 +18,8 @@ from .pacing import ai_next_run_after, next_run_after
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
 DEFAULT_AUTO_RETRY_STATUSES = ("failed", "retryable_failed")
 TARGET_ADMISSION_AUTO_RETRY_STATUSES = ("failed", "retryable_failed", "unknown_after_send")
+TARGET_ADMISSION_DEFAULT_MAX_RETRIES = 1
+TARGET_ADMISSION_DEFAULT_RETRY_DELAY_SECONDS = 30
 BUSINESS_MEMBERSHIP_ACTION_TYPES = ["ensure_channel_membership", "ensure_target_membership"]
 PLANNER_BACKLOG_OPEN_STATUSES = {"pending", "claiming", "executing"}
 PLANNER_BACKLOG_STAT_KEYS = (
@@ -168,10 +170,10 @@ def _archived_skipped_count(session: Session, task: Task, business_filter) -> in
 
 def retry_failed_actions(session: Session, task: Task) -> int:
     policy = task.failure_policy or {}
-    max_retries = int(policy.get("max_retries") or 0)
+    max_retries = _max_retries_for_task(task, policy)
     if max_retries <= 0:
         return 0
-    retry_delay = int(policy["retry_delay_seconds"]) if policy.get("retry_delay_seconds") is not None else 60
+    retry_delay = _retry_delay_seconds_for_task(task, policy)
     backoff = policy.get("retry_backoff") or "none"
     count = 0
     query = select(Action).where(
@@ -210,6 +212,22 @@ def _auto_retry_statuses(task: Task) -> tuple[str, ...]:
     if task.type == "target_admission_retry":
         return TARGET_ADMISSION_AUTO_RETRY_STATUSES
     return DEFAULT_AUTO_RETRY_STATUSES
+
+
+def _max_retries_for_task(task: Task, policy: dict[str, Any]) -> int:
+    if policy.get("max_retries") is not None:
+        return int(policy.get("max_retries") or 0)
+    if task.type == "target_admission_retry":
+        return TARGET_ADMISSION_DEFAULT_MAX_RETRIES
+    return 0
+
+
+def _retry_delay_seconds_for_task(task: Task, policy: dict[str, Any]) -> int:
+    if policy.get("retry_delay_seconds") is not None:
+        return int(policy["retry_delay_seconds"])
+    if task.type == "target_admission_retry":
+        return TARGET_ADMISSION_DEFAULT_RETRY_DELAY_SECONDS
+    return 60
 
 
 def _skip_expired_hard_hourly_retry(action: Action, previous_result: dict[str, Any], now_value: datetime) -> bool:

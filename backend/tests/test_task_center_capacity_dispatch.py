@@ -2328,7 +2328,6 @@ def test_target_admission_retry_reschedules_unknown_after_send_actions(monkeypat
             name="天津准入重试",
             type="target_admission_retry",
             status="running",
-            failure_policy={"max_retries": 1, "retry_delay_seconds": 30, "retry_backoff": "none"},
         )
         session.add(task)
         session.add(
