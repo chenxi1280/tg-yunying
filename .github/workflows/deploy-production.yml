@@ -8,6 +8,11 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      run_tianjin_admission_retry:
+        description: Queue all failed Tianjin target-admission accounts for retry after deploy
+        required: false
+        default: false
+        type: boolean
   push:
     branches:
       - release
@@ -331,6 +336,38 @@ jobs:
             echo "==> planner logs after profile"
             docker logs --tail 120 tgyunying-worker-planner || true
           '
+
+      - name: Queue Tianjin admission retry
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tianjin_admission_retry }}
+        run: |
+          set -euo pipefail
+          ssh silicon-valley-production-server 'docker exec -i tgyunying-backend python -' <<'PY'
+          import json
+
+          from app.database import SessionLocal
+          from app.schemas.operations import OperationTargetAdmissionRetryRequest
+          from app.services.operations import retry_operation_target_admission
+
+          TARGET_ID = 485
+
+          with SessionLocal() as session:
+              result = retry_operation_target_admission(
+                  session,
+                  1,
+                  TARGET_ID,
+                  OperationTargetAdmissionRetryRequest(reason='天津音乐学院全量准入重试：管理员解除限制后重新加入', account_ids=[]),
+                  'github-actions',
+              )
+              retry = result.get('admission_retry') or {}
+              compact = {
+                  'target_id': TARGET_ID,
+                  'task_id': retry.get('task_id'),
+                  'retried_account_count': retry.get('retried_account_count'),
+                  'queued_action_count': retry.get('queued_action_count'),
+                  'failed_account_count': retry.get('failed_account_count'),
+              }
+              print('TIANJIN_ADMISSION_RETRY=' + json.dumps(compact, ensure_ascii=False, sort_keys=True), flush=True)
+          PY
 
       - name: Inspect AI hourly task volume
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_production_diagnostics }}
