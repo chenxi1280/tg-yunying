@@ -13,13 +13,23 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      run_tianjin_diagnostics:
+        description: Run lightweight Tianjin admission diagnostics without planner probing
+        required: false
+        default: false
+        type: boolean
+      force_cancel_in_progress:
+        description: Explicitly cancel a stuck in-progress Deploy Production run before this manual run
+        required: false
+        default: false
+        type: boolean
   push:
     branches:
       - release
 
 concurrency:
   group: deploy-production
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.force_cancel_in_progress }}
 
 permissions:
   contents: read
@@ -368,6 +378,15 @@ jobs:
               }
               print('TIANJIN_ADMISSION_RETRY=' + json.dumps(compact, ensure_ascii=False, sort_keys=True), flush=True)
           PY
+
+      - name: Inspect Tianjin admission state
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tianjin_diagnostics }}
+        run: |
+          set -euo pipefail
+          echo "TIANJIN_LIGHT_INSPECT_START"
+          ssh silicon-valley-production-server 'timeout 90 docker exec -i tgyunying-backend python -' \
+            < .github/scripts/tianjin_admission_diagnostics.py
+          echo "TIANJIN_LIGHT_INSPECT_END"
 
       - name: Inspect AI hourly task volume
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_production_diagnostics }}

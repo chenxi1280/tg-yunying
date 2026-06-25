@@ -816,11 +816,20 @@ def test_production_deploy_starts_four_dispatcher_workers():
 
 def test_production_ai_hourly_probe_reports_membership_failures():
     workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
+    tianjin_diagnostics = (PROJECT_ROOT / ".github/scripts/tianjin_admission_diagnostics.py").read_text()
 
     assert "run_production_diagnostics:" in workflow
+    assert "run_tianjin_diagnostics:" in workflow
+    assert "force_cancel_in_progress:" in workflow
+    assert "cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.force_cancel_in_progress }}" in workflow
     assert "Run production planner drain and AI hourly volume diagnostics after deploy" in workflow
+    assert "Run lightweight Tianjin admission diagnostics without planner probing" in workflow
     assert "default: false" in workflow
     assert workflow.count("if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_production_diagnostics }}") == 2
+    assert "if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tianjin_diagnostics }}" in workflow
+    assert ".github/scripts/tianjin_admission_diagnostics.py" in workflow
+    assert "TIANJIN_LIGHT_SUMMARY=" in tianjin_diagnostics
+    assert "TIANJIN_FAILED_ACCOUNTS=" in tianjin_diagnostics
     assert "VerificationTask" in workflow
     assert "recent_membership_actions" in workflow
     assert "recent_failed_membership_actions" in workflow
