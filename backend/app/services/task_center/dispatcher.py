@@ -1366,11 +1366,21 @@ def _follow_required_channels_and_reprobe(
     *,
     retry_target_membership: bool = False,
 ):
+    followed_refs: list[str] = []
+    skipped_refs: list[dict[str, str]] = []
     for channel_ref in required_channels:
         followed = gateway.ensure_channel_membership(account.id, channel_ref, account.session_ciphertext, credentials, invite_link=channel_ref)
         if not followed.ok:
             detail = followed.detail or followed.failure_type or probe_result.detail
+            if _membership_peer_ref_invalid(followed):
+                skipped_refs.append({"ref": channel_ref, "detail": detail or "peer_ref_invalid"})
+                continue
             return OperationResult(False, "失败", followed.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, detail)
+        followed_refs.append(channel_ref)
+    if not followed_refs:
+        action.result = {**(action.result or {}), "required_channels_skipped": skipped_refs}
+        detail = "; ".join(f"{item['ref']}:{item['detail']}" for item in skipped_refs) or probe_result.detail
+        return OperationResult(False, "失败", FailureType.PEER_INVALID.value, detail)
     if retry_target_membership:
         ctx = MembershipDispatchContext(session, action, account, credentials, payload, None)
         refreshed = _retry_target_membership_after_required_channel(ctx)
@@ -1378,8 +1388,11 @@ def _follow_required_channels_and_reprobe(
             return refreshed
     reprobe = gateway.probe_target_capabilities(account.id, payload.channel_id, payload.target_type, account.session_ciphertext, credentials)
     if reprobe.ok:
-        action.result = {**(action.result or {}), "required_channels_followed": required_channels}
-        return OperationResult(True, detail=f"已关注 {len(required_channels)} 个必需频道并通过群发言验证")
+        result = {**(action.result or {}), "required_channels_followed": followed_refs}
+        if skipped_refs:
+            result["required_channels_skipped"] = skipped_refs
+        action.result = result
+        return OperationResult(True, detail=f"已关注 {len(followed_refs)} 个必需频道并通过群发言验证")
     detail = reprobe.detail or reprobe.failure_type or probe_result.detail
     return OperationResult(False, "失败", reprobe.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, detail)
 

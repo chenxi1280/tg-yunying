@@ -557,6 +557,44 @@ def test_button_verification_with_tme_links_auto_follows_links_not_ad_mentions(m
     assert verification.status == "已处理"
 
 
+def test_required_channel_follow_skips_invalid_mentions_and_continues(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    followed: list[str] = []
+
+    def fake_follow(_account_id, channel_ref, *_args, **_kwargs):
+        if channel_ref == "ad_user":
+            return OperationResult(False, "失败", "目标无效", "Cannot cast InputPeerUser to any kind of InputChannel.")
+        followed.append(channel_ref)
+        return OperationResult(True, "已处理", detail="已加入")
+
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.ensure_channel_membership", fake_follow)
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(True, detail="复检可发言"))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(id="task-skip-invalid-required", tenant_id=1, name="跳过无效引用", type="group_ai_chat", status="running")
+        account = TgAccount(id=46, tenant_id=1, display_name="账号46", phone_masked="46", status="在线", session_ciphertext="session")
+        action = Action(id="membership-skip-invalid-required", tenant_id=1, task_id=task.id, task_type="group_ai_chat", action_type="ensure_target_membership", account_id=46)
+        session.add_all([task, account, action])
+        session.commit()
+
+        result = dispatcher._follow_required_channels_and_reprobe(
+            session,
+            action,
+            account,
+            object(),
+            EnsureChannelMembershipPayload(channel_id="-100816", channel_target_id=916, target_type="group", target_display="天津音乐学院", require_send=True),
+            OperationResult(False, "失败", "群无权限", "需要关注"),
+            ["ad_user", "qiyue201"],
+        )
+
+    assert result.ok is True
+    assert followed == ["qiyue201"]
+    assert action.result["required_channels_followed"] == ["qiyue201"]
+    assert action.result["required_channels_skipped"][0]["ref"] == "ad_user"
+
+
 def test_membership_summary_uses_send_ready_title_group_when_target_peer_is_stale() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
