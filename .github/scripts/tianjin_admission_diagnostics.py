@@ -7,8 +7,12 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 
 from app.database import SessionLocal
+from app.integrations.telegram.telethon_utils import resolve_telethon_target
 from app.models import Action, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, WorkerHeartbeat
 from app.models.enums import AccountStatus
+from app.security import decrypt_session
+from app.services.developer_apps import credentials_for_account
+from app.telethon_lifecycle import TelethonClientLifecycle
 
 
 TARGET_ID = 485
@@ -18,6 +22,7 @@ ACTIVE_STATUS = AccountStatus.ACTIVE.value
 ACTION_LIMIT = 600
 FAILED_SAMPLE_LIMIT = 80
 RECENT_TASK_LIMIT = 12
+REMOTE_ADMIN_LIMIT = 50
 
 
 def iso(value):
@@ -99,6 +104,73 @@ def rescue_candidate_samples(session, group):
         .limit(12)
     )
     return [account_row(account, link) for account, link in rows]
+
+
+def remote_admin_summary(session, target, group):
+    tenant = session.get(Tenant, TENANT_ID)
+    admin = session.get(TgAccount, tenant.group_rescue_admin_account_id) if tenant and tenant.group_rescue_admin_account_id else None
+    if not admin:
+        return {"status": "skipped", "detail": "no_configured_rescue_admin", "admins": [], "matched_accounts": []}
+    if not admin.session_ciphertext:
+        return {"status": "skipped", "detail": "configured_rescue_admin_has_no_session", "admins": [], "matched_accounts": []}
+    try:
+        raw_session = decrypt_session(admin.session_ciphertext)
+        credentials = credentials_for_account(session, admin)
+        admins = TelethonClientLifecycle().run(_fetch_remote_admins(raw_session, credentials, target.tg_peer_id))
+    except Exception as exc:
+        return {"status": "failed", "detail": f"{exc.__class__.__name__}: {exc}", "admins": [], "matched_accounts": []}
+    return {
+        "status": "ok",
+        "source_admin": account_group_row(session, group, admin),
+        "admins": admins,
+        "matched_accounts": matched_admin_accounts(session, group, admins),
+    }
+
+
+async def _fetch_remote_admins(raw_session, credentials, target_peer_id):
+    if not raw_session:
+        raise RuntimeError("configured rescue admin session decrypt failed")
+    from telethon import types
+
+    lifecycle = TelethonClientLifecycle()
+    client = await lifecycle.get_or_create_client(credentials, raw_session)
+    if not await client.is_user_authorized():
+        raise RuntimeError("configured rescue admin session is unauthorized")
+    target = await resolve_telethon_target(client, target_peer_id, group_id=0)
+    admins = []
+    async for participant in client.iter_participants(target, filter=types.ChannelParticipantsAdmins):
+        admins.append(remote_admin_row(participant))
+        if len(admins) >= REMOTE_ADMIN_LIMIT:
+            break
+    return admins
+
+
+def remote_admin_row(participant):
+    first_name = getattr(participant, "first_name", "") or ""
+    last_name = getattr(participant, "last_name", "") or ""
+    role = type(getattr(participant, "participant", None)).__name__
+    return {
+        "tg_user_id": str(getattr(participant, "id", "") or ""),
+        "username": getattr(participant, "username", None),
+        "display_name": f"{first_name} {last_name}".strip(),
+        "role": role,
+    }
+
+
+def matched_admin_accounts(session, group, admins):
+    usernames = {str(item.get("username") or "").lower() for item in admins if item.get("username")}
+    if not usernames:
+        return []
+    rows = session.scalars(
+        select(TgAccount)
+        .where(
+            TgAccount.tenant_id == TENANT_ID,
+            TgAccount.deleted_at.is_(None),
+            func.lower(TgAccount.username).in_(usernames),
+        )
+        .order_by(TgAccount.id.asc())
+    )
+    return [account_group_row(session, group, account) for account in rows]
 
 
 def action_error_key(action):
@@ -403,6 +475,7 @@ def main():
         summary["group_rescue"] = group_rescue_summary(session, group)
         summary["explicit_rescue_candidate"] = explicit_rescue_candidate(session, group)
         summary["rescue_candidate_samples"] = rescue_candidate_samples(session, group)
+        summary["remote_admins"] = remote_admin_summary(session, target, group)
         print("TIANJIN_LIGHT_SUMMARY=" + json.dumps(summary, ensure_ascii=False, sort_keys=True), flush=True)
         print("TIANJIN_ADMISSION_RETRY_COMPACT=" + json.dumps(retry, ensure_ascii=False, sort_keys=True), flush=True)
         print("TIANJIN_FAILED_ACCOUNTS=" + json.dumps(failed_accounts, ensure_ascii=False, sort_keys=True), flush=True)
