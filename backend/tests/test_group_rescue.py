@@ -692,3 +692,38 @@ def test_invite_account_to_group_reports_unresolvable_account(monkeypatch) -> No
 
     assert result.ok is False
     assert result.detail == "被救援账号无法解析或目标群不可访问"
+
+
+def test_export_group_invite_link_creates_rescue_titled_link(monkeypatch) -> None:
+    gateway = TelethonTelegramGateway()
+    seen_requests: list[object] = []
+
+    class FakeClient:
+        async def is_user_authorized(self) -> bool:
+            return True
+
+        async def get_entity(self, peer_id: int):  # noqa: ANN001
+            assert peer_id == -1007
+            return SimpleNamespace(id=7)
+
+        async def __call__(self, request):  # noqa: ANN001
+            seen_requests.append(request)
+            return SimpleNamespace(link="https://t.me/+freshInvite")
+
+    async def fake_client(_credentials, _raw_session):  # noqa: ANN001
+        return FakeClient()
+
+    monkeypatch.setattr(gateway, "_get_or_create_client", fake_client)
+
+    result = gateway._run(
+        gateway._export_group_invite_link_async(
+            515,
+            "raw-session",
+            "-1007",
+            DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1),
+        )
+    )
+
+    assert result.ok is True
+    assert result.invite_link == "https://t.me/+freshInvite"
+    assert getattr(seen_requests[0], "title") == "tg-yunying-rescue-515"

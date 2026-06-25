@@ -1031,6 +1031,7 @@ class TelethonTelegramGateway(TelegramGateway):
 
     async def _export_group_invite_link_async(
         self,
+        account_id: int,
         session_ciphertext: str | None,
         group_peer_id: str,
         credentials: DeveloperAppCredentials,
@@ -1049,7 +1050,12 @@ class TelethonTelegramGateway(TelegramGateway):
                 return InviteLinkResult(False, "失败", FailureType.PEER_INVALID.value, "缺少目标群")
             entity_ref: int | str = int(target) if target.lstrip("-").isdigit() else target.lstrip("@")
             entity = await client.get_entity(entity_ref)
-            invite = await client(functions.messages.ExportChatInviteRequest(peer=entity))
+            invite = await client(
+                functions.messages.ExportChatInviteRequest(
+                    peer=entity,
+                    title=f"tg-yunying-rescue-{account_id}",
+                )
+            )
             link = str(getattr(invite, "link", "") or "").strip()
             if not link:
                 return InviteLinkResult(False, "失败", "invite_link_empty", "Telegram 未返回邀请链接")
@@ -1065,7 +1071,7 @@ class TelethonTelegramGateway(TelegramGateway):
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
     ) -> InviteLinkResult:
-        return self._run(self._export_group_invite_link_async(session_ciphertext, group_peer_id, self._usable_credentials(credentials)))
+        return self._run(self._export_group_invite_link_async(account_id, session_ciphertext, group_peer_id, self._usable_credentials(credentials)))
 
     async def _invite_account_to_group_async(
         self,
