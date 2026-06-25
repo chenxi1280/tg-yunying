@@ -942,6 +942,13 @@ def _dispatch_channel_membership(session: Session, action: Action, account: TgAc
         _mark_membership_joined(session, action, account, payload)
     elif result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
         return _handle_group_send_permission_denied(runtime_ctx, result, membership_status="joined", skip_on_failure=True)
+    elif _membership_requires_admin_rescue(result):
+        rescued = _try_admin_lift_restriction_and_join(runtime_ctx, _membership_result_detail(result))
+        if rescued.ok:
+            _apply_operation_result(action, account, True, "", rescued.detail or "admin_rescue_joined", attempt=attempt)
+            action.result = {**(action.result or {}), "membership_status": "joined", "admin_restriction_lifted": True}
+            return True
+        result = rescued
     result_detail = _membership_result_detail(result)
     failure_type = _classify_membership_failure(result.failure_type, result_detail)
     _apply_operation_result(action, account, result.ok, failure_type, result_detail, attempt=attempt)
@@ -963,6 +970,51 @@ def _membership_existing_group_for_account(ctx: MembershipDispatchContext) -> tu
 
 def _membership_result_detail(result) -> str:
     return result.detail or getattr(result, "membership_status", "")
+
+
+def _membership_requires_admin_rescue(result) -> bool:
+    detail = _membership_result_detail(result).lower()
+    return "getchannelsrequest" in detail and ("private" in detail or "banned" in detail)
+
+
+def _try_admin_lift_restriction_and_join(ctx: MembershipDispatchContext, first_detail: str) -> OperationResult:
+    admin = _tenant_rescue_admin(ctx.session, ctx.action.tenant_id)
+    if not admin:
+        return OperationResult(False, "需人工处理", FailureType.ACCOUNT_UNAVAILABLE.value, "未配置可用救援管理员账号")
+    target_ref = _account_invite_ref(ctx.account)
+    if not target_ref:
+        return OperationResult(False, "需人工处理", FailureType.ACCOUNT_UNAVAILABLE.value, "目标账号缺少 username 或手机号，无法解除群限制")
+    credentials = credentials_for_account(ctx.session, admin)
+    lifted = gateway.lift_group_account_restrictions(admin.id, ctx.payload.channel_id, target_ref, admin.session_ciphertext, credentials)
+    ctx.action.result = {**(ctx.action.result or {}), "admin_restriction_lift_detail": lifted.detail or lifted.failure_type}
+    if not lifted.ok:
+        return OperationResult(False, "失败", lifted.failure_type or FailureType.UNKNOWN.value, lifted.detail or first_detail)
+    return _join_after_admin_restriction_lift(ctx, admin, credentials, first_detail)
+
+
+def _join_after_admin_restriction_lift(
+    ctx: MembershipDispatchContext,
+    admin: TgAccount,
+    credentials,
+    first_detail: str,
+) -> OperationResult:
+    link = gateway.export_group_invite_link(admin.id, ctx.payload.channel_id, admin.session_ciphertext, credentials)
+    if not link.ok or not link.invite_link:
+        return OperationResult(False, "失败", link.failure_type or "invite_link_export_failed", link.detail or first_detail)
+    joined = gateway.ensure_channel_membership(
+        ctx.account.id,
+        ctx.payload.channel_id,
+        ctx.account.session_ciphertext,
+        ctx.credentials,
+        invite_link=link.invite_link,
+    )
+    if not joined.ok:
+        return OperationResult(False, "失败", joined.failure_type or FailureType.UNKNOWN.value, joined.detail or first_detail)
+    reprobe = gateway.probe_target_capabilities(ctx.account.id, ctx.payload.channel_id, ctx.payload.target_type, ctx.account.session_ciphertext, ctx.credentials)
+    if not reprobe.ok:
+        return OperationResult(False, "失败", reprobe.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, reprobe.detail or first_detail)
+    _record_group_send_permission_allowed(ctx.session, ctx.action, ctx.account, ctx.payload)
+    return OperationResult(True, "已处理", detail=f"admin_rescue_{joined.membership_status or 'joined'}")
 
 
 def _ensure_membership_with_peer_candidates(ctx: MembershipDispatchContext):

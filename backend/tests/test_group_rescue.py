@@ -422,6 +422,51 @@ def test_dispatch_membership_waiting_approval_uses_rescue_admin(monkeypatch) -> 
         assert action.result["membership_status"] == "joined"
 
 
+def test_dispatch_membership_private_group_lifts_restriction_and_joins(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        task = session.get(Task, "task-rescue")
+        action = _group_ai_membership_action("membership-private-banned", task)
+        session.add(action)
+        session.commit()
+
+        calls: list[tuple[str, int, str]] = []
+        private = ChannelMembershipResult(
+            False,
+            "失败",
+            FailureType.UNKNOWN.value,
+            "The channel specified is private and you lack permission to access it. Another reason may be that you were banned from it (caused by GetChannelsRequest)",
+            "failed",
+        )
+        joined = ChannelMembershipResult(True, "已处理", "", "joined", "joined")
+        join_results = [private, joined]
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "lift_group_account_restrictions",
+            lambda account_id, group_peer_id, target_ref, *_args, **_kwargs: calls.append(("lift", account_id, target_ref)) or OperationResult(True, "已处理", detail="account_restrictions_lifted"),
+        )
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "export_group_invite_link",
+            lambda *_args, **_kwargs: InviteLinkResult(True, detail="https://t.me/+fresh", invite_link="https://t.me/+fresh"),
+        )
+
+        def fake_join(account_id, group_peer_id, *_args, invite_link=None, **_kwargs):  # noqa: ANN001
+            calls.append(("join", account_id, invite_link or group_peer_id))
+            return join_results.pop(0)
+
+        monkeypatch.setattr(dispatcher.gateway, "ensure_channel_membership", fake_join)
+        monkeypatch.setattr(dispatcher.gateway, "probe_target_capabilities", lambda *_args, **_kwargs: OperationResult(True, "已处理", detail="可发言"))
+
+        assert dispatch_action(session, action) is True
+
+        assert calls == [("join", 11, "-10021"), ("lift", 99, "@normal_user"), ("join", 11, "https://t.me/+fresh")]
+        assert action.status == "success"
+        assert action.result["admin_restriction_lifted"] is True
+        assert action.result["membership_status"] == "joined"
+
+
 def test_dispatch_deprecated_group_rescue_action_migrates_to_account_invite(monkeypatch) -> None:
     with _session() as session:
         _seed_rescue_target(session)
