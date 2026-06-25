@@ -16,6 +16,8 @@ from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from .pacing import ai_next_run_after, next_run_after
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
+DEFAULT_AUTO_RETRY_STATUSES = ("failed", "retryable_failed")
+TARGET_ADMISSION_AUTO_RETRY_STATUSES = ("failed", "retryable_failed", "unknown_after_send")
 BUSINESS_MEMBERSHIP_ACTION_TYPES = ["ensure_channel_membership", "ensure_target_membership"]
 PLANNER_BACKLOG_OPEN_STATUSES = {"pending", "claiming", "executing"}
 PLANNER_BACKLOG_STAT_KEYS = (
@@ -174,7 +176,7 @@ def retry_failed_actions(session: Session, task: Task) -> int:
     count = 0
     query = select(Action).where(
         Action.task_id == task.id,
-        Action.status.in_(["failed", "retryable_failed"]),
+        Action.status.in_(_auto_retry_statuses(task)),
         Action.retry_count < max_retries,
     )
     for action in session.scalars(query):
@@ -202,6 +204,12 @@ def retry_failed_actions(session: Session, task: Task) -> int:
         }
         count += 1
     return count
+
+
+def _auto_retry_statuses(task: Task) -> tuple[str, ...]:
+    if task.type == "target_admission_retry":
+        return TARGET_ADMISSION_AUTO_RETRY_STATUSES
+    return DEFAULT_AUTO_RETRY_STATUSES
 
 
 def _skip_expired_hard_hourly_retry(action: Action, previous_result: dict[str, Any], now_value: datetime) -> bool:

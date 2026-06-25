@@ -2314,6 +2314,49 @@ def test_retry_skips_expired_hard_hourly_bucket_without_rescheduling(monkeypatch
         assert current.result["retry_scheduled"] is True
 
 
+def test_target_admission_retry_reschedules_unknown_after_send_actions(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 26, 3, 20, 0)
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(
+            id="task-admission-retry",
+            tenant_id=1,
+            name="天津准入重试",
+            type="target_admission_retry",
+            status="running",
+            failure_policy={"max_retries": 1, "retry_delay_seconds": 30, "retry_backoff": "none"},
+        )
+        session.add(task)
+        session.add(
+            Action(
+                id="action-unknown-admission",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="target_admission_retry",
+                action_type="ensure_target_membership",
+                status="unknown_after_send",
+                retry_count=0,
+                scheduled_at=now_value - timedelta(minutes=10),
+                executed_at=now_value - timedelta(minutes=5),
+                result={"error_code": "unknown_after_send"},
+            )
+        )
+        session.commit()
+
+        assert retry_failed_actions(session, task) == 1
+
+        action = session.get(Action, "action-unknown-admission")
+        assert action.status == "pending"
+        assert action.retry_count == 1
+        assert action.scheduled_at == now_value + timedelta(seconds=30)
+        assert action.executed_at is None
+        assert action.result["last_failure"]["error_code"] == "unknown_after_send"
+
+
 def test_hard_hourly_replacement_scan_uses_planned_deficit():
     action = Action(payload={"hard_hourly_target": True, "hard_hourly_deficit_at_plan": 300})
     task = Task(type_config={"hourly_min_messages": 120})
