@@ -1079,6 +1079,7 @@ def _dispatch_existing_membership(
         return True
     if result.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
         _skip_membership_permission_denied(action, result.detail or result.failure_type)
+        _maybe_trigger_membership_permission_rescue(ctx, result.detail or result.failure_type)
         _finish_execution_attempt(attempt, action, failure_type=result.failure_type, detail=result.detail or result.failure_type)
         _release_runtime_resources(action)
         return True
@@ -1424,12 +1425,11 @@ def _handle_group_send_permission_denied(
         return True
     if skip_on_failure or recovered.failure_type == FailureType.GROUP_PERMISSION_DENIED.value:
         _skip_membership_permission_denied(ctx.action, detail)
-        _maybe_trigger_send_permission_rescue(ctx.action, ctx.account, detail)
+        _maybe_trigger_membership_permission_rescue(ctx, detail)
         _finish_execution_attempt(ctx.attempt, ctx.action, failure_type=recovered.failure_type, detail=detail)
         _release_runtime_resources(ctx.action)
         return True
     _apply_operation_result(ctx.action, ctx.account, False, recovered.failure_type, detail, attempt=ctx.attempt)
-    _maybe_trigger_send_permission_rescue(ctx.action, ctx.account, detail)
     return True
 
 
@@ -1452,6 +1452,25 @@ def _skip_membership_permission_denied(action: Action, detail: str) -> None:
         "membership_status": "permission_denied",
         "validation_stage": "target_membership_runtime",
     }
+
+
+def _maybe_trigger_membership_permission_rescue(ctx: MembershipDispatchContext, detail: str) -> None:
+    if ctx.action.task_type != "group_ai_chat" or ctx.payload.target_type != "group":
+        return
+    task = ctx.session.get(Task, ctx.action.task_id) if ctx.action.task_id else None
+    target = ctx.session.get(OperationTarget, ctx.payload.channel_target_id)
+    if not task or not target or target.tenant_id != ctx.action.tenant_id:
+        return
+    group = _membership_group_for_payload(ctx.session, target, ctx.payload, create=True)
+    result = trigger_group_rescue(
+        ctx.session,
+        task,
+        group,
+        trigger_account_id=ctx.account.id,
+        trigger_reason=detail,
+        operation_target_id=target.id,
+    )
+    _record_group_rescue_result(ctx.action, result)
 
 
 def _verification_result_snapshot(action: Action) -> dict[str, object]:
@@ -2305,6 +2324,10 @@ def _maybe_trigger_send_permission_rescue(action: Action, account: TgAccount, de
         return
     target_id = _payload_int(action.payload if isinstance(action.payload, dict) else {}, "operation_target_id")
     result = trigger_group_rescue(session, task, group, trigger_account_id=account.id, trigger_reason=detail, operation_target_id=target_id or None)
+    _record_group_rescue_result(action, result)
+
+
+def _record_group_rescue_result(action: Action, result) -> None:
     action.result = {**(action.result or {}), "group_rescue_status": result.status, "group_rescue_detail": result.detail}
     if result.action:
         action.result = {**(action.result or {}), "group_rescue_action_id": result.action.id}

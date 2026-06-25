@@ -279,6 +279,55 @@ def test_membership_permission_denied_over_threshold_creates_one_rescue_action()
         assert item.rescue_status == "pending"
 
 
+def test_group_ai_membership_permission_denied_creates_rescue_action(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        task = Task(id="task-ai-membership-rescue", tenant_id=1, name="AI 群聊", type="group_ai_chat", status="running")
+        action = Action(
+            id="ai-membership-denied",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="ensure_target_membership",
+            account_id=11,
+            scheduled_at=NOW,
+            status="pending",
+            payload={
+                "channel_id": "-10021",
+                "channel_target_id": 21,
+                "target_type": "group",
+                "target_display": "目标群",
+                "require_send": True,
+            },
+        )
+        session.add(task)
+        session.add(action)
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "ensure_channel_membership",
+            lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "群无权限或账号不可发言"),
+        )
+        monkeypatch.setattr(
+            dispatcher,
+            "_recover_group_send_permission_with_linked_channel",
+            lambda *_args, **_kwargs: OperationResult(False, "失败", FailureType.GROUP_PERMISSION_DENIED.value, "群无权限或账号不可发言"),
+        )
+        monkeypatch.setattr(dispatcher, "_auto_verify_and_apply_group_send", lambda *_args, **_kwargs: False)
+
+        assert dispatch_action(session, action) is True
+
+        rescue_actions = session.scalars(select(Action).where(Action.action_type == "invite_group_account")).all()
+        assert action.status == "skipped"
+        assert action.result["group_rescue_status"] == "pending"
+        assert len(rescue_actions) == 1
+        assert rescue_actions[0].account_id == 99
+        assert rescue_actions[0].payload["target_account_id"] == 11
+        assert rescue_actions[0].payload["target_account_ref"] == "@normal_user"
+        assert rescue_actions[0].payload["trigger_reason"] == "群无权限或账号不可发言"
+
+
 def test_membership_sync_counts_same_permission_action_once() -> None:
     with _session() as session:
         _seed_rescue_target(session)
