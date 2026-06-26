@@ -1834,14 +1834,18 @@ def test_production_ai_hourly_probe_reports_membership_failures():
 
     assert "run_production_diagnostics:" in workflow
     assert "run_tianjin_diagnostics:" in workflow
+    assert "cleanup_tianjin_admission_backlog:" in workflow
     assert "force_cancel_in_progress:" in workflow
     assert "cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.force_cancel_in_progress }}" in workflow
     assert "Run production planner drain and AI hourly volume diagnostics after deploy" in workflow
     assert "Run lightweight Tianjin admission diagnostics without planner probing" in workflow
+    assert "Deduplicate stale Tianjin target-admission retry backlog" in workflow
     assert "default: false" in workflow
     assert workflow.count("if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_production_diagnostics }}") == 2
     assert "if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tianjin_diagnostics }}" in workflow
+    assert "if: ${{ github.event_name == 'workflow_dispatch' && inputs.cleanup_tianjin_admission_backlog }}" in workflow
     assert ".github/scripts/tianjin_admission_diagnostics.py" in workflow
+    assert ".github/scripts/tianjin_cleanup_admission_backlog.py" in workflow
     assert "TIANJIN_LIGHT_SUMMARY=" in tianjin_diagnostics
     assert "TIANJIN_FAILED_ACCOUNTS=" in tianjin_diagnostics
     assert "VerificationTask" in workflow

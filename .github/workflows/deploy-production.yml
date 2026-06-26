@@ -23,6 +23,11 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      cleanup_tianjin_admission_backlog:
+        description: Deduplicate stale Tianjin target-admission retry backlog
+        required: false
+        default: false
+        type: boolean
       run_tianjin_blocked_account_diagnostics:
         description: Run production diagnostics for blocked Tianjin account 84
         required: false
@@ -397,6 +402,15 @@ jobs:
           ssh silicon-valley-production-server 'timeout 90 docker exec -i tgyunying-backend python -' \
             < .github/scripts/tianjin_sync_remote_admin_links.py
           echo "TIANJIN_REMOTE_ADMIN_LINK_SYNC_END"
+
+      - name: Cleanup Tianjin admission backlog
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.cleanup_tianjin_admission_backlog }}
+        run: |
+          set -euo pipefail
+          echo "TIANJIN_ADMISSION_BACKLOG_CLEANUP_START"
+          ssh silicon-valley-production-server 'timeout 120 docker exec -i tgyunying-backend python -' \
+            < .github/scripts/tianjin_cleanup_admission_backlog.py
+          echo "TIANJIN_ADMISSION_BACKLOG_CLEANUP_END"
 
       - name: Diagnose Tianjin blocked account
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tianjin_blocked_account_diagnostics }}
