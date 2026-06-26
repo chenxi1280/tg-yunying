@@ -3414,15 +3414,20 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
 
     def fake_generate_drafts(_credentials, prompt, **_kwargs):
         if f"第二条真人上下文 {context_suffix}" in prompt:
-            candidates = [
-                AiDraftCandidate(persona="自然群友", content=f"第二条真人上下文 {context_suffix} {second_context_marker} 这个信息可以往具体案例上聊。"),
-                AiDraftCandidate(persona="补充群友", content=f"这个新内容 {context_suffix} {second_context_marker} 更适合先问问实际发生了什么。"),
+            base_candidates = [
+                ("自然群友", f"第二条真人上下文 {context_suffix} {second_context_marker} 这个信息可以往具体案例上聊。"),
+                ("补充群友", f"这个新内容 {context_suffix} {second_context_marker} 更适合先问问实际发生了什么。"),
             ]
         else:
-            candidates = [
-                AiDraftCandidate(persona="自然群友", content=f"第一条真人上下文 {context_suffix} 可以先从实际体验聊起。"),
-                AiDraftCandidate(persona="补充群友", content=f"我觉得第一条真人上下文 {context_suffix} 这里要看具体情况。"),
+            base_candidates = [
+                ("自然群友", f"第一条真人上下文 {context_suffix} 可以先从实际体验聊起。"),
+                ("补充群友", f"我觉得第一条真人上下文 {context_suffix} 这里要看具体情况。"),
             ]
+        count = int(_kwargs.get("count") or len(base_candidates))
+        candidates = [
+            AiDraftCandidate(persona=base_candidates[index % len(base_candidates)][0], content=f"pytest-{index:02d} {base_candidates[index % len(base_candidates)][1]}")
+            for index in range(count)
+        ]
         return AiGenerationResult(
             candidates=candidates,
             usage=AiUsage(total_tokens=18),
@@ -4371,8 +4376,12 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
     def fake_generate_drafts(_credentials, _prompt, **_kwargs):
         generated["count"] += 1
         contents = ["reset ai 今天先聊报名体验。", "重置之后我再问问活动安排。"]
+        count = int(_kwargs.get("count") or 1)
         return AiGenerationResult(
-            candidates=[AiDraftCandidate(persona="自然群友", content=contents[(generated["count"] - 1) % len(contents)])],
+            candidates=[
+                AiDraftCandidate(persona="自然群友", content=f"pytest-reset-{index:02d} {contents[(generated['count'] + index - 1) % len(contents)]}")
+                for index in range(count)
+            ],
             usage=AiUsage(total_tokens=10),
         )
 
