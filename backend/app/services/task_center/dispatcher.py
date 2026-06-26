@@ -433,6 +433,9 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
         if not _apply_claim_account_policy(session, action):
             session.commit()
             continue
+        if _skip_resolved_invite_group_account_action(session, action):
+            session.commit()
+            continue
         if not _reserve_runtime_resources(action):
             result = action.result or {}
             delay_seconds = _runtime_resource_retry_delay(action, result)
@@ -479,6 +482,34 @@ def _runtime_resource_retry_delay(action: Action, result: dict) -> int:
     if str(result.get("runtime_resource_reason") or "") != "account_inflight_conflict":
         return delay_seconds
     return max(delay_seconds, GROUP_RESCUE_INFLIGHT_CONFLICT_BACKOFF_SECONDS)
+
+
+def _skip_resolved_invite_group_account_action(session: Session, action: Action) -> bool:
+    if action.action_type != "invite_group_account":
+        return False
+    try:
+        payload = validate_action_payload(action.action_type, action.payload or {})
+    except (ValidationError, ValueError):
+        return False
+    target = session.get(TgAccount, payload.target_account_id or 0)
+    if not target:
+        return False
+    if target.deleted_at is not None or target.status != AccountStatus.ACTIVE.value:
+        _skip(action, "admission_retry_target_inactive", "被救援账号已不是当前在线账号，跳过过期入群邀请")
+        action.result = {**(action.result or {}), "rescue_status": "stale_skipped"}
+        return True
+    link = session.scalar(
+        select(TgGroupAccount).where(
+            TgGroupAccount.tenant_id == action.tenant_id,
+            TgGroupAccount.group_id == payload.group_id,
+            TgGroupAccount.account_id == target.id,
+        )
+    )
+    if not link or not link.can_send:
+        return False
+    _skip(action, "admission_retry_target_already_joined", "被救援账号已在目标群可发言，跳过过期入群邀请")
+    action.result = {**(action.result or {}), "rescue_status": "already_joined_skipped"}
+    return True
 
 
 def _hard_hourly_claim_rank():

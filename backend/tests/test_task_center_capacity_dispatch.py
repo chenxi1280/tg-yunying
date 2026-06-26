@@ -174,6 +174,54 @@ def test_claim_actions_backs_off_group_rescue_inflight_conflict(monkeypatch):
         assert action.scheduled_at >= now_value + timedelta(seconds=dispatcher.GROUP_RESCUE_INFLIGHT_CONFLICT_BACKOFF_SECONDS)
 
 
+@pytest.mark.no_postgres
+def test_claim_actions_skips_resolved_group_rescue_invite_before_runtime_reservation(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间", group_rescue_enabled=True, group_rescue_admin_account_id=515))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="目标账号", phone_masked="+195***0011", status="在线"))
+        session.add(TgAccount(id=515, tenant_id=1, display_name="管理员", phone_masked="+195***0433", status="在线"))
+        session.add(TgGroup(id=7, tenant_id=1, title="天津音乐学院", tg_peer_id="-1007"))
+        session.add(TgGroupAccount(id=1, tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
+        session.add(Task(id="task-rescue-stale", tenant_id=1, name="rescue", type="target_admission_retry", status="running", priority=1))
+        session.add(
+            Action(
+                id="rescue-stale",
+                tenant_id=1,
+                task_id="task-rescue-stale",
+                task_type="target_admission_retry",
+                action_type="invite_group_account",
+                account_id=515,
+                status="pending",
+                scheduled_at=now_value,
+                payload={
+                    "group_id": 7,
+                    "group_peer_id": "-1007",
+                    "target_account_id": 11,
+                    "target_account_ref": "@target_11",
+                    "trigger_account_id": 11,
+                },
+            )
+        )
+        session.commit()
+
+        def fail_reservation(_action):
+            raise AssertionError("resolved invite should not reserve runtime resources")
+
+        monkeypatch.setattr(dispatcher, "_reserve_runtime_resources", fail_reservation)
+
+        claimed = claim_actions(session, limit=1, worker_id="worker-test")
+
+        action = session.get(Action, "rescue-stale")
+        assert claimed == []
+        assert action.status == "skipped"
+        assert action.result["error_code"] == "admission_retry_target_already_joined"
+        assert action.result["rescue_status"] == "already_joined_skipped"
+
+
 def test_claim_actions_reassigns_account_before_reserving_runtime_resources_and_dispatches(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
