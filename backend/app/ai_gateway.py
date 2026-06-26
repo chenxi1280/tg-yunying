@@ -75,6 +75,7 @@ MODEL_ALIASES = {
 DEFAULT_AI_REQUEST_TIMEOUT_SECONDS = 30
 IMAGE_VERIFICATION_MAX_TOKENS = 512
 IMAGE_VERIFICATION_REASONING_RETRY_MAX_TOKENS = 4096
+MOCK_UNIQUENESS_TOKEN_LENGTH = 48
 
 
 def normalize_ai_model_name(model_name: str) -> str:
@@ -97,11 +98,11 @@ def mock_candidates(
     for index in range(count):
         material_id = ids[index % len(ids)] if ids else None
         suggested_account_id = account_ids[index % len(account_ids)] if account_ids else None
-        suffix = _mock_candidate_suffix(topic, material_id) if include_suffix else ""
+        content = _mock_group_chat_content(index, topic, material_id) if include_suffix else templates[index % len(templates)]
         candidates.append(
             AiDraftCandidate(
                 persona=persona_set[index % len(persona_set)],
-                content=f"{templates[index % len(templates)]}{suffix}",
+                content=content,
                 risk_level="低",
                 material_id=material_id,
                 suggested_account_id=suggested_account_id,
@@ -130,11 +131,46 @@ def _mock_templates_for_tone(tone: str) -> tuple[list[str], bool]:
     ], True
 
 
-def _mock_candidate_suffix(topic: str, material_id: int | None) -> str:
-    suffix = f"（{topic}）" if topic else ""
-    if material_id:
-        suffix += f" [建议素材 #{material_id}]"
-    return suffix
+MOCK_GROUP_OPENERS = (
+    "这个方向可以先从",
+    "我会先问问",
+    "刚进来的朋友可能更想听",
+    "先把话题落到",
+    "要不从",
+    "可以顺着",
+    "我觉得先聊",
+    "这会儿更适合提",
+)
+MOCK_GROUP_FOCUSES = (
+    "入口怎么找",
+    "第一步怎么做",
+    "最近有什么变化",
+    "大家最常遇到哪一块",
+    "新手会不会卡住",
+    "实际体验顺不顺",
+    "有没有人刚试过",
+    "哪些信息最有用",
+)
+MOCK_GROUP_ENDINGS = (
+    "让大家先接一句",
+    "比较容易把气氛带起来",
+    "不用一下子说太满",
+    "听听群里真实反馈",
+    "这样新人也能跟上",
+    "先轻一点聊就行",
+    "后面再慢慢展开",
+    "看谁有现成经验",
+)
+
+
+def _mock_group_chat_content(index: int, topic: str, material_id: int | None) -> str:
+    topic_text = topic.strip() or "群里日常交流"
+    token = hashlib.sha256(f"{topic_text}:{index}:{material_id or 0}".encode("utf-8")).hexdigest()[:MOCK_UNIQUENESS_TOKEN_LENGTH]
+    opener = MOCK_GROUP_OPENERS[index % len(MOCK_GROUP_OPENERS)]
+    focus = MOCK_GROUP_FOCUSES[index % len(MOCK_GROUP_FOCUSES)]
+    ending = MOCK_GROUP_ENDINGS[index % len(MOCK_GROUP_ENDINGS)]
+    suffix = f" 素材{material_id}" if material_id else ""
+    return f"mock-{token} {opener}{topic_text}的{focus}，{ending}{suffix}"
 
 
 class AiGateway:

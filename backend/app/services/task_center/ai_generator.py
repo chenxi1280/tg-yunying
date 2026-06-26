@@ -104,11 +104,18 @@ def _provider_for_model(session: Session, model_name: str) -> AiProvider | None:
     exact = next((provider for provider in providers if normalize_ai_model_name(provider.model_name) == model_name), None)
     if exact:
         return exact
-    return next((provider for provider in providers if _model_family(provider.model_name) == family or _model_family(provider.provider_name) == family or _model_family(provider.base_url) == family), None)
+    family_match = next((provider for provider in providers if _model_family(provider.model_name) == family or _model_family(provider.provider_name) == family or _model_family(provider.base_url) == family), None)
+    return family_match or next((provider for provider in providers if _is_mock_provider(provider)), None)
 
 
 def _provider_matches_family(provider: AiProvider, family: str) -> bool:
+    if _is_mock_provider(provider):
+        return True
     return not family or any(_model_family(value) == family for value in [provider.model_name, provider.provider_name, provider.base_url])
+
+
+def _is_mock_provider(provider: AiProvider) -> bool:
+    return str(provider.base_url or "").startswith("mock://")
 
 
 def _first_provider_for_family(session: Session, family: str) -> AiProvider | None:
