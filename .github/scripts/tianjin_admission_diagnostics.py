@@ -348,7 +348,7 @@ def pending_action_window(session, task):
         ).where(Action.task_id == task.id, Action.status == "pending")
     ).one()
     count, earliest, latest = row
-    now = datetime.utcnow()
+    now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
     due_count = session.scalar(
         select(func.count(Action.id)).where(
             Action.task_id == task.id,
