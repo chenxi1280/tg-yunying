@@ -346,6 +346,36 @@ def test_group_send_permission_follows_multiple_required_channels(monkeypatch) -
     assert probes == ["-100999"]
 
 
+def test_group_send_permission_follows_tianjin_common_group_links(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    followed: list[str] = []
+    probes: list[str] = []
+
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.ensure_channel_membership", lambda _account_id, channel_ref, *_args, **_kwargs: followed.append(channel_ref) or OperationResult(True, "已处理", detail="已加入前置群"))
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.probe_target_capabilities", lambda _account_id, target_peer_id, *_args, **_kwargs: probes.append(target_peer_id) or OperationResult(True, detail="复检可发言"))
+
+    with Session(engine) as session:
+        session.add(Task(id="task-common-groups", tenant_id=1, name="共同群准入", type="group_ai_chat", status="running", type_config={"auto_follow_required_channel": True}))
+        action = Action(id="membership-common-groups", tenant_id=1, task_id="task-common-groups", task_type="group_ai_chat", action_type="ensure_target_membership", account_id=11)
+        account = TgAccount(id=11, tenant_id=1, display_name="账号11", phone_masked="11", status="在线", session_ciphertext="session")
+        session.add_all([Tenant(id=1, name="默认运营空间"), action, account])
+        session.commit()
+
+        result = dispatcher._recover_group_send_permission_with_linked_channel(
+            session,
+            action,
+            account,
+            object(),
+            EnsureChannelMembershipPayload(channel_id="-1003583171851", channel_target_id=485, target_type="group", target_display="天津音乐学院", require_send=True),
+            OperationResult(False, "失败", "group_permission_denied", "被邀请人须拥有2个及以上天津的共同✈️群 [按钮：学院工兵群200出击 (https://t.me/zztjxygbq) / 学院优质出击报告 (https://t.me/ttyyxybg)]"),
+        )
+
+    assert result.ok is True
+    assert followed == ["zztjxygbq", "ttyyxybg"]
+    assert probes == ["-1003583171851"]
+
+
 def test_auto_follow_verification_uses_explicit_required_channel_links(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

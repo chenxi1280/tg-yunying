@@ -70,6 +70,9 @@ _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS = (
     "未加入目标频道",
     "无法进入关联讨论区",
     "缓存频道不可访问",
+    "共同群",
+    "共同✈️群",
+    "共同飞机群",
 )
 _GROUP_SEND_BUTTON_VERIFICATION_MARKERS = ("按钮", "button", "click", "点击")
 _GROUP_SEND_REPLY_VERIFICATION_MARKERS = ("/start", "发送验证回复", "send reply")
