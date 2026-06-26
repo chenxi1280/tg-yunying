@@ -23,6 +23,11 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      export_tianjin_invite_link:
+        description: Export a fresh Tianjin invite link with the configured rescue admin before retrying admission
+        required: false
+        default: false
+        type: boolean
       cleanup_tianjin_admission_backlog:
         description: Deduplicate stale Tianjin target-admission retry backlog
         required: false
@@ -361,6 +366,15 @@ jobs:
             echo "==> planner logs after profile"
             docker logs --tail 120 tgyunying-worker-planner || true
           '
+
+      - name: Export Tianjin invite link
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.export_tianjin_invite_link }}
+        run: |
+          set -euo pipefail
+          echo "TIANJIN_INVITE_LINK_EXPORT_START"
+          ssh silicon-valley-production-server 'timeout 90 docker exec -i tgyunying-backend python -' \
+            < .github/scripts/tianjin_export_invite_link.py
+          echo "TIANJIN_INVITE_LINK_EXPORT_END"
 
       - name: Queue Tianjin admission retry
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tianjin_admission_retry }}
