@@ -25,6 +25,7 @@ from app.auth import (
     normalize_phone,
     require_permission,
     serialize_user,
+    verify_password,
     verify_captcha_challenge,
 )
 from app.database import get_session
@@ -34,6 +35,7 @@ from app.schemas import (
     AdminUserCreate,
     AdminUserOut,
     AdminUserUpdate,
+    AuthChangePasswordRequest,
     AuthLoginRequest,
     AuthTokenOut,
     AuthUserOut,
@@ -95,6 +97,24 @@ def auth_login(payload: AuthLoginRequest, session: Session = Depends(get_session
 @router.get("/api/auth/me", response_model=AuthUserOut)
 def auth_me(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     return current_user
+
+
+@router.post("/api/auth/change-password", response_model=AuthUserOut)
+def auth_change_password(
+    payload: AuthChangePasswordRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    user = session.get(AppUser, current_user.id)
+    if not user:
+        raise HTTPException(status_code=400, detail="bootstrap admin password cannot be changed here")
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="current password is incorrect")
+    user.password_hash = hash_password(payload.new_password)
+    audit(session, tenant_id=user.tenant_id, actor=current_user.name, action="修改当前用户密码", target_type="app_user", target_id=str(user.id))
+    session.commit()
+    session.refresh(user)
+    return serialize_user(session, user)
 
 
 @router.get("/api/auth/permissions")

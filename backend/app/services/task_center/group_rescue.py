@@ -18,6 +18,8 @@ RESCUE_STATUS_PENDING = "pending"
 RESCUE_STATUS_INVITE_SUCCESS = "invite_success"
 RESCUE_STATUS_INVITE_FAILED = "invite_failed"
 REFRESHABLE_RESCUE_ACTION_STATUSES = {"failed", "skipped"}
+RESCUE_STATUS_UNKNOWN_AFTER_SEND = "unknown_after_send"
+PERMISSION_STREAK_TERMINAL_STATUSES = {"success", "failed", "skipped", RESCUE_STATUS_UNKNOWN_AFTER_SEND}
 
 
 @dataclass(frozen=True)
@@ -49,7 +51,7 @@ def permission_failure_count_for_send_action(session: Session, action: Action) -
         if _is_group_permission_failure(row, group_id):
             count += 1
             continue
-        if row.status in {"success", "failed", "skipped"}:
+        if row.status in PERMISSION_STREAK_TERMINAL_STATUSES:
             break
     return count
 
@@ -300,6 +302,8 @@ def _action_sort_key(action: Action) -> tuple[datetime, str]:
 
 def _action_rescue_status(action: Action) -> str:
     result = action.result if isinstance(action.result, dict) else {}
+    if action.status == RESCUE_STATUS_UNKNOWN_AFTER_SEND:
+        return RESCUE_STATUS_UNKNOWN_AFTER_SEND
     if result.get("rescue_status"):
         return str(result["rescue_status"])
     if action.status == "success":

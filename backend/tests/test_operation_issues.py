@@ -2,7 +2,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, AccountStatus, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, Task, TaskRuntimeSummary, Tenant, TgAccount
+from app.models import Action, AccountStatus, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, TargetRuntimeSummary, Task, TaskRuntimeSummary, Tenant, TgAccount
 from app.models.enums import FailureType
 from app.services._common import _now
 from app.services.runtime_summary import acknowledge_operation_issue, claim_operation_issue, get_operation_issue_detail, list_operation_issues, reconcile_stale_operation_issues, refresh_task_summary
@@ -74,6 +74,50 @@ def test_failed_task_summary_opens_and_resolves_operation_issue() -> None:
 
         assert list_operation_issues(session, 1, status="open") == []
         assert issue.status == "resolved"
+
+
+def test_unknown_after_send_issue_is_visible_in_target_summary_and_detail() -> None:
+    now = _now()
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=25, tenant_id=1, target_type="group", tg_peer_id="-10025", title="异常群", can_send=True))
+        session.add(TgAccount(id=13, tenant_id=1, display_name="账号", phone_masked="13", status=AccountStatus.ACTIVE.value, session_ciphertext="session"))
+        task = Task(
+            id="task-unknown-issue",
+            tenant_id=1,
+            name="结果未知任务",
+            type="group_ai_chat",
+            status="running",
+            account_config={"account_ids": [13]},
+            type_config={"target_operation_target_id": 25},
+        )
+        session.add(task)
+        session.add(
+            Action(
+                id="action-unknown-issue",
+                tenant_id=1,
+                task_id=task.id,
+                task_type=task.type,
+                action_type="send_message",
+                account_id=13,
+                status="unknown_after_send",
+                scheduled_at=now,
+                executed_at=now,
+                result={"error_code": "unknown_after_send", "error_message": "worker lost after gateway call"},
+            )
+        )
+        session.commit()
+
+        refresh_task_summary(session, task)
+        issue = session.scalar(select(OperationIssue).where(OperationIssue.source_task_id == task.id))
+        target_summary = session.scalar(select(TargetRuntimeSummary).where(TargetRuntimeSummary.tenant_id == 1, TargetRuntimeSummary.target_id == 25))
+        detail = get_operation_issue_detail(session, 1, issue.id)
+
+    assert target_summary.failed_action_count == 1
+    assert target_summary.affected_task_count == 1
+    assert target_summary.latest_failure_at == now
+    assert detail["recent_failed_actions"][0]["id"] == "action-unknown-issue"
+    assert detail["recent_failed_actions"][0]["status"] == "unknown_after_send"
 
 
 def test_delete_task_resolves_linked_operation_issue_and_runtime_summary() -> None:

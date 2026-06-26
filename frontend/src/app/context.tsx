@@ -69,10 +69,8 @@ export function AppProvider({ children }: AppProviderProps) {
   const navigate = useNavigate();
   const [token, setToken] = useState(localStorage.getItem('tg_ops_token') ?? '');
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [registerForm, setRegisterForm] = useState({ name: '', email: '', phone: '', password: '' });
   const [changePasswordForm, setChangePasswordForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
   const [captchaChallenge, setCaptchaChallenge] = useState<CaptchaChallenge | null>(null);
   const [captchaInput, setCaptchaInput] = useState('');
@@ -111,6 +109,10 @@ export function AppProvider({ children }: AppProviderProps) {
   const [auditFilters, setAuditFilters] = useState<AuditFilters>(() => defaultAuditFilters());
   const [accountDetail, setAccountDetail] = useState<AccountDetail | null>(null);
   const [accountDetailTab, setAccountDetailTab] = useState('资料');
+  const accountDetailRequestRef = React.useRef({ accountId: null as number | null, seq: 0 });
+  const accountPoolDetailRequestRef = React.useRef({ poolId: null as number | null, seq: 0 });
+  const groupDetailRequestRef = React.useRef({ groupId: null as number | null, seq: 0 });
+  const archiveDetailRequestRef = React.useRef({ archiveId: null as number | null, seq: 0 });
   const [accountPoolDetail, setAccountPoolDetail] = useState<AccountPoolDetail | null>(null);
   const [poolDirectAccountId, setPoolDirectAccountId] = useState<number | ''>('');
   const [returnAfterVerification, setReturnAfterVerification] = useState<'accountDetail' | 'accountPoolDetail'>('accountDetail');
@@ -138,6 +140,25 @@ export function AppProvider({ children }: AppProviderProps) {
   const [notice, setNotice] = useState('');
   const [directMessageForm, setDirectMessageForm] = useState(() => defaultDirectMessageForm());
   const { pendingActionKeys, isActionPending, runWithLoading } = useActionRunner(setBusy);
+  const appRefreshRequestSeq = React.useRef(0);
+  const userTokenLedgerRequestRef = React.useRef({ userId: null as number | null, seq: 0 });
+  const tokenAdjustmentRequestRef = React.useRef({ seq: 0, userId: null as number | null, signature: '' });
+  const developerAppSaveRequestRef = React.useRef({ seq: 0, appId: null as number | null, signature: '' });
+  const developerAppActionRequestRef = React.useRef({ seq: 0, appId: null as number | null, action: '' });
+  const tenantQuotaSaveRequestRef = React.useRef({ seq: 0, tenantId: null as number | null, signature: '' });
+  const tenantGroupRescueSaveRequestRef = React.useRef({ seq: 0, tenantId: null as number | null, signature: '' });
+  const adminUserSaveRequestRef = React.useRef({ seq: 0, userId: null as number | null, signature: '' });
+  const adminUserPasswordResetRequestRef = React.useRef({ seq: 0, userId: null as number | null, signature: '' });
+  const aiProviderSaveRequestRef = React.useRef({ seq: 0, providerId: null as number | null, signature: '' });
+  const aiProviderActionRequestRef = React.useRef({ seq: 0, providerId: null as number | null, action: '' });
+  const tenantAiSettingSaveRequestRef = React.useRef({ seq: 0, signature: '' });
+  const promptTemplateSaveRequestRef = React.useRef({ seq: 0, templateId: null as number | null, signature: '' });
+  const materialSaveRequestRef = React.useRef({ seq: 0, materialId: null as number | null, signature: '' });
+  const materialActionRequestRef = React.useRef({ seq: 0, materialId: null as number | null, action: '' });
+  const keywordRuleSaveRequestRef = React.useRef({ seq: 0, ruleId: null as number | null, signature: '' });
+  const accountProfileSaveRequestRef = React.useRef({ seq: 0, accountId: null as number | null, signature: '' });
+  const accountDetailActionRequestRef = React.useRef({ seq: 0, accountId: null as number | null, action: '' });
+  const accountLoginRequestRef = React.useRef({ seq: 0, accountId: null as number | null, action: '' });
 
   const accountContacts = accountDetail?.contacts ?? [];
   const poolContacts = accountPoolDetail?.contacts ?? [];
@@ -189,11 +210,23 @@ export function AppProvider({ children }: AppProviderProps) {
     });
   }, [selectedGroup?.id]);
 
+  function beginAppRefreshRequest() {
+    appRefreshRequestSeq.current += 1;
+    return appRefreshRequestSeq.current;
+  }
+
+  function isActiveAppRefreshRequest(requestSeq: number) {
+    return appRefreshRequestSeq.current === requestSeq;
+  }
+
   async function refresh() {
+    const requestSeq = beginAppRefreshRequest();
     setBusy('刷新数据');
     try {
-      const snapshot = await loadAppSnapshot({ activeView, selectedPoolId, taskStatusFilter, auditFilters });
-      const isSystemConfigSnapshot = activeView === 'systemConfig';
+      const refreshContext = { activeView, selectedPoolId, taskStatusFilter, auditFilters };
+      const snapshot = await loadAppSnapshot(refreshContext);
+      if (!isActiveAppRefreshRequest(requestSeq)) return;
+      const isSystemConfigSnapshot = refreshContext.activeView === 'systemConfig';
       setCurrentUser(snapshot.me);
       setRuntime(snapshot.runtime);
       setOverview(snapshot.overview);
@@ -225,8 +258,11 @@ export function AppProvider({ children }: AppProviderProps) {
         setSelectedGroupId((current) => current ?? snapshot.groups[0]?.id ?? null);
         setSelectedAiProviderId((current) => current || snapshot.tenantAiSetting?.default_provider_id || snapshot.aiProviders[0]?.id || '');
       }
+    } catch (error) {
+      if (!isActiveAppRefreshRequest(requestSeq)) return;
+      throw error;
     } finally {
-      setBusy('');
+      if (isActiveAppRefreshRequest(requestSeq)) setBusy('');
     }
   }
 
@@ -264,11 +300,18 @@ export function AppProvider({ children }: AppProviderProps) {
     setModal,
   });
 
+  async function refreshPageDataAfterAction(actionLabel: string) {
+    try {
+      await refresh();
+    } catch (error) {
+      showResult('页面数据刷新失败', `${actionLabel}操作已完成，但刷新页面数据失败：${errorMessage(error)}`);
+    }
+  }
+
   const {
     refreshCaptchaChallenge,
     verifyCaptcha,
     login,
-    register,
     changePassword,
     logout,
   } = createAuthActions({
@@ -277,9 +320,7 @@ export function AppProvider({ children }: AppProviderProps) {
     captchaToken,
     loginEmail,
     loginPassword,
-    registerForm,
     changePasswordForm,
-    setAuthMode,
     setBusy,
     setCaptchaChallenge,
     setCaptchaError,
@@ -309,6 +350,9 @@ export function AppProvider({ children }: AppProviderProps) {
     keywordRuleForm,
     materialFile,
     materialForm,
+    materialSaveRequestRef,
+    materialActionRequestRef,
+    keywordRuleSaveRequestRef,
     setKeywordRuleForm,
     setMaterialFile,
     setMaterialForm,
@@ -316,6 +360,7 @@ export function AppProvider({ children }: AppProviderProps) {
     setModal,
     setBusy,
     closeModal,
+    handleActionError,
     refresh,
     showResult,
   });
@@ -323,6 +368,12 @@ export function AppProvider({ children }: AppProviderProps) {
   const accountActions = createAccountActions({
     accountCreateForm,
     accountDetail,
+    accountDetailRequestRef,
+    accountProfileSaveRequestRef,
+    accountDetailActionRequestRef,
+    accountLoginRequestRef,
+    accountPoolDetailRequestRef,
+    groupDetailRequestRef,
     accountLoginForm,
     accountPoolDetail,
     accountPoolForm,
@@ -421,6 +472,7 @@ export function AppProvider({ children }: AppProviderProps) {
     setDirectMessageForm,
     setPoolDirectAccountId,
     setTasks,
+    handleActionError,
     refresh,
     refreshAccountDetail: accountActions.refreshAccountDetail,
     refreshAccountPoolDetail: accountActions.refreshAccountPoolDetail,
@@ -459,6 +511,18 @@ export function AppProvider({ children }: AppProviderProps) {
     tenantAiSetting,
     tenantForm,
     tokenAdjustmentForm,
+    tokenAdjustmentRequestRef,
+    developerAppSaveRequestRef,
+    developerAppActionRequestRef,
+    tenantQuotaSaveRequestRef,
+    tenantGroupRescueSaveRequestRef,
+    adminUserSaveRequestRef,
+    adminUserPasswordResetRequestRef,
+    aiProviderSaveRequestRef,
+    aiProviderActionRequestRef,
+    tenantAiSettingSaveRequestRef,
+    promptTemplateSaveRequestRef,
+    userTokenLedgerRequestRef,
     closeModal,
     handleActionError,
     refresh,
@@ -480,71 +544,114 @@ export function AppProvider({ children }: AppProviderProps) {
     if (!token) {
       void refreshCaptchaChallenge();
     }
-  }, [token, authMode]);
+  }, [token]);
 
   async function authorizeSelectedGroup(status: string) {
     if (!selectedGroup) return;
     setBusy('更新授权');
-    await api(`/groups/${selectedGroup.id}/authorize`, {
-      method: 'POST',
-      body: JSON.stringify({ actor: '普通用户', auth_status: status }),
-    });
-    showResult('群使用范围已更新', `${selectedGroup.title} 已设置为 ${operationLabel(status)}`);
-    await refresh();
+    try {
+      await api(`/groups/${selectedGroup.id}/authorize`, {
+        method: 'POST',
+        body: JSON.stringify({ actor: '普通用户', auth_status: status }),
+      });
+      showResult('群使用范围已更新', `${selectedGroup.title} 已设置为 ${operationLabel(status)}`);
+      await refreshPageDataAfterAction('群授权更新');
+    } catch (error) {
+      handleActionError(error);
+    } finally {
+      setBusy('');
+    }
   }
 
   async function createArchive() {
     if (!selectedGroup) return;
     setBusy('创建归档');
-    await api('/archives', {
-      method: 'POST',
-      body: JSON.stringify({
-        tenant_id: currentUser?.tenant_id ?? 1,
-        group_id: selectedGroup.id,
-        title: `${selectedGroup.title} 内容与成员归档`,
-      }),
-    });
-    showResult('归档已创建', '已生成群归档和新群初始化方案。');
-    goToView('groupManagement');
-    await refresh();
+    try {
+      await api('/archives', {
+        method: 'POST',
+        body: JSON.stringify({
+          tenant_id: currentUser?.tenant_id ?? 1,
+          group_id: selectedGroup.id,
+          title: `${selectedGroup.title} 内容与成员归档`,
+        }),
+      });
+      showResult('归档已创建', '已生成群归档和新群初始化方案。');
+      goToView('groupManagement');
+      await refreshPageDataAfterAction('归档创建');
+    } catch (error) {
+      handleActionError(error);
+    } finally {
+      setBusy('');
+    }
   }
 
   async function saveGroupPolicy() {
     if (!selectedGroup) return;
     setBusy('保存群配置');
-    await api(`/groups/${selectedGroup.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(groupPolicy),
-    });
-    closeModal();
-    showResult('运营配置已保存', `${selectedGroup.title} 的限频、自动校验和内容规则已更新。`);
-    await refresh();
+    try {
+      await api(`/groups/${selectedGroup.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(groupPolicy),
+      });
+      closeModal();
+      showResult('运营配置已保存', `${selectedGroup.title} 的限频、自动校验和内容规则已更新。`);
+      await refreshPageDataAfterAction('群策略保存');
+    } catch (error) {
+      handleActionError(error);
+    } finally {
+      setBusy('');
+    }
   }
 
-  async function openArchiveDetail(archive: ArchiveItem) {
+  async function openArchiveDetail(archive: ArchiveItem): Promise<boolean> {
+    const archiveId = archive.id;
+    const requestSeq = archiveDetailRequestRef.current.seq + 1;
+    archiveDetailRequestRef.current = { archiveId, seq: requestSeq };
     setBusy('读取归档');
-    const detail = await api<ArchiveDetail>(`/archives/${archive.id}`);
-    setArchiveDetail(detail);
-    setBusy('');
+    try {
+      const detail = await api<ArchiveDetail>(`/archives/${archiveId}`);
+      if (archiveDetailRequestRef.current.archiveId !== archiveId || archiveDetailRequestRef.current.seq !== requestSeq) return false;
+      setArchiveDetail(detail);
+      return true;
+    } catch (error) {
+      if (archiveDetailRequestRef.current.archiveId !== archiveId || archiveDetailRequestRef.current.seq !== requestSeq) return false;
+      handleActionError(error);
+      return false;
+    } finally {
+      if (archiveDetailRequestRef.current.archiveId === archiveId && archiveDetailRequestRef.current.seq === requestSeq) {
+        setBusy('');
+        archiveDetailRequestRef.current = { archiveId: null, seq: requestSeq };
+      }
+    }
   }
 
   async function exportArchive(archive: ArchiveItem) {
     setBusy('导出归档');
-    const exported = await api<ArchiveExport>(`/archives/${archive.id}/export`, {
-      method: 'POST',
-      body: JSON.stringify({ export_format: 'json' }),
-    });
-    showResult('归档导出已生成', `已生成 JSON 导出数据：消息 ${exported.message_count} 条，成员 ${exported.member_count} 个，并写入审计。`);
-    await refresh();
-    setBusy('');
+    try {
+      const exported = await api<ArchiveExport>(`/archives/${archive.id}/export`, {
+        method: 'POST',
+        body: JSON.stringify({ export_format: 'json' }),
+      });
+      showResult('归档导出已生成', `已生成 JSON 导出数据：消息 ${exported.message_count} 条，成员 ${exported.member_count} 个，并写入审计。`);
+      await refreshPageDataAfterAction('归档导出');
+    } catch (error) {
+      handleActionError(error);
+    } finally {
+      setBusy('');
+    }
   }
 
   async function rerunArchive(archive: ArchiveItem) {
     setBusy('重跑归档');
-    const updated = await api<ArchiveItem>(`/archives/${archive.id}/rerun`, { method: 'POST' });
-    setNotice(`${updated.title} 已重新进入归档流程。`);
-    await refresh();
-    setBusy('');
+    try {
+      const updated = await api<ArchiveItem>(`/archives/${archive.id}/rerun`, { method: 'POST' });
+      setNotice(`${updated.title} 已重新进入归档流程。`);
+      await refreshPageDataAfterAction('归档重跑');
+    } catch (error) {
+      handleActionError(error);
+    } finally {
+      setBusy('');
+    }
   }
 
   function accountName(accountId: number | null | undefined) {
@@ -570,14 +677,10 @@ export function AppProvider({ children }: AppProviderProps) {
     setToken,
     currentUser,
     setCurrentUser,
-    authMode,
-    setAuthMode,
     loginEmail,
     setLoginEmail,
     loginPassword,
     setLoginPassword,
-    registerForm,
-    setRegisterForm,
     changePasswordForm,
     setChangePasswordForm,
     captchaChallenge,
@@ -782,7 +885,6 @@ export function AppProvider({ children }: AppProviderProps) {
     saveAccountProfile: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:profile:save`, '保存账号资料', saveAccountProfile),
     retryAccountProfileSync: () => runWithLoading(`account:${accountDetail?.account.id ?? 'current'}:profile-sync`, '重试资料同步', retryAccountProfileSync),
     login: () => runWithLoading('auth:login', '登录', login),
-    register: () => runWithLoading('auth:register', '注册', register),
     changePassword: () => runWithLoading('modal:password:change', '修改密码', changePassword),
     logout,
     runLogin,

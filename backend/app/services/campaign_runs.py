@@ -241,7 +241,7 @@ def _rewrite_mirror_content(
     tenant_setting = get_tenant_ai_setting(session, campaign.tenant_id)
     provider = pick_ai_provider(session, campaign, tenant_setting)
     if not tenant_setting.ai_enabled or not provider:
-        return light_rewrite_message(message.content), "template_fallback", "AI 未启用或没有健康供应商"
+        raise RuntimeError("监听转发 AI 润色不可用：AI 未启用或没有健康供应商")
     prompt = (
         "请把源群消息改写成适合目标 Telegram 群发送的一条自然消息。\n"
         "要求：保留原意，换一种表达；不要暴露转发、监听、AI、运营；不要 @ 用户；不要直接引用原消息；只输出 JSON。\n"
@@ -267,8 +267,8 @@ def _rewrite_mirror_content(
         if not content:
             raise RuntimeError("AI 润色返回空内容")
         return content, provider.provider_type, ""
-    except Exception as exc:  # noqa: BLE001 - mirror forwarding has a local fallback.
-        return light_rewrite_message(message.content), "template_fallback", str(exc)
+    except Exception as exc:  # noqa: BLE001 - expose AI rewrite failures as campaign run failures.
+        raise RuntimeError(f"监听转发 AI 润色不可用：{exc}") from exc
 
 
 def _auto_queue_draft(session: Session, draft: AiDraft, *, actor: str, task_index: int, target_group_id: int, preferred_account_id: int | None = None) -> int:
@@ -402,8 +402,7 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
                     continue
                 selected_ids = _active_selected_account_ids(session, campaign, target_group.id)
                 if not selected_ids:
-                    target_reason = "目标群没有可用发送账号"
-                    continue
+                    raise RuntimeError("监听转发目标群没有可用发送账号")
                 outbound_content, generation_source, rewrite_error = _rewrite_mirror_content(
                     session,
                     campaign=campaign,
@@ -439,9 +438,9 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
                     persona="源群同步",
                     content=filtered.content,
                     risk_level="低",
-                    provider_name="监听转发" if generation_source != "template_fallback" else "代码轻改写",
+                    provider_name="监听转发",
                     model_name=generation_source,
-                    prompt_template_name="AI 润色监听转发" if generation_source != "template_fallback" else "代码轻改写降级",
+                    prompt_template_name="AI 润色监听转发",
                     suggested_account_id=selected_ids[task_index % len(selected_ids)],
                     sequence_index=task_index + 1,
                     generation_source=generation_source,
@@ -459,7 +458,7 @@ def run_mirror_forward_campaign(session: Session, campaign: Campaign) -> int:
                     message=message,
                     target_group_id=target_group.id,
                     action="queued",
-                    reason=f"ai_failed_template_fallback:{rewrite_error[:500]}" if generation_source == "template_fallback" and rewrite_error else "queued=1",
+                    reason="queued=1",
                     content=filtered.content,
                 )
     _mark_campaign_run_success(campaign)

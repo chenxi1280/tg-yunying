@@ -66,14 +66,6 @@ class AuthLoginRequest(BaseModel):
     captcha_token: str
 
 
-class AuthRegisterRequest(BaseModel):
-    name: str = Field(..., min_length=2, max_length=80)
-    email: str = Field(..., min_length=3, max_length=160)
-    phone: str | None = Field(default=None, max_length=40)
-    password: str = Field(..., min_length=6, max_length=80)
-    captcha_token: str
-
-
 class AuthChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=1, max_length=80)
     new_password: str = Field(..., min_length=6, max_length=80)
@@ -302,7 +294,7 @@ class RuntimeConfigOut(BaseModel):
 
 __all__ = [
     "TenantCreate", "TenantUpdate", "TenantOut", "TenantNotificationSettingsOut", "TenantNotificationSettingsUpdate", "TenantGroupRescueSettingsUpdate",
-    "AuthLoginRequest", "AuthRegisterRequest", "AuthChangePasswordRequest", "AuthUserOut", "AuthTokenOut",
+    "AuthLoginRequest", "AuthChangePasswordRequest", "AuthUserOut", "AuthTokenOut",
     "CaptchaChallengeOut", "CaptchaVerifyRequest", "CaptchaVerifyOut",
     "SubscriptionRedeemRequest", "SubscriptionRedeemOut",
     "SubscriptionPlanCreate", "SubscriptionPlanUpdate", "SubscriptionPlanOut",

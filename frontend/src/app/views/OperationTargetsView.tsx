@@ -3,13 +3,13 @@ import { Alert, App as AntdApp, Button, Card, Descriptions, Empty, Form, Input, 
 import type { ColumnsType } from 'antd/es/table';
 import { MessageSquareText, RefreshCcw } from 'lucide-react';
 import { api, ApiError } from '../../shared/api/client';
-import type { ChannelMessage, ChannelMessageCommentSync, OperationTarget, OperationTargetDetail, OperationTargetMessageSync, OperationTargetsSync, TaskCenterTaskType } from '../types';
+import type { ChannelMessage, ChannelMessageComment, ChannelMessageCommentSync, OperationTarget, OperationTargetDetail, OperationTargetMessageSync, OperationTargetsSync, TaskCenterTaskType } from '../types';
 import { DetailModal, StatusBadge, useAntdTableControls } from '../components/shared';
 import { formatBeijingDateTime } from '../time';
 
 type Props = {
   onSendToTarget: (target: OperationTarget) => void;
-  onCreateTaskFromTarget: (taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment'>, target: OperationTarget, message?: ChannelMessage) => void;
+  onCreateTaskFromTarget: (taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment'>, target: OperationTarget, message?: ChannelMessage, comment?: ChannelMessageComment) => void;
   focusTarget?: { targetId: number; nonce: number } | null;
   onFocusTargetConsumed?: () => void;
   canManageMessageSending: boolean;
@@ -17,6 +17,16 @@ type Props = {
   canManageTasks: boolean;
   canManageArchives: boolean;
   onOpenTargetProfile: () => void;
+};
+
+type OperationTargetFormValues = {
+  target_type?: OperationTarget['target_type'];
+  tg_peer_id?: string;
+  title?: string;
+  username?: string;
+  member_count?: number;
+  can_send?: boolean;
+  auth_status?: string;
 };
 
 function formatDateTime(value?: string | null) {
@@ -29,6 +39,10 @@ function taskLabel(taskType: TaskCenterTaskType) {
   if (taskType === 'channel_comment') return '评论';
   if (taskType === 'group_relay') return '转发监听';
   return 'AI 活跃';
+}
+
+function commentsForMessage(comments: ChannelMessageComment[], messageId: number) {
+  return comments.filter((comment) => comment.channel_message_id === messageId);
 }
 
 function capabilityTags(target: OperationTarget) {
@@ -61,89 +75,215 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
   const [targetDetail, setTargetDetail] = React.useState<OperationTargetDetail | null>(null);
   const [targetModalOpen, setTargetModalOpen] = React.useState(false);
   const [detailOpen, setDetailOpen] = React.useState(false);
-  const [form] = Form.useForm();
+  const [form] = Form.useForm<OperationTargetFormValues>();
   const appliedFocusNonce = React.useRef<number | null>(null);
+  const activeTargetsListRequestSeq = React.useRef(0);
+  const activeTargetsSyncAllRequestSeq = React.useRef(0);
+  const activeDetailTargetId = React.useRef<number | null>(null);
+  const activeDetailTargetRequestSeq = React.useRef(0);
+  const activeDetailTargetWriteSeq = React.useRef(0);
+  const activeTargetSaveRequestRef = React.useRef({ seq: 0, signature: '' });
 
   function errorMessage(error: unknown) {
-    if (error instanceof ApiError) {
-      try {
-        const parsed = JSON.parse(error.body) as { detail?: unknown };
-        if (typeof parsed.detail === 'string') return parsed.detail;
-      } catch {
-        return error.body || error.message;
-      }
-      return error.body || error.message;
-    }
+    if (error instanceof ApiError) return error.message;
     return error instanceof Error ? error.message : String(error);
   }
 
-  async function load() {
-    setLoading(true);
-    try {
-      setTargets(await api<OperationTarget[]>('/operation-targets'));
-    } finally {
-      setLoading(false);
-    }
+  function isActiveDetailTarget(targetId: number) {
+    return activeDetailTargetId.current === targetId;
   }
 
-  async function loadTargetDetail(target: OperationTarget) {
+  function beginTargetsListRequest() {
+    activeTargetsListRequestSeq.current += 1;
+    return activeTargetsListRequestSeq.current;
+  }
+
+  function isActiveTargetsListRequest(requestSeq: number) {
+    return activeTargetsListRequestSeq.current === requestSeq;
+  }
+
+  function beginTargetsSyncAllRequest() {
+    activeTargetsSyncAllRequestSeq.current += 1;
+    return activeTargetsSyncAllRequestSeq.current;
+  }
+
+  function isActiveTargetsSyncAllRequest(requestSeq: number) {
+    return activeTargetsSyncAllRequestSeq.current === requestSeq;
+  }
+
+  function beginDetailTargetRequest(targetId: number) {
+    activeDetailTargetId.current = targetId;
+    activeDetailTargetRequestSeq.current += 1;
+    return activeDetailTargetRequestSeq.current;
+  }
+
+  function isActiveDetailTargetRequest(targetId: number, requestSeq: number) {
+    return isActiveDetailTarget(targetId) && activeDetailTargetRequestSeq.current === requestSeq;
+  }
+
+  function beginDetailTargetWrite(targetId: number) {
+    activeDetailTargetId.current = targetId;
+    activeDetailTargetWriteSeq.current += 1;
+    return activeDetailTargetWriteSeq.current;
+  }
+
+  function isActiveDetailTargetWrite(targetId: number, requestSeq: number) {
+    return isActiveDetailTarget(targetId) && activeDetailTargetWriteSeq.current === requestSeq;
+  }
+
+  function operationTargetSavePayloadSignature(targetId: number | null, values: OperationTargetFormValues) {
+    return JSON.stringify({
+      id: targetId,
+      target_type: values.target_type ?? '',
+      tg_peer_id: values.tg_peer_id ?? '',
+      title: values.title ?? '',
+      username: values.username ?? '',
+      member_count: values.member_count ?? 0,
+      can_send: values.can_send ?? true,
+      auth_status: values.auth_status ?? '已授权运营',
+    });
+  }
+
+  function beginTargetSaveRequest(signature: string) {
+    activeTargetSaveRequestRef.current = { seq: activeTargetSaveRequestRef.current.seq + 1, signature };
+    return activeTargetSaveRequestRef.current;
+  }
+
+  function currentOperationTargetSavePayloadSignature() {
+    return operationTargetSavePayloadSignature(editingTarget?.id ?? null, form.getFieldsValue(true));
+  }
+
+  function isActiveTargetSaveRequest(request: { seq: number; signature: string }) {
+    return activeTargetSaveRequestRef.current.seq === request.seq;
+  }
+
+  function isCurrentTargetSaveRequest(request: { seq: number; signature: string }) {
+    return isActiveTargetSaveRequest(request) && currentOperationTargetSavePayloadSignature() === request.signature;
+  }
+
+  async function fetchTargets(requestSeq: number): Promise<boolean> {
+    const nextTargets = await api<OperationTarget[]>('/operation-targets');
+    if (!isActiveTargetsListRequest(requestSeq)) return false;
+    setTargets(nextTargets);
+    return true;
+  }
+
+  async function fetchTargetDetail(target: OperationTarget, requestSeq: number): Promise<boolean> {
+    const detail = await api<OperationTargetDetail>(`/operation-targets/${target.id}/detail`);
+    if (!isActiveDetailTargetRequest(target.id, requestSeq)) return false;
+    setTargetDetail(detail);
+    return true;
+  }
+
+  async function loadTargetDetail(target: OperationTarget): Promise<boolean> {
+    const requestSeq = beginDetailTargetRequest(target.id);
     setDetailLoading(true);
     setFormError('');
     try {
-      const detail = await api<OperationTargetDetail>(`/operation-targets/${target.id}/detail`);
-      setTargetDetail(detail);
+      return await fetchTargetDetail(target, requestSeq);
     } catch (error) {
+      if (!isActiveDetailTargetRequest(target.id, requestSeq)) return false;
+      setFormError(errorMessage(error));
+      return false;
+    } finally {
+      if (isActiveDetailTargetRequest(target.id, requestSeq)) setDetailLoading(false);
+    }
+  }
+
+  async function load() {
+    const requestSeq = beginTargetsListRequest();
+    setLoading(true);
+    setFormError('');
+    try {
+      await fetchTargets(requestSeq);
+    } catch (error) {
+      if (!isActiveTargetsListRequest(requestSeq)) return;
       setFormError(errorMessage(error));
     } finally {
-      setDetailLoading(false);
+      if (isActiveTargetsListRequest(requestSeq)) setLoading(false);
+    }
+  }
+
+  async function refreshTargetsListAfterAction(actionLabel: string) {
+    const requestSeq = beginTargetsListRequest();
+    setLoading(false);
+    try {
+      await fetchTargets(requestSeq);
+    } catch (error) {
+      if (!isActiveTargetsListRequest(requestSeq)) return;
+      setFormError(`运营目标数据刷新失败：${actionLabel}操作已完成，但刷新运营目标列表失败：${errorMessage(error)}`);
+    }
+  }
+
+  async function refreshTargetDetailAfterAction(actionLabel: string, target: OperationTarget) {
+    const requestSeq = beginDetailTargetRequest(target.id);
+    try {
+      const loaded = await fetchTargetDetail(target, requestSeq);
+      if (!loaded) return;
+      await refreshTargetsListAfterAction(actionLabel);
+    } catch (error) {
+      if (!isActiveDetailTargetRequest(target.id, requestSeq)) return;
+      setFormError(`运营目标数据刷新失败：${actionLabel}操作已完成，但刷新目标详情失败：${errorMessage(error)}`);
     }
   }
 
   async function syncTargetMessages(target: OperationTarget) {
+    const requestSeq = beginDetailTargetWrite(target.id);
     setSyncing(true);
+    setFormError('');
     try {
       const result = await api<OperationTargetMessageSync>(`/operation-targets/${target.id}/sync-messages`, { method: 'POST' });
+      if (!isActiveDetailTargetWrite(target.id, requestSeq)) return;
       setTargetDetail(result.detail);
-      await load();
+      await refreshTargetsListAfterAction('目标消息同步');
     } catch (error) {
+      if (!isActiveDetailTargetWrite(target.id, requestSeq)) return;
       setFormError(errorMessage(error));
     } finally {
-      setSyncing(false);
+      if (isActiveDetailTargetWrite(target.id, requestSeq)) setSyncing(false);
     }
   }
 
   async function syncMessageComments(channelMessage: ChannelMessage) {
     if (!targetDetail) return;
+    const target = targetDetail.target;
+    const requestSeq = beginDetailTargetWrite(target.id);
     setSyncingCommentMessageId(channelMessage.id);
     setFormError('');
     try {
       const result = await api<ChannelMessageCommentSync>(`/channel-messages/${channelMessage.id}/sync-comments`, { method: 'POST' });
+      if (!isActiveDetailTargetWrite(target.id, requestSeq)) return;
       if (result.sync_error) {
         setFormError(result.sync_error);
       }
-      await loadTargetDetail(targetDetail.target);
+      await refreshTargetDetailAfterAction('评论同步', target);
     } catch (error) {
+      if (!isActiveDetailTargetWrite(target.id, requestSeq)) return;
       setFormError(errorMessage(error));
     } finally {
-      setSyncingCommentMessageId(null);
+      if (isActiveDetailTargetWrite(target.id, requestSeq)) setSyncingCommentMessageId(null);
     }
   }
 
   async function syncAllTargets() {
+    const requestSeq = beginTargetsSyncAllRequest();
+    setLoading(false);
     setSyncingAllTargets(true);
     setFormError('');
     try {
       const result = await api<OperationTargetsSync>('/operation-targets/sync-all', { method: 'POST' });
-      setTargets(result.targets);
+      if (!isActiveTargetsSyncAllRequest(requestSeq)) return;
       if (result.failed_accounts.length) {
         void message.warning(`已同步 ${result.synced_accounts} 个在线账号，${result.failed_accounts.length} 个账号失败，请查看目标详情或账号同步记录。`);
       } else {
         void message.success(`已同步 ${result.synced_accounts} 个在线账号，当前 ${result.target_count} 个群/频道目标。`);
       }
+      await refreshTargetsListAfterAction('目标全量同步');
     } catch (error) {
+      if (!isActiveTargetsSyncAllRequest(requestSeq)) return;
       setFormError(errorMessage(error));
     } finally {
-      setSyncingAllTargets(false);
+      if (isActiveTargetsSyncAllRequest(requestSeq)) setSyncingAllTargets(false);
     }
   }
 
@@ -171,7 +311,9 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     onFocusTargetConsumed?.();
   }, [focusTarget, message, onFocusTargetConsumed, targets]);
 
-  async function saveTarget(values: any) {
+  async function saveTarget(values: OperationTargetFormValues) {
+    const actionLabel = editingTarget ? '运营目标保存' : '运营目标新增';
+    const saveRequest = beginTargetSaveRequest(operationTargetSavePayloadSignature(editingTarget?.id ?? null, values));
     setSaving(true);
     setFormError('');
     try {
@@ -188,14 +330,17 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
         method: editingTarget ? 'PATCH' : 'POST',
         body: JSON.stringify(body),
       });
+      if (!isCurrentTargetSaveRequest(saveRequest)) return;
       setEditingTarget(null);
       setTargetModalOpen(false);
       form.resetFields();
-      await load();
+      void message.success(editingTarget ? '运营目标已保存' : '运营目标已新增');
+      await refreshTargetsListAfterAction(actionLabel);
     } catch (error) {
+      if (!isCurrentTargetSaveRequest(saveRequest)) return;
       setFormError(errorMessage(error));
     } finally {
-      setSaving(false);
+      if (isActiveTargetSaveRequest(saveRequest)) setSaving(false);
     }
   }
 
@@ -210,32 +355,37 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
           title: `${target.title} 内容与成员归档`,
         }),
       });
+      if (!isActiveDetailTarget(target.id)) return;
       void message.success('归档任务已创建');
-      await loadTargetDetail(target);
-      await load();
+      await refreshTargetDetailAfterAction('归档创建', target);
     } catch (error) {
+      if (!isActiveDetailTarget(target.id)) return;
       setFormError(errorMessage(error));
     } finally {
-      setCreatingArchiveId(null);
+      if (isActiveDetailTarget(target.id)) setCreatingArchiveId(null);
     }
   }
 
   async function saveAccountPolicy(accountId: number, patch: { can_send?: boolean; is_listener?: boolean }) {
     if (!targetDetail) return;
+    const target = targetDetail.target;
+    const requestSeq = beginDetailTargetWrite(target.id);
     setAccountPolicySaving(`${accountId}:${Object.keys(patch)[0] ?? 'policy'}`);
     setFormError('');
     try {
-      const detail = await api<OperationTargetDetail>(`/operation-targets/${targetDetail.target.id}/accounts/${accountId}`, {
+      const detail = await api<OperationTargetDetail>(`/operation-targets/${target.id}/accounts/${accountId}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
       });
+      if (!isActiveDetailTargetWrite(target.id, requestSeq)) return;
       setTargetDetail(detail);
       void message.success('账号风控已保存');
-      await load();
+      await refreshTargetsListAfterAction('账号策略保存');
     } catch (error) {
+      if (!isActiveDetailTargetWrite(target.id, requestSeq)) return;
       setFormError(errorMessage(error));
     } finally {
-      setAccountPolicySaving('');
+      if (isActiveDetailTargetWrite(target.id, requestSeq)) setAccountPolicySaving('');
     }
   }
 
@@ -248,6 +398,7 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
 
   async function retryAdmission() {
     if (!targetDetail) return;
+    const target = targetDetail.target;
     const reason = admissionRetryReason.trim();
     if (!reason) {
       setFormError('请填写重试原因');
@@ -255,11 +406,13 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
     }
     setAdmissionRetrySaving(true);
     setFormError('');
+    const requestSeq = beginDetailTargetWrite(target.id);
     try {
-      const detail = await api<OperationTargetDetail>(`/operation-targets/${targetDetail.target.id}/admission/retry`, {
+      const detail = await api<OperationTargetDetail>(`/operation-targets/${target.id}/admission/retry`, {
         method: 'POST',
         body: JSON.stringify({ reason, account_ids: admissionRetryAccountIds }),
       });
+      if (!isActiveDetailTargetWrite(target.id, requestSeq)) return;
       setTargetDetail(detail);
       setAdmissionRetryOpen(false);
       const retry = detail.admission_retry || {};
@@ -268,11 +421,12 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
       } else {
         void message.success(`已重查 ${retry.retried_account_count ?? admissionRetryAccountIds.length} 个账号，恢复 ${retry.recovered_account_count ?? 0} 个`);
       }
-      await load();
+      await refreshTargetsListAfterAction('准入重试');
     } catch (error) {
+      if (!isActiveDetailTargetWrite(target.id, requestSeq)) return;
       setFormError(errorMessage(error));
     } finally {
-      setAdmissionRetrySaving(false);
+      if (isActiveDetailTargetWrite(target.id, requestSeq)) setAdmissionRetrySaving(false);
     }
   }
 
@@ -292,12 +446,18 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
   }
 
   function openDetail(target: OperationTarget) {
+    activeDetailTargetId.current = target.id;
     setDetailTarget(target);
     setTargetDetail(null);
     setDetailOpen(true);
     setFormError('');
-    void loadTargetDetail(target).then(() => {
-      if (canManageTargets) void syncTargetMessages(target);
+    setSyncing(false);
+    setSyncingCommentMessageId(null);
+    setAdmissionRetrySaving(false);
+    setAccountPolicySaving('');
+    setCreatingArchiveId(null);
+    void loadTargetDetail(target).then((loaded) => {
+      if (loaded && canManageTargets) void syncTargetMessages(target);
     });
   }
 
@@ -316,10 +476,17 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
   }
 
   function closeDetail() {
+    activeDetailTargetId.current = null;
     setDetailOpen(false);
     setDetailTarget(null);
     setTargetDetail(null);
     setAdmissionRetryOpen(false);
+    setDetailLoading(false);
+    setSyncing(false);
+    setSyncingCommentMessageId(null);
+    setAdmissionRetrySaving(false);
+    setAccountPolicySaving('');
+    setCreatingArchiveId(null);
   }
 
   const table = useAntdTableControls<OperationTarget>({
@@ -508,27 +675,38 @@ export default function OperationTargetsView({ onSendToTarget, onCreateTaskFromT
                   dataSource={targetDetail.channel_messages}
                   loading={detailLoading || syncing}
                   locale={{ emptyText: <Empty description="暂无频道消息，同步后可从消息行创建浏览、点赞、评论任务" /> }}
-                  renderItem={(message) => (
-                    <List.Item
-                      actions={[
-                        canManageMessageSending ? <Button size="small" onClick={() => onSendToTarget(targetDetail.target)}>发消息</Button> : null,
-                        canManageTargets ? <Button size="small" loading={syncingCommentMessageId === message.id} onClick={() => syncMessageComments(message)}>同步评论</Button> : null,
-                        canManageTasks ? <Button size="small" onClick={() => onCreateTaskFromTarget('channel_view', targetDetail.target, message)}>做{taskLabel('channel_view')}任务</Button> : null,
-                        canManageTasks ? <Button size="small" onClick={() => onCreateTaskFromTarget('channel_like', targetDetail.target, message)}>做{taskLabel('channel_like')}任务</Button> : null,
-                        canManageTasks ? <Button size="small" onClick={() => onCreateTaskFromTarget('channel_comment', targetDetail.target, message)}>做{taskLabel('channel_comment')}任务</Button> : null,
-                      ]}
-                    >
-                      <List.Item.Meta
-                        title={<Space><Typography.Text strong>#{message.message_id}</Typography.Text><Typography.Text type="secondary">{formatDateTime(message.published_at)}</Typography.Text></Space>}
-                        description={
-                          <Space direction="vertical" size={4}>
-                            <Typography.Text>{message.content_preview || message.message_url || '无内容预览'}</Typography.Text>
-                            <Typography.Text type="secondary">已采集评论 {targetDetail.channel_comments.filter((comment) => comment.channel_message_id === message.id).length} 条</Typography.Text>
-                          </Space>
-                        }
-                      />
-                    </List.Item>
-                  )}
+                  renderItem={(message) => {
+                    const messageComments = commentsForMessage(targetDetail.channel_comments, message.id);
+                    return (
+                      <List.Item
+                        actions={[
+                          canManageMessageSending ? <Button size="small" onClick={() => onSendToTarget(targetDetail.target)}>发消息</Button> : null,
+                          canManageTargets ? <Button size="small" loading={syncingCommentMessageId === message.id} onClick={() => syncMessageComments(message)}>同步评论</Button> : null,
+                          canManageTasks ? <Button size="small" onClick={() => onCreateTaskFromTarget('channel_view', targetDetail.target, message)}>做{taskLabel('channel_view')}任务</Button> : null,
+                          canManageTasks ? <Button size="small" onClick={() => onCreateTaskFromTarget('channel_like', targetDetail.target, message)}>做{taskLabel('channel_like')}任务</Button> : null,
+                          canManageTasks ? <Button size="small" onClick={() => onCreateTaskFromTarget('channel_comment', targetDetail.target, message)}>做{taskLabel('channel_comment')}任务</Button> : null,
+                        ]}
+                      >
+                        <List.Item.Meta
+                          title={<Space><Typography.Text strong>#{message.message_id}</Typography.Text><Typography.Text type="secondary">{formatDateTime(message.published_at)}</Typography.Text></Space>}
+                          description={
+                            <Space direction="vertical" size={4}>
+                              <Typography.Text>{message.content_preview || message.message_url || '无内容预览'}</Typography.Text>
+                              <Typography.Text type="secondary">已采集评论 {messageComments.length} 条</Typography.Text>
+                              {messageComments.map((comment) => (
+                                <Space key={comment.id} size={8} wrap>
+                                  <Typography.Text type="secondary">#{comment.comment_message_id}</Typography.Text>
+                                  <Typography.Text>{comment.author_name || comment.author_username || '匿名'}</Typography.Text>
+                                  <Typography.Text>{comment.content_preview || '无内容预览'}</Typography.Text>
+                                  {canManageTasks && <Button size="small" icon={<MessageSquareText size={14} />} onClick={() => onCreateTaskFromTarget('channel_comment', targetDetail.target, message, comment)}>上线此评论</Button>}
+                                </Space>
+                              ))}
+                            </Space>
+                          }
+                        />
+                      </List.Item>
+                    );
+                  }}
                 />
               </Card>
             )}

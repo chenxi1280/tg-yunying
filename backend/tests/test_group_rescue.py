@@ -26,6 +26,22 @@ from app.services.tenants import group_rescue_settings_payload, update_group_res
 NOW = datetime(2026, 6, 22, 10, 0, 0)
 
 
+def _permission_denied_send_action(action_id: str, task_id: str, when: datetime) -> Action:
+    return Action(
+        id=action_id,
+        tenant_id=1,
+        task_id=task_id,
+        task_type="group_ai_chat",
+        action_type="send_message",
+        account_id=11,
+        scheduled_at=when,
+        executed_at=when,
+        status="failed",
+        payload={"group_id": 7, "message_text": "permission denied"},
+        result={"error_code": FailureType.GROUP_PERMISSION_DENIED.value, "error_message": "群无权限"},
+    )
+
+
 def _session() -> Session:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1123,6 +1139,36 @@ def test_group_ai_permission_failure_count_uses_latest_consecutive_streak() -> N
             payload={"group_id": 7, "message_text": "current"},
             result={"error_code": FailureType.GROUP_PERMISSION_DENIED.value, "error_message": "群无权限"},
         )
+        session.add(current)
+        session.commit()
+
+        assert permission_failure_count_for_send_action(session, current) == 1
+
+
+def test_group_ai_permission_failure_count_stops_at_unknown_after_send() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-ai-unknown-boundary", tenant_id=1, name="ai rescue", type="group_ai_chat", status="running"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="普通账号", phone_masked="11", status=AccountStatus.ACTIVE.value, session_ciphertext="session-11"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="目标群"))
+        for index in range(3):
+            session.add(_permission_denied_send_action(f"old-denied-before-unknown-{index}", "task-ai-unknown-boundary", NOW - timedelta(minutes=10 + index)))
+        session.add(
+            Action(
+                id="unknown-breaks-streak",
+                tenant_id=1,
+                task_id="task-ai-unknown-boundary",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                scheduled_at=NOW - timedelta(minutes=1),
+                executed_at=NOW - timedelta(minutes=1),
+                status="unknown_after_send",
+                payload={"group_id": 7, "message_text": "unknown"},
+                result={"error_code": "unknown_after_send", "error_message": "gateway result unknown"},
+            )
+        )
+        current = _permission_denied_send_action("current-denied-after-unknown", "task-ai-unknown-boundary", NOW)
         session.add(current)
         session.commit()
 

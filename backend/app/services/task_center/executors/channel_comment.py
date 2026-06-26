@@ -26,6 +26,7 @@ DEFAULT_MAX_TOTAL_COMMENTS_JITTER = 0.2
 MAX_TOTAL_COMMENTS_JITTER = 0.3
 PROFILE_SYNCED_STATUS = "已同步"
 COMMENT_ACCOUNT_PROFILE_ERROR = "评论账号资料未初始化，请先在账号中心批量初始化中文昵称、username 和头像"
+AI_COMMENT_CANDIDATE_SHORTFALL_MESSAGE = "AI 评论候选不足，已跳过本轮"
 CURRENT_HOUR_BUDGET_STATUSES = ("pending", "claiming", "executing", "success")
 TOTAL_BUDGET_STATUSES = ("pending", "claiming", "executing", "success", "unknown_after_send")
 
@@ -234,7 +235,7 @@ def _generate_normal_channel_comments(
 ) -> tuple[list[str], int]:
     if count <= 0:
         return [], 0
-    return generate_channel_comments(
+    contents, tokens = generate_channel_comments(
         session,
         task.tenant_id,
         config,
@@ -242,6 +243,10 @@ def _generate_normal_channel_comments(
         message_content=message.content_preview or message.message_url,
         target_label=target_label,
     )
+    if len(contents) < count:
+        stats_inc(task, "normal_candidate_shortfall_count")
+        raise AiGenerationUnavailable(AI_COMMENT_CANDIDATE_SHORTFALL_MESSAGE)
+    return contents, tokens
 
 
 def _message_comment_quantities(
@@ -424,7 +429,7 @@ def _config_with_comment_profile(config: dict, profile_preview: dict) -> dict:
     summary = str(profile_preview.get("profile_hit_summary") or "").strip()
     if not summary:
         return dict(config)
-    return {**config, "target_comment_profile": summary, "comment_style": "；".join(part for part in (str(config.get("comment_style") or ""), f"目标评论画像：{summary}") if part)}
+    return {**config, "target_comment_profile": summary}
 
 
 def _recent_comment_texts(session: Session, task: Task, message: ChannelMessage, *, limit: int = 20) -> list[str]:

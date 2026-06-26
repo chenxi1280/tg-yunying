@@ -36,6 +36,12 @@ interface Props {
   showMaterialAssets?: boolean;
 }
 
+type MaterialCacheConfigFormValues = {
+  material_cache_input?: string;
+  source_media_cache_input?: string;
+  material_cache_account_id?: number | null;
+};
+
 export default function AISettingsView({
   section = 'all',
   aiProviders,
@@ -70,9 +76,11 @@ export default function AISettingsView({
   const showProviders = section === 'all' || section === 'providers';
   const showResources = section === 'all' || section === 'resources';
   const showSlang = section === 'all' || section === 'slang';
-  const [cacheForm] = Form.useForm();
+  const [cacheForm] = Form.useForm<MaterialCacheConfigFormValues>();
   const [savingCacheConfig, setSavingCacheConfig] = React.useState(false);
   const [cacheConfigError, setCacheConfigError] = React.useState('');
+  const [cacheConfigRefreshError, setCacheConfigRefreshError] = React.useState('');
+  const activeCacheConfigSaveRequestRef = React.useRef({ seq: 0, signature: '' });
   const slangTemplates = promptTemplates.filter((template) => template.template_type.replace(/\s+/g, '') === 'AI黑话词表');
   const businessPromptTemplates = promptTemplates.filter((template) => template.template_type.replace(/\s+/g, '') !== 'AI黑话词表');
 
@@ -95,28 +103,67 @@ export default function AISettingsView({
     [accounts],
   );
 
-  async function saveMaterialCacheConfig(values: { material_cache_input?: string; source_media_cache_input?: string; material_cache_account_id?: number | null }) {
+  function materialCacheConfigPayloadSignature(values: MaterialCacheConfigFormValues) {
+    return JSON.stringify({
+      material_cache_input: values.material_cache_input ?? '',
+      source_media_cache_input: values.source_media_cache_input ?? '',
+      material_cache_account_id: values.material_cache_account_id ?? null,
+    });
+  }
+
+  function beginCacheConfigSaveRequest(signature: string) {
+    activeCacheConfigSaveRequestRef.current = { seq: activeCacheConfigSaveRequestRef.current.seq + 1, signature };
+    return activeCacheConfigSaveRequestRef.current;
+  }
+
+  function currentMaterialCacheConfigPayloadSignature() {
+    return materialCacheConfigPayloadSignature(cacheForm.getFieldsValue(true));
+  }
+
+  function isActiveCacheConfigSaveRequest(request: { seq: number; signature: string }) {
+    return activeCacheConfigSaveRequestRef.current.seq === request.seq;
+  }
+
+  function isCurrentCacheConfigSaveRequest(request: { seq: number; signature: string }) {
+    return isActiveCacheConfigSaveRequest(request) && currentMaterialCacheConfigPayloadSignature() === request.signature;
+  }
+
+  async function saveMaterialCacheConfig(values: MaterialCacheConfigFormValues) {
+    const saveRequest = beginCacheConfigSaveRequest(materialCacheConfigPayloadSignature(values));
     setSavingCacheConfig(true);
     setCacheConfigError('');
+    setCacheConfigRefreshError('');
     try {
-      const saved = await api<MaterialCacheConfig>('/materials/cache/config', {
-        method: 'PATCH',
-        body: JSON.stringify({
-          ...values,
-          material_cache_account_id: values.material_cache_account_id ?? null,
-        }),
-      });
-      await onSavedMaterialCacheConfig();
+      let saved: MaterialCacheConfig;
+      try {
+        saved = await api<MaterialCacheConfig>('/materials/cache/config', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            ...values,
+            material_cache_account_id: values.material_cache_account_id ?? null,
+          }),
+        });
+      } catch (error) {
+        if (!isCurrentCacheConfigSaveRequest(saveRequest)) return;
+        setCacheConfigError(error instanceof Error ? error.message : '保存缓存配置失败');
+        return;
+      }
+      if (!isCurrentCacheConfigSaveRequest(saveRequest)) return;
+      try {
+        await onSavedMaterialCacheConfig();
+      } catch (error) {
+        if (!isCurrentCacheConfigSaveRequest(saveRequest)) return;
+        setCacheConfigRefreshError(error instanceof Error ? error.message : String(error));
+      }
+      if (!isCurrentCacheConfigSaveRequest(saveRequest)) return;
       const warning = saved.material_cache.last_error || saved.source_media_cache.last_error;
       if (warning) {
         void message.warning(warning);
       } else {
         void message.success('缓存配置已保存');
       }
-    } catch (error) {
-      setCacheConfigError(error instanceof Error ? error.message : '保存缓存频道配置失败');
     } finally {
-      setSavingCacheConfig(false);
+      if (isActiveCacheConfigSaveRequest(saveRequest)) setSavingCacheConfig(false);
     }
   }
 
@@ -187,6 +234,7 @@ export default function AISettingsView({
         {!showMaterialAssets && (
           <Card size="small" title="缓存频道" style={{ marginTop: 12, marginBottom: 12 }}>
             {cacheConfigError && <Alert type="error" showIcon message={cacheConfigError} style={{ marginBottom: 12 }} />}
+            {cacheConfigRefreshError && <Alert type="error" showIcon message="缓存配置刷新失败" description={cacheConfigRefreshError} style={{ marginBottom: 12 }} />}
             <Form
               form={cacheForm}
               layout="vertical"
@@ -209,7 +257,7 @@ export default function AISettingsView({
                   allowClear
                   showSearch
                   optionFilterProp="label"
-                  placeholder="按手机号 / 备注名 / @username 搜索缓存执行账号"
+                  placeholder="按手机号 / 备注名 / username 搜索缓存执行账号"
                   options={cacheAccountOptions}
                 />
               </Form.Item>

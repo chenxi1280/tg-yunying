@@ -230,28 +230,29 @@ def _has_membership_stats(stats: dict[str, Any]) -> bool:
 
 
 def _membership_phase_from_actions(rows: list[Action]) -> dict[str, Any]:
-    success_statuses = {"success", "skipped"}
     pending_statuses = {"pending", "retryable_failed"}
-    success = sum(1 for action in rows if action.status in success_statuses or bool((action.result or {}).get("success")))
+    success = sum(1 for action in rows if _membership_action_succeeded(action))
     ready = sum(1 for action in rows if _membership_action_ready_before_task(action))
     running = sum(1 for action in rows if action.status in {"claiming", "executing"})
     pending = sum(1 for action in rows if action.status in pending_statuses)
-    failed = sum(1 for action in rows if action.status == "failed")
+    failed = sum(1 for action in rows if _membership_action_failed(action))
+    unknown = sum(1 for action in rows if action.status == "unknown_after_send")
     blocked = sum(1 for action in rows if _membership_action_blocked(action))
     target_count = len({_membership_target_key(action) for action in rows if _membership_target_key(action)})
     estimated_finish_at = max([action.scheduled_at for action in rows if action.status in pending_statuses and action.scheduled_at], default=None)
-    status = _membership_status(success, pending, running, failed, len(rows))
+    status = _membership_status(success, pending, running, failed, len(rows), unknown=unknown)
     return {
         "stage": _membership_stage(status),
         "status": status,
         "progress_percent": _membership_progress(success, failed, len(rows)),
-        "current_phase": _membership_current_phase(status, running=running, pending=pending, failed=failed),
+        "current_phase": _membership_current_phase(status, running=running, pending=pending, failed=failed, unknown=unknown),
         "warnings": _membership_warnings(rows),
         "summary": {
             "target_count": target_count,
             "action_count": len(rows),
             "running_account_count": running,
             "success_account_count": success,
+            "unknown_after_send_count": unknown,
             "estimated_finish_at": estimated_finish_at,
         },
         "joined_count": success,
@@ -261,7 +262,8 @@ def _membership_phase_from_actions(rows: list[Action]) -> dict[str, Any]:
         "running_account_count": running,
         "success_account_count": success,
         "failed_account_count": failed,
-        "blocked_account_count": blocked,
+        "unknown_after_send_count": unknown,
+        "blocked_account_count": blocked + unknown,
         "failed_count": failed,
         "running_count": running,
         "success_count": success,
@@ -274,33 +276,52 @@ def _membership_phase_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
     success = int(stats.get("membership_joined_count") or summary.get("success_account_count") or 0)
     pending = int(stats.get("membership_need_join_count") or summary.get("pending_account_count") or 0)
     failed = int(stats.get("membership_failed_count") or summary.get("failed_account_count") or 0)
+    unknown = int(stats.get("membership_unknown_after_send_count") or summary.get("unknown_after_send_count") or 0)
     running = int(summary.get("running_account_count") or 0)
-    total = success + pending + failed + running
-    status = _membership_status(success, pending, running, failed, total)
+    total = success + pending + failed + running + unknown
+    status = _membership_status(success, pending, running, failed, total, unknown=unknown)
     return {
         "status": status,
         "progress_percent": _membership_progress(success, failed, total),
-        "current_phase": _membership_current_phase(status, running=running, pending=pending, failed=failed),
+        "current_phase": _membership_current_phase(status, running=running, pending=pending, failed=failed, unknown=unknown),
         "warnings": list(stats.get("membership_warnings") or []),
         "ready_account_count": int(summary.get("ready_account_count") or success),
         "pending_account_count": pending,
         "running_account_count": running,
         "success_account_count": success,
         "failed_account_count": failed,
-        "blocked_account_count": int(summary.get("blocked_account_count") or 0),
+        "unknown_after_send_count": unknown,
+        "blocked_account_count": int(summary.get("blocked_account_count") or 0) + unknown,
         "schedule_window_hours": int(stats.get("membership_schedule_window_hours") or summary.get("schedule_window_hours") or 0),
         "estimated_finish_at": summary.get("estimated_finish_at"),
     }
 
 
 def _membership_action_ready_before_task(action: Action) -> bool:
+    return _membership_action_succeeded(action)
+
+
+def _membership_action_succeeded(action: Action) -> bool:
     result = action.result or {}
-    return action.status == "skipped" or result.get("membership_status") == "already_joined"
+    if result.get("membership_status") in {"joined", "already_joined"}:
+        return True
+    if result.get("error_code") == "already_joined":
+        return True
+    return action.status == "success" and bool(result.get("success"))
+
+
+def _membership_action_failed(action: Action) -> bool:
+    if action.status == "failed" or _membership_action_blocked(action):
+        return True
+    return action.status == "skipped" and not _membership_action_succeeded(action)
 
 
 def _membership_action_blocked(action: Action) -> bool:
     result = action.result or {}
-    return action.status == "failed" and str(result.get("error_code") or "").lower() in {"account_unavailable", "manual_required", "permission_denied"}
+    blocked_codes = {"account_unavailable", "manual_required", "permission_denied", "membership_permission_denied"}
+    error_code = str(result.get("error_code") or "").lower()
+    membership_status = str(result.get("membership_status") or "").lower()
+    return error_code in blocked_codes or membership_status in {"permission_denied", "manual_required"}
 
 
 def _membership_target_key(action: Action) -> str:
@@ -308,7 +329,7 @@ def _membership_target_key(action: Action) -> str:
     return str(payload.get("channel_target_id") or payload.get("target_operation_target_id") or payload.get("target_peer_id") or "")
 
 
-def _membership_status(success: int, pending: int, running: int, failed: int, total: int) -> str:
+def _membership_status(success: int, pending: int, running: int, failed: int, total: int, *, unknown: int = 0) -> str:
     if total <= 0:
         return "not_required"
     if running:
@@ -317,6 +338,10 @@ def _membership_status(success: int, pending: int, running: int, failed: int, to
         return "partial_success"
     if pending:
         return "pending"
+    if unknown and success:
+        return "partial_success"
+    if unknown:
+        return "blocked"
     if failed and success:
         return "partial_success"
     if failed:
@@ -340,11 +365,13 @@ def _membership_progress(success: int, failed: int, total: int) -> int:
     return round((success + failed) * 100 / total) if total > 0 else 100
 
 
-def _membership_current_phase(status: str, *, running: int, pending: int, failed: int) -> str:
+def _membership_current_phase(status: str, *, running: int, pending: int, failed: int, unknown: int = 0) -> str:
     if running:
         return "加入 / 关注中"
     if pending:
         return "排队中"
+    if unknown:
+        return "等待人工确认"
     if failed and status in {"failed", "blocked"}:
         return "等待人工处理"
     if status == "partial_success":
@@ -534,6 +561,8 @@ def _membership_item_phase(action: Action, verification: VerificationTask | None
         return "joining"
     if action.status in {"pending", "retryable_failed"}:
         return "not_joined"
+    if action.status == "unknown_after_send":
+        return "manual_required"
     if action.status == "failed":
         return "failed"
     return "manual_required" if (action.result or {}).get("membership_status") == "permission_denied" else action.status

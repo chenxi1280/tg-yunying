@@ -310,6 +310,7 @@ export type TaskCenterPrefill = {
   taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment'>;
   target: OperationTarget;
   message?: ChannelMessage;
+  comment?: ChannelMessageComment;
   nonce: number;
 };
 

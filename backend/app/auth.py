@@ -135,19 +135,8 @@ class RedisCaptchaStore:
         try:
             result = self._client.eval(self._CONSUME_LUA, 1, key)
             return result == 1
-        except Exception:
-            # Redis 不可用时回退到非原子操作
-            raw = self._client.get(key)
-            if not raw:
-                return False
-            data = json.loads(raw)
-            if data.get("consumed"):
-                return False
-            data["consumed"] = True
-            ttl = self._client.ttl(key)
-            if ttl > 0:
-                self._client.setex(key, ttl, json.dumps(data, default=str))
-            return True
+        except Exception as exc:
+            raise RuntimeError("captcha token store unavailable") from exc
 
 
 _captcha_store: CaptchaStore | None = None
@@ -605,7 +594,10 @@ def verify_captcha_challenge(challenge_id: str, captcha_value: str) -> dict:
 
 def consume_captcha_token(captcha_token: str) -> None:
     store = _get_captcha_store()
-    token = store.get_token(captcha_token)
+    try:
+        token = store.get_token(captcha_token)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="captcha token store unavailable") from exc
     now = datetime.now(UTC)
     if not token:
         raise HTTPException(status_code=400, detail="captcha token expired")
@@ -614,7 +606,11 @@ def consume_captcha_token(captcha_token: str) -> None:
         expires_at = expires_at.replace(tzinfo=UTC)
     if expires_at < now:
         raise HTTPException(status_code=400, detail="captcha token expired")
-    if not store.consume_token(captcha_token):
+    try:
+        consumed = store.consume_token(captcha_token)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="captcha token store unavailable") from exc
+    if not consumed:
         raise HTTPException(status_code=400, detail="captcha token already used")
 
 

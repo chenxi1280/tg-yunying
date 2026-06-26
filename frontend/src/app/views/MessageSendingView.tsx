@@ -51,14 +51,7 @@ const emojiKindOptions = [
 ];
 
 function errorText(error: unknown): string {
-  if (error instanceof ApiError) {
-    try {
-      const parsed = JSON.parse(error.body) as { detail?: string };
-      return parsed.detail || error.body;
-    } catch {
-      return error.body;
-    }
-  }
+  if (error instanceof ApiError) return error.message;
   return error instanceof Error ? error.message : '未知错误';
 }
 
@@ -117,6 +110,73 @@ export default function MessageSendingView({
   const [loadingTargets, setLoadingTargets] = React.useState(false);
   const [savingMaterial, setSavingMaterial] = React.useState(false);
   const [preflightLoading, setPreflightLoading] = React.useState(false);
+  const messageContactsRequestRef = React.useRef({ accountId: undefined as number | undefined, seq: 0 });
+  const messageTargetsRequestRef = React.useRef({ accountId: undefined as number | undefined, seq: 0 });
+  const preflightRequestRef = React.useRef({ seq: 0, payloadSignature: '' });
+  const confirmedPreflightPayloadRef = React.useRef<{ payload: MessageSendBatchCreate | null; signature: string }>({ payload: null, signature: '' });
+
+  function messageSendPayloadSignature(payload: MessageSendBatchCreate) {
+    return JSON.stringify({
+      account_id: payload.account_id,
+      targets: payload.targets,
+      content: payload.content,
+      message_type: payload.message_type,
+      material_id: payload.material_id,
+      dispatch_now: payload.dispatch_now,
+      scheduled_at: payload.scheduled_at,
+    });
+  }
+
+  function beginPreflightRequest(payloadSignature: string) {
+    const nextSeq = preflightRequestRef.current.seq + 1;
+    preflightRequestRef.current = { seq: nextSeq, payloadSignature };
+    return nextSeq;
+  }
+
+  function isLatestPreflightRequest(requestSeq: number) {
+    return preflightRequestRef.current.seq === requestSeq;
+  }
+
+  function isCurrentPreflightRequest(requestSeq: number, payloadSignature: string) {
+    if (!isLatestPreflightRequest(requestSeq)) return false;
+    try {
+      return messageSendPayloadSignature(buildPayload()) === payloadSignature;
+    } catch {
+      return false;
+    }
+  }
+
+  function clearConfirmedPreflightPayload() {
+    confirmedPreflightPayloadRef.current = { payload: null, signature: '' };
+  }
+
+  function setConfirmedPreflightPayload(payload: MessageSendBatchCreate, signature: string) {
+    confirmedPreflightPayloadRef.current = { payload, signature };
+  }
+
+  function currentConfirmedPreflightPayload() {
+    return confirmedPreflightPayloadRef.current;
+  }
+
+  function beginMessageContactsRequest(targetAccountId: number | undefined) {
+    const nextSeq = messageContactsRequestRef.current.seq + 1;
+    messageContactsRequestRef.current = { accountId: targetAccountId, seq: nextSeq };
+    return nextSeq;
+  }
+
+  function isActiveMessageContactsRequest(targetAccountId: number | undefined, requestSeq: number) {
+    return messageContactsRequestRef.current.accountId === targetAccountId && messageContactsRequestRef.current.seq === requestSeq;
+  }
+
+  function beginMessageTargetsRequest(targetAccountId: number | undefined) {
+    const nextSeq = messageTargetsRequestRef.current.seq + 1;
+    messageTargetsRequestRef.current = { accountId: targetAccountId, seq: nextSeq };
+    return nextSeq;
+  }
+
+  function isActiveMessageTargetsRequest(targetAccountId: number | undefined, requestSeq: number) {
+    return messageTargetsRequestRef.current.accountId === targetAccountId && messageTargetsRequestRef.current.seq === requestSeq;
+  }
 
   React.useEffect(() => setLocalMaterials(materials), [materials]);
 
@@ -138,24 +198,46 @@ export default function MessageSendingView({
 
   React.useEffect(() => {
     if (!accountId) {
+      beginMessageContactsRequest(undefined);
+      beginMessageTargetsRequest(undefined);
       setContacts([]);
       setOperationTargets([]);
       setLoadingTargets(false);
       return;
     }
     let active = true;
+    const contactRequestSeq = beginMessageContactsRequest(accountId);
+    const targetRequestSeq = beginMessageTargetsRequest(accountId);
     setLoadingTargets(true);
-    Promise.all([
-      api<Contact[]>(`/tg-accounts/${accountId}/contacts`).catch(() => []),
-      api<OperationTarget[]>(`/operation-targets?account_id=${accountId}`).catch(() => []),
-    ]).then(([nextContacts, nextTargets]) => {
+    setError('');
+    Promise.allSettled([
+      api<Contact[]>(`/tg-accounts/${accountId}/contacts`),
+      api<OperationTarget[]>(`/operation-targets?account_id=${accountId}`),
+    ]).then(([contactResult, targetResult]) => {
       if (!active) return;
-      setContacts(nextContacts);
-      setOperationTargets(nextTargets);
-      const allowedTargetKeys = new Set(nextTargets.map((target) => `operation-target:${target.id}`));
-      setTargetKeys((current) => current.filter((key) => key.startsWith('manual:') || key.startsWith('private:') || allowedTargetKeys.has(key)));
+      const errors: string[] = [];
+      if (isActiveMessageContactsRequest(accountId, contactRequestSeq)) {
+        if (contactResult.status === 'fulfilled') {
+          setContacts(contactResult.value);
+        } else {
+          setContacts([]);
+          errors.push(`读取账号联系人失败：${errorText(contactResult.reason)}`);
+        }
+      }
+      if (isActiveMessageTargetsRequest(accountId, targetRequestSeq)) {
+        if (targetResult.status === 'fulfilled') {
+          setOperationTargets(targetResult.value);
+          const allowedTargetKeys = new Set(targetResult.value.map((target) => `operation-target:${target.id}`));
+          setTargetKeys((current) => current.filter((key) => key.startsWith('manual:') || key.startsWith('private:') || allowedTargetKeys.has(key)));
+        } else {
+          setOperationTargets([]);
+          setTargetKeys((current) => current.filter((key) => key.startsWith('manual:') || key.startsWith('private:')));
+          errors.push(`读取运营目标失败：${errorText(targetResult.reason)}`);
+        }
+      }
+      if (isActiveMessageContactsRequest(accountId, contactRequestSeq) || isActiveMessageTargetsRequest(accountId, targetRequestSeq)) setError(errors.join('；'));
     }).finally(() => {
-      if (active) setLoadingTargets(false);
+      if (active && (isActiveMessageContactsRequest(accountId, contactRequestSeq) || isActiveMessageTargetsRequest(accountId, targetRequestSeq))) setLoadingTargets(false);
     });
     return () => { active = false; };
   }, [accountId]);
@@ -163,13 +245,17 @@ export default function MessageSendingView({
   React.useEffect(() => {
     if (!accountId) return undefined;
     function loadOperationTargets() {
+      const requestSeq = beginMessageTargetsRequest(accountId);
       api<OperationTarget[]>(`/operation-targets?account_id=${accountId}`)
         .then((items) => {
+          if (!isActiveMessageTargetsRequest(accountId, requestSeq)) return;
           setOperationTargets(items);
           const allowedTargetKeys = new Set(items.map((target) => `operation-target:${target.id}`));
           setTargetKeys((current) => current.filter((key) => key.startsWith('manual:') || key.startsWith('private:') || allowedTargetKeys.has(key)));
         })
-        .catch(() => setOperationTargets([]));
+        .catch((err: unknown) => {
+          if (isActiveMessageTargetsRequest(accountId, requestSeq)) setError(`刷新运营目标失败：${errorText(err)}`);
+        });
     }
 
     const timer = window.setInterval(loadOperationTargets, 60000);
@@ -177,7 +263,13 @@ export default function MessageSendingView({
   }, [accountId]);
 
   React.useEffect(() => {
-    const timer = window.setInterval(() => void onRefresh(), 60000);
+    function refreshMessageSendingData() {
+      void onRefresh().catch((error: unknown) => {
+        setError(`刷新消息发送数据失败：${errorText(error)}`);
+      });
+    }
+
+    const timer = window.setInterval(refreshMessageSendingData, 60000);
     return () => window.clearInterval(timer);
   }, [onRefresh]);
 
@@ -249,6 +341,7 @@ export default function MessageSendingView({
     setDispatchNow(true);
     setScheduledAt(null);
     setPreflight(null);
+    clearConfirmedPreflightPayload();
     setError('');
   }
 
@@ -270,8 +363,12 @@ export default function MessageSendingView({
   }
 
   async function openConfirm() {
+    let requestSeq = 0;
+    let payloadSignature = '';
     try {
       const payload = buildPayload();
+      payloadSignature = messageSendPayloadSignature(payload);
+      requestSeq = beginPreflightRequest(payloadSignature);
       setError('');
       setPreflightLoading(true);
       const result = await api<RiskPreflight>('/risk-control/preflight', {
@@ -286,32 +383,43 @@ export default function MessageSendingView({
           scheduled_at: payload.scheduled_at ?? null,
         }),
       });
+      if (!isCurrentPreflightRequest(requestSeq, payloadSignature)) return;
       setPreflight(result);
       if (result.decision === 'block') {
         const reason = [...result.suggested_actions, ...result.decision_reasons].filter(Boolean).join('；') || '风控预检未通过';
         throw new Error(reason);
       }
+      setConfirmedPreflightPayload(payload, payloadSignature);
       setConfirmOpen(true);
     } catch (validationError) {
+      if (requestSeq && !isCurrentPreflightRequest(requestSeq, payloadSignature)) return;
       const nextError = errorText(validationError);
       setError(nextError);
       void message.error(nextError);
     } finally {
-      setPreflightLoading(false);
+      if (!requestSeq || isLatestPreflightRequest(requestSeq)) setPreflightLoading(false);
     }
   }
 
   async function submit() {
     try {
-      const created = await createMessageSendTask(buildPayload());
+      const currentPayload = buildPayload();
+      const confirmed = currentConfirmedPreflightPayload();
+      if (!confirmed.payload || messageSendPayloadSignature(currentPayload) !== confirmed.signature) {
+        const nextError = '发送内容已变化，请重新进行风控预检';
+        setError(nextError);
+        void message.error(nextError);
+        return;
+      }
+      const created = await createMessageSendTask(confirmed.payload);
       void message.success(`已创建 ${created.length} 条发送任务`);
       setConfirmOpen(false);
       setTaskOpen(false);
+      clearConfirmedPreflightPayload();
       resetComposer();
     } catch (submitError) {
       const nextError = errorText(submitError);
       setError(nextError);
-      void message.error(nextError);
     }
   }
 
@@ -323,10 +431,18 @@ export default function MessageSendingView({
     }
     setSavingMaterial(true);
     try {
-      const created = await api<Material>('/materials', {
-        method: 'POST',
-        body: JSON.stringify(materialForm),
-      });
+      let created: Material;
+      try {
+        created = await api<Material>('/materials', {
+          method: 'POST',
+          body: JSON.stringify(materialForm),
+        });
+      } catch (materialError) {
+        const nextError = `创建素材失败：${errorText(materialError)}`;
+        setError(nextError);
+        void message.error(nextError);
+        return;
+      }
       setLocalMaterials((current) => [created, ...current.filter((item) => item.id !== created.id)]);
       if (created.cache_ready_status === 'ready') {
         setMaterialId(created.id);
@@ -336,11 +452,13 @@ export default function MessageSendingView({
       if (created.cache_ready_status !== 'ready') {
         void message.info('素材已创建，等待缓存就绪后才能用于发送');
       }
-      await onRefresh();
-    } catch (materialError) {
-      const nextError = `创建素材失败：${errorText(materialError)}`;
-      setError(nextError);
-      void message.error(nextError);
+      try {
+        await onRefresh();
+      } catch (error) {
+        const refreshError = `刷新消息发送数据失败：${errorText(error)}`;
+        setError(refreshError);
+        void message.error(refreshError);
+      }
     } finally {
       setSavingMaterial(false);
     }
@@ -631,7 +749,7 @@ export default function MessageSendingView({
         </Form>
       </Modal>
 
-      <Modal title="确认发送" open={confirmOpen} onCancel={() => setConfirmOpen(false)} onOk={submit} confirmLoading={isActionPending('message-send:create')} okText="确认提交">
+      <Modal title="确认发送" open={confirmOpen} onCancel={() => { setConfirmOpen(false); clearConfirmedPreflightPayload(); }} onOk={submit} confirmLoading={isActionPending('message-send:create')} okText="确认提交">
         <Space direction="vertical" style={{ width: '100%' }}>
           {preflight && (
             <Alert

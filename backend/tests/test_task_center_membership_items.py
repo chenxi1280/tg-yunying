@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountStatus, Action, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, VerificationTask
+from app.models import AccountStatus, Action, ExecutionAttempt, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup, VerificationTask
 from app.services._common import _now
 from app.services.task_center.dispatcher import _group_send_verification_action
 from app.services.task_center import service as task_center_service
@@ -379,6 +379,33 @@ def test_task_detail_is_read_only_summary_without_heavy_rows() -> None:
                 payload={"message_text": "should not be embedded in summary detail"},
             )
         )
+        session.add(
+            Action(
+                id="detail-membership-action",
+                tenant_id=1,
+                task_id="task-light-detail",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=1,
+                status="failed",
+                scheduled_at=now_value,
+                executed_at=now_value,
+                payload={"target_id": 21},
+                result={"error_code": "permission_denied", "error_message": "should stay on membership page"},
+            )
+        )
+        session.add(
+            ExecutionAttempt(
+                id="detail-heavy-attempt",
+                tenant_id=1,
+                action_id="detail-heavy-action",
+                attempt_no=1,
+                status="failed",
+                failure_type="should_not_embed_attempt",
+                failure_detail="attempt rows must stay behind action attempt endpoint",
+                created_at=now_value,
+            )
+        )
         session.commit()
 
         detail = get_task_detail(session, 1, "task-light-detail")
@@ -386,9 +413,13 @@ def test_task_detail_is_read_only_summary_without_heavy_rows() -> None:
 
     assert detail["actions"] == []
     assert detail["accounts"] == []
+    assert detail["membership_accounts"] == []
     assert detail["message_groups"] == []
     assert detail["ai_cycles"] == []
     assert detail["relay_batches"] == []
+    assert "should not be embedded in summary detail" not in str(detail)
+    assert "attempt rows must stay behind action attempt endpoint" not in str(detail)
+    assert "should stay on membership page" not in str(detail)
     assert detail["stats"]["total_actions"] == 99
     assert detail["stats"]["custom_marker"] == "keep"
     assert task is not None
@@ -490,6 +521,112 @@ def test_target_admission_retry_detail_defers_membership_rows_to_page_api() -> N
         assert detail["stats"]["pending_count"] == 3
         assert detail["membership_phase"]["pending_account_count"] == 3
         assert detail["membership_accounts"] == []
+
+
+def test_membership_unknown_after_send_is_not_marked_completed() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-membership-unknown", tenant_id=1, name="结果未知准入", type="group_ai_chat", status="running"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="未知账号", phone_masked="+861***0011", status="在线"))
+        session.add(
+            Action(
+                id="membership-unknown",
+                tenant_id=1,
+                task_id="task-membership-unknown",
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=11,
+                status="unknown_after_send",
+                scheduled_at=now_value,
+                executed_at=now_value,
+                result={"error_code": "unknown_after_send", "error_message": "已进入 Telegram 调用边界但本地结果未知"},
+                payload={"channel_target_id": 21, "target_type": "group", "target_display": "目标群"},
+            )
+        )
+        session.commit()
+
+        detail = get_task_detail(session, 1, "task-membership-unknown")
+
+        assert detail["membership_phase"]["status"] != "completed"
+        assert detail["membership_phase"]["stage"] != "membership_ready"
+        assert detail["membership_phase"]["unknown_after_send_count"] == 1
+        assert detail["membership_phase"]["current_phase"] == "等待人工确认"
+        assert detail["stats"]["unknown_after_send_count"] == 1
+        rows, total = list_membership_items_page(session, 1, "task-membership-unknown", manual_required=True, page=1, page_size=10)
+        assert total == 1
+        assert rows[0]["status"] == "unknown_after_send"
+        assert rows[0]["manual_required"] is True
+
+
+def test_membership_skipped_permission_denied_is_not_counted_as_ready() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-skipped-blocked", tenant_id=1, name="阻塞准入", type="group_ai_chat", status="running"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="阻塞账号", phone_masked="+861***0011", status="在线"))
+        session.add(Action(
+            id="membership-skipped-denied",
+            tenant_id=1,
+            task_id="task-skipped-blocked",
+            task_type="group_ai_chat",
+            action_type="ensure_target_membership",
+            account_id=11,
+            status="skipped",
+            scheduled_at=now_value,
+            result={"success": False, "membership_status": "permission_denied", "error_message": "等待管理员审批"},
+            payload={"channel_target_id": 21, "target_type": "group", "target_display": "目标群", "require_send": True},
+        ))
+        session.commit()
+
+        detail = get_task_detail(session, 1, "task-skipped-blocked")
+
+    assert detail["membership_phase"]["status"] != "completed"
+    assert detail["membership_phase"]["stage"] != "membership_ready"
+    assert detail["membership_phase"]["success_account_count"] == 0
+    assert detail["membership_phase"]["ready_account_count"] == 0
+    assert detail["membership_phase"]["blocked_account_count"] == 1
+
+
+def test_membership_skipped_legacy_already_joined_stays_ready() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-skipped-ready", tenant_id=1, name="历史准入", type="group_ai_chat", status="running"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="目标群"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="就绪账号", phone_masked="+861***0011", status="在线"))
+        session.add(Action(
+            id="membership-skipped-ready",
+            tenant_id=1,
+            task_id="task-skipped-ready",
+            task_type="group_ai_chat",
+            action_type="ensure_target_membership",
+            account_id=11,
+            status="skipped",
+            scheduled_at=now_value,
+            result={"error_code": "already_joined"},
+            payload={"channel_target_id": 21, "target_type": "group", "target_display": "目标群", "require_send": True},
+        ))
+        session.commit()
+
+        detail = get_task_detail(session, 1, "task-skipped-ready")
+
+    assert detail["membership_phase"]["status"] == "completed"
+    assert detail["membership_phase"]["stage"] == "membership_ready"
+    assert detail["membership_phase"]["success_account_count"] == 1
+    assert detail["membership_phase"]["ready_account_count"] == 1
+    assert detail["membership_phase"]["failed_account_count"] == 0
 
 
 def test_group_ai_membership_phase_prefers_deduped_stats_over_action_rows() -> None:

@@ -209,6 +209,8 @@ def channel_membership_summary(
         joined_ids.update(int(account_id) for account_id in session.scalars(link_stmt))
     terminal_actions = _membership_actions_by_account(session, channel.id, task_id=task_id)
     failed_ids = {account_id for account_id, action in terminal_actions.items() if account_id in candidate_ids and _is_failed_membership_action(action)}
+    unknown_ids = {account_id for account_id, action in terminal_actions.items() if account_id in candidate_ids and _is_unknown_membership_action(action)}
+    waiting_ids = failed_ids | unknown_ids
     return {
         "channel_target_id": channel.id,
         "channel_title": channel.title,
@@ -217,12 +219,14 @@ def channel_membership_summary(
         "require_send": require_send,
         "candidate_account_count": len(candidate_ids),
         "joined_account_count": len(joined_ids),
-        "need_join_account_count": len([account_id for account_id in candidate_ids if account_id not in joined_ids and account_id not in failed_ids]),
+        "need_join_account_count": len([account_id for account_id in candidate_ids if account_id not in joined_ids and account_id not in waiting_ids]),
         "failed_account_count": len(failed_ids),
+        "unknown_after_send_count": len(unknown_ids),
         "blocked_account_count": len([account for account in candidate_rows if account.status != AccountStatus.ACTIVE.value]),
         "joined_account_ids": sorted(joined_ids),
         "failed_account_ids": sorted(failed_ids),
-        "estimated_membership_actions": len([account_id for account_id in candidate_ids if account_id not in joined_ids]),
+        "unknown_after_send_account_ids": sorted(unknown_ids),
+        "estimated_membership_actions": len([account_id for account_id in candidate_ids if account_id not in joined_ids and account_id not in unknown_ids]),
     }
 
 
@@ -429,6 +433,8 @@ def _should_create_membership_attempt(action: Action | None, task: Task, now_val
     if action is None:
         return True
     if action.status in OPEN_STATUSES:
+        return False
+    if _is_unknown_membership_action(action):
         return False
     if _is_failed_membership_action(action):
         return False
@@ -754,13 +760,20 @@ def _is_failed_membership_action(action: Action) -> bool:
     return result.get("error_code") == "membership_permission_denied" or result.get("membership_status") == "permission_denied"
 
 
+def _is_unknown_membership_action(action: Action) -> bool:
+    return action.status == "unknown_after_send"
+
+
 def _membership_blocker_reason(summary: dict[str, Any]) -> str:
     candidate_count = int(summary.get("candidate_account_count") or 0)
     failed_count = int(summary.get("failed_account_count") or 0)
+    unknown_count = int(summary.get("unknown_after_send_count") or 0)
     joined_count = int(summary.get("joined_account_count") or 0)
     need_count = int(summary.get("need_join_account_count") or 0)
     if candidate_count > 0 and joined_count <= 0 and need_count <= 0 and failed_count >= candidate_count:
         return "target_permission"
+    if candidate_count > 0 and joined_count <= 0 and need_count <= 0 and unknown_count >= candidate_count:
+        return "target_membership_unknown"
     return "target_membership_pending"
 
 
@@ -784,6 +797,7 @@ def _merge_membership_stats(task: Task, summary: dict[str, Any]) -> dict[str, An
     stats["membership_joined_count"] = summary["joined_account_count"]
     stats["membership_need_join_count"] = summary["need_join_account_count"]
     stats["membership_failed_count"] = summary["failed_account_count"]
+    stats["membership_unknown_after_send_count"] = summary.get("unknown_after_send_count", 0)
     if not stats.get("membership_stage"):
         stats["membership_stage"] = "membership_pending"
     return stats

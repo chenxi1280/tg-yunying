@@ -276,7 +276,7 @@ def test_manual_sample_status_update_rebuilds_profile():
     assert profile.source_sample_count == 0
 
 
-def test_operation_target_detail_hides_learning_preview_without_explicit_permission():
+def test_operation_target_detail_does_not_return_legacy_target_learning_preview():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -290,7 +290,7 @@ def test_operation_target_detail_hides_learning_preview_without_explicit_permiss
         visible = operation_target_detail(session, 1, 31, include_learning_profile=True)
 
     assert hidden["learning_profile_preview"] == {}
-    assert visible["learning_profile_preview"]["profile_hit_summary"] == "真人画像摘要"
+    assert visible["learning_profile_preview"] == {}
 
 
 def test_refresh_channel_learning_reports_sync_errors(monkeypatch):

@@ -1,4 +1,4 @@
-import { API_BASE, api } from '../../shared/api/client';
+import { API_BASE, api, ApiError } from '../../shared/api/client';
 import type { CaptchaChallenge, CaptchaVerifyResponse, CurrentUser } from '../types';
 
 interface AuthActionParams {
@@ -7,9 +7,7 @@ interface AuthActionParams {
   captchaToken: string;
   loginEmail: string;
   loginPassword: string;
-  registerForm: { name: string; email: string; phone: string; password: string };
   changePasswordForm: { current_password: string; new_password: string; confirm_password: string };
-  setAuthMode: (mode: 'login' | 'register') => void;
   setBusy: (busy: string) => void;
   setCaptchaChallenge: (challenge: CaptchaChallenge | null) => void;
   setCaptchaError: (error: string) => void;
@@ -25,6 +23,11 @@ interface AuthActionParams {
   showResult: (title: string, detail: string) => void;
 }
 
+function authErrorMessage(error: unknown) {
+  if (error instanceof ApiError) return error.message;
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function createAuthActions(params: AuthActionParams) {
   async function refreshCaptchaChallenge() {
     params.setCaptchaLoading(true);
@@ -36,7 +39,7 @@ export function createAuthActions(params: AuthActionParams) {
       params.setCaptchaInput('');
     } catch (error) {
       params.setCaptchaChallenge(null);
-      params.setCaptchaError('验证码加载失败，请刷新重试');
+      params.setCaptchaError(`验证码加载失败：${authErrorMessage(error)}`);
     } finally {
       params.setCaptchaLoading(false);
     }
@@ -65,7 +68,7 @@ export function createAuthActions(params: AuthActionParams) {
       params.setCaptchaToken(captcha.captcha_token);
       return captcha.captcha_token;
     } catch (error) {
-      params.setCaptchaError('验证码验证失败，请重新输入');
+      params.setCaptchaError(`验证码验证失败：${authErrorMessage(error)}`);
       return null;
     } finally {
       params.setCaptchaLoading(false);
@@ -84,46 +87,24 @@ export function createAuthActions(params: AuthActionParams) {
     }
     params.setBusy('登录');
     params.setNotice('');
-    const response = await fetch(`${API_BASE}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        identifier: params.loginEmail,
-        email: params.loginEmail,
-        password: params.loginPassword,
-        captcha_token: captchaToken,
-      }),
-    });
-    if (!response.ok) {
-      params.setBusy('');
-      params.setNotice('登录失败，请检查账号和密码');
-      await refreshCaptchaChallenge();
-      return;
-    }
-    const data = await response.json();
-    localStorage.setItem('tg_ops_token', data.access_token);
-    params.setToken(data.access_token);
-    params.setCurrentUser(data.user);
-    params.setNotice('');
-    params.setBusy('');
-  }
-
-  async function register() {
-    if (!params.captchaToken) {
-      params.setNotice('请先完成验证码验证');
-      return;
-    }
-    params.setBusy('注册');
-    params.setNotice('');
     try {
-      const response = await fetch(`${API_BASE}/auth/register`, {
+      const response = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...params.registerForm, captcha_token: params.captchaToken }),
+        body: JSON.stringify({
+          identifier: params.loginEmail,
+          email: params.loginEmail,
+          password: params.loginPassword,
+          captcha_token: captchaToken,
+        }),
       });
       if (!response.ok) {
-        params.setBusy('');
-        params.setNotice('注册失败，请检查填写信息');
+        const text = await response.text().catch(() => '');
+        if (response.status === 401) {
+          params.setNotice('登录失败，请检查账号和密码');
+        } else {
+          params.setNotice(`登录失败：${authErrorMessage(new ApiError(response.status, text))}`);
+        }
         await refreshCaptchaChallenge();
         return;
       }
@@ -131,8 +112,10 @@ export function createAuthActions(params: AuthActionParams) {
       localStorage.setItem('tg_ops_token', data.access_token);
       params.setToken(data.access_token);
       params.setCurrentUser(data.user);
-      params.setAuthMode('login');
-      params.setNotice('注册成功，已进入运营管理平台。');
+      params.setNotice('');
+    } catch (error) {
+      params.setNotice(`登录请求失败：${authErrorMessage(error)}`);
+      await refreshCaptchaChallenge();
     } finally {
       params.setBusy('');
     }
@@ -174,7 +157,6 @@ export function createAuthActions(params: AuthActionParams) {
     refreshCaptchaChallenge,
     verifyCaptcha,
     login,
-    register,
     changePassword,
     logout,
   };

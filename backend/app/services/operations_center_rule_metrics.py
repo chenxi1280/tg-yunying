@@ -22,6 +22,8 @@ from app.services._common import _now
 from app.services.operations_center_utils import as_int as _as_int, iso as _iso
 from app.services.rule_engine import task_type_labels
 
+UNRESOLVED_FAILURE_STATUSES = {"failed", "retryable_failed", "unknown_after_send"}
+
 
 def _rate(numerator: int | float, denominator: int | float) -> float:
     if not denominator:
@@ -149,51 +151,14 @@ def _rule_execution_metrics(session: Session, tenant_id: int) -> list[RuleExecut
             .limit(2000)
         )
     )
-    versions = {
-        version.id: version
-        for version in session.scalars(select(RuleSetVersion).where(RuleSetVersion.tenant_id == tenant_id))
-    }
-    rule_sets = {
-        rule_set.id: rule_set
-        for rule_set in session.scalars(select(RuleSet).where(RuleSet.tenant_id == tenant_id))
-    }
+    versions, rule_sets = _rule_lookup_maps(session, tenant_id)
     metrics: dict[str, RuleExecutionMetricOut] = {}
     task_ids: dict[str, set[str]] = {}
     for action in actions:
-        payload = action.payload or {}
-        version_id = _as_int(payload.get("resolved_rule_set_version_id")) or _as_int(payload.get("rule_set_version_id"))
-        rule_set_id = _as_int(payload.get("rule_set_id"))
-        if not version_id and not rule_set_id:
+        context = _rule_metric_context(action, versions, rule_sets)
+        if context is None:
             continue
-        version = versions.get(version_id or 0)
-        if version and not rule_set_id:
-            rule_set_id = version.rule_set_id
-        rule_set = rule_sets.get(rule_set_id or 0)
-        key = f"rule-version:{version_id}" if version_id else f"rule-set:{rule_set_id}"
-        metric = metrics.get(key)
-        if metric is None:
-            metric = RuleExecutionMetricOut(
-                key=key,
-                rule_set_id=rule_set_id,
-                rule_set_version_id=version_id,
-                rule_set_name=rule_set.name if rule_set else "",
-                version=version.version if version else None,
-            )
-            metrics[key] = metric
-            task_ids[key] = set()
-        metric.action_count += 1
-        task_ids[key].add(action.task_id)
-        if action.status == "success":
-            metric.success_count += 1
-        elif action.status == "failed":
-            metric.failed_count += 1
-        elif action.status == "skipped":
-            metric.skipped_count += 1
-        else:
-            metric.pending_count += 1
-        occurred_at = action.executed_at or action.scheduled_at or action.created_at
-        if occurred_at and (metric.last_used_at is None or (_iso(occurred_at) or "") > metric.last_used_at):
-            metric.last_used_at = _iso(occurred_at)
+        _touch_rule_execution_metric(metrics, task_ids, action=action, context=context)
     for key, metric in metrics.items():
         metric.task_count = len(task_ids.get(key, set()))
     return sorted(metrics.values(), key=lambda item: item.last_used_at or "", reverse=True)[:100]
@@ -282,14 +247,7 @@ def _rule_trend_metrics(session: Session, tenant_id: int, days: int = 14) -> lis
         if not bucket:
             continue
         bucket.action_count += 1
-        if action.status == "success":
-            bucket.success_count += 1
-        elif action.status == "failed":
-            bucket.failed_count += 1
-        elif action.status == "skipped":
-            bucket.skipped_count += 1
-        else:
-            bucket.pending_count += 1
+        _add_status_count(bucket, action.status)
     return list(buckets.values())
 
 
@@ -363,14 +321,7 @@ def _rule_conversion_metrics(session: Session, tenant_id: int, days: int = 7) ->
 
 
 def _rule_cross_metrics(session: Session, tenant_id: int) -> list[RuleCrossMetricOut]:
-    versions = {
-        version.id: version
-        for version in session.scalars(select(RuleSetVersion).where(RuleSetVersion.tenant_id == tenant_id))
-    }
-    rule_sets = {
-        rule_set.id: rule_set
-        for rule_set in session.scalars(select(RuleSet).where(RuleSet.tenant_id == tenant_id))
-    }
+    versions, rule_sets = _rule_lookup_maps(session, tenant_id)
     target_names = {
         group.id: group.title
         for group in session.scalars(select(TgGroup).where(TgGroup.tenant_id == tenant_id))
@@ -393,44 +344,20 @@ def _rule_cross_metrics(session: Session, tenant_id: int) -> list[RuleCrossMetri
         )
     )
     for action in actions:
+        context = _rule_metric_context(action, versions, rule_sets)
         payload = action.payload if isinstance(action.payload, dict) else {}
-        version_id = _as_int(payload.get("resolved_rule_set_version_id")) or _as_int(payload.get("rule_set_version_id"))
-        rule_set_id = _as_int(payload.get("rule_set_id"))
         target_id = _as_int(payload.get("group_id"))
         account_id = int(action.account_id or 0)
-        if not (version_id or rule_set_id) or not target_id or not account_id:
+        if context is None or not target_id or not account_id:
             continue
-        version = versions.get(version_id or 0)
-        if version and not rule_set_id:
-            rule_set_id = version.rule_set_id
-        rule_set = rule_sets.get(rule_set_id or 0)
-        key = f"cross:{version_id or rule_set_id}:{target_id}:{account_id}"
-        metric = metrics.get(key)
-        if metric is None:
-            metric = RuleCrossMetricOut(
-                key=key,
-                rule_set_id=rule_set_id,
-                rule_set_version_id=version_id,
-                rule_set_name=rule_set.name if rule_set else "",
-                version=version.version if version else None,
-                target_group_id=target_id,
-                target_name=target_names.get(target_id, f"目标群 #{target_id}"),
-                account_id=account_id,
-                account_name=account_names.get(account_id, f"账号 #{account_id}"),
-            )
-            metrics[key] = metric
-        metric.action_count += 1
-        if action.status == "success":
-            metric.success_count += 1
-        elif action.status == "failed":
-            metric.failed_count += 1
-        elif action.status == "skipped":
-            metric.skipped_count += 1
-        else:
-            metric.pending_count += 1
-        occurred_at = action.executed_at or action.scheduled_at or action.created_at
-        if occurred_at and (metric.last_used_at is None or (_iso(occurred_at) or "") > metric.last_used_at):
-            metric.last_used_at = _iso(occurred_at)
+        _touch_rule_cross_metric(
+            metrics,
+            action=action,
+            context=context,
+            account_names=account_names,
+            target_id=target_id,
+            target_name=target_names.get(target_id, f"目标群 #{target_id}"),
+        )
     for metric in metrics.values():
         metric.success_rate = _rate(metric.success_count, metric.action_count)
     return sorted(metrics.values(), key=lambda item: (item.action_count, item.success_rate, item.last_used_at or ""), reverse=True)[:100]
@@ -450,14 +377,7 @@ def _touch_rule_dimension_metric(
         metric = RuleDimensionMetricOut(key=key, dimension=dimension, name=name, related_id=related_id)
         metrics[key] = metric
     metric.action_count += 1
-    if action.status == "success":
-        metric.success_count += 1
-    elif action.status == "failed":
-        metric.failed_count += 1
-    elif action.status == "skipped":
-        metric.skipped_count += 1
-    else:
-        metric.pending_count += 1
+    _add_status_count(metric, action.status)
     occurred_at = action.executed_at or action.scheduled_at or action.created_at
     if occurred_at and (metric.last_used_at is None or (_iso(occurred_at) or "") > metric.last_used_at):
         metric.last_used_at = _iso(occurred_at)
@@ -473,3 +393,105 @@ def _keyword_matches(rule: ContentKeywordRule, text: str) -> bool:
             return False
     return rule.keyword.lower() in text.lower()
 
+
+def _add_status_count(metric: Any, status: str) -> None:
+    if status == "success":
+        metric.success_count += 1
+    elif status in UNRESOLVED_FAILURE_STATUSES:
+        metric.failed_count += 1
+    elif status == "skipped":
+        metric.skipped_count += 1
+    else:
+        metric.pending_count += 1
+
+
+def _rule_lookup_maps(session: Session, tenant_id: int) -> tuple[dict[int, RuleSetVersion], dict[int, RuleSet]]:
+    versions = {
+        version.id: version
+        for version in session.scalars(select(RuleSetVersion).where(RuleSetVersion.tenant_id == tenant_id))
+    }
+    rule_sets = {
+        rule_set.id: rule_set
+        for rule_set in session.scalars(select(RuleSet).where(RuleSet.tenant_id == tenant_id))
+    }
+    return versions, rule_sets
+
+
+def _rule_metric_context(action: Action, versions: dict[int, RuleSetVersion], rule_sets: dict[int, RuleSet]) -> dict[str, Any] | None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    version_id = _as_int(payload.get("resolved_rule_set_version_id")) or _as_int(payload.get("rule_set_version_id"))
+    rule_set_id = _as_int(payload.get("rule_set_id"))
+    if not version_id and not rule_set_id:
+        return None
+    version = versions.get(version_id or 0)
+    if version and not rule_set_id:
+        rule_set_id = version.rule_set_id
+    rule_set = rule_sets.get(rule_set_id or 0)
+    return {
+        "key": f"rule-version:{version_id}" if version_id else f"rule-set:{rule_set_id}",
+        "rule_set_id": rule_set_id,
+        "version_id": version_id,
+        "rule_set_name": rule_set.name if rule_set else "",
+        "version": version.version if version else None,
+    }
+
+
+def _touch_rule_execution_metric(
+    metrics: dict[str, RuleExecutionMetricOut],
+    task_ids: dict[str, set[str]],
+    *,
+    action: Action,
+    context: dict[str, Any],
+) -> None:
+    key = str(context["key"])
+    metric = metrics.get(key)
+    if metric is None:
+        metric = RuleExecutionMetricOut(
+            key=key,
+            rule_set_id=context["rule_set_id"],
+            rule_set_version_id=context["version_id"],
+            rule_set_name=str(context["rule_set_name"]),
+            version=context["version"],
+        )
+        metrics[key] = metric
+        task_ids[key] = set()
+    metric.action_count += 1
+    task_ids[key].add(action.task_id)
+    _add_status_count(metric, action.status)
+    _touch_last_used(metric, action)
+
+
+def _touch_rule_cross_metric(
+    metrics: dict[str, RuleCrossMetricOut],
+    *,
+    action: Action,
+    context: dict[str, Any],
+    account_names: dict[int, str],
+    target_id: int,
+    target_name: str,
+) -> None:
+    account_id = int(action.account_id or 0)
+    key = f"cross:{context['version_id'] or context['rule_set_id']}:{target_id}:{account_id}"
+    metric = metrics.get(key)
+    if metric is None:
+        metric = RuleCrossMetricOut(
+            key=key,
+            rule_set_id=context["rule_set_id"],
+            rule_set_version_id=context["version_id"],
+            rule_set_name=str(context["rule_set_name"]),
+            version=context["version"],
+            target_group_id=target_id,
+            target_name=target_name,
+            account_id=account_id,
+            account_name=account_names.get(account_id, f"账号 #{account_id}"),
+        )
+        metrics[key] = metric
+    metric.action_count += 1
+    _add_status_count(metric, action.status)
+    _touch_last_used(metric, action)
+
+
+def _touch_last_used(metric: Any, action: Action) -> None:
+    occurred_at = action.executed_at or action.scheduled_at or action.created_at
+    if occurred_at and (metric.last_used_at is None or (_iso(occurred_at) or "") > metric.last_used_at):
+        metric.last_used_at = _iso(occurred_at)

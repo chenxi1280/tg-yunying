@@ -41,7 +41,7 @@ from app.services.developer_apps import credentials_for_account
 from app.timezone import as_beijing
 
 from .account_pool import select_task_accounts
-from .ai_generator import generate_channel_comments, generate_group_messages
+from .ai_generator import AiGenerationUnavailable, generate_channel_comments, generate_group_messages
 from .channel_membership import (
     ACTION_TYPE as TARGET_MEMBERSHIP_ACTION_TYPE,
     LEGACY_ACTION_TYPE as LEGACY_MEMBERSHIP_ACTION_TYPE,
@@ -60,6 +60,9 @@ from .details import (
     _latest_attempts_by_action,
     _membership_item_payload,
     _membership_items,
+    _membership_action_blocked,
+    _membership_action_failed,
+    _membership_action_succeeded,
     _membership_phase,
     _message_groups,
     _relay_batches,
@@ -99,10 +102,11 @@ _next_run_after_task = next_run_after_task
 _retry_failed_actions = retry_failed_actions
 CHANNEL_COMMENT_SCENE = "channel_comment"
 GROUP_CHAT_SCENE = "group_chat"
+GROUP_PREVIEW_CANDIDATE_SHORTFALL_MESSAGE = "AI 普通发言候选不足，无法生成完整预览"
+CHANNEL_PREVIEW_CANDIDATE_SHORTFALL_MESSAGE = "AI 评论候选不足，无法生成完整预览"
 OPEN_PLAN_ACTION_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
-MEMBERSHIP_SUCCESS_STATUSES = {"success", "skipped"}
 MEMBERSHIP_PENDING_STATUSES = {"pending", "claiming", "executing", "retryable_failed"}
-MEMBERSHIP_FAILURE_STATUSES = {"failed", "unknown_after_send"}
+MEMBERSHIP_UNKNOWN_STATUSES = {"unknown_after_send"}
 MEMBERSHIP_ACTION_TYPES = {TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE}
 TARGET_PERMISSION_MARKERS = (
     "lack permission",
@@ -348,41 +352,44 @@ def _summary_stats(task: Task, membership_phase: dict[str, Any]) -> dict[str, An
             "failure_count": int(membership_phase.get("failed_count") or 0),
             "pending_count": int(membership_phase.get("pending_account_count") or 0),
             "executing_count": int(membership_phase.get("running_count") or 0),
+            "unknown_after_send_count": int(membership_phase.get("unknown_after_send_count") or 0),
         }
     )
     return stats
 
 
 def _lightweight_membership_phase(session: Session, task: Task) -> dict[str, Any]:
-    rows = session.execute(
-        select(Action.status, func.count(Action.id))
+    rows = session.scalars(
+        select(Action)
         .where(
             Action.tenant_id == task.tenant_id,
             Action.task_id == task.id,
             Action.action_type.in_([TARGET_MEMBERSHIP_ACTION_TYPE, LEGACY_MEMBERSHIP_ACTION_TYPE]),
         )
-        .group_by(Action.status)
     ).all()
-    counts = {str(status): int(count) for status, count in rows}
-    success = sum(counts.get(status, 0) for status in MEMBERSHIP_SUCCESS_STATUSES)
-    pending = sum(counts.get(status, 0) for status in MEMBERSHIP_PENDING_STATUSES)
-    failed = sum(counts.get(status, 0) for status in MEMBERSHIP_FAILURE_STATUSES)
-    total = sum(counts.values())
-    running = sum(counts.get(status, 0) for status in {"claiming", "executing"})
-    stage = "membership_running" if pending else "membership_blocked" if failed else "membership_ready"
+    success = sum(1 for action in rows if _membership_action_succeeded(action))
+    pending = sum(1 for action in rows if action.status in MEMBERSHIP_PENDING_STATUSES)
+    failed = sum(1 for action in rows if _membership_action_failed(action))
+    unknown = sum(1 for action in rows if action.status in MEMBERSHIP_UNKNOWN_STATUSES)
+    total = len(rows)
+    running = sum(1 for action in rows if action.status in {"claiming", "executing"})
+    blocked = sum(1 for action in rows if _membership_action_blocked(action)) + unknown
+    stage = "membership_running" if pending else "membership_blocked" if blocked else "membership_ready"
+    status = "partial_success" if success and (pending or blocked) else "pending" if pending else "blocked" if unknown else "failed" if failed else "completed"
     return {
         "stage": stage,
-        "status": "partial_success" if success and (pending or failed) else "pending" if pending else "failed" if failed else "completed",
+        "status": status,
         "progress_percent": round((success + failed) * 100 / total) if total else 100,
-        "current_phase": "排队中" if pending else "等待人工处理" if failed else "已完成",
+        "current_phase": "排队中" if pending else "等待人工确认" if unknown else "等待人工处理" if failed else "已完成",
         "warnings": [],
-        "summary": {"action_count": total, "success_account_count": success},
+        "summary": {"action_count": total, "success_account_count": success, "unknown_after_send_count": unknown},
         "ready_account_count": success,
         "pending_account_count": pending,
         "running_account_count": running,
         "success_account_count": success,
         "failed_account_count": failed,
-        "blocked_account_count": failed,
+        "unknown_after_send_count": unknown,
+        "blocked_account_count": blocked,
         "failed_count": failed,
         "running_count": running,
         "success_count": success,
@@ -951,12 +958,16 @@ def list_action_attempts(session: Session, tenant_id: int, task_id: str, action_
 def generate_group_ai_chat_preview(session: Session, tenant_id: int, payload: GroupAIChatTaskPreviewRequest) -> dict[str, list[str]]:
     config = GroupAIChatConfig(**payload.model_dump(mode="json", exclude={"count"})).model_dump(mode="json")
     contents, _ = generate_group_messages(session, tenant_id, config, count=payload.count, target_label="群组", history="")
+    if len(contents) < payload.count:
+        raise AiGenerationUnavailable(GROUP_PREVIEW_CANDIDATE_SHORTFALL_MESSAGE)
     return {"previews": contents[: payload.count]}
 
 
 def generate_channel_comment_preview(session: Session, tenant_id: int, payload: ChannelCommentTaskPreviewRequest) -> dict[str, list[str]]:
     config = ChannelCommentConfig(**payload.model_dump(mode="json", exclude={"count", "message_content"})).model_dump(mode="json")
     contents, _ = generate_channel_comments(session, tenant_id, config, count=payload.count, message_content=payload.message_content or "频道消息内容示例", target_label="频道")
+    if len(contents) < payload.count:
+        raise AiGenerationUnavailable(CHANNEL_PREVIEW_CANDIDATE_SHORTFALL_MESSAGE)
     return {"previews": contents[: payload.count]}
 
 
@@ -1814,6 +1825,10 @@ def _action_failure_reason(action: Action) -> str:
 def _action_failure_diagnosis(action: Action, failure_type: str, failure_reason: str) -> dict[str, str]:
     if action.status not in {"failed", "retryable_failed", "skipped"} and not failure_type and not failure_reason:
         return {}
+    if action.action_type == "post_comment":
+        diagnosis = _channel_comment_failure_diagnosis(failure_type)
+        if diagnosis:
+            return diagnosis
     text = _action_failure_text(action, failure_type, failure_reason)
     if _has_failure_marker(text, COMMENT_UNAVAILABLE_MARKERS) or failure_type == FailureType.COMMENT_UNAVAILABLE.value:
         return _comment_unavailable_diagnosis()
@@ -1850,6 +1865,44 @@ def _account_auth_types() -> set[str]:
 
 def _rate_limit_types() -> set[str]:
     return {FailureType.FLOOD_WAIT.value, FailureType.SLOWMODE.value}
+
+
+def _channel_comment_failure_diagnosis(failure_type: str) -> dict[str, str]:
+    mapping = {
+        "comment_membership_required": _comment_membership_required_diagnosis,
+        "comment_account_permission_denied": _comment_account_permission_denied_diagnosis,
+        "comment_unavailable_message": _comment_unavailable_message_diagnosis,
+        "comment_unavailable_sibling": _comment_unavailable_message_diagnosis,
+    }
+    builder = mapping.get(failure_type)
+    return builder() if builder else {}
+
+
+def _comment_membership_required_diagnosis() -> dict[str, str]:
+    return {
+        "category": "comment_membership_required",
+        "scope": "account_channel_membership",
+        "operator_summary": "等待账号关注 / 加入频道后继续评论",
+        "suggested_action": "先处理准入前置，让该账号关注频道并进入关联讨论区；准入完成后再重试当前评论。",
+    }
+
+
+def _comment_account_permission_denied_diagnosis() -> dict[str, str]:
+    return {
+        "category": "comment_account_permission_denied",
+        "scope": "account_channel_comment",
+        "operator_summary": "该账号对频道评论区不可发言",
+        "suggested_action": "检查该账号在频道讨论区的发言权限，必要时换其他账号继续评论；不要把整条频道消息关闭。",
+    }
+
+
+def _comment_unavailable_message_diagnosis() -> dict[str, str]:
+    return {
+        "category": "comment_unavailable_message",
+        "scope": "channel_message",
+        "operator_summary": "该消息无法评论",
+        "suggested_action": "确认频道未绑定讨论组、帖子不是频道消息、讨论区入口不可解析或评论已关闭；同帖后续评论应跳过。",
+    }
 
 
 def _target_permission_diagnosis() -> dict[str, str]:

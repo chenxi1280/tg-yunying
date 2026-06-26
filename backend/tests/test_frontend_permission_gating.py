@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+pytestmark = pytest.mark.no_postgres
 
 
 def test_operation_target_detail_does_not_auto_sync_for_read_only_users():
@@ -11,8 +14,894 @@ def test_operation_target_detail_does_not_auto_sync_for_read_only_users():
     open_detail = source[start:end]
 
     assert "syncTargetMessages(target)" in open_detail
-    assert "if (canManageTargets)" in open_detail
-    assert open_detail.index("if (canManageTargets)") < open_detail.index("syncTargetMessages(target)")
+    assert "if (loaded && canManageTargets)" in open_detail
+    assert open_detail.index("if (loaded && canManageTargets)") < open_detail.index("syncTargetMessages(target)")
+
+
+def test_operation_target_focus_opens_detail_once():
+    source = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
+    focus_effect = source[source.index("if (!focusTarget || appliedFocusNonce.current === focusTarget.nonce)"):source.index("\n  async function saveTarget")]
+    found_target_block = focus_effect[focus_effect.index("const target = targets.find"):focus_effect.index("async function saveTarget") if "async function saveTarget" in focus_effect else len(focus_effect)]
+
+    assert focus_effect.count("openDetail(target);") == 1
+    assert found_target_block.index("appliedFocusNonce.current = focusTarget.nonce;") < found_target_block.index("openDetail(target);")
+    assert found_target_block.index("openDetail(target);") < found_target_block.rindex("onFocusTargetConsumed?.();")
+
+
+def test_operation_targets_load_surfaces_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
+    fetch_targets = source[source.index("async function fetchTargets"):source.index("\n\n  async function fetchTargetDetail")]
+    load_block = source[source.index("async function load()"):source.index("\n\n  async function refreshTargetsListAfterAction")]
+
+    assert "const [formError, setFormError] = React.useState('');" in source
+    assert "api<OperationTarget[]>('/operation-targets')" in fetch_targets
+    assert "await fetchTargets(requestSeq);" in load_block
+    assert "catch (error)" in load_block
+    assert "if (!isActiveTargetsListRequest(requestSeq)) return;" in load_block
+    assert "setFormError(errorMessage(error));" in load_block
+
+
+def test_operation_target_detail_sync_only_runs_after_detail_load_success():
+    source = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
+    fetch_detail = source[source.index("async function fetchTargetDetail"):source.index("\n\n  async function loadTargetDetail")]
+    load_detail = source[source.index("async function loadTargetDetail"):source.index("\n  async function syncTargetMessages")]
+    open_detail = source[source.index("function openDetail"):source.index("\n  function openCreate")]
+
+    assert "async function loadTargetDetail(target: OperationTarget): Promise<boolean>" in source
+    assert "return true;" in fetch_detail
+    assert "return false;" in load_detail
+    assert "then((loaded) => {" in open_detail
+    assert "if (loaded && canManageTargets) void syncTargetMessages(target);" in open_detail
+
+
+def test_operation_target_detail_actions_ignore_stale_target_responses():
+    source = (PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx").read_text()
+    load_detail = source[source.index("async function loadTargetDetail"):source.index("\n  async function syncTargetMessages")]
+    sync_messages = source[source.index("async function syncTargetMessages"):source.index("\n  async function syncMessageComments")]
+    sync_comments = source[source.index("async function syncMessageComments"):source.index("\n  async function syncAllTargets")]
+    create_archive = source[source.index("async function createArchiveFromTarget"):source.index("\n  async function saveAccountPolicy")]
+    save_policy = source[source.index("async function saveAccountPolicy"):source.index("\n  function openAdmissionRetry")]
+    retry_admission = source[source.index("async function retryAdmission"):source.index("\n  function startEdit")]
+    open_detail = source[source.index("function openDetail"):source.index("\n  function openCreate")]
+    close_detail = source[source.index("function closeDetail"):source.index("\n  const table")]
+
+    assert "const activeDetailTargetId = React.useRef<number | null>(null);" in source
+    assert "function isActiveDetailTarget(targetId: number)" in source
+    assert "activeDetailTargetId.current = target.id;" in open_detail
+    assert "activeDetailTargetId.current = null;" in close_detail
+    assert "if (!isActiveDetailTargetRequest(target.id, requestSeq)) return false;" in load_detail
+    assert "if (isActiveDetailTargetRequest(target.id, requestSeq)) setDetailLoading(false);" in load_detail
+    assert "if (!isActiveDetailTarget(target.id)) return;" in create_archive
+    catch_block = create_archive[create_archive.index("catch (error)"):]
+    assert catch_block.index("if (!isActiveDetailTarget(target.id)) return;") < catch_block.index("setFormError(errorMessage(error));")
+    for block in [sync_messages, sync_comments, save_policy, retry_admission]:
+        assert "if (!isActiveDetailTargetWrite(target.id, requestSeq)) return;" in block
+        catch_block = block[block.index("catch (error)"):]
+        assert catch_block.index("if (!isActiveDetailTargetWrite(target.id, requestSeq)) return;") < catch_block.index("setFormError(errorMessage(error));")
+    assert "if (isActiveDetailTargetWrite(target.id, requestSeq)) setSyncing(false);" in sync_messages
+    assert "if (isActiveDetailTargetWrite(target.id, requestSeq)) setSyncingCommentMessageId(null);" in sync_comments
+    assert "if (isActiveDetailTarget(target.id)) setCreatingArchiveId(null);" in create_archive
+    assert "if (isActiveDetailTargetWrite(target.id, requestSeq)) setAccountPolicySaving('');" in save_policy
+    assert "if (isActiveDetailTargetWrite(target.id, requestSeq)) setAdmissionRetrySaving(false);" in retry_admission
+
+
+def test_task_center_load_and_focus_task_surface_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    fetch_block = source[source.index("async function fetchTaskListData"):source.index("\n\n  async function load(")]
+    load_block = source[source.index("async function load("):source.index("\n\n  async function refreshTaskListAfterAction")]
+    focus_effect = source[source.index("if (!focusTask || appliedFocusNonce.current === focusTask.nonce)"):source.index("\n  async function fetchTaskDetail")]
+
+    assert "api<TaskCenterTask[]>" in fetch_block
+    assert "api<SchedulingSetting>" in fetch_block
+    assert "await fetchTaskListData(requestSeq, nextTaskTypeFilter);" in load_block
+    assert "catch (error)" in load_block
+    assert "if (!isActiveTaskListRequest(requestSeq)) return;" in load_block
+    assert "setActionError(`读取任务列表失败：${errorMessage(error)}`);" in load_block
+    assert ".catch((error) => {" in focus_effect
+    assert "if (!isActiveDetailRequest(focusTask.taskId, requestSeq)) return;" in focus_effect
+    assert "setActionError(`读取任务 ${focusTask.taskId} 详情失败：${errorMessage(error)}`);" in focus_effect
+
+
+def test_task_center_form_support_load_failures_surface_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    lazy_effect = source[source.index("if (!modalOpen && !editOpen) return;"):source.index("\n  React.useEffect(() => {\n    if (!prefill")]
+    prefill_effect = source[source.index("if (!prefill || appliedPrefillNonce.current === prefill.nonce)"):source.index("\n  React.useEffect(() => {\n    if (!focusTask")]
+    reset_type_fields = source[source.index("function resetTypeFields"):source.index("\n  const table")]
+
+    assert "setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`)" in lazy_effect
+    assert "setActionError(`读取任务预填支撑数据失败：${errorMessage(error)}`)" in prefill_effect
+    assert "setActionError(`读取任务类型支撑数据失败：${errorMessage(error)}`)" in reset_type_fields
+    assert "void ensureRuleSets();" not in lazy_effect
+    assert "void ensureTargets();" not in prefill_effect
+    assert "void ensureTaskFormData(nextType).then" not in reset_type_fields
+
+
+def test_task_center_detail_section_pages_ignore_stale_task_responses():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    section_loader = source[source.index("async function loadDetailSectionPage"):source.index("\n  function loadDetailSectionsForDetail")]
+
+    assert "const response = await apiWithMeta<any[]>(`/tasks/${taskDetail.task.id}/${endpoints[kind]}?${params.toString()}`);" in section_loader
+    assert "if (!isActiveDetailSectionPageRequest(taskDetail.task.id, kind, requestSeq)) return;" in section_loader
+    response_index = section_loader.index("const response = await apiWithMeta")
+    guard_index = section_loader.index("if (!isActiveDetailSectionPageRequest(taskDetail.task.id, kind, requestSeq)) return;", response_index)
+    success_page_index = section_loader.index("setDetailSectionPage(kind, { current: page, pageSize, total, loading: false });")
+    catch_index = section_loader.index("} catch (error) {")
+    catch_guard_index = section_loader.index("if (!isActiveDetailSectionPageRequest(taskDetail.task.id, kind, requestSeq)) return;", catch_index)
+    catch_page_index = section_loader.index("setDetailSectionPage(kind, (current) => ({ ...current, loading: false }));", catch_index)
+    catch_error_index = section_loader.index("setActionError(`读取详情分页失败：${errorMessage(error)}`);", catch_index)
+
+    assert guard_index < success_page_index
+    assert catch_guard_index < catch_page_index < catch_error_index
+
+
+def test_task_center_membership_pages_ignore_stale_task_responses():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    load_for_detail_start = source.index("async function loadMembershipForDetail")
+    load_for_detail = source[load_for_detail_start:source.index("\n  async function loadDetail", load_for_detail_start)]
+    fetch_membership = source[source.index("async function fetchMembershipItems"):source.index("\n  async function loadMembershipPage")]
+    load_page = source[source.index("async function loadMembershipPage"):source.index("\n  function updateMembershipFilters")]
+
+    assert "async function fetchMembershipItems(taskId: string, page: number, pageSize: number, filters: MembershipFilters = membershipFilters): Promise<TaskMembershipItem[] | null>" in source
+    assert "if (!isActiveMembershipPageRequest(taskId, requestSeq)) return null;" in fetch_membership
+    response_index = fetch_membership.index("const response = await apiWithMeta<TaskMembershipItem[]>")
+    guard_index = fetch_membership.index("if (!isActiveMembershipPageRequest(taskId, requestSeq)) return null;", response_index)
+    page_index = fetch_membership.index("setMembershipPage({ current: page, pageSize, total, loading: false });")
+    catch_index = fetch_membership.index("} catch (error) {")
+    catch_guard_index = fetch_membership.index("if (!isActiveMembershipPageRequest(taskId, requestSeq)) return null;", catch_index)
+    catch_page_index = fetch_membership.index("setMembershipPage((current) => ({ ...current, loading: false }));", catch_index)
+
+    assert guard_index < page_index
+    assert catch_guard_index < catch_page_index
+    assert "if (!membershipItems || activeDetailTaskId.current !== taskDetail.task.id) return taskDetail;" in load_for_detail
+    assert "if (activeDetailTaskId.current !== taskDetail.task.id) return taskDetail;" in load_for_detail[load_for_detail.index("} catch (error) {"):]
+    assert "if (!membershipItems || activeDetailTaskId.current !== detail.task.id) return;" in load_page
+
+
+def test_login_flow_has_no_unimplemented_self_registration_path():
+    frontend_files = [
+        "frontend/src/app/context.tsx",
+        "frontend/src/app/context/types.ts",
+        "frontend/src/app/context/authActions.ts",
+        "frontend/src/app/AppShell.tsx",
+    ]
+    frontend = "\n".join((PROJECT_ROOT / path).read_text() for path in frontend_files)
+    backend_schema = (PROJECT_ROOT / "backend/app/schemas/auth.py").read_text()
+
+    assert "/auth/register" not in frontend
+    assert "authMode" not in frontend
+    assert "registerForm" not in frontend
+    assert "register:" not in frontend
+    assert "async function register" not in frontend
+    assert "AuthRegisterRequest" not in backend_schema
+
+
+def test_login_captcha_errors_surface_backend_detail_but_password_stays_generic():
+    source = (PROJECT_ROOT / "frontend/src/app/context/authActions.ts").read_text()
+    refresh_block = source[source.index("async function refreshCaptchaChallenge"):source.index("\n  async function requestCaptchaToken")]
+    verify_block = source[source.index("async function requestCaptchaToken"):source.index("\n  async function verifyCaptcha")]
+    login_block = source[source.index("async function login"):source.index("\n  async function changePassword")]
+
+    assert "import { API_BASE, api, ApiError }" in source
+    assert "function authErrorMessage(error: unknown)" in source
+    assert "setCaptchaError(`验证码加载失败：${authErrorMessage(error)}`);" in refresh_block
+    assert "setCaptchaError(`验证码验证失败：${authErrorMessage(error)}`);" in verify_block
+    assert "setNotice('登录失败，请检查账号和密码')" in login_block
+    bad_credentials_branch = login_block[
+        login_block.index("if (response.status === 401)"):
+        login_block.index("} else {", login_block.index("if (response.status === 401)"))
+    ]
+    assert "authErrorMessage" not in bad_credentials_branch
+
+
+def test_login_submit_distinguishes_captcha_token_and_network_errors_from_bad_credentials():
+    source = (PROJECT_ROOT / "frontend/src/app/context/authActions.ts").read_text()
+    login_block = source[source.index("async function login"):source.index("\n  async function changePassword")]
+
+    assert "const text = await response.text().catch(() => '');" in login_block
+    assert "if (response.status === 401)" in login_block
+    assert "params.setNotice('登录失败，请检查账号和密码');" in login_block
+    assert "params.setNotice(`登录失败：${authErrorMessage(new ApiError(response.status, text))}`);" in login_block
+    assert "catch (error)" in login_block
+    assert "params.setNotice(`登录请求失败：${authErrorMessage(error)}`);" in login_block
+    assert "finally" in login_block
+    assert "params.setBusy('');" in login_block
+
+
+def test_api_error_message_formats_fastapi_detail_for_direct_error_message_views():
+    source = (PROJECT_ROOT / "frontend/src/shared/api/client.ts").read_text()
+    modal_state = (PROJECT_ROOT / "frontend/src/app/context/modalState.ts").read_text()
+    api_error_class = source[source.index("export class ApiError"):source.index("\nexport class AuthExpiredError")]
+
+    assert "function apiErrorMessage(status: number, body: string)" in source
+    assert "function apiDetailMessage(detail: unknown)" in source
+    assert "super(apiErrorMessage(status, body));" in api_error_class
+    assert "const parsed = JSON.parse(body) as { detail?: unknown };" in source
+    assert "const detailMessage = apiDetailMessage(parsed.detail);" in source
+    assert "if (detailMessage) return detailMessage;" in source
+    assert "if (Array.isArray(detail))" in source
+    assert "const path = Array.isArray(item.loc) ? item.loc.join('.') : String(item.loc ?? '');" in source
+    assert "record.message ?? record.failure_detail" in source
+    assert "record.trace_id" in source
+    assert "return body || `HTTP ${status}`;" in source
+    assert "if (error instanceof ApiError) return error.message;" in modal_state
+    assert "JSON.parse(error.body)" not in modal_state
+
+
+def test_page_error_formatters_reuse_api_error_message():
+    formatter_files = [
+        PROJECT_ROOT / "frontend/src/app/context/authActions.ts",
+        PROJECT_ROOT / "frontend/src/app/views/MessageSendingView.tsx",
+        PROJECT_ROOT / "frontend/src/app/views/OperationTargetsView.tsx",
+        PROJECT_ROOT / "frontend/src/app/views/OverviewView.tsx",
+        PROJECT_ROOT / "frontend/src/app/views/targetProfileViewModel.ts",
+    ]
+
+    for path in formatter_files:
+        source = path.read_text()
+        assert "if (error instanceof ApiError) return error.message;" in source
+        assert "JSON.parse(error.body)" not in source
+        assert "error.body || error.message" not in source
+
+    task_center_view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+    task_error = task_center_view_model[
+        task_center_view_model.index("export function errorMessage"):
+        task_center_view_model.index("\n\nexport function words")
+    ]
+    assert "if (error.status === 408)" in task_error
+    assert "return error.message;" in task_error
+    assert "JSON.parse(error.body)" not in task_error
+
+
+def test_message_send_row_actions_surface_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/context/messageActions.ts").read_text()
+    context = (PROJECT_ROOT / "frontend/src/app/context.tsx").read_text()
+
+    assert "handleActionError: (error: unknown) => void;" in source
+    assert "handleActionError," in context[context.index("createMessageActions({"):context.index("});", context.index("createMessageActions({"))]
+    for function_name in ["cancelTask", "dispatchTask", "drainQueue", "retryTask"]:
+        function_body = source[source.index(f"async function {function_name}"):source.index("\n  async function" if function_name != "retryTask" else "\n\n  return", source.index(f"async function {function_name}"))]
+        assert "try {" in function_body
+        assert "catch (error)" in function_body
+        assert "params.handleActionError(error);" in function_body
+        assert "throw error;" not in function_body
+
+
+def test_account_center_actions_surface_backend_error_detail():
+    account_source = (PROJECT_ROOT / "frontend/src/app/context/accountActions.ts").read_text()
+    message_source = (PROJECT_ROOT / "frontend/src/app/context/messageActions.ts").read_text()
+
+    for source, function_name in [
+        (account_source, "healthCheck"),
+        (account_source, "syncAccountGroups"),
+        (message_source, "createDirectMessageTask"),
+    ]:
+        next_function = "\n  async function"
+        end_marker = next_function if function_name != "syncAccountGroups" else "\n\n  return"
+        function_body = source[source.index(f"async function {function_name}"):source.index(end_marker, source.index(f"async function {function_name}") + 1)]
+        assert "try {" in function_body
+        assert "catch (error)" in function_body
+        assert "handleActionError(error);" in function_body
+        assert "throw error;" not in function_body
+        assert "finally" in function_body
+
+
+def test_account_center_detail_sync_clone_and_profile_actions_surface_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/context/accountActions.ts").read_text()
+    handled_functions = [
+        "openAccountDetail",
+        "openAccountVerificationCodes",
+        "openAccountMovePool",
+        "openAccountPoolDetail",
+        "refreshAccountPoolDetail",
+        "createAccountPool",
+        "moveCurrentAccountPool",
+        "createClonePlan",
+        "confirmClonePlan",
+        "retryCloneItem",
+        "refreshAccountDetail",
+        "syncAccountContacts",
+        "queueAccountSyncNow",
+        "openGroupDetail",
+        "pollVerificationCodes",
+        "saveAccountProfile",
+        "retryAccountProfileSync",
+    ]
+    busy_functions = set(handled_functions) - {"refreshAccountPoolDetail", "refreshAccountDetail"}
+
+    for function_name in handled_functions:
+        start = source.index(f"\n  async function {function_name}")
+        async_end = source.find("\n  async function", start + 1)
+        function_end = source.find("\n  function", start + 1)
+        candidates = [index for index in [async_end, function_end] if index != -1]
+        function_body = source[start:min(candidates)]
+        assert "try {" in function_body
+        assert "catch (error)" in function_body
+        assert "params.handleActionError(error);" in function_body
+        assert "throw error;" not in function_body
+        if function_name in busy_functions:
+            assert "finally" in function_body
+            assert "params.setBusy('');" in function_body
+
+
+def test_account_detail_modal_actions_surface_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountModals.tsx").read_text()
+
+    assert "const [actionError, setActionError] = React.useState('');" in source
+    assert "message={actionError}" in source
+    for function_name in [
+        "loadAvailabilitySummary",
+        "rebuildAvailabilitySummary",
+        "loadSecurityDetail",
+        "refreshSecurityDetail",
+        "createSingleSecurityBatch",
+        "syncTargets",
+        "manualSendNow",
+    ]:
+        start = source.index(f"async function {function_name}")
+        async_end = source.find("\n  async function", start + 1)
+        function_end = source.find("\n  function", start + 1)
+        const_end = source.find("\n  const", start + 1)
+        candidates = [index for index in [async_end, function_end, const_end] if index != -1]
+        function_body = source[start:min(candidates)]
+        assert "catch (error)" in function_body
+        assert "setActionError(error instanceof Error ? error.message" in function_body
+        assert "throw error;" not in function_body
+
+
+def test_account_detail_modal_availability_and_security_ignore_stale_account_responses():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountModals.tsx").read_text()
+
+    assert "const activeAccountDetailId = React.useRef(accountDetail.account.id);" in source
+    assert "function isActiveAccountDetail(accountId: number)" in source
+    assert "activeAccountDetailId.current = accountDetail.account.id;" in source
+    for function_name in [
+        "loadAvailabilitySummary",
+        "rebuildAvailabilitySummary",
+        "loadSecurityDetail",
+        "refreshSecurityDetail",
+        "createSingleSecurityBatch",
+    ]:
+        start = source.index(f"async function {function_name}")
+        async_end = source.find("\n  async function", start + 1)
+        function_end = source.find("\n  function", start + 1)
+        const_end = source.find("\n  const", start + 1)
+        candidates = [index for index in [async_end, function_end, const_end] if index != -1]
+        function_body = source[start:min(candidates)]
+        assert "const accountId = accountDetail.account.id;" in function_body
+        assert "if (!isActiveAccountDetail(accountId)) return;" in function_body
+        catch_block = function_body[function_body.index("catch (error)"):]
+        assert catch_block.index("if (!isActiveAccountDetail(accountId)) return;") < catch_block.index("setActionError")
+        finally_block = function_body[function_body.index("finally"):]
+        assert "if (isActiveAccountDetail(accountId)) set" in finally_block
+
+
+def test_account_detail_context_actions_ignore_stale_account_responses():
+    context = (PROJECT_ROOT / "frontend/src/app/context.tsx").read_text()
+    source = (PROJECT_ROOT / "frontend/src/app/context/accountActions.ts").read_text()
+
+    assert "const accountDetailRequestRef = React.useRef({ accountId: null as number | null, seq: 0 });" in context
+    assert "const accountPoolDetailRequestRef = React.useRef({ poolId: null as number | null, seq: 0 });" in context
+    assert "const groupDetailRequestRef = React.useRef({ groupId: null as number | null, seq: 0 });" in context
+    assert "accountDetailRequestRef," in context[context.index("const accountActions = createAccountActions"):context.index("});", context.index("const accountActions = createAccountActions"))]
+    assert "accountPoolDetailRequestRef," in context[context.index("const accountActions = createAccountActions"):context.index("});", context.index("const accountActions = createAccountActions"))]
+    assert "groupDetailRequestRef," in context[context.index("const accountActions = createAccountActions"):context.index("});", context.index("const accountActions = createAccountActions"))]
+    assert "accountDetailRequestRef: { current: { accountId: number | null; seq: number } };" in source
+    assert "accountPoolDetailRequestRef: { current: { poolId: number | null; seq: number } };" in source
+    assert "groupDetailRequestRef: { current: { groupId: number | null; seq: number } };" in source
+    assert "function beginAccountDetailRequest(accountId: number)" in source
+    assert "function isActiveAccountDetailRequest(accountId: number, seq: number)" in source
+    assert "function clearAccountDetailRequest(accountId: number, seq: number)" in source
+    for function_name in ["openAccountDetail", "openAccountVerificationCodes", "openAccountMovePool", "refreshAccountDetail"]:
+        start = source.index(f"async function {function_name}")
+        async_end = source.find("\n  async function", start + 1)
+        function_end = source.find("\n  function", start + 1)
+        candidates = [index for index in [async_end, function_end] if index != -1]
+        function_body = source[start:min(candidates)]
+        stale_return = "if (!isActiveAccountDetailRequest(accountId, requestSeq)) return false;" if function_name == "openAccountDetail" else "if (!isActiveAccountDetailRequest(accountId, requestSeq)) return;"
+        assert "const accountId =" in function_body
+        assert "const requestSeq = beginAccountDetailRequest(accountId);" in function_body
+        assert stale_return in function_body
+        catch_block = function_body[function_body.index("catch (error)"):]
+        assert catch_block.index(stale_return) < catch_block.index("params.handleActionError(error);")
+        assert "clearAccountDetailRequest(accountId, requestSeq);" in function_body[function_body.index("finally"):]
+
+    for function_name, id_name, begin_name, active_name, clear_name in [
+        ("openAccountPoolDetail", "poolId", "beginAccountPoolDetailRequest", "isActiveAccountPoolDetailRequest", "clearAccountPoolDetailRequest"),
+        ("refreshAccountPoolDetail", "poolId", "beginAccountPoolDetailRequest", "isActiveAccountPoolDetailRequest", "clearAccountPoolDetailRequest"),
+        ("openGroupDetail", "groupId", "beginGroupDetailRequest", "isActiveGroupDetailRequest", "clearGroupDetailRequest"),
+    ]:
+        start = source.index(f"async function {function_name}")
+        async_end = source.find("\n  async function", start + 1)
+        function_end = source.find("\n  function", start + 1)
+        candidates = [index for index in [async_end, function_end] if index != -1]
+        function_body = source[start:min(candidates)]
+        stale_return = f"if (!{active_name}({id_name}, requestSeq)) return false;" if function_name == "openGroupDetail" else f"if (!{active_name}({id_name}, requestSeq)) return;"
+        assert f"const {id_name} =" in function_body
+        assert f"const requestSeq = {begin_name}({id_name});" in function_body
+        assert stale_return in function_body
+        catch_block = function_body[function_body.index("catch (error)"):]
+        assert catch_block.index(stale_return) < catch_block.index("params.handleActionError(error);")
+        assert f"{clear_name}({id_name}, requestSeq);" in function_body[function_body.index("finally"):]
+
+    refresh_action_group = source[source.index("async function refreshActionGroupDetail"):source.index("\n\n  function relatedDetailRefreshersForAction")]
+    assert "const groupId = params.groupDetail.group.id;" in refresh_action_group
+    assert "const requestSeq = beginGroupDetailRequest(groupId);" in refresh_action_group
+    assert "if (!isActiveGroupDetailRequest(groupId, requestSeq)) return;" in refresh_action_group
+    assert "clearGroupDetailRequest(groupId, requestSeq);" in refresh_action_group[refresh_action_group.index("finally"):]
+
+
+def test_account_authorization_assets_panel_actions_surface_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountAuthorizationAssetsPanel.tsx").read_text()
+
+    assert "const [error, setError] = React.useState('');" in source
+    assert "message={error}" in source
+    for function_name in [
+        "loadAssets",
+        "openLoginModal",
+        "startStandbyLogin",
+        "verifyStandbyLogin",
+        "checkQrLogin",
+        "switchPrimary",
+    ]:
+        start = source.index(f"async function {function_name}")
+        async_end = source.find("\n  async function", start + 1)
+        function_end = source.find("\n  function", start + 1)
+        const_end = source.find("\n  const", start + 1)
+        candidates = [index for index in [async_end, function_end, const_end] if index != -1]
+        function_body = source[start:min(candidates)]
+        assert "catch (error)" in function_body
+        assert "setError(error instanceof Error ? error.message" in function_body
+        assert "throw error;" not in function_body
+
+
+def test_account_authorization_assets_panel_ignores_stale_account_responses():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountAuthorizationAssetsPanel.tsx").read_text()
+    effect = source[source.index("React.useEffect(() => {"):source.index("\n  function isActiveAccount")]
+    load_assets = source[source.index("async function loadAssets"):source.index("\n  async function openLoginModal")]
+    complete_login = source[source.index("async function completeLoginModal"):source.index("\n  function confirmSwitch")]
+
+    assert "const activeAccountId = React.useRef(accountId);" in source
+    assert "function isActiveAccount(targetAccountId: number)" in source
+    assert "activeAccountId.current = accountId;" in effect
+    assert "setLoginOpen(false);" in effect
+    assert "setLoginFlow(null);" in effect
+    assert "setLoginLoading(false);" in effect
+    assert "setSwitchingId(null);" in effect
+    assert "async function loadAssets(targetAccountId = accountId): Promise<boolean>" in source
+    assert "`/tg-accounts/${targetAccountId}/authorizations`" in load_assets
+    assert "if (!isActiveAuthorizationAssetsRequest(targetAccountId, requestSeq)) return false;" in load_assets
+    for function_name in ["openLoginModal", "verifyStandbyLogin", "checkQrLogin"]:
+        start = source.index(f"async function {function_name}")
+        async_end = source.find("\n  async function", start + 1)
+        function_end = source.find("\n  function", start + 1)
+        candidates = [index for index in [async_end, function_end] if index != -1]
+        function_body = source[start:min(candidates)]
+        assert "const targetAccountId = accountId;" in function_body
+        assert "if (!isActiveLoginSession(targetAccountId, loginSeq)) return;" in function_body
+        catch_block = function_body[function_body.index("catch (error)"):]
+        assert catch_block.index("if (!isActiveLoginSession(targetAccountId, loginSeq)) return;") < catch_block.index("setError")
+        finally_block = function_body[function_body.index("finally"):]
+        assert "if (isActiveLoginSession(targetAccountId, loginSeq)) setLoginLoading(false);" in finally_block
+    start_login = source[source.index("async function startStandbyLogin"):source.index("\n  async function verifyStandbyLogin")]
+    assert "const targetAccountId = accountId;" in start_login
+    assert "const payload = loginStartPayload;" in start_login
+    assert "const payloadSignature = loginStartPayloadSignature;" in start_login
+    assert "if (!isActiveLoginStart(targetAccountId, loginSeq, payloadSignature)) return;" in start_login
+    catch_block = start_login[start_login.index("catch (error)"):]
+    assert catch_block.index("if (!isActiveLoginStart(targetAccountId, loginSeq, payloadSignature)) return;") < catch_block.index("setError")
+    finally_block = start_login[start_login.index("finally"):]
+    assert "if (isActiveLoginSession(targetAccountId, loginSeq)) setLoginLoading(false);" in finally_block
+    switch_primary = source[source.index("async function switchPrimary"):source.index("\n  function closeLoginModal")]
+    assert "const targetAccountId = accountId;" in switch_primary
+    assert "if (!isActiveAccount(targetAccountId)) return;" in switch_primary
+    catch_block = switch_primary[switch_primary.index("catch (error)"):]
+    assert catch_block.index("if (!isActiveAccount(targetAccountId)) return;") < catch_block.index("setError")
+    assert "if (isActiveAccount(targetAccountId)) setSwitchingId(null);" in switch_primary[switch_primary.index("finally"):]
+    assert "async function completeLoginModal(targetAccountId: number, loginSeq: number)" in source
+    assert "const loaded = await loadAssets(targetAccountId);" in complete_login
+    assert "if (!loaded || !isActiveLoginSession(targetAccountId, loginSeq)) return;" in complete_login
+    assert "onClick={() => void loadAssets()}" in source
+
+
+def test_authorization_assets_loads_bind_account_and_request_sequence():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountAuthorizationAssetsPanel.tsx").read_text()
+    load_assets = source[source.index("async function loadAssets"):source.index("\n  async function openLoginModal")]
+    complete_login = source[source.index("async function completeLoginModal"):source.index("\n  function confirmSwitch")]
+    switch_primary = source[source.index("async function switchPrimary"):source.index("\n  function closeLoginModal")]
+
+    assert "const authorizationAssetsRequestRef = React.useRef({ accountId, seq: 0 });" in source
+    assert "function beginAuthorizationAssetsRequest(targetAccountId: number)" in source
+    assert "function isActiveAuthorizationAssetsRequest(targetAccountId: number, requestSeq: number)" in source
+    assert "authorizationAssetsRequestRef.current.accountId === targetAccountId" in source
+    assert "authorizationAssetsRequestRef.current.seq === requestSeq" in source
+
+    assert "const requestSeq = beginAuthorizationAssetsRequest(targetAccountId);" in load_assets
+    assert "if (!isActiveAuthorizationAssetsRequest(targetAccountId, requestSeq)) return false;" in load_assets
+    assert load_assets.index("if (!isActiveAuthorizationAssetsRequest(targetAccountId, requestSeq)) return false;") < load_assets.index("setAssets(nextAssets);")
+    assert "if (isActiveAuthorizationAssetsRequest(targetAccountId, requestSeq)) setLoading(false);" in load_assets
+
+    assert "const loaded = await loadAssets(targetAccountId);" in complete_login
+    assert "const loaded = await loadAssets(targetAccountId);" in switch_primary
+    assert "onClick={() => void loadAssets()}" in source
+
+
+def test_account_authorization_login_modal_ignores_stale_sessions():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountAuthorizationAssetsPanel.tsx").read_text()
+    open_login = source[source.index("async function openLoginModal"):source.index("\n  async function startStandbyLogin")]
+    start_login = source[source.index("async function startStandbyLogin"):source.index("\n  async function verifyStandbyLogin")]
+    verify_login = source[source.index("async function verifyStandbyLogin"):source.index("\n  async function checkQrLogin")]
+    check_qr = source[source.index("async function checkQrLogin"):source.index("\n  async function completeLoginModal")]
+    close_modal = source[source.index("function closeLoginModal"):source.index("\n  function assetForRole")]
+    modal_start = source.index('title="新增备用授权"')
+    modal = source[modal_start:source.index("\n      </Modal>", modal_start)]
+
+    assert "const loginSessionSeq = React.useRef(0);" in source
+    assert "function beginLoginSession()" in source
+    assert "function currentLoginSession()" in source
+    assert "function isActiveLoginSession(targetAccountId: number, loginSeq: number)" in source
+    assert "function closeLoginModal()" in source
+    assert "loginSessionSeq.current += 1;" in close_modal
+    assert "setLoginOpen(false);" in close_modal
+    assert "setLoginFlow(null);" in close_modal
+    assert "onCancel={closeLoginModal}" in modal
+    assert "const loginSeq = beginLoginSession();" in open_login
+    assert "const loginSeq = currentLoginSession();" in start_login
+    for block in [open_login, verify_login, check_qr]:
+        assert "if (!isActiveLoginSession(targetAccountId, loginSeq)) return;" in block
+        catch_block = block[block.index("catch (error)"):]
+        assert catch_block.index("if (!isActiveLoginSession(targetAccountId, loginSeq)) return;") < catch_block.index("setError")
+        finally_block = block[block.index("finally"):]
+        assert "if (isActiveLoginSession(targetAccountId, loginSeq)) setLoginLoading(false);" in finally_block
+    assert "function isActiveLoginStart(targetAccountId: number, loginSeq: number, payloadSignature: string)" in source
+    assert "latestLoginStartPayloadSignature.current === payloadSignature" in source
+    assert "if (!isActiveLoginStart(targetAccountId, loginSeq, payloadSignature)) return;" in start_login
+    catch_block = start_login[start_login.index("catch (error)"):]
+    assert catch_block.index("if (!isActiveLoginStart(targetAccountId, loginSeq, payloadSignature)) return;") < catch_block.index("setError")
+    finally_block = start_login[start_login.index("finally"):]
+    assert "if (isActiveLoginSession(targetAccountId, loginSeq)) setLoginLoading(false);" in finally_block
+    assert "await completeLoginModal(targetAccountId, loginSeq);" in verify_login
+    assert "await completeLoginModal(targetAccountId, loginSeq);" in check_qr
+    assert "async function completeLoginModal(targetAccountId: number, loginSeq: number)" in source
+
+
+def test_managed_2fa_panel_actions_surface_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountManaged2FaSettingsPanel.tsx").read_text()
+
+    assert "const [error, setError] = React.useState('');" in source
+    assert "message={error}" in source
+    start = source.index("async function saveManagedPassword")
+    end = source.index("\n\n  return", start)
+    save_body = source[start:end]
+    assert "catch (error)" in save_body
+    assert "setError(error instanceof Error ? error.message" in save_body
+    assert "throw error;" not in save_body
+
+
+def test_managed_2fa_panel_ignores_stale_account_responses():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountManaged2FaSettingsPanel.tsx").read_text()
+    effect = source[source.index("React.useEffect(() => {"):source.index("\n  function isActiveAccount")]
+    save_body = source[source.index("async function saveManagedPassword"):source.index("\n\n  return")]
+
+    assert "type Managed2FaAction = 'save' | 'rotate';" in source
+    assert "function managed2FaPath(accountId: number, action: Managed2FaAction)" in source
+    assert "const activeAccountId = React.useRef(accountId);" in source
+    assert "function isActiveAccount(targetAccountId: number)" in source
+    assert "activeAccountId.current = accountId;" in effect
+    assert "setPassword('');" in effect
+    assert "setReason('');" in effect
+    assert "async function saveManagedPassword(action: Managed2FaAction)" in source
+    assert "const targetAccountId = accountId;" in save_body
+    assert "const payload = managed2FaPayload;" in save_body
+    assert "const payloadSignature = managed2FaPayloadSignature;" in save_body
+    assert "const path = managed2FaPath(targetAccountId, action);" in save_body
+    assert "if (!isActiveManaged2FaRequest(targetAccountId, action, requestSeq, payloadSignature)) return;" in save_body
+    catch_block = save_body[save_body.index("catch (error)"):]
+    assert catch_block.index("if (!isActiveManaged2FaRequest(targetAccountId, action, requestSeq, payloadSignature)) return;") < catch_block.index("setError")
+    finally_block = save_body[save_body.index("finally"):]
+    assert "if (isCurrentManaged2FaRequest(targetAccountId, action, requestSeq)) setLoading(false);" in finally_block
+    assert "onClick={() => saveManagedPassword(`/tg-accounts/${accountId}/security/managed-2fa`)}" not in source
+    assert "onClick={() => saveManagedPassword('save')}" in source
+    assert "onClick={() => saveManagedPassword('rotate')}" in source
+
+
+def test_managed_2fa_panel_ignores_stale_same_account_actions():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountManaged2FaSettingsPanel.tsx").read_text()
+    save_body = source[source.index("async function saveManagedPassword"):source.index("\n\n  return")]
+
+    assert "const managed2FaRequestRef = React.useRef({ accountId, action: '' as Managed2FaAction | '', seq: 0 });" in source
+    assert "const latestManaged2FaPayloadSignature = React.useRef('');" in source
+    assert "const managed2FaPayload = React.useMemo(() => ({" in source
+    assert "const managed2FaPayloadSignature = React.useMemo(() => JSON.stringify(managed2FaPayload), [managed2FaPayload]);" in source
+    assert "latestManaged2FaPayloadSignature.current = managed2FaPayloadSignature;" in source
+    assert "function beginManaged2FaRequest(targetAccountId: number, action: Managed2FaAction)" in source
+    assert "function isCurrentManaged2FaRequest(targetAccountId: number, action: Managed2FaAction, requestSeq: number)" in source
+    assert "function isActiveManaged2FaRequest(targetAccountId: number, action: Managed2FaAction, requestSeq: number, payloadSignature: string)" in source
+    assert "managed2FaRequestRef.current.accountId === targetAccountId" in source
+    assert "managed2FaRequestRef.current.action === action" in source
+    assert "managed2FaRequestRef.current.seq === requestSeq" in source
+    assert "latestManaged2FaPayloadSignature.current === payloadSignature" in source
+
+    assert "const requestSeq = beginManaged2FaRequest(targetAccountId, action);" in save_body
+    assert "const payloadSignature = managed2FaPayloadSignature;" in save_body
+    assert "if (!isActiveManaged2FaRequest(targetAccountId, action, requestSeq, payloadSignature)) return;" in save_body
+    assert save_body.index("if (!isActiveManaged2FaRequest(targetAccountId, action, requestSeq, payloadSignature)) return;") < save_body.index("setPassword('');")
+    catch_block = save_body[save_body.index("catch (error)"):]
+    assert catch_block.index("if (!isActiveManaged2FaRequest(targetAccountId, action, requestSeq, payloadSignature)) return;") < catch_block.index("setError")
+    finally_block = save_body[save_body.index("finally"):]
+    assert "if (isCurrentManaged2FaRequest(targetAccountId, action, requestSeq)) setLoading(false);" in finally_block
+
+
+def test_group_and_archive_actions_surface_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/context.tsx").read_text()
+
+    for function_name in [
+        "authorizeSelectedGroup",
+        "createArchive",
+        "saveGroupPolicy",
+        "openArchiveDetail",
+        "exportArchive",
+        "rerunArchive",
+    ]:
+        start = source.index(f"async function {function_name}")
+        async_end = source.find("\n\n  async function", start + 1)
+        function_end = source.find("\n\n  function", start + 1)
+        candidates = [index for index in [async_end, function_end] if index != -1]
+        end = min(candidates)
+        function_body = source[start:end]
+        assert "try {" in function_body
+        assert "catch (error)" in function_body
+        assert "handleActionError(error);" in function_body
+        assert "throw error;" not in function_body
+        assert "finally" in function_body
+
+
+def test_archives_view_create_archive_from_target_surfaces_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/views/ArchivesView.tsx").read_text()
+
+    assert "const [createError, setCreateError] = React.useState('');" in source
+    assert "message=\"归档创建失败\"" in source
+    assert "description={createError}" in source
+    start = source.index("async function createArchiveFromTarget")
+    end = source.index("\n\n  return", start)
+    function_body = source[start:end]
+    assert "catch (error)" in function_body
+    assert "setCreateError(error instanceof Error ? error.message" in function_body
+    assert "throw error;" not in function_body
+
+
+def test_content_actions_surface_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/context/contentActions.ts").read_text()
+    context = (PROJECT_ROOT / "frontend/src/app/context.tsx").read_text()
+
+    assert "handleActionError: (error: unknown) => void;" in source
+    assert "handleActionError," in context[context.index("createContentActions({"):context.index("});", context.index("createContentActions({"))]
+    for function_name in [
+        "createMaterial",
+        "saveMaterial",
+        "disableMaterial",
+        "restoreMaterial",
+        "createContentKeywordRule",
+        "saveContentKeywordRule",
+    ]:
+        start = source.index(f"\n  async function {function_name}")
+        async_end = source.find("\n  async function", start + 1)
+        function_end = source.find("\n  function", start + 1)
+        return_end = source.find("\n  return", start + 1)
+        candidates = [index for index in [async_end, function_end, return_end] if index != -1]
+        function_body = source[start:min(candidates)]
+        assert "try {" in function_body
+        assert "catch (error)" in function_body
+        assert "params.handleActionError(error);" in function_body
+        assert "throw error;" not in function_body
+        assert "finally" in function_body
+
+
+def test_system_prompt_and_token_ledger_actions_surface_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/context/systemActions.ts").read_text()
+
+    for function_name in [
+        "loadUserTokenLedgers",
+        "createPromptTemplate",
+        "savePromptTemplate",
+    ]:
+        start = source.index(f"\n  async function {function_name}")
+        async_end = source.find("\n  async function", start + 1)
+        function_end = source.find("\n  function", start + 1)
+        return_end = source.find("\n  return", start + 1)
+        candidates = [index for index in [async_end, function_end, return_end] if index != -1]
+        function_body = source[start:min(candidates)]
+        assert "try {" in function_body
+        assert "catch (error)" in function_body
+        assert "params.handleActionError(error);" in function_body
+        assert "throw error;" not in function_body
+        assert "finally" in function_body
+
+
+def test_admin_user_token_ledgers_are_cleared_before_loading_selected_user():
+    source = (PROJECT_ROOT / "frontend/src/app/context/systemActions.ts").read_text()
+    open_edit = source[source.index("function openAdminUserEdit"):source.index("\n\n  function openAdminUserCreate")]
+    load_ledgers = source[source.index("async function loadUserTokenLedgers"):source.index("\n\n  async function toggleDeveloperApp")]
+
+    assert "params.setSelectedAdminUserId(user.id);" in open_edit
+    assert "void loadUserTokenLedgers(user.id);" in open_edit
+    assert "params.setSelectedAdminUserId(userId);" in load_ledgers
+    assert "params.setSelectedUserTokenLedgers([]);" in load_ledgers
+    assert load_ledgers.index("params.setSelectedUserTokenLedgers([]);") < load_ledgers.index("const ledgers = await api<TokenLedger[]>")
+    assert load_ledgers.index("params.setSelectedUserTokenLedgers([]);") < load_ledgers.index("catch (error)")
+
+
+def test_system_config_top_refresh_surfaces_tab_loader_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
+    start = source.index("async function refreshCurrentView")
+    end = source.index("\n\n  React.useEffect(() => {\n    if (!notice)", start)
+    function_body = source[start:end]
+
+    assert "try {" in function_body
+    assert "catch (error)" in function_body
+    assert "const prefix = activeView === 'systemConfig' ? '系统设置数据读取异常' : '刷新当前数据失败';" in function_body
+    assert "setNotice(`${prefix}：${error instanceof Error ? error.message : String(error)}`);" in function_body
+    assert "await loadSystemConfigTabData(systemConfigTab, requestSeq);" in function_body
+    assert "throw error;" not in function_body
+
+
+def test_system_config_tab_lazy_loads_bind_tab_and_request_sequence():
+    source = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
+    loader_start = source.index("const loadSystemConfigTabData = React.useCallback")
+    loader_end = source.index("\n\n  React.useEffect(() => {\n    if (!token || activeView !== 'systemConfig') return;", loader_start)
+    loader_body = source[loader_start:loader_end]
+    effect_start = loader_end
+    effect_body = source[effect_start:source.index("\n\n  async function refreshCurrentView", effect_start)]
+    refresh_body = source[source.index("async function refreshCurrentView"):source.index("\n\n  React.useEffect(() => {\n    if (!notice)", loader_start)]
+
+    assert "const systemConfigTabRequestRef = React.useRef({ tab: '', seq: 0 });" in source
+    assert "function beginSystemConfigTabRequest(tab: string)" in source
+    assert "function isActiveSystemConfigTabRequest(tab: string, requestSeq: number)" in source
+    assert "return activeView === 'systemConfig' && systemConfigTab === tab && systemConfigTabRequestRef.current.tab === tab && systemConfigTabRequestRef.current.seq === requestSeq;" in source
+
+    assert "requestSeq: number" in loader_body
+    assert "const loadDeveloperConfig = React.useCallback(async (requestSeq: number)" in source
+    assert "const loadAiProviderConfig = React.useCallback(async (requestSeq: number)" in source
+    assert "const loadResourceConfig = React.useCallback(async (requestSeq: number)" in source
+    assert "if (!isActiveSystemConfigTabRequest('developer-apps', requestSeq)) return;" in source
+    assert "if (!isActiveSystemConfigTabRequest('ai-providers', requestSeq)) return;" in source
+    assert "if (!isActiveSystemConfigTabRequest('resources', requestSeq)) return;" in source
+    assert "if (tab === 'admin-users' && hasPermission(currentUser, 'permissions.view'))" in loader_body
+    assert "const adminRows = await api<AdminUser[]>('/admin/users');" in loader_body
+    assert "if (!isActiveSystemConfigTabRequest(tab, requestSeq)) return;" in loader_body
+    assert loader_body.index("const adminRows = await api<AdminUser[]>('/admin/users');") < loader_body.index("if (!isActiveSystemConfigTabRequest(tab, requestSeq)) return;")
+    assert loader_body.index("if (!isActiveSystemConfigTabRequest(tab, requestSeq)) return;") < loader_body.index("setAdminUsers(adminRows);")
+
+    assert "const requestSeq = beginSystemConfigTabRequest(systemConfigTab);" in effect_body
+    assert "loadSystemConfigTabData(systemConfigTab, requestSeq).catch((error)" in effect_body
+    assert "if (!isActiveSystemConfigTabRequest(systemConfigTab, requestSeq)) return;" in effect_body
+    assert "const requestSeq = beginSystemConfigTabRequest(systemConfigTab);" in refresh_body
+    assert "await loadSystemConfigTabData(systemConfigTab, requestSeq);" in refresh_body
+
+
+def test_blob_export_fetches_use_api_error_for_backend_detail():
+    client_source = (PROJECT_ROOT / "frontend/src/shared/api/client.ts").read_text()
+    audit_source = (PROJECT_ROOT / "frontend/src/app/views/AuditsView.tsx").read_text()
+    rules_source = (PROJECT_ROOT / "frontend/src/app/views/RulesCenterView.tsx").read_text()
+    task_source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+
+    assert "export async function apiErrorFromResponse(response: Response)" in client_source
+    assert "return new AuthExpiredError(response.status, text);" in client_source
+    assert "apiErrorFromResponse" in audit_source[audit_source.index("from '../../shared/api/client'") - 80:audit_source.index("from '../../shared/api/client'")]
+    assert "apiErrorFromResponse" in rules_source[rules_source.index("from '../../shared/api/client'") - 80:rules_source.index("from '../../shared/api/client'")]
+    assert "apiErrorFromResponse" in task_source[task_source.index("from '../../shared/api/client'") - 100:task_source.index("from '../../shared/api/client'")]
+    for source in [audit_source, rules_source, task_source]:
+        assert "throw await apiErrorFromResponse(response);" in source
+        assert "new ApiError(response.status" not in source
+        assert "throw new Error(await response.text())" not in source
+
+
+def test_rules_center_bound_tasks_ignore_stale_rule_set_responses():
+    source = (PROJECT_ROOT / "frontend/src/app/views/RulesCenterView.tsx").read_text()
+    open_bound = source[source.index("async function openBoundTasks"):source.index("\n  const table")]
+    close_bound = source[source.index("function closeBoundTasks"):source.index("\n  const table")]
+    modal_start = source.index("title={boundTaskTarget ? `绑定任务：${boundTaskTarget.name}` : '绑定任务'}")
+    modal_end = source.index("\n      <Modal", modal_start + 1)
+    modal = source[modal_start:modal_end]
+
+    assert "const activeBoundTaskRuleSetId = React.useRef<number | null>(null);" in source
+    assert "const [boundTaskLoading, setBoundTaskLoading] = React.useState(false);" in source
+    assert "function isActiveBoundTaskRuleSet(ruleSetId: number)" in source
+    assert "activeBoundTaskRuleSetId.current = ruleSet.id;" in open_bound
+    assert "if (!isActiveBoundTaskRuleSet(ruleSet.id)) return;" in open_bound
+    assert "if (isActiveBoundTaskRuleSet(ruleSet.id)) setBoundTaskLoading(false);" in open_bound
+    catch_block = open_bound[open_bound.index("catch (err)"):]
+    assert catch_block.index("if (!isActiveBoundTaskRuleSet(ruleSet.id)) return;") < catch_block.index("setError")
+    assert "activeBoundTaskRuleSetId.current = null;" in close_bound
+    assert "setBoundTasks([]);" in close_bound
+    assert "onCancel={closeBoundTasks}" in modal
+    assert "loading={boundTaskLoading}" in modal
+
+
+def test_audit_export_modal_surfaces_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AuditsView.tsx").read_text()
+    export_body = source[source.index("async function exportCsv"):source.index("\n\n  return (")]
+
+    assert "App as AntdApp" in source
+    assert "const { message } = AntdApp.useApp();" in source
+    assert "function errorText(error: unknown)" in source
+    assert "catch (error)" in export_body
+    assert "void message.error(`导出审计记录失败：${errorText(error)}`);" in export_body
+    assert "onOk={() => void exportCsv(exportReason)}" not in source
+    assert "onOk={() => exportCsv(exportReason)}" in source
+
+
+def test_topbar_exposes_change_password_entry_separate_from_logout():
+    source = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
+    top_actions = source[source.index('<Space className="top-actions">'):source.index("</Space>", source.index('<Space className="top-actions">'))]
+
+    assert "onClick={() => setModal({ type: 'changePassword' })}" in top_actions
+    assert "修改密码" in top_actions
+    assert "onClick={logout}" in top_actions
+    assert "icon={<RefreshCcw size={16} />} onClick={logout}" in top_actions
+
+
+def test_frontend_data_loaders_do_not_silently_fake_empty_success():
+    checked_files = [
+        "frontend/src/app/context/refresh.ts",
+        "frontend/src/app/views/OverviewView.tsx",
+        "frontend/src/app/views/RulesCenterView.tsx",
+        "frontend/src/app/views/ArchivesView.tsx",
+        "frontend/src/app/context/accountActions.ts",
+    ]
+
+    combined = "\n".join((PROJECT_ROOT / path).read_text() for path in checked_files)
+    assert "Promise.allSettled" not in combined
+    assert ".catch(() => [])" not in combined
+    assert ".catch(() => ({}" not in combined
+    assert ".catch(() => undefined)" not in combined
+
+
+def test_overview_issue_actions_surface_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/views/OverviewView.tsx").read_text()
+    submit_issue_action = source[source.index("async function submitIssueAction"):source.index("\n  const targetRows")]
+    open_issue_detail = source[source.index("async function openIssueDetail"):source.index("\n  async function submitIssueAction")]
+
+    assert "import { api, ApiError }" in source
+    assert "function errorText(error: unknown)" in source
+    assert "catch (error)" in submit_issue_action
+    assert "message.error(`${actionLabel}失败：${errorText(error)}`)" in submit_issue_action
+    assert "catch (error)" in open_issue_detail
+    assert "message.error(`读取目标异常失败：${errorText(error)}`)" in open_issue_detail
+
+
+def test_overview_issue_detail_and_actions_ignore_stale_issue_responses():
+    source = (PROJECT_ROOT / "frontend/src/app/views/OverviewView.tsx").read_text()
+    open_issue_detail = source[source.index("async function openIssueDetail"):source.index("\n  async function submitIssueAction")]
+    close_issue_drawer = source[source.index("function closeIssueDrawer"):source.index("\n  function openIssueAction")]
+    submit_issue_action = source[source.index("async function submitIssueAction"):source.index("\n  const targetRows")]
+    drawer_start = source.index("title={issueDetail?.issue ? `目标异常 ${issueDetail.issue.id}` : '目标异常'}")
+    drawer = source[drawer_start:source.index("\n      </Drawer>", drawer_start)]
+
+    assert "const activeIssueDetailId = React.useRef<string | null>(null);" in source
+    assert "function isActiveIssueDetail(issueId: string)" in source
+    assert "activeIssueDetailId.current = issueId;" in open_issue_detail
+    assert "if (!isActiveIssueDetail(issueId)) return;" in open_issue_detail
+    assert "if (isActiveIssueDetail(issueId)) setIssueLoading(false);" in open_issue_detail
+    assert "onClose={closeIssueDrawer}" in drawer
+    assert "activeIssueDetailId.current = null;" in close_issue_drawer
+    assert "setIssueDetail(null);" in close_issue_drawer
+    assert "const issueId = issue.id;" in submit_issue_action
+    assert "if (!isActiveIssueDetail(issueId)) return;" in submit_issue_action
+    catch_block = submit_issue_action[submit_issue_action.index("catch (error)"):]
+    assert catch_block.index("if (!isActiveIssueDetail(issueId)) return;") < catch_block.index("message.error")
+    assert "if (requestSeq ? isCurrentIssueActionRequest(requestSeq) : isActiveIssueDetail(issueId)) setIssueBusy('');" in submit_issue_action
+
+
+def test_group_create_task_target_lookup_surfaces_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
+    start = source.index("async function openTaskFromGroup")
+    open_task = source[start:source.index("\n  const captchaControl", start)]
+
+    assert "import { api, ApiError }" in source
+    assert "function errorText(error: unknown)" in source
+    assert "if (error instanceof ApiError) return error.message;" in source
+    assert "catch (error)" in open_task
+    assert "message.warning(`读取运营目标失败：${errorText(error)}。请在任务中心手动选择目标。`)" in open_task
 
 
 def test_risk_control_proxy_write_actions_require_proxy_manage_permission():
@@ -33,6 +922,19 @@ def test_risk_control_proxy_write_actions_require_proxy_manage_permission():
 
     assert "render: (_, row) => canManageProxies && row.id" in source
     assert "if (!canManageProxies) return null" in source
+
+
+def test_risk_control_proxy_disable_surfaces_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/views/RiskControlView.tsx").read_text()
+    start = source.index("async function disableProxy")
+    end = source.index("\n  async function handleProxyAlert", start)
+    disable_proxy = source[start:end]
+
+    assert "onOk: async () => {" in disable_proxy
+    assert "try {" in disable_proxy
+    assert "catch (exc)" in disable_proxy
+    assert "setError(exc instanceof Error ? exc.message : '禁用代理失败');" in disable_proxy
+    assert "throw exc;" not in disable_proxy
     assert "{canManageProxies && <Button type=\"primary\" onClick={openProxyCreate}>新增代理资源</Button>}" in source
     assert "{canManageRisk && <Button type=\"primary\" onClick={openPolicyEdit}>编辑全局策略</Button>}" in source
 
@@ -151,6 +1053,10 @@ def test_account_center_consumes_account_deep_link_query_on_load():
     app_shell = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
     app_modals = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
     account_modals = (PROJECT_ROOT / "frontend/src/app/views/AccountModals.tsx").read_text()
+    deep_link_effect = app_shell[
+        app_shell.index("if (activeView !== 'accounts') return;"):
+        app_shell.index("\n  const loginReady", app_shell.index("if (activeView !== 'accounts') return;"))
+    ]
 
     assert "import { useLocation } from 'react-router-dom'" in app_shell
     assert "function accountDetailTabLabel(tab: string)" in app_shell
@@ -160,8 +1066,11 @@ def test_account_center_consumes_account_deep_link_query_on_load():
     assert "params.get('account_id')" in app_shell
     assert "accountDetailTabLabel(params.get('tab') || 'availability')" in app_shell
     assert "if (activeView !== 'accounts')" in app_shell
-    assert "void openAccountDetail" in app_shell
-    assert "setAccountDetailTab(tab)" in app_shell
+    assert "void openAccountDetail" in deep_link_effect
+    assert ".then((opened) => {" in deep_link_effect
+    assert "if (opened) setAccountDetailTab(tab);" in deep_link_effect
+    assert ".catch((error) => {" in deep_link_effect
+    assert "setNotice(`读取账号 ${accountId} 详情失败：${errorText(error)}`);" in deep_link_effect
     assert "import { useLocation } from 'react-router-dom'" in app_modals
     assert "function riskControlReturnSearch(search: string)" in app_modals
     assert "const returnToRiskControl = new URLSearchParams(location.search).get('return_to') === 'risk-control'" in app_modals
@@ -279,6 +1188,25 @@ def test_system_config_exposes_group_rescue_as_top_level_tab():
     assert "status: '在线'" in rescue_view
 
 
+def test_group_rescue_account_search_ignores_stale_responses_and_surfaces_errors():
+    source = (PROJECT_ROOT / "frontend/src/app/views/GroupRescueSettingsView.tsx").read_text()
+    search_body = source[source.index("async function searchOnlineAccounts"):source.index("\n\n  return (")]
+
+    assert "const searchRequestSeq = React.useRef(0);" in source
+    assert "const [searchError, setSearchError] = React.useState('');" in source
+    assert "const requestSeq = searchRequestSeq.current + 1;" in search_body
+    assert "searchRequestSeq.current = requestSeq;" in search_body
+    assert "const nextAccounts = await api<Account[]>(`/tg-accounts?${params.toString()}`);" in search_body
+    assert "if (searchRequestSeq.current !== requestSeq) return;" in search_body
+    assert "setAccounts(nextAccounts);" in search_body
+    catch_block = search_body[search_body.index("catch (error)"):]
+    assert catch_block.index("if (searchRequestSeq.current !== requestSeq) return;") < catch_block.index("setSearchError")
+    finally_block = search_body[search_body.index("finally"):]
+    assert "if (searchRequestSeq.current === requestSeq) setSearching(false);" in finally_block
+    assert "type=\"error\"" in source
+    assert "message={searchError}" in source
+
+
 def test_task_center_target_selects_support_searching():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
@@ -354,13 +1282,29 @@ def test_task_center_membership_items_support_server_side_filters():
     assert "value={membershipFilters.manualRequired}" in panel
 
 
+def test_task_center_admission_unknown_labels_are_operator_friendly():
+    modal = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+
+    assert "if (status === 'unknown_after_send') return '结果未知';" in modal
+    assert "const deleteStatusLabel = (status?: string | null) =>" in modal
+    assert "unknown_after_send: '结果未知'" in modal
+    assert "render: (value) => deleteStatusLabel(value)" in modal
+    assert "rescueStatusLabel(item.rescue_status)" in modal
+
+
 def test_task_detail_opens_before_membership_page_load():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     membership_loader = source[source.index("async function loadMembershipForDetail"):source.index("\n  async function loadDetail(task")]
     load_detail = source[source.index("async function loadDetail(task"):source.index("\n  async function fetchMembershipItems")]
 
     assert "setDetail(taskDetail)" in load_detail
-    assert load_detail.index("setDetail(taskDetail)") < load_detail.index("loadMembershipForDetail")
+    set_detail_index = load_detail.index("setDetail(taskDetail)")
+    assert set_detail_index < load_detail.index("loadActionPagesForDetail(taskDetail);")
+    assert set_detail_index < load_detail.index("loadDetailSectionsForDetail(taskDetail);")
+    assert set_detail_index < load_detail.index("loadMembershipForDetail")
+    assert "apiWithMeta<TaskCenterAction[]>(`/tasks/${taskId}/actions?${params.toString()}`)" in source
+    assert "apiWithMeta<any[]>(`/tasks/${taskDetail.task.id}/${endpoints[kind]}?${params.toString()}`)" in source
+    assert "apiWithMeta<TaskMembershipItem[]>(`/tasks/${taskId}/membership-items?${params.toString()}`)" in source
     assert "读取准入前置失败" in membership_loader
 
 
@@ -491,6 +1435,26 @@ def test_account_center_uses_availability_summary_health_fields():
     assert "dataIndex: 'health_score'" not in source
 
 
+def test_accounts_view_availability_and_security_actions_surface_backend_error_detail():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountsView.tsx").read_text()
+
+    assert "const [error, setError] = React.useState('');" in source
+    assert "message={error}" in source
+    for function_name in [
+        "loadAvailability",
+        "rebuildAvailability",
+        "refreshSelectedSecurity",
+    ]:
+        start = source.index(f"async function {function_name}")
+        async_end = source.find("\n  async function", start + 1)
+        const_end = source.find("\n  const", start + 1)
+        candidates = [index for index in [async_end, const_end] if index != -1]
+        function_body = source[start:min(candidates)]
+        assert "catch (error)" in function_body
+        assert "setError(error instanceof Error ? error.message" in function_body
+        assert "throw error;" not in function_body
+
+
 def test_overview_issue_status_actions_require_permission_and_structured_reason():
     source = (PROJECT_ROOT / "frontend/src/app/views/OverviewView.tsx").read_text()
     app_shell = (PROJECT_ROOT / "frontend/src/app/AppShell.tsx").read_text()
@@ -609,6 +1573,31 @@ def test_materials_view_exposes_prd_detail_preview_usage_and_cache_actions():
     assert "usage_count" in source
 
 
+def test_materials_view_detail_and_cache_refresh_ignore_stale_material_responses():
+    source = (PROJECT_ROOT / "frontend/src/app/views/MaterialsView.tsx").read_text()
+    open_detail = source[source.index("async function openMaterialDetail"):source.index("\n  async function refreshMaterialCache")]
+    refresh_cache = source[source.index("async function refreshMaterialCache"):source.index("\n  function openMaterialGroups")]
+    close_detail = source[source.index("function closeMaterialDetail"):source.index("\n  async function refreshMaterialCache")]
+
+    assert "const activeMaterialDetailId = React.useRef<number | null>(null);" in source
+    assert "const materialDetailRequestSeq = React.useRef(0);" in source
+    assert "function isActiveMaterialDetail(materialId: number, requestSeq: number)" in source
+    assert "activeMaterialDetailId.current = material.id;" in open_detail
+    assert "const requestSeq = materialDetailRequestSeq.current + 1;" in open_detail
+    assert "if (!isActiveMaterialDetail(material.id, requestSeq)) return;" in open_detail
+    assert "if (isActiveMaterialDetail(material.id, requestSeq)) setDetailLoading(false);" in open_detail
+    assert "activeMaterialDetailId.current = null;" in close_detail
+    assert "materialDetailRequestSeq.current += 1;" in close_detail
+    assert "const detailRequestSeq = materialDetailRequestSeq.current;" in refresh_cache
+    assert "const shouldRefreshDetail = activeMaterialDetailId.current === material.id;" in refresh_cache
+    assert "if (shouldRefreshDetail && materialDetailRequestSeq.current !== detailRequestSeq) return;" in refresh_cache
+    assert "if (shouldRefreshDetail) {" in refresh_cache
+    assert "setDetailMaterial((current) => current?.id === updated.id ? updated : current);" in refresh_cache
+    assert "await openMaterialDetail(updated);" in refresh_cache
+    catch_block = refresh_cache[refresh_cache.index("catch (error)"):]
+    assert catch_block.index("if (shouldRefreshDetail && materialDetailRequestSeq.current !== detailRequestSeq) return;") < catch_block.index("message.error")
+
+
 def test_materials_view_exposes_prd_material_group_management():
     source = (PROJECT_ROOT / "frontend/src/app/views/MaterialsView.tsx").read_text()
 
@@ -661,6 +1650,31 @@ def test_profile_batch_summary_labels_manual_items_as_auto_skipped():
     assert "需人工处理 {precheck" not in source
 
 
+def test_account_security_batch_precheck_and_create_bind_payload_signature_and_request_sequence():
+    source = (PROJECT_ROOT / "frontend/src/app/views/AccountSecurityBatchDrawer.tsx").read_text()
+    precheck_body = source[source.index("async function runPrecheck"):source.index("\n\n  function openCreateConfirm")]
+    create_body = source[source.index("async function createBatch"):source.index("\n\n  const previewColumns")]
+
+    assert "const batchDrawerRequestRef = React.useRef({ kind: '', signature: '', seq: 0 });" in source
+    assert "const latestBatchPayloadSignatureRef = React.useRef(payloadSignature);" in source
+    assert "function beginBatchDrawerRequest(kind: string, signature: string)" in source
+    assert "function isActiveBatchDrawerRequest(kind: string, signature: string, requestSeq: number)" in source
+    assert "latestBatchPayloadSignatureRef.current === signature" in source
+    assert "function isCurrentBatchDrawerRequest(kind: string, requestSeq: number)" in source
+
+    assert "const requestSignature = payloadSignature;" in precheck_body
+    assert "const requestSeq = beginBatchDrawerRequest('precheck', requestSignature);" in precheck_body
+    assert "if (!isActiveBatchDrawerRequest('precheck', requestSignature, requestSeq)) return;" in precheck_body
+    assert precheck_body.index("if (!isActiveBatchDrawerRequest('precheck', requestSignature, requestSeq)) return;") < precheck_body.index("setPrecheck(result);")
+    assert "if (isCurrentBatchDrawerRequest('precheck', requestSeq)) setLoading(false);" in precheck_body
+
+    assert "const requestSignature = payloadSignature;" in create_body
+    assert "const requestSeq = beginBatchDrawerRequest('create', requestSignature);" in create_body
+    assert "if (!isActiveBatchDrawerRequest('create', requestSignature, requestSeq)) return;" in create_body
+    assert create_body.index("if (!isActiveBatchDrawerRequest('create', requestSignature, requestSeq)) return;") < create_body.index("setBatch(result);")
+    assert "if (isCurrentBatchDrawerRequest('create', requestSeq)) setLoading(false);" in create_body
+
+
 def test_telegram_profile_update_can_clear_last_name():
     source = (PROJECT_ROOT / "backend/app/integrations/telegram/gateway.py").read_text()
 
@@ -690,7 +1704,7 @@ def test_navigation_does_not_reload_full_app_snapshot_for_self_loading_views():
     assert "refreshContentResourcesForActiveView" not in context
     assert "loadAccountList(context.selectedPoolId)" not in system_loader
     assert "loadContentResources()" not in system_loader
-    assert "loadSystemConfigTabData(systemConfigTab)" in shell
+    assert "loadSystemConfigTabData(systemConfigTab, requestSeq)" in shell
     assert "page_size=${SYSTEM_CONFIG_ACCOUNT_OPTION_LIMIT}" in shell
 
 
@@ -846,11 +1860,14 @@ def test_production_ai_hourly_probe_reports_membership_failures():
 
 
 def test_api_error_message_supports_trace_id_in_structured_detail_objects():
-    source = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+    api_client = (PROJECT_ROOT / "frontend/src/shared/api/client.ts").read_text()
+    task_center = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+    task_error = task_center[task_center.index("export function errorMessage"):task_center.index("\n\nexport function words")]
 
-    assert "typeof parsed.detail === 'object'" in source
-    assert "detail.message" in source
-    assert "detail.trace_id" in source
+    assert "if (detail && typeof detail === 'object')" in api_client
+    assert "record.message ?? record.failure_detail" in api_client
+    assert "record.trace_id" in api_client
+    assert "return error.message;" in task_error
 
 
 def test_profile_batch_submit_message_says_background_execution_not_completed():
@@ -1011,8 +2028,8 @@ def test_security_drawers_show_cleanup_preservation_and_managed_2fa_policy():
     assert "托管 2FA" in modals
     assert "密码设置 / 轮换不回显旧密码" in modals
     assert "accountId={accountDetail.account.id}" in modals
-    assert "`/tg-accounts/${accountId}/security/managed-2fa`" in managed_2fa
-    assert "`/tg-accounts/${accountId}/security/managed-2fa/rotate`" in managed_2fa
+    assert "const suffix = action === 'save' ? 'managed-2fa' : 'managed-2fa/rotate';" in managed_2fa
+    assert "return `/tg-accounts/${accountId}/security/${suffix}`;" in managed_2fa
     assert "post_account_security_managed_2fa" in router
     assert "post_account_security_managed_2fa_rotate" in router
     assert "accounts.security.credential_manage" in auth
@@ -1130,13 +2147,20 @@ def test_task_center_create_refreshes_after_long_timeout_and_capacity_summary_ty
 def test_task_center_create_reuses_review_precheck_before_submit():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
 
-    assert "const result = taskType !== 'group_membership_admission' && !options.skipCapacityCheck ? precheck ?? await runTaskPrecheck(values) : precheck;" in source
+    create_task = source[source.index("async function createTask"):source.index("\n\n  async function saveTaskSettings")]
+    assert "const precheckSignature = taskPrecheckPayloadSignature(taskType, payload);" in create_task
+    assert "const requiresFreshPrecheck = taskType !== 'group_membership_admission' && !options.skipCapacityCheck;" in create_task
+    assert "precheck && precheckPayloadSignature === precheckSignature" in create_task
+    assert "await runTaskPrecheck(values)" in create_task
+    assert "if (!result && requiresFreshPrecheck) return;" in create_task
 
 
 def test_api_error_message_supports_timeout_copy_and_trace_id():
+    api_client = (PROJECT_ROOT / "frontend/src/shared/api/client.ts").read_text()
     source = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
     assert "error.status === 408" in source
     assert "请求超时，服务可能仍在处理" in source
-    assert "parsed.detail && typeof parsed.detail === 'object'" in source
-    assert "detail.trace_id" in source
+    assert "if (detail && typeof detail === 'object')" in api_client
+    assert "record.trace_id" in api_client
+    assert "return error.message;" in source

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Card, Checkbox, Select, Space, Typography } from 'antd';
+import { Alert, Button, Card, Checkbox, Select, Space, Typography } from 'antd';
 import { api } from '../../shared/api/client';
 import type { Account, Tenant } from '../types';
 import { Badge } from '../components/shared';
@@ -48,6 +48,8 @@ function TenantGroupRescueCard({ tenant, initialAccounts, canManage, isActionPen
   const [adminAccountId, setAdminAccountId] = React.useState<number | null>(tenant.group_rescue_admin_account_id);
   const [accounts, setAccounts] = React.useState<Account[]>(initialAccounts);
   const [searching, setSearching] = React.useState(false);
+  const [searchError, setSearchError] = React.useState('');
+  const searchRequestSeq = React.useRef(0);
   const saveDisabled = !canManage || (enabled && !adminAccountId);
 
   React.useEffect(() => {
@@ -56,6 +58,8 @@ function TenantGroupRescueCard({ tenant, initialAccounts, canManage, isActionPen
   }, [tenant.id, tenant.group_rescue_enabled, tenant.group_rescue_admin_account_id]);
 
   async function searchOnlineAccounts(search: string) {
+    const requestSeq = searchRequestSeq.current + 1;
+    searchRequestSeq.current = requestSeq;
     const params = new URLSearchParams({
       page: '1',
       page_size: String(ACCOUNT_SEARCH_PAGE_SIZE),
@@ -63,10 +67,16 @@ function TenantGroupRescueCard({ tenant, initialAccounts, canManage, isActionPen
     });
     if (search.trim()) params.set('search', search.trim());
     setSearching(true);
+    setSearchError('');
     try {
-      setAccounts(await api<Account[]>(`/tg-accounts?${params.toString()}`));
+      const nextAccounts = await api<Account[]>(`/tg-accounts?${params.toString()}`);
+      if (searchRequestSeq.current !== requestSeq) return;
+      setAccounts(nextAccounts);
+    } catch (error) {
+      if (searchRequestSeq.current !== requestSeq) return;
+      setSearchError(error instanceof Error ? error.message : '搜索救援管理员账号失败');
     } finally {
-      setSearching(false);
+      if (searchRequestSeq.current === requestSeq) setSearching(false);
     }
   }
 
@@ -76,6 +86,7 @@ function TenantGroupRescueCard({ tenant, initialAccounts, canManage, isActionPen
         <Checkbox disabled={!canManage} checked={enabled} onChange={(event) => setEnabled(event.target.checked)}>启用群聊救援</Checkbox>
         <label className="wide-field">救援管理员账号<Select<number> showSearch allowClear disabled={!canManage} loading={searching} value={adminAccountId ?? undefined} onSearch={searchOnlineAccounts} onDropdownVisibleChange={(open) => { if (open) void searchOnlineAccounts(''); }} onChange={(value) => setAdminAccountId(value ?? null)} filterOption={false} options={accountOptions(accounts)} placeholder="搜索在线 TG 账号" /></label>
       </div>
+      {searchError && <Alert type="error" showIcon message={searchError} />}
       <Typography.Paragraph type="secondary">当前救援账号：{rescueAccountLabel(tenant, accounts)}</Typography.Paragraph>
       <Typography.Paragraph type="secondary">连续失败阈值固定为 {RESCUE_FAILURE_THRESHOLD} 次；该账号只做救援处置，直接邀请异常账号入群，不参与发送、点赞、评论等普通任务。</Typography.Paragraph>
       <Button size="small" type="primary" disabled={saveDisabled} loading={isActionPending(`tenant:${tenant.id}:group-rescue:save`)} onClick={() => onSave(tenant.id, {

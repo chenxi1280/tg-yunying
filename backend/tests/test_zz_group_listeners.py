@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.database import SessionLocal
 from app.integrations.telegram import GroupMessageSnapshot
 from app.main import app
-from app.models import AccountStatus, Campaign, GroupContextMessage, MessageTask, OperationTarget, SourceMediaAsset, TargetLearningProfile, TargetLearningSample, TgGroup, TgGroupAccount
+from app.models import AccountStatus, Campaign, GroupContextMessage, MessageTask, OperationTarget, SourceMediaAsset, TenantLearningSample, TenantLearningSource, TgGroup, TgGroupAccount
 from app.services.group_listeners import process_group_listener
 from tests.test_workflow import _next_test_phone, auth_headers, ensure_developer_app, ensure_test_workspace
 
@@ -236,6 +236,17 @@ def test_group_listener_learning_records_human_samples_and_rejects_bot_or_manage
                 )
                 session.add(target)
                 session.flush()
+            source = session.query(TenantLearningSource).filter_by(tenant_id=1, target_id=target.id).first()
+            if not source:
+                source = TenantLearningSource(
+                    tenant_id=1,
+                    target_id=target.id,
+                    source_kind="group",
+                    is_enabled=True,
+                    auto_sync_enabled=True,
+                    listener_account_ids=[listener["id"]],
+                )
+                session.add(source)
             target_id = target.id
             session.commit()
 
@@ -245,17 +256,15 @@ def test_group_listener_learning_records_human_samples_and_rejects_bot_or_manage
             assert processed >= 1, listener_error
 
         with SessionLocal() as session:
-            samples = session.query(TargetLearningSample).filter_by(target_id=target_id, profile_scene="group_chat").all()
+            source = session.query(TenantLearningSource).filter_by(tenant_id=1, target_id=target_id).one()
+            samples = session.query(TenantLearningSample).filter_by(source_id=source.id, source_scene="group_chat").all()
             statuses = {sample.source_message_id: sample.learning_status for sample in samples}
             assert statuses["learning-human-1"] == "accepted"
             assert statuses["learning-bot-1"] == "rejected"
             assert statuses["learning-managed-1"] == "rejected"
             assert statuses["learning-media-1"] == "downweighted"
             assert session.query(SourceMediaAsset).filter_by(source_group_id=group["id"], source_message_id="learning-media-1").count() == 0
-            profile = session.query(TargetLearningProfile).filter_by(target_id=target_id, profile_scene="group_chat").one()
-            assert profile.learning_enabled is True
-            assert profile.profile_version >= 1
-            assert profile.source_sample_count >= 1
+            assert source.last_sync_at is not None
 
 
 def test_group_listener_context_collection_is_not_subscription_gated(monkeypatch):

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.auth import CurrentUser, ensure_permission, get_current_user
 from app.database import get_session
 from app.services.tenant_target_profile import (
+    TargetProfileRunFailed,
     clear_profile,
     get_quality_rules,
     get_target_profile_overview,
@@ -71,6 +72,9 @@ def post_target_profile_source_sync(source_id: str, session: Session = Depends(g
         result = start_source_run(session, current_user.tenant_id or 1, source_id, "sync", actor=current_user.name)
         session.commit()
         return result
+    except TargetProfileRunFailed as exc:
+        session.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -82,6 +86,9 @@ def post_target_profile_source_pull_history(source_id: str, session: Session = D
         result = start_source_run(session, current_user.tenant_id or 1, source_id, "pull_history", actor=current_user.name)
         session.commit()
         return result
+    except TargetProfileRunFailed as exc:
+        session.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -144,6 +151,9 @@ def post_target_profile_recompute_candidates(payload: dict, session: Session = D
         result = recompute_candidates(session, current_user.tenant_id or 1, actor=current_user.name, reason=str(payload.get("reason") or ""))
         session.commit()
         return result
+    except TargetProfileRunFailed as exc:
+        session.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -183,6 +193,9 @@ def post_target_profile_rebuild(payload: dict, session: Session = Depends(get_se
         result = rebuild_profile(session, current_user.tenant_id or 1, actor=current_user.name, reason=str(payload.get("reason") or ""))
         session.commit()
         return result
+    except TargetProfileRunFailed as exc:
+        session.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

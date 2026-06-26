@@ -240,7 +240,7 @@ def test_mirror_forward_campaign_is_not_subscription_gated():
             assert db_campaign.last_error != "subscription inactive"
 
 
-def test_mirror_forward_multi_target_deduplicates_messages(monkeypatch):
+def test_mirror_forward_ai_rewrite_failure_blocks_queueing(monkeypatch):
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, _ = ensure_test_workspace(client, headers)
@@ -304,17 +304,16 @@ def test_mirror_forward_multi_target_deduplicates_messages(monkeypatch):
             second = process_continuous_campaign(session, campaign_id)
             task_count = session.query(MessageTask).filter_by(campaign_id=campaign_id).count()
             processed_count = session.query(CampaignProcessedMessage).filter_by(campaign_id=campaign_id).count()
-            processed = session.query(CampaignProcessedMessage).filter_by(campaign_id=campaign_id).first()
             draft = session.query(AiDraft).filter_by(campaign_id=campaign_id).first()
+            db_campaign = session.get(Campaign, campaign_id)
 
-        expected = len(source_groups) * len(target_groups)
-        assert first == expected
+        assert first == 0
         assert second == 0
-        assert task_count == expected
-        assert processed_count == expected
-        assert processed.reason.startswith("ai_failed_template_fallback:")
-        assert draft.generation_source == "template_fallback"
-        assert draft.content != f"{source_groups[0]['tg_peer_id']} 今天气氛不错"
+        assert task_count == 0
+        assert processed_count == 0
+        assert draft is None
+        assert db_campaign.last_error.startswith("监听转发 AI 润色不可用：")
+        assert "AI polish down" in db_campaign.last_error
 
 
 def test_content_filter_rejects_mentions_replies_tenant_keywords_and_group_rules():

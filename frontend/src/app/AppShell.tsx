@@ -19,6 +19,7 @@ import type {
   AdminUser,
   AiProvider,
   ChannelMessage,
+  ChannelMessageComment,
   ContentKeywordRule,
   DeveloperApp,
   Material,
@@ -33,7 +34,7 @@ import type {
   Tenant,
   TenantAiSetting,
 } from './types';
-import { api } from '../shared/api/client';
+import { api, ApiError } from '../shared/api/client';
 import { canView, hasPermission } from './utils';
 
 const { Header, Sider, Content } = Layout;
@@ -92,6 +93,11 @@ function noticeMessageType(notice: string): 'success' | 'error' | 'warning' | 'i
   return 'info';
 }
 
+function errorText(error: unknown) {
+  if (error instanceof ApiError) return error.message;
+  return error instanceof Error ? error.message : String(error);
+}
+
 function accountDetailTabSlug(tab: string) {
   if (/验证待处理|待处理/.test(tab)) return 'verification';
   if (/登录|验证|验证码|扫码/.test(tab)) return 'login';
@@ -132,6 +138,7 @@ function AppShell() {
   const [taskCenterFocus, setTaskCenterFocus] = React.useState<{ taskId: string; nonce: number } | null>(null);
   const [targetFocus, setTargetFocus] = React.useState<{ targetId: number; nonce: number } | null>(null);
   const [systemConfigTab, setSystemConfigTab] = React.useState('developer-apps');
+  const systemConfigTabRequestRef = React.useRef({ tab: '', seq: 0 });
   const ctx = useAppContext();
   const {
     token, currentUser,
@@ -189,26 +196,38 @@ function AppShell() {
 
   const nav = currentUser ? SHELL_NAV_ITEMS.filter(([viewId]) => canView(currentUser, viewId)) : SHELL_NAV_ITEMS;
 
-  const loadDeveloperConfig = React.useCallback(async () => {
+  function beginSystemConfigTabRequest(tab: string) {
+    const nextSeq = systemConfigTabRequestRef.current.seq + 1;
+    systemConfigTabRequestRef.current = { tab, seq: nextSeq };
+    return nextSeq;
+  }
+
+  function isActiveSystemConfigTabRequest(tab: string, requestSeq: number) {
+    return activeView === 'systemConfig' && systemConfigTab === tab && systemConfigTabRequestRef.current.tab === tab && systemConfigTabRequestRef.current.seq === requestSeq;
+  }
+
+  const loadDeveloperConfig = React.useCallback(async (requestSeq: number) => {
     const [apps, tenantRows] = await Promise.all([
       api<DeveloperApp[]>('/developer-apps'),
       api<Tenant[]>('/tenants'),
     ]);
+    if (!isActiveSystemConfigTabRequest('developer-apps', requestSeq)) return;
     setDeveloperApps(apps);
     setTenants(tenantRows);
-  }, [setDeveloperApps, setTenants]);
+  }, [activeView, setDeveloperApps, setTenants, systemConfigTab]);
 
-  const loadAiProviderConfig = React.useCallback(async () => {
+  const loadAiProviderConfig = React.useCallback(async (requestSeq: number) => {
     const [providers, setting] = await Promise.all([
       api<AiProvider[]>('/ai-providers'),
       api<TenantAiSetting>('/tenant-ai-settings'),
     ]);
+    if (!isActiveSystemConfigTabRequest('ai-providers', requestSeq)) return;
     setAiProviders(providers);
     setTenantAiSetting(setting);
     if (!selectedAiProviderId) setSelectedAiProviderId(setting?.default_provider_id || providers[0]?.id || '');
-  }, [selectedAiProviderId, setAiProviders, setSelectedAiProviderId, setTenantAiSetting]);
+  }, [activeView, selectedAiProviderId, setAiProviders, setSelectedAiProviderId, setTenantAiSetting, systemConfigTab]);
 
-  const loadResourceConfig = React.useCallback(async () => {
+  const loadResourceConfig = React.useCallback(async (requestSeq: number) => {
     const accountPath = `/tg-accounts?page=1&page_size=${SYSTEM_CONFIG_ACCOUNT_OPTION_LIMIT}&status=${encodeURIComponent('在线')}`;
     const [templates, materialRows, health, config, imports, rules, accountRows] = await Promise.all([
       api<PromptTemplate[]>('/prompt-templates'),
@@ -219,6 +238,7 @@ function AppShell() {
       api<ContentKeywordRule[]>('/content-keyword-rules'),
       hasPermission(currentUser, 'accounts.view') ? api<Account[]>(accountPath) : Promise.resolve([]),
     ]);
+    if (!isActiveSystemConfigTabRequest('resources', requestSeq)) return;
     setPromptTemplates(templates);
     setMaterials(materialRows);
     setMaterialCacheHealth(health);
@@ -226,28 +246,46 @@ function AppShell() {
     setMaterialImports(imports);
     setContentKeywordRules(rules);
     setAccounts(accountRows);
-  }, [currentUser, setAccounts, setContentKeywordRules, setMaterialCacheConfig, setMaterialCacheHealth, setMaterialImports, setMaterials, setPromptTemplates]);
+  }, [activeView, currentUser, setAccounts, setContentKeywordRules, setMaterialCacheConfig, setMaterialCacheHealth, setMaterialImports, setMaterials, setPromptTemplates, systemConfigTab]);
 
-  const loadSystemConfigTabData = React.useCallback(async (tab: string) => {
+  const loadSystemConfigTabData = React.useCallback(async (tab: string, requestSeq: number) => {
     if (!currentUser || activeView !== 'systemConfig') return;
-    if (tab === 'developer-apps') return loadDeveloperConfig();
-    if (tab === 'admin-users' && hasPermission(currentUser, 'permissions.view')) return setAdminUsers(await api<AdminUser[]>('/admin/users'));
-    if (tab === 'ai-providers') return loadAiProviderConfig();
-    if (tab === 'ai-slang') return setPromptTemplates(await api<PromptTemplate[]>('/prompt-templates'));
-    if (tab === 'resources') return loadResourceConfig();
+    if (tab === 'developer-apps') return loadDeveloperConfig(requestSeq);
+    if (tab === 'admin-users' && hasPermission(currentUser, 'permissions.view')) {
+      const adminRows = await api<AdminUser[]>('/admin/users');
+      if (!isActiveSystemConfigTabRequest(tab, requestSeq)) return;
+      setAdminUsers(adminRows);
+      return;
+    }
+    if (tab === 'ai-providers') return loadAiProviderConfig(requestSeq);
+    if (tab === 'ai-slang') {
+      const templates = await api<PromptTemplate[]>('/prompt-templates');
+      if (!isActiveSystemConfigTabRequest(tab, requestSeq)) return;
+      setPromptTemplates(templates);
+      return;
+    }
+    if (tab === 'resources') return loadResourceConfig(requestSeq);
   }, [activeView, currentUser, loadAiProviderConfig, loadDeveloperConfig, loadResourceConfig, setAdminUsers, setPromptTemplates]);
 
   React.useEffect(() => {
     if (!token || activeView !== 'systemConfig') return;
-    loadSystemConfigTabData(systemConfigTab).catch((error) => {
+    const requestSeq = beginSystemConfigTabRequest(systemConfigTab);
+    loadSystemConfigTabData(systemConfigTab, requestSeq).catch((error) => {
+      if (!isActiveSystemConfigTabRequest(systemConfigTab, requestSeq)) return;
       setNotice(`系统设置数据读取异常：${error instanceof Error ? error.message : String(error)}`);
     });
   }, [activeView, loadSystemConfigTabData, setNotice, systemConfigTab, token]);
 
   async function refreshCurrentView() {
-    await refresh();
-    if (activeView === 'systemConfig') {
-      await loadSystemConfigTabData(systemConfigTab);
+    try {
+      await refresh();
+      if (activeView === 'systemConfig') {
+        const requestSeq = beginSystemConfigTabRequest(systemConfigTab);
+        await loadSystemConfigTabData(systemConfigTab, requestSeq);
+      }
+    } catch (error) {
+      const prefix = activeView === 'systemConfig' ? '系统设置数据读取异常' : '刷新当前数据失败';
+      setNotice(`${prefix}：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -278,10 +316,12 @@ function AppShell() {
     if (accountDeepLinkRef.current === key) return;
     accountDeepLinkRef.current = key;
     const account = accounts.find((item) => item.id === accountId);
-    void openAccountDetail((account ?? { id: accountId }) as Parameters<typeof openAccountDetail>[0]).then(() => {
-      setAccountDetailTab(tab);
+    void openAccountDetail((account ?? { id: accountId }) as Parameters<typeof openAccountDetail>[0]).then((opened) => {
+      if (opened) setAccountDetailTab(tab);
+    }).catch((error) => {
+      setNotice(`读取账号 ${accountId} 详情失败：${errorText(error)}`);
     });
-  }, [accounts, activeView, location.search, openAccountDetail, setAccountDetailTab]);
+  }, [accounts, activeView, location.search, openAccountDetail, setAccountDetailTab, setNotice]);
 
   const loginReady = Boolean(
     loginEmail.trim()
@@ -301,8 +341,9 @@ function AppShell() {
     taskType: Extract<TaskCenterTaskType, 'group_ai_chat' | 'group_relay' | 'channel_view' | 'channel_like' | 'channel_comment'>,
     target: OperationTarget,
     channelMessage?: ChannelMessage,
+    comment?: ChannelMessageComment,
   ) {
-    setTaskCenterPrefill({ taskType, target, message: channelMessage, nonce: Date.now() });
+    setTaskCenterPrefill({ taskType, target, message: channelMessage, comment, nonce: Date.now() });
     goToView('taskManagement');
   }
 
@@ -328,8 +369,8 @@ function AppShell() {
   async function openAccountDetailFromOperation(accountId: number, tab: string = '可用性', context: AccountDeepLinkContext = {}) {
     goToView('accounts', accountDetailSearch(accountId, tab, context));
     const account = accounts.find((item) => item.id === accountId);
-    await openAccountDetail((account ?? { id: accountId }) as Parameters<typeof openAccountDetail>[0]);
-    setAccountDetailTab(tab);
+    const opened = await openAccountDetail((account ?? { id: accountId }) as Parameters<typeof openAccountDetail>[0]);
+    if (opened) setAccountDetailTab(tab);
   }
 
   async function openTaskFromGroup(groupId?: number) {
@@ -347,8 +388,8 @@ function AppShell() {
         return;
       }
       void message.warning('该群还没有对应的运营目标，请先在运营目标中心同步或创建。');
-    } catch {
-      void message.warning('读取运营目标失败，请在任务中心手动选择目标。');
+    } catch (error) {
+      void message.warning(`读取运营目标失败：${errorText(error)}。请在任务中心手动选择目标。`);
     }
     goToView('taskManagement');
   }
@@ -446,7 +487,8 @@ function AppShell() {
             <Tooltip title="刷新当前数据">
               <Button aria-label="刷新当前数据" icon={<RefreshCcw size={18} />} loading={isActionPending('app:refresh')} onClick={() => refreshCurrentView()} />
             </Tooltip>
-            <Button icon={<LockKeyhole size={16} />} onClick={logout}>退出</Button>
+            <Button icon={<LockKeyhole size={16} />} onClick={() => setModal({ type: 'changePassword' })}>修改密码</Button>
+            <Button icon={<RefreshCcw size={16} />} onClick={logout}>退出</Button>
           </Space>
         </Header>
 
@@ -546,7 +588,10 @@ function AppShell() {
               onEditMaterial={openMaterialEdit}
               onCreateKeywordRule={() => setModal({ type: 'keywordRuleCreate' })}
               onEditKeywordRule={openContentKeywordRuleEdit}
-              onSavedMaterialCacheConfig={() => loadSystemConfigTabData('resources')}
+              onSavedMaterialCacheConfig={() => {
+                const requestSeq = beginSystemConfigTabRequest('resources');
+                return loadSystemConfigTabData('resources', requestSeq);
+              }}
               onOpenConfirm={openConfirm}
               isActionPending={isActionPending}
             />

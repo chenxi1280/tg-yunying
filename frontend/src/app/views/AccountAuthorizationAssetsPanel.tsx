@@ -34,6 +34,8 @@ export function AccountAuthorizationAssetsPanel({
 }) {
   const [assets, setAssets] = React.useState<AccountAuthorizationAsset[]>([]);
   const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState('');
+  const [refreshError, setRefreshError] = React.useState('');
   const [switchingId, setSwitchingId] = React.useState<number | null>(null);
   const [loginOpen, setLoginOpen] = React.useState(false);
   const [loginLoading, setLoginLoading] = React.useState(false);
@@ -48,29 +50,112 @@ export function AccountAuthorizationAssetsPanel({
     code: '',
     password_2fa: '',
   });
+  const activeAccountId = React.useRef(accountId);
+  const authorizationAssetsRequestRef = React.useRef({ accountId, seq: 0 });
+  const loginSessionSeq = React.useRef(0);
+  const latestLoginStartPayloadSignature = React.useRef('');
+  const loginStartPayload = React.useMemo(() => ({
+    method: loginForm.method,
+    role: loginForm.role,
+    developer_app_id: loginForm.developer_app_id,
+    proxy_id: loginForm.proxy_id,
+  }), [loginForm.developer_app_id, loginForm.method, loginForm.proxy_id, loginForm.role]);
+  const loginStartPayloadSignature = React.useMemo(() => JSON.stringify(loginStartPayload), [loginStartPayload]);
+  latestLoginStartPayloadSignature.current = loginStartPayloadSignature;
 
   React.useEffect(() => {
-    void loadAssets();
+    activeAccountId.current = accountId;
+    loginSessionSeq.current += 1;
+    setAssets([]);
+    setLoginOpen(false);
+    setLoginFlow(null);
+    setLoginLoading(false);
+    setSwitchingId(null);
+    setError('');
+    setRefreshError('');
+    void loadAssets(accountId);
   }, [accountId]);
 
-  async function loadAssets() {
-    setLoading(true);
+  function isActiveAccount(targetAccountId: number) {
+    return activeAccountId.current === targetAccountId;
+  }
+
+  function beginAuthorizationAssetsRequest(targetAccountId: number) {
+    const requestSeq = authorizationAssetsRequestRef.current.seq + 1;
+    authorizationAssetsRequestRef.current = { accountId: targetAccountId, seq: requestSeq };
+    return requestSeq;
+  }
+
+  function isActiveAuthorizationAssetsRequest(targetAccountId: number, requestSeq: number) {
+    return isActiveAccount(targetAccountId)
+      && authorizationAssetsRequestRef.current.accountId === targetAccountId
+      && authorizationAssetsRequestRef.current.seq === requestSeq;
+  }
+
+  function beginLoginSession() {
+    loginSessionSeq.current += 1;
+    return loginSessionSeq.current;
+  }
+
+  function currentLoginSession() {
+    return loginSessionSeq.current;
+  }
+
+  function isActiveLoginSession(targetAccountId: number, loginSeq: number) {
+    return isActiveAccount(targetAccountId) && loginSessionSeq.current === loginSeq;
+  }
+
+  function isActiveLoginStart(targetAccountId: number, loginSeq: number, payloadSignature: string) {
+    return isActiveLoginSession(targetAccountId, loginSeq)
+      && latestLoginStartPayloadSignature.current === payloadSignature;
+  }
+
+  async function refreshChangedAccount(targetAccountId: number, loginSeq?: number) {
+    setRefreshError('');
     try {
-      setAssets(await api<AccountAuthorizationAsset[]>(`/tg-accounts/${accountId}/authorizations`));
+      await onChanged();
+    } catch (error) {
+      const stillActive = loginSeq === undefined
+        ? isActiveAccount(targetAccountId)
+        : isActiveLoginSession(targetAccountId, loginSeq);
+      if (!stillActive) return;
+      setRefreshError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function loadAssets(targetAccountId = accountId): Promise<boolean> {
+    const requestSeq = beginAuthorizationAssetsRequest(targetAccountId);
+    setLoading(true);
+    setError('');
+    setRefreshError('');
+    try {
+      const nextAssets = await api<AccountAuthorizationAsset[]>(`/tg-accounts/${targetAccountId}/authorizations`);
+      if (!isActiveAuthorizationAssetsRequest(targetAccountId, requestSeq)) return false;
+      setAssets(nextAssets);
+      return true;
+    } catch (error) {
+      if (!isActiveAuthorizationAssetsRequest(targetAccountId, requestSeq)) return false;
+      setError(error instanceof Error ? error.message : '读取授权资产失败');
+      return false;
     } finally {
-      setLoading(false);
+      if (isActiveAuthorizationAssetsRequest(targetAccountId, requestSeq)) setLoading(false);
     }
   }
 
   async function openLoginModal() {
+    const targetAccountId = accountId;
+    const loginSeq = beginLoginSession();
     setLoginOpen(true);
     setLoginFlow(null);
     setLoginLoading(true);
+    setError('');
+    setRefreshError('');
     try {
       const [apps, proxyRows] = await Promise.all([
         api<DeveloperApp[]>('/developer-apps'),
         api<AccountProxy[]>('/account-proxies'),
       ]);
+      if (!isActiveLoginSession(targetAccountId, loginSeq)) return;
       const firstApp = apps.find((app) => app.is_active && app.health_status === '健康') ?? apps[0];
       const firstProxy = proxyRows.find((proxy) => proxy.status === 'healthy' || proxy.status === '健康') ?? proxyRows[0];
       setDeveloperApps(apps);
@@ -82,35 +167,47 @@ export function AccountAuthorizationAssetsPanel({
         code: '',
         password_2fa: '',
       }));
+    } catch (error) {
+      if (!isActiveLoginSession(targetAccountId, loginSeq)) return;
+      setError(error instanceof Error ? error.message : '读取备用授权登录资源失败');
     } finally {
-      setLoginLoading(false);
+      if (isActiveLoginSession(targetAccountId, loginSeq)) setLoginLoading(false);
     }
   }
 
   async function startStandbyLogin() {
+    const targetAccountId = accountId;
+    const loginSeq = currentLoginSession();
+    const payload = loginStartPayload;
+    const payloadSignature = loginStartPayloadSignature;
     setLoginLoading(true);
+    setError('');
+    setRefreshError('');
     try {
-      const flow = await api<LoginFlow>(`/tg-accounts/${accountId}/authorizations/login/start`, {
+      const flow = await api<LoginFlow>(`/tg-accounts/${targetAccountId}/authorizations/login/start`, {
         method: 'POST',
-        body: JSON.stringify({
-          method: loginForm.method,
-          role: loginForm.role,
-          developer_app_id: loginForm.developer_app_id,
-          proxy_id: loginForm.proxy_id,
-        }),
+        body: JSON.stringify(payload),
       });
+      if (!isActiveLoginStart(targetAccountId, loginSeq, payloadSignature)) return;
       setLoginFlow(flow);
       setLoginForm((current) => ({ ...current, code: flow.code_preview ?? '' }));
+    } catch (error) {
+      if (!isActiveLoginStart(targetAccountId, loginSeq, payloadSignature)) return;
+      setError(error instanceof Error ? error.message : '启动备用授权登录失败');
     } finally {
-      setLoginLoading(false);
+      if (isActiveLoginSession(targetAccountId, loginSeq)) setLoginLoading(false);
     }
   }
 
   async function verifyStandbyLogin() {
     if (!loginFlow) return;
+    const targetAccountId = accountId;
+    const loginSeq = currentLoginSession();
     setLoginLoading(true);
+    setError('');
+    setRefreshError('');
     try {
-      await api(`/tg-accounts/${accountId}/authorizations/login/verify`, {
+      await api(`/tg-accounts/${targetAccountId}/authorizations/login/verify`, {
         method: 'POST',
         body: JSON.stringify({
           flow_id: loginFlow.id,
@@ -118,29 +215,44 @@ export function AccountAuthorizationAssetsPanel({
           password_2fa: loginForm.password_2fa.trim() || null,
         }),
       });
-      await completeLoginModal();
+      if (!isActiveLoginSession(targetAccountId, loginSeq)) return;
+      await completeLoginModal(targetAccountId, loginSeq);
+    } catch (error) {
+      if (!isActiveLoginSession(targetAccountId, loginSeq)) return;
+      setError(error instanceof Error ? error.message : '校验备用授权登录失败');
     } finally {
-      setLoginLoading(false);
+      if (isActiveLoginSession(targetAccountId, loginSeq)) setLoginLoading(false);
     }
   }
 
   async function checkQrLogin() {
     if (!loginFlow) return;
+    const targetAccountId = accountId;
+    const loginSeq = currentLoginSession();
     setLoginLoading(true);
+    setError('');
+    setRefreshError('');
     try {
-      await api(`/tg-accounts/${accountId}/authorizations/login/qr/check`, {
+      await api(`/tg-accounts/${targetAccountId}/authorizations/login/qr/check`, {
         method: 'POST',
         body: JSON.stringify({ flow_id: loginFlow.id }),
       });
-      await completeLoginModal();
+      if (!isActiveLoginSession(targetAccountId, loginSeq)) return;
+      await completeLoginModal(targetAccountId, loginSeq);
+    } catch (error) {
+      if (!isActiveLoginSession(targetAccountId, loginSeq)) return;
+      setError(error instanceof Error ? error.message : '检查 QR 登录失败');
     } finally {
-      setLoginLoading(false);
+      if (isActiveLoginSession(targetAccountId, loginSeq)) setLoginLoading(false);
     }
   }
 
-  async function completeLoginModal() {
-    await loadAssets();
-    await onChanged();
+  async function completeLoginModal(targetAccountId: number, loginSeq: number) {
+    if (!isActiveLoginSession(targetAccountId, loginSeq)) return;
+    const loaded = await loadAssets(targetAccountId);
+    if (!loaded || !isActiveLoginSession(targetAccountId, loginSeq)) return;
+    await refreshChangedAccount(targetAccountId, loginSeq);
+    if (!isActiveLoginSession(targetAccountId, loginSeq)) return;
     setLoginOpen(false);
     setLoginFlow(null);
     void message.success('备用授权已登录');
@@ -159,18 +271,34 @@ export function AccountAuthorizationAssetsPanel({
   }
 
   async function switchPrimary(authorizationId: number) {
+    const targetAccountId = accountId;
     setSwitchingId(authorizationId);
+    setError('');
+    setRefreshError('');
     try {
-      await api(`/tg-accounts/${accountId}/authorizations/${authorizationId}/switch-primary`, {
+      await api(`/tg-accounts/${targetAccountId}/authorizations/${authorizationId}/switch-primary`, {
         method: 'POST',
         body: JSON.stringify({ reason: '账号中心手动切换备用授权' }),
       });
-      await loadAssets();
-      await onChanged();
+      if (!isActiveAccount(targetAccountId)) return;
+      const loaded = await loadAssets(targetAccountId);
+      if (!loaded || !isActiveAccount(targetAccountId)) return;
+      await refreshChangedAccount(targetAccountId);
+      if (!isActiveAccount(targetAccountId)) return;
       void message.success('已切换主授权');
+    } catch (error) {
+      if (!isActiveAccount(targetAccountId)) return;
+      setError(error instanceof Error ? error.message : '切换主授权失败');
     } finally {
-      setSwitchingId(null);
+      if (isActiveAccount(targetAccountId)) setSwitchingId(null);
     }
+  }
+
+  function closeLoginModal() {
+    loginSessionSeq.current += 1;
+    setLoginOpen(false);
+    setLoginFlow(null);
+    setLoginLoading(false);
   }
 
   function assetForRole(role: string) {
@@ -262,11 +390,13 @@ export function AccountAuthorizationAssetsPanel({
       extra={(
         <Space>
           <Button size="small" disabled={!canManage} onClick={openLoginModal}>新增备用授权</Button>
-          <Button size="small" loading={loading} onClick={loadAssets}>刷新授权资产</Button>
+          <Button size="small" loading={loading} onClick={() => void loadAssets()}>刷新授权资产</Button>
         </Space>
       )}
     >
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        {error && <Alert type="error" showIcon message={error} />}
+        {refreshError && <Alert type="error" showIcon message="刷新账号授权资产失败" description={refreshError} />}
         <Alert
           type={healthyStandbyCount >= 2 && primaryAsset?.session_available ? 'success' : healthyStandbyCount > 0 ? 'warning' : 'error'}
           showIcon
@@ -292,7 +422,7 @@ export function AccountAuthorizationAssetsPanel({
       <Modal
         title="新增备用授权"
         open={loginOpen}
-        onCancel={() => setLoginOpen(false)}
+        onCancel={closeLoginModal}
         footer={null}
         destroyOnHidden
       >

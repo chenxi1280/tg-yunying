@@ -2,7 +2,7 @@ import React from 'react';
 import { Alert, Button, Card, Collapse, Form, Input, Modal, Select, Space, Steps, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, CirclePause, CirclePlay, RefreshCcw } from 'lucide-react';
-import { api, apiWithMeta, ApiError, API_BASE } from '../../shared/api/client';
+import { api, apiWithMeta, apiErrorFromResponse, ApiError, API_BASE } from '../../shared/api/client';
 import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskMembershipItem, TaskPrecheck } from '../types';
 import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
 import { fromBeijingDateTimeLocalValue } from '../time';
@@ -241,6 +241,7 @@ export default function TaskCenterView({
   const [dangerAction, setDangerAction] = React.useState<DangerousTaskState | null>(null);
   const [dangerReason, setDangerReason] = React.useState('');
   const [attemptDetail, setAttemptDetail] = React.useState<{ action: TaskCenterAction; attempts: TaskExecutionAttempt[]; loading: boolean } | null>(null);
+  const [attemptError, setAttemptError] = React.useState('');
   const [plannedActionRows, setPlannedActionRows] = React.useState<TaskCenterAction[]>([]);
   const [executedActionRows, setExecutedActionRows] = React.useState<TaskCenterAction[]>([]);
   const [plannedActionPage, setPlannedActionPage] = React.useState<ActionPageState>(DEFAULT_ACTION_PAGE);
@@ -250,6 +251,7 @@ export default function TaskCenterView({
   const [relayBatchPage, setRelayBatchPage] = React.useState<ActionPageState>(DEFAULT_DETAIL_SECTION_PAGE);
   const [admissionItemPage, setAdmissionItemPage] = React.useState<ActionPageState>(DEFAULT_DETAIL_SECTION_PAGE);
   const [precheck, setPrecheck] = React.useState<TaskPrecheck | null>(null);
+  const [precheckPayloadSignature, setPrecheckPayloadSignature] = React.useState('');
   const [precheckLoading, setPrecheckLoading] = React.useState(false);
   const [editRecommendation, setEditRecommendation] = React.useState<AiLimitRecommendation | null>(null);
   const [editRecommendationLoading, setEditRecommendationLoading] = React.useState(false);
@@ -263,7 +265,23 @@ export default function TaskCenterView({
   const [editForm] = Form.useForm();
   const appliedPrefillNonce = React.useRef<number | null>(null);
   const appliedFocusNonce = React.useRef<number | null>(null);
+  const activeTaskListRequestSeq = React.useRef(0);
+  const activeTaskFormSupportRequestSeq = React.useRef(0);
+  const activeTaskActionKey = React.useRef('');
+  const activeTaskPrecheckRequestRef = React.useRef({ seq: 0, signature: '' });
+  const activeEditRecommendationRequestRef = React.useRef({ seq: 0, signature: '' });
+  const activeEditSaveRequestRef = React.useRef({ seq: 0, taskId: '', signature: '' });
   const activeDetailTaskId = React.useRef('');
+  const activeDetailRequestSeq = React.useRef(0);
+  const activeAttemptActionId = React.useRef<string | null>(null);
+  const activeActionPageRequestSeq = React.useRef<Record<ActionPageKind, number>>({ planned: 0, executed: 0 });
+  const activeDetailSectionPageRequestSeq = React.useRef<Record<DetailSectionKind, number>>({
+    aiCycles: 0,
+    messageGroups: 0,
+    relayBatches: 0,
+    admissionItems: 0,
+  });
+  const activeMembershipPageRequestSeq = React.useRef(0);
   const accountMode = Form.useWatch('selection_mode', form) ?? 'all';
   const pacingMode = Form.useWatch('pacing_mode', form) ?? 'template';
   const editAccountMode = Form.useWatch('selection_mode', editForm) ?? 'all';
@@ -290,20 +308,182 @@ export default function TaskCenterView({
     if (promptTemplates.length) setTaskPromptTemplates(promptTemplates);
   }, [promptTemplates]);
 
-  async function load(nextTaskTypeFilter: TaskTypeFilter = taskTypeFilter) {
+  function beginTaskListRequest() {
+    activeTaskListRequestSeq.current += 1;
+    return activeTaskListRequestSeq.current;
+  }
+
+  function isActiveTaskListRequest(requestSeq: number) {
+    return activeTaskListRequestSeq.current === requestSeq;
+  }
+
+  function beginTaskFormSupportRequest() {
+    activeTaskFormSupportRequestSeq.current += 1;
+    return activeTaskFormSupportRequestSeq.current;
+  }
+
+  function isActiveTaskFormSupportRequest(requestSeq: number) {
+    return activeTaskFormSupportRequestSeq.current === requestSeq;
+  }
+
+  function beginTaskAction(actionKey: string) {
+    activeTaskActionKey.current = actionKey;
+    setBusyId(actionKey);
+  }
+
+  function isActiveTaskAction(actionKey: string) {
+    return activeTaskActionKey.current === actionKey;
+  }
+
+  function clearTaskAction(actionKey: string) {
+    if (!isActiveTaskAction(actionKey)) return;
+    activeTaskActionKey.current = '';
+    setBusyId('');
+  }
+
+  function taskPrecheckPayloadSignature(type: TaskCenterTaskType, payload: Record<string, any>) {
+    return JSON.stringify({ task_type: type, payload });
+  }
+
+  function taskSettingsSavePayloadSignature(taskId: string, type: TaskCenterTaskType, payload: Record<string, any>) {
+    return JSON.stringify({ task_id: taskId, task_type: type, payload });
+  }
+
+  function beginTaskPrecheckRequest(signature: string) {
+    const requestSeq = activeTaskPrecheckRequestRef.current.seq + 1;
+    activeTaskPrecheckRequestRef.current = { seq: requestSeq, signature };
+    return requestSeq;
+  }
+
+  function currentTaskPrecheckPayloadSignature() {
+    try {
+      return taskPrecheckPayloadSignature(taskType, createPayload(form.getFieldsValue(true)));
+    } catch {
+      return '';
+    }
+  }
+
+  function isCurrentTaskPrecheckRequest(requestSeq: number) {
+    return activeTaskPrecheckRequestRef.current.seq === requestSeq;
+  }
+
+  function isActiveTaskPrecheckRequest(requestSeq: number, signature: string) {
+    return isCurrentTaskPrecheckRequest(requestSeq)
+      && activeTaskPrecheckRequestRef.current.signature === signature
+      && currentTaskPrecheckPayloadSignature() === signature;
+  }
+
+  function beginEditRecommendationRequest(signature: string) {
+    const requestSeq = activeEditRecommendationRequestRef.current.seq + 1;
+    activeEditRecommendationRequestRef.current = { seq: requestSeq, signature };
+    return requestSeq;
+  }
+
+  function currentEditRecommendationPayloadSignature() {
+    if (!detail || isSystemTask(detail.task)) return '';
+    const editableType = detail.task.type as TaskCenterTaskType;
+    try {
+      return taskPrecheckPayloadSignature(editableType, settingsPayload(editableType, editForm.getFieldsValue(true)));
+    } catch {
+      return '';
+    }
+  }
+
+  function isCurrentEditRecommendationRequest(requestSeq: number) {
+    return activeEditRecommendationRequestRef.current.seq === requestSeq;
+  }
+
+  function isActiveEditRecommendationRequest(requestSeq: number, signature: string) {
+    return isCurrentEditRecommendationRequest(requestSeq)
+      && activeEditRecommendationRequestRef.current.signature === signature
+      && currentEditRecommendationPayloadSignature() === signature;
+  }
+
+  function invalidateTaskSettingsSaveRequest() {
+    const requestSeq = activeEditSaveRequestRef.current.seq + 1;
+    activeEditSaveRequestRef.current = { seq: requestSeq, taskId: '', signature: '' };
+  }
+
+  function beginTaskSettingsSaveRequest(taskId: string, signature: string) {
+    const requestSeq = activeEditSaveRequestRef.current.seq + 1;
+    activeEditSaveRequestRef.current = { seq: requestSeq, taskId, signature };
+    return requestSeq;
+  }
+
+  function currentTaskSettingsSavePayloadSignature() {
+    if (!detail || isSystemTask(detail.task)) return '';
+    const editableType = detail.task.type as TaskCenterTaskType;
+    try {
+      return taskSettingsSavePayloadSignature(detail.task.id, editableType, settingsPayload(editableType, editForm.getFieldsValue(true)));
+    } catch {
+      return '';
+    }
+  }
+
+  function isCurrentTaskSettingsSaveRequest(requestSeq: number) {
+    return activeEditSaveRequestRef.current.seq === requestSeq;
+  }
+
+  function isActiveTaskSettingsSaveRequest(taskId: string, requestSeq: number, signature: string) {
+    return isCurrentTaskSettingsSaveRequest(requestSeq)
+      && activeEditSaveRequestRef.current.taskId === taskId
+      && activeEditSaveRequestRef.current.signature === signature
+      && currentTaskSettingsSavePayloadSignature() === signature;
+  }
+
+  async function fetchTaskListData(requestSeq: number, nextTaskTypeFilter: TaskTypeFilter = taskTypeFilter): Promise<boolean> {
     const params = new URLSearchParams();
     if (nextTaskTypeFilter !== 'all') params.set('type', nextTaskTypeFilter);
     const query = params.toString();
+    const [taskData, schedulingData] = await Promise.all([
+      api<TaskCenterTask[]>(`/tasks${query ? `?${query}` : ''}`),
+      api<SchedulingSetting>('/scheduling-settings'),
+    ]);
+    if (!isActiveTaskListRequest(requestSeq)) return false;
+    setTasks(taskData);
+    setSchedulingSetting(schedulingData);
+    return true;
+  }
+
+  async function load(nextTaskTypeFilter: TaskTypeFilter = taskTypeFilter) {
+    const requestSeq = beginTaskListRequest();
     setLoading(true);
     try {
-      const [taskData, schedulingData] = await Promise.all([
-        api<TaskCenterTask[]>(`/tasks${query ? `?${query}` : ''}`),
-        api<SchedulingSetting>('/scheduling-settings'),
-      ]);
-      setTasks(taskData);
-      setSchedulingSetting(schedulingData);
+      await fetchTaskListData(requestSeq, nextTaskTypeFilter);
+    } catch (error) {
+      if (!isActiveTaskListRequest(requestSeq)) return;
+      setActionError(`读取任务列表失败：${errorMessage(error)}`);
     } finally {
-      setLoading(false);
+      if (isActiveTaskListRequest(requestSeq)) setLoading(false);
+    }
+  }
+
+  async function refreshTaskListAfterAction(actionLabel: string) {
+    const requestSeq = beginTaskListRequest();
+    try {
+      await fetchTaskListData(requestSeq);
+    } catch (error) {
+      if (!isActiveTaskListRequest(requestSeq)) return;
+      setActionError(`任务中心数据刷新失败：${actionLabel}操作已完成，但刷新任务列表失败：${errorMessage(error)}`);
+    }
+  }
+
+  async function refreshVisibleTaskAfterAction(actionLabel: string, task: TaskCenterTask) {
+    await refreshTaskListAfterAction(actionLabel);
+    if (activeDetailTaskId.current !== task.id) return;
+    const requestSeq = beginDetailRequest();
+    resetActionPages();
+    resetDetailSectionPages();
+    try {
+      const taskDetail = await fetchTaskDetail(task.id);
+      if (!isActiveDetailRequest(task.id, requestSeq)) return;
+      setDetail(taskDetail);
+      loadActionPagesForDetail(taskDetail);
+      loadDetailSectionsForDetail(taskDetail);
+      await loadMembershipForDetail(taskDetail, 1, membershipPage.pageSize, DEFAULT_MEMBERSHIP_FILTERS);
+    } catch (error) {
+      if (!isActiveDetailRequest(task.id, requestSeq)) return;
+      setActionError(`任务中心数据刷新失败：${actionLabel}操作已完成，但刷新任务详情失败：${errorMessage(error)}`);
     }
   }
 
@@ -371,16 +551,32 @@ export default function TaskCenterView({
     if (selection) form.setFieldsValue(selection);
   }
 
-  async function ensureTaskFormData(type: TaskCenterTaskType) {
+  function taskTypeSupportRequests(type: TaskCenterTaskType): Array<Promise<unknown>> {
+    const requests: Array<Promise<unknown>> = [];
+    if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(type)) requests.push(ensureRuleSets());
+    if (type.startsWith('channel_')) requests.push(ensureMessages());
+    if (type === 'channel_comment') requests.push(ensureComments());
+    return requests;
+  }
+
+  async function loadTaskTypeSupportData(type: TaskCenterTaskType, requestSeq: number): Promise<boolean> {
+    const requests = taskTypeSupportRequests(type);
+    if (!requests.length) return true;
+    await Promise.all(requests);
+    if (!isActiveTaskFormSupportRequest(requestSeq)) return false;
+    return true;
+  }
+
+  async function ensureTaskFormData(type: TaskCenterTaskType, requestSeq: number): Promise<boolean> {
     setSupportLoading(true);
     try {
       const requests: Array<Promise<unknown>> = [ensureTargets(), ensureAccounts(), ensurePromptTemplates()];
-      if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(type)) requests.push(ensureRuleSets());
-      if (type.startsWith('channel_')) requests.push(ensureMessages());
-      if (type === 'channel_comment') requests.push(ensureComments());
+      requests.push(...taskTypeSupportRequests(type));
       await Promise.all(requests);
+      if (!isActiveTaskFormSupportRequest(requestSeq)) return false;
+      return true;
     } finally {
-      setSupportLoading(false);
+      if (isActiveTaskFormSupportRequest(requestSeq)) setSupportLoading(false);
     }
   }
 
@@ -392,19 +588,26 @@ export default function TaskCenterView({
 
   React.useEffect(() => {
     if (!modalOpen && !editOpen) return;
-    if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType)) void ensureRuleSets();
-    if (taskType.startsWith('channel_')) void ensureMessages();
-    if (taskType === 'channel_comment') void ensureComments();
+    const requestSeq = beginTaskFormSupportRequest();
+    void loadTaskTypeSupportData(taskType, requestSeq).catch((error) => {
+      if (!isActiveTaskFormSupportRequest(requestSeq)) return;
+      setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`);
+    });
   }, [editOpen, modalOpen, messageScope, taskType]);
 
   React.useEffect(() => {
     if (!prefill || appliedPrefillNonce.current === prefill.nonce) return;
     if (!targets.length) {
-      void ensureTargets();
+      void ensureTargets().catch((error) => {
+        setActionError(`读取任务预填支撑数据失败：${errorMessage(error)}`);
+      });
       return;
     }
     if (prefill.message) {
       setMessages((current) => current.some((message) => message.id === prefill.message?.id) ? current : [prefill.message!, ...current]);
+    }
+    if (prefill.comment) {
+      setComments((current) => current.some((comment) => comment.id === prefill.comment?.id) ? current : [prefill.comment!, ...current]);
     }
 
     const nextType = prefill.taskType;
@@ -424,13 +627,25 @@ export default function TaskCenterView({
         nextValues.message_scope = 'specific';
         nextValues.message_ids = [prefill.message.id];
       }
+      if (prefill.comment) {
+        nextValues.message_scope = 'specific';
+        nextValues.message_ids = [prefill.comment.channel_message_id];
+        nextValues.comment_mode = 'reply';
+        nextValues.reply_to_message_ids = [prefill.comment.comment_message_id];
+        nextValues.target_comments_per_message = 1;
+        nextValues.reply_min_per_message = 1;
+      }
     }
     setActionError('');
     setActionWarning('');
     setTaskType(nextType);
     form.resetFields();
     form.setFieldsValue(nextValues);
-    if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(nextType)) void ensureRuleSets().then((loaded) => applyDefaultRuleSet(loaded, nextType));
+    if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(nextType)) {
+      void ensureRuleSets()
+        .then((loaded) => applyDefaultRuleSet(loaded, nextType))
+        .catch((error) => setActionError(`读取任务预填支撑数据失败：${errorMessage(error)}`));
+    }
     setWizardStep(2);
     setModalOpen(true);
     appliedPrefillNonce.current = prefill.nonce;
@@ -441,17 +656,21 @@ export default function TaskCenterView({
     appliedFocusNonce.current = focusTask.nonce;
     setActionError('');
     activeDetailTaskId.current = focusTask.taskId;
+    const requestSeq = beginDetailRequest();
     resetActionPages();
     resetDetailSectionPages();
     fetchTaskDetail(focusTask.taskId)
       .then((taskDetail) => {
-        if (activeDetailTaskId.current !== taskDetail.task.id) return;
+        if (!isActiveDetailRequest(focusTask.taskId, requestSeq)) return;
         setDetail(taskDetail);
         loadActionPagesForDetail(taskDetail);
         loadDetailSectionsForDetail(taskDetail);
         void loadMembershipForDetail(taskDetail, 1, MEMBERSHIP_PAGE_SIZE, DEFAULT_MEMBERSHIP_FILTERS);
       })
-      .catch(() => setActionError(`读取任务 ${focusTask.taskId} 详情失败`))
+      .catch((error) => {
+        if (!isActiveDetailRequest(focusTask.taskId, requestSeq)) return;
+        setActionError(`读取任务 ${focusTask.taskId} 详情失败：${errorMessage(error)}`);
+      })
       .finally(() => onFocusTaskConsumed?.());
   }, [focusTask, onFocusTaskConsumed]);
 
@@ -483,19 +702,56 @@ export default function TaskCenterView({
     setters[kind](value);
   }
 
+  function beginDetailRequest() {
+    activeDetailRequestSeq.current += 1;
+    return activeDetailRequestSeq.current;
+  }
+
+  function isActiveDetailRequest(taskId: string, requestSeq: number) {
+    return activeDetailTaskId.current === taskId && activeDetailRequestSeq.current === requestSeq;
+  }
+
+  function beginActionPageRequest(kind: ActionPageKind) {
+    activeActionPageRequestSeq.current[kind] += 1;
+    return activeActionPageRequestSeq.current[kind];
+  }
+
+  function isActiveActionPageRequest(taskId: string, kind: ActionPageKind, requestSeq: number) {
+    return activeDetailTaskId.current === taskId && activeActionPageRequestSeq.current[kind] === requestSeq;
+  }
+
+  function beginDetailSectionPageRequest(kind: DetailSectionKind) {
+    activeDetailSectionPageRequestSeq.current[kind] += 1;
+    return activeDetailSectionPageRequestSeq.current[kind];
+  }
+
+  function isActiveDetailSectionPageRequest(taskId: string, kind: DetailSectionKind, requestSeq: number) {
+    return activeDetailTaskId.current === taskId && activeDetailSectionPageRequestSeq.current[kind] === requestSeq;
+  }
+
+  function beginMembershipPageRequest() {
+    activeMembershipPageRequestSeq.current += 1;
+    return activeMembershipPageRequestSeq.current;
+  }
+
+  function isActiveMembershipPageRequest(taskId: string, requestSeq: number) {
+    return activeDetailTaskId.current === taskId && activeMembershipPageRequestSeq.current === requestSeq;
+  }
+
   async function loadActionPage(taskId: string, kind: ActionPageKind, page: number, pageSize: number) {
+    const requestSeq = beginActionPageRequest(kind);
     const setRows = kind === 'planned' ? setPlannedActionRows : setExecutedActionRows;
     const setPage = kind === 'planned' ? setPlannedActionPage : setExecutedActionPage;
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), status: kind });
     setPage((current) => ({ ...current, current: page, pageSize, loading: true }));
     try {
       const response = await apiWithMeta<TaskCenterAction[]>(`/tasks/${taskId}/actions?${params.toString()}`);
-      if (activeDetailTaskId.current !== taskId) return;
+      if (!isActiveActionPageRequest(taskId, kind, requestSeq)) return;
       const total = Number(response.headers.get('X-Total-Count') || response.data.length);
       setRows(response.data);
       setPage({ current: page, pageSize, total, loading: false });
     } catch (error) {
-      if (activeDetailTaskId.current !== taskId) return;
+      if (!isActiveActionPageRequest(taskId, kind, requestSeq)) return;
       setPage((current) => ({ ...current, loading: false }));
       setActionError(`读取${kind === 'planned' ? '执行计划' : '执行记录'}失败：${errorMessage(error)}`);
     }
@@ -508,6 +764,7 @@ export default function TaskCenterView({
   }
 
   async function loadDetailSectionPage(taskDetail: TaskCenterDetail, kind: DetailSectionKind, page: number, pageSize: number) {
+    const requestSeq = beginDetailSectionPageRequest(kind);
     const endpoints = {
       aiCycles: 'ai-cycles',
       messageGroups: 'message-groups',
@@ -524,10 +781,12 @@ export default function TaskCenterView({
     setDetailSectionPage(kind, (current) => ({ ...current, current: page, pageSize, loading: true }));
     try {
       const response = await apiWithMeta<any[]>(`/tasks/${taskDetail.task.id}/${endpoints[kind]}?${params.toString()}`);
+      if (!isActiveDetailSectionPageRequest(taskDetail.task.id, kind, requestSeq)) return;
       const total = Number(response.headers.get('X-Total-Count') || response.data.length);
       setDetail((current) => current && current.task.id === taskDetail.task.id ? { ...current, [fields[kind]]: response.data } : current);
       setDetailSectionPage(kind, { current: page, pageSize, total, loading: false });
     } catch (error) {
+      if (!isActiveDetailSectionPageRequest(taskDetail.task.id, kind, requestSeq)) return;
       setDetailSectionPage(kind, (current) => ({ ...current, loading: false }));
       setActionError(`读取详情分页失败：${errorMessage(error)}`);
     }
@@ -547,10 +806,12 @@ export default function TaskCenterView({
     }
     try {
       const membershipItems = await fetchMembershipItems(taskDetail.task.id, page, pageSize, filters);
+      if (!membershipItems || activeDetailTaskId.current !== taskDetail.task.id) return taskDetail;
       const nextDetail = { ...taskDetail, membership_accounts: membershipItems };
       setDetail((current) => current && current.task.id === taskDetail.task.id ? nextDetail : current);
       return nextDetail;
     } catch (error) {
+      if (activeDetailTaskId.current !== taskDetail.task.id) return taskDetail;
       setActionError(`读取准入前置失败：${errorMessage(error)}`);
       return taskDetail;
     }
@@ -560,21 +821,24 @@ export default function TaskCenterView({
     setMembershipFilters(DEFAULT_MEMBERSHIP_FILTERS);
     setActionError('');
     activeDetailTaskId.current = task.id;
+    const requestSeq = beginDetailRequest();
     resetActionPages();
     resetDetailSectionPages();
     try {
       const taskDetail = await fetchTaskDetail(task.id);
-      if (activeDetailTaskId.current !== task.id) return;
+      if (!isActiveDetailRequest(task.id, requestSeq)) return;
       setDetail(taskDetail);
       loadActionPagesForDetail(taskDetail);
       loadDetailSectionsForDetail(taskDetail);
       await loadMembershipForDetail(taskDetail, 1, membershipPage.pageSize, DEFAULT_MEMBERSHIP_FILTERS);
     } catch (error) {
+      if (!isActiveDetailRequest(task.id, requestSeq)) return;
       setActionError(`读取任务 ${task.id} 详情失败：${errorMessage(error)}`);
     }
   }
 
-  async function fetchMembershipItems(taskId: string, page: number, pageSize: number, filters: MembershipFilters = membershipFilters) {
+  async function fetchMembershipItems(taskId: string, page: number, pageSize: number, filters: MembershipFilters = membershipFilters): Promise<TaskMembershipItem[] | null> {
+    const requestSeq = beginMembershipPageRequest();
     const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
     if (filters.phase !== 'all') params.set('phase', filters.phase);
     if (filters.manualRequired === 'true') params.set('manual_required', 'true');
@@ -582,10 +846,12 @@ export default function TaskCenterView({
     setMembershipPage((current) => ({ ...current, current: page, pageSize, loading: true }));
     try {
       const response = await apiWithMeta<TaskMembershipItem[]>(`/tasks/${taskId}/membership-items?${params.toString()}`);
+      if (!isActiveMembershipPageRequest(taskId, requestSeq)) return null;
       const total = Number(response.headers.get('X-Total-Count') || response.data.length);
       setMembershipPage({ current: page, pageSize, total, loading: false });
       return response.data;
     } catch (error) {
+      if (!isActiveMembershipPageRequest(taskId, requestSeq)) return null;
       setMembershipPage((current) => ({ ...current, loading: false }));
       throw error;
     }
@@ -595,6 +861,7 @@ export default function TaskCenterView({
     if (!detail || isSystemTask(detail.task)) return;
     try {
       const membershipItems = await fetchMembershipItems(detail.task.id, page, pageSize, filters);
+      if (!membershipItems || activeDetailTaskId.current !== detail.task.id) return;
       setDetail((current) => current && current.task.id === detail.task.id ? { ...current, membership_accounts: membershipItems } : current);
     } catch (error) {
       setActionError(errorMessage(error));
@@ -636,17 +903,22 @@ export default function TaskCenterView({
   }
 
   async function openActionAttempts(action: TaskCenterAction) {
+    setAttemptError('');
+    activeAttemptActionId.current = action.id;
     setAttemptDetail({ action, attempts: [], loading: true });
     try {
       const attempts = await api<TaskExecutionAttempt[]>(`/tasks/${action.task_id}/actions/${action.id}/attempts`);
+      if (activeAttemptActionId.current !== action.id) return;
       setAttemptDetail({ action, attempts, loading: false });
     } catch (error) {
-      setAttemptDetail(null);
-      throw error;
+      if (activeAttemptActionId.current !== action.id) return;
+      setAttemptDetail({ action, attempts: [], loading: false });
+      setAttemptError(`读取执行尝试失败：${errorMessage(error)}`);
     }
   }
 
   async function openCreateTask() {
+    const requestSeq = beginTaskFormSupportRequest();
     setActionError('');
     setActionWarning('');
     setPrecheck(null);
@@ -655,8 +927,14 @@ export default function TaskCenterView({
     form.setFieldsValue(initialValuesForType('group_ai_chat', schedulingSetting));
     if (defaultSlangTemplateId) form.setFieldsValue({ slang_prompt_template_id: defaultSlangTemplateId });
     setWizardStep(0);
-    await ensureTaskFormData('group_ai_chat');
-    setModalOpen(true);
+    try {
+      await ensureTaskFormData('group_ai_chat', requestSeq);
+      if (!isActiveTaskFormSupportRequest(requestSeq)) return;
+      setModalOpen(true);
+    } catch (error) {
+      if (!isActiveTaskFormSupportRequest(requestSeq)) return;
+      setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`);
+    }
   }
 
   function editValuesFromTask(task: TaskCenterTask): Record<string, any> {
@@ -713,15 +991,28 @@ export default function TaskCenterView({
 
   async function openEditTask(task: TaskCenterTask) {
     if (isSystemTask(task)) return;
+    const requestSeq = beginTaskFormSupportRequest();
+    invalidateTaskSettingsSaveRequest();
     setActionError('');
     setActionWarning('');
     setEditRecommendation(null);
     const editableType = task.type as TaskCenterTaskType;
     setTaskType(editableType);
-    await ensureTaskFormData(editableType);
-    editForm.resetFields();
-    editForm.setFieldsValue(editValuesFromTask(task));
-    setEditOpen(true);
+    try {
+      await ensureTaskFormData(editableType, requestSeq);
+      if (!isActiveTaskFormSupportRequest(requestSeq)) return;
+      editForm.resetFields();
+      editForm.setFieldsValue(editValuesFromTask(task));
+      setEditOpen(true);
+    } catch (error) {
+      if (!isActiveTaskFormSupportRequest(requestSeq)) return;
+      setActionError(`读取任务表单支撑数据失败：${errorMessage(error)}`);
+    }
+  }
+
+  function closeEditTaskModal() {
+    invalidateTaskSettingsSaveRequest();
+    setEditOpen(false);
   }
 
   function accountConfig(values: any) {
@@ -820,6 +1111,8 @@ export default function TaskCenterView({
     const payload: Record<string, any> = {
       ...base,
       ...(includeScope ? channelScopePayload(values) : {}),
+      comment_mode: values.comment_mode ?? 'comment',
+      reply_to_message_ids: csvNumbers(values.reply_to_message_ids),
       reply_min_per_message: values.reply_min_per_message ?? 0,
       rule_set_id: values.rule_set_id ?? null,
       rule_set_version_id: values.rule_set_version_id ?? null,
@@ -1060,14 +1353,19 @@ export default function TaskCenterView({
   }
 
   async function runTaskPrecheck(values: any) {
+    const payload = createPayload(values);
+    const payloadSignature = taskPrecheckPayloadSignature(taskType, payload);
+    const requestSeq = beginTaskPrecheckRequest(payloadSignature);
     setPrecheckLoading(true);
     try {
       const result = await api<TaskPrecheck>('/tasks/precheck', {
         method: 'POST',
-        body: JSON.stringify({ task_type: taskType, payload: createPayload(values) }),
+        body: JSON.stringify({ task_type: taskType, payload }),
         timeoutMs: TASK_CREATE_TIMEOUT_MS,
       });
+      if (!isActiveTaskPrecheckRequest(requestSeq, payloadSignature)) return null;
       setPrecheck(result);
+      setPrecheckPayloadSignature(payloadSignature);
       applyAiLimitRecommendations(result);
       if (result.decision === 'block') {
         setActionWarning(`预检发现阻塞项：${formatPrecheckReasons(result.blockers) || '请检查账号、目标和风控配置'}`);
@@ -1078,7 +1376,7 @@ export default function TaskCenterView({
       }
       return result;
     } finally {
-      setPrecheckLoading(false);
+      if (isCurrentTaskPrecheckRequest(requestSeq)) setPrecheckLoading(false);
     }
   }
 
@@ -1098,20 +1396,27 @@ export default function TaskCenterView({
     if (!detail || isSystemTask(detail.task)) return;
     const editableType = detail.task.type as TaskCenterTaskType;
     if (!isAiLimitTaskType(editableType)) return;
+    let requestSeq = 0;
+    let payloadSignature = '';
     setEditRecommendationLoading(true);
     setActionError('');
     try {
       await editForm.validateFields(editFieldsForSubmit(editableType, editAccountMode, 'template'));
+      const payload = settingsPayload(editableType, editForm.getFieldsValue(true));
+      payloadSignature = taskPrecheckPayloadSignature(editableType, payload);
+      requestSeq = beginEditRecommendationRequest(payloadSignature);
       const result = await api<TaskPrecheck>('/tasks/precheck', {
         method: 'POST',
-        body: JSON.stringify({ task_type: editableType, payload: settingsPayload(editableType, editForm.getFieldsValue(true)) }),
+        body: JSON.stringify({ task_type: editableType, payload }),
         timeoutMs: TASK_CREATE_TIMEOUT_MS,
       });
+      if (!isActiveEditRecommendationRequest(requestSeq, payloadSignature)) return;
       setEditRecommendation(result.capacity_summary?.recommended_limits ?? null);
     } catch (error) {
+      if (requestSeq && !isActiveEditRecommendationRequest(requestSeq, payloadSignature)) return;
       setActionError(errorMessage(error));
     } finally {
-      setEditRecommendationLoading(false);
+      if (!requestSeq || isCurrentEditRecommendationRequest(requestSeq)) setEditRecommendationLoading(false);
     }
   }
 
@@ -1122,7 +1427,13 @@ export default function TaskCenterView({
     try {
       await form.validateFields(fieldsForSubmit(taskType, messageScope, accountMode, pacingMode));
       const values = form.getFieldsValue(true);
-      const result = taskType !== 'group_membership_admission' && !options.skipCapacityCheck ? precheck ?? await runTaskPrecheck(values) : precheck;
+      const payload = createPayload(values);
+      const precheckSignature = taskPrecheckPayloadSignature(taskType, payload);
+      const requiresFreshPrecheck = taskType !== 'group_membership_admission' && !options.skipCapacityCheck;
+      const result = requiresFreshPrecheck
+        ? precheck && precheckPayloadSignature === precheckSignature ? precheck : await runTaskPrecheck(values)
+        : precheck;
+      if (!result && requiresFreshPrecheck) return;
       if (start && result?.decision === 'block') {
         setActionError(`预检未通过：${formatPrecheckReasons(result.blockers) || '存在阻塞项'}`);
         return;
@@ -1139,7 +1450,7 @@ export default function TaskCenterView({
       form.setFieldsValue(initialValuesForType('group_ai_chat', schedulingSetting));
       setWizardStep(0);
       setModalOpen(false);
-      await load();
+      await refreshTaskListAfterAction(start ? '任务创建并启动' : '任务创建');
     } catch (error) {
       if (error instanceof ApiError && error.status === 408) {
         await load();
@@ -1151,27 +1462,35 @@ export default function TaskCenterView({
   async function saveTaskSettings() {
     if (!detail) return;
     if (isSystemTask(detail.task)) return;
+    const taskId = detail.task.id;
+    const editableType = detail.task.type as TaskCenterTaskType;
+    let requestSeq = 0;
+    let payloadSignature = '';
     setEditSaving(true);
     setActionError('');
     setActionWarning('');
     try {
-      const editableType = detail.task.type as TaskCenterTaskType;
       await editForm.validateFields(editFieldsForSubmit(editableType, editAccountMode, 'template'));
       const values = editForm.getFieldsValue(true);
-      const updated = await api<TaskCenterTask>(`/tasks/${detail.task.id}/settings`, { method: 'PATCH', body: JSON.stringify(settingsPayload(editableType, values)) });
+      const payload = settingsPayload(editableType, values);
+      payloadSignature = taskSettingsSavePayloadSignature(taskId, editableType, payload);
+      requestSeq = beginTaskSettingsSaveRequest(taskId, payloadSignature);
+      const updated = await api<TaskCenterTask>(`/tasks/${taskId}/settings`, { method: 'PATCH', body: JSON.stringify(payload) });
+      if (!isActiveTaskSettingsSaveRequest(taskId, requestSeq, payloadSignature)) return;
       setEditOpen(false);
       setActionWarning(updated.status === 'running' ? '已保存，下一轮会按新配置重新规划未执行计划。' : '已保存任务配置。');
-      await load();
-      await loadDetail(updated);
+      await refreshVisibleTaskAfterAction('任务配置保存', updated);
     } catch (error) {
+      if (requestSeq && !isActiveTaskSettingsSaveRequest(taskId, requestSeq, payloadSignature)) return;
       setActionError(errorMessage(error));
     } finally {
-      setEditSaving(false);
+      if (!requestSeq || isCurrentTaskSettingsSaveRequest(requestSeq)) setEditSaving(false);
     }
   }
 
   async function taskAction(task: TaskCenterTask, name: 'start' | 'pause' | 'resume' | 'stop' | 'retry' | 'reset', reason?: string) {
-    setBusyId(`${task.id}:${name}`);
+    const actionKey = `${task.id}:${name}`;
+    beginTaskAction(actionKey);
     setActionError('');
     try {
       const body = name === 'retry'
@@ -1179,70 +1498,86 @@ export default function TaskCenterView({
         : ['stop', 'reset'].includes(name)
           ? JSON.stringify({ reason: (reason ?? '').trim() })
           : undefined;
-      await api<TaskCenterTask>(`/tasks/${task.id}/${name}`, { method: 'POST', body });
-      await load();
-      if (detail?.task.id === task.id) await loadDetail(task);
+      const updated = await api<TaskCenterTask>(`/tasks/${task.id}/${name}`, { method: 'POST', body });
+      const labels = { start: '任务启动', pause: '任务暂停', resume: '任务恢复', stop: '任务停止', retry: '任务重试', reset: '任务重置' };
+      if (!isActiveTaskAction(actionKey)) return false;
+      await refreshVisibleTaskAfterAction(labels[name], updated);
       return true;
     } catch (error) {
+      if (!isActiveTaskAction(actionKey)) return false;
       setActionError(errorMessage(error));
       return false;
     } finally {
-      setBusyId('');
+      clearTaskAction(actionKey);
     }
   }
 
-  async function membershipAdmissionAction(path: string, loadingKey: string) {
-    setBusyId(`admission:${loadingKey}`);
+  async function membershipAdmissionAction(path: string, loadingKey: string, taskId: string) {
+    const actionKey = `admission:${loadingKey}`;
+    beginTaskAction(actionKey);
     setActionError('');
     try {
       const updated = await api<TaskCenterDetail>(path, { method: 'POST' });
+      if (!isActiveTaskAction(actionKey)) return false;
+      if (activeDetailTaskId.current !== taskId) return false;
       setDetail(updated);
-      await load();
+      await refreshTaskListAfterAction('准入处理');
       return true;
     } catch (error) {
+      if (!isActiveTaskAction(actionKey)) return false;
+      if (activeDetailTaskId.current !== taskId) return false;
       setActionError(errorMessage(error));
       return false;
     } finally {
-      setBusyId('');
+      clearTaskAction(actionKey);
     }
   }
 
   async function downloadMembershipAdmissionFailures(task: TaskCenterTask) {
-    setBusyId(`admission:export:${task.id}`);
+    const actionKey = `admission:export:${task.id}`;
+    beginTaskAction(actionKey);
     setActionError('');
     try {
       const token = localStorage.getItem('tg_ops_token');
       const response = await fetch(`${API_BASE}/tasks/${task.id}/membership-admission/failures.csv`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+      if (!response.ok) throw await apiErrorFromResponse(response);
+      if (!isActiveTaskAction(actionKey)) return false;
       const blob = await response.blob();
+      if (!isActiveTaskAction(actionKey)) return false;
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
       link.download = `membership-admission-${task.id}-failures.csv`;
       link.click();
       URL.revokeObjectURL(url);
+      return true;
     } catch (error) {
+      if (!isActiveTaskAction(actionKey)) return false;
       setActionError(errorMessage(error));
+      return false;
     } finally {
-      setBusyId('');
+      clearTaskAction(actionKey);
     }
   }
 
   async function deleteTask(task: TaskCenterTask, reason: string) {
-    setBusyId(`${task.id}:delete`);
+    const actionKey = `${task.id}:delete`;
+    beginTaskAction(actionKey);
     setActionError('');
     try {
       await api(`/tasks/${task.id}`, { method: 'DELETE', body: JSON.stringify({ reason: reason.trim() }) });
+      if (!isActiveTaskAction(actionKey)) return false;
       if (detail?.task.id === task.id) setDetail(null);
-      await load();
+      await refreshTaskListAfterAction('任务删除');
       return true;
     } catch (error) {
+      if (!isActiveTaskAction(actionKey)) return false;
       setActionError(errorMessage(error));
       return false;
     } finally {
-      setBusyId('');
+      clearTaskAction(actionKey);
     }
   }
 
@@ -1327,8 +1662,7 @@ export default function TaskCenterView({
     try {
       const updated = await api<TaskCenterTask>(`/tasks/${detail.task.id}/source-filter-overrides`, { method: 'POST', body: JSON.stringify(payload) });
       setActionWarning('已加入当前任务的来源不转发名单。');
-      await load();
-      await loadDetail(updated);
+      await refreshVisibleTaskAfterAction('来源屏蔽', updated);
     } catch (error) {
       setActionError(errorMessage(error));
     }
@@ -1361,8 +1695,14 @@ export default function TaskCenterView({
     try {
       await form.validateFields(fieldsForStep(wizardStep, taskType, messageScope, accountMode));
       if (wizardStep === 0) {
-        await ensureTaskFormData(taskType);
-        if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType)) applyDefaultRuleSet(await ensureRuleSets(), taskType);
+        const requestSeq = beginTaskFormSupportRequest();
+        await ensureTaskFormData(taskType, requestSeq);
+        if (!isActiveTaskFormSupportRequest(requestSeq)) return;
+        if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(taskType)) {
+          const loadedRuleSets = await ensureRuleSets();
+          if (!isActiveTaskFormSupportRequest(requestSeq)) return;
+          applyDefaultRuleSet(loadedRuleSets, taskType);
+        }
       }
       if (wizardStep === 3) {
         if (taskType !== 'group_membership_admission') await runTaskPrecheck(form.getFieldsValue(true));
@@ -1380,9 +1720,20 @@ export default function TaskCenterView({
     form.setFieldsValue(initialValuesForType(nextType, schedulingSetting));
     if (nextType === 'group_ai_chat' && defaultSlangTemplateId) form.setFieldsValue({ slang_prompt_template_id: defaultSlangTemplateId });
     setWizardStep(0);
-    void ensureTaskFormData(nextType).then(async () => {
-      if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(nextType)) applyDefaultRuleSet(await ensureRuleSets(), nextType);
-    });
+    const requestSeq = beginTaskFormSupportRequest();
+    void ensureTaskFormData(nextType, requestSeq)
+      .then(async (loaded) => {
+        if (!loaded || !isActiveTaskFormSupportRequest(requestSeq)) return;
+        if (['group_relay', 'group_ai_chat', 'channel_comment'].includes(nextType)) {
+          const loadedRuleSets = await ensureRuleSets();
+          if (!isActiveTaskFormSupportRequest(requestSeq)) return;
+          applyDefaultRuleSet(loadedRuleSets, nextType);
+        }
+      })
+      .catch((error) => {
+        if (!isActiveTaskFormSupportRequest(requestSeq)) return;
+        setActionError(`读取任务类型支撑数据失败：${errorMessage(error)}`);
+      });
   }
 
   const table = useAntdTableControls<TaskCenterTask>({
@@ -1751,7 +2102,7 @@ export default function TaskCenterView({
         </Form>
       </Modal>
 
-      <Modal className="tg-modal large" title="编辑任务" open={editOpen} width={980} confirmLoading={editSaving} okText="保存并重新规划" cancelText="取消" onOk={saveTaskSettings} onCancel={() => setEditOpen(false)} destroyOnHidden centered>
+      <Modal className="tg-modal large" title="编辑任务" open={editOpen} width={980} confirmLoading={editSaving} okText="保存并重新规划" cancelText="取消" onOk={saveTaskSettings} onCancel={closeEditTaskModal} destroyOnHidden centered>
         {actionError && <Alert className="form-alert" type="error" showIcon message={actionError} />}
         <Form form={editForm} layout="vertical">
           <EditBasics />
@@ -1825,10 +2176,19 @@ export default function TaskCenterView({
         onOpenAccountDetail={onOpenAccountDetail}
         onResumeTask={(task) => void taskAction(task, 'resume')}
         admissionBusyId={busyId.startsWith('admission:') ? busyId.slice('admission:'.length) : ''}
-        onRetryAdmissionItem={(item) => void membershipAdmissionAction(`/tasks/${detail?.task.id}/membership-admission/items/${item.id}/retry`, `retry:${item.id}`)}
-        onRetryAdmissionRescue={(item) => void membershipAdmissionAction(`/tasks/${detail?.task.id}/membership-admission/items/${item.id}/retry-rescue`, `rescue:${item.id}`)}
-        onRetryFailedAdmissionItems={(task) => void membershipAdmissionAction(`/tasks/${task.id}/membership-admission/retry-failed`, 'retry-failed')}
-        onMarkAdmissionManualHandled={(item) => void membershipAdmissionAction(`/tasks/${detail?.task.id}/membership-admission/items/${item.id}/manual-handled`, `manual:${item.id}`)}
+        onRetryAdmissionItem={(item) => {
+          if (!detail) return;
+          void membershipAdmissionAction(`/tasks/${detail.task.id}/membership-admission/items/${item.id}/retry`, `retry:${item.id}`, detail.task.id);
+        }}
+        onRetryAdmissionRescue={(item) => {
+          if (!detail) return;
+          void membershipAdmissionAction(`/tasks/${detail.task.id}/membership-admission/items/${item.id}/retry-rescue`, `rescue:${item.id}`, detail.task.id);
+        }}
+        onRetryFailedAdmissionItems={(task) => void membershipAdmissionAction(`/tasks/${task.id}/membership-admission/retry-failed`, 'retry-failed', task.id)}
+        onMarkAdmissionManualHandled={(item) => {
+          if (!detail) return;
+          void membershipAdmissionAction(`/tasks/${detail.task.id}/membership-admission/items/${item.id}/manual-handled`, `manual:${item.id}`, detail.task.id);
+        }}
         onExportAdmissionFailures={(task) => void downloadMembershipAdmissionFailures(task)}
         onClose={() => {
           activeDetailTaskId.current = '';
@@ -1845,7 +2205,11 @@ export default function TaskCenterView({
         open={Boolean(attemptDetail)}
         width={980}
         footer={null}
-        onCancel={() => setAttemptDetail(null)}
+        onCancel={() => {
+          activeAttemptActionId.current = null;
+          setAttemptDetail(null);
+          setAttemptError('');
+        }}
         destroyOnHidden
         centered
       >
@@ -1858,6 +2222,7 @@ export default function TaskCenterView({
             description={<Space direction="vertical" size={2}><Typography.Text strong>处理建议</Typography.Text><Typography.Text>{attemptDiagnosis.suggested_action}</Typography.Text></Space>}
           />
         )}
+        {attemptError && <Alert className="form-alert" type="error" showIcon message={attemptError} />}
         <Table<TaskExecutionAttempt>
           className="tg-table"
           rowKey="id"

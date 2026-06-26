@@ -22,7 +22,20 @@ const rescueStatusLabel = (status: string) => {
   if (status === 'invite_success') return '邀请成功';
   if (status === 'invite_failed') return '邀请失败';
   if (status === 'unconfigured') return '救援配置缺失';
+  if (status === 'unknown_after_send') return '结果未知';
   return '未触发';
+};
+
+const deleteStatusLabel = (status?: string | null) => {
+  const labels: Record<string, string> = {
+    delete_pending: '待删除',
+    deleting: '删除中',
+    deleted: '已删除',
+    delete_failed: '删除失败',
+    not_requested: '不删除',
+    unknown_after_send: '结果未知',
+  };
+  return status ? labels[status] || status : '-';
 };
 
 interface TaskCenterDetailModalProps {
@@ -254,7 +267,7 @@ export function TaskCenterDetailModal({
     { title: '阶段', dataIndex: 'phase', width: 130, render: (value, item) => <Tag color={item.manual_required ? 'orange' : value === 'completed' ? 'green' : value === 'failed' ? 'red' : 'blue'}>{value}</Tag> },
     { title: '测试消息', dataIndex: 'test_message_text', ellipsis: true, render: (value) => value || '-' },
     { title: '消息 ID', dataIndex: 'test_message_id', width: 120, render: (value) => value || '-' },
-    { title: '删除', dataIndex: 'delete_status', width: 110, render: (value) => value || '-' },
+    { title: '删除', dataIndex: 'delete_status', width: 110, render: (value) => deleteStatusLabel(value) },
     { title: '权限失败', dataIndex: 'permission_failure_count', width: 100, render: (value) => value || 0 },
     {
       title: '救援状态',

@@ -598,6 +598,10 @@ def test_material_cache_config_normalizes_admin_links_and_overrides_env(monkeypa
         session.add(Tenant(id=1, name="默认运营空间"))
         session.commit()
 
+        env_config = ai_config_service.get_material_cache_config(session, 1)
+        env_material_peer = ai_config_service.resolve_material_cache_peer_id(session, 1)
+        env_source_peer = ai_config_service.resolve_source_media_cache_peer_id(session, 1)
+
         saved = ai_config_service.update_material_cache_config(
             session,
             tenant_id=1,
@@ -610,6 +614,14 @@ def test_material_cache_config_normalizes_admin_links_and_overrides_env(monkeypa
         source_peer = ai_config_service.resolve_source_media_cache_peer_id(session, 1)
         audit_actions = [row.action for row in session.scalars(select(AuditLog)).all()]
 
+    assert env_config.material_cache.raw_input == "env-material-cache"
+    assert env_config.material_cache.normalized_peer == "env-material-cache"
+    assert env_config.material_cache.source == "env"
+    assert env_config.source_media_cache.raw_input == "env-source-cache"
+    assert env_config.source_media_cache.normalized_peer == "env-source-cache"
+    assert env_config.source_media_cache.source == "env"
+    assert env_material_peer == "env-material-cache"
+    assert env_source_peer == "env-source-cache"
     assert saved.material_cache.raw_input == "https://t.me/c/1234567890/55397"
     assert saved.material_cache.normalized_peer == "-1001234567890"
     assert saved.material_cache.source == "saved"

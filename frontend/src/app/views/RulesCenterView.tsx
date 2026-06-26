@@ -1,8 +1,8 @@
 import React from 'react';
-import { Alert, Button, Card, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Typography } from 'antd';
+import { Alert, App as AntdApp, Button, Card, Descriptions, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { CheckCircle2, Database, RefreshCcw, ShieldAlert } from 'lucide-react';
-import { API_BASE, api } from '../../shared/api/client';
+import { API_BASE, api, apiErrorFromResponse } from '../../shared/api/client';
 import { StatCard, StatusBadge, useAntdTableControls } from '../components/shared';
 import type { OperationTarget, RuleSet, RuleSetBoundTask } from '../types';
 import { formatBeijingDateTime } from '../time';
@@ -55,6 +55,12 @@ type VersionAction = {
   action: 'copy' | 'publish' | 'rollback';
   ruleSet: RuleSet;
   version: RuleVersionRow;
+};
+
+type RuleActionRequestOptions = {
+  actionKey: string;
+  payloadSignature: string;
+  currentPayloadSignature: () => string;
 };
 
 type RelayMaterialAttribution = {
@@ -211,6 +217,7 @@ function versionDiffLabels(before: RuleSet['versions'][number] | undefined, afte
 
 export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemConfig: () => void }) {
   void onOpenSystemConfig;
+  const { message } = AntdApp.useApp();
   const [summary, setSummary] = React.useState<RuleSummary>({ system_rule_count: 0, keyword_rule_count: 0, relay_task_rule_count: 0, items: [], conflicts: [], execution_metrics: [], target_metrics: [], account_metrics: [], keyword_metrics: [], trend_metrics: [], conversion_metrics: [], cross_metrics: [] });
   const [relayReport, setRelayReport] = React.useState<RelayAttributionReport>({ total_materials: 0, total_source_events: 0, total_actions: 0, rows: [] });
   const [ruleSets, setRuleSets] = React.useState<RuleSet[]>([]);
@@ -257,30 +264,125 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
   const [versionAction, setVersionAction] = React.useState<VersionAction | null>(null);
   const [versionActionReason, setVersionActionReason] = React.useState('');
   const [boundTaskTarget, setBoundTaskTarget] = React.useState<RuleSet | null>(null);
+  const [boundTaskLoading, setBoundTaskLoading] = React.useState(false);
   const [boundTasks, setBoundTasks] = React.useState<RuleSetBoundTask[]>([]);
+  const activeBoundTaskRuleSetId = React.useRef<number | null>(null);
+  const rulesCenterDataRequestSeq = React.useRef(0);
+  const activeRuleTestRequestSeq = React.useRef(0);
+  const activeRuleActionRequestRef = React.useRef({ seq: 0, actionKey: '', signature: '' });
+  const latestRuleTestPayloadSignature = React.useRef('');
+  const latestCreateOpenRef = React.useRef(createOpen);
+  const latestConfigTargetRef = React.useRef<RuleSet | null>(configTarget);
+  const latestVersionActionRef = React.useRef<VersionAction | null>(versionAction);
+  const latestVersionActionReasonRef = React.useRef(versionActionReason);
   const [detailRule, setDetailRule] = React.useState<RuleRow | null>(null);
   const [error, setError] = React.useState('');
   const [createForm] = Form.useForm();
   const [configForm] = Form.useForm();
+  const ruleTestPayload = React.useMemo(() => ({
+    text: sample,
+    test_type: testType,
+    test_mode: testMode,
+    simulation_scenario: simulationScenario,
+    candidates: candidateSample.split(/\n+/).map((item) => item.trim()).filter(Boolean),
+    rule_set_version_id: testVersionId,
+    source_group_id: testSourceGroupId.trim() ? Number(testSourceGroupId) : null,
+  }), [candidateSample, sample, simulationScenario, testMode, testSourceGroupId, testType, testVersionId]);
+  const ruleTestPayloadSignature = React.useMemo(() => JSON.stringify(ruleTestPayload), [ruleTestPayload]);
+  latestRuleTestPayloadSignature.current = ruleTestPayloadSignature;
+  latestCreateOpenRef.current = createOpen;
+  latestConfigTargetRef.current = configTarget;
+  latestVersionActionRef.current = versionAction;
+  latestVersionActionReasonRef.current = versionActionReason;
+
+  function beginRulesCenterDataRequest() {
+    rulesCenterDataRequestSeq.current += 1;
+    return rulesCenterDataRequestSeq.current;
+  }
+
+  function isActiveRulesCenterDataRequest(requestSeq: number) {
+    return rulesCenterDataRequestSeq.current === requestSeq;
+  }
+
+  function beginRuleTestRequest() {
+    activeRuleTestRequestSeq.current += 1;
+    return activeRuleTestRequestSeq.current;
+  }
+
+  function isCurrentRuleTestRequest(requestSeq: number) {
+    return activeRuleTestRequestSeq.current === requestSeq;
+  }
+
+  function isActiveRuleTestRequest(requestSeq: number, payloadSignature: string) {
+    return (
+      isCurrentRuleTestRequest(requestSeq) &&
+      latestRuleTestPayloadSignature.current === payloadSignature
+    );
+  }
+
+  function rulesCenterActionPayloadSignature(actionKey: string, payload: Record<string, unknown>) {
+    return JSON.stringify({ action_key: actionKey, payload });
+  }
+
+  function beginRuleActionRequest(actionKey: string, signature: string) {
+    rulesCenterDataRequestSeq.current += 1;
+    const requestSeq = activeRuleActionRequestRef.current.seq + 1;
+    activeRuleActionRequestRef.current = { seq: requestSeq, actionKey, signature };
+    return requestSeq;
+  }
+
+  function isCurrentRuleActionRequest(requestSeq: number) {
+    return activeRuleActionRequestRef.current.seq === requestSeq;
+  }
+
+  function isActiveRuleActionRequest(
+    requestSeq: number,
+    actionKey: string,
+    signature: string,
+    currentSignature: () => string,
+  ) {
+    return isCurrentRuleActionRequest(requestSeq)
+      && activeRuleActionRequestRef.current.actionKey === actionKey
+      && activeRuleActionRequestRef.current.signature === signature
+      && currentSignature() === signature;
+  }
+
+  async function fetchRulesCenterData(requestSeq: number) {
+    const [nextSummary, nextRuleSets, nextTargets, nextRelayReport] = await Promise.all([
+      api<RuleSummary>('/rules/summary'),
+      api<RuleSet[]>('/rule-sets'),
+      api<OperationTarget[]>('/operation-targets?target_type=group'),
+      api<RelayAttributionReport>('/rules/relay-attribution/report'),
+    ]);
+    if (!isActiveRulesCenterDataRequest(requestSeq)) return false;
+    setSummary(nextSummary);
+    setRuleSets(nextRuleSets);
+    setOperationTargets(nextTargets);
+    setRelayReport(nextRelayReport);
+    return true;
+  }
 
   async function load() {
+    const requestSeq = beginRulesCenterDataRequest();
     setLoading(true);
     setError('');
     try {
-      const [nextSummary, nextRuleSets, nextTargets, nextRelayReport] = await Promise.all([
-        api<RuleSummary>('/rules/summary'),
-        api<RuleSet[]>('/rule-sets'),
-        api<OperationTarget[]>('/operation-targets?target_type=group').catch(() => [] as OperationTarget[]),
-        api<RelayAttributionReport>('/rules/relay-attribution/report').catch(() => ({ total_materials: 0, total_source_events: 0, total_actions: 0, rows: [] })),
-      ]);
-      setSummary(nextSummary);
-      setRuleSets(nextRuleSets);
-      setOperationTargets(nextTargets);
-      setRelayReport(nextRelayReport);
+      await fetchRulesCenterData(requestSeq);
     } catch (err) {
+      if (!isActiveRulesCenterDataRequest(requestSeq)) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (isActiveRulesCenterDataRequest(requestSeq)) setLoading(false);
+    }
+  }
+
+  async function refreshRulesCenterAfterAction(actionLabel: string) {
+    const requestSeq = beginRulesCenterDataRequest();
+    try {
+      await fetchRulesCenterData(requestSeq);
+    } catch (err) {
+      if (!isActiveRulesCenterDataRequest(requestSeq)) return;
+      setError(`规则中心数据刷新失败：${actionLabel}操作已完成，但刷新规则中心数据失败：${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -298,25 +400,23 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
   }, [ruleSets, testVersionId]);
 
   async function runRuleTest() {
+    const requestSeq = beginRuleTestRequest();
+    const payload = ruleTestPayload;
+    const payloadSignature = ruleTestPayloadSignature;
     setTesting(true);
     setError('');
     try {
-      setTestResult(await api<RuleTestResult>('/rules/test', {
+      const result = await api<RuleTestResult>('/rules/test', {
         method: 'POST',
-        body: JSON.stringify({
-          text: sample,
-          test_type: testType,
-          test_mode: testMode,
-          simulation_scenario: simulationScenario,
-          candidates: candidateSample.split(/\n+/).map((item) => item.trim()).filter(Boolean),
-          rule_set_version_id: testVersionId,
-          source_group_id: testSourceGroupId.trim() ? Number(testSourceGroupId) : null,
-        }),
-      }));
+        body: JSON.stringify(payload),
+      });
+      if (!isActiveRuleTestRequest(requestSeq, payloadSignature)) return;
+      setTestResult(result);
     } catch (err) {
+      if (!isActiveRuleTestRequest(requestSeq, payloadSignature)) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setTesting(false);
+      if (isCurrentRuleTestRequest(requestSeq)) setTesting(false);
     }
   }
 
@@ -327,9 +427,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
       const response = await fetch(`${API_BASE}/rules/relay-attribution/export`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
+      if (!response.ok) throw await apiErrorFromResponse(response);
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -351,45 +449,89 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
     };
   }
 
-  async function createRuleSet() {
+  function createRuleSetPayload(values: Record<string, any>) {
+    return {
+      name: values.name,
+      description: values.description ?? '',
+      task_types: values.task_types ?? [],
+      default_policy: {
+        input_failure: values.input_failure ?? 'skip',
+        output_failure: values.output_failure ?? 'transform_once_drop',
+        version_binding: values.version_binding ?? 'follow_current',
+      },
+      ...ruleConfig(values),
+    };
+  }
+
+  async function runRuleAction(options: RuleActionRequestOptions, action: () => Promise<void>, successText: string) {
+    const requestSeq = beginRuleActionRequest(options.actionKey, options.payloadSignature);
     setSaving(true);
     setError('');
     try {
-      const values = await createForm.validateFields();
-      await api<RuleSet>('/rule-sets', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: values.name,
-          description: values.description ?? '',
-          task_types: values.task_types ?? [],
-          default_policy: { input_failure: values.input_failure ?? 'skip', output_failure: values.output_failure ?? 'transform_once_drop', version_binding: values.version_binding ?? 'follow_current' },
-          ...ruleConfig(values),
-        }),
-      });
-      setCreateOpen(false);
-      createForm.resetFields();
-      await load();
+      await action();
+      if (!isActiveRuleActionRequest(
+        requestSeq,
+        options.actionKey,
+        options.payloadSignature,
+        options.currentPayloadSignature,
+      )) return;
+      void message.success(successText);
+      await refreshRulesCenterAfterAction(successText);
     } catch (err) {
+      if (!isActiveRuleActionRequest(
+        requestSeq,
+        options.actionKey,
+        options.payloadSignature,
+        options.currentPayloadSignature,
+      )) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      if (isCurrentRuleActionRequest(requestSeq)) setSaving(false);
+    }
+  }
+
+  async function createRuleSet() {
+    try {
+      const values = await createForm.validateFields();
+      const actionKey = 'rule-set:create';
+      const payload = createRuleSetPayload(values);
+      const payloadSignature = rulesCenterActionPayloadSignature(actionKey, payload);
+      await runRuleAction({
+        actionKey,
+        payloadSignature,
+        currentPayloadSignature: () => latestCreateOpenRef.current
+          ? rulesCenterActionPayloadSignature(actionKey, createRuleSetPayload(createForm.getFieldsValue(true)))
+          : '',
+      }, async () => {
+        await api<RuleSet>('/rule-sets', { method: 'POST', body: JSON.stringify(payload) });
+        setCreateOpen(false);
+        createForm.resetFields();
+      }, '规则集新建');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
   async function saveRuleSetConfig() {
     if (!configTarget) return;
-    setSaving(true);
-    setError('');
     try {
       const values = await configForm.validateFields();
-      await api<RuleSet>(`/rule-sets/${configTarget.id}/config`, { method: 'PUT', body: JSON.stringify(ruleConfig(values)) });
-      setConfigTarget(null);
-      configForm.resetFields();
-      await load();
+      const actionKey = `rule-set:${configTarget.id}:config`;
+      const payload = ruleConfig(values);
+      const payloadSignature = rulesCenterActionPayloadSignature(actionKey, payload);
+      await runRuleAction({
+        actionKey,
+        payloadSignature,
+        currentPayloadSignature: () => latestConfigTargetRef.current?.id === configTarget.id
+          ? rulesCenterActionPayloadSignature(actionKey, ruleConfig(configForm.getFieldsValue(true)))
+          : '',
+      }, async () => {
+        await api<RuleSet>(`/rule-sets/${configTarget.id}/config`, { method: 'PUT', body: JSON.stringify(payload) });
+        setConfigTarget(null);
+        configForm.resetFields();
+      }, '规则配置保存');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -424,30 +566,57 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
       setError('请输入版本操作原因');
       return;
     }
-    setSaving(true);
-    setError('');
-    try {
-      const endpoint = `/rule-sets/${versionAction.ruleSet.id}/versions/${versionAction.version.id}/${versionAction.action}`;
-      await api<RuleSet>(endpoint, { method: 'POST', body: JSON.stringify({ reason }) });
+    const actionKey = `rule-set:${versionAction.ruleSet.id}:version:${versionAction.version.id}:${versionAction.action}`;
+    const endpoint = `/rule-sets/${versionAction.ruleSet.id}/versions/${versionAction.version.id}/${versionAction.action}`;
+    const payload = { reason };
+    const payloadSignature = rulesCenterActionPayloadSignature(actionKey, payload);
+    await runRuleAction({
+      actionKey,
+      payloadSignature,
+      currentPayloadSignature: () => {
+        const currentAction = latestVersionActionRef.current;
+        if (
+          currentAction?.ruleSet.id !== versionAction.ruleSet.id ||
+          currentAction.version.id !== versionAction.version.id ||
+          currentAction.action !== versionAction.action
+        ) return '';
+        return rulesCenterActionPayloadSignature(actionKey, { reason: latestVersionActionReasonRef.current.trim() });
+      },
+    }, async () => {
+      await api<RuleSet>(endpoint, { method: 'POST', body: JSON.stringify(payload) });
       setVersionAction(null);
       setVersionActionReason('');
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
+    }, versionActionLabels[versionAction.action]);
+  }
+
+  function isActiveBoundTaskRuleSet(ruleSetId: number) {
+    return activeBoundTaskRuleSetId.current === ruleSetId;
   }
 
   async function openBoundTasks(ruleSet: RuleSet) {
+    activeBoundTaskRuleSetId.current = ruleSet.id;
     setBoundTaskTarget(ruleSet);
+    setBoundTasks([]);
+    setBoundTaskLoading(true);
     setError('');
     try {
-      setBoundTasks(await api<RuleSetBoundTask[]>(`/rule-sets/${ruleSet.id}/tasks`));
+      const tasks = await api<RuleSetBoundTask[]>(`/rule-sets/${ruleSet.id}/tasks`);
+      if (!isActiveBoundTaskRuleSet(ruleSet.id)) return;
+      setBoundTasks(tasks);
     } catch (err) {
+      if (!isActiveBoundTaskRuleSet(ruleSet.id)) return;
       setError(err instanceof Error ? err.message : String(err));
       setBoundTasks([]);
+    } finally {
+      if (isActiveBoundTaskRuleSet(ruleSet.id)) setBoundTaskLoading(false);
     }
+  }
+
+  function closeBoundTasks() {
+    activeBoundTaskRuleSetId.current = null;
+    setBoundTaskTarget(null);
+    setBoundTasks([]);
+    setBoundTaskLoading(false);
   }
 
   const table = useAntdTableControls<RuleRow>({
@@ -915,7 +1084,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
           </Space>
         )}
       </Modal>
-      <Modal className="tg-modal large" title={boundTaskTarget ? `绑定任务：${boundTaskTarget.name}` : '绑定任务'} open={Boolean(boundTaskTarget)} width={980} footer={null} onCancel={() => { setBoundTaskTarget(null); setBoundTasks([]); }} destroyOnHidden centered>
+      <Modal className="tg-modal large" title={boundTaskTarget ? `绑定任务：${boundTaskTarget.name}` : '绑定任务'} open={Boolean(boundTaskTarget)} width={980} footer={null} onCancel={closeBoundTasks} destroyOnHidden centered>
         <Table<RuleSetBoundTask>
           className="tg-table"
           rowKey="id"
@@ -929,6 +1098,7 @@ export default function RulesCenterView({ onOpenSystemConfig }: { onOpenSystemCo
             { title: '更新时间', dataIndex: 'updated_at', width: 180, render: (value) => formatBeijingDateTime(value) },
           ]}
           dataSource={boundTasks}
+          loading={boundTaskLoading}
           pagination={{ pageSize: 8 }}
           scroll={{ x: 940 }}
           locale={{ emptyText: '暂无任务绑定该规则集。' }}

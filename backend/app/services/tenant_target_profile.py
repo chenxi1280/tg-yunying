@@ -6,7 +6,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    OperationTarget,
     Task,
     TenantLearningProfile,
     TenantLearningProfileVersion,
@@ -14,10 +13,9 @@ from app.models import (
     TenantLearningRun,
     TenantLearningSample,
     TenantLearningSource,
-    TgGroup,
-    TgGroupAccount,
 )
 from app.services._common import _now, audit
+from app.services.tenant_target_profile_sources import list_source_candidates, list_sources, update_sources
 
 
 USAGE_SCOPE = ["group_ai_chat", "channel_comment", "discussion_reply"]
@@ -29,6 +27,10 @@ DEFAULT_RULES = {
     "scene_weights": {"group_chat": 1.0, "channel_comment": 1.0, "discussion_reply": 1.0},
     "forbidden_patterns": {"keywords": [], "links": True, "contacts": True},
 }
+
+
+class TargetProfileRunFailed(ValueError):
+    pass
 
 
 def get_target_profile_overview(session: Session, tenant_id: int) -> dict[str, Any]:
@@ -70,52 +72,6 @@ def tenant_learning_profile_preview(session: Session, tenant_id: int, profile_sc
     return _profile_preview_payload(profile, profile_scene, "")
 
 
-def list_source_candidates(session: Session, tenant_id: int) -> dict[str, Any]:
-    groups = session.scalars(
-        select(TgGroup)
-        .where(TgGroup.tenant_id == tenant_id, TgGroup.group_type != "channel")
-        .order_by(TgGroup.listener_enabled.desc(), TgGroup.id.desc())
-    ).all()
-    targets = session.scalars(select(OperationTarget).where(OperationTarget.tenant_id == tenant_id, OperationTarget.target_type == "group")).all()
-    targets_by_peer = {target.tg_peer_id: target for target in targets}
-    links_by_group = _group_links_by_group(session, tenant_id, [group.id for group in groups])
-    items = [_group_candidate_payload(group, targets_by_peer.get(group.tg_peer_id), links_by_group.get(group.id, [])) for group in groups]
-    return {"items": items, "total": len(items)}
-
-
-def list_sources(session: Session, tenant_id: int) -> dict[str, Any]:
-    sources = session.scalars(select(TenantLearningSource).where(TenantLearningSource.tenant_id == tenant_id).order_by(TenantLearningSource.selected_at.desc())).all()
-    return {"items": [_source_payload(source, session.get(OperationTarget, source.target_id)) for source in sources], "total": len(sources)}
-
-
-def update_sources(session: Session, tenant_id: int, payload: dict[str, Any], *, actor: str, reason: str) -> dict[str, Any]:
-    if not reason.strip():
-        raise ValueError("请填写学习来源变更原因")
-    source_items = list(payload.get("sources") or [])
-    resolved_sources = [_resolve_source_target(session, tenant_id, item) for item in source_items]
-    target_ids = [target.id for item, target, listener_ids in resolved_sources]
-    existing = {source.target_id: source for source in session.scalars(select(TenantLearningSource).where(TenantLearningSource.tenant_id == tenant_id)).all()}
-    for item, target, listener_ids in resolved_sources:
-        target_id = target.id
-        source = existing.get(target_id) or TenantLearningSource(tenant_id=tenant_id, target_id=target_id)
-        source.source_kind = target.target_type
-        source.is_enabled = bool(item.get("is_enabled", True))
-        source.auto_sync_enabled = bool(item.get("auto_sync_enabled", True))
-        source.listener_account_ids = list(item.get("listener_account_ids") or listener_ids)
-        source.source_status = "active" if source.is_enabled else "disabled"
-        source.last_failure_detail = str(item.get("last_failure_detail") or "")
-        source.selected_by = actor
-        if source not in session:
-            session.add(source)
-    for target_id, source in existing.items():
-        if target_id not in target_ids:
-            source.is_enabled = False
-            source.source_status = "disabled"
-    audit(session, tenant_id=tenant_id, actor=actor, action="配置全站目标画像学习来源", target_type="target_profile", target_id=str(tenant_id), detail=reason.strip())
-    session.flush()
-    return list_sources(session, tenant_id)
-
-
 def get_quality_rules(session: Session, tenant_id: int) -> dict[str, Any]:
     rule = ensure_quality_rule(session, tenant_id)
     return _quality_rule_payload(rule)
@@ -140,20 +96,6 @@ def update_quality_rules(session: Session, tenant_id: int, payload: dict[str, An
     )
     session.add(rule)
     session.flush()
-    from app.services.tenant_learning_samples import recompute_source_candidates
-
-    counts = recompute_source_candidates(session, tenant_id)
-    run = TenantLearningRun(
-        tenant_id=tenant_id,
-        run_type="recompute_candidates",
-        status="success",
-        quality_rule_version=version,
-        sample_count=counts["sample_count"],
-        accepted_count=counts["accepted_count"],
-        rejected_count=counts["rejected_count"],
-        trace_id=f"quality-rule-{version}",
-    )
-    session.add(run)
     audit(session, tenant_id=tenant_id, actor=actor, action="配置目标画像样本质量规则", target_type="target_profile", target_id=str(tenant_id), detail=reason.strip())
     session.flush()
     return _quality_rule_payload(rule)
@@ -165,7 +107,19 @@ def recompute_candidates(session: Session, tenant_id: int, *, actor: str, reason
     from app.services.tenant_learning_samples import recompute_source_candidates
 
     rule = ensure_quality_rule(session, tenant_id)
-    counts = recompute_source_candidates(session, tenant_id)
+    try:
+        counts = recompute_source_candidates(session, tenant_id)
+    except Exception as exc:
+        run = _record_failed_run(
+            session,
+            tenant_id,
+            run_type="recompute_candidates",
+            failure_detail=str(exc),
+            trace_id=f"candidate-recompute-{rule.rule_version}-failed",
+            quality_rule_version=rule.rule_version,
+        )
+        audit(session, tenant_id=tenant_id, actor=actor, action="重算目标画像候选样本失败", target_type="target_profile_run", target_id=run.id, detail=run.failure_detail)
+        raise TargetProfileRunFailed(run.failure_detail) from exc
     run = TenantLearningRun(
         tenant_id=tenant_id,
         run_type="recompute_candidates",
@@ -216,7 +170,21 @@ def rebuild_profile(session: Session, tenant_id: int, *, actor: str, reason: str
     if not reason.strip():
         raise ValueError("请填写重建原因")
     profile = ensure_tenant_profile(session, tenant_id)
-    accepted = session.scalars(select(TenantLearningSample).where(TenantLearningSample.tenant_id == tenant_id, TenantLearningSample.learning_status == "accepted").order_by(TenantLearningSample.created_at.desc())).all()
+    try:
+        accepted = session.scalars(select(TenantLearningSample).where(TenantLearningSample.tenant_id == tenant_id, TenantLearningSample.learning_status == "accepted").order_by(TenantLearningSample.created_at.desc())).all()
+    except Exception as exc:
+        next_version = int(profile.profile_version or 0) + 1
+        run = _record_failed_run(
+            session,
+            tenant_id,
+            run_type="rebuild",
+            failure_detail=str(exc),
+            trace_id=f"profile-rebuild-{next_version}-failed",
+            profile_version=next_version,
+            quality_rule_version=_latest_quality_rule_version(session, tenant_id),
+        )
+        audit(session, tenant_id=tenant_id, actor=actor, action="重建全站目标画像失败", target_type="target_profile_run", target_id=run.id, detail=run.failure_detail)
+        raise TargetProfileRunFailed(run.failure_detail) from exc
     profile.profile_version += 1
     profile.source_sample_count = len(accepted)
     profile.status = "active" if accepted else "sample_insufficient"
@@ -284,7 +252,19 @@ def start_source_run(session: Session, tenant_id: int, source_id: str, run_type:
         raise ValueError("学习来源不存在")
     from app.services.tenant_learning_samples import ingest_source_samples
 
-    counts = ingest_source_samples(session, source, run_type)
+    try:
+        counts = ingest_source_samples(session, source, run_type)
+    except Exception as exc:
+        run = _record_failed_run(
+            session,
+            tenant_id,
+            run_type=run_type,
+            failure_detail=str(exc),
+            trace_id=f"{run_type}-{source.id}-failed",
+            source_id=source.id,
+        )
+        audit(session, tenant_id=tenant_id, actor=actor, action="执行目标画像学习同步失败" if run_type == "sync" else "执行目标画像历史拉取失败", target_type="target_profile_source", target_id=source.id, detail=run.failure_detail)
+        raise TargetProfileRunFailed(run.failure_detail) from exc
     run = TenantLearningRun(
         tenant_id=tenant_id,
         source_id=source.id,
@@ -309,11 +289,37 @@ def list_runs(session: Session, tenant_id: int) -> dict[str, Any]:
 def ensure_tenant_profile(session: Session, tenant_id: int) -> TenantLearningProfile:
     profile = session.scalar(select(TenantLearningProfile).where(TenantLearningProfile.tenant_id == tenant_id))
     if profile:
+        _ensure_initial_profile_version(session, tenant_id, profile)
         return profile
     profile = TenantLearningProfile(tenant_id=tenant_id, profile_version=0, status="sample_insufficient")
     session.add(profile)
     session.flush()
+    _ensure_initial_profile_version(session, tenant_id, profile)
     return profile
+
+
+def _ensure_initial_profile_version(session: Session, tenant_id: int, profile: TenantLearningProfile) -> None:
+    if profile.profile_version != 0:
+        return
+    existing = session.scalar(
+        select(TenantLearningProfileVersion).where(
+            TenantLearningProfileVersion.tenant_id == tenant_id,
+            TenantLearningProfileVersion.profile_version == 0,
+        )
+    )
+    if existing:
+        return
+    session.add(
+        TenantLearningProfileVersion(
+            tenant_id=tenant_id,
+            profile_version=0,
+            profile_snapshot=_profile_snapshot(profile),
+            source_snapshot={"initial_empty": True},
+            sample_count=0,
+            created_by="system",
+        )
+    )
+    session.flush()
 
 
 def ensure_quality_rule(session: Session, tenant_id: int) -> TenantLearningQualityRule:
@@ -328,6 +334,37 @@ def ensure_quality_rule(session: Session, tenant_id: int) -> TenantLearningQuali
 
 def latest_quality_rule(session: Session, tenant_id: int) -> TenantLearningQualityRule | None:
     return session.scalar(select(TenantLearningQualityRule).where(TenantLearningQualityRule.tenant_id == tenant_id).order_by(TenantLearningQualityRule.rule_version.desc()).limit(1))
+
+
+def _latest_quality_rule_version(session: Session, tenant_id: int) -> int:
+    rule = latest_quality_rule(session, tenant_id)
+    return rule.rule_version if rule else 0
+
+
+def _record_failed_run(
+    session: Session,
+    tenant_id: int,
+    *,
+    run_type: str,
+    failure_detail: str,
+    trace_id: str,
+    source_id: str = "",
+    quality_rule_version: int = 0,
+    profile_version: int = 0,
+) -> TenantLearningRun:
+    run = TenantLearningRun(
+        tenant_id=tenant_id,
+        source_id=source_id,
+        run_type=run_type,
+        status="failed",
+        failure_detail=failure_detail,
+        trace_id=trace_id,
+        quality_rule_version=quality_rule_version,
+        profile_version=profile_version,
+    )
+    session.add(run)
+    session.flush()
+    return run
 
 
 def target_profile_usage(session: Session, tenant_id: int) -> dict[str, Any]:
@@ -367,85 +404,6 @@ def _unavailable_preview(profile_scene: str, reason: str) -> dict[str, Any]:
         "sample_sufficiency": "missing",
         "profile_unavailable_reason": reason,
         "profile_hit_summary": "",
-    }
-
-
-def _group_links_by_group(session: Session, tenant_id: int, group_ids: list[int]) -> dict[int, list[Any]]:
-    if not group_ids:
-        return {}
-    links: dict[int, list[Any]] = {group_id: [] for group_id in group_ids}
-    for link in session.scalars(select(TgGroupAccount).where(TgGroupAccount.tenant_id == tenant_id, TgGroupAccount.group_id.in_(group_ids))):
-        links.setdefault(link.group_id, []).append(link)
-    return links
-
-
-def _group_candidate_payload(group: TgGroup, target: OperationTarget | None, links: list[Any]) -> dict[str, Any]:
-    listener_ids = [link.account_id for link in links if link.is_listener]
-    can_listen = bool(group.listener_enabled or listener_ids)
-    reason = "" if can_listen else "no_listener_account"
-    return {
-        "source_key": f"group:{group.id}",
-        "group_id": group.id,
-        "target_id": target.id if target else None,
-        "target_type": "group",
-        "title": group.title,
-        "tg_peer_id": group.tg_peer_id,
-        "can_listen": can_listen,
-        "listener_account_ids": listener_ids,
-        "recent_message_at": _iso(group.listener_last_polled_at),
-        "associated_task_types": [],
-        "recommended": can_listen,
-        "recommend_reason": "可监听群聊" if can_listen else "",
-        "cannot_auto_sync_reason": reason,
-    }
-
-
-def _resolve_source_target(session: Session, tenant_id: int, item: dict[str, Any]) -> tuple[dict[str, Any], OperationTarget, list[int]]:
-    if item.get("group_id"):
-        group = session.get(TgGroup, int(item["group_id"]))
-        if not group or group.tenant_id != tenant_id or group.group_type == "channel":
-            raise ValueError("学习来源群聊不存在")
-        links_by_group = _group_links_by_group(session, tenant_id, [group.id])
-        target = _ensure_group_target(session, group)
-        listener_ids = [link.account_id for link in links_by_group.get(group.id, []) if link.is_listener]
-        return item, target, listener_ids
-    if not item.get("target_id"):
-        raise ValueError("学习来源目标不存在")
-    target = session.get(OperationTarget, int(item["target_id"]))
-    if not target or target.tenant_id != tenant_id:
-        raise ValueError("学习来源目标不存在")
-    return item, target, []
-
-
-def _ensure_group_target(session: Session, group: TgGroup) -> OperationTarget:
-    target = session.scalar(select(OperationTarget).where(OperationTarget.tenant_id == group.tenant_id, OperationTarget.tg_peer_id == group.tg_peer_id))
-    if not target:
-        target = OperationTarget(tenant_id=group.tenant_id, tg_peer_id=group.tg_peer_id)
-        session.add(target)
-    target.target_type = "group"
-    target.title = group.title
-    target.member_count = group.member_count
-    target.can_send = group.can_send
-    target.auth_status = group.auth_status
-    target.updated_at = _now()
-    session.flush()
-    return target
-
-
-def _source_payload(source: TenantLearningSource, target: OperationTarget | None) -> dict[str, Any]:
-    return {
-        "id": source.id,
-        "target_id": source.target_id,
-        "target_title": target.title if target else "",
-        "target_type": target.target_type if target else source.source_kind,
-        "source_kind": source.source_kind,
-        "is_enabled": source.is_enabled,
-        "auto_sync_enabled": source.auto_sync_enabled,
-        "source_status": source.source_status,
-        "listener_account_ids": source.listener_account_ids or [],
-        "last_sync_at": _iso(source.last_sync_at),
-        "last_history_pull_at": _iso(source.last_history_pull_at),
-        "last_failure_detail": source.last_failure_detail,
     }
 
 

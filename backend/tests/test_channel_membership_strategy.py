@@ -1155,6 +1155,54 @@ def test_membership_permission_denied_skip_counts_as_failed() -> None:
     assert summary["need_join_account_count"] == 0
 
 
+def test_membership_unknown_after_send_stays_out_of_retry_candidates() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now() - timedelta(hours=1)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        target = OperationTarget(id=903, tenant_id=1, target_type="group", tg_peer_id="-100903", title="结果未知群", auth_status="已授权运营", can_send=True)
+        account = TgAccount(id=13, tenant_id=1, display_name="账号13", phone_masked="13", status="在线", session_ciphertext="session")
+        task = Task(
+            id="task-membership-unknown-summary",
+            tenant_id=1,
+            name="结果未知汇总",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all"},
+            type_config={"hard_hourly_target_enabled": True, "hourly_min_messages": 60},
+        )
+        session.add_all([target, account, task])
+        session.add(
+            Action(
+                id="membership-unknown-summary",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="ensure_target_membership",
+                account_id=account.id,
+                status="unknown_after_send",
+                executed_at=now_value,
+                payload={"channel_target_id": target.id},
+                result={"error_code": "unknown_after_send"},
+            )
+        )
+        session.commit()
+
+        summary = channel_membership_summary(session, 1, target, task.account_config, task_id=task.id, require_send=True)
+        gate = gate_channel_membership(session, task, target, require_send=True)
+        created_count = session.query(Action).filter(Action.task_id == task.id, Action.action_type == "ensure_target_membership").count()
+
+    assert summary["unknown_after_send_account_ids"] == [13]
+    assert summary["unknown_after_send_count"] == 1
+    assert summary["need_join_account_count"] == 0
+    assert summary["failed_account_count"] == 0
+    assert summary["estimated_membership_actions"] == 0
+    assert gate.blocked is True
+    assert created_count == 1
+
+
 def test_hard_hourly_reactivates_auto_verification_membership_failures() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

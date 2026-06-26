@@ -657,6 +657,7 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
     topic_thread_prompt = f"话题脉络：\n{topic_thread}" if topic_thread else ""
     topic_plan = str(config.get("topic_plan") or "").strip()
     topic_plan_prompt = f"本轮话题计划：\n{topic_plan}" if topic_plan else ""
+    target_profile_prompt = _target_profile_style_prompt(config.get("target_profile_style"), audience="group")
     slang_prompt = _slang_system_prompt(session, tenant_id, config)
     requirements = "\n".join(
         part
@@ -664,6 +665,7 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
             config.get("topic_hint") or "",
             topic_thread_prompt,
             topic_plan_prompt,
+            target_profile_prompt,
             persona_prompt,
             memory_prompt,
             profile_prompt,
@@ -699,12 +701,14 @@ def generate_group_reply_messages(
     history: str = "",
 ) -> tuple[list[str], int]:
     reply_lines = "\n".join(_reply_target_line(index, item) for index, item in enumerate(reply_targets, start=1))
+    target_profile_prompt = _target_profile_style_prompt(config.get("target_profile_style"), audience="group")
     requirements = "\n".join(
         part
         for part in [
             config.get("topic_hint") or "",
             f"引用目标：\n{reply_lines}" if reply_lines else "",
             f"群聊上下文：\n{history}" if history else "",
+            target_profile_prompt,
             config.get("system_prompt_override") or "",
         ]
         if part
@@ -814,9 +818,11 @@ def _slang_terms_prompt(value: object) -> str:
 def generate_channel_comments(session: Session, tenant_id: int, config: dict, *, count: int, message_content: str, target_label: str) -> tuple[list[str], int]:
     topic = config.get("topic_hint") or "频道评论"
     safe_message_content = _sanitize_sensitive_context(message_content)
+    target_profile_prompt = _target_profile_style_prompt(config.get("target_comment_profile"), audience="channel")
     requirements = (
         f"频道消息：{safe_message_content}\n"
         f"评论风格：{config.get('comment_style') or 'mixed'}\n"
+        f"{target_profile_prompt}\n"
         f"语言：{config.get('language') or 'zh-CN'}\n"
         f"{_sanitize_sensitive_context(config.get('system_prompt_override') or '')}"
     )
@@ -845,9 +851,11 @@ def generate_channel_reply_comments(
     target_label: str,
 ) -> tuple[list[str], int]:
     reply_lines = "\n".join(_reply_target_line(index, item) for index, item in enumerate(reply_targets, start=1))
+    target_profile_prompt = _target_profile_style_prompt(config.get("target_comment_profile"), audience="channel")
     requirements = (
         f"频道消息：{_sanitize_sensitive_context(message_content)}\n"
         f"评论风格：{config.get('comment_style') or 'mixed'}\n"
+        f"{target_profile_prompt}\n"
         f"引用目标：\n{reply_lines}\n"
         f"{_sanitize_sensitive_context(config.get('system_prompt_override') or '')}"
     )
@@ -864,6 +872,17 @@ def generate_channel_reply_comments(
         system_prompt=_channel_comment_system_prompt(),
     )
     return _trim(contents, config.get("max_comment_length")), tokens
+
+
+def _target_profile_style_prompt(value: object, *, audience: str) -> str:
+    profile = str(value or "").strip()
+    if not profile:
+        return ""
+    if audience == "channel":
+        label = "全站目标画像（只作读者口吻和追问方式参考，不能作为具体事实来源）"
+    else:
+        label = "全站目标画像（只作风格和话题参考，不能作为具体事实来源）"
+    return f"{label}：\n{profile}"
 
 
 def rewrite_relay_content(session: Session, tenant_id: int, config: dict, content: str, *, target_label: str) -> tuple[str, int]:

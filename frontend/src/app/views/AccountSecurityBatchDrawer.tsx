@@ -247,6 +247,29 @@ export function AccountSecurityBatchDrawer({
     avatar_strategy: avatarStrategy,
     reason,
   }), [actions, avatarStrategy, draftAccountIds, profileStrategy, reason, standbySlotStrategy]);
+  const batchDrawerRequestRef = React.useRef({ kind: '', signature: '', seq: 0 });
+  const latestBatchPayloadSignatureRef = React.useRef(payloadSignature);
+
+  React.useEffect(() => {
+    latestBatchPayloadSignatureRef.current = payloadSignature;
+  }, [payloadSignature]);
+
+  function beginBatchDrawerRequest(kind: string, signature: string) {
+    const nextSeq = batchDrawerRequestRef.current.seq + 1;
+    batchDrawerRequestRef.current = { kind, signature, seq: nextSeq };
+    return nextSeq;
+  }
+
+  function isActiveBatchDrawerRequest(kind: string, signature: string, requestSeq: number) {
+    return batchDrawerRequestRef.current.kind === kind
+      && batchDrawerRequestRef.current.signature === signature
+      && batchDrawerRequestRef.current.seq === requestSeq
+      && latestBatchPayloadSignatureRef.current === signature;
+  }
+
+  function isCurrentBatchDrawerRequest(kind: string, requestSeq: number) {
+    return batchDrawerRequestRef.current.kind === kind && batchDrawerRequestRef.current.seq === requestSeq;
+  }
 
   React.useEffect(() => {
     if (!precheck || !precheckPayloadSignature || precheckPayloadSignature === payloadSignature) return;
@@ -329,11 +352,14 @@ export function AccountSecurityBatchDrawer({
       void message.warning('请在当前批量动作中选择账号');
       return;
     }
+    const requestSignature = payloadSignature;
+    const requestSeq = beginBatchDrawerRequest('precheck', requestSignature);
     setLoading(true);
     try {
       const endpoint = isProfileMode ? '/tg-accounts/security-batches/profile-preview' : '/tg-accounts/security-batches/precheck';
       const timeoutMs = isProfileMode ? Math.min(210_000, Math.max(60_000, draftAccountIds.length * 5_000)) : 60_000;
       const result = await api<AccountSecurityPrecheck>(endpoint, { method: 'POST', body: JSON.stringify(payload), timeoutMs });
+      if (!isActiveBatchDrawerRequest('precheck', requestSignature, requestSeq)) return;
       setPrecheck(result);
       setPrecheckPayloadSignature(payloadSignature);
       setEditedPreviewIds(new Set());
@@ -341,9 +367,10 @@ export function AccountSecurityBatchDrawer({
       setStep(1);
       void message.success(`预检完成：共 ${result.summary.total ?? 0} 个，可执行 ${result.summary.executable ?? 0} 个`);
     } catch (error) {
+      if (!isActiveBatchDrawerRequest('precheck', requestSignature, requestSeq)) return;
       void message.error(errorMessage(error, '预检失败'));
     } finally {
-      setLoading(false);
+      if (isCurrentBatchDrawerRequest('precheck', requestSeq)) setLoading(false);
     }
   }
 
@@ -370,20 +397,24 @@ export function AccountSecurityBatchDrawer({
 
   async function createBatch() {
     if (!precheck) return;
+    const requestSignature = payloadSignature;
+    const requestSeq = beginBatchDrawerRequest('create', requestSignature);
     setLoading(true);
     try {
       const result = await api<AccountSecurityBatch>('/tg-accounts/security-batches', {
         method: 'POST',
         body: JSON.stringify({ ...payload, preview_overrides: previewOverrides, confirm_text: '确认' }),
       });
+      if (!isActiveBatchDrawerRequest('create', requestSignature, requestSeq)) return;
       setBatch(result);
       setStep(2);
       setConfirmOpen(false);
       void message.success(`批次 #${result.id} 已提交后台执行：共 ${result.total_count} 个，自动跳过 ${result.skipped_count} 个；后台 worker 完成后再刷新账号列表查看${batchResultTargetLabel}。`);
     } catch (error) {
+      if (!isActiveBatchDrawerRequest('create', requestSignature, requestSeq)) return;
       void message.error(errorMessage(error, '创建批次失败'));
     } finally {
-      setLoading(false);
+      if (isCurrentBatchDrawerRequest('create', requestSeq)) setLoading(false);
     }
   }
 

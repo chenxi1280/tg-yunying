@@ -17,7 +17,7 @@ interface Props {
   onDisableMaterial: (material: Material) => void;
   onRestoreMaterial: (material: Material) => void;
   onOpenImportResult: (result: MaterialImportResult) => void;
-  onRefresh: () => void;
+  onRefresh: () => void | Promise<void>;
   isActionPending: (key: string) => boolean;
 }
 
@@ -116,31 +116,61 @@ export default function MaterialsView({
   const [materialGroups, setMaterialGroups] = React.useState<MaterialGroup[]>([]);
   const [editingGroup, setEditingGroup] = React.useState<MaterialGroup | null>(null);
   const [groupForm, setGroupForm] = React.useState<MaterialGroupForm>(emptyMaterialGroupForm());
+  const activeMaterialDetailId = React.useRef<number | null>(null);
+  const materialDetailRequestSeq = React.useRef(0);
+  const materialGroupRequestSeq = React.useRef(0);
+  const activeMaterialGroupActionKey = React.useRef('');
+  const activeMaterialGroupSaveRequestRef = React.useRef({ seq: 0, signature: '' });
   const counts = cacheCounts(materialCacheHealth);
   const stickerMaterials = React.useMemo(() => materials.filter((item) => materialType(item) === 'sticker'), [materials]);
   const avatarMaterials = React.useMemo(() => materials.filter((item) => materialType(item) === 'avatar'), [materials]);
   const mediaMaterials = React.useMemo(() => materials.filter((item) => materialType(item) === 'media'), [materials]);
 
+  function isActiveMaterialDetail(materialId: number, requestSeq: number) {
+    return activeMaterialDetailId.current === materialId && materialDetailRequestSeq.current === requestSeq;
+  }
+
   async function openMaterialDetail(material: Material) {
+    const requestSeq = materialDetailRequestSeq.current + 1;
+    materialDetailRequestSeq.current = requestSeq;
+    activeMaterialDetailId.current = material.id;
     setDetailOpen(true);
     setDetailLoading(true);
     setDetailMaterial(material);
     setMaterialReferences(null);
     setMaterialVersions(null);
     try {
-      const [detail, references, versions] = await Promise.all([
+      const [detailResult, referencesResult, versionsResult] = await Promise.allSettled([
         api<Material>(`/materials/${material.id}`),
         api<MaterialReferences>(`/materials/${material.id}/references`),
         api<MaterialVersionHistory>(`/materials/${material.id}/versions`),
       ]);
-      setDetailMaterial(detail);
-      setMaterialReferences(references);
-      setMaterialVersions(versions);
+      if (!isActiveMaterialDetail(material.id, requestSeq)) return;
+      if (detailResult.status === 'fulfilled') setDetailMaterial(detailResult.value);
+      if (referencesResult.status === 'fulfilled') setMaterialReferences(referencesResult.value);
+      if (versionsResult.status === 'fulfilled') setMaterialVersions(versionsResult.value);
+      const errors = [
+        detailResult.status === 'rejected' ? `基础信息：${detailResult.reason instanceof Error ? detailResult.reason.message : String(detailResult.reason)}` : '',
+        referencesResult.status === 'rejected' ? `引用记录：${referencesResult.reason instanceof Error ? referencesResult.reason.message : String(referencesResult.reason)}` : '',
+        versionsResult.status === 'rejected' ? `版本记录：${versionsResult.reason instanceof Error ? versionsResult.reason.message : String(versionsResult.reason)}` : '',
+      ].filter(Boolean);
+      if (errors.length) void message.error(`读取素材详情失败：${errors.join('；')}`);
     } catch (error) {
+      if (!isActiveMaterialDetail(material.id, requestSeq)) return;
       void message.error(error instanceof Error ? error.message : '读取素材详情失败');
     } finally {
-      setDetailLoading(false);
+      if (isActiveMaterialDetail(material.id, requestSeq)) setDetailLoading(false);
     }
+  }
+
+  function closeMaterialDetail() {
+    activeMaterialDetailId.current = null;
+    materialDetailRequestSeq.current += 1;
+    setDetailOpen(false);
+    setDetailLoading(false);
+    setDetailMaterial(null);
+    setMaterialReferences(null);
+    setMaterialVersions(null);
   }
 
   async function refreshMaterialCache(material: Material) {
@@ -148,20 +178,30 @@ export default function MaterialsView({
       void message.warning('当前账号没有素材管理权限');
       return;
     }
+    const detailRequestSeq = materialDetailRequestSeq.current;
+    const shouldRefreshDetail = activeMaterialDetailId.current === material.id;
     setCacheBusyId(material.id);
     try {
       const updated = await api<Material>(`/materials/${material.id}/refresh-cache`, {
         method: 'POST',
         body: JSON.stringify({ reason: '素材中心手动刷新缓存' }),
       });
-      setDetailMaterial((current) => current?.id === updated.id ? updated : current);
-      await openMaterialDetail(updated);
-      onRefresh();
+      if (shouldRefreshDetail && materialDetailRequestSeq.current !== detailRequestSeq) return;
+      if (shouldRefreshDetail) {
+        setDetailMaterial((current) => current?.id === updated.id ? updated : current);
+        await openMaterialDetail(updated);
+      }
+      try {
+        await onRefresh();
+      } catch (refreshError) {
+        void message.error(`刷新素材列表失败：${refreshError instanceof Error ? refreshError.message : String(refreshError)}`);
+      }
       void message.success('已提交素材缓存刷新');
     } catch (error) {
+      if (shouldRefreshDetail && materialDetailRequestSeq.current !== detailRequestSeq) return;
       void message.error(error instanceof Error ? error.message : '刷新素材缓存失败');
     } finally {
-      setCacheBusyId(null);
+      setCacheBusyId((current) => current === material.id ? null : current);
     }
   }
 
@@ -173,13 +213,74 @@ export default function MaterialsView({
   }
 
   async function loadMaterialGroups() {
+    const requestSeq = beginMaterialGroupRequest();
     setGroupLoading(true);
     try {
-      setMaterialGroups(await api<MaterialGroup[]>('/material-groups'));
+      await fetchMaterialGroups(requestSeq);
     } catch (error) {
+      if (!isActiveMaterialGroupRequest(requestSeq)) return;
       void message.error(error instanceof Error ? error.message : '读取素材组失败');
     } finally {
-      setGroupLoading(false);
+      if (isActiveMaterialGroupRequest(requestSeq)) setGroupLoading(false);
+    }
+  }
+
+  function beginMaterialGroupRequest() {
+    materialGroupRequestSeq.current += 1;
+    return materialGroupRequestSeq.current;
+  }
+
+  function isActiveMaterialGroupRequest(requestSeq: number) {
+    return materialGroupRequestSeq.current === requestSeq;
+  }
+
+  function beginMaterialGroupAction(actionKey: string) {
+    activeMaterialGroupActionKey.current = actionKey;
+    return activeMaterialGroupActionKey.current;
+  }
+
+  function isActiveMaterialGroupAction(actionKey: string) {
+    return activeMaterialGroupActionKey.current === actionKey;
+  }
+
+  function materialGroupSavePayloadSignature(groupId: number | null, payload: MaterialGroupForm) {
+    return JSON.stringify({
+      id: groupId,
+      name: payload.name.trim(),
+      group_type: payload.group_type,
+      description: payload.description.trim(),
+      is_active: payload.is_active,
+    });
+  }
+
+  function beginMaterialGroupSaveRequest(signature: string) {
+    activeMaterialGroupSaveRequestRef.current = { seq: activeMaterialGroupSaveRequestRef.current.seq + 1, signature };
+    return activeMaterialGroupSaveRequestRef.current;
+  }
+
+  function currentMaterialGroupSavePayloadSignature() {
+    return materialGroupSavePayloadSignature(editingGroup?.id ?? null, groupForm);
+  }
+
+  function isCurrentMaterialGroupSaveRequest(request: { seq: number; signature: string }) {
+    return activeMaterialGroupSaveRequestRef.current.seq === request.seq && currentMaterialGroupSavePayloadSignature() === request.signature;
+  }
+
+  async function fetchMaterialGroups(requestSeq: number) {
+    const rows = await api<MaterialGroup[]>('/material-groups');
+    if (!isActiveMaterialGroupRequest(requestSeq)) return false;
+    setMaterialGroups(rows);
+    return true;
+  }
+
+  async function refreshMaterialGroupsAfterAction(actionLabel: string) {
+    const requestSeq = beginMaterialGroupRequest();
+    try {
+      await fetchMaterialGroups(requestSeq);
+    } catch (error) {
+      if (!isActiveMaterialGroupRequest(requestSeq)) return;
+      const reason = error instanceof Error ? error.message : String(error);
+      void message.error(`素材中心数据刷新失败：${actionLabel}操作已完成，但刷新素材组列表失败：${reason}`);
     }
   }
 
@@ -202,6 +303,8 @@ export default function MaterialsView({
       void message.warning('素材组名称不能为空');
       return;
     }
+    const actionKey = beginMaterialGroupAction(editingGroup ? `group-save:${editingGroup.id}` : 'group-create');
+    const saveRequest = beginMaterialGroupSaveRequest(currentMaterialGroupSavePayloadSignature());
     setGroupSaving(true);
     try {
       const payload = {
@@ -215,14 +318,18 @@ export default function MaterialsView({
       } else {
         await api<MaterialGroup>('/material-groups', { method: 'POST', body: JSON.stringify(payload) });
       }
+      if (!isActiveMaterialGroupAction(actionKey)) return;
+      if (!isCurrentMaterialGroupSaveRequest(saveRequest)) return;
       setEditingGroup(null);
       setGroupForm(emptyMaterialGroupForm());
-      await loadMaterialGroups();
       void message.success('素材组已保存');
+      await refreshMaterialGroupsAfterAction('素材组保存');
     } catch (error) {
+      if (!isActiveMaterialGroupAction(actionKey)) return;
+      if (!isCurrentMaterialGroupSaveRequest(saveRequest)) return;
       void message.error(error instanceof Error ? error.message : '保存素材组失败');
     } finally {
-      setGroupSaving(false);
+      if (isActiveMaterialGroupAction(actionKey)) setGroupSaving(false);
     }
   }
 
@@ -231,17 +338,20 @@ export default function MaterialsView({
       void message.warning('当前账号没有素材管理权限');
       return;
     }
+    const actionKey = beginMaterialGroupAction(`group-toggle:${group.id}`);
     setGroupSaving(true);
     try {
       await api<MaterialGroup>(`/material-groups/${group.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ is_active: !group.is_active }),
       });
-      await loadMaterialGroups();
+      if (!isActiveMaterialGroupAction(actionKey)) return;
+      await refreshMaterialGroupsAfterAction('素材组启停');
     } catch (error) {
+      if (!isActiveMaterialGroupAction(actionKey)) return;
       void message.error(error instanceof Error ? error.message : '更新素材组失败');
     } finally {
-      setGroupSaving(false);
+      if (isActiveMaterialGroupAction(actionKey)) setGroupSaving(false);
     }
   }
 
@@ -491,7 +601,7 @@ export default function MaterialsView({
         open={detailOpen}
         width={980}
         footer={null}
-        onCancel={() => setDetailOpen(false)}
+        onCancel={closeMaterialDetail}
         destroyOnHidden
         centered
       >

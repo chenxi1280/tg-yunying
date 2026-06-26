@@ -1207,6 +1207,46 @@ def test_auth_single_admin_and_default_operation_space():
         assert client.get("/api/tg-accounts").status_code == 401
 
 
+def test_authenticated_user_can_change_own_password():
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        suffix = uuid4().hex[:8]
+        email = f"password_user_{suffix}@example.local"
+        created = client.post(
+            "/api/admin/users",
+            headers=headers,
+            json={
+                "name": f"改密用户{suffix}",
+                "email": email,
+                "password": "oldpass123",
+                "role": "后台用户",
+                "role_template": "运营人员",
+                "permissions": ["overview.view"],
+                "menu_permissions": ["overview.view"],
+            },
+        )
+        assert created.status_code == 200, created.text
+        user_headers = auth_headers(client, email, "oldpass123")
+
+        wrong_password = client.post(
+            "/api/auth/change-password",
+            headers=user_headers,
+            json={"current_password": "badpass", "new_password": "newpass123"},
+        )
+        assert wrong_password.status_code == 400
+
+        changed = client.post(
+            "/api/auth/change-password",
+            headers=user_headers,
+            json={"current_password": "oldpass123", "new_password": "newpass123"},
+        )
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["email"] == email
+
+        assert login_response(client, email, "oldpass123").status_code == 401
+        assert login_response(client, email, "newpass123").status_code == 200
+
+
 def test_admin_users_permission_lifecycle_and_legacy_subscription_endpoints_removed():
     with TestClient(app) as client:
         headers = auth_headers(client)

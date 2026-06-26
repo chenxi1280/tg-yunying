@@ -1,5 +1,5 @@
 import React from 'react';
-import { App as AntdApp, Button, Card, Descriptions, Empty, Input, List, Modal, Select, Space, Typography } from 'antd';
+import { Alert, App as AntdApp, Button, Card, Descriptions, Empty, Input, List, Modal, Select, Space, Typography } from 'antd';
 import type { ArchiveItem, ArchiveDetail, OperationTarget } from '../types';
 import { StatusBadge } from '../components/shared';
 import { statusAccent } from '../utils';
@@ -8,7 +8,7 @@ import { api } from '../../shared/api/client';
 interface Props {
   archives: ArchiveItem[];
   archiveDetail: ArchiveDetail | null;
-  onOpenArchiveDetail: (archive: ArchiveItem) => void;
+  onOpenArchiveDetail: (archive: ArchiveItem) => Promise<boolean>;
   onExportArchive?: (archive: ArchiveItem) => void;
   onRerunArchive?: (archive: ArchiveItem) => void;
   onRefresh?: () => Promise<void>;
@@ -23,6 +23,10 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
   const [selectedTargetId, setSelectedTargetId] = React.useState<number | undefined>();
   const [archiveTitle, setArchiveTitle] = React.useState('');
   const [creating, setCreating] = React.useState(false);
+  const [targetError, setTargetError] = React.useState('');
+  const [archiveRefreshError, setArchiveRefreshError] = React.useState('');
+  const [createError, setCreateError] = React.useState('');
+  const detailRequestSeq = React.useRef(0);
   const detailArchive = archives.find((archive) => archive.id === detailArchiveId) ?? null;
   const currentDetail = archiveDetail?.archive.id === detailArchiveId ? archiveDetail : null;
   const archiveTargets = targets.filter((target) => target.target_type === 'group' && target.can_archive && target.linked_group_id);
@@ -30,12 +34,19 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
   React.useEffect(() => {
     api<OperationTarget[]>('/operation-targets?target_type=group')
       .then(setTargets)
-      .catch(() => setTargets([]));
+      .catch((error: unknown) => {
+        setTargets([]);
+        setTargetError(error instanceof Error ? error.message : String(error));
+      });
   }, []);
 
-  function openDetail(archive: ArchiveItem) {
+  async function openDetail(archive: ArchiveItem) {
+    const requestSeq = detailRequestSeq.current + 1;
+    detailRequestSeq.current = requestSeq;
     setDetailArchiveId(archive.id);
-    onOpenArchiveDetail(archive);
+    const loaded = await onOpenArchiveDetail(archive);
+    if (detailRequestSeq.current !== requestSeq) return;
+    if (!loaded) setDetailArchiveId(null);
   }
 
   async function createArchiveFromTarget() {
@@ -44,7 +55,9 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
       void message.error('请选择归档运营目标');
       return;
     }
+    setArchiveRefreshError('');
     setCreating(true);
+    setCreateError('');
     try {
       await api('/archives', {
         method: 'POST',
@@ -53,13 +66,20 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
           title: archiveTitle.trim() || `${target.title} 内容与成员归档`,
         }),
       });
-      void message.success('归档任务已创建');
-      setCreateOpen(false);
-      setSelectedTargetId(undefined);
-      setArchiveTitle('');
-      await onRefresh?.();
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : '创建归档失败');
+      return;
     } finally {
       setCreating(false);
+    }
+    void message.success('归档任务已创建');
+    setCreateOpen(false);
+    setSelectedTargetId(undefined);
+    setArchiveTitle('');
+    if (onRefresh) {
+      void onRefresh().catch((error: unknown) => {
+        setArchiveRefreshError(error instanceof Error ? error.message : String(error));
+      });
     }
   }
 
@@ -75,6 +95,8 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
           </Space>
         )}
       >
+        {targetError && <Alert className="form-alert" type="error" showIcon message="归档目标加载失败" description={targetError} />}
+        {archiveRefreshError && <Alert className="form-alert" type="error" showIcon message="归档列表刷新失败" description={archiveRefreshError} />}
         <div className="cards-grid">
           {!archives.length && <Empty description="暂无群聊归档" />}
           {archives.map((archive) => (
@@ -85,7 +107,7 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
               title={archive.title}
               extra={<StatusBadge status={archive.status} />}
               actions={[
-                <Button type="link" loading={isActionPending(`archive:${archive.id}:detail`)} onClick={() => openDetail(archive)}>查看详情</Button>,
+                <Button type="link" loading={isActionPending(`archive:${archive.id}:detail`)} onClick={() => void openDetail(archive)}>查看详情</Button>,
                 onRerunArchive ? <Button type="link" loading={isActionPending(`archive:${archive.id}:rerun`)} onClick={() => onRerunArchive(archive)}>重跑</Button> : null,
                 onExportArchive ? <Button type="link" loading={isActionPending(`archive:${archive.id}:export`)} onClick={() => onExportArchive(archive)}>导出</Button> : null,
               ].filter(Boolean)}
@@ -109,7 +131,10 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
         footer={null}
         destroyOnHidden
         centered
-        onCancel={() => setDetailArchiveId(null)}
+        onCancel={() => {
+          detailRequestSeq.current += 1;
+          setDetailArchiveId(null);
+        }}
       >
         {!currentDetail ? (
           <Empty description={detailArchive ? '正在读取归档详情' : '暂无归档详情'} />
@@ -147,6 +172,7 @@ export default function ArchivesView({ archives, archiveDetail, onOpenArchiveDet
       >
         <Space direction="vertical" style={{ width: '100%' }}>
           <Typography.Text type="secondary">归档目标来自已确认的运营目标，并会回查关联群资产。</Typography.Text>
+          {createError && <Alert type="error" showIcon message="归档创建失败" description={createError} />}
           <Select
             showSearch
             allowClear

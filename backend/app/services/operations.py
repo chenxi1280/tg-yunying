@@ -42,11 +42,6 @@ from .ai_config import ai_provider_credentials, get_tenant_ai_setting
 from .developer_apps import credentials_for_account
 from .group_listeners import collect_group_context, recent_context_messages
 from .notifications import notify_ai_failure
-from .target_learning import (
-    CHANNEL_COMMENT_SCENE as TARGET_CHANNEL_COMMENT_SCENE,
-    GROUP_CHAT_SCENE as TARGET_GROUP_CHAT_SCENE,
-    learning_profile_preview,
-)
 from .tenant_learning_samples import GROUP_CHAT_SCENE, record_channel_comment_sample
 from .task_center.payloads import EnsureChannelMembershipPayload, create_membership_action
 
@@ -1205,10 +1200,7 @@ def _learning_preview_for_detail(
     *,
     include_learning_profile: bool,
 ) -> dict:
-    if not include_learning_profile:
-        return {}
-    profile_scene = TARGET_CHANNEL_COMMENT_SCENE if target.target_type == "channel" else TARGET_GROUP_CHAT_SCENE
-    return learning_profile_preview(session, tenant_id, target.id, profile_scene)
+    return {}
 
 
 def _normalize_snapshot_datetime(value) -> datetime | None:

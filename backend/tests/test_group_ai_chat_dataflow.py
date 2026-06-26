@@ -1,0 +1,112 @@
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from app.services.task_center.ai_generator import AiGenerationUnavailable
+from app.services.task_center import ai_generator
+from app.services.task_center.executors import group_ai_chat
+
+
+pytestmark = pytest.mark.no_postgres
+
+
+def test_group_ai_chat_normal_candidate_shortfall_is_visible_failure(monkeypatch):
+    task = SimpleNamespace(tenant_id=1, stats={})
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        assert count == 3
+        return ["只返回一条普通发言"], 0
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate_group_messages)
+
+    with pytest.raises(AiGenerationUnavailable, match="AI 普通发言候选不足"):
+        group_ai_chat._generate_group_planned_items(
+            None,
+            task,
+            {},
+            reply_targets=[],
+            normal_count=3,
+            target_label="测试群",
+            history="真人用户: 今天群里有什么安排",
+        )
+
+    assert task.stats["normal_candidate_shortfall_count"] == 1
+
+
+def test_group_ai_chat_keeps_target_profile_out_of_fact_thread():
+    config = group_ai_chat._generation_config_with_profile(
+        {"topic_hint": "日常闲聊"},
+        {"1": "账号只聊已知经历"},
+        {"1": "谨慎短句"},
+        "真人A: 今天只聊停车位",
+        "围绕停车位短句接话",
+        {"profile_hit_summary": "常聊装修预算", "profile_version": 3, "profile_scene": "group_chat"},
+    )
+
+    assert config["topic_thread"] == "真人A: 今天只聊停车位"
+    assert config["target_profile_style"] == "常聊装修预算"
+    assert config["target_learning_profile"]["profile_version"] == 3
+
+
+def test_group_ai_prompt_layers_target_profile_as_style_not_fact(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def fake_generate_contents(_session, _tenant_id, *, requirements, **_kwargs):
+        captured["requirements"] = requirements
+        return ["停车位那句我懂"], 0
+
+    monkeypatch.setattr(ai_generator, "generate_contents", fake_generate_contents)
+
+    ai_generator.generate_group_messages(
+        None,
+        1,
+        {
+            "topic_hint": "日常闲聊",
+            "topic_thread": "真人A: 今天只聊停车位",
+            "topic_plan": "只围绕停车位",
+            "target_profile_style": "常聊装修预算",
+            "account_profiles": {"7": "只讲自己知道的上下文"},
+        },
+        count=1,
+        target_label="测试群",
+        history="真人A: 今天只聊停车位",
+    )
+
+    assert "话题脉络：\n真人A: 今天只聊停车位" in captured["requirements"]
+    assert "全站目标画像（只作风格和话题参考，不能作为具体事实来源）：\n常聊装修预算" in captured["requirements"]
+    assert "账号长期画像：\n- 账号 7: 只讲自己知道的上下文" in captured["requirements"]
+
+
+def test_group_ai_reply_prompt_layers_target_profile_as_style_not_fact(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def fake_generate_contents(_session, _tenant_id, *, requirements, **_kwargs):
+        captured["requirements"] = requirements
+        return ["这句我接一下"], 0
+
+    monkeypatch.setattr(ai_generator, "generate_contents", fake_generate_contents)
+
+    ai_generator.generate_group_reply_messages(
+        None,
+        1,
+        {
+            "topic_hint": "日常闲聊",
+            "target_profile_style": "常聊装修预算",
+        },
+        reply_targets=[{"author": "真人A", "preview": "停车位快没了", "source": "group"}],
+        target_label="测试群",
+        history="真人A: 停车位快没了",
+    )
+
+    assert "引用目标 1：作者：真人A；原文：停车位快没了；来源：group" in captured["requirements"]
+    assert "群聊上下文：\n真人A: 停车位快没了" in captured["requirements"]
+    assert "全站目标画像（只作风格和话题参考，不能作为具体事实来源）：\n常聊装修预算" in captured["requirements"]
+
+
+def test_group_ai_chat_reads_tenant_profile_without_target_identity():
+    source = Path(group_ai_chat.__file__).read_text()
+
+    assert "tenant_learning_profile_preview(session, task.tenant_id, GROUP_CHAT_SCENE)" in source
+    assert "learning_profile_preview(session, task.tenant_id, task.target_id" not in source
+    assert "target_id, GROUP_CHAT_SCENE" not in source

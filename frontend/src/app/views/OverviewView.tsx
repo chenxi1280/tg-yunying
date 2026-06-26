@@ -6,7 +6,7 @@ import type { OperationCenterSummary, OperationIssue, OperationIssueDetail, Oper
 import { StatCard, Badge, StatusBadge } from '../components/shared';
 import { riskTone } from '../utils';
 import { formatBeijingDateTime } from '../time';
-import { api } from '../../shared/api/client';
+import { api, ApiError } from '../../shared/api/client';
 import { GROUP_AI_HARD_HOURLY_MIN_MESSAGES } from './taskCenterViewModel';
 
 type ActivityPoint = NonNullable<Overview['activity_24h']>[number];
@@ -68,6 +68,11 @@ function isMessageIssue(issue?: OperationIssue | null) {
   return Boolean(issue?.source_task_id?.startsWith('message_task:') || issue?.return_to?.page === 'message-sending');
 }
 
+function errorText(error: unknown) {
+  if (error instanceof ApiError) return error.message;
+  return error instanceof Error ? error.message : String(error);
+}
+
 export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail, onOpenMessageSending, onOpenAccounts, onOpenAccountDetail, onOpenRules, onOpenRisk, canManageOperationIssues = false }: Props) {
   const [plans, setPlans] = React.useState<OperationPlan[]>([]);
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
@@ -75,12 +80,19 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   const [targetSummaries, setTargetSummaries] = React.useState<TargetRuntimeSummary[]>([]);
   const [issues, setIssues] = React.useState<OperationIssue[]>([]);
   const [operationLoading, setOperationLoading] = React.useState(false);
+  const [operationError, setOperationError] = React.useState('');
   const [issueDetail, setIssueDetail] = React.useState<OperationIssueDetail | null>(null);
   const [issueDrawerOpen, setIssueDrawerOpen] = React.useState(false);
   const [issueLoading, setIssueLoading] = React.useState(false);
   const [issueBusy, setIssueBusy] = React.useState('');
   const [issueAction, setIssueAction] = React.useState<IssueAction | null>(null);
   const [issueActionReason, setIssueActionReason] = React.useState('');
+  const activeIssueDetailId = React.useRef<string | null>(null);
+  const operationDataRequestSeq = React.useRef(0);
+  const activePlanActionKey = React.useRef('');
+  const activePlanEditSaveRequestRef = React.useRef<{ seq: number; planId: number | null; signature: string }>({ seq: 0, planId: null, signature: '' });
+  const activeImpactApplyRequestRef = React.useRef<{ seq: number; planId: number | null; signature: string }>({ seq: 0, planId: null, signature: '' });
+  const activeIssueActionRequestRef = React.useRef({ seq: 0, issueId: '', signature: '' });
   const [planBusy, setPlanBusy] = React.useState('');
   const [planPreview, setPlanPreview] = React.useState<OperationPlanPreview | null>(null);
   const [planPreviewTitle, setPlanPreviewTitle] = React.useState('');
@@ -109,27 +121,165 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
   const failureRate = totals.total ? Math.round((totals.failed * 1000) / totals.total) / 10 : 0;
   const issueTaskStage = issueDetail?.task_runtime_stage || issueDetail?.related_task_summary?.summary?.runtime_stage;
 
+  function isActiveIssueDetail(issueId: string) {
+    return activeIssueDetailId.current === issueId;
+  }
+
+  function beginOperationDataRequest() {
+    operationDataRequestSeq.current += 1;
+    return operationDataRequestSeq.current;
+  }
+
+  function isActiveOperationDataRequest(requestSeq: number) {
+    return operationDataRequestSeq.current === requestSeq;
+  }
+
+  function beginPlanAction(actionKey: string) {
+    activePlanActionKey.current = actionKey;
+    return actionKey;
+  }
+
+  function isActivePlanAction(actionKey: string) {
+    return activePlanActionKey.current === actionKey;
+  }
+
+  function planEditSavePayloadSignature(planId: number, payload: Record<string, any>) {
+    return JSON.stringify({ plan_id: planId, payload });
+  }
+
+  function impactApplyPayloadSignature(planId: number, payload: Record<string, any>) {
+    return JSON.stringify({ plan_id: planId, payload });
+  }
+
+  function issueActionPayloadSignature(issueId: string, action: IssueAction, reason: string) {
+    return JSON.stringify({ issue_id: issueId, action, reason });
+  }
+
+  function invalidatePlanEditSaveRequest() {
+    const requestSeq = activePlanEditSaveRequestRef.current.seq + 1;
+    activePlanEditSaveRequestRef.current = { seq: requestSeq, planId: null, signature: '' };
+  }
+
+  function invalidateImpactApplyRequest() {
+    const requestSeq = activeImpactApplyRequestRef.current.seq + 1;
+    activeImpactApplyRequestRef.current = { seq: requestSeq, planId: null, signature: '' };
+  }
+
+  function invalidateIssueActionRequest() {
+    const requestSeq = activeIssueActionRequestRef.current.seq + 1;
+    activeIssueActionRequestRef.current = { seq: requestSeq, issueId: '', signature: '' };
+  }
+
+  function beginPlanEditSaveRequest(planId: number, signature: string) {
+    const requestSeq = activePlanEditSaveRequestRef.current.seq + 1;
+    activePlanEditSaveRequestRef.current = { seq: requestSeq, planId, signature };
+    return requestSeq;
+  }
+
+  function beginImpactApplyRequest(planId: number, signature: string) {
+    const requestSeq = activeImpactApplyRequestRef.current.seq + 1;
+    activeImpactApplyRequestRef.current = { seq: requestSeq, planId, signature };
+    return requestSeq;
+  }
+
+  function beginIssueActionRequest(issueId: string, signature: string) {
+    const requestSeq = activeIssueActionRequestRef.current.seq + 1;
+    activeIssueActionRequestRef.current = { seq: requestSeq, issueId, signature };
+    return requestSeq;
+  }
+
+  function currentPlanEditSavePayloadSignature() {
+    if (!editingPlan) return '';
+    return planEditSavePayloadSignature(editingPlan.id, planEditPayloadFromForm(planEditForm));
+  }
+
+  function currentImpactApplyPayloadSignature() {
+    if (!impactPlan) return '';
+    return impactApplyPayloadSignature(impactPlan.id, { reason: impactReason.trim(), confirm_apply: true });
+  }
+
+  function currentIssueActionPayloadSignature() {
+    const issue = issueDetail?.issue;
+    if (!issue || !issueAction) return '';
+    return issueActionPayloadSignature(issue.id, issueAction, issueActionReason.trim());
+  }
+
+  function isCurrentPlanEditSaveRequest(requestSeq: number) {
+    return activePlanEditSaveRequestRef.current.seq === requestSeq;
+  }
+
+  function isCurrentImpactApplyRequest(requestSeq: number) {
+    return activeImpactApplyRequestRef.current.seq === requestSeq;
+  }
+
+  function isCurrentIssueActionRequest(requestSeq: number) {
+    return activeIssueActionRequestRef.current.seq === requestSeq;
+  }
+
+  function isActivePlanEditSaveRequest(planId: number, requestSeq: number, signature: string) {
+    return isCurrentPlanEditSaveRequest(requestSeq)
+      && activePlanEditSaveRequestRef.current.planId === planId
+      && activePlanEditSaveRequestRef.current.signature === signature
+      && currentPlanEditSavePayloadSignature() === signature;
+  }
+
+  function isActiveImpactApplyRequest(planId: number, requestSeq: number, signature: string) {
+    return isCurrentImpactApplyRequest(requestSeq)
+      && activeImpactApplyRequestRef.current.planId === planId
+      && activeImpactApplyRequestRef.current.signature === signature
+      && currentImpactApplyPayloadSignature() === signature;
+  }
+
+  function isActiveIssueActionRequest(issueId: string, requestSeq: number, signature: string) {
+    return isCurrentIssueActionRequest(requestSeq)
+      && isActiveIssueDetail(issueId)
+      && activeIssueActionRequestRef.current.issueId === issueId
+      && activeIssueActionRequestRef.current.signature === signature
+      && currentIssueActionPayloadSignature() === signature;
+  }
+
   React.useEffect(() => {
     void loadOperationData();
   }, []);
 
+  async function fetchOperationData(requestSeq: number) {
+    const [planRows, targetRows, centerSummary, runtimeRows, issueRows] = await Promise.all([
+      api<OperationPlan[]>('/operation-plans'),
+      api<OperationTarget[]>('/operation-targets'),
+      api<OperationCenterSummary>('/operation-center/overview'),
+      api<TargetRuntimeSummary[]>('/operation-targets/runtime-summary'),
+      api<OperationIssue[]>('/operation-issues'),
+    ]);
+    if (!isActiveOperationDataRequest(requestSeq)) return false;
+    setPlans(planRows);
+    setTargets(targetRows);
+    setOperationCenter(centerSummary);
+    setTargetSummaries(runtimeRows);
+    setIssues(issueRows);
+    return true;
+  }
+
   async function loadOperationData() {
+    const requestSeq = beginOperationDataRequest();
     setOperationLoading(true);
+    setOperationError('');
     try {
-      const [planRows, targetRows, centerSummary, runtimeRows, issueRows] = await Promise.all([
-        api<OperationPlan[]>('/operation-plans').catch(() => []),
-        api<OperationTarget[]>('/operation-targets').catch(() => []),
-        api<OperationCenterSummary>('/operation-center/overview').catch(() => overview.operation_center ?? null),
-        api<TargetRuntimeSummary[]>('/operation-targets/runtime-summary').catch(() => []),
-        api<OperationIssue[]>('/operation-issues').catch(() => []),
-      ]);
-      setPlans(planRows);
-      setTargets(targetRows);
-      setOperationCenter(centerSummary);
-      setTargetSummaries(runtimeRows);
-      setIssues(issueRows);
+      await fetchOperationData(requestSeq);
+    } catch (err) {
+      if (!isActiveOperationDataRequest(requestSeq)) return;
+      setOperationError(err instanceof Error ? err.message : String(err));
     } finally {
-      setOperationLoading(false);
+      if (isActiveOperationDataRequest(requestSeq)) setOperationLoading(false);
+    }
+  }
+
+  async function refreshOperationDataAfterAction(actionLabel: string) {
+    const requestSeq = beginOperationDataRequest();
+    try {
+      await fetchOperationData(requestSeq);
+    } catch (error) {
+      if (!isActiveOperationDataRequest(requestSeq)) return;
+      setOperationError(`运营中心数据刷新失败：${actionLabel}操作已完成，但刷新运营中心数据失败：${errorText(error)}`);
     }
   }
 
@@ -143,7 +293,8 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       void message.warning('请先在目标管理里添加运营目标');
       return;
     }
-    setPlanBusy('create');
+    const actionKey = beginPlanAction('create');
+    setPlanBusy(actionKey);
     try {
       await api<OperationPlan>('/operation-plans', {
         method: 'POST',
@@ -155,40 +306,54 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
           task_blueprints: defaultBlueprints(selectedTarget),
         }),
       });
-      await loadOperationData();
+      if (!isActivePlanAction(actionKey)) return;
       void message.success(`${selectedTarget.title} 的运营方案已创建`);
+      await refreshOperationDataAfterAction('运营方案创建');
+    } catch (error) {
+      if (!isActivePlanAction(actionKey)) return;
+      void message.error(`创建运营方案失败：${errorText(error)}`);
     } finally {
-      setPlanBusy('');
+      if (isActivePlanAction(actionKey)) setPlanBusy('');
     }
   }
 
   async function previewPlan(plan: OperationPlan) {
+    const actionKey = beginPlanAction(`${plan.id}:preview`);
     setPlanPreviewTitle(plan.name);
     setPlanPreview(null);
     setPlanPreviewOpen(true);
-    setPlanBusy(`${plan.id}:preview`);
+    setPlanBusy(actionKey);
     try {
       const result = await api<OperationPlanPreview>(`/operation-plans/${plan.id}/generate-preview`, { method: 'POST', body: JSON.stringify({}) });
+      if (!isActivePlanAction(actionKey)) return;
       setPlanPreview(result);
       void message.success(`预览生成 ${result.estimated_task_count || result.planned_tasks.length} 个任务${result.blockers.length ? `，阻塞 ${result.blockers.length} 项` : ''}`);
-      await loadOperationData();
+      await refreshOperationDataAfterAction('运营方案预览');
+    } catch (error) {
+      if (!isActivePlanAction(actionKey)) return;
+      void message.error(`生成运营方案预览失败：${errorText(error)}`);
     } finally {
-      setPlanBusy('');
+      if (isActivePlanAction(actionKey)) setPlanBusy('');
     }
   }
 
   async function generatePlanTasks(plan: OperationPlan, autoStart: boolean) {
     const busyKey = `${plan.id}:${autoStart ? 'generate' : 'draft'}`;
-    setPlanBusy(busyKey);
+    const actionKey = beginPlanAction(busyKey);
+    setPlanBusy(actionKey);
     try {
       const result = await api<OperationPlanGenerateResult>(`/operation-plans/${plan.id}/generate-tasks`, {
         method: 'POST',
         body: JSON.stringify({ auto_start: autoStart, reason: autoStart ? '运营中心生成并启动方案任务' : '运营中心生成方案草稿' }),
       });
+      if (!isActivePlanAction(actionKey)) return;
       void message.success(autoStart ? `已生成并启动 ${result.created_task_ids.length} 个关联任务` : `已生成 ${result.created_task_ids.length} 个任务草稿`);
-      await loadOperationData();
+      await refreshOperationDataAfterAction(autoStart ? '方案任务生成并启动' : '方案任务草稿生成');
+    } catch (error) {
+      if (!isActivePlanAction(actionKey)) return;
+      void message.error(`生成方案任务失败：${errorText(error)}`);
     } finally {
-      setPlanBusy('');
+      if (isActivePlanAction(actionKey)) setPlanBusy('');
     }
   }
 
@@ -203,18 +368,24 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       const ok = window.confirm(`确认归档运营方案「${plan.name}」？归档后不会继续作为日常方案入口。`);
       if (!ok) return;
     }
-    setPlanBusy(`${plan.id}:${action}`);
+    const actionKey = beginPlanAction(`${plan.id}:${action}`);
+    setPlanBusy(actionKey);
     try {
       await api<OperationPlan>(`/operation-plans/${plan.id}/${action}`, { method: 'POST', body: JSON.stringify({}) });
-      await loadOperationData();
+      if (!isActivePlanAction(actionKey)) return;
       void message.success(`运营方案已${labels[action]}`);
+      await refreshOperationDataAfterAction(`运营方案${labels[action]}`);
+    } catch (error) {
+      if (!isActivePlanAction(actionKey)) return;
+      void message.error(`运营方案${labels[action]}失败：${errorText(error)}`);
     } finally {
-      setPlanBusy('');
+      if (isActivePlanAction(actionKey)) setPlanBusy('');
     }
   }
 
   function openPlanEditor(plan: OperationPlan) {
     const taskTypes = plan.task_blueprints.map((item) => String(item.task_type || item.type || '')).filter(Boolean);
+    invalidatePlanEditSaveRequest();
     setEditingPlan(plan);
     setPlanEditForm({
       name: plan.name,
@@ -225,6 +396,11 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       task_types: taskTypes.length ? taskTypes : defaultTaskTypesForPlan(plan.target_type || 'group'),
     });
     setPlanEditOpen(true);
+  }
+
+  function closePlanEditor() {
+    invalidatePlanEditSaveRequest();
+    setPlanEditOpen(false);
   }
 
   async function savePlanEditor() {
@@ -241,42 +417,60 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       void message.warning('至少选择一个任务模板');
       return;
     }
-    setPlanBusy(`${editingPlan.id}:edit`);
+    const planId = editingPlan.id;
+    const actionKey = beginPlanAction(`${editingPlan.id}:edit`);
+    let requestSeq = 0;
+    let payloadSignature = '';
+    setPlanBusy(actionKey);
     try {
-      await api<OperationPlan>(`/operation-plans/${editingPlan.id}`, {
+      const payload = planEditPayloadFromForm(planEditForm);
+      payloadSignature = planEditSavePayloadSignature(planId, payload);
+      requestSeq = beginPlanEditSaveRequest(planId, payloadSignature);
+      await api<OperationPlan>(`/operation-plans/${planId}`, {
         method: 'PATCH',
-        body: JSON.stringify({
-          name: planEditForm.name.trim(),
-          description: planEditForm.description.trim(),
-          target_type: planEditForm.target_type,
-          status: planEditForm.status,
-          target_ids: planEditForm.target_ids,
-          task_blueprints: planEditForm.task_types.map((taskType) => ({ task_type: taskType, name: taskTypeLabel(taskType) })),
-        }),
+        body: JSON.stringify(payload),
       });
+      if (!isActivePlanAction(actionKey)) return;
+      if (!isActivePlanEditSaveRequest(planId, requestSeq, payloadSignature)) return;
       setPlanEditOpen(false);
-      await loadOperationData();
       void message.success('运营方案已保存');
+      await refreshOperationDataAfterAction('运营方案保存');
+    } catch (error) {
+      if (!isActivePlanAction(actionKey)) return;
+      if (requestSeq && !isActivePlanEditSaveRequest(planId, requestSeq, payloadSignature)) return;
+      void message.error(`保存运营方案失败：${errorText(error)}`);
     } finally {
-      setPlanBusy('');
+      if (requestSeq ? isCurrentPlanEditSaveRequest(requestSeq) : isActivePlanAction(actionKey)) setPlanBusy('');
     }
   }
 
   async function openImpactPreview(plan: OperationPlan) {
+    const actionKey = beginPlanAction(`${plan.id}:impact`);
+    invalidateImpactApplyRequest();
     setImpactPlan(plan);
     setImpactResult(null);
     setImpactReason('');
     setImpactOpen(true);
-    setPlanBusy(`${plan.id}:impact`);
+    setPlanBusy(actionKey);
     try {
-      setImpactResult(await api<OperationPlanApplyResult>(`/operation-plans/${plan.id}/apply-to-linked-tasks`, {
+      const result = await api<OperationPlanApplyResult>(`/operation-plans/${plan.id}/apply-to-linked-tasks`, {
         method: 'POST',
         body: JSON.stringify({ reason: '预览关联任务影响', confirm_apply: false }),
-      }));
-      await loadOperationData();
+      });
+      if (!isActivePlanAction(actionKey)) return;
+      setImpactResult(result);
+      await refreshOperationDataAfterAction('关联任务影响预览');
+    } catch (error) {
+      if (!isActivePlanAction(actionKey)) return;
+      void message.error(`生成关联任务影响预览失败：${errorText(error)}`);
     } finally {
-      setPlanBusy('');
+      if (isActivePlanAction(actionKey)) setPlanBusy('');
     }
+  }
+
+  function closeImpactPreview() {
+    invalidateImpactApplyRequest();
+    setImpactOpen(false);
   }
 
   async function confirmImpactApply() {
@@ -285,32 +479,63 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       void message.warning('应用到关联任务前必须填写原因');
       return;
     }
-    setPlanBusy(`${impactPlan.id}:apply`);
+    const planId = impactPlan.id;
+    const actionKey = beginPlanAction(`${impactPlan.id}:apply`);
+    let requestSeq = 0;
+    let payloadSignature = '';
+    setPlanBusy(actionKey);
     try {
-      const result = await api<OperationPlanApplyResult>(`/operation-plans/${impactPlan.id}/apply-to-linked-tasks`, {
+      const reason = impactReason.trim();
+      const payload = { reason, confirm_apply: true };
+      payloadSignature = impactApplyPayloadSignature(planId, payload);
+      requestSeq = beginImpactApplyRequest(planId, payloadSignature);
+      const result = await api<OperationPlanApplyResult>(`/operation-plans/${planId}/apply-to-linked-tasks`, {
         method: 'POST',
-        body: JSON.stringify({ reason: impactReason.trim(), confirm_apply: true }),
+        body: JSON.stringify(payload),
       });
+      if (!isActivePlanAction(actionKey)) return;
+      if (!isActiveImpactApplyRequest(planId, requestSeq, payloadSignature)) return;
       setImpactResult(result);
-      await loadOperationData();
       void message.success(`已应用 ${result.applied_task_ids.length} 个关联任务`);
+      await refreshOperationDataAfterAction('关联任务应用');
+    } catch (error) {
+      if (!isActivePlanAction(actionKey)) return;
+      if (requestSeq && !isActiveImpactApplyRequest(planId, requestSeq, payloadSignature)) return;
+      void message.error(`应用关联任务失败：${errorText(error)}`);
     } finally {
-      setPlanBusy('');
+      if (requestSeq ? isCurrentImpactApplyRequest(requestSeq) : isActivePlanAction(actionKey)) setPlanBusy('');
     }
   }
 
   async function openIssueDetail(issueId: string) {
+    activeIssueDetailId.current = issueId;
     setIssueDrawerOpen(true);
     setIssueLoading(true);
     setIssueDetail(null);
+    setIssueBusy('');
+    setIssueAction(null);
+    setIssueActionReason('');
     try {
-      setIssueDetail(await api<OperationIssueDetail>(`/operation-issues/${issueId}`));
-    } catch {
-      void message.error('读取目标异常失败');
+      const detail = await api<OperationIssueDetail>(`/operation-issues/${issueId}`);
+      if (!isActiveIssueDetail(issueId)) return;
+      setIssueDetail(detail);
+    } catch (error) {
+      if (!isActiveIssueDetail(issueId)) return;
+      void message.error(`读取目标异常失败：${errorText(error)}`);
       setIssueDrawerOpen(false);
     } finally {
-      setIssueLoading(false);
+      if (isActiveIssueDetail(issueId)) setIssueLoading(false);
     }
+  }
+
+  function closeIssueDrawer() {
+    activeIssueDetailId.current = null;
+    setIssueDrawerOpen(false);
+    setIssueDetail(null);
+    setIssueLoading(false);
+    setIssueBusy('');
+    setIssueAction(null);
+    setIssueActionReason('');
   }
 
   function openIssueAction(action: IssueAction) {
@@ -318,7 +543,14 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
       void message.warning('当前账号没有异常处理权限');
       return;
     }
+    invalidateIssueActionRequest();
     setIssueAction(action);
+    setIssueActionReason('');
+  }
+
+  function closeIssueActionModal() {
+    invalidateIssueActionRequest();
+    setIssueAction(null);
     setIssueActionReason('');
   }
 
@@ -326,27 +558,36 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
     const issue = issueDetail?.issue;
     const action = issueAction;
     if (!issue || !action) return;
+    const issueId = issue.id;
     const actionLabel = issueActionLabel(action);
     const reason = issueActionReason.trim();
     if (!reason) {
       void message.warning('需要填写处理原因');
       return;
     }
+    let requestSeq = 0;
+    let payloadSignature = '';
     setIssueBusy(action);
     try {
+      payloadSignature = issueActionPayloadSignature(issueId, action, reason);
+      requestSeq = beginIssueActionRequest(issueId, payloadSignature);
       const updated = await api<OperationIssue>(`/operation-issues/${issue.id}/${action}`, {
         method: 'POST',
         body: JSON.stringify({ reason }),
       });
+      if (!isActiveIssueDetail(issueId)) return;
+      if (!isActiveIssueActionRequest(issueId, requestSeq, payloadSignature)) return;
       setIssueDetail((current) => current ? { ...current, issue: updated } : current);
       setIssueAction(null);
       setIssueActionReason('');
-      await loadOperationData();
       void message.success(`${actionLabel}已提交`);
-    } catch {
-      void message.error(`${actionLabel}失败`);
+      await refreshOperationDataAfterAction(`异常${actionLabel}`);
+    } catch (error) {
+      if (!isActiveIssueDetail(issueId)) return;
+      if (requestSeq && !isActiveIssueActionRequest(issueId, requestSeq, payloadSignature)) return;
+      void message.error(`${actionLabel}失败：${errorText(error)}`);
     } finally {
-      setIssueBusy('');
+      if (requestSeq ? isCurrentIssueActionRequest(requestSeq) : isActiveIssueDetail(issueId)) setIssueBusy('');
     }
   }
 
@@ -499,6 +740,7 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
         title="目标工作台"
         extra={<Button size="small" icon={<RefreshCcw size={14} />} loading={operationLoading} onClick={() => void loadOperationData()}>刷新</Button>}
       >
+        {operationError && <Alert className="form-alert" type="error" showIcon message="运营中心数据刷新失败" description={operationError} />}
         <div className="operation-kpi-grid">
           <OperationKpi label="目标异常" value={operationSummary?.open_issue_count ?? 0} detail="open issue" />
           <OperationKpi label="影响目标" value={operationSummary?.affected_target_count ?? 0} detail="需要运营处理" />
@@ -607,7 +849,7 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
         title={editingPlan ? `编辑方案：${editingPlan.name}` : '编辑方案'}
         open={planEditOpen}
         size="large"
-        onClose={() => setPlanEditOpen(false)}
+        onClose={closePlanEditor}
         destroyOnHidden
         extra={<Button type="primary" loading={editingPlan ? planBusy === `${editingPlan.id}:edit` : false} onClick={() => void savePlanEditor()}>保存方案</Button>}
       >
@@ -668,7 +910,7 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
         title={impactPlan ? `关联任务影响预览：${impactPlan.name}` : '关联任务影响预览'}
         open={impactOpen}
         size="large"
-        onClose={() => setImpactOpen(false)}
+        onClose={closeImpactPreview}
         destroyOnHidden
         extra={<Button type="primary" danger loading={impactPlan ? planBusy === `${impactPlan.id}:apply` : false} disabled={!impactResult?.impact_preview?.changed_task_count} onClick={() => void confirmImpactApply()}>确认应用</Button>}
       >
@@ -772,7 +1014,7 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
         title={issueDetail?.issue ? `目标异常 ${issueDetail.issue.id}` : '目标异常'}
         open={issueDrawerOpen}
         size="large"
-        onClose={() => setIssueDrawerOpen(false)}
+        onClose={closeIssueDrawer}
         destroyOnHidden
         extra={canManageOperationIssues && issueDetail?.issue && (
           <Space>
@@ -884,10 +1126,7 @@ export default function OverviewView({ overview, onOpenTargets, onOpenTaskDetail
         cancelText="取消"
         confirmLoading={Boolean(issueBusy)}
         onOk={() => void submitIssueAction()}
-        onCancel={() => {
-          setIssueAction(null);
-          setIssueActionReason('');
-        }}
+        onCancel={closeIssueActionModal}
         destroyOnHidden
         centered
       >
@@ -1003,6 +1242,17 @@ function taskTypeLabel(value: string) {
 
 function emptyPlanEditForm(): PlanEditForm {
   return { name: '', description: '', target_type: 'group', status: 'active', target_ids: [], task_types: defaultTaskTypesForPlan('group') };
+}
+
+function planEditPayloadFromForm(form: PlanEditForm): Record<string, any> {
+  return {
+    name: form.name.trim(),
+    description: form.description.trim(),
+    target_type: form.target_type,
+    status: form.status,
+    target_ids: form.target_ids,
+    task_blueprints: form.task_types.map((taskType) => ({ task_type: taskType, name: taskTypeLabel(taskType) })),
+  };
 }
 
 function defaultTaskTypesForPlan(targetType: string) {

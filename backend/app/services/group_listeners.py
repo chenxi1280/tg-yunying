@@ -26,7 +26,6 @@ from .campaigns import approve_all_drafts, create_campaign, generate_drafts
 from .developer_apps import credentials_for_account
 from .required_channel_prompts import apply_required_channel_prompt_admission
 from .source_media import ensure_source_media_asset
-from .target_learning import record_group_learning_sample as record_target_group_learning_sample
 from .tenant_learning_samples import GROUP_CHAT_SCENE, record_group_learning_sample as record_tenant_group_learning_sample
 
 
@@ -301,8 +300,6 @@ def collect_group_context(
             content = str(snapshot.content or "").strip()
             if not content:
                 continue
-            if learning_scene:
-                record_target_group_learning_sample(session, group, snapshot, profile_scene=learning_scene)
             if _is_ignored_sender(snapshot, ignored_sender_identity):
                 continue
             if learning_scene:
@@ -494,13 +491,4 @@ def drain_group_listeners(session_factory, limit: int = 10) -> int:
     return processed
 
 
-__all__ = [
-    "apply_group_listener_accounts",
-    "drain_group_listeners",
-    "is_listener_ignored_sender",
-    "listener_account_summaries",
-    "process_group_listener",
-    "recent_context_messages",
-    "trigger_listener_auto_reply",
-    "validate_listener_accounts",
-]
+__all__ = ["apply_group_listener_accounts", "drain_group_listeners", "is_listener_ignored_sender", "listener_account_summaries", "process_group_listener", "recent_context_messages", "trigger_listener_auto_reply", "validate_listener_accounts"]

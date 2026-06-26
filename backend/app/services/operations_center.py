@@ -66,6 +66,9 @@ from app.services.operations_center_rule_sets import (
     update_rule_set_config,
 )
 
+UNRESOLVED_FAILURE_STATUSES = {"failed", "retryable_failed", "unknown_after_send"}
+
+
 def relay_attribution_csv(session: Session, tenant_id: int, *, limit: int = 5000) -> str:
     output = StringIO()
     writer = csv.writer(output)
@@ -150,85 +153,96 @@ def relay_attribution_report(session: Session, tenant_id: int, *, limit: int = 5
     ).all()
     metrics: dict[str, dict[str, Any]] = {}
     for action, task in rows:
-        payload = action.payload if isinstance(action.payload, dict) else {}
-        batch_id = str(payload.get("relay_batch_id") or "")
-        if not batch_id:
-            continue
-        original_text = str(payload.get("original_text") or "")
-        transformed_text = str(payload.get("message_text") or "")
-        material_text = original_text or transformed_text
-        fingerprint = str(payload.get("material_fingerprint") or "") or (content_fingerprint(material_text) if material_text else "")
-        if not fingerprint:
-            fingerprint = f"batch:{batch_id}"
-        metric = metrics.setdefault(
-            fingerprint,
-            {
-                "sample_text": material_text[:160],
-                "task_ids": set(),
-                "source_events": set(),
-                "targets": set(),
-                "accounts": set(),
-                "action_count": 0,
-                "success_count": 0,
-                "failed_count": 0,
-                "skipped_count": 0,
-                "pending_count": 0,
-                "retry_count": 0,
-                "last_used_at": None,
-            },
-        )
-        metric["sample_text"] = metric["sample_text"] or material_text[:160]
-        metric["task_ids"].add(task.id)
-        source_event = str(payload.get("source_event_key") or payload.get("relay_event_id") or "")
-        if source_event:
-            metric["source_events"].add(source_event)
-        target_id = payload.get("operation_target_id") or payload.get("target_group_id")
-        if target_id:
-            metric["targets"].add(str(target_id))
-        if action.account_id:
-            metric["accounts"].add(str(action.account_id))
-        metric["action_count"] += 1
-        metric["retry_count"] += int(action.retry_count or 0)
-        if action.status == "success":
-            metric["success_count"] += 1
-        elif action.status == "failed":
-            metric["failed_count"] += 1
-        elif action.status == "skipped":
-            metric["skipped_count"] += 1
-        elif action.status in {"pending", "executing"}:
-            metric["pending_count"] += 1
-        occurred_at = action.executed_at or action.scheduled_at or action.created_at
-        if occurred_at and (metric["last_used_at"] is None or occurred_at > metric["last_used_at"]):
-            metric["last_used_at"] = occurred_at
-    report_rows: list[RelayMaterialAttributionOut] = []
-    for fingerprint, metric in metrics.items():
-        action_count = int(metric["action_count"] or 0)
-        success_count = int(metric["success_count"] or 0)
-        report_rows.append(
-            RelayMaterialAttributionOut(
-                key=fingerprint,
-                material_fingerprint=fingerprint,
-                sample_text=str(metric["sample_text"] or ""),
-                task_count=len(metric["task_ids"]),
-                source_event_count=len(metric["source_events"]),
-                target_count=len(metric["targets"]),
-                account_count=len(metric["accounts"]),
-                action_count=action_count,
-                success_count=success_count,
-                failed_count=int(metric["failed_count"] or 0),
-                skipped_count=int(metric["skipped_count"] or 0),
-                pending_count=int(metric["pending_count"] or 0),
-                retry_count=int(metric["retry_count"] or 0),
-                success_rate=round(success_count * 100 / action_count, 2) if action_count else 0,
-                last_used_at=_iso(metric["last_used_at"]),
-            )
-        )
+        _touch_relay_attribution_metric(metrics, action=action, task=task)
+    report_rows = [_relay_attribution_row(fingerprint, metric) for fingerprint, metric in metrics.items()]
     report_rows.sort(key=lambda item: (item.action_count, item.last_used_at or ""), reverse=True)
     return RelayAttributionReportOut(
         total_materials=len(report_rows),
         total_source_events=sum(item.source_event_count for item in report_rows),
         total_actions=sum(item.action_count for item in report_rows),
         rows=report_rows,
+    )
+
+
+def _touch_relay_attribution_metric(metrics: dict[str, dict[str, Any]], *, action: Action, task: Task) -> None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    batch_id = str(payload.get("relay_batch_id") or "")
+    if not batch_id:
+        return
+    original_text = str(payload.get("original_text") or "")
+    transformed_text = str(payload.get("message_text") or "")
+    material_text = original_text or transformed_text
+    fingerprint = str(payload.get("material_fingerprint") or "") or (content_fingerprint(material_text) if material_text else "")
+    metric = metrics.setdefault(fingerprint or f"batch:{batch_id}", _empty_relay_attribution_metric(material_text))
+    metric["sample_text"] = metric["sample_text"] or material_text[:160]
+    metric["task_ids"].add(task.id)
+    _touch_relay_attribution_sets(metric, action=action, payload=payload)
+    metric["action_count"] += 1
+    metric["retry_count"] += int(action.retry_count or 0)
+    _add_relay_status_count(metric, action.status)
+    occurred_at = action.executed_at or action.scheduled_at or action.created_at
+    if occurred_at and (metric["last_used_at"] is None or occurred_at > metric["last_used_at"]):
+        metric["last_used_at"] = occurred_at
+
+
+def _empty_relay_attribution_metric(material_text: str) -> dict[str, Any]:
+    return {
+        "sample_text": material_text[:160],
+        "task_ids": set(),
+        "source_events": set(),
+        "targets": set(),
+        "accounts": set(),
+        "action_count": 0,
+        "success_count": 0,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "pending_count": 0,
+        "retry_count": 0,
+        "last_used_at": None,
+    }
+
+
+def _touch_relay_attribution_sets(metric: dict[str, Any], *, action: Action, payload: dict[str, Any]) -> None:
+    source_event = str(payload.get("source_event_key") or payload.get("relay_event_id") or "")
+    if source_event:
+        metric["source_events"].add(source_event)
+    target_id = payload.get("operation_target_id") or payload.get("target_group_id")
+    if target_id:
+        metric["targets"].add(str(target_id))
+    if action.account_id:
+        metric["accounts"].add(str(action.account_id))
+
+
+def _add_relay_status_count(metric: dict[str, Any], status: str) -> None:
+    if status == "success":
+        metric["success_count"] += 1
+    elif status in UNRESOLVED_FAILURE_STATUSES:
+        metric["failed_count"] += 1
+    elif status == "skipped":
+        metric["skipped_count"] += 1
+    else:
+        metric["pending_count"] += 1
+
+
+def _relay_attribution_row(fingerprint: str, metric: dict[str, Any]) -> RelayMaterialAttributionOut:
+    action_count = int(metric["action_count"] or 0)
+    success_count = int(metric["success_count"] or 0)
+    return RelayMaterialAttributionOut(
+        key=fingerprint,
+        material_fingerprint=fingerprint,
+        sample_text=str(metric["sample_text"] or ""),
+        task_count=len(metric["task_ids"]),
+        source_event_count=len(metric["source_events"]),
+        target_count=len(metric["targets"]),
+        account_count=len(metric["accounts"]),
+        action_count=action_count,
+        success_count=success_count,
+        failed_count=int(metric["failed_count"] or 0),
+        skipped_count=int(metric["skipped_count"] or 0),
+        pending_count=int(metric["pending_count"] or 0),
+        retry_count=int(metric["retry_count"] or 0),
+        success_rate=round(success_count * 100 / action_count, 2) if action_count else 0,
+        last_used_at=_iso(metric["last_used_at"]),
     )
 
 
@@ -298,12 +312,12 @@ def operation_metrics_summary(session: Session, tenant_id: int) -> OperationMetr
         Action.executed_at >= today_start,
         Action.executed_at < today_end,
     )
-    failed_actions = _count(session, Action, Action.tenant_id == tenant_id, Action.status == "failed")
+    failed_actions = _count(session, Action, Action.tenant_id == tenant_id, Action.status.in_(UNRESOLVED_FAILURE_STATUSES))
     skipped_actions = _count(session, Action, Action.tenant_id == tenant_id, Action.status == "skipped")
 
     channel_actions = _count(session, Action, Action.tenant_id == tenant_id, Action.action_type.in_(["view_message", "like_message", "post_comment"]))
     channel_success = _count(session, Action, Action.tenant_id == tenant_id, Action.action_type.in_(["view_message", "like_message", "post_comment"]), Action.status == "success")
-    channel_failed = _count(session, Action, Action.tenant_id == tenant_id, Action.action_type.in_(["view_message", "like_message", "post_comment"]), Action.status == "failed")
+    channel_failed = _count(session, Action, Action.tenant_id == tenant_id, Action.action_type.in_(["view_message", "like_message", "post_comment"]), Action.status.in_(UNRESOLVED_FAILURE_STATUSES))
 
     ai_tasks = _count(session, Task, Task.tenant_id == tenant_id, Task.type == "group_ai_chat", Task.deleted_at.is_(None))
     ai_turns = _count(session, Action, Action.tenant_id == tenant_id, Action.task_type == "group_ai_chat", Action.action_type == "send_message")
@@ -312,7 +326,7 @@ def operation_metrics_summary(session: Session, tenant_id: int) -> OperationMetr
     relay_tasks = _count(session, Task, Task.tenant_id == tenant_id, Task.type == "group_relay", Task.deleted_at.is_(None))
     relay_items = _count(session, Action, Action.tenant_id == tenant_id, Action.task_type == "group_relay", Action.action_type == "send_message")
     relay_sent = _count(session, Action, Action.tenant_id == tenant_id, Action.task_type == "group_relay", Action.status == "success")
-    relay_failed = _count(session, Action, Action.tenant_id == tenant_id, Action.task_type == "group_relay", Action.status == "failed")
+    relay_failed = _count(session, Action, Action.tenant_id == tenant_id, Action.task_type == "group_relay", Action.status.in_(UNRESOLVED_FAILURE_STATUSES))
 
     archive_count = _count(session, GroupArchive, GroupArchive.tenant_id == tenant_id)
     archived_messages = session.scalar(select(func.coalesce(func.sum(GroupArchive.message_count), 0)).where(GroupArchive.tenant_id == tenant_id)) or 0
@@ -369,7 +383,7 @@ def operation_metrics_summary(session: Session, tenant_id: int) -> OperationMetr
             _metric("ai_usage.cost", "费用", round(float(ai_cost), 6), "按模型价格累计"),
         ],
         failures=[
-            _metric("failures.actions", "失败执行项", failed_actions, "需要重试、换号或排查"),
+            _metric("failures.actions", "失败/结果未知执行项", failed_actions, "需要重试、换号、人工确认或排查"),
             _metric("failures.skipped", "跳过执行项", skipped_actions, "自动校验、上下文过期或规则过滤跳过"),
             _metric("failures.rate", "失败率", f"{_rate(failed_actions, total_actions)}%", "按全部执行项计算"),
         ],
@@ -704,7 +718,7 @@ def _task_metric_detail_text(task: Task) -> str:
 def _failure_metric_details(session: Session, tenant_id: int) -> list[OperationMetricDetailOut]:
     rows = session.scalars(
         select(Action)
-        .where(Action.tenant_id == tenant_id, Action.status.in_(["failed", "skipped"]))
+        .where(Action.tenant_id == tenant_id, Action.status.in_([*UNRESOLVED_FAILURE_STATUSES, "skipped"]))
         .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
         .limit(10)
     )

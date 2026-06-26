@@ -35,7 +35,7 @@ from app.timezone import BEIJING_TZ, as_beijing
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
-from .executors.common import quantity_jitter_bounds
+from .executors.common import quantity_jitter_bounds, stats_inc
 from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
 from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
@@ -124,6 +124,7 @@ REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS = 300
 VERIFICATION_READER_CANDIDATE_LIMIT = 5
 HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS = 300
 AI_DISPATCH_GENERATION_BATCH_SIZE = 10
+AI_DISPATCH_CANDIDATE_SHORTFALL_MESSAGE = "AI 普通发言候选不足，已跳过本批次发送"
 _ACCOUNT_SESSION_FAILURE_MARKERS = (
     "session",
     "auth key",
@@ -672,6 +673,9 @@ def _ensure_send_message_content(session: Session, action: Action, account: TgAc
         target_label=payload.target_display,
         history=payload.ai_generation_history,
     )
+    if len(contents) < len(batch):
+        stats_inc(task, "normal_candidate_shortfall_count")
+        raise AiGenerationUnavailable(AI_DISPATCH_CANDIDATE_SHORTFALL_MESSAGE)
     _store_generated_send_payloads(batch, contents, tokens)
     refreshed = SendMessagePayload.model_validate(action.payload or {})
     if not refreshed.message_text.strip():

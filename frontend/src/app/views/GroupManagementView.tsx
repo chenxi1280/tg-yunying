@@ -17,8 +17,8 @@ interface Props {
   onCreateArchive: () => void;
   onAuthorizeGroup: (status: string) => void;
   onEditGroupPolicy: () => void;
-  onOpenGroupDetail: (group: Group) => Promise<void>;
-  onOpenArchiveDetail: (archive: ArchiveItem) => Promise<void>;
+  onOpenGroupDetail: (group: Group) => Promise<boolean>;
+  onOpenArchiveDetail: (archive: ArchiveItem) => Promise<boolean>;
   onExportArchive: (archive: ArchiveItem) => Promise<void>;
   onRerunArchive: (archive: ArchiveItem) => Promise<void>;
   onOpenConfirm: (payload: ConfirmPayload) => void;
@@ -28,24 +28,30 @@ interface Props {
 function GroupCoveragePanel({ selectedGroup, groupDetail, onOpenGroupDetail, isActionPending }: Pick<Props, 'selectedGroup' | 'groupDetail' | 'onOpenGroupDetail' | 'isActionPending'>) {
   const [detailOpen, setDetailOpen] = React.useState(false);
   if (!selectedGroup) return <Card className="panel"><Empty description="暂无群聊资产" /></Card>;
-  const currentDetail = groupDetail?.group.id === selectedGroup.id ? groupDetail : null;
+  const group = selectedGroup;
+  const currentDetail = groupDetail?.group.id === group.id ? groupDetail : null;
   const accounts = currentDetail?.accounts ?? [];
+  async function openCoverageDetail() {
+    setDetailOpen(true);
+    const loaded = await onOpenGroupDetail(group);
+    if (!loaded) setDetailOpen(false);
+  }
   return (
     <>
       <Card
         className="panel"
         title="账号覆盖"
-        extra={<Button loading={isActionPending(`group:${selectedGroup.id}:detail`)} onClick={() => { setDetailOpen(true); void onOpenGroupDetail(selectedGroup); }}>查看账号覆盖</Button>}
+        extra={<Button loading={isActionPending(`group:${group.id}:detail`)} onClick={() => { void openCoverageDetail(); }}>查看账号覆盖</Button>}
       >
         <Typography.Text type="secondary">同步群后自动形成群资产，并展示账号覆盖状态。</Typography.Text>
         <div className="stats-grid compact-stats">
           <Card className="summary-card" size="small"><span>覆盖账号</span><strong>{accounts.length || '-'}</strong><p>{currentDetail ? '已读取详情' : '点击查看后读取'}</p></Card>
           <Card className="summary-card" size="small"><span>可发言</span><strong>{accounts.filter((account) => account.can_send).length || '-'}</strong><p>按账号权限统计</p></Card>
-          <Card className="summary-card" size="small"><span>监听账号</span><strong>{currentDetail?.listener_accounts.length ?? selectedGroup.listener_account_ids.length}</strong><p>用于上下文采集</p></Card>
+          <Card className="summary-card" size="small"><span>监听账号</span><strong>{currentDetail?.listener_accounts.length ?? group.listener_account_ids.length}</strong><p>用于上下文采集</p></Card>
         </div>
       </Card>
 
-      <Modal className="tg-modal large" title={`${selectedGroup.title} 账号覆盖`} open={detailOpen} width={920} footer={null} destroyOnHidden centered onCancel={() => setDetailOpen(false)}>
+      <Modal className="tg-modal large" title={`${group.title} 账号覆盖`} open={detailOpen} width={920} footer={null} destroyOnHidden centered onCancel={() => setDetailOpen(false)}>
         <List
           className="mini-list"
           dataSource={accounts}
@@ -120,23 +126,29 @@ function OperationPolicyPanel({
 function ListenerContextPanel({ selectedGroup, groupDetail, onOpenGroupDetail, isActionPending }: Pick<Props, 'selectedGroup' | 'groupDetail' | 'onOpenGroupDetail' | 'isActionPending'>) {
   const [detailOpen, setDetailOpen] = React.useState(false);
   if (!selectedGroup) return <Card className="panel"><Empty description="暂无群聊资产" /></Card>;
-  const currentDetail = groupDetail?.group.id === selectedGroup.id ? groupDetail : null;
+  const group = selectedGroup;
+  const currentDetail = groupDetail?.group.id === group.id ? groupDetail : null;
+  async function openListenerDetail() {
+    setDetailOpen(true);
+    const loaded = await onOpenGroupDetail(group);
+    if (!loaded) setDetailOpen(false);
+  }
   return (
     <>
-      <Card className="panel" title="监听上下文" extra={<Button loading={isActionPending(`group:${selectedGroup.id}:detail`)} onClick={() => { setDetailOpen(true); void onOpenGroupDetail(selectedGroup); }}>查看上下文</Button>}>
+      <Card className="panel" title="监听上下文" extra={<Button loading={isActionPending(`group:${group.id}:detail`)} onClick={() => { void openListenerDetail(); }}>查看上下文</Button>}>
         <div className="stats-grid compact-stats">
-          <Card className="summary-card" size="small"><span>监听状态</span><strong>{selectedGroup.listener_enabled ? '已启用' : '未启用'}</strong><p>{selectedGroup.listener_auto_reply_enabled ? '自动续聊' : '只采集上下文'}</p></Card>
-          <Card className="summary-card" size="small"><span>轮询间隔</span><strong>{selectedGroup.listener_interval_seconds}s</strong><p>上下文 {selectedGroup.listener_context_limit} 条</p></Card>
+          <Card className="summary-card" size="small"><span>监听状态</span><strong>{group.listener_enabled ? '已启用' : '未启用'}</strong><p>{group.listener_auto_reply_enabled ? '自动续聊' : '只采集上下文'}</p></Card>
+          <Card className="summary-card" size="small"><span>轮询间隔</span><strong>{group.listener_interval_seconds}s</strong><p>上下文 {group.listener_context_limit} 条</p></Card>
           <Card className="summary-card" size="small"><span>已读上下文</span><strong>{currentDetail?.recent_context_messages.length ?? '-'}</strong><p>{currentDetail ? '已读取详情' : '点击查看后读取'}</p></Card>
         </div>
       </Card>
 
-      <Modal className="tg-modal large" title={`${selectedGroup.title} 监听上下文`} open={detailOpen} width={920} footer={null} destroyOnHidden centered onCancel={() => setDetailOpen(false)}>
+      <Modal className="tg-modal large" title={`${group.title} 监听上下文`} open={detailOpen} width={920} footer={null} destroyOnHidden centered onCancel={() => setDetailOpen(false)}>
         <Descriptions className="detail-list" column={2} size="small" items={[
-          { key: 'enabled', label: '监听', children: <StatusBadge status={selectedGroup.listener_enabled ? '已启用' : '未配置'} /> },
-          { key: 'auto', label: '自动续聊', children: selectedGroup.listener_auto_reply_enabled ? '自动排队' : '只采集上下文' },
-          { key: 'interval', label: '轮询间隔', children: `${selectedGroup.listener_interval_seconds}s` },
-          { key: 'limit', label: '上下文条数', children: selectedGroup.listener_context_limit },
+          { key: 'enabled', label: '监听', children: <StatusBadge status={group.listener_enabled ? '已启用' : '未配置'} /> },
+          { key: 'auto', label: '自动续聊', children: group.listener_auto_reply_enabled ? '自动排队' : '只采集上下文' },
+          { key: 'interval', label: '轮询间隔', children: `${group.listener_interval_seconds}s` },
+          { key: 'limit', label: '上下文条数', children: group.listener_context_limit },
         ]} />
         <div className="detail-columns">
           <List

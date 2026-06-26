@@ -49,10 +49,50 @@ def test_sensitive_read_routes_have_explicit_least_privilege_rules():
     assert required_permission("GET", "/api/rules/relay-attribution/report") == ("rules.view",)
 
 
+def test_auth_change_password_route_exists_for_frontend_self_service_flow():
+    auth_router = (PROJECT_ROOT / "backend/app/api/routers/auth.py").read_text()
+    auth_actions = (PROJECT_ROOT / "frontend/src/app/context/authActions.ts").read_text()
+
+    assert "api<CurrentUser>('/auth/change-password'" in auth_actions
+    assert '@router.post("/api/auth/change-password"' in auth_router
+    assert "AuthChangePasswordRequest" in auth_router
+    assert "verify_password" in auth_router
+
+
 def test_operation_metrics_prd_reports_and_export_routes_use_usage_permission():
     assert required_permission("GET", "/api/operation-metrics/summary") == ("usage.view",)
     assert required_permission("GET", "/api/operation-metrics/reports") == ("usage.view",)
     assert required_permission("POST", "/api/operation-metrics/export") == ("usage.export",)
+
+
+def test_system_and_legacy_task_write_routes_have_backend_permission_rules():
+    assert required_permission("PATCH", "/api/tenant-group-rescue-settings") == ("system.manage",)
+    assert required_permission("GET", "/api/tenant-notification-settings") == ("system.view",)
+    assert required_permission("GET", "/api/tenant-group-rescue-settings") == ("system.view",)
+    assert required_permission("GET", "/api/operation-tasks") == ("tasks.view",)
+    assert required_permission("GET", "/api/operation-task-attempts") == ("tasks.view",)
+    assert required_permission("GET", "/api/manual-operation-records") == ("tasks.view",)
+    assert required_permission("POST", "/api/operation-tasks") == ("tasks.manage",)
+    assert required_permission("POST", "/api/operation-tasks/123/dispatch") == ("tasks.manage",)
+    assert required_permission("POST", "/api/operation-tasks/123/retry") == ("tasks.manage",)
+    assert required_permission("POST", "/api/operation-tasks/123/cancel") == ("tasks.manage",)
+    assert required_permission("GET", "/api/review-queue") == ("tasks.view",)
+    assert required_permission("POST", "/api/review/abc/approve") == ("tasks.manage",)
+    assert required_permission("POST", "/api/review/abc/reject") == ("tasks.manage",)
+
+
+def test_legacy_campaign_routes_use_message_sending_permissions():
+    assert required_permission("GET", "/api/campaigns") == ("message_sending.view",)
+    assert required_permission("GET", "/api/campaigns/123/detail") == ("message_sending.view",)
+    assert required_permission("GET", "/api/ai-drafts") == ("message_sending.view",)
+    assert required_permission("POST", "/api/campaigns") == ("message_sending.manage",)
+    assert required_permission("POST", "/api/campaigns/recommend-accounts") == ("message_sending.manage",)
+    assert required_permission("POST", "/api/campaigns/123/generate-drafts") == ("message_sending.manage",)
+    assert required_permission("POST", "/api/campaigns/123/approve-all") == ("message_sending.manage",)
+    assert required_permission("POST", "/api/campaigns/123/cancel") == ("message_sending.manage",)
+    assert required_permission("POST", "/api/ai-drafts/123/approve") == ("message_sending.manage",)
+    assert required_permission("PATCH", "/api/ai-drafts/123") == ("message_sending.manage",)
+    assert required_permission("POST", "/api/ai-drafts/123/reject") == ("message_sending.manage",)
 
 
 def test_target_profile_routes_use_top_level_permissions_and_old_routes_are_removed():

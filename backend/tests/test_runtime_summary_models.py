@@ -71,6 +71,41 @@ def test_account_runtime_summary_uses_security_snapshot_and_security_retry() -> 
     assert any("外部登录设备" in reason for reason in summary.score_reasons)
 
 
+def test_task_runtime_summary_uses_unknown_after_send_as_latest_failure() -> None:
+    now = _now()
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=31, tenant_id=1, target_type="group", tg_peer_id="-10031", title="异常群", can_send=True))
+        task = Task(
+            id="task-runtime-unknown",
+            tenant_id=1,
+            name="结果未知任务",
+            type="group_ai_chat",
+            status="running",
+            type_config={"target_operation_target_id": 31},
+        )
+        session.add(task)
+        session.add(
+            Action(
+                id="action-runtime-unknown",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="send_message",
+                status="unknown_after_send",
+                scheduled_at=now,
+                executed_at=now,
+                result={"error_code": "unknown_after_send", "error_message": "已进入 Gateway 调用边界但本地结果未知"},
+            )
+        )
+        session.commit()
+
+        summary = refresh_task_summary(session, task)
+
+    assert summary.pending_count == 1
+    assert summary.latest_failure_type == "unknown_after_send"
+
+
 def test_account_runtime_summary_surfaces_recent_risk_preflight_result() -> None:
     now = _now()
     with _sqlite_session() as session:

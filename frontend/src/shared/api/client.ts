@@ -2,13 +2,43 @@ export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000/
 export const API_ORIGIN = API_BASE.replace(/\/api$/, '');
 export const AUTH_EXPIRED_EVENT = 'tg-ops-auth-expired';
 
+function apiDetailMessage(detail: unknown) {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item: any) => {
+      const path = Array.isArray(item.loc) ? item.loc.join('.') : String(item.loc ?? '');
+      const message = item.msg ?? JSON.stringify(item);
+      return path ? `${path}: ${message}` : message;
+    }).join('；');
+  }
+  if (detail && typeof detail === 'object') {
+    const record = detail as Record<string, unknown>;
+    const message = String(record.message ?? record.failure_detail ?? '');
+    const traceId = String(record.trace_id ?? '');
+    if (message && traceId) return `${message}（trace_id: ${traceId}）`;
+    return message || '';
+  }
+  return '';
+}
+
+function apiErrorMessage(status: number, body: string) {
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    const detailMessage = apiDetailMessage(parsed.detail);
+    if (detailMessage) return detailMessage;
+  } catch {
+    // Fall back to the raw response body below.
+  }
+  return body || `HTTP ${status}`;
+}
+
 /** 结构化 API 错误，包含 HTTP 状态码和响应正文。 */
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
     public readonly body: string,
   ) {
-    super(`${status}: ${body}`);
+    super(apiErrorMessage(status, body));
     this.name = 'ApiError';
   }
 }
@@ -43,6 +73,15 @@ function notifyAuthExpired(status: number, body: string): void {
   window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT, { detail: { status, body } }));
 }
 
+export async function apiErrorFromResponse(response: Response): Promise<ApiError> {
+  const text = await response.text().catch(() => '');
+  if (isAuthExpiredResponse(response.status, text)) {
+    notifyAuthExpired(response.status, text);
+    return new AuthExpiredError(response.status, text);
+  }
+  return new ApiError(response.status, text);
+}
+
 export async function api<T>(path: string, options?: ApiRequestOptions): Promise<T> {
   return (await apiWithMeta<T>(path, options)).data;
 }
@@ -64,12 +103,7 @@ export async function apiWithMeta<T>(path: string, options?: ApiRequestOptions):
       ...fetchOptions,
     });
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      if (isAuthExpiredResponse(response.status, text)) {
-        notifyAuthExpired(response.status, text);
-        throw new AuthExpiredError(response.status, text);
-      }
-      throw new ApiError(response.status, text);
+      throw await apiErrorFromResponse(response);
     }
     if (response.status === 204) {
       return { data: undefined as T, headers: response.headers, status: response.status };

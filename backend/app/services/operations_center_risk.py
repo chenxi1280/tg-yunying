@@ -12,6 +12,8 @@ from app.services._common import _as_utc, _now
 from app.services.operations_center_defaults import ACTIVE_TASK_STATUSES
 from app.services.operations_center_utils import iso as _iso
 
+RISK_ACTION_STATUSES = {"failed", "skipped", "unknown_after_send"}
+
 
 def _metric(key: str, label: str, value: int | float | str, detail: str = "", status: str = "") -> MetricBucketOut:
     return MetricBucketOut(key=key, label=label, value=value, detail=detail, status=status)
@@ -204,7 +206,7 @@ def _task_has_rate_limit(task: Task) -> bool:
 def _risk_action_counts(session: Session, tenant_id: int) -> dict[str, int]:
     content = 0
     rate = 0
-    for action in _recent_failed_or_skipped_actions(session, tenant_id, limit=5000):
+    for action in _recent_risk_actions(session, tenant_id, limit=5000):
         text = _risk_action_text(action)
         if _looks_like_content_risk(text):
             content += 1
@@ -296,11 +298,11 @@ def _is_stale_heartbeat(last_seen_at: datetime, cutoff: datetime) -> bool:
 
 def _recent_risk_action_details(session: Session, tenant_id: int) -> list[OperationMetricDetailOut]:
     details: list[OperationMetricDetailOut] = []
-    for action in _recent_failed_or_skipped_actions(session, tenant_id, limit=20):
+    for action in _recent_risk_actions(session, tenant_id, limit=20):
         text = _risk_action_text(action)
-        if not (_looks_like_content_risk(text) or _looks_like_rate_risk(text)):
+        category = _risk_action_category(action, text)
+        if not category:
             continue
-        category = "内容拦截" if _looks_like_content_risk(text) else "频控拦截"
         details.append(
             _metric_detail(
                 f"risk:action:{action.id}",
@@ -315,15 +317,25 @@ def _recent_risk_action_details(session: Session, tenant_id: int) -> list[Operat
     return details[:10]
 
 
-def _recent_failed_or_skipped_actions(session: Session, tenant_id: int, *, limit: int) -> list[Action]:
+def _recent_risk_actions(session: Session, tenant_id: int, *, limit: int) -> list[Action]:
     return list(
         session.scalars(
             select(Action)
-            .where(Action.tenant_id == tenant_id, Action.status.in_(["failed", "skipped"]))
+            .where(Action.tenant_id == tenant_id, Action.status.in_(RISK_ACTION_STATUSES))
             .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
             .limit(limit)
         )
     )
+
+
+def _risk_action_category(action: Action, text: str) -> str:
+    if action.status == "unknown_after_send":
+        return "结果未知"
+    if _looks_like_content_risk(text):
+        return "内容拦截"
+    if _looks_like_rate_risk(text):
+        return "频控拦截"
+    return ""
 
 
 def _risk_action_text(action: Action) -> str:

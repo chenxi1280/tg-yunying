@@ -35,10 +35,6 @@ function auditQuery(auditFilters: AuditFilters) {
   return query ? `/audit-logs?${query}` : '/audit-logs';
 }
 
-function settledValue<T>(result: PromiseSettledResult<T>, fallback: T): T {
-  return result.status === 'fulfilled' ? result.value : fallback;
-}
-
 const ACCOUNT_SNAPSHOT_PAGE_SIZE = 200;
 const FIRST_ACCOUNT_PAGE = 1;
 
@@ -121,7 +117,7 @@ function emptySnapshot(me: CurrentUser, runtime: RuntimeConfig): AppSnapshot {
 }
 
 export async function loadContentResources(): Promise<ContentResourceSnapshot> {
-  const results = await Promise.allSettled([
+  const [materials, materialCacheHealth, materialCacheConfig, materialImports, contentKeywordRules] = await Promise.all([
     api<Material[]>('/materials'),
     api<MaterialCacheHealth>('/materials/cache/health'),
     api<MaterialCacheConfig>('/materials/cache/config'),
@@ -129,11 +125,11 @@ export async function loadContentResources(): Promise<ContentResourceSnapshot> {
     api<ContentKeywordRule[]>('/content-keyword-rules'),
   ]);
   return {
-    materials: settledValue(results[0], [] as Material[]),
-    materialCacheHealth: settledValue(results[1], null as MaterialCacheHealth | null),
-    materialCacheConfig: settledValue(results[2], null as MaterialCacheConfig | null),
-    materialImports: settledValue(results[3], [] as MaterialImportResult[]),
-    contentKeywordRules: settledValue(results[4], [] as ContentKeywordRule[]),
+    materials,
+    materialCacheHealth,
+    materialCacheConfig,
+    materialImports,
+    contentKeywordRules,
   };
 }
 
@@ -167,8 +163,8 @@ async function loadOverviewPage(): Promise<SnapshotPatch> {
 
 async function loadSystemPage(context: LoaderContext): Promise<SnapshotPatch> {
   const [developerApps, tenants] = await Promise.all([
-    hasPermission(context.me, 'system.view') ? api<DeveloperApp[]>('/developer-apps').catch(() => []) : [],
-    hasPermission(context.me, 'system.view') ? api<Tenant[]>('/tenants').catch(() => []) : [],
+    hasPermission(context.me, 'system.view') ? api<DeveloperApp[]>('/developer-apps') : [],
+    hasPermission(context.me, 'system.view') ? api<Tenant[]>('/tenants') : [],
   ]);
   return { developerApps, tenants };
 }
@@ -177,15 +173,15 @@ async function loadMessagePage(context: LoaderContext): Promise<SnapshotPatch> {
   const [accounts, contentResources, tasks] = await Promise.all([
     loadAccountList(context.selectedPoolId),
     loadContentResources(),
-    loadMessageTasks(context.taskStatusFilter).catch(() => []),
+    loadMessageTasks(context.taskStatusFilter),
   ]);
   return { accounts, contentResources, tasks };
 }
 
 async function loadGroupPage(): Promise<SnapshotPatch> {
   const [groups, archives] = await Promise.all([
-    api<Group[]>('/groups').catch(() => []),
-    loadArchives().catch(() => []),
+    api<Group[]>('/groups'),
+    loadArchives(),
   ]);
   return { groups, archives };
 }
@@ -218,7 +214,7 @@ export async function loadAppSnapshot({
   auditFilters: AuditFilters;
 }): Promise<AppSnapshot> {
   const me = await api<CurrentUser>('/auth/me');
-  const runtime = await api<RuntimeConfig>('/config/runtime').catch(() => ({} as RuntimeConfig));
+  const runtime = await api<RuntimeConfig>('/config/runtime');
   const loader = VIEW_RESOURCE_LOADERS[activeView];
   const patch = loader ? await loader({ me, selectedPoolId, taskStatusFilter, auditFilters }) : {};
   return { ...emptySnapshot(me, runtime), ...patch };

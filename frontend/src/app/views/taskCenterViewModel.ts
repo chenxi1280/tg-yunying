@@ -156,26 +156,7 @@ export function errorMessage(error: unknown) {
     if (error.status === 408) {
       return '请求超时，服务可能仍在处理，已刷新任务列表，请确认是否已创建后再重试。';
     }
-    try {
-      const parsed = JSON.parse(error.body) as { detail?: unknown };
-      if (typeof parsed.detail === 'string') return parsed.detail;
-      if (parsed.detail && typeof parsed.detail === 'object' && !Array.isArray(parsed.detail)) {
-        const detail = parsed.detail as Record<string, unknown>;
-        const message = String(detail.message ?? detail.failure_detail ?? error.body);
-        const traceId = String(detail.trace_id ?? '');
-        return traceId ? `${message}（trace_id: ${traceId}）` : message;
-      }
-      if (Array.isArray(parsed.detail)) {
-        return parsed.detail.map((item: any) => {
-          const path = Array.isArray(item.loc) ? item.loc.join('.') : String(item.loc ?? '');
-          const message = item.msg ?? JSON.stringify(item);
-          return path ? `${path}: ${message}` : message;
-        }).join('；');
-      }
-    } catch {
-      return error.body || error.message;
-    }
-    return error.body || error.message;
+    return error.message;
   }
   return error instanceof Error ? error.message : String(error);
 }

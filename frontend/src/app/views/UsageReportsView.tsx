@@ -17,16 +17,30 @@ export default function UsageReportsView({ usageLedgers, usageSummary, currentUs
   const [metrics, setMetrics] = React.useState<OperationMetricsSummary | null>(null);
   const [loadingMetrics, setLoadingMetrics] = React.useState(false);
   const [metricsError, setMetricsError] = React.useState('');
+  const metricsRequestSeq = React.useRef(0);
+
+  function beginMetricsRequest() {
+    metricsRequestSeq.current += 1;
+    return metricsRequestSeq.current;
+  }
+
+  function isActiveMetricsRequest(requestSeq: number) {
+    return metricsRequestSeq.current === requestSeq;
+  }
 
   async function loadMetrics() {
+    const requestSeq = beginMetricsRequest();
     setLoadingMetrics(true);
     setMetricsError('');
     try {
-      setMetrics(await api<OperationMetricsSummary>('/operation-metrics/summary'));
+      const nextMetrics = await api<OperationMetricsSummary>('/operation-metrics/summary');
+      if (!isActiveMetricsRequest(requestSeq)) return;
+      setMetrics(nextMetrics);
     } catch (error) {
+      if (!isActiveMetricsRequest(requestSeq)) return;
       setMetricsError(error instanceof Error ? error.message : String(error));
     } finally {
-      setLoadingMetrics(false);
+      if (isActiveMetricsRequest(requestSeq)) setLoadingMetrics(false);
     }
   }
 

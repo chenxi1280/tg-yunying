@@ -31,7 +31,7 @@ interface AccountPoolDetailModalProps {
   selectedDirectContact: Contact | null;
   onClose: () => void;
   onOpenAccountCreate: (loginNow: boolean) => void;
-  onOpenAccountDetail: (account: Account) => Promise<void>;
+  onOpenAccountDetail: (account: Account) => Promise<boolean>;
   onRefreshAccountPoolDetail: () => Promise<void>;
   onStartDirectMessageToContact: (contact: Contact) => void;
   onCreateDirectMessageTask: () => Promise<void>;
@@ -243,9 +243,49 @@ export function AccountDetailModal({
   const [securityReason, setSecurityReason] = React.useState('');
   const [availabilitySummary, setAvailabilitySummary] = React.useState<AccountAvailabilitySummary | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = React.useState(false);
+  const [actionError, setActionError] = React.useState('');
+  const [detailRefreshError, setDetailRefreshError] = React.useState('');
   const [verificationContexts, setVerificationContexts] = React.useState<Record<number, VerificationChallengeContext>>({});
   const [verificationReplies, setVerificationReplies] = React.useState<Record<number, string>>({});
   const [verificationChallengeTask, setVerificationChallengeTask] = React.useState<VerificationTask | null>(null);
+  const activeAccountDetailId = React.useRef(accountDetail.account.id);
+  const activeVerificationChallengeTaskId = React.useRef<number | null>(null);
+  const activeVerificationChallengeSession = React.useRef(0);
+  activeAccountDetailId.current = accountDetail.account.id;
+
+  function isActiveAccountDetail(accountId: number) {
+    return activeAccountDetailId.current === accountId;
+  }
+
+  function beginVerificationChallengeSession(taskId: number) {
+    activeVerificationChallengeSession.current += 1;
+    activeVerificationChallengeTaskId.current = taskId;
+    return activeVerificationChallengeSession.current;
+  }
+
+  function isActiveVerificationChallenge(accountId: number, taskId: number, sessionId: number) {
+    return (
+      isActiveAccountDetail(accountId) &&
+      activeVerificationChallengeTaskId.current === taskId &&
+      activeVerificationChallengeSession.current === sessionId
+    );
+  }
+
+  function closeVerificationChallenge() {
+    activeVerificationChallengeSession.current += 1;
+    activeVerificationChallengeTaskId.current = null;
+    setVerificationChallengeTask(null);
+  }
+
+  React.useEffect(() => {
+    setAvailabilitySummary(null);
+    setSecurityDetail(null);
+    setActionError('');
+    setDetailRefreshError('');
+    setAvailabilityLoading(false);
+    setSecurityLoading(false);
+    closeVerificationChallenge();
+  }, [accountDetail.account.id]);
 
   React.useEffect(() => {
     setManualTargetId((current) => current ?? accountDetail.operation_targets[0]?.id ?? null);
@@ -263,53 +303,105 @@ export function AccountDetailModal({
   }, [accountDetail.account.id, accountDetailTab]);
 
   async function loadAvailabilitySummary() {
+    const accountId = accountDetail.account.id;
     setAvailabilityLoading(true);
+    setActionError('');
     try {
-      setAvailabilitySummary(await api<AccountAvailabilitySummary>(`/tg-accounts/${accountDetail.account.id}/availability`));
+      const summary = await api<AccountAvailabilitySummary>(`/tg-accounts/${accountId}/availability`);
+      if (!isActiveAccountDetail(accountId)) return;
+      setAvailabilitySummary(summary);
+    } catch (error) {
+      if (!isActiveAccountDetail(accountId)) return;
+      setActionError(error instanceof Error ? error.message : '读取账号可用性失败');
     } finally {
-      setAvailabilityLoading(false);
+      if (isActiveAccountDetail(accountId)) setAvailabilityLoading(false);
     }
   }
 
   async function rebuildAvailabilitySummary() {
+    const accountId = accountDetail.account.id;
     setAvailabilityLoading(true);
+    setActionError('');
     try {
       await api('/tg-accounts/availability/rebuild', { method: 'POST' });
-      setAvailabilitySummary(await api<AccountAvailabilitySummary>(`/tg-accounts/${accountDetail.account.id}/availability`));
+      if (!isActiveAccountDetail(accountId)) return;
+      const summary = await api<AccountAvailabilitySummary>(`/tg-accounts/${accountId}/availability`);
+      if (!isActiveAccountDetail(accountId)) return;
+      setAvailabilitySummary(summary);
+    } catch (error) {
+      if (!isActiveAccountDetail(accountId)) return;
+      setActionError(error instanceof Error ? error.message : '重算账号可用性失败');
     } finally {
-      setAvailabilityLoading(false);
+      if (isActiveAccountDetail(accountId)) setAvailabilityLoading(false);
     }
   }
 
-  async function loadVerificationContext(task: VerificationTask) {
-    const context = await onLoadVerificationChallengeContext(task);
-    setVerificationContexts((current) => ({ ...current, [task.id]: context }));
+  async function loadVerificationContext(task: VerificationTask, sessionId: number) {
+    const accountId = accountDetail.account.id;
+    const taskId = task.id;
+    try {
+      const context = await onLoadVerificationChallengeContext(task);
+      if (!isActiveVerificationChallenge(accountId, taskId, sessionId)) return;
+      setVerificationContexts((current) => ({ ...current, [taskId]: context }));
+    } catch (error) {
+      if (!isActiveVerificationChallenge(accountId, taskId, sessionId)) return;
+      setActionError(error instanceof Error ? `读取验证聊天失败：${error.message}` : '读取验证聊天失败');
+    }
   }
 
   async function refreshVerificationContext(task: VerificationTask) {
-    const context = await onRefreshVerificationChallengeContext(task);
-    setVerificationContexts((current) => ({ ...current, [task.id]: context }));
+    const accountId = accountDetail.account.id;
+    const taskId = task.id;
+    const sessionId = beginVerificationChallengeSession(taskId);
+    setActionError('');
+    try {
+      const context = await onRefreshVerificationChallengeContext(task);
+      if (!isActiveVerificationChallenge(accountId, taskId, sessionId)) return;
+      setVerificationContexts((current) => ({ ...current, [taskId]: context }));
+    } catch (error) {
+      if (!isActiveVerificationChallenge(accountId, taskId, sessionId)) return;
+      setActionError(error instanceof Error ? `重新读取验证聊天失败：${error.message}` : '重新读取验证聊天失败');
+    }
   }
 
-  async function openVerificationChallenge(task: VerificationTask) {
+  function openVerificationChallenge(task: VerificationTask) {
+    const sessionId = beginVerificationChallengeSession(task.id);
     setVerificationChallengeTask(task);
-    await loadVerificationContext(task);
+    setActionError('');
+    void loadVerificationContext(task, sessionId);
   }
 
   async function submitVerificationReply(task: VerificationTask) {
+    const accountId = accountDetail.account.id;
+    const taskId = task.id;
+    const sessionId = activeVerificationChallengeSession.current;
     const responseText = (verificationReplies[task.id] || '').trim();
     if (!responseText) return;
-    await onSubmitVerificationTaskResponse(task, responseText);
-    setVerificationReplies((current) => ({ ...current, [task.id]: '' }));
-    setVerificationChallengeTask(null);
+    setActionError('');
+    try {
+      await onSubmitVerificationTaskResponse(task, responseText);
+      if (!isActiveVerificationChallenge(accountId, taskId, sessionId)) return;
+      setVerificationReplies((current) => ({ ...current, [taskId]: '' }));
+      closeVerificationChallenge();
+    } catch (error) {
+      if (!isActiveVerificationChallenge(accountId, taskId, sessionId)) return;
+      setActionError(error instanceof Error ? `提交验证回复失败：${error.message}` : '提交验证回复失败');
+    }
   }
 
   async function loadSecurityDetail() {
+    const accountId = accountDetail.account.id;
     setSecurityLoading(true);
+    setActionError('');
     try {
-      setSecurityDetail(await api<AccountSecurityDetail>(`/tg-accounts/${accountDetail.account.id}/security`));
+      const detail = await api<AccountSecurityDetail>(`/tg-accounts/${accountId}/security`);
+      if (!isActiveAccountDetail(accountId)) return;
+      setSecurityDetail(detail);
+    } catch (error) {
+      if (!isActiveAccountDetail(accountId)) return;
+      setActionError(error instanceof Error ? error.message : '读取账号安全状态失败');
     } finally {
-      setSecurityLoading(false);
+      if (isActiveAccountDetail(accountId)) setSecurityLoading(false);
     }
   }
 
@@ -328,12 +420,30 @@ export function AccountDetailModal({
   }
 
   async function refreshSecurityDetail() {
+    const accountId = accountDetail.account.id;
     setSecurityLoading(true);
+    setActionError('');
     try {
-      await api(`/tg-accounts/${accountDetail.account.id}/security/refresh`, { method: 'POST' });
-      setSecurityDetail(await api<AccountSecurityDetail>(`/tg-accounts/${accountDetail.account.id}/security`));
+      await api(`/tg-accounts/${accountId}/security/refresh`, { method: 'POST' });
+      if (!isActiveAccountDetail(accountId)) return;
+      const detail = await api<AccountSecurityDetail>(`/tg-accounts/${accountId}/security`);
+      if (!isActiveAccountDetail(accountId)) return;
+      setSecurityDetail(detail);
+    } catch (error) {
+      if (!isActiveAccountDetail(accountId)) return;
+      setActionError(error instanceof Error ? error.message : '刷新账号安全状态失败');
     } finally {
-      setSecurityLoading(false);
+      if (isActiveAccountDetail(accountId)) setSecurityLoading(false);
+    }
+  }
+
+  async function refreshAccountDetailAfterAction(accountId: number) {
+    setDetailRefreshError('');
+    try {
+      await onRefreshAccountDetail();
+    } catch (error) {
+      if (!isActiveAccountDetail(accountId)) return;
+      setDetailRefreshError(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -344,40 +454,67 @@ export function AccountDetailModal({
 
   async function createSingleSecurityBatch() {
     if (!securityReasonAction) return;
+    const accountId = accountDetail.account.id;
     const reason = securityReason.trim();
     if (!reason) return;
     setSecurityLoading(true);
+    setActionError('');
     try {
-      await api(`/tg-accounts/${accountDetail.account.id}/security/${securityReasonAction}`, {
+      await api(`/tg-accounts/${accountId}/security/${securityReasonAction}`, {
         method: 'POST',
         body: JSON.stringify({ reason, confirm_text: '确认' }),
       });
-      setSecurityDetail(await api<AccountSecurityDetail>(`/tg-accounts/${accountDetail.account.id}/security`));
+      if (!isActiveAccountDetail(accountId)) return;
+      const detail = await api<AccountSecurityDetail>(`/tg-accounts/${accountId}/security`);
+      if (!isActiveAccountDetail(accountId)) return;
+      setSecurityDetail(detail);
       setSecurityReasonAction(null);
       setSecurityReason('');
+    } catch (error) {
+      if (!isActiveAccountDetail(accountId)) return;
+      setActionError(error instanceof Error ? error.message : '创建账号安全批次失败');
     } finally {
-      setSecurityLoading(false);
+      if (isActiveAccountDetail(accountId)) setSecurityLoading(false);
     }
   }
 
   async function syncTargets() {
-    await api(`/tg-accounts/${accountDetail.account.id}/sync-targets`, { method: 'POST' });
-    await onRefreshAccountDetail();
+    const accountId = accountDetail.account.id;
+    setActionError('');
+    setDetailRefreshError('');
+    try {
+      await api(`/tg-accounts/${accountId}/sync-targets`, { method: 'POST' });
+      if (!isActiveAccountDetail(accountId)) return;
+      await refreshAccountDetailAfterAction(accountId);
+    } catch (error) {
+      if (!isActiveAccountDetail(accountId)) return;
+      setActionError(error instanceof Error ? error.message : '同步账号目标失败');
+    }
   }
 
   async function manualSendNow() {
-    if (!manualTargetId || !manualContent.trim()) return;
+    const accountId = accountDetail.account.id;
+    const targetId = manualTargetId;
+    const content = manualContent.trim();
+    if (!targetId || !content) return;
     setManualSending(true);
+    setActionError('');
+    setDetailRefreshError('');
     try {
-      await api(`/tg-accounts/${accountDetail.account.id}/manual-send`, {
+      await api(`/tg-accounts/${accountId}/manual-send`, {
         method: 'POST',
-        body: JSON.stringify({ target_id: manualTargetId, content: manualContent }),
+        body: JSON.stringify({ target_id: targetId, content }),
       });
+      if (!isActiveAccountDetail(accountId)) return;
       setManualContent('');
-      await onRefreshAccountDetail();
+      await refreshAccountDetailAfterAction(accountId);
+      if (!isActiveAccountDetail(accountId)) return;
       setAccountDetailTab('执行记录');
+    } catch (error) {
+      if (!isActiveAccountDetail(accountId)) return;
+      setActionError(error instanceof Error ? error.message : '手动发送失败');
     } finally {
-      setManualSending(false);
+      if (isActiveAccountDetail(accountId)) setManualSending(false);
     }
   }
 
@@ -530,6 +667,8 @@ export function AccountDetailModal({
       centered
     >
       <div className="modal-body">
+      {actionError && <Alert type="error" showIcon message={actionError} />}
+      {detailRefreshError && <Alert type="error" showIcon message="刷新账号详情失败" description={detailRefreshError} />}
       <div className="account-detail-summary">
         <div><span>账号状态</span><strong><StatusBadge status={accountDetail.account.status} /></strong></div>
         <div><span>手机号</span><strong>{accountPhone(accountDetail.account)}</strong></div>
@@ -984,7 +1123,7 @@ export function AccountDetailModal({
       open={Boolean(verificationChallengeTask)}
       width={720}
       footer={null}
-      onCancel={() => setVerificationChallengeTask(null)}
+      onCancel={closeVerificationChallenge}
       destroyOnHidden
       centered
     >
@@ -999,7 +1138,7 @@ export function AccountDetailModal({
           <Card
             size="small"
             title="最近验证聊天"
-            extra={<Button size="small" loading={isActionPending(`verification:${verificationChallengeTask.id}:context-refresh`)} onClick={() => refreshVerificationContext(verificationChallengeTask)}>重新读取</Button>}
+            extra={<Button size="small" loading={isActionPending(`verification:${verificationChallengeTask.id}:context-refresh`)} onClick={() => { void refreshVerificationContext(verificationChallengeTask); }}>重新读取</Button>}
           >
             {isActionPending(`verification:${verificationChallengeTask.id}:context`) && !verificationChallengeContext ? (
               <Typography.Text type="secondary">正在读取群内最近消息...</Typography.Text>
@@ -1040,7 +1179,7 @@ export function AccountDetailModal({
             enterButton="提交验证回复"
             value={verificationReplies[verificationChallengeTask.id] || ''}
             onChange={(event) => setVerificationReplies((current) => ({ ...current, [verificationChallengeTask.id]: event.target.value }))}
-            onSearch={() => submitVerificationReply(verificationChallengeTask)}
+            onSearch={() => { void submitVerificationReply(verificationChallengeTask); }}
             loading={isActionPending(`verification:${verificationChallengeTask.id}:submit-response`)}
             disabled={!verificationActionable(verificationChallengeTask) || !verificationContextAllowsReply(verificationChallengeContext)}
           />

@@ -1,10 +1,10 @@
 import React from 'react';
 import { Database } from 'lucide-react';
-import { Button, Card, Descriptions, Input, Modal, Select, Space, Table, Typography } from 'antd';
+import { App as AntdApp, Button, Card, Descriptions, Input, Modal, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { AuditFilters, AuditLog } from '../types';
 import { DetailModal, StatusBadge, useAntdTableControls } from '../components/shared';
-import { API_BASE } from '../../shared/api/client';
+import { API_BASE, apiErrorFromResponse } from '../../shared/api/client';
 import { formatBeijingDateTime } from '../time';
 
 interface Props {
@@ -25,7 +25,12 @@ const TARGET_TYPE_OPTIONS = [
   { value: 'audit', label: '审计' },
 ];
 
+function errorText(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export default function AuditsView({ audits, filters, setFilters, onRefresh, canExport = true }: Props) {
+  const { message } = AntdApp.useApp();
   const [selectedAudit, setSelectedAudit] = React.useState<AuditLog | null>(null);
   const [exporting, setExporting] = React.useState(false);
   const [exportReasonOpen, setExportReasonOpen] = React.useState(false);
@@ -106,7 +111,7 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh, can
       const response = await fetch(`${API_BASE}/audit-logs/export?${params.toString()}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });
-      if (!response.ok) throw new Error(await response.text());
+      if (!response.ok) throw await apiErrorFromResponse(response);
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -116,6 +121,8 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh, can
       window.URL.revokeObjectURL(url);
       setExportReasonOpen(false);
       setExportReason('');
+    } catch (error) {
+      void message.error(`导出审计记录失败：${errorText(error)}`);
     } finally {
       setExporting(false);
     }
@@ -178,7 +185,7 @@ export default function AuditsView({ audits, filters, setFilters, onRefresh, can
         cancelText="取消"
         okButtonProps={{ disabled: !exportReason.trim() }}
         confirmLoading={exporting}
-        onOk={() => void exportCsv(exportReason)}
+        onOk={() => exportCsv(exportReason)}
         onCancel={() => setExportReasonOpen(false)}
         destroyOnHidden
         centered

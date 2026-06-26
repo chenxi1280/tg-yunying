@@ -35,15 +35,7 @@ export function createModalStateActions({ message, modalApi, setModal }: ModalSt
   }
 
   function errorMessage(error: unknown) {
-    if (error instanceof ApiError) {
-      try {
-        const parsed = JSON.parse(error.body) as { detail?: unknown };
-        if (typeof parsed.detail === 'string') return parsed.detail;
-      } catch {
-        // Fall back to the raw body below.
-      }
-      return error.body || error.message;
-    }
+    if (error instanceof ApiError) return error.message;
     return error instanceof Error ? error.message : String(error);
   }
 

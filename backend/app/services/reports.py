@@ -25,6 +25,8 @@ from app.services._common import _now
 from app.services.runtime_summary import operation_center_overview
 from app.timezone import as_beijing, beijing_day_bounds
 
+UNRESOLVED_FAILURE_STATUSES = {"failed", "retryable_failed", "unknown_after_send"}
+
 
 def build_overview(session: Session, tenant_id: int | None = None) -> dict:
     account_stmt = select(func.count(TgAccount.id)).where(TgAccount.deleted_at.is_(None))
@@ -70,7 +72,7 @@ def build_overview(session: Session, tenant_id: int | None = None) -> dict:
     limited_accounts = session.scalar(select(func.count(TgAccount.id)).where(*account_filters, TgAccount.status.in_([AccountStatus.LIMITED.value, AccountStatus.NEED_RELOGIN.value]))) or 0
     readonly_groups = session.scalar(select(func.count(TgGroup.id)).where(*([TgGroup.tenant_id == tenant_id] if tenant_id is not None else []), TgGroup.auth_status != GroupAuthStatus.AUTHORIZED.value)) or 0
     listener_error_groups = session.scalar(select(func.count(TgGroup.id)).where(*([TgGroup.tenant_id == tenant_id] if tenant_id is not None else []), TgGroup.listener_last_error != "")) or 0
-    failed_actions = session.scalar(select(func.count(Action.id)).where(*action_filters, Action.status == "failed")) or 0
+    failed_actions = session.scalar(select(func.count(Action.id)).where(*action_filters, Action.status.in_(UNRESOLVED_FAILURE_STATUSES))) or 0
     pending_actions = session.scalar(select(func.count(Action.id)).where(*action_filters, Action.status.in_(["pending", "executing"]))) or 0
     rule_filters = [RuleSet.tenant_id == tenant_id] if tenant_id is not None else []
     active_rules = session.scalar(select(func.count(RuleSet.id)).where(*rule_filters, RuleSet.status == "active")) or 0
@@ -86,7 +88,7 @@ def build_overview(session: Session, tenant_id: int | None = None) -> dict:
     if listener_error_groups:
         risks.append({"level": "高", "title": f"{listener_error_groups} 个监听对象异常", "detail": "建议进入监听中心查看备用账号和最近事件。"})
     if failed_actions:
-        risks.append({"level": "中", "title": f"{failed_actions} 个执行项失败", "detail": "需要按账号、目标、内容规则或 TG API 返回逐项排查。"})
+        risks.append({"level": "中", "title": f"{failed_actions} 个执行项失败或结果未知", "detail": "需要按账号、目标、内容规则或 TG API 返回逐项排查。"})
 
     return {
         "totals": {
@@ -128,6 +130,34 @@ def _hourly_activity_24h(session: Session, tenant_id: int | None = None) -> list
     current_hour = now_value.replace(minute=0, second=0, microsecond=0)
     start_hour = current_hour - timedelta(hours=23)
     end_hour = current_hour + timedelta(hours=1)
+    buckets = _empty_hourly_buckets(start_hour)
+
+    filters = [
+        Action.executed_at.is_not(None),
+        Action.executed_at >= start_hour,
+        Action.executed_at < end_hour,
+        Action.action_type.in_(["send_message", "like_message", "post_comment"]),
+        Action.status.in_(["success", *UNRESOLVED_FAILURE_STATUSES]),
+    ]
+    if tenant_id is not None:
+        filters.append(Action.tenant_id == tenant_id)
+
+    rows = session.execute(
+        select(Action.executed_at, Action.action_type, Action.status)
+        .where(*filters)
+        .order_by(Action.executed_at.asc())
+    ).all()
+    for executed_at, action_type, status in rows:
+        _touch_hourly_bucket(buckets, executed_at=executed_at, action_type=action_type, status=status)
+
+    for bucket in buckets.values():
+        total = int(bucket["total"])
+        bucket["success_rate"] = round(int(bucket["success"]) * 100 / total, 1) if total else 0.0
+        bucket["failure_rate"] = round(int(bucket["failed"]) * 100 / total, 1) if total else 0.0
+    return list(buckets.values())
+
+
+def _empty_hourly_buckets(start_hour: datetime) -> dict[datetime, dict[str, int | float | str]]:
     buckets: dict[datetime, dict[str, int | float | str]] = {}
     for index in range(24):
         hour = start_hour + timedelta(hours=index)
@@ -142,47 +172,37 @@ def _hourly_activity_24h(session: Session, tenant_id: int | None = None) -> list
             "success_rate": 0.0,
             "failure_rate": 0.0,
         }
+    return buckets
 
-    filters = [
-        Action.executed_at.is_not(None),
-        Action.executed_at >= start_hour,
-        Action.executed_at < end_hour,
-        Action.action_type.in_(["send_message", "like_message", "post_comment"]),
-        Action.status.in_(["success", "failed"]),
-    ]
-    if tenant_id is not None:
-        filters.append(Action.tenant_id == tenant_id)
 
-    rows = session.execute(
-        select(Action.executed_at, Action.action_type, Action.status)
-        .where(*filters)
-        .order_by(Action.executed_at.asc())
-    ).all()
-    for executed_at, action_type, status in rows:
-        executed_at = as_beijing(executed_at)
-        if executed_at is None:
-            continue
-        hour = executed_at.replace(minute=0, second=0, microsecond=0)
-        bucket = buckets.get(hour)
-        if bucket is None:
-            continue
-        bucket["total"] = int(bucket["total"]) + 1
-        if status == "success":
-            bucket["success"] = int(bucket["success"]) + 1
-            if action_type == "send_message":
-                bucket["sent_messages"] = int(bucket["sent_messages"]) + 1
-            elif action_type == "like_message":
-                bucket["likes"] = int(bucket["likes"]) + 1
-            elif action_type == "post_comment":
-                bucket["comments"] = int(bucket["comments"]) + 1
-        elif status == "failed":
-            bucket["failed"] = int(bucket["failed"]) + 1
+def _touch_hourly_bucket(
+    buckets: dict[datetime, dict[str, int | float | str]],
+    *,
+    executed_at: datetime | None,
+    action_type: str,
+    status: str,
+) -> None:
+    executed_at = as_beijing(executed_at)
+    if executed_at is None:
+        return
+    bucket = buckets.get(executed_at.replace(minute=0, second=0, microsecond=0))
+    if bucket is None:
+        return
+    bucket["total"] = int(bucket["total"]) + 1
+    if status == "success":
+        _touch_hourly_success(bucket, action_type)
+    elif status in UNRESOLVED_FAILURE_STATUSES:
+        bucket["failed"] = int(bucket["failed"]) + 1
 
-    for bucket in buckets.values():
-        total = int(bucket["total"])
-        bucket["success_rate"] = round(int(bucket["success"]) * 100 / total, 1) if total else 0.0
-        bucket["failure_rate"] = round(int(bucket["failed"]) * 100 / total, 1) if total else 0.0
-    return list(buckets.values())
+
+def _touch_hourly_success(bucket: dict[str, int | float | str], action_type: str) -> None:
+    bucket["success"] = int(bucket["success"]) + 1
+    if action_type == "send_message":
+        bucket["sent_messages"] = int(bucket["sent_messages"]) + 1
+    elif action_type == "like_message":
+        bucket["likes"] = int(bucket["likes"]) + 1
+    elif action_type == "post_comment":
+        bucket["comments"] = int(bucket["comments"]) + 1
 
 
 def build_report(session: Session, tenant_id: int | None = None) -> dict:

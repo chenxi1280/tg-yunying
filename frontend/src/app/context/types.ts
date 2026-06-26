@@ -26,14 +26,10 @@ export interface AppState {
   setToken: (token: string) => void;
   currentUser: CurrentUser | null;
   setCurrentUser: (user: CurrentUser | null) => void;
-  authMode: 'login' | 'register';
-  setAuthMode: (mode: 'login' | 'register') => void;
   loginEmail: string;
   setLoginEmail: (email: string) => void;
   loginPassword: string;
   setLoginPassword: (password: string) => void;
-  registerForm: { name: string; email: string; phone: string; password: string };
-  setRegisterForm: React.Dispatch<React.SetStateAction<{ name: string; email: string; phone: string; password: string }>>;
   changePasswordForm: { current_password: string; new_password: string; confirm_password: string };
   setChangePasswordForm: React.Dispatch<React.SetStateAction<{ current_password: string; new_password: string; confirm_password: string }>>;
   captchaChallenge: CaptchaChallenge | null;
@@ -259,7 +255,7 @@ export interface AppState {
   closeModal: () => void;
   openConfirm: (payload: ConfirmPayload) => void;
   openAccountCreate: (loginNow?: boolean) => void;
-  openAccountDetail: (account: Account) => Promise<void>;
+  openAccountDetail: (account: Account) => Promise<boolean>;
   openAccountVerificationCodes: (account: Account) => Promise<void>;
   openAccountMovePool: (account: Account) => Promise<void>;
   openAccountPoolDetail: (pool: AccountPool) => Promise<void>;
@@ -281,7 +277,7 @@ export interface AppState {
   syncAccountContacts: () => Promise<void>;
   queueAccountSyncNow: () => Promise<void>;
   startDirectMessageToContact: (contact: Contact) => void;
-  openGroupDetail: (group: Group) => Promise<void>;
+  openGroupDetail: (group: Group) => Promise<boolean>;
   avatarUrl: (value: string) => string;
   openAccountProfileEdit: () => void;
   pollVerificationCodes: (reason: string) => Promise<void>;
@@ -290,7 +286,6 @@ export interface AppState {
   saveAccountProfile: () => Promise<void>;
   retryAccountProfileSync: () => Promise<void>;
   login: () => Promise<void>;
-  register: () => Promise<void>;
   changePassword: () => Promise<void>;
   logout: () => void;
   runLogin: (account: Account, method: 'code' | 'qr') => Promise<void>;
@@ -310,7 +305,7 @@ export interface AppState {
   authorizeSelectedGroup: (status: string) => Promise<void>;
   createArchive: () => Promise<void>;
   saveGroupPolicy: () => Promise<void>;
-  openArchiveDetail: (archive: ArchiveItem) => Promise<void>;
+  openArchiveDetail: (archive: ArchiveItem) => Promise<boolean>;
   exportArchive: (archive: ArchiveItem) => Promise<void>;
   rerunArchive: (archive: ArchiveItem) => Promise<void>;
   createDeveloperApp: () => Promise<void>;

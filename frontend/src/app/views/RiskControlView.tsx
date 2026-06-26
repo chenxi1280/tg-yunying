@@ -120,6 +120,12 @@ function defaultProxyAlertIgnoreUntil() {
   return new Date(Date.now() + PROXY_ALERT_IGNORE_DEFAULT_MS).toISOString().slice(0, DATETIME_LOCAL_LENGTH);
 }
 
+function errorText(exc: unknown) {
+  if (exc instanceof Error) return exc.message;
+  if (typeof exc === 'string') return exc;
+  return '未知错误';
+}
+
 interface Props {
   onOpenAccounts: () => void;
   onOpenAccountDetail?: (accountId: number, tab?: string, context?: AccountDetailContext) => void;
@@ -149,23 +155,126 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
   const [accountQuickFilter, setAccountQuickFilter] = React.useState('');
   const [policyForm] = Form.useForm<RiskGlobalPolicy>();
   const [proxyForm] = Form.useForm<ProxyFormValues>();
+  const riskControlDataRequestSeq = React.useRef(0);
+  const activeRiskControlActionKey = React.useRef('');
+  const activeRiskPolicySaveRequestRef = React.useRef({ seq: 0, signature: '' });
+  const activeRiskProxySaveRequestRef = React.useRef({ seq: 0, signature: '' });
+
+  const beginRiskControlDataRequest = React.useCallback(() => {
+    riskControlDataRequestSeq.current += 1;
+    return riskControlDataRequestSeq.current;
+  }, []);
+
+  const isActiveRiskControlDataRequest = React.useCallback((requestSeq: number) => {
+    return riskControlDataRequestSeq.current === requestSeq;
+  }, []);
+
+  function beginRiskControlAction(actionKey: string) {
+    activeRiskControlActionKey.current = actionKey;
+    return activeRiskControlActionKey.current;
+  }
+
+  function isActiveRiskControlAction(actionKey: string) {
+    return activeRiskControlActionKey.current === actionKey;
+  }
+
+  function riskPolicyPayloadSignature(payload: RiskGlobalPolicy) {
+    return JSON.stringify({
+      jitter_min_seconds: payload.jitter_min_seconds,
+      jitter_max_seconds: payload.jitter_max_seconds,
+      batch_interval_seconds: payload.batch_interval_seconds,
+      respect_send_window: payload.respect_send_window,
+      quiet_hours_enabled: payload.quiet_hours_enabled,
+      quiet_start: payload.quiet_start,
+      quiet_end: payload.quiet_end,
+      quiet_timezone: payload.quiet_timezone,
+      default_max_retries: payload.default_max_retries,
+      default_retry_delay_seconds: payload.default_retry_delay_seconds,
+      default_retry_backoff: payload.default_retry_backoff,
+      default_on_account_banned: payload.default_on_account_banned,
+      default_on_api_rate_limit: payload.default_on_api_rate_limit,
+      default_on_content_rejected: payload.default_on_content_rejected,
+      default_account_hour_limit: payload.default_account_hour_limit,
+      default_account_day_limit: payload.default_account_day_limit,
+      default_account_cooldown_seconds: payload.default_account_cooldown_seconds,
+    });
+  }
+
+  function riskProxyPayloadSignature(payload: ProxyFormValues) {
+    return JSON.stringify({
+      id: payload.id ?? null,
+      name: payload.name,
+      protocol: payload.protocol,
+      host: payload.host,
+      port: payload.port,
+      username: payload.username || '',
+      password: payload.password || '',
+      check_interval_seconds: payload.check_interval_seconds,
+      timeout_ms: payload.timeout_ms,
+      max_bound_accounts: payload.max_bound_accounts,
+      max_concurrent_sessions: payload.max_concurrent_sessions,
+      notes: payload.notes || '',
+    });
+  }
+
+  function beginRiskPolicySaveRequest(signature: string) {
+    activeRiskPolicySaveRequestRef.current = { seq: activeRiskPolicySaveRequestRef.current.seq + 1, signature };
+    return activeRiskPolicySaveRequestRef.current;
+  }
+
+  function beginRiskProxySaveRequest(signature: string) {
+    activeRiskProxySaveRequestRef.current = { seq: activeRiskProxySaveRequestRef.current.seq + 1, signature };
+    return activeRiskProxySaveRequestRef.current;
+  }
+
+  function currentRiskPolicyPayloadSignature() {
+    return riskPolicyPayloadSignature(policyForm.getFieldsValue(true) as RiskGlobalPolicy);
+  }
+
+  function currentRiskProxyPayloadSignature() {
+    return riskProxyPayloadSignature(proxyForm.getFieldsValue(true) as ProxyFormValues);
+  }
+
+  function isActiveRiskPolicySaveRequest(request: { seq: number; signature: string }) {
+    return activeRiskPolicySaveRequestRef.current.seq === request.seq;
+  }
+
+  function isActiveRiskProxySaveRequest(request: { seq: number; signature: string }) {
+    return activeRiskProxySaveRequestRef.current.seq === request.seq;
+  }
+
+  function isCurrentRiskPolicySaveRequest(request: { seq: number; signature: string }) {
+    return isActiveRiskPolicySaveRequest(request) && currentRiskPolicyPayloadSignature() === request.signature;
+  }
+
+  function isCurrentRiskProxySaveRequest(request: { seq: number; signature: string }) {
+    return isActiveRiskProxySaveRequest(request) && currentRiskProxyPayloadSignature() === request.signature;
+  }
+
+  const fetchRiskControlData = React.useCallback(async (requestSeq: number) => {
+    const [nextSummary, nextProxies] = await Promise.all([
+      api<RiskControlSummary>('/risk-control/summary'),
+      api<AccountProxy[]>('/account-proxies'),
+    ]);
+    if (!isActiveRiskControlDataRequest(requestSeq)) return false;
+    setSummary(nextSummary);
+    setProxies(nextProxies);
+    return true;
+  }, [isActiveRiskControlDataRequest]);
 
   const loadSummary = React.useCallback(async () => {
+    const requestSeq = beginRiskControlDataRequest();
     setLoading(true);
     setError('');
     try {
-      const [nextSummary, nextProxies] = await Promise.all([
-        api<RiskControlSummary>('/risk-control/summary'),
-        api<AccountProxy[]>('/account-proxies'),
-      ]);
-      setSummary(nextSummary);
-      setProxies(nextProxies);
+      await fetchRiskControlData(requestSeq);
     } catch (exc) {
+      if (!isActiveRiskControlDataRequest(requestSeq)) return;
       setError(exc instanceof Error ? exc.message : '读取风控中心失败');
     } finally {
-      setLoading(false);
+      if (isActiveRiskControlDataRequest(requestSeq)) setLoading(false);
     }
-  }, []);
+  }, [beginRiskControlDataRequest, fetchRiskControlData, isActiveRiskControlDataRequest]);
 
   React.useEffect(() => {
     void loadSummary();
@@ -272,8 +381,19 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
     }
   }
 
+  async function refreshRiskControlSummaryAfterAction(actionLabel: string) {
+    const requestSeq = beginRiskControlDataRequest();
+    try {
+      await fetchRiskControlData(requestSeq);
+    } catch (exc) {
+      if (!isActiveRiskControlDataRequest(requestSeq)) return;
+      setError(`风控中心数据刷新失败：${actionLabel}操作已完成，但刷新风控中心数据失败：${errorText(exc)}`);
+    }
+  }
+
   async function checkProxy(proxyId: number) {
     if (!canManageProxies) return;
+    const actionKey = beginRiskControlAction(`proxy-check:${proxyId}`);
     setCheckingProxyId(proxyId);
     setError('');
     try {
@@ -281,12 +401,14 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
         method: 'POST',
         body: JSON.stringify({ check_type: 'quick', reason: '风控中心手动检查' }),
       });
-      await loadSummary();
+      if (!isActiveRiskControlAction(actionKey)) return;
       void message.success('代理健康检查已完成');
+      await refreshRiskControlSummaryAfterAction('代理健康检查');
     } catch (exc) {
+      if (!isActiveRiskControlAction(actionKey)) return;
       setError(exc instanceof Error ? exc.message : '代理检查失败');
     } finally {
-      setCheckingProxyId(null);
+      if (isActiveRiskControlAction(actionKey)) setCheckingProxyId(null);
     }
   }
 
@@ -300,6 +422,8 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
   async function savePolicy() {
     if (!canManageRisk) return;
     const values = await policyForm.validateFields();
+    const signature = riskPolicyPayloadSignature(values);
+    const saveRequest = beginRiskPolicySaveRequest(signature);
     setPolicySaving(true);
     setError('');
     try {
@@ -307,13 +431,15 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
         method: 'PATCH',
         body: JSON.stringify(values),
       });
+      if (!isCurrentRiskPolicySaveRequest(saveRequest)) return;
       setPolicyOpen(false);
       void message.success('全局风控策略已保存');
-      await loadSummary();
+      await refreshRiskControlSummaryAfterAction('全局风控策略保存');
     } catch (exc) {
+      if (!isCurrentRiskPolicySaveRequest(saveRequest)) return;
       setError(exc instanceof Error ? exc.message : '保存全局策略失败');
     } finally {
-      setPolicySaving(false);
+      if (isActiveRiskPolicySaveRequest(saveRequest)) setPolicySaving(false);
     }
   }
 
@@ -359,6 +485,8 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
     if (!canManageProxies) return;
     const values = await proxyForm.validateFields();
     const isEdit = Boolean(values.id);
+    const signature = riskProxyPayloadSignature(values);
+    const saveRequest = beginRiskProxySaveRequest(signature);
     setProxySaving(true);
     setError('');
     try {
@@ -394,13 +522,15 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
         method: isEdit ? 'PATCH' : 'POST',
         body: JSON.stringify(payload),
       });
+      if (!isCurrentRiskProxySaveRequest(saveRequest)) return;
       setProxyOpen(false);
       void message.success(isEdit ? '代理资源已保存' : '代理资源已新增');
-      await loadSummary();
+      await refreshRiskControlSummaryAfterAction(isEdit ? '代理资源保存' : '代理资源新增');
     } catch (exc) {
+      if (!isCurrentRiskProxySaveRequest(saveRequest)) return;
       setError(exc instanceof Error ? exc.message : '保存代理资源失败');
     } finally {
-      setProxySaving(false);
+      if (isActiveRiskProxySaveRequest(saveRequest)) setProxySaving(false);
     }
   }
 
@@ -413,12 +543,16 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        await api(`/account-proxies/${proxy.id}/disable`, {
-          method: 'POST',
-          body: JSON.stringify({ disabled_reason: '风控中心手动禁用' }),
-        });
-        void message.success('代理已禁用');
-        await loadSummary();
+        try {
+          await api(`/account-proxies/${proxy.id}/disable`, {
+            method: 'POST',
+            body: JSON.stringify({ disabled_reason: '风控中心手动禁用' }),
+          });
+          void message.success('代理已禁用');
+          await refreshRiskControlSummaryAfterAction('代理禁用');
+        } catch (exc) {
+          setError(exc instanceof Error ? exc.message : '禁用代理失败');
+        }
       },
     });
   }
@@ -426,6 +560,7 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
   async function handleProxyAlert(alertId: number, action: ProxyAlertAction) {
     if (!canManageProxies) return;
     const key = `proxy-alert:${alertId}:${action}`;
+    beginRiskControlAction(key);
     setHandlingAction(key);
     setError('');
     try {
@@ -433,12 +568,14 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
         method: 'POST',
         body: JSON.stringify({ reason: action === 'acknowledge' ? '风控中心标记处理中' : '风控中心标记已恢复' }),
       });
+      if (!isActiveRiskControlAction(key)) return;
       void message.success(action === 'acknowledge' ? '已标记处理中' : '已标记恢复');
-      await loadSummary();
+      await refreshRiskControlSummaryAfterAction(action === 'acknowledge' ? '代理告警标记处理中' : '代理告警标记恢复');
     } catch (exc) {
+      if (!isActiveRiskControlAction(key)) return;
       setError(exc instanceof Error ? exc.message : '处理代理告警失败');
     } finally {
-      setHandlingAction('');
+      if (isActiveRiskControlAction(key)) setHandlingAction('');
     }
   }
 
@@ -462,6 +599,7 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
       return;
     }
     const key = `proxy-alert:${proxyAlertIgnoreId}:ignore`;
+    beginRiskControlAction(key);
     setHandlingAction(key);
     setError('');
     try {
@@ -469,13 +607,15 @@ export default function RiskControlView({ onOpenAccounts, onOpenAccountDetail, c
         method: 'POST',
         body: JSON.stringify({ reason, ignored_until: proxyAlertIgnoreUntil }),
       });
+      if (!isActiveRiskControlAction(key)) return;
       setProxyAlertIgnoreOpen(false);
       void message.success('代理告警已忽略');
-      await loadSummary();
+      await refreshRiskControlSummaryAfterAction('代理告警忽略');
     } catch (exc) {
+      if (!isActiveRiskControlAction(key)) return;
       setError(exc instanceof Error ? exc.message : '忽略代理告警失败');
     } finally {
-      setHandlingAction('');
+      if (isActiveRiskControlAction(key)) setHandlingAction('');
     }
   }
 

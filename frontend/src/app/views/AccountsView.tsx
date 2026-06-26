@@ -97,7 +97,9 @@ export default function AccountsView({
   const [securityDrawerMode, setSecurityDrawerMode] = React.useState<'cleanup_devices' | 'set_two_fa' | 'profile' | 'standby_session' | null>(null);
   const [refreshingSecurity, setRefreshingSecurity] = React.useState(false);
   const [availabilityLoading, setAvailabilityLoading] = React.useState(false);
+  const [error, setError] = React.useState('');
   const [availabilityByAccountId, setAvailabilityByAccountId] = React.useState<Map<number, AccountAvailabilitySummary>>(new Map());
+  const availabilityRequestSeq = React.useRef(0);
   const accountTable = useAntdTableControls<Account>({
     rows: accounts,
     placeholder: '搜索账号 / 登录有问题 / username / 手机号 / 分组 / 状态 / 代理',
@@ -154,22 +156,58 @@ export default function AccountsView({
     void loadAvailability();
   }, [accountIds]);
 
-  async function loadAvailability() {
+  function beginAvailabilityRequest() {
+    availabilityRequestSeq.current += 1;
+    return availabilityRequestSeq.current;
+  }
+
+  function isActiveAvailabilityRequest(requestSeq: number) {
+    return availabilityRequestSeq.current === requestSeq;
+  }
+
+  async function fetchAvailabilitySummary(requestSeq: number) {
+    const rows = await api<AccountAvailabilitySummary[]>('/tg-accounts/availability/summary');
+    if (!isActiveAvailabilityRequest(requestSeq)) return false;
+    setAvailabilityByAccountId(new Map(rows.map((item) => [item.account_id, item])));
+    return true;
+  }
+
+  async function loadAvailability(): Promise<boolean> {
+    const requestSeq = beginAvailabilityRequest();
     setAvailabilityLoading(true);
+    setError('');
     try {
-      const rows = await api<AccountAvailabilitySummary[]>('/tg-accounts/availability/summary');
-      setAvailabilityByAccountId(new Map(rows.map((item) => [item.account_id, item])));
+      await fetchAvailabilitySummary(requestSeq);
+      return true;
+    } catch (error) {
+      if (!isActiveAvailabilityRequest(requestSeq)) return false;
+      setError(error instanceof Error ? error.message : '读取账号可用性汇总失败');
+      return false;
     } finally {
-      setAvailabilityLoading(false);
+      if (isActiveAvailabilityRequest(requestSeq)) setAvailabilityLoading(false);
+    }
+  }
+
+  async function refreshAvailabilityAfterAction(actionLabel: string) {
+    const requestSeq = beginAvailabilityRequest();
+    try {
+      await fetchAvailabilitySummary(requestSeq);
+    } catch (error) {
+      if (!isActiveAvailabilityRequest(requestSeq)) return;
+      const reason = error instanceof Error ? error.message : String(error);
+      setError(`账号中心数据刷新失败：${actionLabel}操作已完成，但刷新账号可用性汇总失败：${reason}`);
     }
   }
 
   async function rebuildAvailability() {
     setAvailabilityLoading(true);
+    setError('');
     try {
       await api('/tg-accounts/availability/rebuild', { method: 'POST' });
-      await loadAvailability();
       void message.success('账号可用性汇总已重算');
+      await refreshAvailabilityAfterAction('账号可用性重算');
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '重算账号可用性失败');
     } finally {
       setAvailabilityLoading(false);
     }
@@ -181,9 +219,13 @@ export default function AccountsView({
       return;
     }
     setRefreshingSecurity(true);
+    setError('');
     try {
       await Promise.all(selectedAccountIds.map((id) => api(`/tg-accounts/${id}/security/refresh`, { method: 'POST' })));
       void message.success(`已刷新 ${selectedAccountIds.length} 个账号安全状态`);
+      await refreshAvailabilityAfterAction('账号安全状态刷新');
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '刷新账号安全状态失败');
     } finally {
       setRefreshingSecurity(false);
     }
@@ -363,6 +405,7 @@ export default function AccountsView({
           action={<Button type="primary" size="small" onClick={onConfigureDeveloperApps}>去配置开发者应用</Button>}
         />
       )}
+      {error && <Alert className="sub-panel compact-panel" type="error" showIcon message={error} />}
       <Space className="pool-filter-strip" wrap>
         <Segmented
           value={selectedPoolId === '' ? 'all' : String(selectedPoolId)}

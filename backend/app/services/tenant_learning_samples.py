@@ -26,6 +26,7 @@ from app.services.tenant_target_profile import ensure_quality_rule
 GROUP_CHAT_SCENE = "group_chat"
 CHANNEL_COMMENT_SCENE = "channel_comment"
 DISCUSSION_REPLY_SCENE = "discussion_reply"
+FORBIDDEN_REASONS = {"forbidden_keyword", "coarse_language", "contains_link", "contains_contact"}
 
 
 def record_group_learning_sample(session: Session, group: TgGroup, snapshot: Any) -> TenantLearningSample | None:
@@ -220,7 +221,8 @@ def _classify_sample(
         return "rejected", 0, "managed_account", rule
     reason = _text_reject_reason(text, text_filters, forbidden)
     if reason:
-        return "rejected", 0, reason, rule
+        status, score = _text_failure_decision(reason, forbidden, rule.scoring_thresholds or {})
+        return status, score, reason, rule
     if _looks_template(text, rule.template_filters or {}):
         return "downweighted", 40, "template_like", rule
     return "accepted", 100, "", rule
@@ -250,6 +252,12 @@ def _text_reject_reason(text: str, text_filters: dict[str, Any], forbidden: dict
 def _looks_template(text: str, template_filters: dict[str, Any]) -> bool:
     phrases = [str(item).strip() for item in template_filters.get("phrases") or [] if str(item).strip()]
     return any(phrase in text for phrase in phrases)
+
+
+def _text_failure_decision(reason: str, forbidden: dict[str, Any], scoring: dict[str, Any]) -> tuple[str, int]:
+    if reason in FORBIDDEN_REASONS and forbidden.get("mode") == "downweight":
+        return "downweighted", int(scoring.get("downweighted") or 40)
+    return "rejected", 0
 
 
 def _looks_managed(username: str, sender_name: str) -> bool:

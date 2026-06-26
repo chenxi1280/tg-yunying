@@ -5,6 +5,7 @@ import { Activity, RefreshCcw, Users } from 'lucide-react';
 import { api } from '../../shared/api/client';
 import { StatCard, StatusBadge, useAntdTableControls } from '../components/shared';
 import { formatBeijingDateTime } from '../time';
+import { useListenerDetailRequestGuards, useListenerSummaryRequestGuards } from './listenerCenterRequestGuards';
 
 type ListenerRow = {
   key: string;
@@ -94,16 +95,25 @@ export default function ListenerCenterView({ canManageListeners = false, onOpenT
   const [resetReason, setResetReason] = React.useState('');
   const [resetConfirmText, setResetConfirmText] = React.useState('');
   const [error, setError] = React.useState('');
+  const requestGuards = useListenerSummaryRequestGuards();
+  const detailRequestGuards = useListenerDetailRequestGuards();
+  const resetWatermarkSessionRef = React.useRef({ key: '', seq: 0 });
 
   async function load() {
+    const requestSeq = requestGuards.beginSummaryRequest();
+    const actionSeq = requestGuards.currentSummaryActionSeq();
+    const activeLoadRequestSeq = requestGuards.beginLoadRequest();
     setLoading(true);
     setError('');
     try {
-      setSummary(await api<ListenerSummary>('/listeners/summary'));
+      const nextSummary = await api<ListenerSummary>('/listeners/summary');
+      if (!requestGuards.isActiveSummaryRequest(requestSeq, actionSeq)) return;
+      setSummary(nextSummary);
     } catch (err) {
+      if (!requestGuards.isActiveSummaryRequest(requestSeq, actionSeq)) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (requestGuards.isActiveLoadRequest(activeLoadRequestSeq)) setLoading(false);
     }
   }
 
@@ -115,74 +125,97 @@ export default function ListenerCenterView({ canManageListeners = false, onOpenT
 
   async function switchListener(row: ListenerRow) {
     if (!row.backup_account) return;
+    const summaryActionSeq = requestGuards.beginSummaryAction();
+    const actionRequestSeq = requestGuards.beginActionRequest();
     setSwitchingKey(row.key);
     setError('');
     try {
       const [, rawId] = row.key.split(':');
-      setSummary(await api<ListenerSummary>(`/listeners/${row.object_type}/${rawId}/switch`, { method: 'POST', body: JSON.stringify({ backup_account_id: row.backup_account.id }) }));
+      const nextSummary = await api<ListenerSummary>(`/listeners/${row.object_type}/${rawId}/switch`, { method: 'POST', body: JSON.stringify({ backup_account_id: row.backup_account.id }) });
+      if (!requestGuards.isActiveSummaryAction(summaryActionSeq)) return;
+      setSummary(nextSummary);
     } catch (err) {
+      if (!requestGuards.isActiveSummaryAction(summaryActionSeq)) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSwitchingKey('');
+      if (requestGuards.isActiveActionRequest(actionRequestSeq)) setSwitchingKey('');
     }
   }
 
   async function loadListenerEvents(row: ListenerRow) {
+    const detailRequestSeq = detailRequestGuards.beginDetailRequest();
     setDetailLoadingKey(`${row.key}:events`);
     setError('');
     try {
       const [, rawId] = row.key.split(':');
       const rows = await api<ListenerEvent[]>(`/listeners/${row.object_type}/${rawId}/events?limit=100`);
+      if (!detailRequestGuards.isActiveDetailRequest(detailRequestSeq)) return;
       setEventRows((current) => ({ ...current, [row.key]: rows }));
     } catch (err) {
+      if (!detailRequestGuards.isActiveDetailRequest(detailRequestSeq)) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setDetailLoadingKey('');
+      if (detailRequestGuards.isActiveDetailRequest(detailRequestSeq)) setDetailLoadingKey('');
     }
   }
 
   async function loadListenerErrors(row: ListenerRow) {
+    const detailRequestSeq = detailRequestGuards.beginDetailRequest();
     setDetailLoadingKey(`${row.key}:errors`);
     setError('');
     try {
       const [, rawId] = row.key.split(':');
       const rows = await api<ListenerError[]>(`/listeners/${row.object_type}/${rawId}/errors`);
+      if (!detailRequestGuards.isActiveDetailRequest(detailRequestSeq)) return;
       setErrorRows((current) => ({ ...current, [row.key]: rows }));
     } catch (err) {
+      if (!detailRequestGuards.isActiveDetailRequest(detailRequestSeq)) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setDetailLoadingKey('');
+      if (detailRequestGuards.isActiveDetailRequest(detailRequestSeq)) setDetailLoadingKey('');
     }
   }
 
   function openResetWatermark(row: ListenerRow) {
+    resetWatermarkSessionRef.current = { key: row.key, seq: resetWatermarkSessionRef.current.seq + 1 };
     setResetTarget(row);
     setResetReason('');
     setResetConfirmText('');
   }
 
+  function closeResetWatermark() {
+    resetWatermarkSessionRef.current = { key: '', seq: resetWatermarkSessionRef.current.seq + 1 };
+    setResetTarget(null);
+  }
+
   async function confirmResetWatermark() {
     if (!resetTarget) return;
+    const target = resetTarget;
+    const resetSession = resetWatermarkSessionRef.current;
     const reason = resetReason.trim();
     if (!reason) {
       setError('请填写重置原因');
       return;
     }
-    setSwitchingKey(`${resetTarget.key}:reset`);
+    const summaryActionSeq = requestGuards.beginSummaryAction();
+    const actionRequestSeq = requestGuards.beginActionRequest();
+    setSwitchingKey(`${target.key}:reset`);
     setError('');
     try {
-      const [, rawId] = resetTarget.key.split(':');
-      const next = await api<ListenerSummary>(`/listeners/${resetTarget.object_type}/${rawId}/reset-watermark`, {
+      const [, rawId] = target.key.split(':');
+      const nextSummary = await api<ListenerSummary>(`/listeners/${target.object_type}/${rawId}/reset-watermark`, {
         method: 'POST',
         body: JSON.stringify({ reason, confirm_text: resetConfirmText }),
       });
-      setSummary(next);
-      setErrorRows((current) => ({ ...current, [resetTarget.key]: [] }));
-      setResetTarget(null);
+      if (!requestGuards.isActiveSummaryAction(summaryActionSeq) || resetWatermarkSessionRef.current.key !== target.key || resetWatermarkSessionRef.current.seq !== resetSession.seq) return;
+      setSummary(nextSummary);
+      setErrorRows((current) => ({ ...current, [target.key]: [] }));
+      closeResetWatermark();
     } catch (err) {
+      if (!requestGuards.isActiveSummaryAction(summaryActionSeq) || resetWatermarkSessionRef.current.key !== target.key || resetWatermarkSessionRef.current.seq !== resetSession.seq) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSwitchingKey('');
+      if (requestGuards.isActiveActionRequest(actionRequestSeq)) setSwitchingKey('');
     }
   }
 
@@ -303,7 +336,7 @@ export default function ListenerCenterView({ canManageListeners = false, onOpenT
         cancelText="取消"
         confirmLoading={Boolean(resetTarget && switchingKey === `${resetTarget.key}:reset`)}
         onOk={confirmResetWatermark}
-        onCancel={() => setResetTarget(null)}
+        onCancel={closeResetWatermark}
         destroyOnHidden
       >
         <Space direction="vertical" size={12} style={{ width: '100%' }}>

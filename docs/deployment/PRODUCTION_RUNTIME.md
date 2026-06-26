@@ -59,6 +59,8 @@ Repository variables:
 - `TGYUNYING_WEB_HOST`
 - `TGYUNYING_FRONTEND_STATIC_BASE_DIR`
 
+后端在 `APP_ENV=production` 时会拒绝默认 bootstrap 管理员密码 `admin123`，因此 `ADMIN_BOOTSTRAP_PASSWORD` / `ADMIN_PASSWORD` 必须显式设置为强随机值。
+
 生产环境不要开启 `ENABLE_EMBEDDED_WORKER`。compose 会单独启动 backend 以及 planner / dispatcher / listener / recovery / account-security / metrics worker。`account-security` worker 会先推进素材 TG 缓存再执行资料初始化，避免头像素材尚未暂存完成就更新资料；排障或扩容时也可以单独运行 `python -m app.worker --role material-cache`。
 
 worker 容器不暴露 backend API 端口，健康检查不能使用 `curl 127.0.0.1:8000/api/health`。生产 compose 使用 `python -m app.worker_health --role "$WORKER_ROLE"` 检查对应角色最近 2 分钟心跳；如果某个 worker unhealthy，先看 `worker_heartbeats`、容器日志和数据库连接，而不是先排查 backend API。

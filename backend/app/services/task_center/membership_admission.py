@@ -20,9 +20,11 @@ PHASE_TESTING_MESSAGE = "testing_message"
 PHASE_WAITING_APPROVAL = "waiting_approval"
 PHASE_FAILED = "failed"
 PHASE_COMPLETED = "completed"
-MEMBERSHIP_DONE_STATUSES = {"success", "failed", "skipped"}
-TEST_MESSAGE_DONE_STATUSES = {"success", "failed"}
-DELETE_DONE_STATUSES = {"success", "failed"}
+MEMBERSHIP_UNKNOWN_STATUS = "unknown_after_send"
+MEMBERSHIP_DONE_STATUSES = {"success", "failed", "skipped", MEMBERSHIP_UNKNOWN_STATUS}
+TEST_MESSAGE_DONE_STATUSES = {"success", "failed", MEMBERSHIP_UNKNOWN_STATUS}
+DELETE_DONE_STATUSES = {"success", "failed", MEMBERSHIP_UNKNOWN_STATUS}
+RESCUE_DONE_STATUSES = {"success", "failed", "skipped", MEMBERSHIP_UNKNOWN_STATUS}
 
 
 def lock_membership_admission_snapshot(session: Session, task: Task, now: datetime | None = None) -> list[TaskMembershipAdmissionItem]:
@@ -522,6 +524,9 @@ def _sync_test_message_item_if_done(item: TaskMembershipAdmissionItem, actions: 
     if action.status == "success" and bool((action.result or {}).get("success")):
         _mark_completed(item, action, timestamp)
         return
+    if action.status == MEMBERSHIP_UNKNOWN_STATUS:
+        _mark_unknown_after_send_waiting(item, action, timestamp)
+        return
     item.phase = PHASE_FAILED
     item.failure_type = "test_message_failed"
     item.failure_detail = str((action.result or {}).get("error_message") or (action.result or {}).get("detail") or "测试发言失败")
@@ -536,6 +541,10 @@ def _sync_delete_message_item_if_done(item: TaskMembershipAdmissionItem, actions
         item.delete_status = "deleted"
         item.failure_type = ""
         item.failure_detail = ""
+    elif action.status == MEMBERSHIP_UNKNOWN_STATUS:
+        item.delete_status = MEMBERSHIP_UNKNOWN_STATUS
+        item.failure_type = MEMBERSHIP_UNKNOWN_STATUS
+        item.failure_detail = str((action.result or {}).get("error_message") or (action.result or {}).get("detail") or "删除测试消息结果未知")
     else:
         item.delete_status = "delete_failed"
         item.failure_type = "delete_message_failed"
@@ -545,7 +554,7 @@ def _sync_delete_message_item_if_done(item: TaskMembershipAdmissionItem, actions
 
 def _sync_rescue_item_if_done(item: TaskMembershipAdmissionItem, actions: dict[str, Action], timestamp: datetime) -> None:
     action = actions.get(item.rescue_action_id or "")
-    if not action or action.status not in {"success", "failed", "skipped"}:
+    if not action or action.status not in RESCUE_DONE_STATUSES:
         return
     status, detail = rescue_action_snapshot(action)
     item.rescue_status = status
@@ -557,6 +566,9 @@ def _sync_membership_item(session: Session, task: Task, item: TaskMembershipAdmi
     if _membership_action_success(action):
         item.permission_failure_count = 0
         _mark_test_message_pending(item, timestamp)
+        return
+    if action.status == MEMBERSHIP_UNKNOWN_STATUS:
+        _mark_unknown_after_send_waiting(item, action, timestamp)
         return
     recovery = classify_membership_recovery(
         phase=_action_phase(action),
@@ -591,6 +603,15 @@ def _mark_completed(item: TaskMembershipAdmissionItem, action: Action, timestamp
     item.manual_required = False
     item.permission_failure_count = 0
     item.completed_at = timestamp
+    item.updated_at = timestamp
+
+
+def _mark_unknown_after_send_waiting(item: TaskMembershipAdmissionItem, action: Action, timestamp: datetime) -> None:
+    result = action.result if isinstance(action.result, dict) else {}
+    item.phase = PHASE_WAITING_APPROVAL
+    item.manual_required = True
+    item.failure_type = MEMBERSHIP_UNKNOWN_STATUS
+    item.failure_detail = str(result.get("error_message") or result.get("detail") or "已进入 Gateway 调用边界但本地结果未知")
     item.updated_at = timestamp
 
 

@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = ROOT_DIR.parent
+DEFAULT_BOOTSTRAP_ADMIN_PASSWORD = "admin123"
 
 for env_path in (PROJECT_ROOT / ".env", ROOT_DIR / ".env"):
     if env_path.exists():
@@ -88,12 +89,17 @@ class Settings:
                 "A random key has been generated for this session but it will change on restart. "
                 "Set SESSION_SECRET_KEY in your .env file for persistence."
             )
+        if self.app_env == "production" and self.admin_bootstrap_password.strip() in {"", DEFAULT_BOOTSTRAP_ADMIN_PASSWORD}:
+            raise ValueError(
+                "ADMIN_BOOTSTRAP_PASSWORD or ADMIN_PASSWORD must be set to a non-default value in production. "
+                "Do NOT use the default 'admin123'."
+            )
     tg_api_id: str | None = os.getenv("TG_API_ID")
     tg_api_hash: str | None = os.getenv("TG_API_HASH")
     tg_gateway_mode: str = os.getenv("TG_GATEWAY_MODE", "mock" if os.getenv("APP_ENV") == "test" else "telethon")
     admin_bootstrap_username: str = os.getenv("ADMIN_USERNAME", os.getenv("ADMIN_BOOTSTRAP_USERNAME", "admin")).strip() or "admin"
     admin_bootstrap_email: str | None = os.getenv("ADMIN_BOOTSTRAP_EMAIL")
-    admin_bootstrap_password: str = os.getenv("ADMIN_PASSWORD", os.getenv("ADMIN_BOOTSTRAP_PASSWORD", "admin123"))
+    admin_bootstrap_password: str = os.getenv("ADMIN_PASSWORD", os.getenv("ADMIN_BOOTSTRAP_PASSWORD", DEFAULT_BOOTSTRAP_ADMIN_PASSWORD))
     login_code_ttl_seconds: int = int(os.getenv("LOGIN_CODE_TTL_SECONDS", "180"))
     enable_sync_dispatch_fallback: bool = _bool_env("ENABLE_SYNC_DISPATCH_FALLBACK", True)
     enable_embedded_worker: bool = _bool_env("ENABLE_EMBEDDED_WORKER", os.getenv("APP_ENV", "development") == "development")

@@ -71,19 +71,14 @@ def refresh_task_summary(session: Session, task: Task) -> TaskRuntimeSummary:
     rows = session.execute(select(Action.status, func.count(Action.id)).where(Action.task_id == task.id).group_by(Action.status)).all()
     counts = {str(status): int(count) for status, count in rows}
     oldest_pending = session.scalar(select(func.min(Action.scheduled_at)).where(Action.task_id == task.id, Action.status.in_(PENDING_STATUSES)))
-    latest_failure = session.scalar(
-        select(Action)
-        .where(Action.task_id == task.id, Action.status == "failed")
-        .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
-        .limit(1)
-    )
+    latest_failure = _latest_unresolved_failure_action(session, task.id)
     target_id = _task_target_id(task)
     summary = _get_or_create_task_summary(session, task.tenant_id, task.id)
     summary.task_status = task.status
     summary.target_id = target_id
     summary.planned_count = sum(counts.values())
     summary.success_count = counts.get("success", 0)
-    summary.failed_count = counts.get("failed", 0)
+    summary.failed_count = sum(counts.get(status, 0) for status in UNRESOLVED_FAILURE_STATUSES)
     summary.pending_count = sum(counts.get(status, 0) for status in PENDING_STATUSES)
     summary.oldest_pending_at = oldest_pending
     summary.latest_failure_type = _failure_type(latest_failure)
@@ -117,6 +112,15 @@ def refresh_task_summary(session: Session, task: Task) -> TaskRuntimeSummary:
         if session.get(TgAccount, account_id):
             refresh_account_summary(session, task.tenant_id, account_id)
     return summary
+
+
+def _latest_unresolved_failure_action(session: Session, task_id: str) -> Action | None:
+    return session.scalar(
+        select(Action)
+        .where(Action.task_id == task_id, Action.status.in_(UNRESOLVED_FAILURE_STATUSES))
+        .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
+        .limit(1)
+    )
 
 
 def rollup_message_task_failure(session: Session, task: MessageTask) -> OperationIssue | None:
@@ -271,7 +275,7 @@ def refresh_target_summary(session: Session, tenant_id: int, target_id: int) -> 
         session.scalar(
             select(func.max(Action.executed_at)).where(
                 Action.tenant_id == tenant_id,
-                Action.status == "failed",
+                Action.status.in_(UNRESOLVED_FAILURE_STATUSES),
                 Action.task_id.in_(task_ids),
             )
         )
@@ -610,7 +614,7 @@ def get_operation_issue_detail(session: Session, tenant_id: int, issue_id: str) 
     failed_actions = list(
         session.scalars(
             select(Action)
-            .where(Action.tenant_id == tenant_id, Action.task_id == issue.source_task_id, Action.status == "failed")
+            .where(Action.tenant_id == tenant_id, Action.task_id == issue.source_task_id, Action.status.in_(UNRESOLVED_FAILURE_STATUSES))
             .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
             .limit(20)
         )
