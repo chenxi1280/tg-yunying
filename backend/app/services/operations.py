@@ -11,6 +11,7 @@ from app.models import (
     AiProvider,
     AiProviderHealthStatus,
     AccountStatus,
+    Action,
     ChannelMessage,
     ChannelMessageComment,
     FailureType,
@@ -980,10 +981,55 @@ def _create_admission_retry_task(session: Session, tenant_id: int, target: Opera
     return task
 
 
+def _running_admission_retry_task(session: Session, tenant_id: int, target: OperationTarget) -> Task | None:
+    rows = session.scalars(
+        select(Task)
+        .where(Task.tenant_id == tenant_id, Task.type == ADMISSION_RETRY_TASK_TYPE, Task.status == "running")
+        .order_by(Task.created_at.desc())
+        .limit(25)
+    )
+    return next((task for task in rows if int((task.type_config or {}).get("target_operation_target_id") or 0) == int(target.id)), None)
+
+
+def _pending_admission_retry_account_ids(session: Session, tenant_id: int, target: OperationTarget) -> set[int]:
+    rows = session.execute(
+        select(Action.account_id, Action.payload)
+        .join(Task, Task.id == Action.task_id)
+        .where(
+            Task.tenant_id == tenant_id,
+            Task.type == ADMISSION_RETRY_TASK_TYPE,
+            Task.status == "running",
+            Action.action_type == "ensure_target_membership",
+            Action.status.in_(["pending", "claiming", "executing"]),
+        )
+    )
+    account_ids: set[int] = set()
+    for account_id, payload in rows:
+        if account_id is None or not isinstance(payload, dict):
+            continue
+        if int(payload.get("channel_target_id") or 0) == int(target.id):
+            account_ids.add(int(account_id))
+    return account_ids
+
+
+def _admission_retry_task(session: Session, tenant_id: int, target: OperationTarget, accounts: list[TgAccount], actor: str, reason: str) -> Task:
+    task = _running_admission_retry_task(session, tenant_id, target)
+    if not task:
+        return _create_admission_retry_task(session, tenant_id, target, accounts, actor, reason)
+    account_ids = set(int(account_id) for account_id in (task.account_config or {}).get("account_ids", []))
+    account_ids.update(account.id for account in accounts)
+    task.account_config = {**(task.account_config or {}), "account_ids": sorted(account_ids)}
+    task.stats = {**(task.stats or {}), "admission_retry_reason": reason, "updated_by": actor, "queued_account_count": len(account_ids)}
+    return task
+
+
 def _queue_admission_retry_actions(session: Session, task: Task, target: OperationTarget, accounts: list[TgAccount]) -> int:
     payload = _admission_retry_payload(target)
+    pending_ids = _pending_admission_retry_account_ids(session, task.tenant_id, target)
     action_ids: set[str] = set()
     for account in accounts:
+        if account.id in pending_ids:
+            continue
         action = create_membership_action(session, task, account.id, _now(), payload)
         action_ids.add(action.id)
     return len(action_ids)
@@ -1005,13 +1051,14 @@ def retry_operation_target_admission(
     if not requested_ids:
         raise ValueError("no failed admission accounts")
     accounts, failure_details = _admission_retry_accounts(session, tenant_id, requested_ids)
-    retry_task = _create_admission_retry_task(session, tenant_id, target, accounts, actor, operator_reason)
+    retry_task = _admission_retry_task(session, tenant_id, target, accounts, actor, operator_reason)
     queued = _queue_admission_retry_actions(session, retry_task, target, accounts)
     summary = {
         "mode": "queued",
         "task_id": retry_task.id,
         "retried_account_count": len(accounts),
         "queued_action_count": queued,
+        "deduped_action_count": len(accounts) - queued,
         "recovered_account_count": 0,
         "failed_account_count": len(failure_details),
         "failure_details": failure_details,

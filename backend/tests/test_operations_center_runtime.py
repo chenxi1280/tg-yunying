@@ -5720,6 +5720,50 @@ def test_operation_target_admission_retry_queues_failed_accounts_and_audits(monk
     assert "failed=0" in audit_row.detail
 
 
+@pytest.mark.no_postgres
+def test_operation_target_admission_retry_reuses_running_task_and_dedupes_actions(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("admission retry must queue membership actions")
+
+    monkeypatch.setattr("app.services.operations.gateway.list_groups", fail_if_called)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1001", title="运营群", can_send=False, auth_status="只读"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="只读", can_send=False))
+        for account_id in (11, 12, 13):
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status=AccountStatus.ACTIVE.value, session_ciphertext=f"session-{account_id}"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=False, permission_label="账号无权限"))
+        session.commit()
+
+        first = retry_operation_target_admission(
+            session,
+            1,
+            21,
+            OperationTargetAdmissionRetryRequest(reason="首次重查", account_ids=[11, 12, 13]),
+            "pytest",
+        )
+        second = retry_operation_target_admission(
+            session,
+            1,
+            21,
+            OperationTargetAdmissionRetryRequest(reason="重复重查", account_ids=[11, 12, 13]),
+            "pytest",
+        )
+        tasks = list(session.scalars(select(Task).where(Task.type == "target_admission_retry")))
+        actions = list(session.scalars(select(Action).where(Action.action_type == "ensure_target_membership")))
+
+    assert first["admission_retry"]["queued_action_count"] == 3
+    assert second["admission_retry"]["task_id"] == first["admission_retry"]["task_id"]
+    assert second["admission_retry"]["queued_action_count"] == 0
+    assert second["admission_retry"]["deduped_action_count"] == 3
+    assert len(tasks) == 1
+    assert len(actions) == 3
+
+
 def test_operation_target_bulk_admission_retry_queues_membership_actions_without_gateway_calls(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
