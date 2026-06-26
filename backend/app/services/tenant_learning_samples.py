@@ -262,7 +262,7 @@ def _text_failure_decision(reason: str, forbidden: dict[str, Any], scoring: dict
 
 def _looks_managed(username: str, sender_name: str) -> bool:
     identity = f"{username} {sender_name}".lower()
-    return any(marker in identity for marker in ["bot", "admin", "客服", "小助理"])
+    return any(marker in identity for marker in ["bot", "admin", "客服", "小助理", "托管"])
 
 
 def _apply_decision(sample: TenantLearningSample, status: str, score: int, reason: str, rule_version: int) -> None:

@@ -134,7 +134,7 @@ def test_rule_material_policy_selects_ready_material_for_preview_and_ai_action(m
     Base.metadata.create_all(engine)
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.generate_group_messages",
-        lambda *_args, **_kwargs: (["素材规则触发"], 0),
+        lambda *_args, **kwargs: ([f"素材规则触发 {index}" for index in range(kwargs["count"])], 0),
     )
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
 

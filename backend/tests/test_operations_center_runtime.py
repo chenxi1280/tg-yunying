@@ -4232,7 +4232,7 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
 
     def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
         generated.append(history)
-        return ["这条真人消息可以接着问细节。"], 0
+        return [f"这条真人消息可以接着问细节 {index}。" for index in range(count)], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)

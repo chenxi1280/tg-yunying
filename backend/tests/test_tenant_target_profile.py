@@ -346,7 +346,7 @@ def test_sampling_requires_explicit_enabled_learning_source() -> None:
     assert sample_count == 0
 
 
-def test_group_listener_ignored_sender_is_not_recorded_as_learning_sample(monkeypatch) -> None:
+def test_group_listener_managed_sender_is_rejected_without_context_record(monkeypatch) -> None:
     with _session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         group = TgGroup(id=41, tenant_id=1, tg_peer_id="-10031", title="活群", listener_enabled=True)
@@ -372,12 +372,16 @@ def test_group_listener_ignored_sender_is_not_recorded_as_learning_sample(monkey
         monkeypatch.setattr("app.services.group_listeners.gateway.fetch_group_messages", lambda *args, **kwargs: snapshots)
 
         inserted = collect_group_context(session, group, [51])
-        sample_count = session.scalar(select(TenantLearningSample).where(TenantLearningSample.source_message_id == "managed-m1"))
+        sample = session.scalar(select(TenantLearningSample).where(TenantLearningSample.source_message_id == "managed-m1"))
+        sample_status = sample.learning_status if sample else ""
+        sample_reject_reason = sample.reject_reason if sample else ""
         context_count = session.scalar(select(GroupContextMessage).where(GroupContextMessage.remote_message_id == "managed-m1"))
         session.commit()
 
     assert inserted == 0
-    assert sample_count is None
+    assert sample is not None
+    assert sample_status == "rejected"
+    assert sample_reject_reason == "managed_account"
     assert context_count is None
 
 

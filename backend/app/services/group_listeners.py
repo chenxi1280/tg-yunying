@@ -300,10 +300,10 @@ def collect_group_context(
             content = str(snapshot.content or "").strip()
             if not content:
                 continue
-            if _is_ignored_sender(snapshot, ignored_sender_identity):
-                continue
             if learning_scene:
                 record_tenant_group_learning_sample(session, group, snapshot)
+            if _is_ignored_sender(snapshot, ignored_sender_identity):
+                continue
             exists = session.scalar(
                 select(GroupContextMessage.id).where(
                     GroupContextMessage.group_id == group.id,
