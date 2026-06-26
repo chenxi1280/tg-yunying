@@ -123,6 +123,7 @@ RECENT_REQUIRED_CHANNEL_PROMPT_LOOKBACK_HOURS = 6
 REQUIRED_CHANNEL_ADMISSION_RETRY_SECONDS = 300
 VERIFICATION_READER_CANDIDATE_LIMIT = 5
 HARD_HOURLY_OVERDUE_SEND_PRIORITY_SECONDS = 300
+GROUP_RESCUE_INFLIGHT_CONFLICT_BACKOFF_SECONDS = 30
 AI_DISPATCH_GENERATION_BATCH_SIZE = 10
 AI_DISPATCH_CANDIDATE_SHORTFALL_MESSAGE = "AI 普通发言候选不足，已跳过本批次发送"
 _ACCOUNT_SESSION_FAILURE_MARKERS = (
@@ -411,7 +412,7 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
     )
     if session.bind and session.bind.dialect.name != "sqlite":
         stmt = stmt.with_for_update(skip_locked=True)
-    candidates = list(session.scalars(stmt))
+    candidates = _claimable_candidates(list(session.scalars(stmt)))
     claim_until = now_value + timedelta(seconds=max(5, int(_setting(settings, "action_claim_seconds", 60) or 60)))
     for action in candidates:
         action.status = "claiming"
@@ -434,7 +435,7 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
             continue
         if not _reserve_runtime_resources(action):
             result = action.result or {}
-            delay_seconds = int(result.get("rate_limit_wait_seconds") or result.get("runtime_resource_wait_seconds") or 0)
+            delay_seconds = _runtime_resource_retry_delay(action, result)
             _release_claim(action, delay_seconds=delay_seconds, reason=str(result.get("runtime_resource_reason") or "runtime_resource_unavailable"))
             session.commit()
             continue
@@ -454,6 +455,30 @@ def claim_actions(session: Session, limit: int = 100, *, exclude_task_ids: set[s
                 _release_claim(action, delay_seconds=1, reason="account_inflight_conflict")
                 session.commit()
     return [action for action in (session.get(Action, action_id) for action_id in confirmed_ids) if action]
+
+
+def _claimable_candidates(candidates: list[Action]) -> list[Action]:
+    rescue_admins: set[int] = set()
+    selected: list[Action] = []
+    for action in candidates:
+        if action.action_type != "invite_group_account" or action.account_id is None:
+            selected.append(action)
+            continue
+        account_id = int(action.account_id)
+        if account_id in rescue_admins:
+            continue
+        rescue_admins.add(account_id)
+        selected.append(action)
+    return selected
+
+
+def _runtime_resource_retry_delay(action: Action, result: dict) -> int:
+    delay_seconds = int(result.get("rate_limit_wait_seconds") or result.get("runtime_resource_wait_seconds") or 0)
+    if action.action_type != "invite_group_account":
+        return delay_seconds
+    if str(result.get("runtime_resource_reason") or "") != "account_inflight_conflict":
+        return delay_seconds
+    return max(delay_seconds, GROUP_RESCUE_INFLIGHT_CONFLICT_BACKOFF_SECONDS)
 
 
 def _hard_hourly_claim_rank():

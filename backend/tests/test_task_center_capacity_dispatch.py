@@ -123,6 +123,57 @@ def test_claim_actions_uses_claiming_then_confirms_executing_with_account_lock()
         dispatcher._IN_FLIGHT_ACCOUNTS.clear()
 
 
+@pytest.mark.no_postgres
+def test_claim_actions_takes_one_group_rescue_invite_per_admin_batch():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间", group_rescue_enabled=True, group_rescue_admin_account_id=515))
+        session.add(TgAccount(id=515, tenant_id=1, display_name="管理员", phone_masked="+195***0433", status="在线"))
+        session.add(Task(id="task-rescue-claim", tenant_id=1, name="rescue", type="target_admission_retry", status="running", priority=1))
+        session.add_all(
+            [
+                Action(id="rescue-1", tenant_id=1, task_id="task-rescue-claim", task_type="target_admission_retry", action_type="invite_group_account", account_id=515, status="pending", scheduled_at=now_value, payload={"group_id": 7, "group_peer_id": "-1007", "target_account_id": 11, "target_account_ref": "@target_11", "trigger_account_id": 11}),
+                Action(id="rescue-2", tenant_id=1, task_id="task-rescue-claim", task_type="target_admission_retry", action_type="invite_group_account", account_id=515, status="pending", scheduled_at=now_value, payload={"group_id": 7, "group_peer_id": "-1007", "target_account_id": 12, "target_account_ref": "@target_12", "trigger_account_id": 12}),
+            ]
+        )
+        session.commit()
+
+        claimed = claim_actions(session, limit=2, worker_id="worker-test")
+
+        assert [action.id for action in claimed] == ["rescue-1"]
+        untouched = session.get(Action, "rescue-2")
+        assert untouched.status == "pending"
+        assert untouched.result in ({}, None)
+
+
+@pytest.mark.no_postgres
+def test_claim_actions_backs_off_group_rescue_inflight_conflict(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    settings = _redis_bucket_settings(enable_redis_account_inflight=True)
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "_redis_client", lambda _redis_url: FakeRedisAccountLock(locked=False))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间", group_rescue_enabled=True, group_rescue_admin_account_id=515))
+        session.add(TgAccount(id=515, tenant_id=1, display_name="管理员", phone_masked="+195***0433", status="在线"))
+        session.add(Task(id="task-rescue-lock", tenant_id=1, name="rescue", type="target_admission_retry", status="running", priority=1))
+        session.add(Action(id="rescue-lock", tenant_id=1, task_id="task-rescue-lock", task_type="target_admission_retry", action_type="invite_group_account", account_id=515, status="pending", scheduled_at=now_value, payload={"group_id": 7, "group_peer_id": "-1007", "target_account_id": 11, "target_account_ref": "@target_11", "trigger_account_id": 11}))
+        session.commit()
+
+        claimed = claim_actions(session, limit=1, worker_id="worker-test")
+
+        action = session.get(Action, "rescue-lock")
+        assert claimed == []
+        assert action.status == "pending"
+        assert action.result["claim_released_reason"] == "account_inflight_conflict"
+        assert action.scheduled_at >= now_value + timedelta(seconds=dispatcher.GROUP_RESCUE_INFLIGHT_CONFLICT_BACKOFF_SECONDS)
+
+
 def test_claim_actions_reassigns_account_before_reserving_runtime_resources_and_dispatches(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
