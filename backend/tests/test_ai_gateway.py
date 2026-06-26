@@ -678,6 +678,42 @@ def test_mimo_image_verification_uses_openai_compatible_image_payload(monkeypatc
     assert result.usage.total_tokens == 14
 
 
+def test_mimo_image_verification_retries_reasoning_only_empty_content(monkeypatch):
+    requests: list[dict[str, Any]] = []
+    responses = [
+        {
+            "choices": [
+                {
+                    "message": {"content": "", "reasoning_content": "先分析图片"},
+                    "finish_reason": "length",
+                }
+            ],
+            "usage": {"prompt_tokens": 450, "completion_tokens": 512, "total_tokens": 962},
+        },
+        {
+            "choices": [
+                {
+                    "message": {"content": '{"answer":"7391","confidence":0.91}'},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 450, "completion_tokens": 8, "total_tokens": 458},
+        },
+    ]
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        requests.append(json.loads(request.data.decode("utf-8")))
+        return FakeResponse(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = AiGateway().solve_image_verification(credentials(), b"\x89PNG\r\n", "image/png")
+
+    assert [request["max_tokens"] for request in requests] == [512, 4096]
+    assert result.answer == "7391"
+    assert result.confidence == 0.91
+
+
 def test_deepseek_image_verification_is_rejected_before_network(monkeypatch):
     def should_not_call(*_args, **_kwargs):
         raise AssertionError("DeepSeek must not receive image verification requests")

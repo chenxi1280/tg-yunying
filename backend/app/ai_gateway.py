@@ -73,6 +73,8 @@ MODEL_ALIASES = {
     "xiaomi mino-v2.5-pro": "mimo-v2.5-pro",
 }
 DEFAULT_AI_REQUEST_TIMEOUT_SECONDS = 30
+IMAGE_VERIFICATION_MAX_TOKENS = 512
+IMAGE_VERIFICATION_REASONING_RETRY_MAX_TOKENS = 4096
 
 
 def normalize_ai_model_name(model_name: str) -> str:
@@ -226,10 +228,11 @@ class AiGateway:
             credentials,
             prompt,
             0.1,
-            256,
+            IMAGE_VERIFICATION_MAX_TOKENS,
             system_prompt="你是验证码识别助手。只输出紧凑 JSON，不要解释。",
             response_format_json=False,
             image_data_url=_image_data_url(image_bytes, mime_type),
+            reasoning_retry_max_tokens=IMAGE_VERIFICATION_REASONING_RETRY_MAX_TOKENS,
             timeout=timeout,
         )
         parsed = _parse_image_verification_json(raw)
