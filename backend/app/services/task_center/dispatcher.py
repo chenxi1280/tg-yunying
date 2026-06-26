@@ -30,7 +30,7 @@ from app.services.required_channel_prompts import (
     required_channel_references,
 )
 from app.services.verification import create_verification_task
-from app.timezone import BEIJING_TZ
+from app.timezone import BEIJING_TZ, as_beijing
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
@@ -997,7 +997,7 @@ def _task_group_rescue_admin_rate_limited_until(task: Task | None) -> datetime |
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(raw)
+        return _naive_datetime(datetime.fromisoformat(raw))
     except ValueError:
         return None
 
@@ -1815,7 +1815,7 @@ def _task_membership_admin_rate_limited_until(task: Task | None) -> datetime | N
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(raw)
+        return _naive_datetime(datetime.fromisoformat(raw))
     except ValueError:
         return None
 
@@ -3330,7 +3330,7 @@ def _capacity_check_at(action: Action) -> datetime:
 
 
 def _naive_datetime(value: datetime | None) -> datetime | None:
-    return value.replace(tzinfo=None) if value and value.tzinfo is not None else value
+    return as_beijing(value)
 
 
 def _released_before(action: Action) -> bool:

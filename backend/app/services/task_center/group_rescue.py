@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import AccountStatus, Action, FailureType, Task, Tenant, TgAccount, TgGroup
 from app.services._common import _now
 from app.services.task_center.payloads import InviteGroupAccountPayload
+from app.timezone import as_beijing
 
 
 GROUP_RESCUE_FAILURE_THRESHOLD = 3
@@ -110,8 +111,9 @@ def infer_rescue_admin_rate_limit(session: Session, task: Task, account_id: int 
     for action in rows:
         if _action_has_floodwait_result(action):
             detail = _action_result_detail(action)
-            _record_rescue_admin_rate_limit(task, action.scheduled_at, detail)
-            return action.scheduled_at, detail
+            retry_at = as_beijing(action.scheduled_at)
+            _record_rescue_admin_rate_limit(task, retry_at, detail)
+            return retry_at, detail
     return None
 
 
@@ -247,7 +249,7 @@ def _action_result_detail(action: Action) -> str:
 
 def _record_rescue_admin_rate_limit(task: Task, retry_at: datetime, detail: str) -> None:
     stats = dict(task.stats or {})
-    stats["group_rescue_admin_rate_limited_until"] = retry_at.isoformat()
+    stats["group_rescue_admin_rate_limited_until"] = as_beijing(retry_at).isoformat()
     stats["group_rescue_admin_rate_limit_detail"] = detail
     task.stats = stats
 

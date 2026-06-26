@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -1570,3 +1570,43 @@ def test_hard_hourly_retries_terminal_future_scheduled_membership_action() -> No
     assert rows[-1].account_id == 31
     assert rows[-1].status == "pending"
     assert rows[-1].scheduled_at <= now_value + timedelta(seconds=5)
+
+
+def test_group_rescue_admin_rate_limit_accepts_aware_stats_datetime() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    retry_at = (_now() + timedelta(minutes=30)).replace(tzinfo=timezone(timedelta(hours=8)))
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(
+            id="task-aware-group-rescue-limit",
+            tenant_id=1,
+            name="救援限流时区",
+            type="target_admission_retry",
+            status="running",
+            stats={
+                "group_rescue_admin_rate_limited_until": retry_at.isoformat(),
+                "group_rescue_admin_rate_limit_detail": "FloodWait 1800 秒",
+            },
+        )
+        action = Action(
+            id="aware-group-rescue-action",
+            tenant_id=1,
+            task_id=task.id,
+            task_type=task.type,
+            action_type="invite_group_account",
+            account_id=515,
+            status="pending",
+            scheduled_at=_now(),
+            payload={"group_id": 484, "target_account_id": 84},
+        )
+        session.add_all([task, action])
+        session.commit()
+
+        deferred = dispatcher._defer_existing_group_rescue_admin_rate_limit(session, action)
+
+        assert deferred is True
+        assert action.status == "pending"
+        assert action.scheduled_at.tzinfo is None
+        assert action.result["error_code"] == "FloodWait"
