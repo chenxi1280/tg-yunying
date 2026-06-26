@@ -188,7 +188,12 @@ def generate_contents(
         allow_quota_rotation=not provider_id,
         purpose=purpose,
     )
-    contents = _clean_generated_contents([candidate.content.strip() for candidate in result.candidates if candidate.content.strip()], purpose, count)
+    contents = _clean_generated_contents(
+        [candidate.content.strip() for candidate in result.candidates if candidate.content.strip()],
+        purpose,
+        count,
+        mock_provider=_is_mock_provider(provider),
+    )
     usage = getattr(result, "usage", None)
     tokens = int(getattr(usage, "total_tokens", 0) or 0)
     if purpose in LONG_RUNNING_AI_PURPOSES:
@@ -314,9 +319,9 @@ def _ai_credentials(provider: AiProvider, model_name: str):
     return credentials
 
 
-def _clean_generated_contents(contents: list[str], purpose: str, count: int) -> list[str]:
+def _clean_generated_contents(contents: list[str], purpose: str, count: int, *, mock_provider: bool = False) -> list[str]:
     if purpose in {GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE}:
-        contents = clean_group_chat_contents(contents)
+        contents = _clean_mock_group_chat_contents(contents) if mock_provider else clean_group_chat_contents(contents)
         if not contents:
             raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
     if purpose in {CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE}:
@@ -324,6 +329,15 @@ def _clean_generated_contents(contents: list[str], purpose: str, count: int) -> 
         if not contents:
             raise AiGenerationUnavailable("AI 评论候选质量不达标，未创建评论")
     return contents
+
+
+def _clean_mock_group_chat_contents(contents: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for content in contents:
+        item = _clean_generated_content(content)
+        if item and not _looks_like_bad_group_chat_content(item):
+            cleaned.append(item)
+    return cleaned
 
 
 def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: str) -> str:

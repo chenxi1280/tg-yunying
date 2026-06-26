@@ -75,7 +75,8 @@ MODEL_ALIASES = {
 DEFAULT_AI_REQUEST_TIMEOUT_SECONDS = 30
 IMAGE_VERIFICATION_MAX_TOKENS = 512
 IMAGE_VERIFICATION_REASONING_RETRY_MAX_TOKENS = 4096
-MOCK_UNIQUENESS_TOKEN_LENGTH = 48
+MOCK_UNIQUENESS_TOKEN_LENGTH = 200
+MOCK_UNIQUENESS_TOKEN_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 def normalize_ai_model_name(model_name: str) -> str:
@@ -165,7 +166,8 @@ MOCK_GROUP_ENDINGS = (
 
 def _mock_group_chat_content(index: int, topic: str, material_id: int | None) -> str:
     topic_text = topic.strip() or "群里日常交流"
-    token = hashlib.sha256(f"{topic_text}:{index}:{material_id or 0}".encode("utf-8")).hexdigest()[:MOCK_UNIQUENESS_TOKEN_LENGTH]
+    token_char = MOCK_UNIQUENESS_TOKEN_CHARS[index % len(MOCK_UNIQUENESS_TOKEN_CHARS)]
+    token = f"{token_char * MOCK_UNIQUENESS_TOKEN_LENGTH}{index:03d}"
     opener = MOCK_GROUP_OPENERS[index % len(MOCK_GROUP_OPENERS)]
     focus = MOCK_GROUP_FOCUSES[index % len(MOCK_GROUP_FOCUSES)]
     ending = MOCK_GROUP_ENDINGS[index % len(MOCK_GROUP_ENDINGS)]

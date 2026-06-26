@@ -20,6 +20,13 @@ from sqlalchemy import inspect, select
 
 
 _workspace_phone_suffix = 1000
+WORKFLOW_AI_TOKEN_LENGTH = 200
+WORKFLOW_AI_TOKEN_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+
+def _workflow_ai_token(index: int) -> str:
+    token_char = WORKFLOW_AI_TOKEN_CHARS[index % len(WORKFLOW_AI_TOKEN_CHARS)]
+    return f"{token_char * WORKFLOW_AI_TOKEN_LENGTH}{index:03d}"
 
 
 def _next_test_phone(prefix: str = "+8613800") -> str:
@@ -3424,10 +3431,11 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
                 ("补充群友", f"我觉得第一条真人上下文 {context_suffix} 这里要看具体情况。"),
             ]
         count = int(_kwargs.get("count") or len(base_candidates))
-        candidates = [
-            AiDraftCandidate(persona=base_candidates[index % len(base_candidates)][0], content=f"pytest-{index:02d} {base_candidates[index % len(base_candidates)][1]}")
-            for index in range(count)
-        ]
+        candidates = []
+        for index in range(count):
+            persona, content = base_candidates[index % len(base_candidates)]
+            token = _workflow_ai_token(index)
+            candidates.append(AiDraftCandidate(persona=persona, content=f"pytest-{token} {content}"))
         return AiGenerationResult(
             candidates=candidates,
             usage=AiUsage(total_tokens=18),
@@ -4377,13 +4385,12 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
         generated["count"] += 1
         contents = ["reset ai 今天先聊报名体验。", "重置之后我再问问活动安排。"]
         count = int(_kwargs.get("count") or 1)
-        return AiGenerationResult(
-            candidates=[
-                AiDraftCandidate(persona="自然群友", content=f"pytest-reset-{index:02d} {contents[(generated['count'] + index - 1) % len(contents)]}")
-                for index in range(count)
-            ],
-            usage=AiUsage(total_tokens=10),
-        )
+        candidates = []
+        for index in range(count):
+            token = _workflow_ai_token(index)
+            content = contents[(generated["count"] + index - 1) % len(contents)]
+            candidates.append(AiDraftCandidate(persona="自然群友", content=f"pytest-reset-{token} {content}"))
+        return AiGenerationResult(candidates=candidates, usage=AiUsage(total_tokens=10))
 
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
     monkeypatch.setattr(
