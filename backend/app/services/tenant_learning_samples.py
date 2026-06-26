@@ -16,7 +16,9 @@ from app.models import (
     TenantLearningRun,
     TenantLearningSample,
     TenantLearningSource,
+    TgAccount,
     TgGroup,
+    TgGroupAccount,
 )
 from app.services._common import _now
 from app.services.content_filters import contains_coarse_language
@@ -51,6 +53,7 @@ def record_group_learning_sample(session: Session, group: TgGroup, snapshot: Any
         sender_username=str(getattr(snapshot, "sender_username", "") or "").lstrip("@"),
         sender_name=str(getattr(snapshot, "sender_name", "") or "真人用户"),
         is_bot=bool(getattr(snapshot, "is_bot", False)),
+        is_managed=_is_managed_group_sender(session, group, snapshot),
         sent_at=getattr(snapshot, "sent_at", None),
     )
 
@@ -74,6 +77,7 @@ def record_channel_comment_sample(session: Session, comment: ChannelMessageComme
         sender_username=comment.author_username,
         sender_name=comment.author_name,
         is_bot=comment.is_bot,
+        is_managed=False,
         sent_at=comment.published_at,
     )
 
@@ -137,6 +141,7 @@ def _ingest_group_messages(session: Session, source: TenantLearningSource, targe
             sender_username=row.sender_username,
             sender_name=row.sender_name,
             is_bot=row.is_bot,
+            is_managed=False,
             sent_at=row.sent_at,
         )
         if sample:
@@ -166,6 +171,7 @@ def _upsert_sample(
     sender_username: str,
     sender_name: str,
     is_bot: bool,
+    is_managed: bool,
     sent_at: Any,
 ) -> TenantLearningSample | None:
     text = text.strip()
@@ -178,6 +184,7 @@ def _upsert_sample(
         sender_username=sender_username,
         sender_name=sender_name,
         is_bot=is_bot,
+        is_managed=is_managed,
     )
     sample = session.scalar(
         select(TenantLearningSample).where(
@@ -210,6 +217,7 @@ def _classify_sample(
     sender_username: str,
     sender_name: str,
     is_bot: bool,
+    is_managed: bool = False,
 ) -> tuple[str, int, str, TenantLearningQualityRule]:
     rule = ensure_quality_rule(session, tenant_id)
     identity = rule.identity_filters or {}
@@ -217,7 +225,7 @@ def _classify_sample(
     forbidden = rule.forbidden_patterns or {}
     if identity.get("exclude_bots", True) and is_bot:
         return "rejected", 0, "bot_sender", rule
-    if identity.get("exclude_managed_accounts", True) and _looks_managed(sender_username, sender_name):
+    if identity.get("exclude_managed_accounts", True) and (is_managed or _looks_managed(sender_username, sender_name)):
         return "rejected", 0, "managed_account", rule
     reason = _text_reject_reason(text, text_filters, forbidden)
     if reason:
@@ -263,6 +271,34 @@ def _text_failure_decision(reason: str, forbidden: dict[str, Any], scoring: dict
 def _looks_managed(username: str, sender_name: str) -> bool:
     identity = f"{username} {sender_name}".lower()
     return any(marker in identity for marker in ["bot", "admin", "客服", "小助理", "托管"])
+
+
+def _is_managed_group_sender(session: Session, group: TgGroup, snapshot: Any) -> bool:
+    sender_values = {
+        str(getattr(snapshot, "sender_peer_id", "") or "").strip().lower(),
+        str(getattr(snapshot, "sender_name", "") or "").strip().lower(),
+        str(getattr(snapshot, "sender_username", "") or "").strip().lower().lstrip("@"),
+    }
+    return bool(sender_values & _managed_group_sender_keys(session, group))
+
+
+def _managed_group_sender_keys(session: Session, group: TgGroup) -> set[str]:
+    rows = session.scalars(
+        select(TgAccount)
+        .join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id)
+        .where(
+            TgGroupAccount.group_id == group.id,
+            TgAccount.tenant_id == group.tenant_id,
+            TgAccount.deleted_at.is_(None),
+        )
+    )
+    keys: set[str] = set()
+    for account in rows:
+        keys.update({str(account.id), f"account:{account.id}", str(account.display_name or "").lower()})
+        username = str(account.username or "").strip().lower().lstrip("@")
+        if username:
+            keys.add(username)
+    return {key for key in keys if key}
 
 
 def _apply_decision(sample: TenantLearningSample, status: str, score: int, reason: str, rule_version: int) -> None:
