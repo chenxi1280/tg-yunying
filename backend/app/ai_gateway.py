@@ -97,7 +97,7 @@ def mock_candidates(
     for index in range(count):
         material_id = ids[index % len(ids)] if ids else None
         suggested_account_id = account_ids[index % len(account_ids)] if account_ids else None
-        suffix = _mock_candidate_suffix(topic, tone, material_id) if include_suffix else ""
+        suffix = _mock_candidate_suffix(topic, material_id) if include_suffix else ""
         candidates.append(
             AiDraftCandidate(
                 persona=persona_set[index % len(persona_set)],
@@ -130,8 +130,8 @@ def _mock_templates_for_tone(tone: str) -> tuple[list[str], bool]:
     ], True
 
 
-def _mock_candidate_suffix(topic: str, tone: str, material_id: int | None) -> str:
-    suffix = f"（话题：{topic}，语气：{tone}）"
+def _mock_candidate_suffix(topic: str, material_id: int | None) -> str:
+    suffix = f"（{topic}）" if topic else ""
     if material_id:
         suffix += f" [建议素材 #{material_id}]"
     return suffix

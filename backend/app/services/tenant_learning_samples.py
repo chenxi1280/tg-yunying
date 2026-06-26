@@ -54,6 +54,7 @@ def record_group_learning_sample(session: Session, group: TgGroup, snapshot: Any
         sender_name=str(getattr(snapshot, "sender_name", "") or "真人用户"),
         is_bot=bool(getattr(snapshot, "is_bot", False)),
         is_managed=_is_managed_group_sender(session, group, snapshot),
+        is_media=_is_media_snapshot(snapshot),
         sent_at=getattr(snapshot, "sent_at", None),
     )
 
@@ -78,6 +79,7 @@ def record_channel_comment_sample(session: Session, comment: ChannelMessageComme
         sender_name=comment.author_name,
         is_bot=comment.is_bot,
         is_managed=False,
+        is_media=False,
         sent_at=comment.published_at,
     )
 
@@ -113,6 +115,7 @@ def recompute_source_candidates(session: Session, tenant_id: int) -> dict[str, i
             sender_username=sample.sender_username,
             sender_name=sample.sender_name,
             is_bot=sample.is_bot,
+            is_media=_looks_media_text(sample.text),
         )
         _apply_decision(sample, status, score, reason, rule.rule_version)
         recomputed.append(sample)
@@ -142,6 +145,7 @@ def _ingest_group_messages(session: Session, source: TenantLearningSource, targe
             sender_name=row.sender_name,
             is_bot=row.is_bot,
             is_managed=False,
+            is_media=row.message_type != "text",
             sent_at=row.sent_at,
         )
         if sample:
@@ -172,6 +176,7 @@ def _upsert_sample(
     sender_name: str,
     is_bot: bool,
     is_managed: bool,
+    is_media: bool,
     sent_at: Any,
 ) -> TenantLearningSample | None:
     text = text.strip()
@@ -185,6 +190,7 @@ def _upsert_sample(
         sender_name=sender_name,
         is_bot=is_bot,
         is_managed=is_managed,
+        is_media=is_media,
     )
     sample = session.scalar(
         select(TenantLearningSample).where(
@@ -218,6 +224,7 @@ def _classify_sample(
     sender_name: str,
     is_bot: bool,
     is_managed: bool = False,
+    is_media: bool = False,
 ) -> tuple[str, int, str, TenantLearningQualityRule]:
     rule = ensure_quality_rule(session, tenant_id)
     identity = rule.identity_filters or {}
@@ -227,6 +234,8 @@ def _classify_sample(
         return "rejected", 0, "bot_sender", rule
     if identity.get("exclude_managed_accounts", True) and (is_managed or _looks_managed(sender_username, sender_name)):
         return "rejected", 0, "managed_account", rule
+    if is_media:
+        return "downweighted", int((rule.scoring_thresholds or {}).get("downweighted") or 40), "media_message", rule
     reason = _text_reject_reason(text, text_filters, forbidden)
     if reason:
         status, score = _text_failure_decision(reason, forbidden, rule.scoring_thresholds or {})
@@ -271,6 +280,17 @@ def _text_failure_decision(reason: str, forbidden: dict[str, Any], scoring: dict
 def _looks_managed(username: str, sender_name: str) -> bool:
     identity = f"{username} {sender_name}".lower()
     return any(marker in identity for marker in ["bot", "admin", "客服", "小助理", "托管"])
+
+
+def _is_media_snapshot(snapshot: Any) -> bool:
+    message_type = str(getattr(snapshot, "message_type", "") or "").strip().lower()
+    media_type = str(getattr(snapshot, "media_type", "") or "").strip()
+    media_fingerprint = str(getattr(snapshot, "media_fingerprint", "") or "").strip()
+    return message_type not in {"", "text"} or bool(media_type or media_fingerprint)
+
+
+def _looks_media_text(text: str) -> bool:
+    return str(text or "").strip().lower() in {"[media]", "[photo]", "[video]", "[document]"}
 
 
 def _is_managed_group_sender(session: Session, group: TgGroup, snapshot: Any) -> bool:
