@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.database import get_session
 from app.schemas import TaskOut
 from app.services.telegram_bot_settings import apply_group_ai_settings_from_bot, handle_group_ai_bot_update
+from app.services.tenant_bot_settings import resolve_tenant_bot_webhook
 
 
 class GroupAISettingsBotRequest(BaseModel):
@@ -50,6 +51,22 @@ def post_group_ai_settings_from_bot(payload: GroupAISettingsBotRequest, session:
 def post_telegram_bot_update(payload: TelegramBotUpdateRequest, session: Session = Depends(get_session)):
     try:
         return handle_group_ai_bot_update(session, tenant_id=payload.tenant_id, update=payload.update)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/telegram-bot/webhook/{tenant_id}/{webhook_secret}")
+def post_telegram_bot_webhook(
+    tenant_id: int,
+    webhook_secret: str,
+    update: dict[str, Any],
+    session: Session = Depends(get_session),
+):
+    try:
+        tenant = resolve_tenant_bot_webhook(session, tenant_id, webhook_secret)
+        return handle_group_ai_bot_update(session, tenant_id=tenant.id, update=update)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

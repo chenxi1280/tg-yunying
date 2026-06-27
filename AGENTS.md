@@ -15,8 +15,23 @@
 - 所有输入先进入 Intake Card，再由 product 做 L0/L1/L2/L3 分级。
 - 线上问题必须走 `prod-diagnosis -> product -> dev -> qa -> product -> prod-diagnosis`。
 - product 整理完需求后必须投递 dev；dev 完成后必须投递 qa；qa 通过后必须回到 product 验收。
+- 任何 Agent 输出阶段结论时，只要 `next_agent` 不为空，必须同时完成真实线程投递；只写 `notify_xxx: true`、`next_agent: xxx` 或口头说明“需要通知”不算完成。
+- 当前 Agent 无法直接投递时，必须写 `handoff_delivery_status=blocked`、`requires_orchestrator_send=true`、目标线程、完整消息正文和阻塞原因，交给主控/监督 Agent 代发。
 - `qa_pass` 不等于产品接受；`product_accepted` 不等于线上恢复。
 - L3 只有真实生产 E4 证据才能写 `production_fixed`。
+
+## Product Design Complete 闸门
+
+- product 不能实现代码；即使用户在 product 线程输入“执行/实现/修复”，product 也必须转成 Product Handoff 投递给 dev。
+- product 投递 dev 前必须完成 Product Design Complete 自检，覆盖原始需求、功能设计、前端状态、后端/API/worker 设计、数据流转、权限安全、边界场景和 QA 验收口径。
+- `design_status=partial/blocked` 时不能投递 dev，也不能声明产品设计完成；必须列出缺口、追问或补齐设计。
+- product 必须深度自检遗漏项：未覆盖用户原话、隐含场景、失败路径、并发/幂等、数据一致性、发布/迁移风险和回滚口径。
+
+## 交接监督
+
+- `flow-supervisor` 或主控线程负责检查 `agent-status-board.md` 中的 `next_agent`、`handoff_delivery_status`、`ack_deadline` 和 `retry_count`。
+- 交接状态必须从 `pending -> sent -> acknowledged` 推进；超时或没有真实投递记录时，监督 Agent 必须重发 handoff 或标记 `handoff_delivery_status=blocked`。
+- 开发完成后没有投递 QA、QA 通过后没有投递 product、product 接受后没有投递 release/production verify，均视为流程断链，不能把任务写成 closed。
 
 ## 快修与并行
 

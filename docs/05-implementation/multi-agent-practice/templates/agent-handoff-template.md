@@ -22,6 +22,16 @@
 - idempotency_key:
 - expected_ack: true | false
 - expected_ack_deadline:
+- handoff_required: true | false
+- handoff_delivery_status: pending | sent | acknowledged | timeout | blocked | not_required
+- delivery_required: true | false
+- target_thread_id:
+- handoff_message_id:
+- sent_at:
+- ack_deadline:
+- retry_count:
+- requires_orchestrator_send: true | false
+- orchestrator_send_reason:
 - handoff_quality: complete | partial | missing_inputs
 - status: new | acknowledged | in_progress | ready_for_validation | failed | blocked | unproven | production_fixed | production_failed | done
 - ready_status: missing_inputs | ready | blocked
@@ -68,6 +78,23 @@
 ## 完成标准
 
 ## 需要回传的内容
+
+## 下游真实投递
+
+- next_agent:
+- must_send_thread_message: true | false
+- thread_message_sent: true | false
+- target_thread:
+- target_thread_id:
+- sent_message_summary:
+- handoff_delivery_status: pending | sent | acknowledged | timeout | blocked | not_required
+- ack_expected: true | false
+- ack_deadline:
+- retry_count:
+- requires_orchestrator_send: true | false
+- blocked_reason:
+
+只要 `next_agent` 不为空，本节必须填写。`notify_xxx: true`、`next_agent: xxx` 或“需要通知”不算投递完成；没有真实投递能力时必须把完整待发送消息写入本节，并设为 `requires_orchestrator_send=true`。
 
 ## ACK 规则
 

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, Button, Descriptions, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { HardHourlyRecentBucket, TaskCenterAction, TaskCenterDetail, TaskCenterTask } from '../types';
+import type { HardHourlyRecentBucket, TaskCenterAction, TaskCenterDetail, TaskCenterTask, TenantBotSettings } from '../types';
 import { DetailModal, StatusBadge } from '../components/shared';
 import { parseBeijingDate } from '../time';
 import { API_ORIGIN } from '../../shared/api/client';
@@ -96,6 +96,7 @@ interface TaskCenterDetailModalProps {
   onDetailSectionPageChange: (kind: DetailSectionKind, page: number, pageSize: number) => void;
   onEditTask: (task: TaskCenterTask) => void;
   onRefreshTask: (task: TaskCenterTask) => void;
+  telegramBotSettings?: TenantBotSettings | null;
   onMembershipPageChange: (page: number, pageSize: number) => void;
   onMembershipFiltersChange: (filters: { phase: string; manualRequired: string }) => void;
   onOpenAccountDetail?: (accountId: number, tab?: string) => void | Promise<void>;
@@ -210,6 +211,7 @@ export function TaskCenterDetailModal({
   onDetailSectionPageChange,
   onEditTask,
   onRefreshTask,
+  telegramBotSettings,
   onMembershipPageChange,
   onMembershipFiltersChange,
   onOpenAccountDetail,
@@ -328,6 +330,11 @@ export function TaskCenterDetailModal({
   ];
   const admissionTotal = Number(detail?.membership_admission_phase?.snapshot_total ?? admissionItemPagination.total ?? 0);
   const showAiTab = detail?.task.type === 'group_ai_chat';
+  const botMissingReasons = [
+    !telegramBotSettings?.telegram_bot_configured ? 'TG bot 未配置' : '',
+    !telegramBotSettings?.admin_chat_id ? '管理员 Chat ID 未配置' : '',
+    telegramBotSettings && !telegramBotSettings.ai_group_bot_enabled ? 'AI 活群 Bot 设置未启用' : '',
+  ].filter(Boolean);
   const showTargetTab = detail ? ['group_relay', 'channel_view', 'channel_like', 'channel_comment'].includes(detail.task.type) : false;
   const detailTabs = detail ? [
     showAiTab ? {
@@ -335,6 +342,7 @@ export function TaskCenterDetailModal({
       label: 'AI 设置',
       children: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          {botMissingReasons.length > 0 && <Alert type="warning" showIcon message={botMissingReasons.join('；')} />}
           <Descriptions
             bordered
             size="small"

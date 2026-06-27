@@ -79,9 +79,27 @@ export type Tenant = {
   admin_chat_id: string;
   notify_ai_failures_enabled: boolean;
   telegram_bot_configured: boolean;
+  ai_group_bot_enabled?: boolean;
+  telegram_bot_webhook_status?: string;
+  telegram_bot_last_error?: string;
   group_rescue_enabled: boolean;
   group_rescue_admin_account_id: number | null;
   created_at: string;
+};
+
+export type TenantBotSettings = {
+  tenant_id: number;
+  admin_chat_id: string;
+  telegram_bot_configured: boolean;
+  telegram_bot_token_configured: boolean;
+  telegram_bot_token_preview: string;
+  telegram_bot_token: null;
+  ai_group_bot_enabled: boolean;
+  telegram_bot_webhook_secret: string;
+  telegram_bot_webhook_url: string;
+  telegram_bot_webhook_status: string;
+  telegram_bot_last_error: string;
+  notify_ai_failures_enabled: boolean;
 };
 
 export type CaptchaChallenge = {

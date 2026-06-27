@@ -33,6 +33,7 @@ import type {
   TaskCenterTaskType,
   Tenant,
   TenantAiSetting,
+  TenantBotSettings,
 } from './types';
 import { api, ApiError } from '../shared/api/client';
 import { canView, hasPermission } from './utils';
@@ -138,6 +139,7 @@ function AppShell() {
   const [taskCenterFocus, setTaskCenterFocus] = React.useState<{ taskId: string; nonce: number } | null>(null);
   const [targetFocus, setTargetFocus] = React.useState<{ targetId: number; nonce: number } | null>(null);
   const [systemConfigTab, setSystemConfigTab] = React.useState('developer-apps');
+  const [tenantBotSettings, setTenantBotSettings] = React.useState<Record<number, TenantBotSettings>>({});
   const systemConfigTabRequestRef = React.useRef({ tab: '', seq: 0 });
   const ctx = useAppContext();
   const {
@@ -146,7 +148,7 @@ function AppShell() {
     login,
     captchaChallenge, captchaInput, setCaptchaInput,
     captchaToken, captchaError, captchaLoading, refreshCaptchaChallenge,
-    activeView, goToView, busy, notice, setNotice, isActionPending,
+    activeView, goToView, busy, setBusy, notice, setNotice, isActionPending,
     runtime, overview,
     accountPools, selectedPoolId, setSelectedPoolId, accounts, setAccounts, selectedPool,
     developerApps, setDeveloperApps, tenants, setTenants, adminUsers, setAdminUsers, groups, selectedGroup, selectedGroupId, setSelectedGroupId,
@@ -216,6 +218,14 @@ function AppShell() {
     setTenants(tenantRows);
   }, [activeView, setDeveloperApps, setTenants, systemConfigTab]);
 
+  const loadTelegramBotConfig = React.useCallback(async (requestSeq: number) => {
+    const tenantRows = await api<Tenant[]>('/tenants');
+    const botRows = await Promise.all(tenantRows.map((tenant) => api<TenantBotSettings>(`/tenant-bot-settings?tenant_id=${tenant.id}`)));
+    if (!isActiveSystemConfigTabRequest('telegram-bot', requestSeq)) return;
+    setTenants(tenantRows);
+    setTenantBotSettings(Object.fromEntries(botRows.map((row) => [row.tenant_id, row])));
+  }, [activeView, setTenants, systemConfigTab]);
+
   const loadAiProviderConfig = React.useCallback(async (requestSeq: number) => {
     const [providers, setting] = await Promise.all([
       api<AiProvider[]>('/ai-providers'),
@@ -251,6 +261,7 @@ function AppShell() {
   const loadSystemConfigTabData = React.useCallback(async (tab: string, requestSeq: number) => {
     if (!currentUser || activeView !== 'systemConfig') return;
     if (tab === 'developer-apps') return loadDeveloperConfig(requestSeq);
+    if (tab === 'telegram-bot') return loadTelegramBotConfig(requestSeq);
     if (tab === 'admin-users' && hasPermission(currentUser, 'permissions.view')) {
       const adminRows = await api<AdminUser[]>('/admin/users');
       if (!isActiveSystemConfigTabRequest(tab, requestSeq)) return;
@@ -265,7 +276,44 @@ function AppShell() {
       return;
     }
     if (tab === 'resources') return loadResourceConfig(requestSeq);
-  }, [activeView, currentUser, loadAiProviderConfig, loadDeveloperConfig, loadResourceConfig, setAdminUsers, setPromptTemplates]);
+  }, [activeView, currentUser, loadAiProviderConfig, loadDeveloperConfig, loadResourceConfig, loadTelegramBotConfig, setAdminUsers, setPromptTemplates]);
+
+  async function saveTenantBotSettings(tenantId: number, payload: {
+    admin_chat_id: string;
+    telegram_bot_token?: string;
+    ai_group_bot_enabled: boolean;
+    notify_ai_failures_enabled: boolean;
+  }) {
+    setBusy('保存 TG Bot 配置');
+    try {
+      const saved = await api<TenantBotSettings>(`/tenant-bot-settings?tenant_id=${tenantId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      });
+      setTenantBotSettings((current) => ({ ...current, [tenantId]: saved }));
+      const requestSeq = beginSystemConfigTabRequest('telegram-bot');
+      await loadTelegramBotConfig(requestSeq);
+      setNotice('TG Bot 配置已保存');
+    } catch (error) {
+      setNotice(`保存 TG Bot 配置失败：${errorText(error)}`);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function testTenantBotMessage(tenantId: number) {
+    setBusy('测试 TG Bot 发送');
+    try {
+      await api(`/tenant-bot-settings/test-message?tenant_id=${tenantId}`, { method: 'POST' });
+      const requestSeq = beginSystemConfigTabRequest('telegram-bot');
+      await loadTelegramBotConfig(requestSeq);
+      setNotice('TG Bot 测试消息已发送');
+    } catch (error) {
+      setNotice(`TG Bot 测试发送失败：${errorText(error)}`);
+    } finally {
+      setBusy('');
+    }
+  }
 
   React.useEffect(() => {
     if (!token || activeView !== 'systemConfig') return;
@@ -275,6 +323,14 @@ function AppShell() {
       setNotice(`系统设置数据读取异常：${error instanceof Error ? error.message : String(error)}`);
     });
   }, [activeView, loadSystemConfigTabData, setNotice, systemConfigTab, token]);
+
+  React.useEffect(() => {
+    if (!token || !currentUser?.tenant_id) return;
+    const tenantId = currentUser.tenant_id;
+    api<TenantBotSettings>(`/tenant-bot-settings?tenant_id=${tenantId}`)
+      .then((settings) => setTenantBotSettings((current) => ({ ...current, [tenantId]: settings })))
+      .catch(() => undefined);
+  }, [currentUser?.tenant_id, token]);
 
   async function refreshCurrentView() {
     try {
@@ -526,6 +582,7 @@ function AppShell() {
               accounts={accounts}
               promptTemplates={promptTemplates}
               tenantAiSetting={tenantAiSetting}
+              tenantBotSettings={tenantBotSettings}
               materials={materials}
               materialCacheHealth={materialCacheHealth}
               materialCacheConfig={materialCacheConfig}
@@ -542,6 +599,8 @@ function AppShell() {
               onToggleDeveloperApp={toggleDeveloperApp}
               onEditTenant={openTenantEdit}
               onSaveGroupRescueSettings={saveTenantGroupRescueSettings}
+              onSaveTenantBotSettings={saveTenantBotSettings}
+              onTestTenantBotMessage={testTenantBotMessage}
               onCreateAdminUser={openAdminUserCreate}
               onEditAdminUser={openAdminUserEdit}
               onCreateAiProvider={() => setModal({ type: 'aiProviderCreate' })}
@@ -678,6 +737,7 @@ function AppShell() {
               canManageTasks={hasPermission(currentUser, 'tasks.manage')}
               canDispatchControl={hasPermission(currentUser, 'tasks.dispatch_control')}
               onOpenAccountDetail={openAccountDetailFromOperation}
+              telegramBotSettings={currentUser?.tenant_id ? tenantBotSettings[currentUser.tenant_id] ?? null : null}
             />
           )}
           {activeView === 'listenerCenter' && (

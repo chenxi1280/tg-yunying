@@ -15,6 +15,8 @@
 - merge_owner:
 - release_gate: not_required | pending | passed | failed | blocked
 - status: ready_for_validation | blocked | partial
+- next_agent: qa | product | none
+- handoff_delivery_status: pending | sent | acknowledged | timeout | blocked | not_required
 
 ## 实现摘要
 
@@ -41,3 +43,14 @@
 - notify_qa: true | false
 - notify_product: true | false
 - qa_validation_scope:
+- qa_thread_id:
+- qa_handoff_message_id:
+- qa_handoff_sent_at:
+- qa_ack_deadline:
+- product_thread_id:
+- product_notice_message_id:
+- handoff_delivery_status: pending | sent | acknowledged | timeout | blocked | not_required
+- requires_orchestrator_send: true | false
+- blocked_reason:
+
+`status=ready_for_validation` 时必须真实投递 QA。没有 `qa_handoff_message_id` 或 `handoff_delivery_status=sent/acknowledged` 时，开发阶段只能写 `handoff_pending` 或 `blocked`，不能写完成。

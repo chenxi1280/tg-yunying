@@ -12,12 +12,14 @@ import type {
   PromptTemplate,
   Tenant,
   TenantAiSetting,
+  TenantBotSettings,
   CurrentUser,
   RuntimeConfig,
 } from '../types';
 import AISettingsView from './AISettingsView';
 import DeveloperAppsView from './DeveloperAppsView';
 import GroupRescueSettingsView from './GroupRescueSettingsView';
+import TelegramBotSettingsView from './TelegramBotSettingsView';
 import { hasPermission } from '../utils';
 
 interface Props {
@@ -27,6 +29,7 @@ interface Props {
   accounts: Account[];
   promptTemplates: PromptTemplate[];
   tenantAiSetting: TenantAiSetting | null;
+  tenantBotSettings: Record<number, TenantBotSettings>;
   materials: Material[];
   materialCacheHealth: MaterialCacheHealth | null;
   materialCacheConfig: MaterialCacheConfig | null;
@@ -46,6 +49,13 @@ interface Props {
     group_rescue_enabled: boolean;
     group_rescue_admin_account_id: number | null;
   }) => Promise<void>;
+  onSaveTenantBotSettings: (tenantId: number, payload: {
+    admin_chat_id: string;
+    telegram_bot_token?: string;
+    ai_group_bot_enabled: boolean;
+    notify_ai_failures_enabled: boolean;
+  }) => Promise<void>;
+  onTestTenantBotMessage: (tenantId: number) => Promise<void>;
   onCreateAdminUser: () => void;
   onEditAdminUser: (user: AdminUser) => void;
   onCreateAiProvider: () => void;
@@ -72,6 +82,7 @@ export default function SystemConfigView({
   accounts,
   promptTemplates,
   tenantAiSetting,
+  tenantBotSettings,
   materials,
   materialCacheHealth,
   materialCacheConfig,
@@ -88,6 +99,8 @@ export default function SystemConfigView({
   onToggleDeveloperApp,
   onEditTenant,
   onSaveGroupRescueSettings,
+  onSaveTenantBotSettings,
+  onTestTenantBotMessage,
   onCreateAdminUser,
   onEditAdminUser,
   onCreateAiProvider,
@@ -128,6 +141,20 @@ export default function SystemConfigView({
               onToggle={onToggleDeveloperApp}
               onEditTenant={onEditTenant}
               onOpenConfirm={onOpenConfirm}
+              isActionPending={isActionPending}
+            />
+          ),
+        },
+        {
+          key: 'telegram-bot',
+          label: 'TG Bot 配置',
+          children: (
+            <TelegramBotSettingsView
+              tenants={tenants}
+              botSettings={tenantBotSettings}
+              onSaveTenantBotSettings={onSaveTenantBotSettings}
+              onTestTenantBotMessage={onTestTenantBotMessage}
+              canManageBotSettings={hasPermission(currentUser, 'system.manage')}
               isActionPending={isActionPending}
             />
           ),

@@ -72,6 +72,9 @@ def notification_settings_payload(tenant: Tenant) -> dict:
         "notify_ai_failures_enabled": tenant.notify_ai_failures_enabled,
         "admin_chat_id": tenant.admin_chat_id,
         "telegram_bot_configured": tenant.telegram_bot_configured,
+        "ai_group_bot_enabled": bool(tenant.ai_group_bot_enabled),
+        "telegram_bot_webhook_status": tenant.telegram_bot_webhook_status,
+        "telegram_bot_last_error": tenant.telegram_bot_last_error,
         **group_rescue_settings_payload(tenant, None),
     }
 

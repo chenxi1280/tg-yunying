@@ -3,7 +3,7 @@ import { Alert, Button, Card, Collapse, Form, Input, Modal, Select, Space, Steps
 import type { ColumnsType } from 'antd/es/table';
 import { Activity, CirclePause, CirclePlay, RefreshCcw } from 'lucide-react';
 import { api, apiWithMeta, apiErrorFromResponse, ApiError, API_BASE } from '../../shared/api/client';
-import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskMembershipItem, TaskPrecheck } from '../types';
+import type { Account, AccountPool, ChannelMessage, ChannelMessageComment, OperationTarget, PromptTemplate, RuleSet, SchedulingSetting, TaskCenterAction, TaskCenterAnyTaskType, TaskCenterDetail, TaskCenterPrefill, TaskCenterTask, TaskCenterTaskType, TaskExecutionAttempt, TaskMembershipItem, TaskPrecheck, TenantBotSettings } from '../types';
 import { StatusBadge, StatCard, useAntdTableControls } from '../components/shared';
 import { fromBeijingDateTimeLocalValue } from '../time';
 import {
@@ -211,6 +211,7 @@ export default function TaskCenterView({
   canManageTasks = false,
   canDispatchControl = false,
   onOpenAccountDetail,
+  telegramBotSettings,
 }: {
   accounts: Account[];
   accountPools: AccountPool[];
@@ -221,6 +222,7 @@ export default function TaskCenterView({
   canManageTasks?: boolean;
   canDispatchControl?: boolean;
   onOpenAccountDetail?: (accountId: number, tab?: string) => void | Promise<void>;
+  telegramBotSettings?: TenantBotSettings | null;
 }) {
   const [tasks, setTasks] = React.useState<TaskCenterTask[]>([]);
   const [targets, setTargets] = React.useState<OperationTarget[]>([]);
@@ -2187,6 +2189,7 @@ export default function TaskCenterView({
         onDetailSectionPageChange={(kind, page, pageSize) => loadDetailSection(kind, page, pageSize)}
         onEditTask={(task) => void openEditTask(task)}
         onRefreshTask={(task) => void loadDetail(task)}
+        telegramBotSettings={telegramBotSettings}
         onMembershipPageChange={(page, pageSize) => void loadMembershipPage(page, pageSize)}
         onMembershipFiltersChange={updateMembershipFilters}
         onOpenAccountDetail={onOpenAccountDetail}

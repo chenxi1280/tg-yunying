@@ -114,6 +114,8 @@ PERMISSION_RULES: list[PermissionRule] = [
     _compile("POST", r"^/api/tenants(?:/.*)?$", "system.manage"),
     _compile("PATCH", r"^/api/tenants(?:/.*)?$", "system.manage"),
     _compile("PATCH", r"^/api/tenant-notification-settings$", "system.manage"),
+    _compile("PATCH", r"^/api/tenant-bot-settings$", "system.manage"),
+    _compile("POST", r"^/api/tenant-bot-settings/test-message$", "system.manage"),
     _compile("PATCH", r"^/api/tenant-group-rescue-settings$", "system.manage"),
     _compile("POST", r"^/api/worker/drain-once$", "tasks.dispatch_control"),
 

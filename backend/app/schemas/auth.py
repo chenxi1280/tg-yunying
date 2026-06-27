@@ -52,6 +52,28 @@ class TenantNotificationSettingsUpdate(BaseModel):
     telegram_bot_token: str | None = Field(default=None, max_length=300)
 
 
+class TenantBotSettingsOut(BaseModel):
+    tenant_id: int
+    admin_chat_id: str = ""
+    telegram_bot_configured: bool = False
+    telegram_bot_token_configured: bool = False
+    telegram_bot_token_preview: str = ""
+    telegram_bot_token: None = None
+    ai_group_bot_enabled: bool = False
+    telegram_bot_webhook_secret: str = ""
+    telegram_bot_webhook_url: str = ""
+    telegram_bot_webhook_status: str = "not_configured"
+    telegram_bot_last_error: str = ""
+    notify_ai_failures_enabled: bool = False
+
+
+class TenantBotSettingsUpdate(BaseModel):
+    admin_chat_id: str | None = Field(default=None, max_length=120)
+    telegram_bot_token: str | None = Field(default=None, max_length=300)
+    ai_group_bot_enabled: bool | None = None
+    notify_ai_failures_enabled: bool | None = None
+
+
 class TenantGroupRescueSettingsUpdate(BaseModel):
     group_rescue_enabled: bool | None = None
     group_rescue_admin_account_id: int | None = Field(default=None, ge=1)
@@ -293,7 +315,7 @@ class RuntimeConfigOut(BaseModel):
 
 
 __all__ = [
-    "TenantCreate", "TenantUpdate", "TenantOut", "TenantNotificationSettingsOut", "TenantNotificationSettingsUpdate", "TenantGroupRescueSettingsUpdate",
+    "TenantCreate", "TenantUpdate", "TenantOut", "TenantNotificationSettingsOut", "TenantNotificationSettingsUpdate", "TenantBotSettingsOut", "TenantBotSettingsUpdate", "TenantGroupRescueSettingsUpdate",
     "AuthLoginRequest", "AuthChangePasswordRequest", "AuthUserOut", "AuthTokenOut",
     "CaptchaChallengeOut", "CaptchaVerifyRequest", "CaptchaVerifyOut",
     "SubscriptionRedeemRequest", "SubscriptionRedeemOut",

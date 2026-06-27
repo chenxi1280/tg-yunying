@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -20,6 +20,10 @@ class Tenant(Base):
     task_quota: Mapped[int] = mapped_column(Integer, default=5000)
     telegram_bot_token_ciphertext: Mapped[str] = mapped_column(Text, default="")
     admin_chat_id: Mapped[str] = mapped_column(String(120), default="")
+    telegram_bot_webhook_secret: Mapped[str] = mapped_column(String(80), default="")
+    telegram_bot_webhook_status: Mapped[str] = mapped_column(String(40), default="not_configured")
+    telegram_bot_last_error: Mapped[str] = mapped_column(Text, default="")
+    ai_group_bot_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     notify_ai_failures_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     group_rescue_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     group_rescue_admin_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -31,6 +35,19 @@ class Tenant(Base):
     @property
     def telegram_bot_configured(self) -> bool:
         return bool(self.telegram_bot_token_ciphertext)
+
+
+class TelegramBotConversation(Base):
+    __tablename__ = "telegram_bot_conversations"
+    __table_args__ = (UniqueConstraint("tenant_id", "chat_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    chat_id: Mapped[str] = mapped_column(String(120))
+    task_id: Mapped[str] = mapped_column(String(80))
+    step: Mapped[str] = mapped_column(String(40))
+    draft_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class AccountPool(Base):
@@ -137,4 +154,4 @@ class UserTokenLedger(Base):
     user: Mapped[AppUser] = relationship()
 
 
-__all__ = ["Tenant", "AccountPool", "AppUser", "SubscriptionPlan", "ActivationCode", "UserTokenLedger"]
+__all__ = ["Tenant", "TelegramBotConversation", "AccountPool", "AppUser", "SubscriptionPlan", "ActivationCode", "UserTokenLedger"]

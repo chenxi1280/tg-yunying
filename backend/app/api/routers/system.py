@@ -20,6 +20,8 @@ from app.schemas import (
     ReportOut,
     RuntimeConfigOut,
     TenantCreate,
+    TenantBotSettingsOut,
+    TenantBotSettingsUpdate,
     TenantGroupRescueSettingsUpdate,
     TenantNotificationSettingsOut,
     TenantNotificationSettingsUpdate,
@@ -37,6 +39,7 @@ from app.services import (
     update_tenant,
     update_tenant_notification_settings,
 )
+from app.services.tenant_bot_settings import send_tenant_bot_test_message, tenant_bot_settings_payload, update_tenant_bot_settings
 from app.services._common import audit
 from app.worker import drain_once
 
@@ -139,6 +142,49 @@ def patch_tenant_notification_settings(
         return update_tenant_notification_settings(session, resolved_tenant_id, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/tenant-bot-settings", response_model=TenantBotSettingsOut)
+def get_tenant_bot_settings(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    tenant = session.get(Tenant, resolved_tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    return tenant_bot_settings_payload(tenant)
+
+
+@router.patch("/api/tenant-bot-settings", response_model=TenantBotSettingsOut)
+def patch_tenant_bot_settings(
+    payload: TenantBotSettingsUpdate,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        return update_tenant_bot_settings(session, resolved_tenant_id, payload.model_dump(exclude_unset=True), current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tenant-bot-settings/test-message")
+def post_tenant_bot_test_message(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        result = send_tenant_bot_test_message(session, resolved_tenant_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not result.ok:
+        raise HTTPException(status_code=400, detail=result.detail)
+    return {"ok": True, "detail": result.detail}
 
 
 @router.get("/api/tenant-group-rescue-settings", response_model=TenantNotificationSettingsOut)

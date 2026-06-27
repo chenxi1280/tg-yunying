@@ -18,6 +18,7 @@ AI 执行时必须遵守：
 - 不覆盖已有 PRD、索引、worklog 和模板，只做增量更新。
 - 不把本地通过、CI 通过、QA pass 写成线上恢复。
 - 不使用 silent fallback、mock success 或未经验证的完成声明。
+- 不把 `notify_xxx: true`、`next_agent: xxx` 或口头说明“需要通知”当成真实交接；有下游 Agent 时必须真实投递线程消息。
 - 涉及线上环境时，真实证据优先；生产恢复必须由 `prod-diagnosis` 输出 `production_fixed`。
 - 涉及需求、流程、数据流转变化时，先更新 PRD / 专项设计 / 数据流转索引，再投递开发。
 - 涉及代码入口、模块边界、API、worker、页面数据流变化时，开发 Agent 必须更新项目结构索引，必要时同步数据流转索引。
@@ -30,6 +31,7 @@ AI 执行时必须遵守：
 | `product` | Intake、分级、范围、PRD/ops 更新、验收标准、产品模型和数据流转索引 | 开发边界清楚，验收口径可执行，索引结论明确 |
 | `dev` | 实现、修复、自测、项目结构索引和代码入口索引 | 输出 Development Complete、验证证据、索引更新结论 |
 | `qa` | 独立验收、回归、按 bug_id 复验 | 输出 `qa_pass` / `failed` / `blocked` / `unproven` |
+| `flow-supervisor` | 监督交接、ACK、超时重投、断链恢复 | 所有必须交接项均为 `sent` / `acknowledged` / `blocked`，无悬空 `pending` |
 
 后续可以通过 Team Agent Request 增加 `ui`、`frontend`、`interaction`、`backend`、`ops`、`data` 等专项 Agent。专项 Agent 只能关闭自己的专业范围，不能宣布整条链路完成。
 
@@ -73,7 +75,15 @@ prod-diagnosis -> product -> dev -> qa -> product -> prod-diagnosis
 user -> product(Intake + Triage + PRD/索引) -> dev -> qa -> product
 ```
 
-产品 Agent 整理完成后必须投递开发 Agent，不能停在需求整理；开发完成后必须投递 QA；QA 通过后必须回到产品验收。
+产品 Agent 整理完成后必须投递开发 Agent，不能停在需求整理；开发完成后必须投递 QA；QA 通过后必须回到产品验收。每一次交接都必须记录 `handoff_delivery_status` 和目标线程；没有真实投递记录时，当前阶段不能关闭。
+
+产品 Agent 投递 dev 前必须先完成 Product Design Complete：
+
+- 对照用户原始输入逐条覆盖，不能只做初稿。
+- 完成功能设计、前端状态设计、后端/API/worker 设计、数据流转设计、权限安全和边界场景。
+- 输出 QA 可执行的验收口径。
+- 做遗漏自检；发现 `partial` 或 `blocked` 时不得投递 dev。
+- 用户在 product 线程要求“执行/实现/修复”时，product 只能生成并投递 dev handoff，不能自己改代码。
 
 ### 4.3 小 Bug 快修
 
@@ -119,7 +129,22 @@ Mini Bug Card -> dev -> QA 定向验收 -> product/main 接受
 - `blocked`：缺信息、缺权限或环境不可达的动作。
 - `unproven`：尚无证据证明的结论。
 - `next_route`：下一步进入 Intake、Triage、quick_fix、batch、dev、qa、product_acceptance、production_verify 或 rule_backfill。
+- `handoff_delivery_status`：本轮如有下游 Agent，必须是 `sent`、`acknowledged` 或 `blocked`；不能停在 `pending` 后宣称完成。
 
-## 7. 本目录历史
+## 7. Flow Supervisor
+
+Flow Supervisor 可以由主控线程承担，也可以单独开长期线程。它不替代 product/dev/qa/prod-diagnosis 的专业判断，只负责流程不断链。
+
+监督规则：
+
+- 扫描 `agent-status-board.md` 中 `handoff_required=true` 且 `handoff_delivery_status` 不是 `sent/acknowledged/blocked` 的行。
+- 检查 `ack_deadline`；目标 Agent 未 ACK 时重发原 handoff，或标记 `blocked` 并写明原因。
+- 检查阶段关闭条件；`qa_pass` 未投递 product、`product_accepted` 未投递 Release Gate 或 production verify、线上问题未回到 prod-diagnosis，均视为断链。
+- 每次重发必须增加 `retry_count`，并把 `supervisor_action` 写回状态看板。
+- 监督 Agent 只能恢复消息流和状态，不得替 product 补需求设计、替 dev 改代码、替 QA 判通过。
+
+## 8. 本目录历史
 
 [runs/2026-06-27-docs-practice.md](runs/2026-06-27-docs-practice.md) 记录了第一次文档级四 Agent 演练。该记录证明线程和文件交接能跑通，但不代表任何线上业务恢复。
+
+[runs/2026-06-28-handoff-supervision-upgrade.md](runs/2026-06-28-handoff-supervision-upgrade.md) 记录了真实使用中暴露的交接断链、product 越权实现和产品设计半成品问题，并补充强制投递、Product Design Complete 与 Flow Supervisor。
