@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, Action, OperationTarget, Task, TaskMembershipAdmissionItem, Tenant, TgAccount, TgGroup
@@ -52,9 +53,17 @@ def lock_membership_admission_snapshot(session: Session, task: Task, now: dateti
         )
         for account_id in account_ids
     ]
-    session.add_all(items)
+    try:
+        with session.begin_nested():
+            session.add_all(items)
+            session.flush()
+    except IntegrityError:
+        existing = _items_for_task(session, task)
+        if not existing:
+            raise
+        _refresh_snapshot_stats(task, existing)
+        return existing
     _refresh_snapshot_stats(task, items)
-    session.flush()
     return items
 
 

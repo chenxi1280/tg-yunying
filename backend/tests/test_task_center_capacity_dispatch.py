@@ -12,6 +12,7 @@ from app.integrations.telegram import OperationResult, SendResult
 from app.models import Action, DailyRuntimeStat, ExecutionAttempt, FailureType, GroupContextMessage, OperationTarget, ReviewQueue, RuntimeCleanupAudit, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now
 from app.services.task_center import dispatcher
+from app.services.task_center import payloads as task_payloads
 from app.services.task_center.executors import group_ai_chat
 from app.services.task_center import service as task_service
 from app.services.task_center import account_pool
@@ -97,7 +98,7 @@ def _redis_bucket_settings(**overrides):
 def test_claim_actions_uses_claiming_then_confirms_executing_with_account_lock():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
+    now_value = datetime(2026, 6, 27, 12, 0, 0)
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -220,6 +221,48 @@ def test_claim_actions_skips_resolved_group_rescue_invite_before_runtime_reserva
         assert action.status == "skipped"
         assert action.result["error_code"] == "admission_retry_target_already_joined"
         assert action.result["rescue_status"] == "already_joined_skipped"
+
+
+@pytest.mark.no_postgres
+def test_release_runtime_resources_keeps_later_holder_inflight() -> None:
+    old_action = Action(id="old-action", account_id=11)
+    dispatcher._IN_FLIGHT_ACCOUNTS.add(11)
+    dispatcher._ACTION_RESERVATIONS["new-action"] = dispatcher._runtime_resources._RuntimeReservation(account_id=11)
+
+    dispatcher._release_runtime_resources(old_action)
+
+    assert 11 in dispatcher._IN_FLIGHT_ACCOUNTS
+    assert "new-action" in dispatcher._ACTION_RESERVATIONS
+
+
+@pytest.mark.no_postgres
+def test_action_dedupe_key_ignores_dynamic_generation_metadata() -> None:
+    task = Task(id="task-dedupe", tenant_id=1, stats={"current_plan_batch_key": "batch-1"})
+    payload = {
+        "group_id": 7,
+        "message_text": "同一条业务发言",
+        "cycle_id": "cycle-a",
+        "turn_index": 2,
+        "ai_generation_id": "gen-a",
+        "ai_generation_tokens": 128,
+        "ai_generation_history": "draft-a",
+        "context_message_ids": [1, 2, 3],
+        "context_snapshot_message_id": 3,
+    }
+    changed_dynamic = {
+        **payload,
+        "ai_generation_id": "gen-b",
+        "ai_generation_tokens": 256,
+        "ai_generation_history": "draft-b",
+        "context_message_ids": [2, 3, 4],
+        "context_snapshot_message_id": 4,
+    }
+    changed_business = {**changed_dynamic, "message_text": "另一条业务发言"}
+
+    first_key = task_payloads._action_dedupe_key(task, "batch-1", "send_message", 11, payload)
+
+    assert task_payloads._action_dedupe_key(task, "batch-1", "send_message", 11, changed_dynamic) == first_key
+    assert task_payloads._action_dedupe_key(task, "batch-1", "send_message", 11, changed_business) != first_key
 
 
 def test_claim_actions_reassigns_account_before_reserving_runtime_resources_and_dispatches(monkeypatch):
@@ -2413,7 +2456,8 @@ def test_retry_skips_expired_hard_hourly_bucket_without_rescheduling(monkeypatch
         assert current.result["retry_scheduled"] is True
 
 
-def test_target_admission_retry_reschedules_unknown_after_send_actions(monkeypatch):
+@pytest.mark.no_postgres
+def test_target_admission_retry_does_not_reschedule_unknown_after_send_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 26, 3, 20, 0)
@@ -2445,14 +2489,13 @@ def test_target_admission_retry_reschedules_unknown_after_send_actions(monkeypat
         )
         session.commit()
 
-        assert retry_failed_actions(session, task) == 1
+        assert retry_failed_actions(session, task) == 0
 
         action = session.get(Action, "action-unknown-admission")
-        assert action.status == "pending"
-        assert action.retry_count == 1
-        assert action.scheduled_at == now_value + timedelta(seconds=30)
-        assert action.executed_at is None
-        assert action.result["last_failure"]["error_code"] == "unknown_after_send"
+        assert action.status == "unknown_after_send"
+        assert action.retry_count == 0
+        assert action.executed_at == now_value - timedelta(minutes=5)
+        assert action.result["error_code"] == "unknown_after_send"
 
 
 def test_hard_hourly_replacement_scan_uses_planned_deficit():
@@ -2793,6 +2836,48 @@ def test_recovery_reprobes_existing_unknown_target_membership_action(monkeypatch
         assert link.can_send is True
 
 
+@pytest.mark.no_postgres
+def test_recovery_limits_existing_unknown_membership_reprobe_by_account_and_target(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    calls: list[tuple[int, str]] = []
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=7, tenant_id=1, title="青岛师范学院", target_type="group", tg_peer_id="@qdsfxy"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
+        session.add(Task(id="task-membership", tenant_id=1, name="retry", type="target_admission_retry", status="running", stats={}))
+        for index in range(3):
+            session.add(
+                Action(
+                    id=f"action-membership-{index}",
+                    tenant_id=1,
+                    task_id="task-membership",
+                    task_type="target_admission_retry",
+                    action_type="ensure_target_membership",
+                    account_id=11,
+                    status="unknown_after_send",
+                    scheduled_at=now_value - timedelta(hours=1, minutes=index),
+                    executed_at=now_value - timedelta(minutes=10 + index),
+                    payload={"channel_id": "@qdsfxy", "channel_target_id": 7, "target_type": "group", "require_send": True},
+                    result={"error_code": "unknown_after_send"},
+                )
+            )
+        session.commit()
+
+        def fake_probe(account_id, target_peer_id, *_args, **_kwargs):
+            calls.append((account_id, target_peer_id))
+            return OperationResult(False, detail="still unknown")
+
+        monkeypatch.setattr(task_service, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(task_service.gateway, "probe_target_capabilities", fake_probe)
+
+        assert _recover_stale_executing_actions(session, timeout_minutes=30) == 0
+
+        assert calls == [(11, "@qdsfxy")]
+
+
 def test_membership_prefers_existing_group_peer_over_stale_username(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -2925,6 +3010,83 @@ def test_group_ai_build_plan_canonicalizes_duplicate_username_target_before_memb
     assert action.payload["channel_target_id"] == 485
     assert action.payload["channel_id"] == "-1003583171851"
     assert action.payload["target_username"] == "zzjinli"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(group_ai_chat.random, "random", lambda: 0.0)
+    monkeypatch.setattr(group_ai_chat.random, "randint", lambda _start, _end: 2)
+
+    generated_configs: list[dict] = []
+
+    def fake_generate(_session, _tenant_id, config, *, count, target_label, history):  # noqa: ANN001
+        generated_configs.append(dict(config))
+        messages = ["王老师这边可以先看报名节奏", "材料清单我晚点再补一下", "择校顺序别排太满", "有问题先按节点问"]
+        return messages[:count], 11
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),
+                TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"),
+            ]
+        )
+        session.add_all(
+            [
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
+            ]
+        )
+        task = Task(
+            id="task-topic-teacher-burst",
+            tenant_id=1,
+            name="话题老师连发",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
+            pacing_config={"max_actions_per_hour": 120},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 4,
+                "reply_min_per_round": 0,
+                "allow_account_repeat": True,
+                "silent_mode_enabled": False,
+                "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+                "topic_directions": [{"title": "升学规划", "description": "围绕择校节奏聊", "weight": 1}],
+                "teacher_targets": [{"name": "王老师", "description": "负责报名答疑", "priority": 10}],
+                "consecutive_message_enabled": True,
+                "consecutive_message_min": 2,
+                "consecutive_message_max": 2,
+                "consecutive_message_probability": 1,
+            },
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+
+        assert group_ai_chat.build_plan(session, task) == 4
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.scheduled_at, Action.created_at)))
+
+    assert generated_configs[0]["active_topic_direction"]["title"] == "升学规划"
+    assert generated_configs[0]["active_teacher_target"]["name"] == "王老师"
+    assert [action.account_id for action in actions[:2]] == [11, 11]
+    assert actions[0].payload["burst_id"] == actions[1].payload["burst_id"]
+    assert actions[0].payload["burst_index"] == 1
+    assert actions[1].payload["burst_index"] == 2
+    assert actions[0].payload["burst_size"] == 2
+    assert actions[0].payload["topic_direction"]["title"] == "升学规划"
+    assert actions[0].payload["teacher_target"]["name"] == "王老师"
 
 
 def test_retry_failed_only_requeues_unknown_after_send_actions():

@@ -206,7 +206,7 @@ def render_markdown(results: list[CapacityResult]) -> str:
             "  --scenario 100:5 --scenario 300:10 --scenario 1000:30 \\",
             "  --gateway-mode fast,slow,flood_wait,slowmode,unknown_after_send \\",
             "  --output ../reports/capacity/latest.json \\",
-            "  --markdown ../docs/capacity-report-100-300-1000.md",
+            "  --markdown ../docs/02-architecture/reports/capacity-report-100-300-1000.md",
             "```",
             "",
         ]

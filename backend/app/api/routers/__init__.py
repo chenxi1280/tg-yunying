@@ -20,6 +20,7 @@ from .risk_control import router as risk_control_router
 from .system import router as system_router
 from .task_center import router as task_center_router
 from .target_profile import router as target_profile_router
+from .telegram_bot import router as telegram_bot_router
 
 
 router = APIRouter()
@@ -39,6 +40,7 @@ for sub_router in (
     groups_router,
     message_tasks_router,
     task_center_router,
+    telegram_bot_router,
     archives_router,
     audit_router,
 ):

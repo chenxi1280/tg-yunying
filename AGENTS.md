@@ -1,0 +1,38 @@
+# tg-yunying Agent Rules
+
+本项目使用 `docs/05-implementation/multi-agent-practice/` 作为多 Agent 协作协议。接到需求、Bug、线上问题或排障请求时，先阅读该目录，再执行。
+
+## 项目真相源
+
+- 产品口径：`docs/01-product/tg-ops-platform-prd.md` 和 `docs/03-feature-designs/`。
+- 数据流转：`docs/00-index/project-dataflow-index.md`。
+- 代码结构：`docs/00-index/project-structure-index.md`。
+- 生产运行：`docs/04-ops/deployment/PRODUCTION_RUNTIME.md` 和真实线上证据。
+- 多 Agent 状态：`docs/05-implementation/multi-agent-practice/agent-status-board.md`。
+
+## 多 Agent 流程
+
+- 所有输入先进入 Intake Card，再由 product 做 L0/L1/L2/L3 分级。
+- 线上问题必须走 `prod-diagnosis -> product -> dev -> qa -> product -> prod-diagnosis`。
+- product 整理完需求后必须投递 dev；dev 完成后必须投递 qa；qa 通过后必须回到 product 验收。
+- `qa_pass` 不等于产品接受；`product_accepted` 不等于线上恢复。
+- L3 只有真实生产 E4 证据才能写 `production_fixed`。
+
+## 快修与并行
+
+- 日常小 Bug 可走 `quick_fix`，但必须有 Mini Bug Card、定向 QA 和升级标准流程的触发条件。
+- 批量 Bug 不逐条派活，必须先做 Bug Batch Plan 和 Root Cause Grouping。
+- 多个可写 Agent 并行时必须登记 `locked_paths`，由 `merge_owner` 统一合并。
+
+## PRD 和索引
+
+- 需求、流程、验收标准或数据流转变化时，先更新 PRD / 专项设计 / 数据流转索引，再通知 dev。
+- 代码入口、模块边界、API、worker、页面数据流变化时，dev 必须更新项目结构索引，必要时同步数据流转索引。
+- 上游文档或索引在开发开始后变化时，product 必须发送 `resync`，不能只改文档。
+
+## 发布和验证
+
+- 生产发布路径默认是 `master -> release -> GitHub Actions Deploy Production`。
+- L2/L3 或影响生产的任务必须有 Release Gate。
+- 后端测试默认使用 `backend/.venv`。
+- 不允许 silent fallback、mock success 或未经验证的完成声明。

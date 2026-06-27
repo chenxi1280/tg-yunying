@@ -15,6 +15,7 @@ from app.models import AccountStatus, Action, FailureType, OperationTarget, Task
 from app.schemas import TenantGroupRescueSettingsUpdate
 from app.services.account_capacity import AccountCapacityDecision
 from app.services.task_center import dispatcher
+from app.services.task_center import membership_admission
 from app.services.task_center.account_pool import select_task_accounts
 from app.services.task_center.dispatcher import dispatch_action
 from app.services.task_center.group_rescue import permission_failure_count_for_send_action
@@ -165,6 +166,48 @@ def test_group_membership_admission_snapshot_excludes_rescue_admin_account() -> 
         items = lock_membership_admission_snapshot(session, task, now=NOW)
 
         assert [item.account_id for item in items] == [11]
+
+
+@pytest.mark.no_postgres
+def test_group_membership_admission_snapshot_returns_existing_items_after_race(monkeypatch) -> None:
+    with _session() as session:
+        _seed_rescue_target(session)
+        for item in session.scalars(select(TaskMembershipAdmissionItem).where(TaskMembershipAdmissionItem.task_id == "task-rescue")):
+            session.delete(item)
+        session.get(TgAccount, 11).pool_id = 5
+        task = session.get(Task, "task-rescue")
+        task.type_config = {"target_operation_target_id": 21, "account_group_ids": [5]}
+        session.commit()
+
+        existing_item = TaskMembershipAdmissionItem(
+            tenant_id=1,
+            task_id=task.id,
+            account_id=11,
+            target_id=21,
+            phase="pending",
+        )
+        calls = {"items": 0}
+
+        def fake_items_for_task(_session, _task):
+            calls["items"] += 1
+            return [] if calls["items"] == 1 else [existing_item]
+
+        original_flush = session.flush
+
+        def fake_flush():
+            from sqlalchemy.exc import IntegrityError
+
+            if not any(isinstance(item, TaskMembershipAdmissionItem) for item in session.new):
+                return original_flush()
+            raise IntegrityError("duplicate admission snapshot", {}, None)
+
+        monkeypatch.setattr(membership_admission, "_items_for_task", fake_items_for_task)
+        monkeypatch.setattr(session, "flush", fake_flush)
+
+        items = lock_membership_admission_snapshot(session, task, now=NOW)
+
+        assert items == [existing_item]
+        assert task.stats["admission_snapshot_total"] == 1
 
 
 def test_dispatch_skips_normal_actions_bound_to_rescue_admin_account(monkeypatch) -> None:

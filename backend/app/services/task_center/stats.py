@@ -17,7 +17,7 @@ from .pacing import ai_next_run_after, next_run_after
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
 DEFAULT_AUTO_RETRY_STATUSES = ("failed", "retryable_failed")
-TARGET_ADMISSION_AUTO_RETRY_STATUSES = ("failed", "retryable_failed", "unknown_after_send")
+TARGET_ADMISSION_AUTO_RETRY_STATUSES = ("failed", "retryable_failed")
 TARGET_ADMISSION_DEFAULT_MAX_RETRIES = 1
 TARGET_ADMISSION_DEFAULT_RETRY_DELAY_SECONDS = 30
 BUSINESS_MEMBERSHIP_ACTION_TYPES = ["ensure_channel_membership", "ensure_target_membership"]
