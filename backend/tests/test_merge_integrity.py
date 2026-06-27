@@ -3,8 +3,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+pytestmark = pytest.mark.no_postgres
 
 
 def test_alembic_versions_have_single_head():
@@ -31,7 +34,7 @@ def test_alembic_versions_have_single_head():
             referenced.update(item for item in down_revision if item)
 
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0065_capacity_occupied_idx"]
+    assert heads == ["0066_ai_group_hard_target_10"]
 
 
 def test_backend_test_names_are_unique_per_file():
