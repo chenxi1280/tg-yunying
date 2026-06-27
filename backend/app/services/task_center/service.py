@@ -1428,6 +1428,7 @@ def _recover_stale_executing_actions(session: Session, *, timeout_minutes: int =
 
 def _recover_existing_unknown_membership_actions(session: Session, now: datetime) -> int:
     recovered = 0
+    reprobed_identities: set[tuple[int, int, str]] = set()
     rows = session.execute(
         select(Action, Task)
         .join(Task, Task.id == Action.task_id)
@@ -1443,6 +1444,10 @@ def _recover_existing_unknown_membership_actions(session: Session, now: datetime
         result = dict(action.result or {})
         if result.get("unknown_membership_reprobe_status") == "failed":
             continue
+        identity = _unknown_membership_reprobe_identity(action)
+        if identity in reprobed_identities:
+            continue
+        reprobed_identities.add(identity)
         latest_attempt = session.scalar(
             select(ExecutionAttempt)
             .where(ExecutionAttempt.action_id == action.id)
@@ -1458,6 +1463,15 @@ def _recover_existing_unknown_membership_actions(session: Session, now: datetime
             "unknown_membership_reprobe_at": now.isoformat(),
         }
     return recovered
+
+
+def _unknown_membership_reprobe_identity(action: Action) -> tuple[int, int, str]:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return (
+        int(action.account_id or 0),
+        _as_int(payload.get("channel_target_id")),
+        str(payload.get("channel_id") or ""),
+    )
 
 
 def _recover_unknown_membership_action(

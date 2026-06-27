@@ -45,6 +45,7 @@ def _reserve_runtime_resources(action: Action) -> bool:
                 }
                 return False
             _IN_FLIGHT_ACCOUNTS.add(account_id)
+            _ACTION_RESERVATIONS[action.id] = _RuntimeReservation(account_id=account_id)
     redis_reservation = _reserve_redis_token(action)
     if redis_reservation is False:
         _release_runtime_resources(action)
@@ -68,16 +69,13 @@ def _reserve_runtime_resources(action: Action) -> bool:
 def _release_runtime_resources(action: Action) -> None:
     with _IN_FLIGHT_LOCK:
         reservation = _ACTION_RESERVATIONS.pop(action.id, None)
+        if reservation and reservation.account_id is not None:
+            _IN_FLIGHT_ACCOUNTS.discard(reservation.account_id)
     if reservation:
         for redis_key, redis_token in reservation.redis_reservations:
             _release_redis_reservation(redis_key, redis_token)
         if reservation.redis_account_lock:
             _release_redis_reservation(*reservation.redis_account_lock)
-    account_id = reservation.account_id if reservation else (int(action.account_id) if action.account_id is not None else None)
-    if account_id is None:
-        return
-    with _IN_FLIGHT_LOCK:
-        _IN_FLIGHT_ACCOUNTS.discard(account_id)
 
 
 def _reserve_redis_token(action: Action) -> tuple[tuple[str, str], ...] | None | bool:

@@ -218,6 +218,25 @@ PAYLOAD_MODELS = {
     "post_comment": PostCommentPayload,
 }
 
+DEDUPE_VOLATILE_PAYLOAD_FIELDS = frozenset(
+    {
+        "ai_generation_context_count",
+        "ai_generation_count",
+        "ai_generation_history",
+        "ai_generation_id",
+        "ai_generation_memory_count",
+        "ai_generation_status",
+        "ai_generation_tokens",
+        "album_segment_results",
+        "context_message_ids",
+        "context_snapshot_message_id",
+        "material_cache_wait_until",
+        "profile_hit_summary",
+        "source_sent_at",
+        "waiting_source_media_versions",
+    }
+)
+
 
 def validate_action_payload(action_type: str, payload: dict[str, Any]) -> BaseModel:
     model = PAYLOAD_MODELS.get(action_type)
@@ -285,10 +304,14 @@ def _action_dedupe_key(task: Task, plan_batch_key: str, action_type: str, accoun
     business_parts = {
         "action_type": action_type,
         "account_id": account_id,
-        "payload": payload_data,
+        "payload": _stable_payload_for_dedupe(payload_data),
     }
     digest = hashlib.sha256(json.dumps(business_parts, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
     return f"{task.tenant_id}:{plan_batch_key}:{digest}"
+
+
+def _stable_payload_for_dedupe(payload_data: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload_data.items() if key not in DEDUPE_VOLATILE_PAYLOAD_FIELDS}
 
 
 def create_send_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: SendMessagePayload) -> Action:
