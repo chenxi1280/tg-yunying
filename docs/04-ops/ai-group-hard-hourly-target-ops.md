@@ -380,15 +380,15 @@ master -> release -> push release -> GitHub Actions Deploy Production
 配置：
 
 ```text
-hourly_min_messages = 60
-账号数量 >= 60
+hourly_min_messages = 10
+账号数量 >= 10
 目标群可发送
 ```
 
 预期：
 
-- 当前小时不足 60 条时自动补量。
-- 成功达到 60 条后停止硬目标补量。
+- 当前小时不足 10 条时自动补量。
+- 成功达到 10 条后停止硬目标补量。
 - 任务 stats 显示 `met`。
 
 ### 9.2 高目标不可达场景
@@ -427,9 +427,9 @@ hourly_min_messages = 10
 配置：
 
 ```text
-目标 60
-成功 40
-当前小时待执行 20
+目标 10
+成功 6
+当前小时待执行 4
 ```
 
 预期：
@@ -442,9 +442,9 @@ hourly_min_messages = 10
 配置：
 
 ```text
-目标 60
-成功 40
-当前小时 pending 20，但 scheduled_at 已过
+目标 10
+成功 6
+当前小时 pending 4，但 scheduled_at 已过
 ```
 
 预期：
@@ -475,7 +475,7 @@ hourly_min_messages = 10
 
 ```text
 目标群需要验证码 / 加减验证 / 关注多个频道
-hourly_min_messages = 60
+hourly_min_messages = 10
 ```
 
 预期：
@@ -492,7 +492,7 @@ hourly_min_messages = 60
 配置：
 
 ```text
-hourly_min_messages = 60
+hourly_min_messages = 10
 目标群已 can_send
 MiMo/Mino Provider 健康
 ```
@@ -566,23 +566,23 @@ hard_hourly_recent_buckets
 正常：
 
 ```text
-AI 活跃群硬目标正常。本小时目标 60，成功 63，缺口 0，无硬目标阻塞。
+AI 活跃群硬目标正常。本小时目标 10，成功 10，缺口 0，无硬目标阻塞。
 ```
 
 追赶中：
 
 ```text
-AI 活跃群硬目标追赶中。本小时目标 60，成功 42，当前小时待执行 18，缺口已被待执行覆盖，计划时间未到。
+AI 活跃群硬目标追赶中。本小时目标 10，成功 7，当前小时待执行 3，缺口已被待执行覆盖，计划时间未到。
 ```
 
 执行滞后：
 
 ```text
-AI 活跃群硬目标存在执行滞后。本小时目标 60，成功 40，未来待执行 5，已过期未执行 15，缺口 15。需检查 dispatcher / worker 心跳和 claim 恢复。
+AI 活跃群硬目标存在执行滞后。本小时目标 10，成功 6，未来待执行 1，已过期未执行 3，缺口 3。需检查 dispatcher / worker 心跳和 claim 恢复。
 ```
 
 异常：
 
 ```text
-AI 活跃群硬目标未达成。本小时目标 60，成功 45，待执行 3，缺口 12。主要原因：账号容量不足 7、AI 质量过滤 3、TG FloodWait 2。已生成运营异常，需处理账号容量和目标权限。
+AI 活跃群硬目标未达成。本小时目标 10，成功 7，待执行 1，缺口 2。主要原因：账号容量不足 1、AI 质量过滤 1。已生成运营异常，需处理账号容量和目标权限。
 ```

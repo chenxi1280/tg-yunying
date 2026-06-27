@@ -478,6 +478,7 @@
 | `backend/migrations/versions/0063_task_action_detail_paging_index.py` | 43 | 数据库迁移：task action detail paging index，维护表结构、索引、字段默认值或历史数据修复。 | revision=0063_task_action_paging、down_revision=0062_group_rescue、upgrade()、downgrade() |
 | `backend/migrations/versions/0064_metrics_action_count_indexes.py` | 42 | 数据库迁移：metrics action count indexes，维护表结构、索引、字段默认值或历史数据修复。 | revision=0064_metrics_count_idx、down_revision=0063_task_action_paging、upgrade()、downgrade() |
 | `backend/migrations/versions/0065_capacity_occupied_indexes.py` | 60 | 数据库迁移：capacity occupied indexes，维护表结构、索引、字段默认值或历史数据修复。 | revision=0065_capacity_occupied_idx、down_revision=0064_metrics_count_idx、upgrade()、downgrade() |
+| `backend/migrations/versions/0066_ai_group_hard_target_10.py` | 108 | 数据库迁移：ai group hard target 10，维护表结构、索引、字段默认值或历史数据修复。 | revision=0066_ai_group_hard_target_10、down_revision=0065_capacity_occupied_idx、upgrade()、downgrade() |
 
 ### 前端应用入口/路由
 

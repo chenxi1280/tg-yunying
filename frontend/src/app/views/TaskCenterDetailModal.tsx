@@ -38,6 +38,30 @@ const deleteStatusLabel = (status?: string | null) => {
   return status ? labels[status] || status : '-';
 };
 
+const topicDirectionTags = (value: unknown) => {
+  const items = Array.isArray(value) ? value : [];
+  if (!items.length) return '-';
+  return (
+    <Space wrap>
+      {items.map((item: any, index) => (
+        <Tag key={`${item?.title || 'topic'}:${index}`}>{item?.title || '-'}</Tag>
+      ))}
+    </Space>
+  );
+};
+
+const teacherTargetTags = (value: unknown) => {
+  const items = Array.isArray(value) ? value : [];
+  if (!items.length) return '-';
+  return (
+    <Space wrap>
+      {items.map((item: any, index) => (
+        <Tag key={`${item?.name || 'teacher'}:${index}`}>{item?.name || '-'}</Tag>
+      ))}
+    </Space>
+  );
+};
+
 interface TaskCenterDetailModalProps {
   detail: TaskCenterDetail | null;
   canManageTasks: boolean;
@@ -306,6 +330,28 @@ export function TaskCenterDetailModal({
   const showAiTab = detail?.task.type === 'group_ai_chat';
   const showTargetTab = detail ? ['group_relay', 'channel_view', 'channel_like', 'channel_comment'].includes(detail.task.type) : false;
   const detailTabs = detail ? [
+    showAiTab ? {
+      key: 'ai-settings',
+      label: 'AI 设置',
+      children: (
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Descriptions
+            bordered
+            size="small"
+            column={2}
+            items={[
+              { key: 'topic_hint', label: '兼容话题', children: detail.task.type_config?.topic_hint || '-' },
+              { key: 'topic_directions', label: '话题方向', children: topicDirectionTags(detail.task.type_config?.topic_directions) },
+              { key: 'teacher_targets', label: '聊天对象老师', children: teacherTargetTags(detail.task.type_config?.teacher_targets) },
+              { key: 'burst_enabled', label: '同账号连发', children: detail.task.type_config?.consecutive_message_enabled ? '开启' : '关闭' },
+              { key: 'burst_window', label: '连发窗口', children: `${detail.task.type_config?.consecutive_message_min ?? 2}-${detail.task.type_config?.consecutive_message_max ?? 4}` },
+              { key: 'burst_probability', label: '连发概率', children: detail.task.type_config?.consecutive_message_probability ?? 0.3 },
+            ]}
+          />
+          {canManageTasks && <Button onClick={() => onEditTask(detail.task)}>编辑设置</Button>}
+        </Space>
+      ),
+    } : null,
     accountSecurityBatch ? {
       key: 'account-security-batch',
       label: TYPE_LABEL[accountSecurityBatch.system_task_type] || '账号安全批次',

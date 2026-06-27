@@ -37,7 +37,7 @@ export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
 };
 
 export const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号与节奏', '预检确认'];
-export const GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 60;
+export const GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 10;
 export const CHANNEL_COUNT_JITTER_DEFAULT = 0.2;
 
 export const OPERATION_PROFILE_TEMPLATES = [
@@ -183,6 +183,18 @@ export function parseKeyValueMap(value?: string | Record<string, string>): Recor
 
 export function formatKeyValueMap(value?: Record<string, string>): string {
   return value ? Object.entries(value).map(([key, role]) => `${key}=${role}`).join('\n') : '';
+}
+
+export function parseJsonArray(value?: string | unknown[]): unknown[] {
+  if (Array.isArray(value)) return value;
+  const text = String(value ?? '').trim();
+  if (!text) return [];
+  const parsed = JSON.parse(text);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+export function formatJsonArray(value?: unknown[]): string {
+  return Array.isArray(value) && value.length ? JSON.stringify(value, null, 2) : '';
 }
 
 export function normalizePromptTemplateType(value?: string): string {
@@ -374,9 +386,15 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       allow_account_repeat: true,
       repeat_cooldown_rounds: 2,
       chat_history_depth: 50,
+      topic_directions: '',
+      teacher_targets: '',
       messages_per_round_mode: 'auto',
       messages_per_round: 1,
       reply_min_per_round: 0,
+      consecutive_message_enabled: false,
+      consecutive_message_min: 2,
+      consecutive_message_max: 4,
+      consecutive_message_probability: 0.3,
       hard_hourly_target_enabled: true,
       hourly_min_messages: GROUP_AI_HARD_HOURLY_MIN_MESSAGES,
       hard_hourly_strategy: 'force_planning',
@@ -520,6 +538,8 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'rule_set_id',
       'rule_set_version_id',
       'topic_hint',
+      'topic_directions',
+      'teacher_targets',
       'slang_prompt_template_id',
       'tone',
       'participation_rate',
@@ -528,6 +548,10 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'messages_per_round_mode',
       'messages_per_round',
       'reply_min_per_round',
+      'consecutive_message_enabled',
+      'consecutive_message_min',
+      'consecutive_message_max',
+      'consecutive_message_probability',
       'hard_hourly_target_enabled',
       'hourly_min_messages',
       'hard_hourly_strategy',
@@ -591,6 +615,8 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
       'rule_set_id',
       'rule_set_version_id',
       'topic_hint',
+      'topic_directions',
+      'teacher_targets',
       'chat_history_depth',
       'ai_model',
       'system_prompt_override',
@@ -607,6 +633,10 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
       'messages_per_round_mode',
       'messages_per_round',
       'reply_min_per_round',
+      'consecutive_message_enabled',
+      'consecutive_message_min',
+      'consecutive_message_max',
+      'consecutive_message_probability',
       'hard_hourly_target_enabled',
       'hourly_min_messages',
       'hard_hourly_strategy',

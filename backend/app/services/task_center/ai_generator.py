@@ -661,6 +661,29 @@ def _looks_like_ai_provider_refusal(content: str) -> bool:
     return any(marker in normalized for marker in AI_PROVIDER_REFUSAL_MARKERS)
 
 
+def _active_topic_title(config: dict) -> str:
+    topic = config.get("active_topic_direction") if isinstance(config.get("active_topic_direction"), dict) else {}
+    return str(topic.get("title") or "").strip()
+
+
+def _active_topic_prompt(config: dict) -> str:
+    topic = config.get("active_topic_direction") if isinstance(config.get("active_topic_direction"), dict) else {}
+    title = str(topic.get("title") or "").strip()
+    description = str(topic.get("description") or "").strip()
+    if not title:
+        return ""
+    return f"本轮话题方向：{title}\n话题说明：{description}" if description else f"本轮话题方向：{title}"
+
+
+def _active_teacher_prompt(config: dict) -> str:
+    teacher = config.get("active_teacher_target") if isinstance(config.get("active_teacher_target"), dict) else {}
+    name = str(teacher.get("name") or "").strip()
+    description = str(teacher.get("description") or "").strip()
+    if not name:
+        return ""
+    return f"聊天对象老师：{name}\n老师说明：{description}" if description else f"聊天对象老师：{name}"
+
+
 def generate_group_messages(session: Session, tenant_id: int, config: dict, *, count: int, target_label: str, history: str = "") -> tuple[list[str], int]:
     personas = config.get("account_personas") if isinstance(config.get("account_personas"), dict) else {}
     persona_prompt = ""
@@ -678,12 +701,16 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
     topic_thread_prompt = f"话题脉络：\n{topic_thread}" if topic_thread else ""
     topic_plan = str(config.get("topic_plan") or "").strip()
     topic_plan_prompt = f"本轮话题计划：\n{topic_plan}" if topic_plan else ""
+    active_topic_prompt = _active_topic_prompt(config)
+    active_teacher_prompt = _active_teacher_prompt(config)
     target_profile_prompt = _target_profile_style_prompt(config.get("target_profile_style"), audience="group")
     slang_prompt = _slang_system_prompt(session, tenant_id, config)
     requirements = "\n".join(
         part
         for part in [
             config.get("topic_hint") or "",
+            active_topic_prompt,
+            active_teacher_prompt,
             topic_thread_prompt,
             topic_plan_prompt,
             target_profile_prompt,
@@ -699,7 +726,7 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
     contents, tokens = generate_contents(
         session,
         tenant_id,
-        topic=config.get("topic_hint") or "群聊日常活跃",
+        topic=_active_topic_title(config) or config.get("topic_hint") or "群聊日常活跃",
         requirements=requirements,
         provider_id=config.get("ai_provider_id"),
         model_name=_group_chat_model(config),
@@ -723,10 +750,14 @@ def generate_group_reply_messages(
 ) -> tuple[list[str], int]:
     reply_lines = "\n".join(_reply_target_line(index, item) for index, item in enumerate(reply_targets, start=1))
     target_profile_prompt = _target_profile_style_prompt(config.get("target_profile_style"), audience="group")
+    active_topic_prompt = _active_topic_prompt(config)
+    active_teacher_prompt = _active_teacher_prompt(config)
     requirements = "\n".join(
         part
         for part in [
             config.get("topic_hint") or "",
+            active_topic_prompt,
+            active_teacher_prompt,
             f"引用目标：\n{reply_lines}" if reply_lines else "",
             f"群聊上下文：\n{history}" if history else "",
             target_profile_prompt,
@@ -737,7 +768,7 @@ def generate_group_reply_messages(
     contents, tokens = generate_contents(
         session,
         tenant_id,
-        topic=config.get("topic_hint") or "群引用回复",
+        topic=_active_topic_title(config) or config.get("topic_hint") or "群引用回复",
         requirements=_sanitize_sensitive_context(requirements),
         provider_id=config.get("ai_provider_id"),
         model_name=_group_chat_model(config),

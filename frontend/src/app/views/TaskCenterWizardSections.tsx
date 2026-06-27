@@ -124,7 +124,7 @@ export function WizardTypeConfig({
       validator(_: unknown, value: number | null) {
         if (!getFieldValue('hard_hourly_target_enabled')) return Promise.resolve();
         if (Number.isInteger(Number(value)) && Number(value) >= GROUP_AI_HARD_HOURLY_MIN_MESSAGES) return Promise.resolve();
-        return Promise.reject(new Error('开启后必须填写不小于 60 的整数'));
+        return Promise.reject(new Error(`开启后必须填写不小于 ${GROUP_AI_HARD_HOURLY_MIN_MESSAGES} 的整数`));
       },
     }),
   ];
@@ -155,6 +155,12 @@ export function WizardTypeConfig({
         {ruleFields}
         <div className="form-grid">
           <Form.Item name="topic_hint" label="话题方向（可选）"><Input.TextArea rows={2} placeholder="不填时系统会按群目标方向或自然开场自动起聊" /></Form.Item>
+          <Form.Item name="topic_directions" label="多个话题方向">
+            <Input.TextArea rows={5} placeholder={'[{"title":"升学规划","description":"围绕择校节奏聊","weight":1}]'} />
+          </Form.Item>
+          <Form.Item name="teacher_targets" label="聊天对象老师">
+            <Input.TextArea rows={5} placeholder={'[{"name":"王老师","description":"负责报名答疑","priority":10}]'} />
+          </Form.Item>
           <Form.Item name="tone" label="语气"><Select options={[{ value: 'auto', label: '自动' }, { value: 'casual', label: '口语' }, { value: 'professional', label: '正式' }, { value: 'mixed', label: '混合' }]} /></Form.Item>
           <Form.Item name="slang_prompt_template_id" label="AI 黑话配置">
             <Select allowClear options={slangOptions} placeholder="选择系统设置里的 AI 黑话词表" />
@@ -162,6 +168,10 @@ export function WizardTypeConfig({
           <Form.Item name="messages_per_round_mode" label="每轮发言"><Select options={[{ value: 'auto', label: '系统自动判定' }, { value: 'manual', label: '手动指定' }]} /></Form.Item>
           <Form.Item name="messages_per_round" label="每轮总发言数"><InputNumber min={1} onChange={markMessagesPerRoundManual} /></Form.Item>
           <Form.Item name="reply_min_per_round" label="每轮最少引用回复数" dependencies={['messages_per_round']} rules={replyMinPerRoundRules}><InputNumber min={0} /></Form.Item>
+          <Form.Item name="consecutive_message_enabled" label="同账号连发"><Select options={[{ value: true, label: '开启' }, { value: false, label: '关闭' }]} /></Form.Item>
+          <Form.Item name="consecutive_message_min" label="连发最少条数"><InputNumber min={2} max={4} precision={0} /></Form.Item>
+          <Form.Item name="consecutive_message_max" label="连发最多条数"><InputNumber min={2} max={4} precision={0} /></Form.Item>
+          <Form.Item name="consecutive_message_probability" label="连发概率"><InputNumber min={0} max={1} step={0.05} /></Form.Item>
           <Form.Item name="hard_hourly_strategy" hidden><Input /></Form.Item>
           <Form.Item name="hard_hourly_target_enabled" valuePropName="checked">
             <Checkbox onChange={(event) => {

@@ -27,6 +27,11 @@ class SendMessagePayload(BaseModel):
     account_role: str = ""
     account_memory: str = ""
     account_profile: str = ""
+    topic_direction: dict[str, Any] = Field(default_factory=dict)
+    teacher_target: dict[str, Any] = Field(default_factory=dict)
+    burst_id: str = ""
+    burst_index: int = 0
+    burst_size: int = 0
     topic_thread: str = ""
     topic_plan: str = ""
     intent: str = ""

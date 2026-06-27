@@ -13,7 +13,7 @@ TaskTypeValue = Literal["group_ai_chat", "group_relay", "group_membership_admiss
 TaskStatusValue = Literal["draft", "pending", "running", "paused", "target_reached", "wrapping_up", "completed", "stopped", "failed", "deleted"]
 ActionStatusValue = Literal["pending", "executing", "success", "failed", "skipped"]
 ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
-GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 60
+GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 10
 CHANNEL_COUNT_JITTER_DEFAULT = 0.2
 MAX_TOTAL_COMMENT_JITTER = 0.3
 
@@ -146,6 +146,22 @@ class SourceGroup(BaseModel):
         return self
 
 
+class GroupAITopicDirection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=60)
+    description: str = Field(default="", max_length=240)
+    weight: float = Field(default=1, ge=0.01, le=100)
+
+
+class GroupAITeacherTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=60)
+    description: str = Field(default="", max_length=240)
+    priority: int = Field(default=1, ge=1, le=100)
+
+
 class GroupAIChatConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -158,6 +174,8 @@ class GroupAIChatConfig(BaseModel):
     rule_set_version_id: int | None = None
     target_group_name: str = ""
     topic_hint: str | None = None
+    topic_directions: list[GroupAITopicDirection] = Field(default_factory=list)
+    teacher_targets: list[GroupAITeacherTarget] = Field(default_factory=list)
     chat_history_depth: int = Field(default=50, ge=1, le=200)
     ai_model: str = ""
     system_prompt_override: str | None = None
@@ -175,6 +193,10 @@ class GroupAIChatConfig(BaseModel):
     messages_per_round_mode: Literal["auto", "manual"] = "auto"
     messages_per_round: int = Field(default=1, ge=1)
     reply_min_per_round: int = Field(default=0, ge=0)
+    consecutive_message_enabled: bool = False
+    consecutive_message_min: int = Field(default=2, ge=2, le=4)
+    consecutive_message_max: int = Field(default=4, ge=2, le=4)
+    consecutive_message_probability: float = Field(default=0.3, ge=0, le=1)
     hard_hourly_target_enabled: bool = True
     hourly_min_messages: int | None = Field(default=GROUP_AI_HARD_HOURLY_MIN_MESSAGES, ge=1)
     hard_hourly_strategy: Literal["force_planning"] = "force_planning"
@@ -205,12 +227,14 @@ class GroupAIChatConfig(BaseModel):
             raise ValueError("target_group_id、target_operation_target_id 或 target_input 至少填写一个")
         if self.reply_min_per_round > self.messages_per_round:
             raise ValueError("reply_min_per_round 不能大于 messages_per_round")
+        if self.consecutive_message_min > self.consecutive_message_max:
+            raise ValueError("consecutive_message_min 不能大于 consecutive_message_max")
         if not self.hard_hourly_target_enabled:
             raise ValueError("AI 活跃群必须启用每小时硬目标")
         if not self.hourly_min_messages:
             raise ValueError("AI 活跃群必须填写每小时最低发送量")
         if self.hourly_min_messages < GROUP_AI_HARD_HOURLY_MIN_MESSAGES:
-            raise ValueError("AI 活跃群每小时最低发送量不能低于 60")
+            raise ValueError(f"AI 活跃群每小时最低发送量不能低于 {GROUP_AI_HARD_HOURLY_MIN_MESSAGES}")
         return self
 
 
@@ -483,6 +507,8 @@ class TaskSettingsUpdate(TaskUpdate):
     model_config = ConfigDict(extra="forbid")
 
     topic_hint: str | None = None
+    topic_directions: list[GroupAITopicDirection] | None = None
+    teacher_targets: list[GroupAITeacherTarget] | None = None
     chat_history_depth: int | None = Field(default=None, ge=1, le=200)
     ai_model: str | None = None
     system_prompt_override: str | None = None
@@ -500,6 +526,10 @@ class TaskSettingsUpdate(TaskUpdate):
     messages_per_round_mode: Literal["auto", "manual"] | None = None
     messages_per_round: int | None = Field(default=None, ge=1)
     reply_min_per_round: int | None = Field(default=None, ge=0)
+    consecutive_message_enabled: bool | None = None
+    consecutive_message_min: int | None = Field(default=None, ge=2, le=4)
+    consecutive_message_max: int | None = Field(default=None, ge=2, le=4)
+    consecutive_message_probability: float | None = Field(default=None, ge=0, le=1)
     hard_hourly_target_enabled: bool | None = None
     hourly_min_messages: int | None = Field(default=None, ge=1)
     hard_hourly_strategy: Literal["force_planning"] | None = None
@@ -574,6 +604,14 @@ class TaskSettingsUpdate(TaskUpdate):
     language: str | None = None
     max_comment_length: int | None = Field(default=None, ge=1)
     max_comments_per_account_per_hour: int | None = Field(default=None, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def validate_consecutive_window(self) -> "TaskSettingsUpdate":
+        if self.consecutive_message_min is None or self.consecutive_message_max is None:
+            return self
+        if self.consecutive_message_min > self.consecutive_message_max:
+            raise ValueError("consecutive_message_min 不能大于 consecutive_message_max")
+        return self
 
 
 class TaskSourceFilterOverrideRequest(BaseModel):

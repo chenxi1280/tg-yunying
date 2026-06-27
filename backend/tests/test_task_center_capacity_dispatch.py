@@ -98,7 +98,7 @@ def _redis_bucket_settings(**overrides):
 def test_claim_actions_uses_claiming_then_confirms_executing_with_account_lock():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    now_value = _now()
+    now_value = datetime(2026, 6, 27, 12, 0, 0)
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
@@ -2911,6 +2911,83 @@ def test_group_ai_build_plan_canonicalizes_duplicate_username_target_before_memb
     assert action.payload["channel_target_id"] == 485
     assert action.payload["channel_id"] == "-1003583171851"
     assert action.payload["target_username"] == "zzjinli"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(group_ai_chat.random, "random", lambda: 0.0)
+    monkeypatch.setattr(group_ai_chat.random, "randint", lambda _start, _end: 2)
+
+    generated_configs: list[dict] = []
+
+    def fake_generate(_session, _tenant_id, config, *, count, target_label, history):  # noqa: ANN001
+        generated_configs.append(dict(config))
+        messages = ["王老师这边可以先看报名节奏", "材料清单我晚点再补一下", "择校顺序别排太满", "有问题先按节点问"]
+        return messages[:count], 11
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),
+                TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"),
+            ]
+        )
+        session.add_all(
+            [
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
+            ]
+        )
+        task = Task(
+            id="task-topic-teacher-burst",
+            tenant_id=1,
+            name="话题老师连发",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
+            pacing_config={"max_actions_per_hour": 120},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 4,
+                "reply_min_per_round": 0,
+                "allow_account_repeat": True,
+                "silent_mode_enabled": False,
+                "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+                "topic_directions": [{"title": "升学规划", "description": "围绕择校节奏聊", "weight": 1}],
+                "teacher_targets": [{"name": "王老师", "description": "负责报名答疑", "priority": 10}],
+                "consecutive_message_enabled": True,
+                "consecutive_message_min": 2,
+                "consecutive_message_max": 2,
+                "consecutive_message_probability": 1,
+            },
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+
+        assert group_ai_chat.build_plan(session, task) == 4
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.scheduled_at, Action.created_at)))
+
+    assert generated_configs[0]["active_topic_direction"]["title"] == "升学规划"
+    assert generated_configs[0]["active_teacher_target"]["name"] == "王老师"
+    assert [action.account_id for action in actions[:2]] == [11, 11]
+    assert actions[0].payload["burst_id"] == actions[1].payload["burst_id"]
+    assert actions[0].payload["burst_index"] == 1
+    assert actions[1].payload["burst_index"] == 2
+    assert actions[0].payload["burst_size"] == 2
+    assert actions[0].payload["topic_direction"]["title"] == "升学规划"
+    assert actions[0].payload["teacher_target"]["name"] == "王老师"
 
 
 def test_retry_failed_only_requeues_unknown_after_send_actions():

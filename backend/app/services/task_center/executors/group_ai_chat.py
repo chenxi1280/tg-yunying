@@ -100,6 +100,7 @@ def build_plan(session: Session, task: Task) -> int:
             mark_plan_result(task, hard_progress, 0, {"target_permission": max(1, int(hard_progress.get("deficit") or 1))})
         return 0
     target_label = target.title if target and target.tenant_id == task.tenant_id else group.title
+    config = _with_active_conversation_targets(config, group)
     accounts = _select_accounts_for_plan(session, task, group, hard_progress)
     if not accounts:
         error_message, reason = _account_shortage_reason(session, task, group, hard_progress)
@@ -246,6 +247,8 @@ def build_plan(session: Session, task: Task) -> int:
     prepared_actions: list[tuple[int, datetime, SendMessagePayload]] = []
     capacity_reservations: list[AccountCapacityReservation] = []
     capacity_cache = AccountCapacityCache()
+    burst_plan = _consecutive_burst_plan(round_config, len(quality_items), allow_account_repeat, cycle_id)
+    burst_account = None
     created = 0
     for index, quality_item in enumerate(quality_items):
         content = str(quality_item.get("content") or "")
@@ -258,10 +261,11 @@ def build_plan(session: Session, task: Task) -> int:
                 continue
             content = policy_result.content
         planned_at = times[index]
+        candidate_accounts = [burst_account] if burst_account and index in burst_plan else selected
         account, planned_at = _choose_capacity_slot(
             session,
             task,
-            selected,
+            candidate_accounts,
             planned_at,
             index,
             used_account_ids,
@@ -274,6 +278,8 @@ def build_plan(session: Session, task: Task) -> int:
             _hard_blocker_inc(hard_blockers, "account_capacity", hard_progress)
             stats_inc(task, "skipped_count")
             continue
+        if burst_plan and index == min(burst_plan):
+            burst_account = account
         used_account_ids.add(account.id)
         has_native_reply = _reply_target_message_id(quality_item) is not None
         filtered_content = content
@@ -313,6 +319,9 @@ def build_plan(session: Session, task: Task) -> int:
                     account_role=_role_for_account(account.id, index, config),
                     account_memory=account_memories.get(str(account.id), ""),
                     account_profile=account_profiles.get(str(account.id), ""),
+                    topic_direction=dict(config.get("active_topic_direction") or {}),
+                    teacher_target=dict(config.get("active_teacher_target") or {}),
+                    **burst_plan.get(index, {}),
                     topic_thread=topic_thread,
                     topic_plan=topic_plan,
                     intent=_intent_for_turn(index),
@@ -1082,21 +1091,79 @@ def _prioritize_account_memory(accounts: list, account_memories: dict[str, str])
     return sorted(accounts, key=lambda account: 0 if account_memories.get(str(account.id)) else 1)
 
 
+def _with_active_conversation_targets(config: dict, group: TgGroup) -> dict:
+    topic = _choose_topic_direction(config, group)
+    teacher = _choose_teacher_target(config)
+    return {**config, "active_topic_direction": topic, "active_teacher_target": teacher}
+
+
+def _choose_topic_direction(config: dict, group: TgGroup) -> dict:
+    directions = [item for item in config.get("topic_directions") or [] if str(item.get("title") or "").strip()]
+    if directions:
+        total = sum(max(0.01, float(item.get("weight") or 1)) for item in directions)
+        marker = random.random() * total
+        cursor = 0.0
+        for item in directions:
+            cursor += max(0.01, float(item.get("weight") or 1))
+            if marker <= cursor:
+                return dict(item)
+    fallback = str(config.get("topic_hint") or group.topic_direction or "群聊日常活跃").strip()
+    return {"title": fallback, "description": "", "weight": 1}
+
+
+def _choose_teacher_target(config: dict) -> dict:
+    teachers = [item for item in config.get("teacher_targets") or [] if str(item.get("name") or "").strip()]
+    if not teachers:
+        return {}
+    return dict(sorted(teachers, key=lambda item: int(item.get("priority") or 1), reverse=True)[0])
+
+
+def _active_topic_text(config: dict, group: TgGroup) -> str:
+    topic = config.get("active_topic_direction") or _choose_topic_direction(config, group)
+    title = str(topic.get("title") or "").strip()
+    description = str(topic.get("description") or "").strip()
+    return f"{title}：{description}" if title and description else title
+
+
+def _active_teacher_text(config: dict) -> str:
+    teacher = config.get("active_teacher_target") or {}
+    name = str(teacher.get("name") or "").strip()
+    description = str(teacher.get("description") or "").strip()
+    return f"{name}：{description}" if name and description else name
+
+
+def _consecutive_burst_plan(config: dict, count: int, allow_repeat: bool, cycle_id: str) -> dict[int, dict]:
+    if not allow_repeat or not bool(config.get("consecutive_message_enabled")):
+        return {}
+    minimum = int(config.get("consecutive_message_min") or 2)
+    maximum = int(config.get("consecutive_message_max") or minimum)
+    if count < minimum or random.random() > float(config.get("consecutive_message_probability") or 0):
+        return {}
+    size = min(count, random.randint(minimum, maximum))
+    burst_id = f"{cycle_id}:burst:1"
+    return {index: {"burst_id": burst_id, "burst_index": index + 1, "burst_size": size} for index in range(size)}
+
+
 def _bootstrap_history(config: dict, group: TgGroup) -> str:
-    topic = str(config.get("topic_hint") or group.topic_direction or "").strip()
+    topic = _active_topic_text(config, group)
     if not topic:
         topic = "围绕群内日常交流自然开场，轻松抛出一个大家容易接上的话题"
-    return f"当前群暂无可用历史消息。请以“{topic}”为方向，生成自然开场，不要提到系统、任务或 AI。"
+    teacher = _active_teacher_text(config)
+    suffix = f"，聊天对象参考“{teacher}”" if teacher else ""
+    return f"当前群暂无可用历史消息。请以“{topic}”为方向{suffix}，生成自然开场，不要提到系统、任务或 AI。"
 
 
 def _idle_continuation_history(config: dict, group: TgGroup, previous_ai_messages: list[str]) -> str:
-    topic = str(config.get("topic_hint") or group.topic_direction or "群聊日常活跃").strip()
+    topic = _active_topic_text(config, group) or "群聊日常活跃"
+    teacher = _active_teacher_text(config)
     recent_ai = " / ".join(_clean_topic_text(text) for text in previous_ai_messages[-3:])
     recent_ai = recent_ai.strip(" /")
     parts = [
         f"群内暂时没有新的真人消息。请围绕“{topic}”补一句具体小事，像群友随手回消息。",
         "必须避免重复上一轮表达，不要提到系统、任务或 AI。",
     ]
+    if teacher:
+        parts.append(f"聊天对象参考：{teacher}。")
     if recent_ai:
         parts.append(f"上一轮 AI 已说：{recent_ai}。请避开原句，只接一个轻量问题或泛化观察，不要编具体经历、到场感受、位置或回访。")
     return "\n".join(parts)
@@ -1144,9 +1211,12 @@ def _mark_quality_skip(
 
 def _topic_thread_summary(config: dict, group: TgGroup, context_rows: list, previous_ai_messages: list[str]) -> str:
     parts: list[str] = []
-    topic = str(config.get("topic_hint") or group.topic_direction or "").strip()
+    topic = _active_topic_text(config, group)
     if topic:
         parts.append(f"主线方向：{topic[:80]}")
+    teacher = _active_teacher_text(config)
+    if teacher:
+        parts.append(f"聊天对象：{teacher[:80]}")
     recent_human = [_clean_topic_text(getattr(row, "content", "")) for row in context_rows[-3:]]
     recent_human = [text for text in recent_human if text]
     if recent_human:
@@ -1161,11 +1231,13 @@ def _topic_thread_summary(config: dict, group: TgGroup, context_rows: list, prev
 
 
 def _topic_plan_summary(config: dict, group: TgGroup, topic_thread: str, turn_count: int) -> str:
-    topic = str(config.get("topic_hint") or group.topic_direction or "群聊日常活跃").strip()
+    topic = _active_topic_text(config, group) or "群聊日常活跃"
+    teacher = _active_teacher_text(config)
     anchors = [part.strip() for part in re.split(r"[；/]", topic_thread or "") if part.strip()]
     anchor = anchors[-1] if anchors else f"主线方向：{topic[:80]}"
+    teacher_hint = f"，聊天对象参考“{teacher[:40]}”" if teacher else ""
     steps = [
-        f"1. 贴近现场：从“{anchor[:80]}”里挑一个最像真人会接的点，短句承接。",
+        f"1. 贴近现场：从“{anchor[:80]}”里挑一个最像真人会接的点{teacher_hint}，短句承接。",
         f"2. 补充一点生活化细节：只给一个和“{topic[:60]}”相关的小信息或亲身口吻，不像科普。",
         "3. 轻轻问一句：问题要小、具体、容易回，不要问“大家怎么看”。",
         "4. 收到一个具体细节上：把内容放回上一条真人上下文，别总结成公告。",
@@ -1471,7 +1543,14 @@ def _is_human_context_row(row) -> bool:
 
 
 def _topic_relevant_context_rows(config: dict, rows: list) -> list:
-    topic = str(config.get("topic_hint") or "").strip()
+    active_topic = config.get("active_topic_direction") or {}
+    topic_parts = [
+        str(active_topic.get("title") or ""),
+        str(active_topic.get("description") or ""),
+        _active_teacher_text(config),
+        str(config.get("topic_hint") or ""),
+    ]
+    topic = " ".join(part.strip() for part in topic_parts if part.strip())
     if not topic or not rows:
         return rows
     keywords = _topic_keywords(topic)
