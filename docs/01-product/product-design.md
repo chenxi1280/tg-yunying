@@ -267,7 +267,7 @@ AI 活跃群是循环型任务：
 
 AI 活跃群可以低频发送图片或表情包，但具体素材不由模型自由决定。AI 只输出情绪、意图、话题标签和 `material_intent`；规则引擎根据任务类型、目标群、账号角色、素材标签、表情包子类型、冷却和频控选择具体素材。表情包设计上支持图片伪表情包、静态 sticker、animated sticker、video sticker 和 custom emoji，但发送前必须校验账号、目标和网关能力。素材发送失败默认只跳过当前 Turn 或回退文本，不应让整轮 Cycle 失败。
 
-AI 活跃群每小时硬目标设计以 `docs/ai-group-hard-hourly-target-prd.md` 和 `docs/ai-group-hard-hourly-target-ops.md` 为准。开启硬目标后，任务可以设置每小时最低真实发送量，系统按当前小时成功数、待执行覆盖和缺口强推规划；未达标时必须展示账号容量、目标权限、上下文、AI 生成、质量过滤、内容风控、TG 限制或 dispatcher 延迟等真实原因，不能把 pending、skipped、failed 或 unknown_after_send 计为成功。
+AI 活跃群每小时硬目标设计以 `docs/03-feature-designs/ai-group-hard-hourly-target-prd.md` 和 `docs/04-ops/ai-group-hard-hourly-target-ops.md` 为准。开启硬目标后，任务可以设置每小时最低真实发送量，系统按当前小时成功数、待执行覆盖和缺口强推规划；未达标时必须展示账号容量、目标权限、上下文、AI 生成、质量过滤、内容风控、TG 限制或 dispatcher 延迟等真实原因，不能把 pending、skipped、failed 或 unknown_after_send 计为成功。
 
 校验结果：
 

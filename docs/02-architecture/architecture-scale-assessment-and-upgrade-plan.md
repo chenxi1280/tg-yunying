@@ -611,7 +611,7 @@ runtime_metric_snapshots
 
 - `backend/scripts/run_capacity_benchmark.py`
 - `reports/capacity/latest.json`
-- `docs/capacity-report-100-300-1000.md`
+- `docs/02-architecture/reports/capacity-report-100-300-1000.md`
 
 该脚本覆盖 100 / 300 / 1000 账号、fast / slow / flood_wait / slowmode / unknown_after_send mock gateway 模式，并输出 worker 数、并发数、claim limit、PostgreSQL pool、吞吐、oldest pending、unknown_after_send、重复发送数和单机边界。
 
@@ -726,7 +726,7 @@ runtime_metric_snapshots
 | 账号分片生效 | `ACCOUNT_SHARD_TOTAL` / `ACCOUNT_SHARD_INDEX` 配置存在，但 claim 和转派未使用 | claim 查询、账号转派、Telethon client 加载都限制在当前 shard | `backend/app/services/task_center/dispatcher.py`、`backend/app/services/task_center/account_pool.py`、`backend/app/services/accounts.py` | P3 |
 | Listener 独立 worker | listener runtime 仍由 task center 综合 drain 触发 | listener role 独立采集，source lease / shard 防重复，慢监听不拖慢发送 | `backend/app/services/task_center/listener_runtime.py`、`backend/app/services/task_center/service.py` | P4 |
 | Metrics 快照 | 运营数据主要实时查询，缺少容量快照 | 新增 metrics role 和 runtime snapshots，记录 pending、oldest age、吞吐、限流、worker、DB 等指标 | `backend/app/models/task_center.py` 或新增 metrics 模型、`backend/app/services/operations_center.py`、前端运营数据页 | P5 |
-| 压测脚本 | 已新增 mock gateway 容量模型和 100 / 300 / 1000 账号报告 | 继续接真实 PostgreSQL / Redis 压测，并把真实任务创建、claim、执行、metrics 纳入验收 | `backend/scripts/run_capacity_benchmark.py`、`docs/capacity-report-100-300-1000.md` | P5 |
+| 压测脚本 | 已新增 mock gateway 容量模型和 100 / 300 / 1000 账号报告 | 继续接真实 PostgreSQL / Redis 压测，并把真实任务创建、claim、执行、metrics 纳入验收 | `backend/scripts/run_capacity_benchmark.py`、`docs/02-architecture/reports/capacity-report-100-300-1000.md` | P5 |
 
 ### 10.3 大文件拆分优化
 

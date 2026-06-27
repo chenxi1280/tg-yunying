@@ -43,8 +43,8 @@
 ### Task 3: Docs And Verification
 
 **Files:**
-- Modify: `docs/tg-ops-platform-prd.md`
-- Modify: `docs/tg-ops-platform.md`
+- Modify: `docs/01-product/tg-ops-platform-prd.md`
+- Modify: `docs/01-product/tg-ops-platform.md`
 
 - [ ] Document that account coverage is a runtime visibility metric for AI active group and channel interaction tasks.
 - [ ] Run backend compile checks.

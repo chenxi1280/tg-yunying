@@ -77,5 +77,5 @@ cd backend && pytest tests/test_operations_center_runtime.py::test_group_ai_chat
 - [ ] **Step 2: Run diff whitespace check**
 
 ```bash
-git diff --check -- backend/app/services/task_center/executors/group_ai_chat.py backend/tests/test_operations_center_runtime.py docs/tg-ops-platform.md docs/tg-ops-platform-prd.md
+git diff --check -- backend/app/services/task_center/executors/group_ai_chat.py backend/tests/test_operations_center_runtime.py docs/01-product/tg-ops-platform.md docs/01-product/tg-ops-platform-prd.md
 ```

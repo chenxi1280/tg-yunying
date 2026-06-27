@@ -385,7 +385,7 @@ git diff --check
 
 - [ ] **Step 3: Audit design coverage**
 
-Re-read `docs/superpowers/specs/2026-06-16-group-membership-admission-task-design.md` and confirm every explicit requirement has current code or an explicit documented limitation.
+Re-read `docs/99-history/superpowers/specs/2026-06-16-group-membership-admission-task-design.md` and confirm every explicit requirement has current code or an explicit documented limitation.
 
 - [ ] **Step 4: Commit final fixes if needed**
 

@@ -1543,8 +1543,8 @@ def test_task_center_loads_account_support_data_only_for_forms():
 
 
 def test_core_pages_document_query_optimization_contract():
-    prd = (PROJECT_ROOT / "docs/tg-ops-platform-prd.md").read_text()
-    design = (PROJECT_ROOT / "docs/product-design.md").read_text()
+    prd = (PROJECT_ROOT / "docs/01-product/tg-ops-platform-prd.md").read_text()
+    design = (PROJECT_ROOT / "docs/01-product/product-design.md").read_text()
 
     for source in (prd, design):
         assert "页面数据加载契约" in source
@@ -1943,12 +1943,12 @@ def test_account_center_quick_searches_login_problem_accounts():
     assert "accountTable.setQuery('登录有问题')" in accounts_view
     assert "latest_login_flow: AccountLatestLoginFlow | null" in account_types
     assert "export type AccountLatestLoginFlow" in account_auth_types
-    assert "最近登录流水存在失败类型 / 失败详情" in (PROJECT_ROOT / "docs/tg-ops-platform-prd.md").read_text()
+    assert "最近登录流水存在失败类型 / 失败详情" in (PROJECT_ROOT / "docs/01-product/tg-ops-platform-prd.md").read_text()
 
 
 def test_account_center_prd_documents_login_problem_quick_search_scope():
-    prd = (PROJECT_ROOT / "docs/tg-ops-platform-prd.md").read_text()
-    design = (PROJECT_ROOT / "docs/account-security-hardening-design.md").read_text()
+    prd = (PROJECT_ROOT / "docs/01-product/tg-ops-platform-prd.md").read_text()
+    design = (PROJECT_ROOT / "docs/03-feature-designs/account-security-hardening-design.md").read_text()
 
     for source in (prd, design):
         assert "登录有问题" in source

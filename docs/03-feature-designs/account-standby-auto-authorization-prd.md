@@ -376,4 +376,4 @@
 
 ## 15. 与现有文档关系
 
-本 PRD 是 `docs/tg-ops-platform-prd.md` 中“开发者应用池与账号授权资产”和 `docs/account-security-hardening-design.md` 中“备用 session 自动补齐与自愈”的专项细化。若两处描述与本文冲突，以本文的一期验收口径为准。
+本 PRD 是 `docs/01-product/tg-ops-platform-prd.md` 中“开发者应用池与账号授权资产”和 `docs/03-feature-designs/account-security-hardening-design.md` 中“备用 session 自动补齐与自愈”的专项细化。若两处描述与本文冲突，以本文的一期验收口径为准。

@@ -1,6 +1,6 @@
 # TG 账号安全加固与资料初始化设计文档
 
-> 账号备用授权自动补齐的一期 PRD 见 `docs/account-standby-auto-authorization-prd.md`。当线上已维护备用 TG Developer App 时，账号管理仍必须以真实登录成功的 `standby_1 session` / `standby_2 session` 作为备用授权验收标准，不能把 Developer App 数量当成备用 session 数量。
+> 账号备用授权自动补齐的一期 PRD 见 `docs/03-feature-designs/account-standby-auto-authorization-prd.md`。当线上已维护备用 TG Developer App 时，账号管理仍必须以真实登录成功的 `standby_1 session` / `standby_2 session` 作为备用授权验收标准，不能把 Developer App 数量当成备用 session 数量。
 
 ## 1. 背景与目标
 

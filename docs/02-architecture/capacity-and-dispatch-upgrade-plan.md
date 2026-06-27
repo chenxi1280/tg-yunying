@@ -848,7 +848,7 @@ METRICS_INTERVAL_SECONDS=15
 交付：
 
 - 本方案文档。
-- `docs/tg-ops-platform.md` 同步容量升级口径。
+- `docs/01-product/tg-ops-platform.md` 同步容量升级口径。
 - 明确第一阶段先做 Action claim 与 Dispatcher，而不是先重做前端或重写 Telethon。
 
 验收：
@@ -972,7 +972,7 @@ METRICS_INTERVAL_SECONDS=15
 用数据确认容量边界。
 ```
 
-已新增首期容量模型脚本 `backend/scripts/run_capacity_benchmark.py`，并生成 `docs/capacity-report-100-300-1000.md` / `reports/capacity/latest.json`。该模型覆盖以下压测内容：
+已新增首期容量模型脚本 `backend/scripts/run_capacity_benchmark.py`，并生成 `docs/02-architecture/reports/capacity-report-100-300-1000.md` / `reports/capacity/latest.json`。该模型覆盖以下压测内容：
 
 - 1000 个模拟账号。
 - 20-30 个持续任务。
