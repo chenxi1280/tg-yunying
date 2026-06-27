@@ -56,6 +56,8 @@ interface Props {
     notify_ai_failures_enabled: boolean;
   }) => Promise<void>;
   onTestTenantBotMessage: (tenantId: number) => Promise<void>;
+  onRefreshTenantBotWebhook: (tenantId: number) => Promise<void>;
+  onDeleteTenantBotWebhook: (tenantId: number) => Promise<void>;
   onCreateAdminUser: () => void;
   onEditAdminUser: (user: AdminUser) => void;
   onCreateAiProvider: () => void;
@@ -101,6 +103,8 @@ export default function SystemConfigView({
   onSaveGroupRescueSettings,
   onSaveTenantBotSettings,
   onTestTenantBotMessage,
+  onRefreshTenantBotWebhook,
+  onDeleteTenantBotWebhook,
   onCreateAdminUser,
   onEditAdminUser,
   onCreateAiProvider,
@@ -154,6 +158,8 @@ export default function SystemConfigView({
               botSettings={tenantBotSettings}
               onSaveTenantBotSettings={onSaveTenantBotSettings}
               onTestTenantBotMessage={onTestTenantBotMessage}
+              onRefreshTenantBotWebhook={onRefreshTenantBotWebhook}
+              onDeleteTenantBotWebhook={onDeleteTenantBotWebhook}
               canManageBotSettings={hasPermission(currentUser, 'system.manage')}
               isActionPending={isActionPending}
             />

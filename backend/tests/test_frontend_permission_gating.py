@@ -1096,6 +1096,8 @@ def test_task_center_running_and_paused_states_are_visually_distinct():
 
 def test_task_center_ai_chat_account_distribution_controls_are_visible():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    detail = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
@@ -1111,6 +1113,21 @@ def test_task_center_ai_chat_account_distribution_controls_are_visible():
     assert "setFieldValue('messages_per_round_mode', 'manual')" in source
     assert "onChange={markMessagesPerRoundManual}" in source
     assert "准入策略" in source
+    assert 'name="account_coverage_mode"' in source
+    assert 'label="全账号日覆盖模式"' in source
+    assert 'name="per_account_daily_min_messages"' in source
+    assert 'name="per_account_daily_max_messages"' in source
+    assert "account_coverage_mode: values.account_coverage_mode ?? 'natural'" in view
+    assert "'account_coverage_mode'" in view_model
+    assert "'per_account_daily_min_messages'" in view_model
+    assert "'per_account_daily_max_messages'" in view_model
+    assert "target_account_count" in types
+    assert "blocked_reasons" in types
+    assert "estimated_completion_window" in types
+    assert "pending_accounts" in types
+    assert "预计补齐窗口" in detail
+    assert "阻塞原因" in detail
+    assert "近期待补账号" in detail
     assert 'name="auto_join_target"' in source
     assert 'name="auto_follow_required_channel"' in source
     assert 'name="auto_resolve_verification"' in source

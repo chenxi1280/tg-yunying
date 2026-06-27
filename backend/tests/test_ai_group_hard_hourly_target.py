@@ -458,6 +458,8 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
         return samples[:count], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
@@ -505,6 +507,153 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
     assert all(action.payload["hard_hourly_bucket"] == "2026-06-07T20:00:00+08:00" for action in actions)
     assert all(action.payload["hard_hourly_deficit_at_plan"] == 5 for action in actions)
     assert max(action.scheduled_at for action in actions) < datetime(2026, 6, 7, 21, 0)
+
+
+@pytest.mark.no_postgres
+def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+    captured: dict[str, object] = {}
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        captured["count"] = count
+        return [f"覆盖发言{index}" for index in range(count)], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._quality_filter_ai_messages",
+        lambda contents, _previous, **_kwargs: ([{"content": content} for content in contents], {}),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="全账号覆盖群", auth_status="已授权运营"))
+        for account_id in [101, 102, 103, 104]:
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", health_score=95))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        task = Task(
+            id="ai-all-accounts-daily",
+            tenant_id=1,
+            name="全账号日覆盖",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 4, "cooldown_per_account_minutes": 0},
+            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0, "max_actions_per_hour": 24},
+            type_config={
+                "target_group_id": 7,
+                "account_coverage_mode": "all_accounts_daily",
+                "per_account_daily_min_messages": 1,
+                "per_account_daily_max_messages": 2,
+                "coverage_window_hours": 24,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 1,
+                "participation_rate": 0.25,
+                "participation_jitter": 0,
+                "allow_account_repeat": False,
+                "fact_anchor_required": False,
+                "hard_hourly_target_enabled": False,
+            },
+            stats={"force_bootstrap_once": True},
+        )
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.account_id.asc())))
+
+    assert created == 1
+    assert captured["count"] == 1
+    assert [action.account_id for action in actions] == [101]
+    assert all(action.payload["account_coverage_mode"] == "all_accounts_daily" for action in actions)
+    assert all(action.payload["coverage_window_date"] == "2026-06-07" for action in actions)
+    assert all(action.payload["coverage_target_per_account"] == 1 for action in actions)
+    assert all(action.payload["coverage_account_completed_before_action"] == 0 for action in actions)
+    assert all(action.payload["coverage_account_remaining_before_action"] == 1 for action in actions)
+    assert all(action.payload["coverage_reason"] == "daily_account_coverage" for action in actions)
+
+
+@pytest.mark.no_postgres
+def test_group_ai_chat_all_accounts_daily_coverage_keeps_uncovered_before_memory(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        return [f"覆盖发言{index}" for index in range(count)], 0
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._quality_filter_ai_messages",
+        lambda contents, _previous, **_kwargs: ([{"content": content} for content in contents], {}),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="全账号覆盖群", auth_status="已授权运营"))
+        for account_id in [101, 102, 103, 104]:
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", health_score=95))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+        task = Task(
+            id="ai-coverage-memory-priority",
+            tenant_id=1,
+            name="覆盖优先不被记忆打断",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 4, "cooldown_per_account_minutes": 0},
+            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0, "max_actions_per_hour": 24},
+            type_config={
+                "target_group_id": 7,
+                "account_coverage_mode": "all_accounts_daily",
+                "per_account_daily_min_messages": 1,
+                "per_account_daily_max_messages": 2,
+                "coverage_window_hours": 24,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 2,
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "allow_account_repeat": False,
+                "fact_anchor_required": False,
+                "hard_hourly_target_enabled": False,
+            },
+            stats={"force_bootstrap_once": True},
+        )
+        session.add(task)
+        for account_id in [102, 104]:
+            session.add(
+                Action(
+                    id=f"covered-memory-{account_id}",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=account_id,
+                    status="success",
+                    scheduled_at=now_value,
+                    executed_at=now_value,
+                    payload={"message_text": f"账号{account_id}历史发言"},
+                )
+            )
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        actions = [
+            action
+            for action in session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.created_at.asc(), Action.id.asc()))
+            if action.status == "pending"
+        ]
+
+    assert created == 2
+    assert [action.account_id for action in actions] == [101, 103]
+    assert all(action.payload["coverage_account_remaining_before_action"] == 1 for action in actions)
+    assert all(action.payload["coverage_reason"] == "daily_account_coverage" for action in actions)
 
 
 def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeypatch):

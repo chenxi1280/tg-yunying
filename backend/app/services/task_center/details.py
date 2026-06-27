@@ -13,7 +13,7 @@ from .executors.group_ai_chat import account_profile_summaries
 from .executors.group_relay import relay_source_filter_reason
 from .fingerprints import content_fingerprint
 from .membership_recovery import classify_membership_recovery
-from .account_pool import task_account_coverage
+from .account_coverage import task_account_coverage
 from app.services.task_runtime_stage import derive_task_runtime_stage
 
 

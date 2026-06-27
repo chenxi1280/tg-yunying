@@ -97,6 +97,8 @@ export type TenantBotSettings = {
   ai_group_bot_enabled: boolean;
   telegram_bot_webhook_secret: string;
   telegram_bot_webhook_url: string;
+  telegram_bot_webhook_current_url: string;
+  telegram_bot_webhook_last_checked_at: string | null;
   telegram_bot_webhook_status: string;
   telegram_bot_last_error: string;
   notify_ai_failures_enabled: boolean;

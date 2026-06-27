@@ -26,8 +26,18 @@ export type HardHourlyRecentBucket = {
 };
 
 export type TaskAccountCoverage = {
+  mode?: 'natural' | 'all_accounts_daily';
   covered_count: number;
   eligible_count: number;
+  target_account_count?: number;
+  remaining_count?: number;
+  remaining_message_count?: number;
+  pending_admission_count?: number;
+  restricted_count?: number;
+  target_per_account?: number;
+  blocked_reasons?: Array<{ reason: string; count?: number; message?: string }>;
+  estimated_completion_window?: { status: string; estimated_min_hours?: number | null; label: string };
+  pending_accounts?: Array<{ account_id: number; display_name?: string; completed_count: number; target_count: number; remaining_count: number; reason: string }>;
   coverage_rate: number;
   coverage_percent: number;
   action_types: string[];

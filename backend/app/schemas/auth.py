@@ -3,6 +3,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.admin_chats import ADMIN_CHAT_ID_MAX_LENGTH
+
 from .api import ApiModel
 
 
@@ -48,7 +50,7 @@ class TenantNotificationSettingsOut(BaseModel):
 
 class TenantNotificationSettingsUpdate(BaseModel):
     notify_ai_failures_enabled: bool | None = None
-    admin_chat_id: str | None = Field(default=None, max_length=120)
+    admin_chat_id: str | None = Field(default=None, max_length=ADMIN_CHAT_ID_MAX_LENGTH)
     telegram_bot_token: str | None = Field(default=None, max_length=300)
 
 
@@ -62,13 +64,15 @@ class TenantBotSettingsOut(BaseModel):
     ai_group_bot_enabled: bool = False
     telegram_bot_webhook_secret: str = ""
     telegram_bot_webhook_url: str = ""
+    telegram_bot_webhook_current_url: str = ""
+    telegram_bot_webhook_last_checked_at: datetime | None = None
     telegram_bot_webhook_status: str = "not_configured"
     telegram_bot_last_error: str = ""
     notify_ai_failures_enabled: bool = False
 
 
 class TenantBotSettingsUpdate(BaseModel):
-    admin_chat_id: str | None = Field(default=None, max_length=120)
+    admin_chat_id: str | None = Field(default=None, max_length=ADMIN_CHAT_ID_MAX_LENGTH)
     telegram_bot_token: str | None = Field(default=None, max_length=300)
     ai_group_bot_enabled: bool | None = None
     notify_ai_failures_enabled: bool | None = None

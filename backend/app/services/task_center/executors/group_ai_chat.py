@@ -23,7 +23,7 @@ from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.rule_engine import apply_output_policy, bound_rule_version, evaluate_input_filter
 from app.services.material_rules import select_material_for_policy
 
-from ..account_pool import daily_uncovered_account_count, select_task_accounts
+from ..account_pool import DAILY_COVERAGE_SUCCESS_STATUSES, daily_account_coverage_counts, daily_uncovered_account_count, select_task_accounts
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages, generate_group_reply_messages
 from ..channel_membership import gate_channel_membership
 from ..config_normalization import normalize_operation_target_references
@@ -101,7 +101,7 @@ def build_plan(session: Session, task: Task) -> int:
         return 0
     target_label = target.title if target and target.tenant_id == task.tenant_id else group.title
     config = _with_active_conversation_targets(config, group)
-    accounts = _select_accounts_for_plan(session, task, group, hard_progress)
+    accounts = _select_accounts_for_plan(session, task, group, hard_progress, config)
     if not accounts:
         error_message, reason = _account_shortage_reason(session, task, group, hard_progress)
         task.last_error = error_message
@@ -161,7 +161,7 @@ def build_plan(session: Session, task: Task) -> int:
         has_context=bool(usable_context_rows),
         cycle_index=cycle_index,
         pacing_config=task.pacing_config or {},
-        daily_coverage_uncovered_count=_daily_coverage_uncovered_count(session, task, accounts, hard_progress),
+        daily_coverage_uncovered_count=_daily_coverage_uncovered_count(session, task, accounts, hard_progress, config),
     )
     history_parts = [f"{row.sender_name}: {row.content}" for row in usable_context_rows[-50:]]
     if idle_continuation:
@@ -237,7 +237,8 @@ def build_plan(session: Session, task: Task) -> int:
         if hard_progress:
             mark_plan_result(task, hard_progress, 0, {"quality_filter": int(hard_progress.get("deficit") or 1)})
         return 0
-    selected = _prioritize_account_memory(selected, account_memories)
+    coverage_counts = _coverage_counts_for_plan(session, task, selected, round_config)
+    selected = _prioritize_accounts_for_plan(selected, account_memories, coverage_counts, round_config)
     add_tokens(task, tokens)
     times = _hard_hourly_schedule(task, hard_progress, len(quality_items)) or _round_schedule_times(len(quality_items), task.pacing_config or {}, mode)
     context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
@@ -302,6 +303,7 @@ def build_plan(session: Session, task: Task) -> int:
             stats_inc(task, "failure_count")
             continue
         media_segments = [material_result.segment] if material_result.ok and material_result.segment else []
+        coverage_payload = _coverage_payload_for_account(round_config, account.id, coverage_counts)
         prepared_actions.append(
             (
                 account.id,
@@ -322,6 +324,7 @@ def build_plan(session: Session, task: Task) -> int:
                     topic_direction=dict(config.get("active_topic_direction") or {}),
                     teacher_target=dict(config.get("active_teacher_target") or {}),
                     **burst_plan.get(index, {}),
+                    **coverage_payload,
                     topic_thread=topic_thread,
                     topic_plan=topic_plan,
                     intent=_intent_for_turn(index),
@@ -368,6 +371,7 @@ def build_plan(session: Session, task: Task) -> int:
                 ),
             )
         )
+        _increment_coverage_count(round_config, account.id, coverage_counts)
         capacity_reservations.append(
             AccountCapacityReservation(account_id=account.id, scheduled_at=planned_at)
         )
@@ -509,10 +513,17 @@ def _defer_crosses_hard_hour(progress: dict[str, object], defer_until: datetime)
     return isinstance(hour_end, datetime) and defer_until >= hour_end
 
 
-def _select_accounts_for_plan(session: Session, task: Task, group: TgGroup, progress: dict[str, object]) -> list:
+def _select_accounts_for_plan(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    progress: dict[str, object],
+    config: dict,
+) -> list:
     options = _hard_hourly_account_options(progress)
     if progress:
         options["enforce_capacity"] = False
+    coverage_options = _daily_coverage_account_options(config)
     return select_task_accounts(
         session,
         task.tenant_id,
@@ -520,6 +531,7 @@ def _select_accounts_for_plan(session: Session, task: Task, group: TgGroup, prog
         target_group_id=group.id,
         daily_coverage_task_id=task.id,
         daily_coverage_action_types=("send_message",),
+        **coverage_options,
         **options,
     )
 
@@ -529,11 +541,77 @@ def _daily_coverage_uncovered_count(
     task: Task,
     accounts: list,
     progress: dict[str, object],
+    config: dict,
 ) -> int:
-    uncovered = daily_uncovered_account_count(session, task.id, ("send_message",), accounts)
+    if not _all_accounts_daily_coverage(config):
+        uncovered = daily_uncovered_account_count(session, task.id, ("send_message",), accounts)
+        return min(uncovered, max(0, int(progress.get("deficit") or 0))) if progress else uncovered
+    uncovered = daily_uncovered_account_count(
+        session,
+        task.id,
+        ("send_message",),
+        accounts,
+        count_empty_as_uncovered=True,
+        target_count=_coverage_target_per_account(config),
+        statuses=DAILY_COVERAGE_SUCCESS_STATUSES,
+    )
     if not progress:
         return uncovered
     return min(uncovered, max(0, int(progress.get("deficit") or 0)))
+
+
+def _daily_coverage_account_options(config: dict) -> dict[str, object]:
+    if not _all_accounts_daily_coverage(config):
+        return {}
+    return {
+        "daily_coverage_target_count": _coverage_target_per_account(config),
+        "daily_coverage_statuses": DAILY_COVERAGE_SUCCESS_STATUSES,
+    }
+
+
+def _all_accounts_daily_coverage(config: dict) -> bool:
+    return config.get("account_coverage_mode") == "all_accounts_daily"
+
+
+def _coverage_target_per_account(config: dict) -> int:
+    try:
+        value = int(config.get("per_account_daily_min_messages") or 1)
+    except (TypeError, ValueError):
+        value = 1
+    return max(1, min(2, value))
+
+
+def _coverage_counts_for_plan(session: Session, task: Task, accounts: list, config: dict) -> dict[int, int]:
+    if not _all_accounts_daily_coverage(config):
+        return {}
+    return daily_account_coverage_counts(
+        session,
+        task.id,
+        ("send_message",),
+        [int(account.id) for account in accounts],
+        statuses=DAILY_COVERAGE_SUCCESS_STATUSES,
+    )
+
+
+def _coverage_payload_for_account(config: dict, account_id: int, counts: dict[int, int]) -> dict[str, object]:
+    if not _all_accounts_daily_coverage(config):
+        return {}
+    target = _coverage_target_per_account(config)
+    completed = max(0, int(counts.get(int(account_id), 0)))
+    remaining = max(0, target - completed)
+    return {
+        "account_coverage_mode": "all_accounts_daily",
+        "coverage_window_date": _now().date().isoformat(),
+        "coverage_target_per_account": target,
+        "coverage_account_completed_before_action": completed,
+        "coverage_account_remaining_before_action": remaining,
+        "coverage_reason": "daily_account_coverage" if remaining else "",
+    }
+
+
+def _increment_coverage_count(config: dict, account_id: int, counts: dict[int, int]) -> None:
+    if _all_accounts_daily_coverage(config):
+        counts[int(account_id)] = int(counts.get(int(account_id), 0)) + 1
 
 
 def _account_shortage_reason(
@@ -1016,14 +1094,12 @@ def _select_cycle_accounts(
         messages_per_round = _manual_messages_per_round(config, mode)
         desired = _desired_participant_count(rotated_accounts, config, mode, ramp_ratio)
         turn_count = _manual_turn_count(desired, messages_per_round)
-        turn_count = max(turn_count, coverage_count)
         participant_count = _manual_participant_count(desired, turn_count, len(rotated_accounts), config)
         selected = rotated_accounts[:participant_count]
         if not bool(config.get("allow_account_repeat", True)):
             turn_count = min(turn_count, len(selected))
         return selected, max(1, turn_count)
     turn_count = _auto_messages_per_round(config, mode, has_context, pacing_config or {})
-    turn_count = max(turn_count, coverage_count)
     desired = _desired_participant_count(rotated_accounts, config, mode, ramp_ratio)
     selected_count = min(max(turn_count, desired), len(rotated_accounts))
     selected = rotated_accounts[:selected_count]
@@ -1089,6 +1165,27 @@ def _prioritize_account_memory(accounts: list, account_memories: dict[str, str])
     if len(accounts) <= 1 or not account_memories:
         return accounts
     return sorted(accounts, key=lambda account: 0 if account_memories.get(str(account.id)) else 1)
+
+
+def _prioritize_accounts_for_plan(
+    accounts: list,
+    account_memories: dict[str, str],
+    coverage_counts: dict[int, int],
+    config: dict,
+) -> list:
+    if len(accounts) <= 1:
+        return accounts
+    if not _all_accounts_daily_coverage(config):
+        return _prioritize_account_memory(accounts, account_memories)
+    target = _coverage_target_per_account(config)
+    return sorted(
+        accounts,
+        key=lambda account: (
+            0 if max(0, target - int(coverage_counts.get(int(account.id), 0))) > 0 else 1,
+            int(coverage_counts.get(int(account.id), 0)),
+            0 if account_memories.get(str(account.id)) else 1,
+        ),
+    )
 
 
 def _with_active_conversation_targets(config: dict, group: TgGroup) -> dict:

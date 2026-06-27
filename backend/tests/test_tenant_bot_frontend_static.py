@@ -17,7 +17,11 @@ def test_system_config_exposes_tg_bot_settings_tab() -> None:
     assert "label: 'TG Bot 配置'" in system_view
     assert "onSaveTenantBotSettings" in system_view
     assert "onTestTenantBotMessage" in system_view
+    assert "onRefreshTenantBotWebhook" in system_view
+    assert "onDeleteTenantBotWebhook" in system_view
     assert "loadTelegramBotConfig" in app_shell
+    assert "/tenant-bot-settings/webhook/refresh" in app_shell
+    assert "/tenant-bot-settings/webhook?tenant_id=" in app_shell
 
 
 def test_tg_bot_settings_view_has_self_service_fields() -> None:
@@ -28,6 +32,11 @@ def test_tg_bot_settings_view_has_self_service_fields() -> None:
     assert "ai_group_bot_enabled" in source
     assert "notify_ai_failures_enabled" in source
     assert "测试发送" in source
+    assert "刷新 webhook" in source
+    assert "删除 webhook" in source
+    assert "Telegram 当前 URL" in source
+    assert "测试发送只验证出站 sendMessage" in source
+    assert "每行或逗号分隔多个 Telegram 管理员 chat id" in source
     assert "Bot Token 保存后不会明文回显" in source
 
 

@@ -9,7 +9,7 @@
 ## 产品范围
 
 - 任务配置新增 `topic_directions`、`teacher_targets`、`consecutive_message_*` 字段。
-- Web 系统设置新增租户级 TG Bot 配置中心，支持 Bot Token、管理员 Chat ID、AI 活群 Bot 设置开关、测试发送和 webhook 配置状态。
+- Web 系统设置新增租户级 TG Bot 配置中心，支持 Bot Token、多个管理员 Chat ID、AI 活群 Bot 设置开关、测试发送和 webhook 配置状态。
 - Web 任务详情页提供 AI 活跃群专项设置；创建 / 编辑任务表单同步支持，并以结构化表单作为主入口。
 - TG bot 支持管理员在 bot 内通过按钮选择任务、查看设置、编辑话题方向、编辑老师、编辑连发参数并确认保存。
 - 执行器每轮把选中的话题方向和老师写入 AI prompt、话题计划和 action payload。
@@ -20,11 +20,12 @@
 TG bot 是运营空间级能力，不属于单个任务。Web 必须提供“系统设置 / TG Bot 配置”入口：
 
 - `telegram_bot_token`：必填，保存后只显示已配置状态，不回显明文。
-- `admin_chat_id`：必填，限制可操作 bot 的 Telegram chat。
+- `admin_chat_id`：必填，支持每行、逗号、中文逗号或分号分隔多个 Telegram chat；任一配置 chat 都可操作 bot。
 - `ai_group_bot_enabled`：是否允许管理员通过 bot 修改 AI 活群任务配置。
 - `telegram_bot_webhook_secret`：服务端生成，用于 webhook 路由和校验。
-- `telegram_bot_webhook_status` / `telegram_bot_last_error`：展示 webhook 最近注册或入站错误。
-- 测试发送：向 `admin_chat_id` 发送一条测试消息，失败时展示 Telegram 返回错误摘要。
+- `telegram_bot_webhook_status` / `telegram_bot_last_error`：展示 webhook 最近注册、查询或入站错误；状态以 `tenant-tg-bot-webhook-registration-prd.md` 为准。
+- 测试发送：向全部 `admin_chat_id` 发送一条测试消息，任一发送失败时展示 Telegram 返回错误摘要。测试发送只证明出站 `sendMessage`，不能替代 webhook 注册和入站健康。
+- Webhook 注册：保存有效 Bot Token 和管理员 Chat ID 后必须自动调用 Telegram Bot API `setWebhook`，失败时前端必须显示 bot 不可用和错误摘要，不能只显示“已保存”。
 
 只有 `telegram_bot_token`、`admin_chat_id` 和 `ai_group_bot_enabled` 都满足时，bot 内 AI 活群设置入口才可用。
 
@@ -77,11 +78,12 @@ AI 活群设置在创建、编辑和详情页复用同一套结构化控件：
 Bot 内使用 inline keyboard，不要求管理员手写 JSON：
 
 1. `/start` 或 `/ai_group` 显示主菜单。
-2. “AI 活群任务”列出最近 20 个未删除的 AI 活群任务。
-3. 选择任务后显示当前话题数、老师数、连发状态和操作按钮。
-4. “设置话题方向”“设置聊天对象老师”“设置同账号连发”进入分步输入。
-5. 输入内容先进入会话草稿，保存前展示摘要。
-6. “确认保存”后复用后端配置校验写入任务 `type_config`；“取消”丢弃草稿。
+2. `/admin` 显示管理员菜单、webhook 状态和 AI 活群设置开关状态；若 AI 活群设置未启用，仍必须回复“bot 已连接但 AI 活群设置未启用”。
+3. “AI 活群任务”列出最近 20 个未删除的 AI 活群任务。
+4. 选择任务后显示当前话题数、老师数、连发状态和操作按钮。
+5. “设置话题方向”“设置聊天对象老师”“设置同账号连发”进入分步输入。
+6. 输入内容先进入会话草稿，保存前展示摘要。
+7. “确认保存”后复用后端配置校验写入任务 `type_config`；“取消”丢弃草稿。
 
 会话草稿必须记录 `task_id`、编辑步骤、草稿配置和更新时间。草稿超时或任务被删除/停用时必须拒绝保存并提示重新选择。
 
@@ -89,11 +91,11 @@ Bot 内使用 inline keyboard，不要求管理员手写 JSON：
 
 租户级：
 
-`SystemConfigView / TelegramBotSettingsView -> PATCH /api/tenant-bot-settings -> update_tenant_bot_settings -> Tenant.telegram_bot_* / admin_chat_id / ai_group_bot_enabled`
+`SystemConfigView / TelegramBotSettingsView -> PATCH /api/tenant-bot-settings -> update_tenant_bot_settings -> setWebhook -> getWebhookInfo -> Tenant.telegram_bot_* / admin_chat_id / ai_group_bot_enabled / webhook_status`
 
 Webhook：
 
-`Telegram Bot API -> POST /api/telegram-bot/webhook/{tenant_id}/{webhook_secret} -> resolve tenant -> verify admin_chat_id -> handle_group_ai_bot_update`
+`Telegram Bot API -> POST /api/telegram-bot/webhook/{tenant_id}/{webhook_secret} -> resolve tenant -> parse/verify admin_chat_id list -> handle_group_ai_bot_update`
 
 任务级：
 
@@ -104,8 +106,10 @@ Webhook：
 - 创建和更新任务可保存新字段；非法空标题、非法权重、连发窗口越界必须失败。
 - 旧任务只有 `topic_hint` 时仍能生成，并在 payload 中看到回退话题方向。
 - 开启连发且轮次足够时，同一账号生成 2-4 条连续 action，带完整 burst 元数据。
-- Web 可配置 Bot Token、管理员 Chat ID、AI 活群 Bot 设置开关，并可测试发送。
-- TG bot webhook 不依赖 update 体内业务 `tenant_id`，secret 错误、非管理员 Chat ID、未启用 AI 活群 Bot 设置时必须拒绝。
+- Web 可配置 Bot Token、多个管理员 Chat ID、AI 活群 Bot 设置开关，并可向全部管理员测试发送。
+- 保存 Bot Token 和管理员 Chat ID 后必须自动注册 webhook，并能查询 Telegram 当前 webhook URL；注册失败或 URL 不匹配时页面显示不可用，测试发送成功不能覆盖该失败。
+- TG bot webhook 不依赖 update 体内业务 `tenant_id`，secret 错误、Chat ID 不在管理员列表、未启用 AI 活群 Bot 设置时必须拒绝。
+- `/start`、`/admin`、`/ai_group` 对授权管理员必须有可见回复；AI 活群设置未启用时回复状态说明，不允许静默无响应。
 - TG bot 提供按钮式任务选择、设置查看、分步编辑和确认保存。
 - Web 详情页和 TG bot 修改同一任务后，详情页读取到一致配置。
 - QA 通过不等于生产恢复；本需求无需生产验证。

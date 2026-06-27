@@ -336,6 +336,7 @@ export function TaskCenterDetailModal({
     telegramBotSettings && !telegramBotSettings.ai_group_bot_enabled ? 'AI 活群 Bot 设置未启用' : '',
   ].filter(Boolean);
   const showTargetTab = detail ? ['group_relay', 'channel_view', 'channel_like', 'channel_comment'].includes(detail.task.type) : false;
+  const accountCoverage = detail?.task.stats?.account_coverage;
   const detailTabs = detail ? [
     showAiTab ? {
       key: 'ai-settings',
@@ -354,6 +355,29 @@ export function TaskCenterDetailModal({
               { key: 'burst_enabled', label: '同账号连发', children: detail.task.type_config?.consecutive_message_enabled ? '开启' : '关闭' },
               { key: 'burst_window', label: '连发窗口', children: `${detail.task.type_config?.consecutive_message_min ?? 2}-${detail.task.type_config?.consecutive_message_max ?? 4}` },
               { key: 'burst_probability', label: '连发概率', children: detail.task.type_config?.consecutive_message_probability ?? 0.3 },
+              { key: 'coverage_mode', label: '全账号日覆盖', children: detail.task.type_config?.account_coverage_mode === 'all_accounts_daily' ? '开启' : '关闭' },
+              { key: 'coverage_window', label: '覆盖窗口', children: `${detail.task.type_config?.coverage_window_hours ?? 24} 小时` },
+              { key: 'coverage_range', label: '每账号消息数', children: `${detail.task.type_config?.per_account_daily_min_messages ?? 1}-${detail.task.type_config?.per_account_daily_max_messages ?? 2}` },
+              { key: 'coverage_progress', label: '今日覆盖', children: accountCoverage ? accountCoverageLabel(detail.task) : '-' },
+              { key: 'coverage_remaining', label: '剩余覆盖账号', children: accountCoverage ? Number(accountCoverage.remaining_count ?? 0) : '-' },
+              { key: 'coverage_target_accounts', label: '覆盖目标账号', children: accountCoverage ? Number(accountCoverage.target_account_count ?? accountCoverage.eligible_count ?? 0) : '-' },
+              { key: 'coverage_remaining_messages', label: '剩余覆盖消息', children: accountCoverage ? Number(accountCoverage.remaining_message_count ?? 0) : '-' },
+              { key: 'coverage_not_ready', label: '未准入/受限', children: accountCoverage ? `${Number(accountCoverage.pending_admission_count ?? 0)} / ${Number(accountCoverage.restricted_count ?? 0)}` : '-' },
+              { key: 'coverage_estimated_window', label: '预计补齐窗口', children: accountCoverage?.estimated_completion_window?.label || '-' },
+              {
+                key: 'coverage_blocked_reasons',
+                label: '阻塞原因',
+                children: accountCoverage?.blocked_reasons?.length ? (
+                  <Space wrap>{accountCoverage.blocked_reasons.map((item) => <Tag key={`${item.reason}:${item.message || item.count}`}>{item.message || item.reason}{item.count ? ` x${item.count}` : ''}</Tag>)}</Space>
+                ) : '-',
+              },
+              {
+                key: 'coverage_pending_accounts',
+                label: '近期待补账号',
+                children: accountCoverage?.pending_accounts?.length ? (
+                  <Space direction="vertical" size={2}>{accountCoverage.pending_accounts.slice(0, 6).map((item) => <Typography.Text key={item.account_id}>{item.display_name || item.account_id}：{item.completed_count}/{item.target_count}，{item.reason}</Typography.Text>)}</Space>
+                ) : '-',
+              },
             ]}
           />
           {canManageTasks && <Button onClick={() => onEditTask(detail.task)}>编辑设置</Button>}

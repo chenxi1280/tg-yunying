@@ -4,9 +4,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountRuntimeSummary, AccountStatus, Action, Task, Tenant, TgAccount, TgAccountSecuritySnapshot
+import pytest
+
+from app.models import AccountRuntimeSummary, AccountStatus, Action, Task, Tenant, TgAccount, TgAccountSecuritySnapshot, TgGroup, TgGroupAccount
 from app.services._common import _now
-from app.services.task_center.account_pool import select_task_accounts, task_account_coverage
+from app.services.task_center.account_coverage import task_account_coverage
+from app.services.task_center.account_pool import select_task_accounts
 from app.services.task_center.channel_membership import candidate_accounts_for_config
 
 
@@ -352,6 +355,79 @@ def test_task_account_coverage_counts_same_day_unique_task_accounts():
     assert coverage["eligible_count"] == 6
     assert coverage["coverage_percent"] == 33
     assert coverage["action_types"] == ["send_message"]
+
+
+@pytest.mark.no_postgres
+def test_group_ai_all_accounts_coverage_projects_reasons_and_pending_accounts():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="覆盖群", auth_status="已授权运营"))
+        for account_id in range(1, 5):
+            session.add(
+                TgAccount(
+                    id=account_id,
+                    tenant_id=1,
+                    display_name=f"账号{account_id}",
+                    phone_masked=str(account_id),
+                    status=AccountStatus.ACTIVE.value,
+                    health_score=95,
+                )
+            )
+        session.add_all(
+            [
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=1, can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=2, can_send=False),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=4, can_send=True),
+            ]
+        )
+        task = Task(
+            id="task-all-accounts-coverage-stats",
+            tenant_id=1,
+            name="全账号覆盖统计",
+            type="group_ai_chat",
+            account_config={"selection_mode": "all", "max_concurrent": 4},
+            pacing_config={"max_actions_per_hour": 2},
+            type_config={
+                "target_group_id": 7,
+                "account_coverage_mode": "all_accounts_daily",
+                "per_account_daily_min_messages": 2,
+                "per_account_daily_max_messages": 2,
+                "coverage_window_hours": 24,
+            },
+            last_error="AI 候选不足",
+        )
+        session.add(task)
+        session.add(
+            Action(
+                id="today-success-account-1",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=1,
+                status="success",
+                executed_at=_now(),
+            )
+        )
+        session.commit()
+
+        coverage = task_account_coverage(session, task)
+
+    assert coverage["mode"] == "all_accounts_daily"
+    assert coverage["target_account_count"] == 4
+    assert coverage["eligible_count"] == 2
+    assert coverage["remaining_count"] == 2
+    assert coverage["pending_admission_count"] == 1
+    assert coverage["restricted_count"] == 1
+    assert coverage["remaining_message_count"] == 3
+    assert coverage["estimated_completion_window"]["estimated_min_hours"] == 2
+    assert any(item["reason"] == "coverage_remaining" for item in coverage["pending_accounts"])
+    assert any(item["reason"] == "pending_admission" for item in coverage["pending_accounts"])
+    assert any(item["reason"] == "cannot_send" for item in coverage["pending_accounts"])
+    assert any(item["reason"] == "last_error" and item["message"] == "AI 候选不足" for item in coverage["blocked_reasons"])
 
 
 def test_membership_candidates_include_all_active_config_accounts():

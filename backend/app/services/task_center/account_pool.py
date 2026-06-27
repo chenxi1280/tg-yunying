@@ -11,7 +11,6 @@ from app.models import (
     AccountRuntimeSummary,
     AccountStatus,
     Action,
-    Task,
     Tenant,
     TgAccount,
     TgAccountSecuritySnapshot,
@@ -26,6 +25,7 @@ HEALTH_WEIGHT_MEDIUM = 55
 HEALTH_WEIGHT_LOW = 30
 LOW_HEALTH_PARTICIPATION_STEP = 4
 DAILY_COVERAGE_STATUSES = ("pending", "executing", "success")
+DAILY_COVERAGE_SUCCESS_STATUSES = ("success",)
 COVERAGE_ACTION_TYPES_BY_TASK_TYPE = {
     "group_ai_chat": ("send_message",),
     "channel_view": ("view_message",),
@@ -47,6 +47,8 @@ def select_task_accounts(
     enforce_shard: bool = False,
     daily_coverage_task_id: str | None = None,
     daily_coverage_action_types: tuple[str, ...] = (),
+    daily_coverage_target_count: int = 1,
+    daily_coverage_statuses: tuple[str, ...] = DAILY_COVERAGE_STATUSES,
 ) -> list[TgAccount]:
     max_concurrent = int(account_config.get("max_concurrent") or 20)
     requested = int(limit or max_concurrent)
@@ -60,7 +62,13 @@ def select_task_accounts(
             TgGroupAccount.can_send.is_(True),
         )
     if daily_coverage_task_id and daily_coverage_action_types:
-        stmt = _daily_coverage_ordered_query(stmt, daily_coverage_task_id, daily_coverage_action_types)
+        stmt = _daily_coverage_ordered_query(
+            stmt,
+            daily_coverage_task_id,
+            daily_coverage_action_types,
+            target_count=daily_coverage_target_count,
+            statuses=daily_coverage_statuses,
+        )
     scan_limit = max(wanted * LOW_HEALTH_PARTICIPATION_STEP, wanted)
     accounts = _unique_accounts(session.scalars(stmt.limit(scan_limit)))
     accounts = _cooldown_filtered_accounts(session, accounts, account_config, scan_limit)
@@ -119,14 +127,23 @@ def _rescue_admin_account_id(session: Session, tenant_id: int) -> int:
     return int(tenant.group_rescue_admin_account_id or 0) if tenant else 0
 
 
-def _daily_coverage_ordered_query(stmt, task_id: str, action_types: tuple[str, ...]):
-    covered_ids = _daily_covered_account_query(task_id, action_types)
-    covered_rank = case((TgAccount.id.in_(covered_ids), 1), else_=0)
+def _daily_coverage_ordered_query(
+    stmt,
+    task_id: str,
+    action_types: tuple[str, ...],
+    *,
+    target_count: int,
+    statuses: tuple[str, ...],
+):
+    counts = _daily_covered_account_counts_query(task_id, action_types, statuses)
+    coverage_count = func.coalesce(counts.c.coverage_count, 0)
+    covered_rank = case((coverage_count >= max(1, int(target_count or 1)), 1), else_=0)
     return stmt.order_by(None).order_by(
         covered_rank.asc(),
+        coverage_count.asc(),
         func.coalesce(AccountRuntimeSummary.health_score, TgAccount.health_score).desc(),
         TgAccount.id.asc(),
-    )
+    ).outerjoin(counts, counts.c.account_id == TgAccount.id)
 
 
 def _cooldown_filtered_accounts(
@@ -170,56 +187,51 @@ def daily_uncovered_account_count(
     task_id: str,
     action_types: tuple[str, ...],
     accounts: list[TgAccount],
+    *,
+    target_count: int = 1,
+    statuses: tuple[str, ...] = DAILY_COVERAGE_STATUSES,
+    count_empty_as_uncovered: bool = False,
 ) -> int:
     if not accounts or not task_id or not action_types:
         return 0
-    covered_ids = _daily_covered_account_ids(session, task_id, action_types)
-    if not covered_ids:
+    counts = daily_account_coverage_counts(
+        session,
+        task_id,
+        action_types,
+        [int(account.id) for account in accounts],
+        statuses=statuses,
+    )
+    if not counts and not count_empty_as_uncovered:
         return 0
-    return sum(1 for account in accounts if account.id not in covered_ids)
+    target = max(1, int(target_count or 1))
+    return sum(1 for account in accounts if counts.get(int(account.id), 0) < target)
 
 
-def task_account_coverage(session: Session, task: Task) -> dict[str, object]:
-    action_types = COVERAGE_ACTION_TYPES_BY_TASK_TYPE.get(task.type)
-    if not action_types:
+def daily_account_coverage_counts(
+    session: Session,
+    task_id: str,
+    action_types: tuple[str, ...],
+    account_ids: list[int],
+    *,
+    statuses: tuple[str, ...] = DAILY_COVERAGE_STATUSES,
+) -> dict[int, int]:
+    if not task_id or not action_types or not account_ids:
         return {}
-    accounts = _task_coverage_accounts(session, task)
-    eligible_ids = {int(account.id) for account in accounts}
-    eligible_count = len(eligible_ids)
-    covered_ids = _daily_covered_account_ids(session, task.id, action_types) & eligible_ids
-    covered_count = len(covered_ids)
-    coverage_rate = covered_count / eligible_count if eligible_count else 0
-    return {
-        "covered_count": covered_count,
-        "eligible_count": eligible_count,
-        "coverage_rate": coverage_rate,
-        "coverage_percent": round(coverage_rate * 100),
-        "action_types": list(action_types),
-        "statuses": list(DAILY_COVERAGE_STATUSES),
-    }
-
-
-def _task_coverage_accounts(session: Session, task: Task) -> list[TgAccount]:
-    stmt = _account_query(session, task.tenant_id, task.account_config or {}, enforce_shard=False)
-    if stmt is None:
-        return []
-    target_group_id = _task_coverage_target_group_id(task)
-    if target_group_id:
-        stmt = stmt.join(TgGroupAccount, TgGroupAccount.account_id == TgAccount.id).where(
-            TgGroupAccount.group_id == target_group_id,
-            TgGroupAccount.can_send.is_(True),
+    day_start, day_end = beijing_day_bounds(_now())
+    occupied_at = func.coalesce(Action.executed_at, Action.scheduled_at, Action.created_at)
+    rows = session.execute(
+        select(Action.account_id, func.count(Action.id))
+        .where(
+            Action.task_id == task_id,
+            Action.action_type.in_(action_types),
+            Action.account_id.in_(account_ids),
+            Action.status.in_(statuses),
+            occupied_at >= day_start,
+            occupied_at < day_end,
         )
-    return _unique_accounts(session.scalars(stmt))
-
-
-def _task_coverage_target_group_id(task: Task) -> int | None:
-    if task.type != "group_ai_chat":
-        return None
-    try:
-        parsed_id = int((task.type_config or {}).get("target_group_id") or 0)
-    except (TypeError, ValueError):
-        return None
-    return parsed_id or None
+        .group_by(Action.account_id)
+    )
+    return {int(account_id): int(count or 0) for account_id, count in rows if account_id is not None}
 
 
 def _daily_covered_account_ids(
@@ -257,6 +269,28 @@ def _daily_covered_account_query(task_id: str, action_types: tuple[str, ...]):
             occupied_at < day_end,
         )
         .distinct()
+    )
+
+
+def _daily_covered_account_counts_query(
+    task_id: str,
+    action_types: tuple[str, ...],
+    statuses: tuple[str, ...],
+):
+    day_start, day_end = beijing_day_bounds(_now())
+    occupied_at = func.coalesce(Action.executed_at, Action.scheduled_at, Action.created_at)
+    return (
+        select(Action.account_id, func.count(Action.id).label("coverage_count"))
+        .where(
+            Action.task_id == task_id,
+            Action.action_type.in_(action_types),
+            Action.account_id.is_not(None),
+            Action.status.in_(statuses),
+            occupied_at >= day_start,
+            occupied_at < day_end,
+        )
+        .group_by(Action.account_id)
+        .subquery()
     )
 
 
@@ -410,6 +444,6 @@ __all__ = [
     "apply_account_shard_filter",
     "current_account_shard",
     "daily_uncovered_account_count",
+    "daily_account_coverage_counts",
     "select_task_accounts",
-    "task_account_coverage",
 ]

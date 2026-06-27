@@ -39,7 +39,13 @@ from app.services import (
     update_tenant,
     update_tenant_notification_settings,
 )
-from app.services.tenant_bot_settings import send_tenant_bot_test_message, tenant_bot_settings_payload, update_tenant_bot_settings
+from app.services.tenant_bot_settings import (
+    delete_tenant_bot_webhook,
+    refresh_tenant_bot_webhook,
+    send_tenant_bot_test_message,
+    tenant_bot_settings_payload,
+    update_tenant_bot_settings,
+)
 from app.services._common import audit
 from app.worker import drain_once
 
@@ -185,6 +191,32 @@ def post_tenant_bot_test_message(
     if not result.ok:
         raise HTTPException(status_code=400, detail=result.detail)
     return {"ok": True, "detail": result.detail}
+
+
+@router.post("/api/tenant-bot-settings/webhook/refresh", response_model=TenantBotSettingsOut)
+def post_tenant_bot_webhook_refresh(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        return refresh_tenant_bot_webhook(session, resolved_tenant_id, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/api/tenant-bot-settings/webhook", response_model=TenantBotSettingsOut)
+def delete_tenant_bot_webhook_route(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    resolved_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        return delete_tenant_bot_webhook(session, resolved_tenant_id, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/tenant-group-rescue-settings", response_model=TenantNotificationSettingsOut)

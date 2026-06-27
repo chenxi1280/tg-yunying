@@ -10,6 +10,9 @@ from app.services.task_center.pacing import ai_next_run_after
 from app.services.task_center.executors import group_ai_chat
 
 
+pytestmark = pytest.mark.no_postgres
+
+
 def _curve(hour: int, rounds: int) -> list[int]:
     values = [0 for _ in range(24)]
     values[hour] = rounds
@@ -58,11 +61,11 @@ def test_daily_coverage_priority_is_not_rotated_out(monkeypatch) -> None:
         daily_coverage_uncovered_count=3,
     )
 
-    assert [account.id for account in selected[:3]] == [3, 4, 5]
-    assert turn_count == 3
+    assert [account.id for account in selected] == [3, 4]
+    assert turn_count == 2
 
 
-def test_daily_coverage_minimum_turns_can_exceed_participation_rate(monkeypatch) -> None:
+def test_daily_coverage_does_not_exceed_manual_round_cap(monkeypatch) -> None:
     accounts = [SimpleNamespace(id=account_id) for account_id in range(1, 7)]
     monkeypatch.setattr(group_ai_chat.random, "uniform", lambda _lo, _hi: 1.0)
 
@@ -76,8 +79,8 @@ def test_daily_coverage_minimum_turns_can_exceed_participation_rate(monkeypatch)
         daily_coverage_uncovered_count=5,
     )
 
-    assert [account.id for account in selected[:5]] == [1, 2, 3, 4, 5]
-    assert turn_count == 5
+    assert [account.id for account in selected] == [1, 2]
+    assert turn_count == 2
 
 
 def test_ai_next_run_after_uses_hourly_round_interval() -> None:

@@ -6,6 +6,7 @@ from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Tex
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.admin_chats import ADMIN_CHAT_ID_MAX_LENGTH
 
 from .enums import now
 
@@ -19,9 +20,11 @@ class Tenant(Base):
     account_quota: Mapped[int] = mapped_column(Integer, default=0)
     task_quota: Mapped[int] = mapped_column(Integer, default=5000)
     telegram_bot_token_ciphertext: Mapped[str] = mapped_column(Text, default="")
-    admin_chat_id: Mapped[str] = mapped_column(String(120), default="")
+    admin_chat_id: Mapped[str] = mapped_column(String(ADMIN_CHAT_ID_MAX_LENGTH), default="")
     telegram_bot_webhook_secret: Mapped[str] = mapped_column(String(80), default="")
     telegram_bot_webhook_status: Mapped[str] = mapped_column(String(40), default="not_configured")
+    telegram_bot_webhook_current_url: Mapped[str] = mapped_column(Text, default="")
+    telegram_bot_webhook_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     telegram_bot_last_error: Mapped[str] = mapped_column(Text, default="")
     ai_group_bot_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     notify_ai_failures_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

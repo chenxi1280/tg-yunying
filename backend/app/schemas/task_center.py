@@ -197,6 +197,10 @@ class GroupAIChatConfig(BaseModel):
     consecutive_message_min: int = Field(default=2, ge=2, le=4)
     consecutive_message_max: int = Field(default=4, ge=2, le=4)
     consecutive_message_probability: float = Field(default=0.3, ge=0, le=1)
+    account_coverage_mode: Literal["natural", "all_accounts_daily"] = "natural"
+    per_account_daily_min_messages: int = Field(default=1, ge=1, le=2)
+    per_account_daily_max_messages: int = Field(default=2, ge=1, le=2)
+    coverage_window_hours: Literal[24] = 24
     hard_hourly_target_enabled: bool = True
     hourly_min_messages: int | None = Field(default=GROUP_AI_HARD_HOURLY_MIN_MESSAGES, ge=1)
     hard_hourly_strategy: Literal["force_planning"] = "force_planning"
@@ -229,6 +233,8 @@ class GroupAIChatConfig(BaseModel):
             raise ValueError("reply_min_per_round 不能大于 messages_per_round")
         if self.consecutive_message_min > self.consecutive_message_max:
             raise ValueError("consecutive_message_min 不能大于 consecutive_message_max")
+        if self.per_account_daily_min_messages > self.per_account_daily_max_messages:
+            raise ValueError("per_account_daily_min_messages 不能大于 per_account_daily_max_messages")
         if not self.hard_hourly_target_enabled:
             raise ValueError("AI 活跃群必须启用每小时硬目标")
         if not self.hourly_min_messages:
@@ -530,6 +536,10 @@ class TaskSettingsUpdate(TaskUpdate):
     consecutive_message_min: int | None = Field(default=None, ge=2, le=4)
     consecutive_message_max: int | None = Field(default=None, ge=2, le=4)
     consecutive_message_probability: float | None = Field(default=None, ge=0, le=1)
+    account_coverage_mode: Literal["natural", "all_accounts_daily"] | None = None
+    per_account_daily_min_messages: int | None = Field(default=None, ge=1, le=2)
+    per_account_daily_max_messages: int | None = Field(default=None, ge=1, le=2)
+    coverage_window_hours: Literal[24] | None = None
     hard_hourly_target_enabled: bool | None = None
     hourly_min_messages: int | None = Field(default=None, ge=1)
     hard_hourly_strategy: Literal["force_planning"] | None = None
@@ -611,6 +621,14 @@ class TaskSettingsUpdate(TaskUpdate):
             return self
         if self.consecutive_message_min > self.consecutive_message_max:
             raise ValueError("consecutive_message_min 不能大于 consecutive_message_max")
+        return self
+
+    @model_validator(mode="after")
+    def validate_account_coverage_window(self) -> "TaskSettingsUpdate":
+        if self.per_account_daily_min_messages is None or self.per_account_daily_max_messages is None:
+            return self
+        if self.per_account_daily_min_messages > self.per_account_daily_max_messages:
+            raise ValueError("per_account_daily_min_messages 不能大于 per_account_daily_max_messages")
         return self
 
 

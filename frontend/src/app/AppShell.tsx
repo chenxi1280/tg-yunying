@@ -315,6 +315,32 @@ function AppShell() {
     }
   }
 
+  async function refreshTenantBotWebhook(tenantId: number) {
+    setBusy('刷新 TG Bot webhook');
+    try {
+      const saved = await api<TenantBotSettings>(`/tenant-bot-settings/webhook/refresh?tenant_id=${tenantId}`, { method: 'POST' });
+      setTenantBotSettings((current) => ({ ...current, [tenantId]: saved }));
+      setNotice(saved.telegram_bot_webhook_status === 'registered' ? 'TG Bot webhook 已注册' : `TG Bot webhook 不可用：${saved.telegram_bot_webhook_status}`);
+    } catch (error) {
+      setNotice(`刷新 TG Bot webhook 失败：${errorText(error)}`);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function deleteTenantBotWebhook(tenantId: number) {
+    setBusy('删除 TG Bot webhook');
+    try {
+      const saved = await api<TenantBotSettings>(`/tenant-bot-settings/webhook?tenant_id=${tenantId}`, { method: 'DELETE' });
+      setTenantBotSettings((current) => ({ ...current, [tenantId]: saved }));
+      setNotice(saved.telegram_bot_webhook_status === 'deleted' ? 'TG Bot webhook 已删除' : `TG Bot webhook 删除失败：${saved.telegram_bot_last_error || saved.telegram_bot_webhook_status}`);
+    } catch (error) {
+      setNotice(`删除 TG Bot webhook 失败：${errorText(error)}`);
+    } finally {
+      setBusy('');
+    }
+  }
+
   React.useEffect(() => {
     if (!token || activeView !== 'systemConfig') return;
     const requestSeq = beginSystemConfigTabRequest(systemConfigTab);
@@ -601,6 +627,8 @@ function AppShell() {
               onSaveGroupRescueSettings={saveTenantGroupRescueSettings}
               onSaveTenantBotSettings={saveTenantBotSettings}
               onTestTenantBotMessage={testTenantBotMessage}
+              onRefreshTenantBotWebhook={refreshTenantBotWebhook}
+              onDeleteTenantBotWebhook={deleteTenantBotWebhook}
               onCreateAdminUser={openAdminUserCreate}
               onEditAdminUser={openAdminUserEdit}
               onCreateAiProvider={() => setModal({ type: 'aiProviderCreate' })}

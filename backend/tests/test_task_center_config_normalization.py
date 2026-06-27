@@ -40,6 +40,51 @@ def test_group_ai_config_accepts_topic_teacher_and_consecutive_settings() -> Non
 
 
 @pytest.mark.no_postgres
+def test_group_ai_config_accepts_all_accounts_daily_coverage_settings() -> None:
+    payload = GroupAIChatTaskCreate(
+        name="AI 活群",
+        target_group_id=7,
+        account_coverage_mode="all_accounts_daily",
+        per_account_daily_min_messages=1,
+        per_account_daily_max_messages=2,
+        coverage_window_hours=24,
+        hourly_min_messages=10,
+    )
+
+    data = payload.model_dump(mode="json")
+
+    assert data["account_coverage_mode"] == "all_accounts_daily"
+    assert data["per_account_daily_min_messages"] == 1
+    assert data["per_account_daily_max_messages"] == 2
+    assert data["coverage_window_hours"] == 24
+
+
+@pytest.mark.no_postgres
+def test_group_ai_config_rejects_invalid_all_accounts_daily_coverage_settings() -> None:
+    with pytest.raises(ValidationError):
+        GroupAIChatTaskCreate(
+            name="AI 活群",
+            target_group_id=7,
+            account_coverage_mode="all_accounts_daily",
+            per_account_daily_min_messages=2,
+            per_account_daily_max_messages=1,
+            coverage_window_hours=24,
+            hourly_min_messages=10,
+        )
+
+    with pytest.raises(ValidationError):
+        GroupAIChatTaskCreate(
+            name="AI 活群",
+            target_group_id=7,
+            account_coverage_mode="all_accounts_daily",
+            per_account_daily_min_messages=1,
+            per_account_daily_max_messages=2,
+            coverage_window_hours=12,
+            hourly_min_messages=10,
+        )
+
+
+@pytest.mark.no_postgres
 def test_group_ai_config_rejects_invalid_topic_teacher_and_consecutive_settings() -> None:
     with pytest.raises(ValidationError):
         GroupAIChatTaskCreate(

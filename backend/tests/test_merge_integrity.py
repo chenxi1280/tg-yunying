@@ -34,7 +34,7 @@ def test_alembic_versions_have_single_head():
             referenced.update(item for item in down_revision if item)
 
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0067_tenant_bot_settings"]
+    assert heads == ["0069_expand_admin_chat_ids"]
 
 
 def test_backend_test_names_are_unique_per_file():

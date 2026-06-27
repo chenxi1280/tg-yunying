@@ -32,6 +32,12 @@ class SendMessagePayload(BaseModel):
     burst_id: str = ""
     burst_index: int = 0
     burst_size: int = 0
+    account_coverage_mode: str = ""
+    coverage_window_date: str = ""
+    coverage_target_per_account: int = 0
+    coverage_account_completed_before_action: int = 0
+    coverage_account_remaining_before_action: int = 0
+    coverage_reason: str = ""
     topic_thread: str = ""
     topic_plan: str = ""
     intent: str = ""

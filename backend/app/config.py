@@ -164,6 +164,7 @@ class Settings:
     )
     material_url_probe_timeout_seconds: float = field(default_factory=lambda: float(os.getenv("MATERIAL_URL_PROBE_TIMEOUT_SECONDS", "5.0")))
     material_url_probe_max_redirects: int = field(default_factory=lambda: int(os.getenv("MATERIAL_URL_PROBE_MAX_REDIRECTS", "3")))
+    public_app_base_url: str = field(default_factory=lambda: os.getenv("PUBLIC_APP_BASE_URL", "").strip().rstrip("/"))
     material_allowed_upload_types: tuple[str, ...] = field(
         default_factory=lambda: tuple(
             item.strip()

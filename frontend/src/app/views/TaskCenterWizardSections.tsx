@@ -128,6 +128,16 @@ export function WizardTypeConfig({
       },
     }),
   ];
+  const accountCoverageMaxRules = [
+    ({ getFieldValue }: any) => ({
+      validator(_: unknown, value: number | null) {
+        const minValue = Number(getFieldValue('per_account_daily_min_messages') || 0);
+        if (value == null || !Number.isInteger(Number(value))) return Promise.reject(new Error('必须填写整数'));
+        if (Number(value) >= minValue) return Promise.resolve();
+        return Promise.reject(new Error('不能小于每账号最少消息数'));
+      },
+    }),
+  ];
 
   const versionOptions = ruleSets.flatMap((ruleSet) => ruleSet.versions.filter((version) => version.status === 'published').map((version) => ({
     value: version.id,
@@ -172,6 +182,25 @@ export function WizardTypeConfig({
           <Form.Item name="consecutive_message_min" label="连发最少条数"><InputNumber min={2} max={4} precision={0} /></Form.Item>
           <Form.Item name="consecutive_message_max" label="连发最多条数"><InputNumber min={2} max={4} precision={0} /></Form.Item>
           <Form.Item name="consecutive_message_probability" label="连发概率"><InputNumber min={0} max={1} step={0.05} /></Form.Item>
+          <Form.Item name="account_coverage_mode" label="全账号日覆盖模式">
+            <Select options={[{ value: 'natural', label: '关闭' }, { value: 'all_accounts_daily', label: '开启' }]} />
+          </Form.Item>
+          <Form.Item name="per_account_daily_min_messages" label="每账号最少消息数"><InputNumber min={1} max={2} precision={0} /></Form.Item>
+          <Form.Item name="per_account_daily_max_messages" label="每账号最多消息数" dependencies={['per_account_daily_min_messages']} rules={accountCoverageMaxRules}>
+            <InputNumber min={1} max={2} precision={0} />
+          </Form.Item>
+          <Form.Item name="coverage_window_hours" hidden><InputNumber /></Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, next) => prev.account_coverage_mode !== next.account_coverage_mode}>
+            {({ getFieldValue }) => getFieldValue('account_coverage_mode') === 'all_accounts_daily' ? (
+              <div style={{ gridColumn: '1 / -1' }}>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="系统会在 24 小时内优先补齐每个可发言账号的 1-2 条成功发言；仍受准入、账号容量、风控、AI 候选质量和小时硬上限约束。"
+                />
+              </div>
+            ) : null}
+          </Form.Item>
           <Form.Item name="hard_hourly_strategy" hidden><Input /></Form.Item>
           <Form.Item name="hard_hourly_target_enabled" valuePropName="checked">
             <Checkbox onChange={(event) => {

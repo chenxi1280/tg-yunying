@@ -12,6 +12,7 @@ from app.models import Tenant
 from app.security import decrypt_secret
 
 from ._common import audit
+from app.admin_chats import send_admin_chat_broadcast
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,13 @@ def notify_ai_failure(
         )
         return result
     message = f"{title}\n目标: {target_type} #{target_id}\n原因: {detail[:1200]}"
-    result = send_telegram_bot_message(bot_token, tenant.admin_chat_id, message)
+    summary = send_admin_chat_broadcast(
+        bot_token=bot_token,
+        raw_admin_chat_id=tenant.admin_chat_id,
+        text=message,
+        sender=send_telegram_bot_message,
+    )
+    result = NotificationResult(summary.ok, summary.detail)
     audit(
         session,
         tenant_id=tenant_id,
