@@ -5,6 +5,8 @@
 - [项目结构索引](project-structure-index.md)：每个代码文件的业务职责、主要类、方法、导出和测试入口。
 - [项目数据流转索引](project-dataflow-index.md)：每条 API / 后台流转的数据入口、后端链路、数据状态、外部依赖和测试入口。
 
+多 Agent 协作中，`product` Agent 主责维护产品口径和数据流转索引，`dev` Agent 主责维护项目结构索引；具体交接协议见 `docs/05-implementation/multi-agent-practice/index-maintenance.md`，共享状态见 `docs/05-implementation/multi-agent-practice/agent-status-board.md`。
+
 使用建议：
 
 1. 改需求前先看 `01-product/`。
