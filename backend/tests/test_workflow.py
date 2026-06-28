@@ -103,6 +103,28 @@ def actions_for_cycle_suffix(actions: list[dict], suffix: str) -> list[dict]:
     ]
 
 
+def wait_for_cycle_success(
+    client: TestClient,
+    headers: dict[str, str],
+    task_id: str,
+    suffix: str,
+    attempts: int = 6,
+) -> tuple[dict, list[dict]]:
+    from app.services.task_center.service import drain_task_center
+
+    detail: dict = {}
+    actions: list[dict] = []
+    for _ in range(attempts):
+        make_task_send_actions_due(task_id)
+        drain_task_center(SessionLocal, 20)
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        actions = task_detail_actions(client, headers, task_id)
+        cycle_actions = actions_for_cycle_suffix(actions, suffix)
+        if any(action["status"] == "success" for action in cycle_actions):
+            return detail, cycle_actions
+    return detail, actions_for_cycle_suffix(actions, suffix)
+
+
 def make_task_send_actions_due(task_id: str) -> int:
     now = datetime.now(UTC).replace(tzinfo=None)
     with SessionLocal() as session:
@@ -4564,21 +4586,10 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
             "after_reset": compact_task_debug(detail_after_reset["task"]),
         }
 
-        drain_task_center(SessionLocal, 10)
-        make_task_send_actions_due(task_id)
-        drain_task_center(SessionLocal, 10)
-        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        actions = task_detail_actions(client, headers, task_id)
-        reset_cycle_actions = actions_for_cycle_suffix(actions, ":cycle:2")
-        if not reset_cycle_actions:
-            make_task_send_actions_due(task_id)
-            drain_task_center(SessionLocal, 10)
-            detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-            actions = task_detail_actions(client, headers, task_id)
-            reset_cycle_actions = actions_for_cycle_suffix(actions, ":cycle:2")
+        detail, reset_cycle_actions = wait_for_cycle_success(client, headers, task_id, ":cycle:2")
         assert reset_cycle_actions, {
             "task": compact_task_debug(detail["task"]),
-            "actions": compact_action_debug(actions),
+            "actions": compact_action_debug(task_detail_actions(client, headers, task_id)),
         }
         assert any(action["status"] == "success" for action in reset_cycle_actions), compact_action_debug(
             reset_cycle_actions
