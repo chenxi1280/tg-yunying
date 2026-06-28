@@ -56,3 +56,18 @@
   - Draft prompts now only expose “取消编辑”; they no longer include re-entrant setting buttons.
   - Draft save validation failures now return a visible “保存失败” message, keep the draft, and let the operator resend corrected multi-line content.
 - Targeted verification: `backend/.venv/bin/python -m pytest -q backend/tests/test_telegram_bot_group_ai_settings.py -m no_postgres` passed with 16 tests.
+
+## Follow-up AI Active Group Runtime Quality Fix
+
+- Incident: operator confirmed TG bot setting entry is usable, then asked whether topic / discussion teacher settings actually participate in AI active-group discussion, and reported many repeated AI-like group messages.
+- Evidence:
+  - Existing planner test verifies `topic_directions` and `teacher_targets` become `active_topic_direction` / `active_teacher_target`, then enter AI generation config and `Action.payload.topic_direction` / `teacher_target`.
+  - Runtime prompt now uses the product wording “讨论老师” instead of the old “聊天对象”.
+- Root cause group:
+  - AI active-group duplicate baseline only read successful sent actions, so messages already planned as `pending` / `claiming` / `executing` / `unknown_after_send` were invisible to the next planner round.
+  - Fixed shell phrases such as “这点加分” were similar enough to be pre-dropped before semantic duplicate stats could record the reason.
+- Fix:
+  - Planner duplicate baseline now includes recent planned `send_message` actions in `pending` / `claiming` / `executing` / `unknown_after_send`, while prompt history still only describes actually successful AI messages.
+  - Semantic clusters now include `fixed_shell_bonus` for “这点加分 / 挺加分” style shells, and clustered duplicates are left to the quality filter so skip stats record `duplicate_risk=semantic_cluster`.
+  - AI generation requirements, bootstrap history, idle continuation and topic plan use “讨论老师” wording.
+- Targeted verification: `backend/.venv/bin/python -m pytest -q backend/tests/test_operations_center_runtime.py::test_group_ai_chat_dedupes_against_pending_planned_messages backend/tests/test_operations_center_runtime.py::test_group_ai_chat_drops_repeated_fixed_shell_phrases backend/tests/test_group_ai_chat_dataflow.py::test_group_ai_prompt_layers_target_profile_as_style_not_fact backend/tests/test_group_ai_chat_dataflow.py::test_group_ai_reply_prompt_layers_target_profile_as_style_not_fact backend/tests/test_task_center_capacity_dispatch.py::test_group_ai_build_plan_writes_topic_teacher_and_burst_payload` passed with 5 tests.

@@ -70,6 +70,7 @@ HARD_HOURLY_DEFER_AI_MIN_GOAL = 100
 DEFERRED_AI_HISTORY_MAX_CHARS = 1000
 AI_GENERATION_REQUEST_BATCH_SIZE = 30
 RECENT_CYCLE_SCAN_LIMIT = 200
+RECENT_PLANNED_AI_STATUSES = ("pending", "claiming", "executing", "unknown_after_send")
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -135,7 +136,10 @@ def build_plan(session: Session, task: Task) -> int:
         if not fingerprint_exists(session, task.tenant_id, fingerprint_source, _context_fingerprint(row))
     ]
     force_bootstrap_once = bool((task.stats or {}).get("force_bootstrap_once"))
-    previous_ai_messages = _recent_ai_messages(session, task, limit=_semantic_repeat_window(config))
+    repeat_window = _semantic_repeat_window(config)
+    previous_ai_messages = _recent_ai_messages(session, task, limit=repeat_window)
+    planned_ai_messages = _recent_planned_ai_messages(session, task, limit=repeat_window)
+    duplicate_baseline_messages = [*previous_ai_messages, *planned_ai_messages]
     idle_continuation = False
     if not hard_progress and not force_bootstrap_once and _should_wait_for_human_context(session, task, usable_context_rows, unprocessed_rows):
         idle_decision = _idle_continuation_decision(session, task, config)
@@ -216,7 +220,7 @@ def build_plan(session: Session, task: Task) -> int:
                 mark_plan_result(task, hard_progress, 0, {"ai_generation_unavailable": int(hard_progress.get("deficit") or 1)})
             return 0
         planned_items = [item for item in planned_items if not _looks_like_generated_noise(item["content"])]
-        planned_items = _drop_repeated_planned_items(planned_items, previous_ai_messages)
+        planned_items = _drop_repeated_planned_items(planned_items, duplicate_baseline_messages)
     chat_mode = _chat_mode(usable_context_rows, idle_continuation)
     context_message_ids = [int(row.id) for row in usable_context_rows[-history_depth:]]
     if defer_ai_generation:
@@ -224,7 +228,7 @@ def build_plan(session: Session, task: Task) -> int:
     else:
         quality_items, quality_stats = _quality_filter_ai_messages(
             [item["content"] for item in planned_items],
-            previous_ai_messages,
+            duplicate_baseline_messages,
             chat_mode=chat_mode,
             anchor_message_ids=context_message_ids,
             fact_anchor_required=bool(config.get("fact_anchor_required", True)),
@@ -1246,7 +1250,7 @@ def _bootstrap_history(config: dict, group: TgGroup) -> str:
     if not topic:
         topic = "围绕群内日常交流自然开场，轻松抛出一个大家容易接上的话题"
     teacher = _active_teacher_text(config)
-    suffix = f"，聊天对象参考“{teacher}”" if teacher else ""
+    suffix = f"，讨论老师参考“{teacher}”" if teacher else ""
     return f"当前群暂无可用历史消息。请以“{topic}”为方向{suffix}，生成自然开场，不要提到系统、任务或 AI。"
 
 
@@ -1260,7 +1264,7 @@ def _idle_continuation_history(config: dict, group: TgGroup, previous_ai_message
         "必须避免重复上一轮表达，不要提到系统、任务或 AI。",
     ]
     if teacher:
-        parts.append(f"聊天对象参考：{teacher}。")
+        parts.append(f"讨论老师参考：{teacher}。")
     if recent_ai:
         parts.append(f"上一轮 AI 已说：{recent_ai}。请避开原句，只接一个轻量问题或泛化观察，不要编具体经历、到场感受、位置或回访。")
     return "\n".join(parts)
@@ -1313,7 +1317,7 @@ def _topic_thread_summary(config: dict, group: TgGroup, context_rows: list, prev
         parts.append(f"主线方向：{topic[:80]}")
     teacher = _active_teacher_text(config)
     if teacher:
-        parts.append(f"聊天对象：{teacher[:80]}")
+        parts.append(f"讨论老师：{teacher[:80]}")
     recent_human = [_clean_topic_text(getattr(row, "content", "")) for row in context_rows[-3:]]
     recent_human = [text for text in recent_human if text]
     if recent_human:
@@ -1332,7 +1336,7 @@ def _topic_plan_summary(config: dict, group: TgGroup, topic_thread: str, turn_co
     teacher = _active_teacher_text(config)
     anchors = [part.strip() for part in re.split(r"[；/]", topic_thread or "") if part.strip()]
     anchor = anchors[-1] if anchors else f"主线方向：{topic[:80]}"
-    teacher_hint = f"，聊天对象参考“{teacher[:40]}”" if teacher else ""
+    teacher_hint = f"，讨论老师参考“{teacher[:40]}”" if teacher else ""
     steps = [
         f"1. 贴近现场：从“{anchor[:80]}”里挑一个最像真人会接的点{teacher_hint}，短句承接。",
         f"2. 补充一点生活化细节：只给一个和“{topic[:60]}”相关的小信息或亲身口吻，不像科普。",
@@ -1420,8 +1424,34 @@ def _recent_ai_messages(session: Session, task: Task, *, limit: int) -> list[str
     messages: list[str] = []
     rows = session.scalars(
         select(Action)
-        .where(Action.task_id == task.id, Action.task_type == "group_ai_chat", Action.status == "success")
+        .where(
+            Action.task_id == task.id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status == "success",
+        )
         .order_by(Action.executed_at.desc().nullslast(), Action.created_at.desc())
+        .limit(max(1, int(limit)))
+    )
+    for action in rows:
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        content = str(payload.get("message_text") or "").strip()
+        if content and not _looks_like_internal_prompt(content):
+            messages.append(content)
+    return list(reversed(messages))
+
+
+def _recent_planned_ai_messages(session: Session, task: Task, *, limit: int) -> list[str]:
+    messages: list[str] = []
+    rows = session.scalars(
+        select(Action)
+        .where(
+            Action.task_id == task.id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status.in_(RECENT_PLANNED_AI_STATUSES),
+        )
+        .order_by(Action.created_at.desc())
         .limit(max(1, int(limit)))
     )
     for action in rows:
@@ -1673,16 +1703,26 @@ def _drop_repeated_ai_messages(contents: list[str], previous_messages: list[str]
         normalized = _normalize_for_similarity(content)
         if not normalized:
             continue
+        cluster = _semantic_cluster(content)
         start = normalized[:8]
         if start in seen_starts:
             continue
-        if any(_similarity(normalized, _normalize_for_similarity(previous)) >= 0.62 for previous in previous_messages):
+        if any(_is_similarity_duplicate(normalized, cluster, previous, threshold=0.62) for previous in previous_messages):
             continue
-        if any(_similarity(normalized, _normalize_for_similarity(existing)) >= 0.68 for existing in accepted):
+        if any(_is_similarity_duplicate(normalized, cluster, existing, threshold=0.68) for existing in accepted):
             continue
         seen_starts.add(start)
         accepted.append(content)
     return accepted
+
+
+def _is_similarity_duplicate(normalized: str, cluster: str, previous: str, *, threshold: float) -> bool:
+    previous_normalized = _normalize_for_similarity(previous)
+    if not previous_normalized:
+        return False
+    if cluster and cluster == _semantic_cluster(previous):
+        return False
+    return _similarity(normalized, previous_normalized) >= threshold
 
 
 def _quality_filter_ai_messages(
@@ -1737,6 +1777,7 @@ def _semantic_cluster(content: str) -> str:
         ("early_location", ("位置提前", "提前发位置", "发了位置", "没绕路", "没绕远", "跑冤枉路")),
         ("revisit_feedback", ("结束后问", "问反馈", "回访", "下次安排", "下次约不约", "下次啥时候")),
         ("time_punctual", ("准时到", "准点", "时间卡得准", "没干等", "没让我等", "没放鸽子")),
+        ("fixed_shell_bonus", ("这点加分", "这点挺加分", "挺加分", "这个加分")),
     ]
     for cluster, markers in cluster_markers:
         if any(_normalize_for_similarity(marker) in text for marker in markers):
