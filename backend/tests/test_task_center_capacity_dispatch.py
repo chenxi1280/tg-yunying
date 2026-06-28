@@ -3759,6 +3759,35 @@ def test_group_ai_context_bound_limit_does_not_cap_hard_hourly(monkeypatch):
 
 
 @pytest.mark.no_postgres
+def test_group_ai_context_bound_quality_schedule_cuts_final_candidates(monkeypatch):
+    now_value = datetime(2026, 6, 29, 15, 0)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    task = Task(
+        id="task-context-quality",
+        tenant_id=1,
+        name="最终候选裁剪",
+        type="group_ai_chat",
+        stats={"context_bound_requested_turns": 20},
+    )
+    quality_items = [{"content": f"候选{i}"} for i in range(3)]
+    planned_times = [now_value, now_value + timedelta(minutes=20), now_value + timedelta(hours=2)]
+
+    limited_items, limited_times = group_ai_chat._limit_context_bound_quality_schedule(
+        task,
+        {"context_expire_after_messages": 1, "context_bound_schedule_window_seconds": 3600},
+        has_context=True,
+        progress={},
+        quality_items=quality_items,
+        planned_times=planned_times,
+    )
+
+    assert limited_items == quality_items[:2]
+    assert limited_times == planned_times[:2]
+    assert task.stats["context_bound_requested_turns"] == 20
+    assert task.stats["context_bound_planned_turns"] == 2
+
+
+@pytest.mark.no_postgres
 def test_group_ai_build_plan_uses_unique_emoji_fallback_after_quality_retries(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

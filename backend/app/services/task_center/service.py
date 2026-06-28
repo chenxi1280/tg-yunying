@@ -670,6 +670,7 @@ def reset_task(session: Session, tenant_id: int, task_id: str, actor: str, reaso
         stats["force_bootstrap_once"] = True
     task.stats = stats
     _clear_unfinished_plan(session, task)
+    _clear_group_ai_context_fingerprints(session, task)
     _invalidate_task_listener_cache(task)
     task.status = "pending" if task.scheduled_start and task.scheduled_start > now else "running"
     task.next_run_at = task.scheduled_start if task.status == "pending" else now
@@ -680,6 +681,17 @@ def reset_task(session: Session, tenant_id: int, task_id: str, actor: str, reaso
     session.commit()
     session.refresh(task)
     return task
+
+
+def _clear_group_ai_context_fingerprints(session: Session, task: Task) -> None:
+    if task.type != "group_ai_chat":
+        return
+    session.execute(
+        delete(MessageFingerprint).where(
+            MessageFingerprint.tenant_id == task.tenant_id,
+            MessageFingerprint.source_group_id.like(f"{task.id}:group_ai_chat:%"),
+        )
+    )
 
 
 def list_actions(session: Session, tenant_id: int, task_id: str | None = None, status: str | None = None) -> list[Action]:

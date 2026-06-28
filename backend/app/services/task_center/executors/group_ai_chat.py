@@ -262,7 +262,19 @@ def build_plan(session: Session, task: Task) -> int:
     coverage_counts = _coverage_counts_for_plan(session, task, selected, round_config)
     selected = _prioritize_accounts_for_plan(selected, account_memories, coverage_counts, round_config)
     add_tokens(task, tokens)
-    times = planned_times[: len(quality_items)]
+    times = _schedule_times_for_plan(task, hard_progress, len(quality_items), mode)
+    quality_items, times = _limit_context_bound_quality_schedule(
+        task,
+        config,
+        has_context=bool(usable_context_rows),
+        progress=hard_progress,
+        quality_items=quality_items,
+        planned_times=times,
+    )
+    if not quality_items:
+        task.last_error = "上下文绑定计划超出有效发送窗口，等待新上下文后继续执行"
+        stats_inc(task, "skipped_count")
+        return 0
     context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
     used_account_ids: set[int] = set()
     allow_account_repeat = bool(round_config.get("allow_account_repeat", True))
@@ -1146,6 +1158,30 @@ def _limit_context_bound_turns(
     limited_count = max(1, min(int(turn_count or 1), allowed_count))
     _record_context_bound_limit_stats(task, turn_count, limited_count, window_seconds)
     return limited_count, planned_times[:limited_count]
+
+
+def _limit_context_bound_quality_schedule(
+    task: Task,
+    config: dict,
+    *,
+    has_context: bool,
+    progress: dict[str, object],
+    quality_items: list[dict[str, str]],
+    planned_times: list[datetime],
+) -> tuple[list[dict[str, str]], list[datetime]]:
+    if not _requires_context_bound_window(config, has_context, progress):
+        return quality_items, planned_times
+    window_seconds = _context_bound_schedule_window_seconds(config)
+    cutoff = _now() + timedelta(seconds=window_seconds)
+    allowed_count = len([item for item in planned_times if _naive_datetime(item) <= cutoff])
+    limited_count = min(len(quality_items), allowed_count)
+    _record_context_bound_limit_stats(
+        task,
+        int((task.stats or {}).get("context_bound_requested_turns") or len(quality_items)),
+        limited_count,
+        window_seconds,
+    )
+    return quality_items[:limited_count], planned_times[:limited_count]
 
 
 def _requires_context_bound_window(config: dict, has_context: bool, progress: dict[str, object]) -> bool:
