@@ -24,6 +24,23 @@ WORKFLOW_AI_TOKEN_LENGTH = 200
 WORKFLOW_AI_TOKEN_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
+def workflow_ai_active_pacing() -> dict:
+    return {
+        "mode": "fixed",
+        "interval_seconds_min": 0,
+        "interval_seconds_max": 0,
+        "jitter_percent": 0,
+        "operation_profile": {
+            "template_id": "pytest_always_active",
+            "source": "manual",
+            "hourly_activity_curve": [10] * 24,
+            "quiet_threshold": 2,
+            "peak_threshold": 8,
+            "manual_override": True,
+        },
+    }
+
+
 def _workflow_ai_token(index: int) -> str:
     token_char = WORKFLOW_AI_TOKEN_CHARS[index % len(WORKFLOW_AI_TOKEN_CHARS)]
     return f"{token_char * WORKFLOW_AI_TOKEN_LENGTH}{index:03d}"
@@ -3362,7 +3379,7 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
             json={
                 "name": "5类型 AI 活跃",
                 "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
-                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "pacing_config": workflow_ai_active_pacing(),
                 "failure_policy": {"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
                 "target_group_id": group["id"],
                 "topic_directions": [{"title": "测试话题", "weight": 1}],
@@ -3408,7 +3425,7 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
             json={
                 "name": "worker loop AI 活跃",
                 "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
-                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "pacing_config": workflow_ai_active_pacing(),
                 "failure_policy": {"max_retries": 1, "retry_delay_seconds": 0, "retry_backoff": "none"},
                 "target_group_id": group["id"],
                 "topic_directions": [{"title": "worker loop 测试", "weight": 1}],
@@ -3508,7 +3525,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
             json={
                 "name": "pytest AI 持续监听",
                 "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
-                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "pacing_config": workflow_ai_active_pacing(),
                 "target_group_id": group["id"],
                 "topic_directions": [{"title": "continuous ai", "weight": 1}],
                 "participation_rate": 1,
@@ -4448,7 +4465,7 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
             json={
                 "name": "pytest reset AI 活跃",
                 "account_config": {"selection_mode": "manual", "account_ids": [account["id"]], "max_concurrent": 1, "cooldown_per_account_minutes": 0},
-                "pacing_config": {"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
+                "pacing_config": workflow_ai_active_pacing(),
                 "target_group_id": group["id"],
                 "topic_directions": [{"title": "reset ai", "weight": 1}],
                 "participation_rate": 1,
