@@ -125,6 +125,36 @@ def wait_for_cycle_success(
     return detail, actions_for_cycle_suffix(actions, suffix)
 
 
+def wait_for_new_success_actions(
+    client: TestClient,
+    headers: dict[str, str],
+    task_id: str,
+    known_action_ids: set[str],
+    attempts: int = 6,
+) -> tuple[dict, list[dict]]:
+    from app.services.task_center.service import drain_task_center
+
+    detail: dict = {}
+    actions: list[dict] = []
+    for _ in range(attempts):
+        make_task_send_actions_due(task_id)
+        drain_task_center(SessionLocal, 20)
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        actions = task_detail_actions(client, headers, task_id)
+        new_success = [
+            action
+            for action in actions
+            if str(action.get("id") or "") not in known_action_ids and action.get("status") == "success"
+        ]
+        if new_success:
+            return detail, new_success
+    return detail, [
+        action
+        for action in actions
+        if str(action.get("id") or "") not in known_action_ids
+    ]
+
+
 def make_task_send_actions_due(task_id: str) -> int:
     now = datetime.now(UTC).replace(tzinfo=None)
     with SessionLocal() as session:
@@ -4575,8 +4605,10 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
         assert make_task_send_actions_due(task_id) >= 1
         drain_task_center(SessionLocal, 10)
         initial_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        initial_action_count = len(task_detail_actions(client, headers, task_id))
+        initial_actions = task_detail_actions(client, headers, task_id)
+        initial_action_count = len(initial_actions)
         assert initial_action_count >= 1
+        known_action_ids = {str(action.get("id") or "") for action in initial_actions}
         sends_before_reset = len(sends)
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
@@ -4604,7 +4636,7 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
             task.next_run_at = datetime.now(UTC).replace(tzinfo=None)
             session.commit()
 
-        detail, reset_cycle_actions = wait_for_cycle_success(client, headers, task_id, ":cycle:2")
+        detail, reset_cycle_actions = wait_for_new_success_actions(client, headers, task_id, known_action_ids)
         assert reset_cycle_actions, {
             "task": compact_task_debug(detail["task"]),
             "actions": compact_action_debug(task_detail_actions(client, headers, task_id)),
