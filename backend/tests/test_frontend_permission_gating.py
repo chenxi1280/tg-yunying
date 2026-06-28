@@ -1753,6 +1753,34 @@ def test_task_center_precheck_uses_long_timeout_and_capacity_summary_labels():
     assert "formatPrecheckReasons" in wizard
 
 
+def test_group_ai_topic_and_chat_targets_use_plain_line_inputs():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+
+    assert 'label="多个话题方向（每行一个）"' in wizard
+    assert 'label="聊天对象（每行一个）"' in wizard
+    assert '[{"title":"升学规划"' not in wizard
+    assert '[{"name":"王老师"' not in wizard
+    assert "formatTopicDirectionLines(config.topic_directions)" in source
+    assert "formatChatTargetLines(config.teacher_targets)" in source
+    assert "parseTopicDirectionLines(values.topic_directions)" in source
+    assert "parseChatTargetLines(values.teacher_targets)" in source
+    assert "lines.map((title, index) => ({ ...existingTopicDirection(title, existingItems), title, weight: lines.length - index }))" in view_model
+    assert "lines.map((name, index) => ({ ...existingChatTarget(name, existingItems), name, priority: lines.length - index }))" in view_model
+
+
+def test_group_ai_plain_line_edit_preserves_existing_descriptions():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+
+    assert "parseTopicDirectionLines(values.topic_directions, existingTypeConfig.topic_directions)" in source
+    assert "parseChatTargetLines(values.teacher_targets, existingTypeConfig.teacher_targets)" in source
+    assert "const existingTypeConfig = detail?.task.type_config || {};" in source
+    assert "...existingTopicDirection(title, existingItems)" in view_model
+    assert "...existingChatTarget(name, existingItems)" in view_model
+
+
 def test_task_center_runtime_form_exposes_hour_limit_without_task_daily_cap():
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()

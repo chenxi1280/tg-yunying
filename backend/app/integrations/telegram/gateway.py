@@ -45,6 +45,7 @@ VERIFICATION_CONTEXT_DEFAULT_LIMIT = 120
 VERIFICATION_CONTEXT_PREVIEW_LIMIT = 500
 GROUP_PERMISSION_DETAIL = "群无权限或账号不可发言"
 TARGET_PERMISSION_DETAIL = "缓存频道不可访问 / 账号无权限"
+VERIFICATION_CONFIRM_BUTTON_MARKERS = ("我已加入", "我已关注", "已关注", "完成验证", "完成关注", "确认")
 
 
 def _button_labels(message: Any) -> list[str]:
@@ -65,6 +66,16 @@ def _button_label(button: Any) -> str:
     return text
 
 
+def _button_text(button: Any) -> str:
+    for candidate in (button, getattr(button, "button", None)):
+        if candidate is None:
+            continue
+        text = (getattr(candidate, "text", "") or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def _button_url(button: Any) -> str:
     for candidate in (button, getattr(button, "button", None)):
         if candidate is None:
@@ -73,6 +84,23 @@ def _button_url(button: Any) -> str:
         if url:
             return url
     return ""
+
+
+def _verification_button_click_target(message: Any) -> tuple[int, int, str] | None:
+    first_text_button: tuple[int, int, str] | None = None
+    first_button: tuple[int, int, str] | None = None
+    for row_index, row in enumerate(getattr(message, "buttons", None) or []):
+        for button_index, button in enumerate(row):
+            label = _button_label(button)
+            text = _button_text(button)
+            if not first_button:
+                first_button = (row_index, button_index, label)
+            url = _button_url(button)
+            if text and not url and not first_text_button:
+                first_text_button = (row_index, button_index, text)
+            if text and not url and any(marker in text for marker in VERIFICATION_CONFIRM_BUTTON_MARKERS):
+                return (row_index, button_index, text)
+    return first_text_button or first_button
 
 
 def _first_message_with_buttons(messages: Any) -> Any | None:
@@ -1662,9 +1690,14 @@ class TelethonTelegramGateway(TelegramGateway):
                 message = _first_message_with_buttons(messages)
                 if not message or not getattr(message, "buttons", None):
                     return OperationResult(False, "需人工处理", "复杂验证", "未找到可自动点击的按钮")
-                await message.click(0)
+                click_target = _verification_button_click_target(message)
+                if click_target is None:
+                    return OperationResult(False, "需人工处理", "复杂验证", "未找到可自动点击的按钮")
+                row_index, button_index, label = click_target
+                await message.click(row_index, button_index)
                 message_id = str(getattr(message, "id", "") or "")
-                return OperationResult(True, "已处理", detail=f"已点击首个验证按钮 message_id={message_id}".strip())
+                detail = f"已点击验证按钮 {label} message_id={message_id}".strip()
+                return OperationResult(True, "已处理", detail=detail)
             if action == "发送验证回复" and target is not None:
                 await client.send_message(target, "/start")
                 return OperationResult(True, "已处理", detail="已发送验证回复")

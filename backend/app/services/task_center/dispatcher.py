@@ -75,6 +75,7 @@ _GROUP_SEND_LINKED_CHANNEL_REQUIRED_MARKERS = (
     "共同飞机群",
 )
 _GROUP_SEND_BUTTON_VERIFICATION_MARKERS = ("按钮", "button", "click", "点击")
+_GROUP_SEND_CONFIRM_BUTTON_MARKERS = ("我已加入", "我已关注", "已关注", "完成验证", "完成关注", "确认")
 _GROUP_SEND_REPLY_VERIFICATION_MARKERS = ("/start", "发送验证回复", "send reply")
 _GROUP_SEND_TEXT_VERIFICATION_MARKERS = (
     "验证码",
@@ -1479,6 +1480,7 @@ def _recover_group_send_permission_with_linked_channel(
             probe_result,
             required_channels,
             retry_target_membership=retry_target_membership,
+            confirmation_detail=detail,
         )
     follow = getattr(gateway, "ensure_linked_channel_membership", None)
     if not callable(follow):
@@ -1507,7 +1509,9 @@ def _follow_required_channels_and_reprobe(
     required_channels: list[str],
     *,
     retry_target_membership: bool = False,
+    confirmation_detail: str = "",
 ):
+    ctx = MembershipDispatchContext(session, action, account, credentials, payload, None)
     followed_refs: list[str] = []
     skipped_refs: list[dict[str, str]] = []
     for channel_ref in required_channels:
@@ -1524,10 +1528,12 @@ def _follow_required_channels_and_reprobe(
         detail = "; ".join(f"{item['ref']}:{item['detail']}" for item in skipped_refs) or probe_result.detail
         return OperationResult(False, "失败", FailureType.PEER_INVALID.value, detail)
     if retry_target_membership:
-        ctx = MembershipDispatchContext(session, action, account, credentials, payload, None)
         refreshed = _retry_target_membership_after_required_channel(ctx)
         if not refreshed.ok:
             return refreshed
+    confirmed = _resolve_required_channel_confirmation(ctx, confirmation_detail)
+    if not confirmed.ok:
+        return confirmed
     reprobe = gateway.probe_target_capabilities(account.id, payload.channel_id, payload.target_type, account.session_ciphertext, credentials)
     if reprobe.ok:
         result = {**(action.result or {}), "required_channels_followed": followed_refs}
@@ -1537,6 +1543,29 @@ def _follow_required_channels_and_reprobe(
         return OperationResult(True, detail=f"已关注 {len(followed_refs)} 个必需频道并通过群发言验证")
     detail = reprobe.detail or reprobe.failure_type or probe_result.detail
     return OperationResult(False, "失败", reprobe.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, detail)
+
+
+def _resolve_required_channel_confirmation(ctx: MembershipDispatchContext, detail: str):
+    if not _required_channel_confirmation_needed(detail):
+        return OperationResult(True, detail="required_channel_confirmation_not_needed")
+    clicked = gateway.resolve_verification_task(
+        ctx.account.id,
+        "点击按钮",
+        ctx.payload.channel_id,
+        ctx.account.session_ciphertext,
+        ctx.credentials,
+    )
+    if not clicked.ok:
+        detail = clicked.detail or clicked.failure_type or "关注必需频道后确认按钮点击失败"
+        return OperationResult(False, clicked.status or "失败", clicked.failure_type or FailureType.GROUP_PERMISSION_DENIED.value, detail)
+    ctx.action.result = {**(ctx.action.result or {}), "required_channel_confirmation_clicked": True}
+    return OperationResult(True, detail=clicked.detail or "已点击必需频道确认按钮")
+
+
+def _required_channel_confirmation_needed(detail: str) -> bool:
+    if not _context_requires_button_click(detail):
+        return False
+    return any(marker in detail for marker in _GROUP_SEND_CONFIRM_BUTTON_MARKERS)
 
 
 def _retry_target_membership_after_required_channel(ctx: MembershipDispatchContext):
@@ -2280,7 +2309,8 @@ def _try_auto_follow_verification(ctx: MembershipDispatchContext, verification_t
         retry_target_membership=ctx.action.action_type in MEMBERSHIP_ACTION_TYPES,
     )
     if not result.ok:
-        required_channels = _required_channels_from_verification_context(ctx, verification_task)
+        context_text = _required_channel_context_text(ctx, verification_task)
+        required_channels = required_channel_references(context_text)
         if required_channels and _auto_follow_required_channel_enabled(ctx.session, ctx.action):
             result = _follow_required_channels_and_reprobe(
                 ctx.session,
@@ -2291,6 +2321,7 @@ def _try_auto_follow_verification(ctx: MembershipDispatchContext, verification_t
                 probe_result,
                 required_channels,
                 retry_target_membership=ctx.action.action_type in MEMBERSHIP_ACTION_TYPES,
+                confirmation_detail=context_text,
             )
     return _apply_context_fallback_result(ctx, verification_task, payload, result)
 
@@ -2311,6 +2342,10 @@ def _auto_follow_detail_text(action: Action, verification_task) -> str:
 
 
 def _required_channels_from_verification_context(ctx: MembershipDispatchContext, verification_task) -> list[str]:
+    return required_channel_references(_required_channel_context_text(ctx, verification_task))
+
+
+def _required_channel_context_text(ctx: MembershipDispatchContext, verification_task) -> str:
     readers = _image_verification_reader_candidates(ctx.session, verification_task, ctx.account)
     read_result = read_challenge_context_with_fallback(
         ctx.session,
@@ -2319,7 +2354,7 @@ def _required_channels_from_verification_context(ctx: MembershipDispatchContext,
         ctx.credentials,
         reader_candidates=readers,
     )
-    return required_channel_references(_verification_context_text(read_result.context))
+    return _verification_context_text(read_result.context)
 
 
 def _try_context_verification_fallback(ctx: MembershipDispatchContext, verification_task, image_result):
@@ -2339,6 +2374,7 @@ def _try_context_verification_fallback(ctx: MembershipDispatchContext, verificat
             image_result,
             required_channels,
             retry_target_membership=ctx.action.action_type in MEMBERSHIP_ACTION_TYPES,
+            confirmation_detail=context_text,
         )
         return _apply_context_fallback_result(ctx, verification_task, payload, followed)
     if not _context_requires_button_click(context_text):
@@ -2391,6 +2427,7 @@ def _try_auto_follow_from_button_links(ctx: MembershipDispatchContext, verificat
         probe_result,
         refs,
         retry_target_membership=ctx.action.action_type in MEMBERSHIP_ACTION_TYPES,
+        confirmation_detail=_auto_follow_detail_text(ctx.action, verification_task),
     )
     return _apply_context_fallback_result(ctx, verification_task, payload, followed)
 

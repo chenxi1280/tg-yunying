@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Task, TelegramBotConversation, Tenant
-from app.models.enums import now
-from app.schemas.task_center import GroupAIChatTaskConfigUpdate
 from app.admin_chats import admin_chat_is_allowed
-from app.services.task_center.service import update_group_ai_chat_config
+from app.config import get_settings
 
-CONVERSATION_TTL = timedelta(minutes=30)
+CONFIG_WRITE_UNSUPPORTED_MESSAGE = "TG bot 仅支持查看 AI 活群设置，完整配置请到 Web 任务详情编辑。"
+SUMMARY_LIMIT = 8
 
 
 def apply_group_ai_settings_from_bot(
@@ -33,9 +31,7 @@ def apply_group_ai_settings_from_bot(
     task = session.get(Task, task_id)
     if not task or task.tenant_id != tenant_id or task.type != "group_ai_chat":
         raise ValueError("AI 活群任务不存在")
-    merged = {**(task.type_config or {}), **(payload or {})}
-    update_payload = GroupAIChatTaskConfigUpdate(**merged)
-    return update_group_ai_chat_config(session, tenant_id, task_id, update_payload, "telegram-bot")
+    raise ValueError(CONFIG_WRITE_UNSUPPORTED_MESSAGE)
 
 
 def handle_group_ai_bot_update(session: Session, *, tenant_id: int, update: dict[str, Any]) -> dict[str, Any]:
@@ -63,21 +59,13 @@ def handle_group_ai_bot_update(session: Session, *, tenant_id: int, update: dict
         return _reply(chat_id, _task_list_text(session, tenant_id), _task_list_keyboard(session, tenant_id))
     if text.startswith("/ai_group_settings "):
         task_id = text.split(maxsplit=1)[1].strip()
-        return _reply(chat_id, _task_settings_text(session, tenant_id, task_id))
+        return _reply(chat_id, _task_settings_text(session, tenant_id, task_id), _task_settings_keyboard(task_id))
     if text.startswith("/ai_group_set "):
-        task_id, raw_payload = _split_set_command(text)
-        task = apply_group_ai_settings_from_bot(
-            session,
-            tenant_id=tenant_id,
-            chat_id=chat_id,
-            task_id=task_id,
-            payload=_json_payload(raw_payload),
-        )
-        return _reply(chat_id, f"已保存 AI 活群设置：{task.name} ({task.id})")
+        return _reply(chat_id, CONFIG_WRITE_UNSUPPORTED_MESSAGE, _main_menu_keyboard(tenant))
     draft_reply = _handle_draft_message(session, tenant_id, chat_id, text)
     if draft_reply:
         return draft_reply
-    return _reply(chat_id, "可用命令：/ai_group_tasks、/ai_group_settings <task_id>、/ai_group_set <task_id> <json>", _main_menu_keyboard())
+    return _reply(chat_id, "可用命令：/ai_group_tasks、/ai_group_settings <task_id>。完整配置请到 Web 任务详情编辑。", _main_menu_keyboard())
 
 
 def _assert_admin_chat(session: Session, tenant_id: int, chat_id: str) -> Tenant:
@@ -94,7 +82,6 @@ def _tenant_or_error(session: Session, tenant_id: int) -> Tenant:
     if not tenant or not tenant.telegram_bot_configured or not tenant.admin_chat_id:
         raise PermissionError("Telegram Bot 未配置或缺少管理员 chat id")
     return tenant
-
 
 
 def _audit_rejected_chat(session: Session, tenant: Tenant, chat_id: str) -> None:
@@ -143,17 +130,71 @@ def _task_settings_text(session: Session, tenant_id: int, task_id: str) -> str:
     if not task or task.tenant_id != tenant_id or task.type != "group_ai_chat":
         raise ValueError("AI 活群任务不存在")
     config = task.type_config or {}
+    topics = _topic_titles(config)
+    targets = _target_names(config)
     return "\n".join(
         [
             f"任务：{task.name} ({task.id})",
-            f"话题数：{len(config.get('topic_directions') or [])}",
-            f"老师数：{len(config.get('teacher_targets') or [])}",
-            f"话题：{config.get('topic_directions') or config.get('topic_hint') or '-'}",
-            f"老师：{config.get('teacher_targets') or '-'}",
+            f"话题数：{len(topics)}",
+            f"聊天对象数：{len(targets)}",
+            f"话题摘要：{_compact_list(topics) or config.get('topic_hint') or '-'}",
+            f"聊天对象摘要：{_compact_list(targets) or '-'}",
             f"连发：{config.get('consecutive_message_enabled', False)} {config.get('consecutive_message_min', 2)}-{config.get('consecutive_message_max', 4)}",
             f"全账号日覆盖：{config.get('account_coverage_mode', 'natural')} {config.get('per_account_daily_min_messages', 1)}-{config.get('per_account_daily_max_messages', 2)}",
+            "配置入口：Web 任务详情",
         ]
     )
+
+
+def _topic_summary_text(session: Session, tenant_id: int, task_id: str) -> str:
+    task = _task_or_error(session, tenant_id, task_id)
+    config = task.type_config or {}
+    topics = _numbered_lines(_topic_titles(config))
+    targets = _numbered_lines(_target_names(config))
+    return "\n".join(
+        [
+            f"任务：{task.name} ({task.id})",
+            "话题摘要",
+            topics or "-",
+            "聊天对象摘要",
+            targets or "-",
+            "完整配置请到 Web 任务详情编辑。",
+        ]
+    )
+
+
+def _topic_titles(config: dict[str, Any]) -> list[str]:
+    topics = config.get("topic_directions") or []
+    titles = [str(item.get("title") or "").strip() for item in topics if isinstance(item, dict)]
+    return [title for title in titles if title]
+
+
+def _target_names(config: dict[str, Any]) -> list[str]:
+    targets = config.get("teacher_targets") or []
+    names = [str(item.get("name") or "").strip() for item in targets if isinstance(item, dict)]
+    return [name for name in names if name]
+
+
+def _compact_list(items: list[str]) -> str:
+    visible = items[:3]
+    suffix = f" 等 {len(items)} 条" if len(items) > 3 else ""
+    return "、".join(visible) + suffix
+
+
+def _numbered_lines(items: list[str]) -> str:
+    return "\n".join(f"{index}. {item}" for index, item in enumerate(items[:SUMMARY_LIMIT], start=1))
+
+
+def _web_edit_text() -> str:
+    url = _web_task_center_url()
+    if url:
+        return f"请打开 Web 任务中心编辑该任务：{url}"
+    return "请到 Web 任务中心的任务详情里编辑该任务。"
+
+
+def _web_task_center_url() -> str:
+    base_url = get_settings().public_app_base_url
+    return f"{base_url}/task-center" if base_url else ""
 
 
 def _handle_callback_query(session: Session, tenant_id: int, callback_query: dict[str, Any]) -> dict[str, Any]:
@@ -167,16 +208,23 @@ def _handle_callback_query(session: Session, tenant_id: int, callback_query: dic
     if data.startswith("ai_group:task:"):
         task_id = data.rsplit(":", 1)[-1]
         return _reply(chat_id, _task_settings_text(session, tenant_id, task_id), _task_settings_keyboard(task_id))
+    if data.startswith("ai_group:summary:"):
+        task_id = data.rsplit(":", 1)[-1]
+        return _reply(chat_id, _topic_summary_text(session, tenant_id, task_id), _task_settings_keyboard(task_id))
+    if data.startswith("ai_group:web_edit:"):
+        task_id = data.rsplit(":", 1)[-1]
+        _task_or_error(session, tenant_id, task_id)
+        return _reply(chat_id, _web_edit_text(), _task_settings_keyboard(task_id))
     if data.startswith("ai_group:edit_topics:"):
-        return _start_edit(session, tenant_id, chat_id, data.rsplit(":", 1)[-1], "topics")
+        return _reply(chat_id, CONFIG_WRITE_UNSUPPORTED_MESSAGE, _task_settings_keyboard(data.rsplit(":", 1)[-1]))
     if data.startswith("ai_group:edit_teachers:"):
-        return _start_edit(session, tenant_id, chat_id, data.rsplit(":", 1)[-1], "teachers")
+        return _reply(chat_id, CONFIG_WRITE_UNSUPPORTED_MESSAGE, _task_settings_keyboard(data.rsplit(":", 1)[-1]))
     if data.startswith("ai_group:edit_burst:"):
-        return _start_edit(session, tenant_id, chat_id, data.rsplit(":", 1)[-1], "burst")
+        return _reply(chat_id, CONFIG_WRITE_UNSUPPORTED_MESSAGE, _task_settings_keyboard(data.rsplit(":", 1)[-1]))
     if data.startswith("ai_group:edit_coverage:"):
-        return _start_edit(session, tenant_id, chat_id, data.rsplit(":", 1)[-1], "coverage")
+        return _reply(chat_id, CONFIG_WRITE_UNSUPPORTED_MESSAGE, _task_settings_keyboard(data.rsplit(":", 1)[-1]))
     if data.startswith("ai_group:confirm:"):
-        return _confirm_draft(session, tenant_id, chat_id, data.rsplit(":", 1)[-1])
+        return _reply(chat_id, CONFIG_WRITE_UNSUPPORTED_MESSAGE, _task_settings_keyboard(data.rsplit(":", 1)[-1]))
     if data.startswith("ai_group:cancel:"):
         return _cancel_draft(session, tenant_id, chat_id)
     return _reply(chat_id, "无法识别的操作，请重新选择。", _main_menu_keyboard())
@@ -196,49 +244,24 @@ def _task_list_keyboard(session: Session, tenant_id: int) -> dict[str, Any]:
 
 
 def _task_settings_keyboard(task_id: str) -> dict[str, Any]:
-    return {
-        "inline_keyboard": [
-            [{"text": "设置话题方向", "callback_data": f"ai_group:edit_topics:{task_id}"}],
-            [{"text": "设置聊天对象老师", "callback_data": f"ai_group:edit_teachers:{task_id}"}],
-            [{"text": "设置同账号连发", "callback_data": f"ai_group:edit_burst:{task_id}"}],
-            [{"text": "设置全账号日覆盖", "callback_data": f"ai_group:edit_coverage:{task_id}"}],
-        ]
-    }
-
-
-def _start_edit(session: Session, tenant_id: int, chat_id: str, task_id: str, step: str) -> dict[str, Any]:
-    task = _task_or_error(session, tenant_id, task_id)
-    draft = dict(task.type_config or {})
-    conversation = _conversation(session, tenant_id, chat_id) or TelegramBotConversation(tenant_id=tenant_id, chat_id=chat_id)
-    conversation.task_id = task.id
-    conversation.step = step
-    conversation.draft_config = draft
-    conversation.updated_at = now()
-    session.add(conversation)
-    session.commit()
-    return _reply(chat_id, _edit_prompt(step, task.id), _cancel_keyboard(task.id))
+    keyboard = [[{"text": "查看话题摘要", "callback_data": f"ai_group:summary:{task_id}"}]]
+    edit_url = _web_task_center_url()
+    if edit_url:
+        keyboard.append([{"text": "打开 Web 编辑", "url": edit_url}])
+    else:
+        keyboard.append([{"text": "打开 Web 编辑", "callback_data": f"ai_group:web_edit:{task_id}"}])
+    keyboard.append([{"text": "返回任务列表", "callback_data": "ai_group:tasks"}])
+    return {"inline_keyboard": keyboard}
 
 
 def _handle_draft_message(session: Session, tenant_id: int, chat_id: str, text: str) -> dict[str, Any] | None:
-    conversation = _active_conversation(session, tenant_id, chat_id)
+    conversation = _conversation(session, tenant_id, chat_id)
     if not conversation:
         return None
-    draft = _draft_with_step(conversation.draft_config, conversation.step, text)
-    conversation.draft_config = draft
-    conversation.step = "confirm"
-    conversation.updated_at = now()
-    session.commit()
-    return _reply(chat_id, _draft_summary(conversation.task_id, draft), _confirm_keyboard(conversation.task_id))
-
-
-def _confirm_draft(session: Session, tenant_id: int, chat_id: str, task_id: str) -> dict[str, Any]:
-    conversation = _active_conversation(session, tenant_id, chat_id)
-    if not conversation or conversation.task_id != task_id or conversation.step != "confirm":
-        raise ValueError("没有可保存的草稿，请重新选择任务")
-    task = apply_group_ai_settings_from_bot(session, tenant_id=tenant_id, chat_id=chat_id, task_id=task_id, payload=conversation.draft_config)
+    task_id = conversation.task_id
     session.delete(conversation)
     session.commit()
-    return _reply(chat_id, f"已保存 AI 活群设置：{task.name} ({task.id})", _task_settings_keyboard(task.id))
+    return _reply(chat_id, f"旧草稿已取消。{CONFIG_WRITE_UNSUPPORTED_MESSAGE}", _task_settings_keyboard(task_id))
 
 
 def _cancel_draft(session: Session, tenant_id: int, chat_id: str) -> dict[str, Any]:
@@ -251,117 +274,6 @@ def _cancel_draft(session: Session, tenant_id: int, chat_id: str) -> dict[str, A
     return _reply(chat_id, "已取消本次编辑。", keyboard)
 
 
-def _split_set_command(text: str) -> tuple[str, str]:
-    parts = text.split(maxsplit=2)
-    if len(parts) != 3:
-        raise ValueError("格式：/ai_group_set <task_id> <json>")
-    return parts[1], parts[2]
-
-
-def _json_payload(raw_payload: str) -> dict[str, Any]:
-    import json
-
-    data = json.loads(raw_payload)
-    if not isinstance(data, dict):
-        raise ValueError("设置内容必须是 JSON object")
-    return data
-
-
-def _draft_with_step(draft: dict[str, Any], step: str, text: str) -> dict[str, Any]:
-    next_draft = dict(draft or {})
-    if step == "topics":
-        next_draft["topic_directions"] = _parse_topics(text)
-        return next_draft
-    if step == "teachers":
-        next_draft["teacher_targets"] = _parse_teachers(text)
-        return next_draft
-    if step == "burst":
-        next_draft.update(_parse_burst(text))
-        return next_draft
-    if step == "coverage":
-        next_draft.update(_parse_coverage(text))
-        return next_draft
-    raise ValueError("草稿步骤无效，请重新选择任务")
-
-
-def _parse_topics(text: str) -> list[dict[str, Any]]:
-    topics = []
-    for line in _non_empty_lines(text):
-        parts = [part.strip() for part in line.split("|")]
-        if len(parts) == 2:
-            title, weight = parts
-            topics.append({"title": title, "weight": float(weight)})
-        elif len(parts) == 3:
-            title, description, weight = parts
-            topics.append({"title": title, "description": description, "weight": float(weight)})
-        else:
-            raise ValueError("话题格式：标题|权重 或 标题|描述|权重")
-    return topics
-
-
-def _parse_teachers(text: str) -> list[dict[str, Any]]:
-    teachers = []
-    for line in _non_empty_lines(text):
-        parts = [part.strip() for part in line.split("|")]
-        if len(parts) == 2:
-            name, priority = parts
-            teachers.append({"name": name, "priority": int(priority)})
-        elif len(parts) == 3:
-            name, description, priority = parts
-            teachers.append({"name": name, "description": description, "priority": int(priority)})
-        else:
-            raise ValueError("老师格式：姓名|优先级 或 姓名|描述|优先级")
-    return teachers
-
-
-def _parse_burst(text: str) -> dict[str, Any]:
-    parts = text.split()
-    enabled = parts[0].lower() in {"on", "true", "1", "开", "开启"}
-    if not enabled:
-        return {"consecutive_message_enabled": False}
-    if len(parts) != 4:
-        raise ValueError("连发格式：开启 2 4 0.3，或 关闭")
-    return {
-        "consecutive_message_enabled": True,
-        "consecutive_message_min": int(parts[1]),
-        "consecutive_message_max": int(parts[2]),
-        "consecutive_message_probability": float(parts[3]),
-    }
-
-
-def _parse_coverage(text: str) -> dict[str, Any]:
-    parts = text.split()
-    enabled = parts[0].lower() in {"on", "true", "1", "开", "开启"}
-    if not enabled:
-        return {"account_coverage_mode": "natural", "coverage_window_hours": 24}
-    if len(parts) != 3:
-        raise ValueError("全账号日覆盖格式：开启 1 2，或 关闭")
-    return {
-        "account_coverage_mode": "all_accounts_daily",
-        "per_account_daily_min_messages": int(parts[1]),
-        "per_account_daily_max_messages": int(parts[2]),
-        "coverage_window_hours": 24,
-    }
-
-
-def _non_empty_lines(text: str) -> list[str]:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        raise ValueError("输入不能为空")
-    return lines
-
-
-def _active_conversation(session: Session, tenant_id: int, chat_id: str) -> TelegramBotConversation | None:
-    conversation = _conversation(session, tenant_id, chat_id)
-    if not conversation:
-        return None
-    if now() - conversation.updated_at > CONVERSATION_TTL:
-        session.delete(conversation)
-        session.commit()
-        raise ValueError("草稿已超时，请重新选择任务")
-    return conversation
-
-
 def _conversation(session: Session, tenant_id: int, chat_id: str) -> TelegramBotConversation | None:
     return session.scalar(select(TelegramBotConversation).where(TelegramBotConversation.tenant_id == tenant_id, TelegramBotConversation.chat_id == chat_id))
 
@@ -371,37 +283,6 @@ def _task_or_error(session: Session, tenant_id: int, task_id: str) -> Task:
     if not task or task.tenant_id != tenant_id or task.type != "group_ai_chat":
         raise ValueError("AI 活群任务不存在")
     return task
-
-
-def _edit_prompt(step: str, task_id: str) -> str:
-    prompts = {
-        "topics": f"请输入任务 {task_id} 的话题方向，每行一个：标题|描述|权重。描述可省略为：标题|权重。",
-        "teachers": f"请输入任务 {task_id} 的聊天对象老师，每行一个：姓名|描述|优先级。描述可省略为：姓名|优先级。",
-        "burst": f"请输入任务 {task_id} 的同账号连发：开启 2 4 0.3，或输入 关闭。",
-        "coverage": f"请输入任务 {task_id} 的全账号日覆盖：开启 1 2，或输入 关闭。",
-    }
-    return prompts[step]
-
-
-def _draft_summary(task_id: str, draft: dict[str, Any]) -> str:
-    return "\n".join(
-        [
-            f"待保存任务：{task_id}",
-            f"话题数：{len(draft.get('topic_directions') or [])}",
-            f"老师数：{len(draft.get('teacher_targets') or [])}",
-            f"连发：{draft.get('consecutive_message_enabled', False)} {draft.get('consecutive_message_min', 2)}-{draft.get('consecutive_message_max', 4)}",
-            f"全账号日覆盖：{draft.get('account_coverage_mode', 'natural')} {draft.get('per_account_daily_min_messages', 1)}-{draft.get('per_account_daily_max_messages', 2)}",
-            "确认后写入任务配置。",
-        ]
-    )
-
-
-def _confirm_keyboard(task_id: str) -> dict[str, Any]:
-    return {"inline_keyboard": [[{"text": "确认保存", "callback_data": f"ai_group:confirm:{task_id}"}], [{"text": "取消", "callback_data": f"ai_group:cancel:{task_id}"}]]}
-
-
-def _cancel_keyboard(task_id: str) -> dict[str, Any]:
-    return {"inline_keyboard": [[{"text": "取消", "callback_data": f"ai_group:cancel:{task_id}"}]]}
 
 
 def _reply(chat_id: str, text: str, reply_markup: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -278,6 +278,7 @@ MiMo/Mino draft 成功 / 失败 / malformed JSON
 处理：
 
 - Dispatcher 应解析失败详情中的必需频道，逐个执行自动关注。
+- 如果验证消息同时带“我已加入 / 我已关注 / 完成验证”确认按钮，全部必需频道关注成功后必须点击该确认按钮；按钮点击失败时保留真实失败原因，不能直接写成已可发言。
 - 关注成功后必须复检目标群 `can_send`，复检通过才允许把原 `send_message` action 重新置为 `pending`。
 - 重排 action 的 result 应包含 `error_code=required_channel_followed_retry`、`required_channels_followed` 和 `prerequisite_channel_followed=true`，用于区分“已补前置条件等待重发”和普通失败。
 - 只有后续真实重发成功才计入 `hard_hourly_success_count`；自动关注本身不能抵扣硬目标。

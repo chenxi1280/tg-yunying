@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .api import ApiModel
 from .operation_plans import OperationPlanTaskLinkOut
@@ -162,6 +162,34 @@ class GroupAITeacherTarget(BaseModel):
     priority: int = Field(default=1, ge=1, le=100)
 
 
+def _plain_lines(value: str) -> list[str]:
+    return [line.strip() for line in value.splitlines() if line.strip()]
+
+
+def _topic_directions_from_lines(value: str) -> list[dict[str, Any]]:
+    lines = _plain_lines(value)
+    total = len(lines)
+    return [{"title": line, "weight": float(total - index)} for index, line in enumerate(lines)]
+
+
+def _teacher_targets_from_lines(value: str) -> list[dict[str, Any]]:
+    lines = _plain_lines(value)
+    total = len(lines)
+    return [{"name": line, "priority": total - index} for index, line in enumerate(lines)]
+
+
+def _normalize_topic_directions(value: Any) -> Any:
+    if isinstance(value, str):
+        return _topic_directions_from_lines(value)
+    return value
+
+
+def _normalize_teacher_targets(value: Any) -> Any:
+    if isinstance(value, str):
+        return _teacher_targets_from_lines(value)
+    return value
+
+
 class GroupAIChatConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -224,6 +252,16 @@ class GroupAIChatConfig(BaseModel):
     fact_anchor_required: bool = True
     semantic_repeat_window: int = Field(default=10, ge=1, le=100)
     low_confidence_silence_enabled: bool = True
+
+    @field_validator("topic_directions", mode="before")
+    @classmethod
+    def normalize_topic_directions(cls, value: Any) -> Any:
+        return _normalize_topic_directions(value)
+
+    @field_validator("teacher_targets", mode="before")
+    @classmethod
+    def normalize_teacher_targets(cls, value: Any) -> Any:
+        return _normalize_teacher_targets(value)
 
     @model_validator(mode="after")
     def validate_target_reference(self) -> "GroupAIChatConfig":
@@ -523,6 +561,16 @@ class TaskSettingsUpdate(TaskUpdate):
     tone: Literal["casual", "professional", "mixed", "auto"] | None = None
     language: str | None = None
     max_message_length: int | None = Field(default=None, ge=1)
+
+    @field_validator("topic_directions", mode="before")
+    @classmethod
+    def normalize_topic_directions(cls, value: Any) -> Any:
+        return _normalize_topic_directions(value)
+
+    @field_validator("teacher_targets", mode="before")
+    @classmethod
+    def normalize_teacher_targets(cls, value: Any) -> Any:
+        return _normalize_teacher_targets(value)
     participation_rate: float | None = Field(default=None, ge=0.01, le=1)
     participation_jitter: float | None = Field(default=None, ge=0, le=1)
     allow_account_repeat: bool | None = None

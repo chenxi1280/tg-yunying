@@ -40,6 +40,28 @@ def test_group_ai_config_accepts_topic_teacher_and_consecutive_settings() -> Non
 
 
 @pytest.mark.no_postgres
+def test_group_ai_config_accepts_plain_line_topic_and_chat_targets() -> None:
+    payload = GroupAIChatTaskCreate(
+        name="AI 活群",
+        target_group_id=7,
+        topic_directions="郑州楼凤妹子怎么样\n主任最近约新妹子了\n精品榜的妹子真好",
+        teacher_targets="花花老师身材服务真好\n新人榜单妹子",
+        hourly_min_messages=10,
+    )
+
+    data = payload.model_dump(mode="json")
+
+    assert [item["title"] for item in data["topic_directions"]] == [
+        "郑州楼凤妹子怎么样",
+        "主任最近约新妹子了",
+        "精品榜的妹子真好",
+    ]
+    assert [item["weight"] for item in data["topic_directions"]] == [3.0, 2.0, 1.0]
+    assert [item["name"] for item in data["teacher_targets"]] == ["花花老师身材服务真好", "新人榜单妹子"]
+    assert [item["priority"] for item in data["teacher_targets"]] == [2, 1]
+
+
+@pytest.mark.no_postgres
 def test_group_ai_config_accepts_all_accounts_daily_coverage_settings() -> None:
     payload = GroupAIChatTaskCreate(
         name="AI 活群",

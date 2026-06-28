@@ -32,8 +32,9 @@ import {
   fieldsForSubmit,
   formatDateTime,
   formatKeyValueMap,
-  formatJsonArray,
+  formatChatTargetLines,
   formatPrecheckReasons,
+  formatTopicDirectionLines,
   hardHourlyStats,
   hardHourlyStatusColor,
   hardHourlyStatusLabel,
@@ -41,8 +42,9 @@ import {
   normalizePromptTemplateType,
   operationProfileFromValues,
   operationTemplate,
-  parseJsonArray,
+  parseChatTargetLines,
   parseKeyValueMap,
+  parseTopicDirectionLines,
   runtimeStage,
   runtimeStageLabel,
   statusLabel,
@@ -982,8 +984,8 @@ export default function TaskCenterView({
         ? config.source_groups.map((item: any) => item?.operation_target_id).filter(Boolean)
         : [],
       account_personas: formatKeyValueMap(config.account_personas),
-      topic_directions: formatJsonArray(config.topic_directions),
-      teacher_targets: formatJsonArray(config.teacher_targets),
+      topic_directions: formatTopicDirectionLines(config.topic_directions),
+      teacher_targets: formatChatTargetLines(config.teacher_targets),
       slang_terms: formatKeyValueMap(config.slang_terms),
       slang_prompt_template_id: task.type === 'group_ai_chat' ? (config.slang_prompt_template_id ?? defaultSlangTemplateId) : (config.slang_prompt_template_id ?? null),
       filter_bot_messages: task.type === 'group_relay' ? config.filter_bot_messages !== false : config.filter_bot_messages,
@@ -1237,8 +1239,8 @@ export default function TaskCenterView({
         rule_set_version_id: values.rule_set_version_id ?? null,
         target_group_name: target?.title ?? '',
         topic_hint: values.topic_hint ?? '',
-        topic_directions: parseJsonArray(values.topic_directions),
-        teacher_targets: parseJsonArray(values.teacher_targets),
+        topic_directions: parseTopicDirectionLines(values.topic_directions),
+        teacher_targets: parseChatTargetLines(values.teacher_targets),
         chat_history_depth: values.chat_history_depth ?? 50,
         ai_model: values.ai_model ?? '',
         system_prompt_override: values.system_prompt_override ?? '',
@@ -1319,6 +1321,7 @@ export default function TaskCenterView({
     };
     if (type === 'group_ai_chat') {
       const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
+      const existingTypeConfig = detail?.task.type_config || {};
       return {
         ...base,
         target_operation_target_id: values.target_operation_target_id ?? null,
@@ -1326,8 +1329,8 @@ export default function TaskCenterView({
         rule_set_version_id: values.rule_set_version_id ?? null,
         target_group_name: target?.title ?? '',
         topic_hint: values.topic_hint ?? '',
-        topic_directions: parseJsonArray(values.topic_directions),
-        teacher_targets: parseJsonArray(values.teacher_targets),
+        topic_directions: parseTopicDirectionLines(values.topic_directions, existingTypeConfig.topic_directions),
+        teacher_targets: parseChatTargetLines(values.teacher_targets, existingTypeConfig.teacher_targets),
         chat_history_depth: values.chat_history_depth ?? 50,
         ai_model: values.ai_model ?? '',
         system_prompt_override: values.system_prompt_override ?? '',

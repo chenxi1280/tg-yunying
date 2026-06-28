@@ -185,16 +185,40 @@ export function formatKeyValueMap(value?: Record<string, string>): string {
   return value ? Object.entries(value).map(([key, role]) => `${key}=${role}`).join('\n') : '';
 }
 
-export function parseJsonArray(value?: string | unknown[]): unknown[] {
-  if (Array.isArray(value)) return value;
-  const text = String(value ?? '').trim();
-  if (!text) return [];
-  const parsed = JSON.parse(text);
-  return Array.isArray(parsed) ? parsed : [];
+function nonEmptyLines(value?: string): string[] {
+  return (value ?? '').split(/\n/).map((line) => line.trim()).filter(Boolean);
 }
 
-export function formatJsonArray(value?: unknown[]): string {
-  return Array.isArray(value) && value.length ? JSON.stringify(value, null, 2) : '';
+function existingTopicDirection(title: string, existingItems?: unknown[]): Record<string, unknown> {
+  if (!Array.isArray(existingItems)) return {};
+  return (existingItems.find((item) => (item as { title?: unknown })?.title === title) as Record<string, unknown> | undefined) ?? {};
+}
+
+function existingChatTarget(name: string, existingItems?: unknown[]): Record<string, unknown> {
+  if (!Array.isArray(existingItems)) return {};
+  return (existingItems.find((item) => (item as { name?: unknown })?.name === name) as Record<string, unknown> | undefined) ?? {};
+}
+
+export function parseTopicDirectionLines(value?: string | unknown[], existingItems?: unknown[]): unknown[] {
+  if (Array.isArray(value)) return value;
+  const lines = nonEmptyLines(value);
+  return lines.map((title, index) => ({ ...existingTopicDirection(title, existingItems), title, weight: lines.length - index }));
+}
+
+export function parseChatTargetLines(value?: string | unknown[], existingItems?: unknown[]): unknown[] {
+  if (Array.isArray(value)) return value;
+  const lines = nonEmptyLines(value);
+  return lines.map((name, index) => ({ ...existingChatTarget(name, existingItems), name, priority: lines.length - index }));
+}
+
+export function formatTopicDirectionLines(value?: unknown[]): string {
+  if (!Array.isArray(value)) return '';
+  return value.map((item) => (item as { title?: unknown })?.title).filter(Boolean).join('\n');
+}
+
+export function formatChatTargetLines(value?: unknown[]): string {
+  if (!Array.isArray(value)) return '';
+  return value.map((item) => (item as { name?: unknown })?.name).filter(Boolean).join('\n');
 }
 
 export function normalizePromptTemplateType(value?: string): string {

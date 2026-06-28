@@ -19,7 +19,7 @@ from app.ai_gateway import (
 )
 from app.database import Base
 from app.integrations.telegram import DeveloperAppCredentials
-from app.integrations.telegram.gateway import TelethonTelegramGateway, _first_message_with_buttons, _permission_detail_from_context_rows, _verification_message_text
+from app.integrations.telegram.gateway import TelethonTelegramGateway, _first_message_with_buttons, _permission_detail_from_context_rows, _verification_button_click_target, _verification_message_text
 from app.models import AiProvider, FailureType, Tenant, TenantAiSetting
 from app.security import encrypt_secret
 from app.services.task_center.ai_generator import (
@@ -100,6 +100,21 @@ def test_first_message_with_buttons_scans_recent_context():
     with_buttons = SimpleNamespace(id=8, buttons=[[SimpleNamespace(text="开始验证")]])
 
     assert _first_message_with_buttons([without_buttons, with_buttons]) is with_buttons
+
+
+@pytest.mark.no_postgres
+def test_verification_button_click_target_prefers_confirmation_over_channel_urls():
+    message = SimpleNamespace(
+        buttons=[
+            [
+                SimpleNamespace(text="郑州楼凤阁车库", url="https://t.me/zz_lfg_garage"),
+                SimpleNamespace(text="郑州楼凤报告收录", url="https://t.me/zz_lfg_report"),
+                SimpleNamespace(text="✅ 我已加入"),
+            ]
+        ]
+    )
+
+    assert _verification_button_click_target(message) == (0, 2, "✅ 我已加入")
 
 
 def test_probe_permission_denied_uses_recent_context_detail(monkeypatch):

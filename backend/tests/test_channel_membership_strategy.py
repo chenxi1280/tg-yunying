@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta, timezone
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -583,6 +584,66 @@ def test_button_verification_with_tme_links_auto_follows_links_not_ad_mentions(m
 
     assert result.ok is True
     assert followed == ["qiyue201", "ttyyxybg", "-100815"]
+    assert verification.suggested_action == "关注频道"
+    assert verification.status == "已处理"
+
+
+@pytest.mark.no_postgres
+def test_auto_follow_verification_clicks_confirmation_button_after_required_channels(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    followed: list[str] = []
+    resolved: list[str] = []
+
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.ensure_channel_membership",
+        lambda _account_id, channel_ref, *_args, **_kwargs: followed.append(channel_ref) or OperationResult(True, "已处理", detail="已加入"),
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.resolve_verification_task",
+        lambda _account_id, action, *_args, **_kwargs: resolved.append(action) or OperationResult(True, "已处理", detail="已点击确认按钮"),
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.gateway.probe_target_capabilities",
+        lambda *_args, **_kwargs: OperationResult(True, detail="复检可发言"),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(id=816, tenant_id=1, tg_peer_id="-100816", title="郑州楼凤阁", group_type="supergroup", auth_status="已授权运营", can_send=False)
+        target = OperationTarget(id=916, tenant_id=1, target_type="group", tg_peer_id="-100816", title="郑州楼凤阁", auth_status="只读", can_send=False)
+        task = Task(id="task-required-channel-confirm", tenant_id=1, name="关注后确认", type="group_ai_chat", status="running", type_config={"auto_follow_required_channel": True})
+        account = TgAccount(id=46, tenant_id=1, display_name="账号46", phone_masked="46", status="在线", session_ciphertext="session")
+        action = Action(id="membership-required-channel-confirm", tenant_id=1, task_id=task.id, task_type="group_ai_chat", action_type="ensure_target_membership", account_id=46)
+        verification = VerificationTask(
+            tenant_id=1,
+            account_id=46,
+            group_id=group.id,
+            verification_type="群发言权限",
+            detected_reason="山竹开小差，您需要关注我们的频道才能发言。 [按钮：郑州楼凤阁车库 (https://t.me/zz_lfg_garage) / 郑州楼凤报告收录 (https://t.me/zz_lfg_report) / ✅ 我已加入]",
+            suggested_action="点击按钮",
+            target_peer_id=group.tg_peer_id,
+            target_display=group.title,
+            status="待处理",
+        )
+        session.add_all([group, target, task, account, action, verification, TgGroupAccount(tenant_id=1, group_id=group.id, account_id=account.id, can_send=False)])
+        session.commit()
+
+        result = dispatcher._try_auto_group_send_verification(
+            dispatcher.MembershipDispatchContext(
+                session,
+                action,
+                account,
+                object(),
+                EnsureChannelMembershipPayload(channel_id=group.tg_peer_id, channel_target_id=target.id, target_type="group", target_display=group.title, require_send=True),
+                None,
+            ),
+            verification,
+        )
+
+    assert result.ok is True
+    assert followed == ["zz_lfg_garage", "zz_lfg_report", "-100816"]
+    assert resolved == ["点击按钮"]
     assert verification.suggested_action == "关注频道"
     assert verification.status == "已处理"
 

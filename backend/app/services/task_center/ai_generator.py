@@ -681,7 +681,7 @@ def _active_teacher_prompt(config: dict) -> str:
     description = str(teacher.get("description") or "").strip()
     if not name:
         return ""
-    return f"聊天对象老师：{name}\n老师说明：{description}" if description else f"聊天对象老师：{name}"
+    return f"聊天对象：{name}\n对象说明：{description}" if description else f"聊天对象：{name}"
 
 
 def generate_group_messages(session: Session, tenant_id: int, config: dict, *, count: int, target_label: str, history: str = "") -> tuple[list[str], int]:
