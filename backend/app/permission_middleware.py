@@ -119,6 +119,8 @@ PERMISSION_RULES: list[PermissionRule] = [
     _compile("POST", r"^/api/tenant-bot-settings/webhook/refresh$", "system.manage"),
     _compile("DELETE", r"^/api/tenant-bot-settings/webhook$", "system.manage"),
     _compile("PATCH", r"^/api/tenant-group-rescue-settings$", "system.manage"),
+    _compile("POST", r"^/api/telegram-bot/tasks/group-ai-chat/settings$", "system.manage"),
+    _compile("POST", r"^/api/telegram-bot/update$", "system.manage"),
     _compile("POST", r"^/api/worker/drain-once$", "tasks.dispatch_control"),
 
     _compile("POST", r"^/api/target-profile(?:/.*)?$", "target_profile.manage"),

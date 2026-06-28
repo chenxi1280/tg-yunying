@@ -1,10 +1,13 @@
 from pathlib import Path
 
+import pytest
+
 from app.auth import all_permissions, normalize_permissions
 from app.permission_middleware import required_permission
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+pytestmark = pytest.mark.no_postgres
 
 
 def test_prd_permission_vocabulary_for_ai_prompt_and_proxy_controls():
@@ -69,6 +72,9 @@ def test_system_and_legacy_task_write_routes_have_backend_permission_rules():
     assert required_permission("PATCH", "/api/tenant-group-rescue-settings") == ("system.manage",)
     assert required_permission("GET", "/api/tenant-notification-settings") == ("system.view",)
     assert required_permission("GET", "/api/tenant-group-rescue-settings") == ("system.view",)
+    assert required_permission("POST", "/api/telegram-bot/tasks/group-ai-chat/settings") == ("system.manage",)
+    assert required_permission("POST", "/api/telegram-bot/update") == ("system.manage",)
+    assert required_permission("POST", "/api/telegram-bot/webhook/1/secret") is None
     assert required_permission("GET", "/api/operation-tasks") == ("tasks.view",)
     assert required_permission("GET", "/api/operation-task-attempts") == ("tasks.view",)
     assert required_permission("GET", "/api/manual-operation-records") == ("tasks.view",)
