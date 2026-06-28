@@ -37,8 +37,7 @@ def apply_group_ai_settings_from_bot(
     if unsupported:
         raise ValueError(CONFIG_WRITE_UNSUPPORTED_MESSAGE)
     next_config = {**(task.type_config or {}), **payload}
-    if "topic_directions" in payload:
-        next_config.pop("topic_hint", None)
+    next_config.pop("topic_hint", None)
     normalized = GroupAIChatConfig(**next_config).model_dump(mode="json", exclude_none=True)
     task.type_config = normalized
     session.commit()
@@ -151,7 +150,7 @@ def _task_settings_text(session: Session, tenant_id: int, task_id: str) -> str:
             f"任务：{task.name} ({task.id})",
             f"话题数：{len(topics)}",
             f"讨论老师数：{len(targets)}",
-            f"话题摘要：{_compact_list(topics) or config.get('topic_hint') or '-'}",
+            f"话题摘要：{_compact_list(topics) or '-'}",
             f"讨论老师摘要：{_compact_list(targets) or '-'}",
             f"连发：{config.get('consecutive_message_enabled', False)} {config.get('consecutive_message_min', 2)}-{config.get('consecutive_message_max', 4)}",
             f"全账号日覆盖：{config.get('account_coverage_mode', 'natural')} {config.get('per_account_daily_min_messages', 1)}-{config.get('per_account_daily_max_messages', 2)}",

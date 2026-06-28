@@ -708,7 +708,6 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
     requirements = "\n".join(
         part
         for part in [
-            config.get("topic_hint") or "",
             active_topic_prompt,
             active_teacher_prompt,
             topic_thread_prompt,
@@ -726,7 +725,7 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
     contents, tokens = generate_contents(
         session,
         tenant_id,
-        topic=_active_topic_title(config) or config.get("topic_hint") or "群聊日常活跃",
+        topic=_active_topic_title(config) or "群聊日常活跃",
         requirements=requirements,
         provider_id=config.get("ai_provider_id"),
         model_name=_group_chat_model(config),
@@ -755,7 +754,6 @@ def generate_group_reply_messages(
     requirements = "\n".join(
         part
         for part in [
-            config.get("topic_hint") or "",
             active_topic_prompt,
             active_teacher_prompt,
             f"引用目标：\n{reply_lines}" if reply_lines else "",
@@ -768,7 +766,7 @@ def generate_group_reply_messages(
     contents, tokens = generate_contents(
         session,
         tenant_id,
-        topic=_active_topic_title(config) or config.get("topic_hint") or "群引用回复",
+        topic=_active_topic_title(config) or "群引用回复",
         requirements=_sanitize_sensitive_context(requirements),
         provider_id=config.get("ai_provider_id"),
         model_name=_group_chat_model(config),

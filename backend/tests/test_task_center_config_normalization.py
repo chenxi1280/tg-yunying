@@ -21,7 +21,6 @@ def test_group_ai_config_accepts_topic_teacher_and_consecutive_settings() -> Non
     payload = GroupAIChatTaskCreate(
         name="AI 活群",
         target_group_id=7,
-        topic_hint="升学规划",
         topic_directions=[
             {"title": "升学规划", "description": "围绕择校节奏聊", "weight": 2},
             {"title": "材料准备", "description": "围绕材料清单聊", "weight": 1},
@@ -42,6 +41,17 @@ def test_group_ai_config_accepts_topic_teacher_and_consecutive_settings() -> Non
     assert data["topic_directions"][0]["title"] == "升学规划"
     assert data["teacher_targets"][0]["name"] == "王老师"
     assert data["consecutive_message_min"] == 2
+
+
+@pytest.mark.no_postgres
+def test_group_ai_config_rejects_legacy_topic_hint_input() -> None:
+    with pytest.raises(ValidationError, match="topic_hint"):
+        GroupAIChatTaskCreate(
+            name="AI 活群",
+            target_group_id=7,
+            topic_hint="旧话题",
+            hourly_min_messages=10,
+        )
 
 
 @pytest.mark.no_postgres

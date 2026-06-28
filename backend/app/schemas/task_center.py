@@ -201,7 +201,6 @@ class GroupAIChatConfig(BaseModel):
     rule_set_id: int | None = None
     rule_set_version_id: int | None = None
     target_group_name: str = ""
-    topic_hint: str | None = None
     topic_directions: list[GroupAITopicDirection] = Field(default_factory=list)
     teacher_targets: list[GroupAITeacherTarget] = Field(default_factory=list)
     chat_history_depth: int = Field(default=50, ge=1, le=200)

@@ -101,7 +101,6 @@ TYPE_SETTINGS_FIELDS = {
         "rule_set_id",
         "rule_set_version_id",
         "target_group_name",
-        "topic_hint",
         "topic_directions",
         "teacher_targets",
         "chat_history_depth",

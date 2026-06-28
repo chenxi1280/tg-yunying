@@ -58,7 +58,7 @@ Web 创建 / 编辑表单和 TG bot 配置会话不要求用户手写数组或 J
 - `consecutive_message_probability` 默认 `0.3`，范围 0-1。
 - 若 `consecutive_message_min > consecutive_message_max`，配置必须失败。
 
-旧 `topic_hint` 必须通过迁移写入 `topic_directions`，迁移后移除旧字段。若任务已经有 `topic_directions`，迁移只移除旧 `topic_hint`，避免同一任务出现两套话题来源。
+旧 `topic_hint` 必须通过迁移写入 `topic_directions`，迁移后移除旧字段。若任务已经有 `topic_directions`，迁移只移除旧 `topic_hint`，避免同一任务出现两套话题来源。迁移完成后 AI 活群 schema、设置白名单、TG bot 摘要和执行器都不得再读取 `topic_hint`；未配置话题方向时只回退到目标群运营方向。
 
 ## 执行规则
 

@@ -1757,17 +1757,20 @@ def test_group_ai_topic_and_chat_targets_use_plain_line_inputs():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+    config_fields = (PROJECT_ROOT / "backend/app/services/task_center/config_fields.py").read_text()
 
     assert 'name="topic_hint"' not in wizard
     assert 'label="话题方向（每行一个）"' in wizard
     assert 'label="讨论老师（每行一个）"' in wizard
     assert '[{"title":"升学规划"' not in wizard
     assert '[{"name":"王老师"' not in wizard
-    assert "formatTopicDirectionLines(config.topic_directions, config.topic_hint)" in source
+    assert "formatTopicDirectionLines(config.topic_directions, config.topic_hint)" not in source
     assert "formatChatTargetLines(config.teacher_targets)" in source
     assert "parseTopicDirectionLines(values.topic_directions)" in source
     assert "parseChatTargetLines(values.teacher_targets)" in source
     assert "topic_hint: values.topic_hint" not in source
+    group_ai_fields = config_fields.split('"group_ai_chat": {', 1)[1].split("    },", 1)[0]
+    assert '"topic_hint"' not in group_ai_fields
     assert "lines.map((title, index) => ({ ...existingTopicDirection(title, existingItems), title, weight: lines.length - index }))" in view_model
     assert "lines.map((name, index) => ({ ...existingChatTarget(name, existingItems), name, priority: lines.length - index }))" in view_model
 

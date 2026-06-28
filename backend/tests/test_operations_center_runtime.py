@@ -4220,7 +4220,7 @@ def test_group_ai_chat_context_prefers_topic_relevant_messages():
         SimpleNamespace(content="老师质量这块我更看课后反馈。"),
     ]
 
-    filtered = _topic_relevant_context_rows({"topic_hint": "老师质量"}, rows)
+    filtered = _topic_relevant_context_rows({"active_topic_direction": {"title": "老师质量"}}, rows)
 
     assert [row.content for row in filtered] == ["老师", "老师质量这块我更看课后反馈。"]
 

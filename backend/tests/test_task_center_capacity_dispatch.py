@@ -445,7 +445,7 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypat
                 type="group_ai_chat",
                 status="running",
                 priority=1,
-                type_config={"target_group_id": 7, "ai_model": "mino-v2.5", "topic_hint": "日常活跃"},
+                type_config={"target_group_id": 7, "ai_model": "mino-v2.5", "topic_directions": [{"title": "日常活跃", "weight": 1}]},
             )
         )
         session.add(

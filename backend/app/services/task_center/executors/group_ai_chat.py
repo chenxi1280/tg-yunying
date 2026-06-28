@@ -1204,7 +1204,7 @@ def _choose_topic_direction(config: dict, group: TgGroup) -> dict:
             cursor += max(0.01, float(item.get("weight") or 1))
             if marker <= cursor:
                 return dict(item)
-    fallback = str(config.get("topic_hint") or group.topic_direction or "群聊日常活跃").strip()
+    fallback = str(group.topic_direction or "群聊日常活跃").strip()
     return {"title": fallback, "description": "", "weight": 1}
 
 
@@ -1645,7 +1645,6 @@ def _topic_relevant_context_rows(config: dict, rows: list) -> list:
         str(active_topic.get("title") or ""),
         str(active_topic.get("description") or ""),
         _active_teacher_text(config),
-        str(config.get("topic_hint") or ""),
     ]
     topic = " ".join(part.strip() for part in topic_parts if part.strip())
     if not topic or not rows:

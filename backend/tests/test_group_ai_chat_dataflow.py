@@ -36,7 +36,7 @@ def test_group_ai_chat_normal_candidate_shortfall_is_visible_failure(monkeypatch
 
 def test_group_ai_chat_keeps_target_profile_out_of_fact_thread():
     config = group_ai_chat._generation_config_with_profile(
-        {"topic_hint": "日常闲聊"},
+        {"active_topic_direction": {"title": "日常闲聊"}},
         {"1": "账号只聊已知经历"},
         {"1": "谨慎短句"},
         "真人A: 今天只聊停车位",
@@ -62,7 +62,7 @@ def test_group_ai_prompt_layers_target_profile_as_style_not_fact(monkeypatch):
         None,
         1,
         {
-            "topic_hint": "日常闲聊",
+            "active_topic_direction": {"title": "日常闲聊"},
             "topic_thread": "真人A: 今天只聊停车位",
             "topic_plan": "只围绕停车位",
             "target_profile_style": "常聊装修预算",
@@ -74,6 +74,7 @@ def test_group_ai_prompt_layers_target_profile_as_style_not_fact(monkeypatch):
     )
 
     assert "话题脉络：\n真人A: 今天只聊停车位" in captured["requirements"]
+    assert "本轮话题方向：日常闲聊" in captured["requirements"]
     assert "全站目标画像（只作风格和话题参考，不能作为具体事实来源）：\n常聊装修预算" in captured["requirements"]
     assert "账号长期画像：\n- 账号 7: 只讲自己知道的上下文" in captured["requirements"]
 
@@ -91,7 +92,7 @@ def test_group_ai_reply_prompt_layers_target_profile_as_style_not_fact(monkeypat
         None,
         1,
         {
-            "topic_hint": "日常闲聊",
+            "active_topic_direction": {"title": "日常闲聊"},
             "target_profile_style": "常聊装修预算",
         },
         reply_targets=[{"author": "真人A", "preview": "停车位快没了", "source": "group"}],
@@ -100,6 +101,7 @@ def test_group_ai_reply_prompt_layers_target_profile_as_style_not_fact(monkeypat
     )
 
     assert "引用目标 1：作者：真人A；原文：停车位快没了；来源：group" in captured["requirements"]
+    assert "本轮话题方向：日常闲聊" in captured["requirements"]
     assert "群聊上下文：\n真人A: 停车位快没了" in captured["requirements"]
     assert "全站目标画像（只作风格和话题参考，不能作为具体事实来源）：\n常聊装修预算" in captured["requirements"]
 

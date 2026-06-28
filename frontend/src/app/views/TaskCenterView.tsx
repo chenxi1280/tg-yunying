@@ -984,7 +984,7 @@ export default function TaskCenterView({
         ? config.source_groups.map((item: any) => item?.operation_target_id).filter(Boolean)
         : [],
       account_personas: formatKeyValueMap(config.account_personas),
-      topic_directions: formatTopicDirectionLines(config.topic_directions, config.topic_hint),
+      topic_directions: formatTopicDirectionLines(config.topic_directions),
       teacher_targets: formatChatTargetLines(config.teacher_targets),
       slang_terms: formatKeyValueMap(config.slang_terms),
       slang_prompt_template_id: task.type === 'group_ai_chat' ? (config.slang_prompt_template_id ?? defaultSlangTemplateId) : (config.slang_prompt_template_id ?? null),

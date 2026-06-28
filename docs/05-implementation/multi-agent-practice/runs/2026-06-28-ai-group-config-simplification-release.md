@@ -37,3 +37,11 @@
 - `release_gate`: passed.
 - `production_health`: passed.
 - `business_specific_recheck`: unproven for live TG bot operator interaction until an authenticated operator exercises the bot/UI path.
+
+## Follow-up Config Optimization
+
+- Removed `topic_hint` from AI 活群 create/update schema and task setting allow-list; channel comment `topic_hint` remains independent.
+- Removed AI 活群 runtime fallback to `topic_hint`; missing `topic_directions` now falls back to the target group operation direction.
+- Removed Web edit-form fallback from legacy `topic_hint`; old data must be migrated into `topic_directions` by migration `0070_migrate_group_ai_topic_hint`.
+- TG bot task summaries no longer display legacy `topic_hint`; any bot write removes stale `topic_hint` before backend validation.
+- Local targeted verification before release: `backend/.venv/bin/python -m pytest -q -m no_postgres` passed with 334 passed, 839 deselected.
