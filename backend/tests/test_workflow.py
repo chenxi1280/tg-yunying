@@ -88,9 +88,18 @@ def compact_action_debug(actions: list[dict]) -> list[dict]:
             "executed_at": item.get("executed_at"),
             "result": item.get("result"),
             "memory_id": (item.get("payload") or {}).get("ai_message_memory_id"),
+            "cycle_id": (item.get("payload") or {}).get("cycle_id"),
             "message": (item.get("payload") or {}).get("message_text"),
         }
         for item in actions
+    ]
+
+
+def actions_for_cycle_suffix(actions: list[dict], suffix: str) -> list[dict]:
+    return [
+        action
+        for action in actions
+        if str((action.get("payload") or {}).get("cycle_id") or "").endswith(suffix)
     ]
 
 
@@ -4546,9 +4555,9 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
         initial_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         initial_action_count = len(task_detail_actions(client, headers, task_id))
         assert initial_action_count >= 1
+        sends_before_reset = len(sends)
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
-        post_reset_count = len(task_detail_actions(client, headers, task_id))
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert detail_after_reset["task"]["status"] == "running", {
             "initial": compact_task_debug(initial_detail["task"]),
@@ -4560,14 +4569,21 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         actions = task_detail_actions(client, headers, task_id)
-        if len(actions) <= post_reset_count:
+        reset_cycle_actions = actions_for_cycle_suffix(actions, ":cycle:2")
+        if not reset_cycle_actions:
             make_task_send_actions_due(task_id)
             drain_task_center(SessionLocal, 10)
             detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
             actions = task_detail_actions(client, headers, task_id)
-        assert len(actions) > post_reset_count
-        cycle_ids = [str((action.get("payload") or {}).get("cycle_id") or "") for action in actions]
-        assert any(cycle_id.endswith(":cycle:2") for cycle_id in cycle_ids)
+            reset_cycle_actions = actions_for_cycle_suffix(actions, ":cycle:2")
+        assert reset_cycle_actions, {
+            "task": compact_task_debug(detail["task"]),
+            "actions": compact_action_debug(actions),
+        }
+        assert any(action["status"] == "success" for action in reset_cycle_actions), compact_action_debug(
+            reset_cycle_actions
+        )
+        assert len(sends) > sends_before_reset
 
 
 def test_task_center_reset_group_relay_clears_source_fingerprints():
