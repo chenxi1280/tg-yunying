@@ -20,8 +20,6 @@ from sqlalchemy import inspect, select
 
 
 _workspace_phone_suffix = 1000
-WORKFLOW_AI_TOKEN_LENGTH = 200
-WORKFLOW_AI_TOKEN_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 def workflow_ai_active_pacing() -> dict:
@@ -42,8 +40,7 @@ def workflow_ai_active_pacing() -> dict:
 
 
 def _workflow_ai_token(index: int) -> str:
-    token_char = WORKFLOW_AI_TOKEN_CHARS[index % len(WORKFLOW_AI_TOKEN_CHARS)]
-    return f"{token_char * WORKFLOW_AI_TOKEN_LENGTH}{index:03d}"
+    return f"身边例子{index:03d}{uuid4().hex[:6]}"
 
 
 def _next_test_phone(prefix: str = "+8613800") -> str:
@@ -452,6 +449,38 @@ def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[
             link.is_listener = True
         session.commit()
     return account, group
+
+
+def make_isolated_ai_group(account_id: int, label: str) -> dict:
+    suffix = uuid4().hex[:10]
+    with SessionLocal() as session:
+        group = TgGroup(
+            tenant_id=1,
+            tg_peer_id=f"pytest-ai-{suffix}",
+            title=f"{label}-{suffix}",
+            auth_status="已授权运营",
+            can_send=True,
+            require_review=False,
+            daily_limit=10000,
+            account_cooldown_seconds=0,
+            group_cooldown_seconds=0,
+            listener_enabled=True,
+            listener_interval_seconds=0,
+        )
+        session.add(group)
+        session.flush()
+        session.add(
+            TgGroupAccount(
+                tenant_id=1,
+                group_id=group.id,
+                account_id=account_id,
+                can_send=True,
+                is_listener=True,
+                permission_label="可发言",
+            )
+        )
+        session.commit()
+        return {"id": group.id, "title": group.title, "tg_peer_id": group.tg_peer_id}
 
 
 def mark_test_channel_comment_ready(channel_target_id: int, account_ids: list[int]) -> None:
@@ -3389,6 +3418,7 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
+        group = make_isolated_ai_group(account["id"], "pytest AI 活跃创建")
         enable_mock_ai_provider(client, headers, "pytest AI 活跃创建")
         with SessionLocal() as session:
             db_account = session.get(TgAccount, account["id"])
@@ -3442,6 +3472,7 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
+        group = make_isolated_ai_group(account["id"], "pytest AI worker")
         enable_mock_ai_provider(client, headers, "pytest AI 活跃 worker")
         created = client.post(
             "/api/tasks/group-ai-chat",
@@ -3528,6 +3559,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
+        group = make_isolated_ai_group(account["id"], "pytest AI 持续监听")
         provider = client.post(
             "/api/ai-providers",
             headers=headers,
@@ -4487,6 +4519,7 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
+        group = make_isolated_ai_group(account["id"], "pytest AI 重置")
         enable_mock_ai_provider(client, headers, "pytest AI 活跃重置")
         created = client.post(
             "/api/tasks/group-ai-chat",
