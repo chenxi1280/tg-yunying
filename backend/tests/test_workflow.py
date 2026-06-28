@@ -4586,6 +4586,24 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
             "after_reset": compact_task_debug(detail_after_reset["task"]),
         }
 
+        with SessionLocal() as session:
+            session.add(
+                GroupContextMessage(
+                    tenant_id=1,
+                    group_id=group["id"],
+                    listener_account_id=account["id"],
+                    sender_name="真人用户",
+                    content=f"reset ai 新上下文 {_workflow_ai_token(9)}",
+                    message_type="text",
+                    remote_message_id=f"reset-ai-context-{uuid4().hex[:8]}",
+                    sent_at=datetime.now(UTC).replace(tzinfo=None),
+                )
+            )
+            task = session.get(Task, task_id)
+            assert task is not None
+            task.next_run_at = datetime.now(UTC).replace(tzinfo=None)
+            session.commit()
+
         detail, reset_cycle_actions = wait_for_cycle_success(client, headers, task_id, ":cycle:2")
         assert reset_cycle_actions, {
             "task": compact_task_debug(detail["task"]),
