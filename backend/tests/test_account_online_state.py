@@ -12,6 +12,7 @@ from app.models import AccountStatus, Task, TgAccount, TgAccountOnlineState, TgG
 from app.services._common import _now
 from app.services.account_online_state import (
     is_account_online_ready,
+    is_account_online_ready_for_planning,
     probe_due_online_states,
     reconcile_account_online_sources,
     reconcile_runtime_online_sources,
@@ -148,6 +149,20 @@ def test_stale_online_state_is_not_ready_for_dispatch():
         session.commit()
 
         assert is_account_online_ready(session, tenant_id=1, account_id=101, now=now) is False
+
+
+def test_planning_ready_allows_uninitialized_tenant_but_respects_existing_states():
+    now = _now()
+    with _session() as session:
+        _account(session)
+
+        assert is_account_online_ready(session, tenant_id=1, account_id=101, now=now) is False
+        assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=now) is True
+
+        session.add(TgAccountOnlineState(tenant_id=1, account_id=202, desired_online=True, online_status="online"))
+        session.commit()
+
+        assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=now) is False
 
 
 def test_probe_due_online_states_marks_healthy_account_online(monkeypatch):

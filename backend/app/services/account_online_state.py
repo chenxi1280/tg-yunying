@@ -11,6 +11,7 @@ from app.models import AccountStatus, Task, TgAccount, TgAccountOnlineState, TgG
 from app.services._common import _now
 from app.services.account_online_constants import ONLINE_STALE_AFTER
 from app.services.account_online_probe import probe_due_online_states
+from app.timezone import as_beijing
 
 ONLINE_TASK_STATUSES = {"running"}
 
@@ -45,13 +46,43 @@ def is_account_online_ready(
     now: datetime | None = None,
 ) -> bool:
     current_time = now or _now()
+    state = _account_online_state(session, tenant_id, account_id)
+    return _state_is_ready(state, current_time)
+
+
+def is_account_online_ready_for_planning(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_id: int,
+    now: datetime | None = None,
+) -> bool:
+    current_time = now or _now()
+    state = _account_online_state(session, tenant_id, account_id)
+    if state:
+        return _state_is_ready(state, current_time)
+    return not _tenant_has_online_states(session, tenant_id)
+
+
+def _account_online_state(session: Session, tenant_id: int, account_id: int) -> TgAccountOnlineState | None:
     state = session.scalar(
         select(TgAccountOnlineState).where(
             TgAccountOnlineState.tenant_id == tenant_id,
             TgAccountOnlineState.account_id == account_id,
         )
     )
-    return _state_is_ready(state, current_time)
+    return state
+
+
+def _tenant_has_online_states(session: Session, tenant_id: int) -> bool:
+    return (
+        session.scalar(
+            select(TgAccountOnlineState.id)
+            .where(TgAccountOnlineState.tenant_id == tenant_id)
+            .limit(1)
+        )
+        is not None
+    )
 
 
 def drain_account_online_keepalive(session_factory, limit: int = 100) -> int:
@@ -418,7 +449,9 @@ def _next_desired_status(state: TgAccountOnlineState) -> str:
 def _state_is_ready(state: TgAccountOnlineState | None, now: datetime) -> bool:
     if not state or not state.desired_online or state.online_status != "online":
         return False
-    if state.stale_after_at and state.stale_after_at <= now:
+    stale_after = as_beijing(state.stale_after_at)
+    current_time = as_beijing(now) or now
+    if stale_after and stale_after <= current_time:
         return False
     return True
 
@@ -438,6 +471,7 @@ def _state_signature(state: TgAccountOnlineState) -> tuple[Any, ...]:
 __all__ = [
     "drain_account_online_keepalive",
     "is_account_online_ready",
+    "is_account_online_ready_for_planning",
     "mark_stale_online_states",
     "probe_due_online_states",
     "reconcile_account_online_sources",

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, OperationTarget, RuleSet, Task, TgGroup
 from app.services._common import _now
-from app.services.account_online_state import is_account_online_ready, reconcile_runtime_online_sources
+from app.services.account_online_state import is_account_online_ready_for_planning, reconcile_runtime_online_sources
 from app.services.account_capacity import (
     AccountCapacityCache,
     AccountCapacityReservation,
@@ -571,7 +571,11 @@ def _select_accounts_for_plan(
 
 
 def _online_ready_accounts(session: Session, task: Task, accounts: list, progress: dict[str, object]) -> list:
-    ready = [account for account in accounts if is_account_online_ready(session, tenant_id=task.tenant_id, account_id=account.id)]
+    ready = [
+        account
+        for account in accounts
+        if is_account_online_ready_for_planning(session, tenant_id=task.tenant_id, account_id=account.id)
+    ]
     offline_count = max(0, len(accounts) - len(ready))
     if offline_count:
         stats = dict(task.stats or {})
