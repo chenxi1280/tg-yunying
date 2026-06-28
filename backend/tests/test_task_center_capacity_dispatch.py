@@ -3498,7 +3498,7 @@ def test_group_ai_build_plan_reconciles_missing_online_state_before_main_chat(mo
         assert states[0].active_task_count == 1
         assert states[0].proxy_id == 5
         assert states[2].desired_sources == [{"source_type": "global", "source_id": "global_keepalive"}]
-        assert "在线状态" in task.last_error
+        assert "在线状态" not in (task.last_error or "")
 
 
 @pytest.mark.no_postgres

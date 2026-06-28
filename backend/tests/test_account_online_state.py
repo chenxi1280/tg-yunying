@@ -11,6 +11,7 @@ from app.integrations.telegram import AccountHealth
 from app.models import AccountStatus, Task, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.services._common import _now
 from app.services.account_online_state import (
+    is_account_online_available,
     is_account_online_ready,
     is_account_online_ready_for_planning,
     probe_due_online_states,
@@ -167,7 +168,9 @@ def test_planning_ready_allows_missing_state_but_respects_existing_account_state
         session.add(TgAccountOnlineState(tenant_id=1, account_id=101, desired_online=True, online_status="warming"))
         session.commit()
 
-        assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=now) is False
+        assert is_account_online_ready(session, tenant_id=1, account_id=101, now=now) is False
+        assert is_account_online_available(session, tenant_id=1, account_id=101, now=now) is True
+        assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=now) is True
 
 
 def test_probe_due_online_states_marks_healthy_account_online(monkeypatch):

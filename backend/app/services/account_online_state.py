@@ -14,6 +14,7 @@ from app.services.account_online_probe import probe_due_online_states
 from app.timezone import as_beijing
 
 ONLINE_TASK_STATUSES = {"running"}
+ONLINE_AVAILABLE_STATUSES = {"online", "warming", "recovering"}
 
 
 def reconcile_account_online_sources(
@@ -60,8 +61,20 @@ def is_account_online_ready_for_planning(
     current_time = now or _now()
     state = _account_online_state(session, tenant_id, account_id)
     if state:
-        return _state_is_ready(state, current_time)
+        return _state_is_available(state, current_time)
     return True
+
+
+def is_account_online_available(
+    session: Session,
+    *,
+    tenant_id: int,
+    account_id: int,
+    now: datetime | None = None,
+) -> bool:
+    current_time = now or _now()
+    state = _account_online_state(session, tenant_id, account_id)
+    return _state_is_available(state, current_time)
 
 
 def _account_online_state(session: Session, tenant_id: int, account_id: int) -> TgAccountOnlineState | None:
@@ -438,11 +451,19 @@ def _next_desired_status(state: TgAccountOnlineState) -> str:
 def _state_is_ready(state: TgAccountOnlineState | None, now: datetime) -> bool:
     if not state or not state.desired_online or state.online_status != "online":
         return False
+    return not _state_is_stale(state, now)
+
+
+def _state_is_available(state: TgAccountOnlineState | None, now: datetime) -> bool:
+    if not state or not state.desired_online or state.online_status not in ONLINE_AVAILABLE_STATUSES:
+        return False
+    return not _state_is_stale(state, now)
+
+
+def _state_is_stale(state: TgAccountOnlineState, now: datetime) -> bool:
     stale_after = as_beijing(state.stale_after_at)
     current_time = as_beijing(now) or now
-    if stale_after and stale_after <= current_time:
-        return False
-    return True
+    return bool(stale_after and stale_after <= current_time)
 
 
 def _state_signature(state: TgAccountOnlineState) -> tuple[Any, ...]:
@@ -459,6 +480,7 @@ def _state_signature(state: TgAccountOnlineState) -> tuple[Any, ...]:
 
 __all__ = [
     "drain_account_online_keepalive",
+    "is_account_online_available",
     "is_account_online_ready",
     "is_account_online_ready_for_planning",
     "mark_stale_online_states",
