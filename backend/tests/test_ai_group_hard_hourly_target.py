@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, GroupContextMessage, OperationTarget, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
+from app.models import Action, GroupContextMessage, OperationTarget, SchedulingSetting, Task, Tenant, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.hard_hourly import hard_schedule_times, requires_planning as hard_hourly_requires_planning
@@ -44,6 +44,16 @@ def _send_action(
         status=status,
         scheduled_at=scheduled_at,
         executed_at=executed_at,
+    )
+
+
+def _online_state(account_id: int, now: datetime) -> TgAccountOnlineState:
+    return TgAccountOnlineState(
+        tenant_id=1,
+        account_id=account_id,
+        desired_online=True,
+        online_status="online",
+        stale_after_at=now + timedelta(minutes=5),
     )
 
 
@@ -458,6 +468,7 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
         return samples[:count], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
@@ -521,6 +532,7 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts(monk
         return [f"覆盖发言{index}" for index in range(count)], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
@@ -533,8 +545,9 @@ def test_group_ai_chat_all_accounts_daily_coverage_plans_uncovered_accounts(monk
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="全账号覆盖群", auth_status="已授权运营"))
         for account_id in [101, 102, 103, 104]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", health_score=95))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", health_score=95, session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+            session.add(_online_state(account_id, now_value))
         task = Task(
             id="ai-all-accounts-daily",
             tenant_id=1,
@@ -583,10 +596,11 @@ def test_group_ai_chat_all_accounts_daily_coverage_keeps_uncovered_before_memory
     now_value = datetime(2026, 6, 7, 20, 10)
 
     def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
-        return [f"覆盖发言{index}" for index in range(count)], 0
+        return ["榜单这两天更新挺快", "新人反馈要再看看"][:count], 0
 
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.account_pool._now", lambda: now_value)
+    monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", fake_generate_group_messages)
     monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._drop_repeated_planned_items", lambda items, _previous: items)
@@ -599,8 +613,9 @@ def test_group_ai_chat_all_accounts_daily_coverage_keeps_uncovered_before_memory
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="全账号覆盖群", auth_status="已授权运营"))
         for account_id in [101, 102, 103, 104]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", health_score=95))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", health_score=95, session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+            session.add(_online_state(account_id, now_value))
         task = Task(
             id="ai-coverage-memory-priority",
             tenant_id=1,

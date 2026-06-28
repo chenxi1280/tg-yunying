@@ -34,6 +34,79 @@ def test_group_ai_chat_normal_candidate_shortfall_is_visible_failure(monkeypatch
     assert task.stats["normal_candidate_shortfall_count"] == 1
 
 
+def test_group_ai_quality_fill_retries_until_shortfall_is_filled(monkeypatch):
+    task = SimpleNamespace(tenant_id=1, stats={})
+    rounds = [
+        ["照片准", "照片没p"],
+        ["价格问清楚了再说", "位置别乱发"],
+    ]
+    requested_counts: list[int] = []
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        requested_counts.append(count)
+        return rounds.pop(0), 3
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate_group_messages)
+
+    quality_items, tokens, stats = group_ai_chat._generate_quality_filled_items(
+        None,
+        task,
+        {},
+        reply_targets=[],
+        normal_count=2,
+        target_label="测试群",
+        history="真人A: 昨天照片准",
+        turn_count=2,
+        duplicate_baseline_messages=["昨天照片准"],
+        chat_mode=group_ai_chat.CHAT_MODE_REPLY,
+        context_message_ids=[1],
+        fact_anchor_required=False,
+        low_confidence_silence_enabled=False,
+        fill_reply_shortfall_with_normal=False,
+        enable_quality_fallback=False,
+    )
+
+    assert requested_counts == [2, 2]
+    assert [item["content"] for item in quality_items] == ["价格问清楚了再说", "位置别乱发"]
+    assert tokens == 6
+    assert stats["ai_generation_rounds"] == 2
+    assert stats["quality_fill_rounds"] == 1
+
+
+def test_group_ai_quality_fill_uses_unique_emoji_after_three_failed_rounds(monkeypatch):
+    task = SimpleNamespace(tenant_id=1, stats={})
+    requested_counts: list[int] = []
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        requested_counts.append(count)
+        return ["照片准", "照片没p"][:count], 2
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate_group_messages)
+
+    quality_items, _tokens, stats = group_ai_chat._generate_quality_filled_items(
+        None,
+        task,
+        {},
+        reply_targets=[],
+        normal_count=2,
+        target_label="测试群",
+        history="真人A: 昨天照片准",
+        turn_count=2,
+        duplicate_baseline_messages=["昨天照片准"],
+        chat_mode=group_ai_chat.CHAT_MODE_REPLY,
+        context_message_ids=[1],
+        fact_anchor_required=False,
+        low_confidence_silence_enabled=False,
+        fill_reply_shortfall_with_normal=False,
+        enable_quality_fallback=True,
+    )
+
+    assert requested_counts == [2, 2, 2]
+    assert [item["quality_fallback"] for item in quality_items] == ["emoji_react", "emoji_react"]
+    assert len({item["content"] for item in quality_items}) == 2
+    assert stats["quality_fallback_count"] == 2
+
+
 def test_group_ai_chat_keeps_target_profile_out_of_fact_thread():
     config = group_ai_chat._generation_config_with_profile(
         {"active_topic_direction": {"title": "日常闲聊"}},

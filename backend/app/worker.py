@@ -17,7 +17,9 @@ from .services.task_center.heartbeat import record_worker_heartbeat
 from .task_queue import get_task_queue
 from .services import (
     drain_account_sync_records,
+    drain_account_online_keepalive,
     drain_account_security_batches,
+    drain_ai_message_memory_maintenance,
     drain_archives,
     drain_continuous_campaigns,
     drain_group_listeners,
@@ -36,7 +38,19 @@ from .services.material_cache import drain_material_cache
 from .services.temp_files import cleanup_temp_files
 
 logger = logging.getLogger(__name__)
-VALID_WORKER_ROLES = {"all", "legacy", "planner", "dispatcher", "listener", "recovery", "account-security", "material-cache", "metrics"}
+VALID_WORKER_ROLES = {
+    "all",
+    "legacy",
+    "planner",
+    "dispatcher",
+    "listener",
+    "recovery",
+    "account-online",
+    "account-security",
+    "ai-memory",
+    "material-cache",
+    "metrics",
+}
 WORKER_HEALTH_STALE_AFTER = timedelta(minutes=2)
 
 
@@ -66,8 +80,12 @@ def drain_once(limit: int = 100, *, role: str | None = None) -> int:
         return drain_task_listener(SessionLocal, limit)
     if selected_role == "recovery":
         return drain_task_recovery(SessionLocal, limit)
+    if selected_role == "account-online":
+        return drain_account_online_keepalive(SessionLocal, limit)
     if selected_role == "account-security":
         return _drain_account_security_once(limit)
+    if selected_role == "ai-memory":
+        return drain_ai_message_memory_maintenance(SessionLocal, limit)
     if selected_role == "material-cache":
         return drain_material_cache(SessionLocal, limit)
     if selected_role == "metrics":
@@ -165,7 +183,18 @@ def check_worker_health(*, role: str | None = None) -> bool:
 
 def _health_process_types(role: str) -> set[str]:
     if role == "all":
-        return {"task_center", "planner", "dispatcher", "listener", "recovery", "account-security", "material-cache", "metrics"}
+        return {
+            "task_center",
+            "planner",
+            "dispatcher",
+            "listener",
+            "recovery",
+            "account-online",
+            "account-security",
+            "ai-memory",
+            "material-cache",
+            "metrics",
+        }
     if role == "legacy":
         return {"legacy"}
     return {role}

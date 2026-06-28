@@ -9,7 +9,27 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult
-from app.models import Action, DailyRuntimeStat, ExecutionAttempt, FailureType, GroupContextMessage, OperationTarget, ReviewQueue, RuntimeCleanupAudit, SchedulingSetting, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.models import (
+    Action,
+    AiAccountGroupStanceMemory,
+    AiAccountVoiceProfile,
+    AiGroupMessageMemory,
+    DailyRuntimeStat,
+    ExecutionAttempt,
+    FailureType,
+    GroupContextMessage,
+    OperationTarget,
+    ReviewQueue,
+    RuntimeCleanupAudit,
+    SchedulingSetting,
+    Task,
+    Tenant,
+    TgAccount,
+    TgAccountOnlineState,
+    TgGroup,
+    TgGroupAccount,
+    VerificationTask,
+)
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center import payloads as task_payloads
@@ -739,6 +759,136 @@ def _expired_cycle_payload(
     }
 
 
+@pytest.mark.no_postgres
+def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 29, 10, 0, tzinfo=BEIJING_TZ)
+    with Session(engine) as session:
+        task = Task(
+            id="task-ai-quality",
+            tenant_id=1,
+            name="质量漏斗",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "manual", "account_ids": [11, 12]},
+        )
+        online_now = _now()
+        session.add(task)
+        session.add_all(
+            [
+                TgAccountOnlineState(
+                    tenant_id=1,
+                    account_id=11,
+                    desired_online=True,
+                    desired_sources=[{"source_type": "task", "source_id": task.id}],
+                    online_status="online",
+                    stale_after_at=online_now + timedelta(minutes=1),
+                ),
+                TgAccountOnlineState(
+                    tenant_id=1,
+                    account_id=12,
+                    desired_online=True,
+                    desired_sources=[{"source_type": "task", "source_id": task.id}],
+                    online_status="online",
+                    stale_after_at=online_now - timedelta(seconds=1),
+                    failure_type="stale_probe",
+                ),
+                Action(
+                    id="quality-ok",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=11,
+                    status="success",
+                    scheduled_at=now_value,
+                    executed_at=now_value,
+                    payload={
+                        "message_text": "花花这个服务我上次看反馈还行",
+                        "ai_generation_id": "cycle-1",
+                        "ai_generation_count": 8,
+                        "human_quality_decision": "accepted",
+                        "act_type": "experience",
+                    },
+                ),
+                Action(
+                    id="quality-duplicate",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=12,
+                    status="skipped",
+                    scheduled_at=now_value,
+                    payload={
+                        "message_text": "这个确实不错",
+                        "quality_skip_reason": "duplicate_message",
+                        "duplicate_risk": "semantic_cluster",
+                    },
+                ),
+                Action(
+                    id="quality-template",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=13,
+                    status="skipped",
+                    scheduled_at=now_value,
+                    payload={
+                        "message_text": "感觉挺靠谱",
+                        "quality_skip_reason": "template_shell_limited",
+                    },
+                ),
+                Action(
+                    id="quality-offline",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=14,
+                    status="failed",
+                    scheduled_at=now_value,
+                    payload={"message_text": "我看看"},
+                    result={"validation_stage": "account_online", "error_code": "account_offline"},
+                ),
+                Action(
+                    id="quality-fallback",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=15,
+                    status="success",
+                    scheduled_at=now_value,
+                    payload={
+                        "message_text": "👌",
+                        "quality_fallback": "emoji_react",
+                        "human_quality_decision": "quality_fallback",
+                    },
+                ),
+            ]
+        )
+        session.commit()
+
+        detail = task_service.get_task_detail(session, 1, task.id)
+
+        funnel = detail["ai_quality_funnel"]
+        assert funnel["totals"]["candidate_count"] == 8
+        assert funnel["totals"]["passed_count"] == 1
+        assert funnel["totals"]["final_send_count"] == 2
+        assert funnel["reason_counts"]["duplicate_message"] == 1
+        assert funnel["reason_counts"]["template_shell_limited"] == 1
+        assert funnel["reason_counts"]["account_offline"] == 1
+        assert funnel["reason_counts"]["quality_fallback"] == 1
+        assert funnel["samples"]["duplicate_message"][0]["content"] == "这个确实不错"
+        online = detail["account_online_summary"]
+        assert online["desired_count"] == 2
+        assert online["online_count"] == 1
+        assert online["stale_count"] == 1
+
+
 def test_context_expired_skip_clears_same_cycle_pending_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -790,6 +940,214 @@ def test_context_expired_skip_clears_same_cycle_pending_actions(monkeypatch):
         assert stale_future.result["error_code"] == "context_expired"
         assert fresh_future.status == "pending"
         assert task.next_run_at < now_value + timedelta(minutes=5)
+
+
+@pytest.mark.no_postgres
+def test_group_ai_send_requires_online_state_before_gateway(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=11,
+                desired_online=True,
+                online_status="offline",
+                stale_after_at=now_value + timedelta(minutes=1),
+            )
+        )
+        session.add(
+            AiGroupMessageMemory(
+                id="memory-offline-send",
+                tenant_id=1,
+                group_id=7,
+                task_id="task-cycle-skip",
+                account_id=11,
+                raw_text="这条不应该发送",
+                normalized_text="这条不应该发送",
+                text_fingerprint="offline-send",
+                status="reserved",
+                planned_at=now_value,
+            )
+        )
+        session.add(
+            _cycle_action(
+                "action-offline-send",
+                now_value,
+                {
+                    "group_id": 7,
+                    "message_text": "这条不应该发送",
+                    "review_approved": True,
+                    "slot_id": "task-cycle-skip:cycle:1:turn:1",
+                    "ai_message_memory_id": "memory-offline-send",
+                },
+            )
+        )
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("offline account must not call TG")),
+        )
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert dispatcher.dispatch_action(session, claimed) is True
+        action = session.get(Action, "action-offline-send")
+        assert action.status == "failed"
+        assert action.result["error_code"] == FailureType.ACCOUNT_UNAVAILABLE.value
+        assert action.result["validation_stage"] == "account_online"
+        assert "在线" in action.result["error_message"]
+        memory = session.get(AiGroupMessageMemory, "memory-offline-send")
+        assert memory.status == "account_offline"
+        assert memory.action_id == "action-offline-send"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_send_rechecks_message_memory_before_gateway(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=11,
+                desired_online=True,
+                online_status="online",
+                stale_after_at=now_value + timedelta(minutes=5),
+            )
+        )
+        session.add_all(
+            [
+                AiGroupMessageMemory(
+                    id="memory-current-send",
+                    tenant_id=1,
+                    group_id=7,
+                    task_id="task-cycle-skip",
+                    account_id=11,
+                    raw_text="花花老师身材服务真好",
+                    normalized_text="花花老师身材服务真好",
+                    text_fingerprint="current-send",
+                    status="reserved",
+                    planned_at=now_value,
+                ),
+                AiGroupMessageMemory(
+                    id="memory-conflict-send",
+                    tenant_id=1,
+                    group_id=7,
+                    task_id="other-task",
+                    account_id=12,
+                    raw_text="花花老师服务身材真好",
+                    normalized_text="花花老师服务身材真好",
+                    text_fingerprint="conflict-send",
+                    status="success",
+                    planned_at=now_value + timedelta(seconds=30),
+                ),
+            ]
+        )
+        session.add(
+            _cycle_action(
+                "action-duplicate-send",
+                now_value,
+                {
+                    "group_id": 7,
+                    "message_text": "花花老师身材服务真好",
+                    "review_approved": True,
+                    "slot_id": "task-cycle-skip:cycle:1:turn:1",
+                    "ai_message_memory_id": "memory-current-send",
+                },
+            )
+        )
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate must not call TG")),
+        )
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert dispatcher.dispatch_action(session, claimed) is True
+        action = session.get(Action, "action-duplicate-send")
+        assert action.status == "failed"
+        assert action.result["error_code"] == "duplicate_message"
+        assert action.result["validation_stage"] == "ai_message_memory"
+        memory = session.get(AiGroupMessageMemory, "memory-current-send")
+        assert memory.status == "duplicate_before_send"
+        assert memory.result["duplicate_reference_id"] == "memory-conflict-send"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_send_success_updates_account_stance_memory(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=11,
+                desired_online=True,
+                online_status="online",
+                stale_after_at=now_value + timedelta(minutes=5),
+            )
+        )
+        session.add(
+            AiGroupMessageMemory(
+                id="memory-stance-send",
+                tenant_id=1,
+                group_id=7,
+                task_id="task-cycle-skip",
+                account_id=11,
+                raw_text="花花老师这个感觉可以问问",
+                normalized_text="花花老师这个感觉可以问问",
+                text_fingerprint="stance-send",
+                status="reserved",
+                planned_at=now_value,
+            )
+        )
+        session.add(
+            _cycle_action(
+                "action-stance-send",
+                now_value,
+                {
+                    "group_id": 7,
+                    "message_text": "花花老师这个感觉可以问问",
+                    "review_approved": True,
+                    "slot_id": "task-cycle-skip:cycle:1:turn:1",
+                    "ai_message_memory_id": "memory-stance-send",
+                    "topic_direction": {"title": "郑州楼凤妹子怎么样"},
+                    "teacher_target": {"name": "花花老师"},
+                    "act_type": "追问",
+                },
+            )
+        )
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: SendResult(True, remote_message_id="tg-stance-ok"))
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert dispatcher.dispatch_action(session, claimed) is True
+        stance = session.scalar(select(AiAccountGroupStanceMemory).where(AiAccountGroupStanceMemory.account_id == 11))
+
+    assert stance is not None
+    assert stance.group_id == 7
+    assert stance.topic_direction == "郑州楼凤妹子怎么样"
+    assert stance.teacher_target == "花花老师"
+    assert stance.last_act_type == "追问"
+    assert stance.last_message_id == "tg-stance-ok"
+    assert "花花老师这个感觉可以问问" in stance.summary
 
 
 def test_hard_hourly_plain_send_ignores_context_expiration(monkeypatch):
@@ -895,6 +1253,7 @@ def test_context_expiration_ignores_backfilled_older_messages(monkeypatch):
         assert refreshed.result["telegram_msg_id"] == "tg-context-ok"
 
 
+@pytest.mark.no_postgres
 def test_gateway_exception_after_call_started_marks_unknown_after_send(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -932,6 +1291,73 @@ def test_gateway_exception_after_call_started_marks_unknown_after_send(monkeypat
         assert refreshed.result["error_code"] == "unknown_after_send"
         assert 11 not in dispatcher._IN_FLIGHT_ACCOUNTS
         assert refreshed.id not in dispatcher._ACTION_RESERVATIONS
+
+
+@pytest.mark.no_postgres
+def test_group_ai_gateway_unknown_updates_memory_and_stance(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=11,
+                desired_online=True,
+                online_status="online",
+                stale_after_at=now_value + timedelta(minutes=5),
+            )
+        )
+        session.add(
+            AiGroupMessageMemory(
+                id="memory-unknown-send",
+                tenant_id=1,
+                group_id=7,
+                task_id="task-cycle-skip",
+                account_id=11,
+                raw_text="主任这个可以先问价格",
+                normalized_text="主任这个可以先问价格",
+                text_fingerprint="unknown-send",
+                status="reserved",
+                planned_at=now_value,
+            )
+        )
+        session.add(
+            _cycle_action(
+                "action-unknown-ai-send",
+                now_value,
+                {
+                    "group_id": 7,
+                    "message_text": "主任这个可以先问价格",
+                    "review_approved": True,
+                    "slot_id": "task-cycle-skip:cycle:1:turn:1",
+                    "ai_message_memory_id": "memory-unknown-send",
+                    "topic_direction": {"title": "精品榜"},
+                    "teacher_target": {"name": "主任"},
+                    "act_type": "追问",
+                },
+            )
+        )
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("socket lost after send")))
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert dispatcher.dispatch_action(session, claimed) is True
+        action = session.get(Action, "action-unknown-ai-send")
+        memory = session.get(AiGroupMessageMemory, "memory-unknown-send")
+        stance = session.scalar(select(AiAccountGroupStanceMemory).where(AiAccountGroupStanceMemory.account_id == 11))
+
+    assert action.status == "unknown_after_send"
+    assert memory.status == "unknown_after_send"
+    assert memory.action_id == "action-unknown-ai-send"
+    assert stance is not None
+    assert stance.teacher_target == "主任"
+    assert stance.last_message_id == "action-unknown-ai-send"
+    assert "主任这个可以先问价格" in stance.summary
 
 
 def test_group_permission_denied_marks_group_account_not_sendable(monkeypatch):
@@ -3013,6 +3439,69 @@ def test_group_ai_build_plan_canonicalizes_duplicate_username_target_before_memb
 
 
 @pytest.mark.no_postgres
+def test_group_ai_build_plan_reconciles_missing_online_state_before_main_chat(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a", proxy_id=5),
+                TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"),
+                TgAccount(id=99, tenant_id=1, display_name="全局保活", phone_masked="+861***0099", status="在线", session_ciphertext="session-global"),
+            ]
+        )
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=99,
+                desired_online=True,
+                desired_sources=[{"source_type": "global", "source_id": "global_keepalive"}],
+                online_status="online",
+                stale_after_at=now_value + timedelta(minutes=5),
+            )
+        )
+        session.add_all(
+            [
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
+            ]
+        )
+        task = Task(
+            id="task-online-reconcile",
+            tenant_id=1,
+            name="在线回填",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
+            type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 2},
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+
+        assert group_ai_chat.build_plan(session, task) == 0
+        states = list(session.scalars(select(TgAccountOnlineState).order_by(TgAccountOnlineState.account_id)))
+
+        assert [state.account_id for state in states] == [11, 12, 99]
+        assert all(state.desired_online for state in states)
+        assert [state.online_status for state in states] == ["warming", "warming", "online"]
+        assert {(item["source_type"], item["source_id"]) for item in states[0].desired_sources} == {
+            ("global", "global_keepalive"),
+            ("task", "task-online-reconcile"),
+        }
+        assert states[0].active_task_count == 1
+        assert states[0].proxy_id == 5
+        assert states[2].desired_sources == [{"source_type": "global", "source_id": "global_keepalive"}]
+        assert "在线状态" in task.last_error
+
+
+@pytest.mark.no_postgres
 def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -3046,6 +3535,34 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
             ]
         )
+        session.add_all(
+            [
+                TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
+                TgAccountOnlineState(tenant_id=1, account_id=12, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
+                AiAccountVoiceProfile(
+                    tenant_id=1,
+                    account_id=11,
+                    version=2,
+                    short_prompt_summary="青年短句，爱追问价格，少表情",
+                    quality_status="active",
+                    status="active",
+                ),
+                AiAccountVoiceProfile(
+                    tenant_id=1,
+                    account_id=12,
+                    version=1,
+                    short_prompt_summary="中年中句，谨慎补经历，偶尔轻吐槽",
+                    quality_status="active",
+                    status="active",
+                ),
+                AiAccountGroupStanceMemory(
+                    tenant_id=1,
+                    group_id=7,
+                    account_id=11,
+                    summary="刚围绕王老师表达过观望，别突然强夸",
+                ),
+            ]
+        )
         task = Task(
             id="task-topic-teacher-burst",
             tenant_id=1,
@@ -3077,6 +3594,10 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
 
         assert group_ai_chat.build_plan(session, task) == 4
         actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.scheduled_at, Action.created_at)))
+        memory_by_id = {
+            row.id: row
+            for row in session.scalars(select(AiGroupMessageMemory).where(AiGroupMessageMemory.task_id == task.id))
+        }
 
     assert generated_configs[0]["active_topic_direction"]["title"] == "升学规划"
     assert generated_configs[0]["active_teacher_target"]["name"] == "王老师"
@@ -3087,6 +3608,119 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
     assert actions[0].payload["burst_size"] == 2
     assert actions[0].payload["topic_direction"]["title"] == "升学规划"
     assert actions[0].payload["teacher_target"]["name"] == "王老师"
+    assert actions[0].payload["slot_id"] == "task-topic-teacher-burst:cycle:1:turn:1"
+    assert actions[0].payload["act_type"]
+    assert actions[0].payload["account_voice_profile_version"] == 2
+    assert actions[0].payload["account_voice_profile_summary"] == "青年短句，爱追问价格，少表情"
+    assert actions[0].payload["stance_summary"] == "刚围绕王老师表达过观望，别突然强夸"
+    assert actions[0].payload["ai_message_memory_id"]
+    assert actions[0].payload["human_quality_decision"] == "accepted"
+    memory = memory_by_id.get(actions[0].payload["ai_message_memory_id"])
+    assert memory is not None
+    assert memory.action_id == actions[0].id
+    assert memory.status == "reserved"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_build_plan_uses_unique_emoji_fallback_after_quality_retries(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(group_ai_chat.random, "sample", lambda pool, k: list(pool)[:k])
+
+    requested_counts: list[int] = []
+
+    def fake_generate(_session, _tenant_id, _config, *, count, target_label, history):  # noqa: ANN001
+        requested_counts.append(count)
+        return ["照片准", "照片没p"][:count], 1
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),
+                TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"),
+            ]
+        )
+        session.add_all(
+            [
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
+                TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
+                TgAccountOnlineState(tenant_id=1, account_id=12, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
+            ]
+        )
+        task = Task(
+            id="task-emoji-fallback",
+            tenant_id=1,
+            name="表情兜底",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
+            pacing_config={"max_actions_per_hour": 120},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 2,
+                "reply_min_per_round": 0,
+                "silent_mode_enabled": False,
+                "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+                "account_coverage_mode": "all_accounts_daily",
+            },
+            stats={},
+        )
+        session.add(task)
+        session.add(
+            Action(
+                id="previous-ai-photo",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                status="success",
+                scheduled_at=now_value - timedelta(minutes=1),
+                executed_at=now_value - timedelta(minutes=1),
+                payload={"message_text": "昨天照片准"},
+            )
+        )
+        session.add(
+            GroupContextMessage(
+                tenant_id=1,
+                group_id=7,
+                listener_account_id=11,
+                sender_peer_id="9001",
+                sender_name="真人A",
+                content="昨天照片准，今天别一直重复这句",
+                message_type="text",
+                remote_message_id="7001",
+                sent_at=now_value,
+            )
+        )
+        session.commit()
+
+        assert group_ai_chat.build_plan(session, task) == 2
+        actions = list(
+            session.scalars(
+                select(Action)
+                .where(Action.task_id == task.id, Action.action_type == "send_message", Action.status == "pending")
+                .order_by(Action.scheduled_at, Action.created_at)
+            )
+        )
+        memories = list(session.scalars(select(AiGroupMessageMemory).where(AiGroupMessageMemory.task_id == task.id).order_by(AiGroupMessageMemory.planned_at, AiGroupMessageMemory.id)))
+
+    assert requested_counts == [2, 2, 2]
+    assert [action.payload["act_type"] for action in actions] == ["emoji_react", "emoji_react"]
+    assert [action.payload["human_quality_decision"] for action in actions] == ["quality_fallback", "quality_fallback"]
+    assert len({action.payload["message_text"] for action in actions}) == 2
+    assert len(memories) == 2
+    assert len({memory.normalized_text for memory in memories}) == 2
 
 
 def test_retry_failed_only_requeues_unknown_after_send_actions():

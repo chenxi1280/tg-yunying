@@ -126,6 +126,7 @@ class Settings:
     account_shard_index: int = int(os.getenv("ACCOUNT_SHARD_INDEX", "0"))
     enable_redis_account_inflight: bool = _bool_env("ENABLE_REDIS_ACCOUNT_INFLIGHT", False)
     redis_account_inflight_seconds: int = int(os.getenv("REDIS_ACCOUNT_INFLIGHT_SECONDS", "1800"))
+    enable_global_account_online_keepalive: bool = _bool_env("ENABLE_GLOBAL_ACCOUNT_ONLINE_KEEPALIVE", True)
     db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "5"))
     db_max_overflow: int = int(os.getenv("DB_MAX_OVERFLOW", "10"))
     db_pool_timeout: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))

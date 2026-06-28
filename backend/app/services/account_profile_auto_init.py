@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatus, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem
+from app.models import AccountStatus, AuditLog, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem
 from app.schemas.account_security import AccountSecurityBatchCreate, AvatarStrategy, ProfileGenerationStrategy
 from app.services.account_security import create_account_security_batch
 
 
 AUTO_PROFILE_ACTIONS = ["update_profile", "update_username", "update_avatar"]
 AUTO_PROFILE_REASON = "登录成功后自动初始化账号中文资料和头像"
+AUTO_VOICE_PROFILE_REASON = "登录成功后自动初始化账号表达卡"
 AUTO_PROFILE_ACTOR = "account-profile-auto-init"
 OPEN_BATCH_STATUSES = {"ready", "running"}
 OPEN_ITEM_STATUSES = {"pending", "running", "waiting"}
@@ -53,6 +54,7 @@ def queue_profile_initialization_for_accounts(
 ) -> ProfileInitializationQueueResult:
     accounts = _candidate_accounts(session, tenant_id, account_ids)
     selected = [account for account in accounts if _should_queue_account(session, account)]
+    _queue_voice_profile_initialization(session, tenant_id, accounts, actor)
     batch_ids: list[int] = []
     for overwrite_existing in (False, True):
         group = [account for account in selected if _requires_name_overwrite(account) is overwrite_existing]
@@ -63,6 +65,37 @@ def queue_profile_initialization_for_accounts(
         inspected_count=len(accounts),
         queued_account_ids=tuple(account.id for account in selected),
         batch_ids=tuple(batch_ids),
+    )
+
+
+def _queue_voice_profile_initialization(session: Session, tenant_id: int, accounts: list[TgAccount], actor: str) -> None:
+    if not accounts:
+        return
+    account_ids = [account.id for account in accounts]
+    try:
+        created = _ensure_voice_profiles(session, tenant_id, account_ids)
+        _audit_voice_profile_init(session, tenant_id, actor, "账号表达卡初始化", account_ids, f"created={created}")
+    except (RuntimeError, ValueError) as exc:
+        _audit_voice_profile_init(session, tenant_id, actor, "账号表达卡初始化失败", account_ids, str(exc))
+
+
+def _ensure_voice_profiles(session: Session, tenant_id: int, account_ids: list[int]) -> int:
+    from app.services.task_center.account_voice_profiles import ensure_voice_profiles_for_accounts, generate_voice_profiles_with_ai
+
+    generator = generate_voice_profiles_with_ai(session, tenant_id=tenant_id)
+    return ensure_voice_profiles_for_accounts(session, tenant_id=tenant_id, account_ids=account_ids, generator=generator)
+
+
+def _audit_voice_profile_init(session: Session, tenant_id: int, actor: str, action: str, account_ids: list[int], detail: str) -> None:
+    session.add(
+        AuditLog(
+            tenant_id=tenant_id,
+            actor=actor,
+            action=action,
+            target_type="ai_account_voice_profile",
+            target_id=",".join(str(account_id) for account_id in account_ids),
+            detail=detail,
+        )
     )
 
 

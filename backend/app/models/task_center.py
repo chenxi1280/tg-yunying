@@ -210,6 +210,133 @@ class ListenerSourceState(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class TgAccountOnlineState(Base):
+    __tablename__ = "tg_account_online_state"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "account_id", name="uq_tg_account_online_state_account"),
+        Index("ix_tg_account_online_state_status", "tenant_id", "desired_online", "online_status"),
+        Index("ix_tg_account_online_state_next_probe", "tenant_id", "next_probe_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    desired_online: Mapped[bool] = mapped_column(Boolean, default=False)
+    desired_sources: Mapped[list] = mapped_column(JSON, default=list)
+    online_status: Mapped[str] = mapped_column(String(40), default="offline")
+    session_kind: Mapped[str] = mapped_column(String(40), default="")
+    session_id: Mapped[str] = mapped_column(String(80), default="")
+    proxy_id: Mapped[int | None] = mapped_column(ForeignKey("account_proxies.id"), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_probe_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_keepalive_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stale_after_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_type: Mapped[str] = mapped_column(String(80), default="")
+    failure_detail: Mapped[str] = mapped_column(Text, default="")
+    recovery_status: Mapped[str] = mapped_column(String(40), default="")
+    next_probe_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    active_task_count: Mapped[int] = mapped_column(Integer, default=0)
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class AiGroupMessageMemory(Base):
+    __tablename__ = "ai_group_message_memory"
+    __table_args__ = (
+        Index(
+            "uq_ai_group_message_memory_reservation_key",
+            "reservation_key",
+            unique=True,
+            sqlite_where=text("reservation_key <> ''"),
+            postgresql_where=text("reservation_key <> ''"),
+        ),
+        Index("ix_ai_group_message_memory_dedupe", "tenant_id", "group_id", "text_fingerprint", "status", "planned_at"),
+        Index("ix_ai_group_message_memory_expiry", "status", "expires_at"),
+        Index("ix_ai_group_message_memory_task", "tenant_id", "task_id", "planned_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    group_id: Mapped[int] = mapped_column(Integer)
+    task_id: Mapped[str] = mapped_column(String(36), default="")
+    action_id: Mapped[str] = mapped_column(String(36), default="")
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("tg_accounts.id"), nullable=True)
+    topic_direction: Mapped[str] = mapped_column(Text, default="")
+    teacher_target: Mapped[str] = mapped_column(Text, default="")
+    raw_text: Mapped[str] = mapped_column(Text, default="")
+    normalized_text: Mapped[str] = mapped_column(Text, default="")
+    text_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    semantic_cluster: Mapped[str] = mapped_column(String(128), default="")
+    template_shell_key: Mapped[str] = mapped_column(String(128), default="")
+    reservation_key: Mapped[str] = mapped_column(String(160), default="")
+    status: Mapped[str] = mapped_column(String(40), default="reserved")
+    planned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duplicate_window: Mapped[str] = mapped_column(String(40), default="")
+    duplicate_reference_id: Mapped[str] = mapped_column(String(36), default="")
+    quality_decision: Mapped[str] = mapped_column(String(80), default="")
+    profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    profile_match_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    profile_match_reason: Mapped[str] = mapped_column(Text, default="")
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class AiAccountVoiceProfile(Base):
+    __tablename__ = "ai_account_voice_profiles"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "account_id", "version", name="uq_ai_account_voice_profiles_version"),
+        Index("ix_ai_account_voice_profiles_account_status", "tenant_id", "account_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    age_band: Mapped[str] = mapped_column(String(40), default="")
+    persona_experiences: Mapped[list] = mapped_column(JSON, default=list)
+    consumption_experiences: Mapped[list] = mapped_column(JSON, default=list)
+    sentence_length: Mapped[str] = mapped_column(String(80), default="")
+    interaction_habits: Mapped[list] = mapped_column(JSON, default=list)
+    tone_strength: Mapped[str] = mapped_column(String(80), default="")
+    lexical_preferences: Mapped[list] = mapped_column(JSON, default=list)
+    emoji_policy: Mapped[str] = mapped_column(String(80), default="")
+    forbidden_expressions: Mapped[list] = mapped_column(JSON, default=list)
+    short_prompt_summary: Mapped[str] = mapped_column(Text, default="")
+    source: Mapped[str] = mapped_column(String(40), default="ai_batch")
+    status: Mapped[str] = mapped_column(String(40), default="active")
+    similarity_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quality_status: Mapped[str] = mapped_column(String(40), default="active")
+    last_rebuilt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_by: Mapped[str] = mapped_column(String(120), default="system")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class AiAccountGroupStanceMemory(Base):
+    __tablename__ = "ai_account_group_stance_memory"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "group_id", "account_id", name="uq_ai_account_group_stance"),
+        Index("ix_ai_account_group_stance_group", "tenant_id", "group_id", "account_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    group_id: Mapped[int] = mapped_column(Integer)
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    topic_direction: Mapped[str] = mapped_column(Text, default="")
+    teacher_target: Mapped[str] = mapped_column(Text, default="")
+    stance: Mapped[str] = mapped_column(String(120), default="")
+    last_act_type: Mapped[str] = mapped_column(String(60), default="")
+    last_semantic_cluster: Mapped[str] = mapped_column(String(128), default="")
+    last_message_id: Mapped[str] = mapped_column(String(160), default="")
+    last_spoken_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    window_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    window_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class ReviewQueue(Base):
     __tablename__ = "review_queue"
 
@@ -371,6 +498,9 @@ class WorkerHeartbeat(Base):
 
 __all__ = [
     "Action",
+    "AiAccountGroupStanceMemory",
+    "AiAccountVoiceProfile",
+    "AiGroupMessageMemory",
     "DailyRuntimeStat",
     "ExecutionAttempt",
     "ListenerSourceState",
@@ -381,6 +511,7 @@ __all__ = [
     "SourceMediaAsset",
     "Task",
     "TaskMembershipAdmissionItem",
+    "TgAccountOnlineState",
     "TargetLearningProfile",
     "TargetLearningProfileVersion",
     "TargetLearningSample",

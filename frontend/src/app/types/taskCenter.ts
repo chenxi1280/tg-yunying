@@ -340,6 +340,46 @@ export type TaskCenterDetail = {
     cross_task_success_count: number;
     profile_summary: string;
   }>;
+  ai_quality_funnel: {
+    totals?: {
+      candidate_count?: number;
+      passed_count?: number;
+      final_send_count?: number;
+      action_count?: number;
+    };
+    reason_counts?: Record<string, number>;
+    samples?: Record<string, Array<{
+      action_id: string;
+      account_id: number | null;
+      status: string;
+      content: string;
+      scheduled_at: string | null;
+    }>>;
+  };
+  account_online_summary: {
+    desired_count?: number;
+    online_count?: number;
+    warming_count?: number;
+    recovering_count?: number;
+    relogin_required_count?: number;
+    blocked_count?: number;
+    stale_count?: number;
+    offline_count?: number;
+    missing_state_count?: number;
+    status_counts?: Record<string, number>;
+    samples?: Array<{
+      account_id: number;
+      online_status: string;
+      bucket: string;
+      failure_type: string;
+      failure_detail: string;
+      recovery_status: string;
+      last_seen_at: string | null;
+      last_probe_at: string | null;
+      stale_after_at: string | null;
+      desired_sources: Array<Record<string, unknown>>;
+    }>;
+  };
   relay_batches: Array<{
     relay_batch_id: string;
     stats: Record<string, any>;

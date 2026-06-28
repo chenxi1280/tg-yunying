@@ -221,6 +221,44 @@ services:
     networks:
       - infra_default
 
+  worker-account-online:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-account-online
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "account-online", "--limit", "${ACCOUNT_ONLINE_WORKER_DRAIN_LIMIT:-100}", "--interval", "${ACCOUNT_ONLINE_WORKER_INTERVAL_SECONDS:-5.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: account-online
+      ACCOUNT_ONLINE_WORKER_INTERVAL_SECONDS: ${ACCOUNT_ONLINE_WORKER_INTERVAL_SECONDS:-5.0}
+      WORKER_INTERVAL_SECONDS: ${ACCOUNT_ONLINE_WORKER_INTERVAL_SECONDS:-5.0}
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck: *worker-healthcheck
+    networks:
+      - infra_default
+
+  worker-ai-memory:
+    image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
+    container_name: tgyunying-worker-ai-memory
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker", "--role", "ai-memory", "--limit", "${AI_MEMORY_WORKER_DRAIN_LIMIT:-100}", "--interval", "${AI_MEMORY_WORKER_INTERVAL_SECONDS:-60.0}"]
+    environment:
+      <<: *backend-env
+      WORKER_ROLE: ai-memory
+      AI_MEMORY_WORKER_INTERVAL_SECONDS: ${AI_MEMORY_WORKER_INTERVAL_SECONDS:-60.0}
+      WORKER_INTERVAL_SECONDS: ${AI_MEMORY_WORKER_INTERVAL_SECONDS:-60.0}
+    volumes:
+      - "${TGYUNYING_MEDIA_DIR:-/data/tgyunying/shared/media}:/app/media"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck: *worker-healthcheck
+    networks:
+      - infra_default
+
   worker-metrics:
     image: ${TGYUNYING_BACKEND_IMAGE:?TGYUNYING_BACKEND_IMAGE is required}
     container_name: tgyunying-worker-metrics

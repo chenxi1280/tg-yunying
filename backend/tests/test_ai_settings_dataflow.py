@@ -52,3 +52,57 @@ def test_ai_settings_cache_account_selector_is_searchable_by_label():
     assert "showSearch" in account_selector
     assert "optionFilterProp=\"label\"" in account_selector
     assert "placeholder=\"按手机号 / 备注名 / username 搜索缓存执行账号\"" in account_selector
+
+
+def test_ai_account_voice_profile_routes_exist_and_require_real_service():
+    router = (PROJECT_ROOT / "backend/app/api/routers/ai_config.py").read_text()
+    schemas = (PROJECT_ROOT / "backend/app/schemas/ai_config.py").read_text()
+
+    assert '"/api/ai-account-voice-profiles"' in router
+    assert '"/api/ai-account-voice-profiles/{account_id}"' in router
+    assert '"/api/ai-account-voice-profiles/{account_id}/rebuild"' in router
+    assert '"/api/ai-account-voice-profiles/{account_id}/versions"' in router
+    assert '"/api/ai-account-voice-profiles/{account_id}/audits"' in router
+    assert '"/api/ai-account-voice-profiles/{account_id}/rollback"' in router
+    assert '"/api/ai-account-voice-profiles/batch-rebuild"' in router
+    assert "list_voice_profiles(" in router
+    assert "patch_voice_profile(" in router
+    assert "rebuild_voice_profile(" in router
+    assert "list_voice_profile_versions(" in router
+    assert "list_voice_profile_audits(" in router
+    assert "rollback_voice_profile(" in router
+    assert "batch_rebuild_voice_profiles(" in router
+    assert "generate_voice_profiles_with_ai(" in router
+    assert "AiAccountVoiceProfileOut" in schemas
+    assert "AiAccountVoiceProfileVersionOut" in schemas
+    assert "AiAccountVoiceProfileAuditOut" in schemas
+    assert "AiAccountVoiceProfileRollbackRequest" in schemas
+    assert "AiAccountVoiceProfileUpdate" in schemas
+    assert "AiAccountVoiceProfileBatchRebuildRequest" in schemas
+
+
+def test_system_config_exposes_ai_account_voice_profile_management_tab():
+    system_view = (PROJECT_ROOT / "frontend/src/app/views/SystemConfigView.tsx").read_text()
+    profile_view = (PROJECT_ROOT / "frontend/src/app/views/AIAccountVoiceProfilesView.tsx").read_text()
+    system_types = (PROJECT_ROOT / "frontend/src/app/types/system.ts").read_text()
+
+    assert "import AIAccountVoiceProfilesView from './AIAccountVoiceProfilesView';" in system_view
+    assert "key: 'ai-voice-profiles'" in system_view
+    assert "label: '账号表达卡'" in system_view
+    assert "hasPermission(currentUser, 'ai_voice_profiles.manage')" in system_view
+    assert "<AIAccountVoiceProfilesView" in system_view
+
+    assert "export type AiAccountVoiceProfile" in system_types
+    assert "export type AiAccountVoiceProfileVersion" in system_types
+    assert "export type AiAccountVoiceProfileAudit" in system_types
+    assert "api<AiAccountVoiceProfile[]>('/ai-account-voice-profiles" in profile_view
+    assert "api<AiAccountVoiceProfile>(`/ai-account-voice-profiles/${profile.account_id}`" in profile_view
+    assert "api<AiAccountVoiceProfile>(`/ai-account-voice-profiles/${profile.account_id}/rebuild`" in profile_view
+    assert "api<AiAccountVoiceProfileVersion[]>(`/ai-account-voice-profiles/${profile.account_id}/versions`" in profile_view
+    assert "api<AiAccountVoiceProfileAudit[]>(`/ai-account-voice-profiles/${profile.account_id}/audits`" in profile_view
+    assert "api<AiAccountVoiceProfile>(`/ai-account-voice-profiles/${profile.account_id}/rollback`" in profile_view
+    assert "api<AiAccountVoiceProfileBatchRebuildOut>('/ai-account-voice-profiles/batch-rebuild'" in profile_view
+    assert "缺表达卡" in profile_view
+    assert "批量补齐缺卡账号" in profile_view
+    assert "版本历史" in profile_view
+    assert "回滚到此版本" in profile_view

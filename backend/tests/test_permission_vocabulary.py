@@ -14,6 +14,7 @@ def test_prd_permission_vocabulary_for_ai_prompt_and_proxy_controls():
     permissions = all_permissions()
 
     assert "ai.manage" in permissions
+    assert "ai_voice_profiles.manage" in permissions
     assert "prompt_templates.manage" in permissions
     assert "proxies.manage" in permissions
     assert "usage.export" in permissions
@@ -27,6 +28,13 @@ def test_prd_permission_vocabulary_for_ai_prompt_and_proxy_controls():
     ]
     assert required_permission("POST", "/api/ai-providers") == ("ai.manage",)
     assert required_permission("PATCH", "/api/tenant-ai-settings") == ("ai.manage",)
+    assert required_permission("GET", "/api/ai-account-voice-profiles") == ("system.view", "ai_voice_profiles.manage")
+    assert required_permission("GET", "/api/ai-account-voice-profiles/12/versions") == ("system.view", "ai_voice_profiles.manage")
+    assert required_permission("GET", "/api/ai-account-voice-profiles/12/audits") == ("system.view", "ai_voice_profiles.manage")
+    assert required_permission("PATCH", "/api/ai-account-voice-profiles/12") == ("ai_voice_profiles.manage",)
+    assert required_permission("POST", "/api/ai-account-voice-profiles/12/rebuild") == ("ai_voice_profiles.manage",)
+    assert required_permission("POST", "/api/ai-account-voice-profiles/12/rollback") == ("ai_voice_profiles.manage",)
+    assert required_permission("POST", "/api/ai-account-voice-profiles/batch-rebuild") == ("ai_voice_profiles.manage",)
     assert required_permission("POST", "/api/prompt-templates") == ("prompt_templates.manage",)
     assert required_permission("PATCH", "/api/prompt-templates/12") == ("prompt_templates.manage",)
     assert required_permission("POST", "/api/account-proxies") == ("proxies.manage",)

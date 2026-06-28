@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Action, OperationTarget, RuleSet, Task, TgGroup
 from app.services._common import _now
+from app.services.account_online_state import is_account_online_ready, reconcile_runtime_online_sources
 from app.services.account_capacity import (
     AccountCapacityCache,
     AccountCapacityReservation,
@@ -25,6 +26,8 @@ from app.services.material_rules import select_material_for_policy
 
 from ..account_pool import DAILY_COVERAGE_SUCCESS_STATUSES, daily_account_coverage_counts, daily_uncovered_account_count, select_task_accounts
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages, generate_group_reply_messages
+from ..ai_message_memory import DuplicateMessageReservation, mark_group_ai_message_result, reserve_group_ai_message
+from ..account_voice_profiles import group_stance_summaries, voice_profile_prompt_details
 from ..channel_membership import gate_channel_membership
 from ..config_normalization import normalize_operation_target_references
 from ..fingerprints import fingerprint_exists, remember_fingerprint
@@ -69,6 +72,8 @@ HARD_HOURLY_MIN_BATCH_MESSAGES = 10
 HARD_HOURLY_DEFER_AI_MIN_GOAL = 100
 DEFERRED_AI_HISTORY_MAX_CHARS = 1000
 AI_GENERATION_REQUEST_BATCH_SIZE = 30
+MAX_AI_QUALITY_GENERATION_ROUNDS = 3
+LOW_RISK_EMOJI_FALLBACK_POOL = ("👍", "👌", "👀", "🤔", "😅", "😂", "🙈", "🤝", "💯", "🤣", "🫡", "🙂")
 RECENT_CYCLE_SCAN_LIMIT = 200
 RECENT_PLANNED_AI_STATUSES = ("pending", "claiming", "executing", "unknown_after_send")
 
@@ -103,8 +108,12 @@ def build_plan(session: Session, task: Task) -> int:
     target_label = target.title if target and target.tenant_id == task.tenant_id else group.title
     config = _with_active_conversation_targets(config, group)
     accounts = _select_accounts_for_plan(session, task, group, hard_progress, config)
+    _reconcile_online_sources_for_plan(session, task, accounts)
+    accounts = _online_ready_accounts(session, task, accounts, hard_progress)
     if not accounts:
         error_message, reason = _account_shortage_reason(session, task, group, hard_progress)
+        if int((task.stats or {}).get("account_offline_count") or 0) > 0:
+            error_message, reason = "账号在线状态不可用，等待账号恢复在线后继续执行", "account_offline"
         task.last_error = error_message
         if hard_progress:
             mark_plan_result(task, hard_progress, 0, {reason: max(1, int(hard_progress.get("deficit") or 1))})
@@ -185,9 +194,12 @@ def build_plan(session: Session, task: Task) -> int:
     topic_plan = _topic_plan_summary(config, group, topic_thread, turn_count)
     account_memories = _recent_account_memories(session, task, [account.id for account in selected], depth=int(config.get("account_memory_depth") or 3))
     account_profiles = account_profile_summaries(session, task, [account.id for account in selected])
+    voice_profiles = voice_profile_prompt_details(session, tenant_id=task.tenant_id, account_ids=[account.id for account in selected])
+    stance_summaries = group_stance_summaries(session, tenant_id=task.tenant_id, group_id=group.id, account_ids=[account.id for account in selected])
     profile_preview = tenant_learning_profile_preview(session, task.tenant_id, GROUP_CHAT_SCENE)
     audit_learning_profile_use(session, task, profile_preview, "AI活群任务")
-    generation_config = _generation_config_with_profile(round_config, account_memories, account_profiles, topic_thread, topic_plan, profile_preview)
+    account_prompt_profiles = _account_prompt_profiles(account_profiles, voice_profiles, stance_summaries)
+    generation_config = _generation_config_with_profile(round_config, account_memories, account_prompt_profiles, topic_thread, topic_plan, profile_preview)
     cycle_id = f"{task.id}:cycle:{cycle_index}"
     reply_targets = _reply_targets_for_plan(session, task, group, usable_context_rows, turn_count, config, hard_progress)
     if reply_targets is None:
@@ -199,7 +211,7 @@ def build_plan(session: Session, task: Task) -> int:
         planned_items, tokens = _deferred_ai_planned_items(normal_count), 0
     else:
         try:
-            planned_items, tokens = _generate_group_planned_items(
+            quality_items, tokens, quality_stats = _generate_quality_filled_items(
                 session,
                 task,
                 generation_config,
@@ -207,7 +219,14 @@ def build_plan(session: Session, task: Task) -> int:
                 normal_count=normal_count,
                 target_label=target_label,
                 history=history,
+                turn_count=turn_count,
+                duplicate_baseline_messages=duplicate_baseline_messages,
+                chat_mode=_chat_mode(usable_context_rows, idle_continuation),
+                context_message_ids=[int(row.id) for row in usable_context_rows[-history_depth:]],
+                fact_anchor_required=bool(config.get("fact_anchor_required", True)),
+                low_confidence_silence_enabled=bool(config.get("low_confidence_silence_enabled", True)),
                 fill_reply_shortfall_with_normal=bool(hard_progress),
+                enable_quality_fallback=bool(hard_progress) or _all_accounts_daily_coverage(config),
             )
         except AiGenerationUnavailable as exc:
             task.last_error = str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE
@@ -219,23 +238,10 @@ def build_plan(session: Session, task: Task) -> int:
             if hard_progress:
                 mark_plan_result(task, hard_progress, 0, {"ai_generation_unavailable": int(hard_progress.get("deficit") or 1)})
             return 0
-        planned_items = [item for item in planned_items if not _looks_like_generated_noise(item["content"])]
-        planned_items = _drop_repeated_planned_items(planned_items, duplicate_baseline_messages)
     chat_mode = _chat_mode(usable_context_rows, idle_continuation)
     context_message_ids = [int(row.id) for row in usable_context_rows[-history_depth:]]
     if defer_ai_generation:
         quality_items, quality_stats = planned_items[:turn_count], {}
-    else:
-        quality_items, quality_stats = _quality_filter_ai_messages(
-            [item["content"] for item in planned_items],
-            duplicate_baseline_messages,
-            chat_mode=chat_mode,
-            anchor_message_ids=context_message_ids,
-            fact_anchor_required=bool(config.get("fact_anchor_required", True)),
-            low_confidence_silence_enabled=bool(config.get("low_confidence_silence_enabled", True)),
-            limit=turn_count,
-        )
-        quality_items = _attach_reply_targets(quality_items, planned_items)
     if not quality_items:
         _mark_quality_skip(task, config, mode, ramp_ratio, _context_mode(usable_context_rows, idle_continuation), chat_mode, quality_stats)
         if hard_progress:
@@ -308,6 +314,14 @@ def build_plan(session: Session, task: Task) -> int:
             continue
         media_segments = [material_result.segment] if material_result.ok and material_result.segment else []
         coverage_payload = _coverage_payload_for_account(round_config, account.id, coverage_counts)
+        act_type = _act_type_for_turn(index, quality_item)
+        try:
+            memory = _reserve_planned_message_memory(session, task, group, account.id, filtered_content, config)
+        except DuplicateMessageReservation:
+            _hard_blocker_inc(hard_blockers, "duplicate_message", hard_progress)
+            stats_inc(task, "skipped_count")
+            continue
+        voice_profile = voice_profiles.get(account.id, {})
         prepared_actions.append(
             (
                 account.id,
@@ -324,7 +338,15 @@ def build_plan(session: Session, task: Task) -> int:
                     turn_index=index + 1,
                     account_role=_role_for_account(account.id, index, config),
                     account_memory=account_memories.get(str(account.id), ""),
-                    account_profile=account_profiles.get(str(account.id), ""),
+                    account_profile=account_prompt_profiles.get(str(account.id), ""),
+                    slot_id=_slot_id(cycle_id, index),
+                    act_type=act_type,
+                    account_voice_profile_version=int(voice_profile.get("version") or 0),
+                    account_voice_profile_summary=str(voice_profile.get("summary") or ""),
+                    stance_summary=stance_summaries.get(account.id, ""),
+                    ai_message_memory_id=memory.id if memory else "",
+                    rewrite_attempts=0,
+                    human_quality_decision=str(quality_item.get("human_quality_decision") or "accepted"),
                     topic_direction=dict(config.get("active_topic_direction") or {}),
                     teacher_target=dict(config.get("active_teacher_target") or {}),
                     **burst_plan.get(index, {}),
@@ -386,7 +408,9 @@ def build_plan(session: Session, task: Task) -> int:
             task.last_error = "AI 引用回复候选不足，已跳过本轮"
             return 0
     for account_id, planned_at, payload in prepared_actions:
-        create_send_action(session, task, account_id, planned_at, payload)
+        action = create_send_action(session, task, account_id, planned_at, payload)
+        if payload.ai_message_memory_id:
+            mark_group_ai_message_result(session, payload.ai_message_memory_id, status="reserved", action_id=action.id)
         created += 1
     for row in unprocessed_rows:
         remember_fingerprint(session, task.tenant_id, fingerprint_source, _context_fingerprint(row))
@@ -404,6 +428,12 @@ def build_plan(session: Session, task: Task) -> int:
         stats["hallucination_risk"] = quality_stats["hallucination_risk"]
     else:
         stats.pop("hallucination_risk", None)
+    if quality_stats.get("ai_generation_rounds"):
+        stats["ai_generation_rounds"] = quality_stats["ai_generation_rounds"]
+    if quality_stats.get("quality_fill_rounds"):
+        stats["quality_fill_rounds"] = quality_stats["quality_fill_rounds"]
+    if quality_stats.get("quality_fallback_count"):
+        stats["quality_fallback_count"] = quality_stats["quality_fallback_count"]
     stats.pop("skip_reason", None)
     stats.pop("idle_continuation_next_run_at", None)
     stats.pop("force_bootstrap_once", None)
@@ -540,6 +570,23 @@ def _select_accounts_for_plan(
     )
 
 
+def _online_ready_accounts(session: Session, task: Task, accounts: list, progress: dict[str, object]) -> list:
+    ready = [account for account in accounts if is_account_online_ready(session, tenant_id=task.tenant_id, account_id=account.id)]
+    offline_count = max(0, len(accounts) - len(ready))
+    if offline_count:
+        stats = dict(task.stats or {})
+        stats["account_offline_count"] = offline_count
+        task.stats = stats
+        if progress:
+            progress["account_offline_count"] = offline_count
+    return ready
+
+
+def _reconcile_online_sources_for_plan(session: Session, task: Task, accounts: list) -> None:
+    if accounts:
+        reconcile_runtime_online_sources(session, tenant_id=task.tenant_id, now=_now())
+
+
 def _daily_coverage_uncovered_count(
     session: Session,
     task: Task,
@@ -611,6 +658,60 @@ def _coverage_payload_for_account(config: dict, account_id: int, counts: dict[in
         "coverage_account_remaining_before_action": remaining,
         "coverage_reason": "daily_account_coverage" if remaining else "",
     }
+
+
+def _account_prompt_profiles(
+    account_profiles: dict[str, str],
+    voice_profiles: dict[int, dict[str, str | int]],
+    stance_summaries: dict[int, str],
+) -> dict[str, str]:
+    account_ids = set(int(account_id) for account_id in account_profiles.keys())
+    account_ids.update(voice_profiles.keys())
+    account_ids.update(stance_summaries.keys())
+    result: dict[str, str] = {}
+    for account_id in account_ids:
+        parts = [
+            str(account_profiles.get(str(account_id)) or "").strip(),
+            str((voice_profiles.get(account_id) or {}).get("summary") or "").strip(),
+            f"短期立场：{stance_summaries[account_id]}" if stance_summaries.get(account_id) else "",
+        ]
+        result[str(account_id)] = "；".join(part for part in parts if part)
+    return result
+
+
+def _slot_id(cycle_id: str, index: int) -> str:
+    return f"{cycle_id}:turn:{index + 1}"
+
+
+def _act_type_for_turn(index: int, quality_item: dict) -> str:
+    if quality_item.get("quality_fallback") == "emoji_react":
+        return "emoji_react"
+    if _reply_target_message_id(quality_item) is not None:
+        return "context_reply"
+    act_types = ("short_react", "detail_follow", "light_question", "side_comment")
+    return act_types[index % len(act_types)]
+
+
+def _reserve_planned_message_memory(
+    session: Session,
+    task: Task,
+    group: TgGroup,
+    account_id: int,
+    content: str,
+    config: dict,
+):
+    if not content.strip():
+        return None
+    return reserve_group_ai_message(
+        session,
+        tenant_id=task.tenant_id,
+        group_id=group.id,
+        task_id=task.id,
+        account_id=account_id,
+        raw_text=content,
+        topic_direction=_active_topic_text(config, group),
+        teacher_target=_active_teacher_text(config),
+    )
 
 
 def _increment_coverage_count(config: dict, account_id: int, counts: dict[int, int]) -> None:
@@ -729,6 +830,125 @@ def _generate_group_planned_items(
             tokens += used_tokens
             items.extend({"content": content, "reply_target": None} for content in contents)
     return items, tokens
+
+
+def _generate_quality_filled_items(
+    session: Session, task: Task, config: dict, *, reply_targets: list[dict], normal_count: int,
+    target_label: str, history: str, turn_count: int, duplicate_baseline_messages: list[str],
+    chat_mode: str, context_message_ids: list[int], fact_anchor_required: bool,
+    low_confidence_silence_enabled: bool, fill_reply_shortfall_with_normal: bool,
+    enable_quality_fallback: bool,
+) -> tuple[list[dict[str, str]], int, dict[str, object]]:
+    accepted: list[dict[str, str]] = []
+    tokens = 0
+    stats: dict[str, object] = {}
+    for round_index in range(MAX_AI_QUALITY_GENERATION_ROUNDS):
+        remaining = max(0, int(turn_count or 0) - len(accepted))
+        if remaining <= 0:
+            break
+        planned_items, used_tokens = _generate_quality_round_planned_items(
+            session,
+            task,
+            config,
+            reply_targets=reply_targets,
+            normal_count=normal_count,
+            target_label=target_label,
+            history=history,
+            fill_reply_shortfall_with_normal=fill_reply_shortfall_with_normal,
+            round_index=round_index,
+            remaining=remaining,
+        )
+        tokens += used_tokens
+        accepted = _accept_quality_round(
+            accepted,
+            planned_items,
+            duplicate_baseline_messages,
+            chat_mode=chat_mode,
+            context_message_ids=context_message_ids,
+            fact_anchor_required=fact_anchor_required,
+            low_confidence_silence_enabled=low_confidence_silence_enabled,
+            remaining=remaining,
+            stats=stats,
+        )
+        stats["ai_generation_rounds"] = round_index + 1
+        if len(accepted) < int(turn_count or 0):
+            stats["quality_fill_rounds"] = round_index + 1
+    if len(accepted) < int(turn_count or 0) and enable_quality_fallback:
+        fallback = _emoji_fallback_items(int(turn_count or 0) - len(accepted), accepted)
+        accepted.extend(fallback)
+        stats["quality_fallback_count"] = len(fallback)
+    return accepted[: max(0, int(turn_count or 0))], tokens, stats
+
+
+def _generate_quality_round_planned_items(
+    session: Session,
+    task: Task,
+    config: dict,
+    *,
+    reply_targets: list[dict],
+    normal_count: int,
+    target_label: str,
+    history: str,
+    fill_reply_shortfall_with_normal: bool,
+    round_index: int,
+    remaining: int,
+) -> tuple[list[dict], int]:
+    return _generate_group_planned_items(
+        session,
+        task,
+        config,
+        reply_targets=reply_targets if round_index == 0 else [],
+        normal_count=normal_count if round_index == 0 else remaining,
+        target_label=target_label,
+        history=history,
+        fill_reply_shortfall_with_normal=fill_reply_shortfall_with_normal,
+    )
+
+
+def _accept_quality_round(
+    accepted: list[dict[str, str]],
+    planned_items: list[dict],
+    duplicate_baseline_messages: list[str],
+    *,
+    chat_mode: str,
+    context_message_ids: list[int],
+    fact_anchor_required: bool,
+    low_confidence_silence_enabled: bool,
+    remaining: int,
+    stats: dict[str, object],
+) -> list[dict[str, str]]:
+    previous_messages = [*duplicate_baseline_messages, *[item["content"] for item in accepted]]
+    clean_items = [item for item in planned_items if not _looks_like_generated_noise(item["content"])]
+    clean_items = _drop_repeated_planned_items(clean_items, previous_messages)
+    quality_items, quality_stats = _quality_filter_ai_messages(
+        [item["content"] for item in clean_items],
+        previous_messages,
+        chat_mode=chat_mode,
+        anchor_message_ids=context_message_ids,
+        fact_anchor_required=fact_anchor_required,
+        low_confidence_silence_enabled=low_confidence_silence_enabled,
+        limit=remaining,
+    )
+    stats.update({key: value for key, value in quality_stats.items() if value})
+    return [*accepted, *_attach_reply_targets(quality_items, clean_items)[:remaining]]
+
+
+def _emoji_fallback_items(count: int, accepted: list[dict[str, str]]) -> list[dict[str, str]]:
+    used = {item["content"] for item in accepted}
+    available = [emoji for emoji in LOW_RISK_EMOJI_FALLBACK_POOL if emoji not in used]
+    selected = random.sample(available, k=min(max(0, int(count or 0)), len(available)))
+    return [
+        {
+            "content": emoji,
+            "semantic_cluster": "",
+            "duplicate_risk": "",
+            "hallucination_risk": "",
+            "quality_skip_reason": "quality_fallback",
+            "quality_fallback": "emoji_react",
+            "human_quality_decision": "quality_fallback",
+        }
+        for emoji in selected
+    ]
 
 
 def _normal_generation_batches(total: int) -> list[int]:

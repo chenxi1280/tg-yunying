@@ -16,6 +16,7 @@ import type {
   CurrentUser,
   RuntimeConfig,
 } from '../types';
+import AIAccountVoiceProfilesView from './AIAccountVoiceProfilesView';
 import AISettingsView from './AISettingsView';
 import DeveloperAppsView from './DeveloperAppsView';
 import GroupRescueSettingsView from './GroupRescueSettingsView';
@@ -281,6 +282,15 @@ export default function SystemConfigView({
               onEditKeywordRule={onEditKeywordRule}
               onSavedMaterialCacheConfig={onSavedMaterialCacheConfig}
               isActionPending={isActionPending}
+            />
+          ),
+        },
+        {
+          key: 'ai-voice-profiles',
+          label: '账号表达卡',
+          children: (
+            <AIAccountVoiceProfilesView
+              canManageVoiceProfiles={hasPermission(currentUser, 'ai_voice_profiles.manage')}
             />
           ),
         },

@@ -832,6 +832,101 @@ def _ai_generation_records(actions: list[Action]) -> list[dict[str, Any]]:
     return sorted(records.values(), key=lambda item: item["created_at"], reverse=True)
 
 
+def _ai_quality_funnel(actions: list[Action]) -> dict[str, Any]:
+    rows = [action for action in actions if action.task_type == "group_ai_chat" and action.action_type == "send_message"]
+    reason_counts = {reason: 0 for reason in _quality_reason_order()}
+    samples = {reason: [] for reason in _quality_reason_order()}
+    candidate_count = max([_generation_count(action) for action in rows] or [0])
+    passed_count = 0
+    final_send_count = 0
+    for action in rows:
+        reason = _quality_reason(action)
+        if reason:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            _append_quality_sample(samples, reason, action)
+        if action.status in {"success", "unknown_after_send"}:
+            final_send_count += 1
+        if _is_quality_accepted_text(action):
+            passed_count += 1
+    return {
+        "totals": {
+            "candidate_count": max(candidate_count, len(rows)),
+            "passed_count": passed_count,
+            "final_send_count": final_send_count,
+            "action_count": len(rows),
+        },
+        "reason_counts": reason_counts,
+        "samples": samples,
+    }
+
+
+def _quality_reason_order() -> list[str]:
+    return [
+        "duplicate_message",
+        "template_shell_limited",
+        "voice_profile_mismatch",
+        "stance_conflict",
+        "account_offline",
+        "context_insufficient",
+        "quality_fallback",
+        "hallucination_risk",
+        "diversity_penalty",
+    ]
+
+
+def _generation_count(action: Action) -> int:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return int(payload.get("ai_generation_count") or 0)
+
+
+def _quality_reason(action: Action) -> str:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    result = action.result if isinstance(action.result, dict) else {}
+    if payload.get("quality_fallback"):
+        return "quality_fallback"
+    if result.get("validation_stage") == "account_online" or result.get("error_code") == "account_offline":
+        return "account_offline"
+    reason = str(payload.get("quality_skip_reason") or result.get("quality_skip_reason") or "")
+    if reason:
+        return _normalize_quality_reason(reason)
+    if payload.get("duplicate_risk") or result.get("duplicate_window"):
+        return "duplicate_message"
+    if payload.get("hallucination_risk"):
+        return "hallucination_risk"
+    return ""
+
+
+def _normalize_quality_reason(reason: str) -> str:
+    mapping = {
+        "duplicate_risk": "duplicate_message",
+        "semantic_cluster": "duplicate_message",
+        "low_confidence_bootstrap": "context_insufficient",
+        "no_context_quality_blocked": "context_insufficient",
+    }
+    return mapping.get(reason, reason)
+
+
+def _append_quality_sample(samples: dict[str, list[dict[str, Any]]], reason: str, action: Action) -> None:
+    bucket = samples.setdefault(reason, [])
+    if len(bucket) >= 5:
+        return
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    bucket.append(
+        {
+            "action_id": action.id,
+            "account_id": action.account_id,
+            "status": action.status,
+            "content": str(payload.get("message_text") or ""),
+            "scheduled_at": action.scheduled_at,
+        }
+    )
+
+
+def _is_quality_accepted_text(action: Action) -> bool:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    return action.status in {"success", "unknown_after_send"} and str(payload.get("human_quality_decision") or "accepted") == "accepted"
+
+
 def _quality_risks(payload: dict[str, Any]) -> list[str]:
     return [
         value

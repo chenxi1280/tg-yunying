@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -8,15 +7,16 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgLoginFlow
+from app.models import AccountStatus, AiAccountVoiceProfile, TelegramDeveloperApp, Tenant, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgLoginFlow
 from app.security import encrypt_secret, encrypt_session
+from app.services import account_profile_auto_init
 from app.services import accounts as accounts_service
 
 pytestmark = pytest.mark.no_postgres
 
 
 def _session() -> Session:
-    engine = create_engine(os.environ.get("TEST_DATABASE_URL", "sqlite+pysqlite:///:memory:"), future=True)
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     return Session(engine)
@@ -87,6 +87,34 @@ def test_verify_login_queues_chinese_profile_initialization_for_english_account(
         assert item.status == "pending"
         assert item.generated_display_name
         assert not any("A" <= char <= "z" for char in item.generated_display_name)
+
+
+def test_verify_login_initializes_missing_ai_voice_profile(monkeypatch):
+    with _session() as session:
+        account = _seed_login_account(session)
+        _stub_successful_login(monkeypatch)
+
+        def fake_ensure(_session, tenant_id: int, account_ids: list[int]):
+            assert tenant_id == 1
+            session.add(
+                AiAccountVoiceProfile(
+                    tenant_id=tenant_id,
+                    account_id=account_ids[0],
+                    short_prompt_summary="青年短句，先观望再追问，偶尔说我看看",
+                    status="active",
+                    quality_status="active",
+                )
+            )
+            return 1
+
+        monkeypatch.setattr(account_profile_auto_init, "_ensure_voice_profiles", fake_ensure)
+
+        accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
+
+        voice_profile = session.scalar(select(AiAccountVoiceProfile))
+        assert voice_profile is not None
+        assert voice_profile.account_id == account.id
+        assert voice_profile.short_prompt_summary == "青年短句，先观望再追问，偶尔说我看看"
 
 
 def test_qr_login_queues_profile_initialization_after_success(monkeypatch):

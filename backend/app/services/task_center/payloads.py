@@ -27,6 +27,14 @@ class SendMessagePayload(BaseModel):
     account_role: str = ""
     account_memory: str = ""
     account_profile: str = ""
+    slot_id: str = ""
+    act_type: str = ""
+    account_voice_profile_version: int = 0
+    account_voice_profile_summary: str = ""
+    stance_summary: str = ""
+    ai_message_memory_id: str = ""
+    rewrite_attempts: int = 0
+    human_quality_decision: str = ""
     topic_direction: dict[str, Any] = Field(default_factory=dict)
     teacher_target: dict[str, Any] = Field(default_factory=dict)
     burst_id: str = ""
@@ -238,6 +246,7 @@ DEDUPE_VOLATILE_PAYLOAD_FIELDS = frozenset(
         "ai_generation_memory_count",
         "ai_generation_status",
         "ai_generation_tokens",
+        "ai_message_memory_id",
         "album_segment_results",
         "context_message_ids",
         "context_snapshot_message_id",

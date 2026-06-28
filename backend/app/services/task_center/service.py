@@ -55,6 +55,7 @@ from .details import (
     _ai_account_profiles,
     _ai_cycles,
     _ai_generation_records,
+    _ai_quality_funnel,
     _channel_subtask_status,
     _groups_by_target_id,
     _latest_attempts_by_action,
@@ -95,6 +96,7 @@ from .utils import as_int as _as_int, as_int_list as _as_int_list
 from .runtime_retention import cleanup_runtime_details, cleanup_runtime_metric_snapshots_if_due
 from app.services.tenant_target_profile import tenant_learning_profile_preview
 from app.services.source_media import WAITING_MATERIAL_CACHE, expire_waiting_source_media_actions, wake_waiting_actions_for_source_media
+from app.services.account_online_projection import task_account_online_summary
 from app.services.runtime_summary import clear_task_runtime_artifacts, reconcile_stale_operation_issues
 
 _empty_stats = empty_stats
@@ -310,6 +312,7 @@ def _task_summary_detail(session: Session, tenant_id: int, task: Task) -> dict[s
     admission_phase = membership_admission_summary(session, task)
     task_payload = _task_payload(session, task, actions=[], include_detail_search=False)
     task_payload["runtime_stage"] = derive_task_runtime_stage(task, actions=[], membership_phase=membership_phase, summary=task_summary)
+    ai_quality_actions = _ai_quality_actions(session, task) if task.type == "group_ai_chat" else []
     return {
         "task": task_payload,
         "actions": [],
@@ -325,10 +328,27 @@ def _task_summary_detail(session: Session, tenant_id: int, task: Task) -> dict[s
         "ai_cycles": [],
         "ai_generation_records": [],
         "ai_account_profiles": [],
+        "ai_quality_funnel": _ai_quality_funnel(ai_quality_actions),
+        "account_online_summary": task_account_online_summary(session, task) if task.type in {"group_ai_chat", "group_relay"} else {},
         "relay_batches": [],
         "recent_relay_sources": _relay_recent_sources(session, task) if task.type == "group_relay" else [],
         "learning_profile_preview": _task_learning_profile_preview(session, task),
     }
+
+
+def _ai_quality_actions(session: Session, task: Task) -> list[Action]:
+    return list(
+        session.scalars(
+            select(Action)
+            .where(
+                Action.tenant_id == task.tenant_id,
+                Action.task_id == task.id,
+                Action.task_type == "group_ai_chat",
+                Action.action_type == "send_message",
+            )
+            .order_by(Action.created_at.desc())
+        )
+    )
 
 
 def _summary_membership_phase(session: Session, task: Task) -> dict[str, Any]:

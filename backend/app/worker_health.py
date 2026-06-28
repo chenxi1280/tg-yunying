@@ -13,7 +13,19 @@ from .timezone import beijing_now
 
 logger = logging.getLogger(__name__)
 
-VALID_WORKER_ROLES = {"all", "legacy", "planner", "dispatcher", "listener", "recovery", "account-security", "material-cache", "metrics"}
+VALID_WORKER_ROLES = {
+    "all",
+    "legacy",
+    "planner",
+    "dispatcher",
+    "listener",
+    "recovery",
+    "account-online",
+    "account-security",
+    "ai-memory",
+    "material-cache",
+    "metrics",
+}
 WORKER_HEALTH_STALE_AFTER = timedelta(minutes=2)
 
 
@@ -51,7 +63,18 @@ def _normalize_role(role: str | None = None) -> str:
 
 def _health_process_types(role: str) -> set[str]:
     if role == "all":
-        return {"task_center", "planner", "dispatcher", "listener", "recovery", "account-security", "material-cache", "metrics"}
+        return {
+            "task_center",
+            "planner",
+            "dispatcher",
+            "listener",
+            "recovery",
+            "account-online",
+            "account-security",
+            "ai-memory",
+            "material-cache",
+            "metrics",
+        }
     if role == "legacy":
         return {"legacy"}
     return {role}

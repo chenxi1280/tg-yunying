@@ -16,6 +16,7 @@ from app.integrations.telegram import OperationResult, OutboundSegment
 from app.config import get_settings
 from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now, audit, gateway
+from app.services.account_online_state import is_account_online_ready
 from app.services.account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery
 from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
@@ -33,7 +34,9 @@ from app.services.verification import create_verification_task
 from app.timezone import BEIJING_TZ, as_beijing
 
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
+from .account_voice_profiles import upsert_group_stance_memory
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
+from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_message_sendable, mark_group_ai_message_result
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
 from .executors.common import quantity_jitter_bounds, stats_inc
 from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
@@ -842,6 +845,24 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
             _skip_context_expired_cycle(session, action, payload)
             _skip(action, "context_expired", "上下文已过期，跳过本轮剩余发言")
             return True
+        if not _group_ai_account_online_ready(session, action, account, payload):
+            _fail_with_policy(
+                action,
+                FailureType.ACCOUNT_UNAVAILABLE.value,
+                "账号在线状态不可用，等待账号恢复在线后继续执行",
+                auto_check="拦截",
+                validation_stage="account_online",
+            )
+            _mark_ai_message_memory_result(
+                session,
+                payload,
+                status="account_offline",
+                action_id=action.id,
+                result={"error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "validation_stage": "account_online"},
+            )
+            return True
+        if not _group_ai_message_memory_sendable(session, action, payload):
+            return True
         account_id = account.id
         group_peer = group.tg_peer_id
         group_pk = group.id
@@ -864,6 +885,16 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
         if _recover_send_message_required_channel(session, action, account, credentials, group, payload, result, attempt):
             return True
         _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
+        _mark_ai_message_memory_result(
+            session,
+            payload,
+            status="success" if result.ok else "failed",
+            action_id=action.id,
+            sent_at=_now() if result.ok else None,
+            result=dict(action.result or {}),
+        )
+        if result.ok:
+            _update_group_ai_stance_memory(session, action, account, payload, result.remote_message_id or "")
         if result.ok:
             link.last_sent_at = _now()
         return True
@@ -879,6 +910,101 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
     result = gateway.send_message_to_target(account_id, target_peer, content, "channel", None, session_ciphertext, credentials)
     _apply_send_result(action, account, result.ok, result.remote_message_id or "", result.failure_type or "", result.detail or "", attempt=attempt)
     return True
+
+
+def _group_ai_account_online_ready(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload: SendMessagePayload,
+) -> bool:
+    if action.task_type != "group_ai_chat":
+        return True
+    if not payload.slot_id and not payload.ai_message_memory_id:
+        return True
+    return is_account_online_ready(session, tenant_id=action.tenant_id, account_id=account.id)
+
+
+def _group_ai_message_memory_sendable(session: Session, action: Action, payload: SendMessagePayload) -> bool:
+    if action.task_type != "group_ai_chat" or not payload.ai_message_memory_id:
+        return True
+    try:
+        ensure_group_ai_message_sendable(session, payload.ai_message_memory_id)
+    except DuplicateMessageReservation as exc:
+        result = {
+            "error_code": "duplicate_message",
+            "validation_stage": "ai_message_memory",
+            "duplicate_reference_id": exc.reference_id,
+            "duplicate_window": exc.duplicate_window,
+        }
+        _fail(action, "duplicate_message", f"AI 活群发送前重复拦截：{exc.duplicate_window}", auto_check="拦截", validation_stage="ai_message_memory")
+        action.result = {**(action.result or {}), **result}
+        _mark_ai_message_memory_result(
+            session,
+            payload,
+            status="duplicate_before_send",
+            action_id=action.id,
+            result=result,
+        )
+        return False
+    return True
+
+
+def _mark_ai_message_memory_result(
+    session: Session,
+    payload: SendMessagePayload,
+    *,
+    status: str,
+    action_id: str,
+    sent_at: datetime | None = None,
+    result: dict | None = None,
+) -> None:
+    if not payload.ai_message_memory_id:
+        return
+    mark_group_ai_message_result(
+        session,
+        payload.ai_message_memory_id,
+        status=status,
+        action_id=action_id,
+        sent_at=sent_at,
+        result=result,
+    )
+
+
+def _update_group_ai_stance_memory(
+    session: Session,
+    action: Action,
+    account: TgAccount,
+    payload: SendMessagePayload,
+    remote_message_id: str,
+) -> None:
+    if action.task_type != "group_ai_chat" or not payload.slot_id or not payload.group_id:
+        return
+    upsert_group_stance_memory(
+        session,
+        tenant_id=action.tenant_id,
+        group_id=int(payload.group_id),
+        account_id=account.id,
+        topic_direction=_target_label(payload.topic_direction, "title"),
+        teacher_target=_target_label(payload.teacher_target, "name"),
+        stance="sent",
+        act_type=payload.act_type,
+        semantic_cluster="",
+        message_id=remote_message_id,
+        summary=_stance_summary(payload),
+    )
+
+
+def _target_label(value: dict | None, key: str) -> str:
+    if not isinstance(value, dict):
+        return ""
+    return str(value.get(key) or "").strip()
+
+
+def _stance_summary(payload: SendMessagePayload) -> str:
+    act = payload.act_type or "发言"
+    text = (payload.message_text or "").strip()
+    return f"{act}：{text[:80]}"
 
 
 def _dispatch_delete_message(session: Session, action: Action, account: TgAccount, credentials, payload: DeleteMessagePayload) -> bool:
@@ -3231,7 +3357,29 @@ def _mark_unknown_after_send(session: Session, action: Action, detail: str) -> N
         attempt.failure_type = "unknown_after_send"
         attempt.failure_detail = detail or ""
         attempt.result_snapshot = dict(action.result or {})
+    _mark_group_ai_unknown_side_effects(session, action)
     _release_runtime_resources(action)
+
+
+def _mark_group_ai_unknown_side_effects(session: Session, action: Action) -> None:
+    if action.task_type != "group_ai_chat" or action.action_type != "send_message":
+        return
+    account = session.get(TgAccount, action.account_id) if action.account_id else None
+    try:
+        payload = validate_action_payload(action.action_type, action.payload or {})
+    except (ValidationError, ValueError) as exc:
+        action.result = {**(action.result or {}), "side_effect_error": payload_error_message(exc)}
+        return
+    _mark_ai_message_memory_result(
+        session,
+        payload,
+        status="unknown_after_send",
+        action_id=action.id,
+        sent_at=_now(),
+        result=dict(action.result or {}),
+    )
+    if account:
+        _update_group_ai_stance_memory(session, action, account, payload, action.id)
 
 
 def _fail_with_policy(action: Action, failure_type: str, detail: str, *, auto_check: str = "失败", validation_stage: str = "") -> None:

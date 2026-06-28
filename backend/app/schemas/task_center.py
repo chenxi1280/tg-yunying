@@ -953,6 +953,8 @@ class TaskDetailOut(BaseModel):
     ai_cycles: list[TaskAICycleOut] = Field(default_factory=list)
     ai_generation_records: list[TaskAIGenerationRecordOut] = Field(default_factory=list)
     ai_account_profiles: list[TaskAIAccountProfileOut] = Field(default_factory=list)
+    ai_quality_funnel: dict[str, Any] = Field(default_factory=dict)
+    account_online_summary: dict[str, Any] = Field(default_factory=dict)
     relay_batches: list[TaskRelayBatchOut] = Field(default_factory=list)
     recent_relay_sources: list[TaskRelaySourceOut] = Field(default_factory=list)
     profile_batch: dict[str, Any] | None = None

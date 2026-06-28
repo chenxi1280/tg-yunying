@@ -12,6 +12,8 @@ from app.database import Base
 from app.models import WorkerHeartbeat
 from app.services.task_center.heartbeat import record_worker_heartbeat
 
+pytestmark = pytest.mark.no_postgres
+
 
 def test_drain_once_dispatches_task_center_roles(monkeypatch):
     from app import worker
@@ -25,6 +27,8 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
     monkeypatch.setattr(worker, "drain_account_security_batches", lambda _factory, limit: calls.append(("account_security", limit)) or 6)
     monkeypatch.setattr(worker, "drain_material_cache", lambda _factory, limit: calls.append(("material_cache", limit)) or 1)
     monkeypatch.setattr(worker, "drain_task_metrics", lambda _factory, limit: calls.append(("metrics", limit)) or 5)
+    monkeypatch.setattr(worker, "drain_account_online_keepalive", lambda _factory, limit: calls.append(("account_online", limit)) or 11, raising=False)
+    monkeypatch.setattr(worker, "drain_ai_message_memory_maintenance", lambda _factory, limit: calls.append(("ai_memory", limit)) or 13, raising=False)
 
     assert worker.drain_once(7, role="planner") == 1
     assert worker.drain_once(7, role="dispatcher") == 2
@@ -33,6 +37,8 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
     assert worker.drain_once(7, role="account-security") == 7
     assert worker.drain_once(7, role="material-cache") == 1
     assert worker.drain_once(7, role="metrics") == 5
+    assert worker.drain_once(7, role="account-online") == 11
+    assert worker.drain_once(7, role="ai-memory") == 13
 
     assert calls == [
         ("planner", 7),
@@ -43,6 +49,8 @@ def test_drain_once_dispatches_task_center_roles(monkeypatch):
         ("account_security", 6),
         ("material_cache", 7),
         ("metrics", 7),
+        ("account_online", 7),
+        ("ai_memory", 7),
     ]
 
 
@@ -97,6 +105,26 @@ def test_server_compose_metrics_worker_uses_dedicated_interval():
     assert "${WORKER_INTERVAL_SECONDS:-10.0}" not in metrics_block
 
 
+def test_server_compose_starts_online_and_ai_memory_workers():
+    root = Path(__file__).resolve().parents[2]
+    compose = (root / "docker-compose.server.yml").read_text()
+    compose_up = (root / "deploy/compose-up.sh").read_text()
+    check_web = (root / "deploy/check-web.sh").read_text()
+
+    expected = {
+        "worker-account-online": "tgyunying-worker-account-online",
+        "worker-ai-memory": "tgyunying-worker-ai-memory",
+    }
+    for service_name, container_name in expected.items():
+        assert f"  {service_name}:" in compose
+        assert f"container_name: {container_name}" in compose
+        assert f"  {service_name}" in compose_up
+        assert f"  {container_name}" in check_web
+
+    assert 'WORKER_ROLE: account-online' in compose
+    assert 'WORKER_ROLE: ai-memory' in compose
+
+
 def test_worker_main_healthcheck_uses_role_heartbeat(monkeypatch):
     from app import worker
 
@@ -117,6 +145,48 @@ def test_worker_main_healthcheck_uses_role_heartbeat(monkeypatch):
 
     assert worker.main(["--healthcheck", "--role", "planner"]) == 0
     assert worker.main(["--healthcheck", "--role", "dispatcher"]) == 1
+
+
+def test_worker_health_module_accepts_account_online_role(monkeypatch):
+    from app import worker_health
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(
+            WorkerHeartbeat(
+                worker_id="pytest-account-online",
+                process_type="account-online",
+                status="active",
+                last_seen_at=worker_health.beijing_now(),
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(worker_health, "SessionLocal", lambda: Session(engine))
+
+    assert worker_health.main(["--role", "account-online"]) == 0
+
+
+def test_worker_health_module_accepts_ai_memory_role(monkeypatch):
+    from app import worker_health
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(
+            WorkerHeartbeat(
+                worker_id="pytest-ai-memory",
+                process_type="ai-memory",
+                status="active",
+                last_seen_at=worker_health.beijing_now(),
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(worker_health, "SessionLocal", lambda: Session(engine))
+
+    assert worker_health.main(["--role", "ai-memory"]) == 0
 
 
 def test_worker_main_healthcheck_fails_for_stale_role(monkeypatch):

@@ -21,6 +21,13 @@ from app.schemas import (
     TenantAiSettingOut, TenantAiSettingUpdate,
 )
 from app.schemas.ai_config import (
+    AiAccountVoiceProfileAuditOut,
+    AiAccountVoiceProfileBatchRebuildOut,
+    AiAccountVoiceProfileBatchRebuildRequest,
+    AiAccountVoiceProfileOut,
+    AiAccountVoiceProfileRollbackRequest,
+    AiAccountVoiceProfileUpdate,
+    AiAccountVoiceProfileVersionOut,
     MaterialCacheConfigOut,
     MaterialCacheConfigUpdate,
     MaterialCacheHealthOut,
@@ -30,6 +37,18 @@ from app.schemas.ai_config import (
     MaterialImportResultOut,
     MaterialReferencesOut,
     MaterialVersionHistoryOut,
+)
+from app.services.task_center.account_voice_profiles import (
+    batch_rebuild_voice_profiles,
+    generate_voice_profiles_with_ai,
+    list_voice_profiles,
+    patch_voice_profile,
+    rebuild_voice_profile,
+)
+from app.services.task_center.account_voice_profile_versions import (
+    list_voice_profile_audits,
+    list_voice_profile_versions,
+    rollback_voice_profile,
 )
 from app.services import (
     check_ai_provider, create_ai_provider, create_content_keyword_rule, create_material, create_material_group, create_prompt_template,
@@ -170,6 +189,147 @@ def patch_tenant_ai_settings(
 ) -> TenantAiSetting:
     require_core_feature_access(current_user)
     return update_tenant_ai_setting(session, resolve_tenant_id(current_user, tenant_id), payload, current_user.name)
+
+
+# ── AI Account Voice Profiles ──
+
+@router.get("/api/ai-account-voice-profiles", response_model=list[AiAccountVoiceProfileOut])
+def get_ai_account_voice_profiles(
+    search: str = "",
+    profile_status: str = "",
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return list_voice_profiles(
+        session,
+        tenant_id=resolve_tenant_id(current_user, tenant_id),
+        search=search,
+        profile_status=profile_status,
+    )
+
+
+@router.patch("/api/ai-account-voice-profiles/{account_id}", response_model=AiAccountVoiceProfileOut)
+def patch_ai_account_voice_profile(
+    account_id: int,
+    payload: AiAccountVoiceProfileUpdate,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    target_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        patch_voice_profile(session, tenant_id=target_tenant_id, account_id=account_id, patch=payload.model_dump(exclude_unset=True), actor=current_user.name)
+        session.commit()
+        return _account_voice_profile_projection(session, target_tenant_id, account_id)
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/ai-account-voice-profiles/{account_id}/rebuild", response_model=AiAccountVoiceProfileOut)
+def rebuild_ai_account_voice_profile(
+    account_id: int,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    target_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        rebuild_voice_profile(
+            session,
+            tenant_id=target_tenant_id,
+            account_id=account_id,
+            generator=generate_voice_profiles_with_ai(session, tenant_id=target_tenant_id),
+            actor=current_user.name,
+        )
+        session.commit()
+        return _account_voice_profile_projection(session, target_tenant_id, account_id)
+    except (RuntimeError, ValueError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/api/ai-account-voice-profiles/{account_id}/versions", response_model=list[AiAccountVoiceProfileVersionOut])
+def get_ai_account_voice_profile_versions(
+    account_id: int,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return list_voice_profile_versions(session, tenant_id=resolve_tenant_id(current_user, tenant_id), account_id=account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/api/ai-account-voice-profiles/{account_id}/audits", response_model=list[AiAccountVoiceProfileAuditOut])
+def get_ai_account_voice_profile_audits(
+    account_id: int,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return list_voice_profile_audits(session, tenant_id=resolve_tenant_id(current_user, tenant_id), account_id=account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/api/ai-account-voice-profiles/{account_id}/rollback", response_model=AiAccountVoiceProfileOut)
+def rollback_ai_account_voice_profile(
+    account_id: int,
+    payload: AiAccountVoiceProfileRollbackRequest,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    target_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        rollback_voice_profile(
+            session,
+            tenant_id=target_tenant_id,
+            account_id=account_id,
+            source_version=payload.source_version,
+            actor=current_user.name,
+        )
+        session.commit()
+        return _account_voice_profile_projection(session, target_tenant_id, account_id)
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/ai-account-voice-profiles/batch-rebuild", response_model=AiAccountVoiceProfileBatchRebuildOut)
+def batch_rebuild_ai_account_voice_profiles(
+    payload: AiAccountVoiceProfileBatchRebuildRequest,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    target_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        result = batch_rebuild_voice_profiles(
+            session,
+            tenant_id=target_tenant_id,
+            account_ids=payload.account_ids,
+            generator=generate_voice_profiles_with_ai(session, tenant_id=target_tenant_id),
+            actor=current_user.name,
+            missing_only=payload.missing_only,
+        )
+        session.commit()
+        return result
+    except (RuntimeError, ValueError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _account_voice_profile_projection(session: Session, tenant_id: int, account_id: int) -> dict:
+    rows = list_voice_profiles(session, tenant_id=tenant_id, search="")
+    for row in rows:
+        if int(row["account_id"]) == int(account_id):
+            return row
+    raise HTTPException(status_code=404, detail="account not found")
 
 
 # ── Scheduling Settings ──

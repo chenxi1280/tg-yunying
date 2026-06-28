@@ -135,6 +135,8 @@ worker_containers=(
   tgyunying-worker-listener
   tgyunying-worker-recovery
   tgyunying-worker-account-security
+  tgyunying-worker-account-online
+  tgyunying-worker-ai-memory
   tgyunying-worker-metrics
 )
 

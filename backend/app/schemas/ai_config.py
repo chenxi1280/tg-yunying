@@ -109,6 +109,84 @@ class TenantAiSettingOut(ApiModel):
     updated_at: datetime
 
 
+# ── AI Account Voice Profiles ──
+
+class AiAccountVoiceProfileUpdate(BaseModel):
+    age_band: str | None = None
+    persona_experiences: list[str] | None = None
+    consumption_experiences: list[str] | None = None
+    sentence_length: str | None = None
+    interaction_habits: list[str] | None = None
+    tone_strength: str | None = None
+    lexical_preferences: list[str] | None = None
+    emoji_policy: str | None = None
+    forbidden_expressions: list[str] | None = None
+    short_prompt_summary: str | None = None
+    status: str | None = None
+    quality_status: str | None = None
+
+
+class AiAccountVoiceProfileBatchRebuildRequest(BaseModel):
+    account_ids: list[int] = Field(default_factory=list)
+    missing_only: bool = True
+
+
+class AiAccountVoiceProfileBatchRebuildOut(ApiModel):
+    created: int = 0
+    skipped: int = 0
+
+
+class AiAccountVoiceProfileRollbackRequest(BaseModel):
+    source_version: int = Field(..., ge=1)
+
+
+class AiAccountVoiceProfileOut(ApiModel):
+    account_id: int
+    display_name: str = ""
+    username: str = ""
+    phone_masked: str = ""
+    account_status: str = ""
+    profile_status: str = "missing"
+    version: int = 0
+    age_band: str = ""
+    persona_experiences: list[str] = Field(default_factory=list)
+    consumption_experiences: list[str] = Field(default_factory=list)
+    sentence_length: str = ""
+    interaction_habits: list[str] = Field(default_factory=list)
+    tone_strength: str = ""
+    lexical_preferences: list[str] = Field(default_factory=list)
+    emoji_policy: str = ""
+    forbidden_expressions: list[str] = Field(default_factory=list)
+    short_prompt_summary: str = ""
+    quality_status: str = ""
+    similarity_score: int | None = None
+    updated_by: str = ""
+    updated_at: datetime | None = None
+
+
+class AiAccountVoiceProfileVersionOut(ApiModel):
+    version: int
+    status: str = ""
+    source: str = ""
+    age_band: str = ""
+    sentence_length: str = ""
+    tone_strength: str = ""
+    emoji_policy: str = ""
+    short_prompt_summary: str = ""
+    quality_status: str = ""
+    similarity_score: int | None = None
+    updated_by: str = ""
+    updated_at: datetime | None = None
+
+
+class AiAccountVoiceProfileAuditOut(ApiModel):
+    id: int
+    actor: str = ""
+    action: str = ""
+    detail: str = ""
+    created_at: datetime | None = None
+
+
 # ── Scheduling ──
 
 class SchedulingSettingUpdate(BaseModel):

@@ -104,6 +104,58 @@ export type TenantBotSettings = {
   notify_ai_failures_enabled: boolean;
 };
 
+export type AiAccountVoiceProfile = {
+  account_id: number;
+  display_name: string;
+  username: string;
+  phone_masked: string;
+  account_status: string;
+  profile_status: string;
+  version: number;
+  age_band: string;
+  persona_experiences: string[];
+  consumption_experiences: string[];
+  sentence_length: string;
+  interaction_habits: string[];
+  tone_strength: string;
+  lexical_preferences: string[];
+  emoji_policy: string;
+  forbidden_expressions: string[];
+  short_prompt_summary: string;
+  quality_status: string;
+  similarity_score: number | null;
+  updated_by: string;
+  updated_at: string | null;
+};
+
+export type AiAccountVoiceProfileBatchRebuildOut = {
+  created: number;
+  skipped: number;
+};
+
+export type AiAccountVoiceProfileVersion = {
+  version: number;
+  status: string;
+  source: string;
+  age_band: string;
+  sentence_length: string;
+  tone_strength: string;
+  emoji_policy: string;
+  short_prompt_summary: string;
+  quality_status: string;
+  similarity_score: number | null;
+  updated_by: string;
+  updated_at: string | null;
+};
+
+export type AiAccountVoiceProfileAudit = {
+  id: number;
+  actor: string;
+  action: string;
+  detail: string;
+  created_at: string | null;
+};
+
 export type CaptchaChallenge = {
   challenge_id: string;
   image_data_url: string;
