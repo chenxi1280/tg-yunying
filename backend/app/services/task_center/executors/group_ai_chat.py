@@ -48,6 +48,8 @@ ACCOUNT_CAPACITY_BLOCKED_MESSAGE = "账号容量已排满，等待账号额度�
 ACCOUNT_COOLDOWN_BLOCKED_MESSAGE = "账号冷却中，等待冷却后继续执行"
 ACCOUNT_UNAVAILABLE_MESSAGE = "没有可用账号，等待账号恢复后继续执行"
 DEFAULT_IDLE_CONTINUATION_SECONDS = 300
+DEFAULT_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 3600
+MIN_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 60
 GROUP_CHAT_SCENE = "group_chat"
 TARGET_HISTORY_PERMISSION_MARKERS = (
     "channelprivateerror",
@@ -176,6 +178,16 @@ def build_plan(session: Session, task: Task) -> int:
         pacing_config=task.pacing_config or {},
         daily_coverage_uncovered_count=_daily_coverage_uncovered_count(session, task, accounts, hard_progress, config),
     )
+    planned_times = _schedule_times_for_plan(task, hard_progress, turn_count, mode)
+    turn_count, planned_times = _limit_context_bound_turns(
+        task,
+        config,
+        has_context=bool(usable_context_rows),
+        progress=hard_progress,
+        turn_count=turn_count,
+        planned_times=planned_times,
+    )
+    selected = selected[: max(1, min(len(selected), turn_count))]
     history_parts = [f"{row.sender_name}: {row.content}" for row in usable_context_rows[-50:]]
     if idle_continuation:
         history_parts.append(_idle_continuation_history(config, group, previous_ai_messages))
@@ -250,7 +262,7 @@ def build_plan(session: Session, task: Task) -> int:
     coverage_counts = _coverage_counts_for_plan(session, task, selected, round_config)
     selected = _prioritize_accounts_for_plan(selected, account_memories, coverage_counts, round_config)
     add_tokens(task, tokens)
-    times = _hard_hourly_schedule(task, hard_progress, len(quality_items)) or _round_schedule_times(len(quality_items), task.pacing_config or {}, mode)
+    times = planned_times[: len(quality_items)]
     context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
     used_account_ids: set[int] = set()
     allow_account_repeat = bool(round_config.get("allow_account_repeat", True))
@@ -1110,6 +1122,57 @@ def _choose_turn_account(available: list, selected: list, index: int, used_accou
     if not allow_repeat:
         return None
     return candidates[index % len(candidates)] if candidates else None
+
+
+def _schedule_times_for_plan(task: Task, progress: dict[str, object], total: int, mode: str) -> list[datetime]:
+    return _hard_hourly_schedule(task, progress, total) or _round_schedule_times(total, task.pacing_config or {}, mode)
+
+
+def _limit_context_bound_turns(
+    task: Task,
+    config: dict,
+    *,
+    has_context: bool,
+    progress: dict[str, object],
+    turn_count: int,
+    planned_times: list[datetime],
+) -> tuple[int, list[datetime]]:
+    if not _requires_context_bound_window(config, has_context, progress):
+        _clear_context_bound_limit_stats(task)
+        return turn_count, planned_times
+    window_seconds = _context_bound_schedule_window_seconds(config)
+    cutoff = _now() + timedelta(seconds=window_seconds)
+    allowed_count = len([time_item for time_item in planned_times if _naive_datetime(time_item) <= cutoff])
+    limited_count = max(1, min(int(turn_count or 1), allowed_count))
+    _record_context_bound_limit_stats(task, turn_count, limited_count, window_seconds)
+    return limited_count, planned_times[:limited_count]
+
+
+def _requires_context_bound_window(config: dict, has_context: bool, progress: dict[str, object]) -> bool:
+    return bool(has_context) and not progress and int(config.get("context_expire_after_messages") or 0) > 0
+
+
+def _context_bound_schedule_window_seconds(config: dict) -> int:
+    try:
+        value = int(config.get("context_bound_schedule_window_seconds") or DEFAULT_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS)
+    except (TypeError, ValueError):
+        value = DEFAULT_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS
+    return max(MIN_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS, value)
+
+
+def _record_context_bound_limit_stats(task: Task, requested: int, planned: int, window_seconds: int) -> None:
+    stats = dict(task.stats or {})
+    stats["context_bound_requested_turns"] = int(requested or 0)
+    stats["context_bound_planned_turns"] = int(planned or 0)
+    stats["context_bound_schedule_window_seconds"] = int(window_seconds or 0)
+    task.stats = stats
+
+
+def _clear_context_bound_limit_stats(task: Task) -> None:
+    stats = dict(task.stats or {})
+    for key in ("context_bound_requested_turns", "context_bound_planned_turns", "context_bound_schedule_window_seconds"):
+        stats.pop(key, None)
+    task.stats = stats
 
 
 def _round_schedule_times(total: int, pacing_config: dict, mode: str) -> list[datetime]:

@@ -553,6 +553,7 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypat
         assert action.status == "success"
 
 
+@pytest.mark.no_postgres
 def test_dispatch_context_expired_skip_releases_reserved_account_runtime_resource(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -889,6 +890,7 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
         assert online["stale_count"] == 1
 
 
+@pytest.mark.no_postgres
 def test_context_expired_skip_clears_same_cycle_pending_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1150,6 +1152,7 @@ def test_group_ai_send_success_updates_account_stance_memory(monkeypatch):
     assert "花花老师这个感觉可以问问" in stance.summary
 
 
+@pytest.mark.no_postgres
 def test_hard_hourly_plain_send_ignores_context_expiration(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1181,6 +1184,7 @@ def test_hard_hourly_plain_send_ignores_context_expiration(monkeypatch):
         assert action.result.get("error_code") != "context_expired"
 
 
+@pytest.mark.no_postgres
 def test_hard_hourly_reply_send_keeps_context_expiration(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1211,6 +1215,7 @@ def test_hard_hourly_reply_send_keeps_context_expiration(monkeypatch):
         assert action.result["error_code"] == "context_expired"
 
 
+@pytest.mark.no_postgres
 def test_context_expiration_ignores_backfilled_older_messages(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -3619,6 +3624,138 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
     assert memory is not None
     assert memory.action_id == actions[0].id
     assert memory.status == "reserved"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_context_bound_round_limits_far_future_actions(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 29, 4, 0)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+
+    def fake_quality_items(_session, _task, _config, **kwargs):  # noqa: ANN001
+        turn_count = int(kwargs["turn_count"])
+        return (
+            [
+                {
+                    "content": f"天津那个第{index}个角度先接一下",
+                    "human_quality_decision": "accepted",
+                }
+                for index in range(turn_count)
+            ],
+            3,
+            {"ai_generation_rounds": 1},
+        )
+
+    memory_ids: list[str] = []
+
+    def fake_reserve(_session, _task, _group, _account_id, _content, _config):  # noqa: ANN001
+        memory_id = f"memory-{len(memory_ids)}"
+        memory_ids.append(memory_id)
+        return SimpleNamespace(id=memory_id)
+
+    monkeypatch.setattr(group_ai_chat, "_generate_quality_filled_items", fake_quality_items)
+    monkeypatch.setattr(group_ai_chat, "_reserve_planned_message_memory", fake_reserve)
+    monkeypatch.setattr(group_ai_chat, "mark_group_ai_message_result", lambda *_args, **_kwargs: None)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        for account_id in range(100, 120):
+            session.add(
+                TgAccount(
+                    id=account_id,
+                    tenant_id=1,
+                    display_name=f"账号{account_id}",
+                    phone_masked=str(account_id),
+                    status="在线",
+                    session_ciphertext=f"session-{account_id}",
+                )
+            )
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+            session.add(
+                TgAccountOnlineState(
+                    tenant_id=1,
+                    account_id=account_id,
+                    desired_online=True,
+                    online_status="online",
+                    stale_after_at=now_value + timedelta(minutes=5),
+                )
+            )
+        session.add(
+            GroupContextMessage(
+                tenant_id=1,
+                group_id=7,
+                listener_account_id=100,
+                sender_name="真人",
+                content="刚才说的天津那个咋样",
+                message_type="text",
+                remote_message_id="context-current",
+                sent_at=now_value - timedelta(minutes=1),
+            )
+        )
+        task = Task(
+            id="task-context-near-term",
+            tenant_id=1,
+            name="上下文近端",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 100, "cooldown_per_account_minutes": 0},
+            pacing_config={
+                "operation_profile": {
+                    "hourly_activity_curve": [2, 2, 1, 1, 0, 0, 1, 2, 4, 5, 6, 6, 5, 4, 6, 7, 8, 9, 10, 10, 8, 6, 4, 3],
+                    "quiet_threshold": 2,
+                    "peak_threshold": 8,
+                },
+            },
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 60,
+                "participation_rate": 1,
+                "participation_jitter": 0,
+                "allow_account_repeat": True,
+                "context_expire_after_messages": 1,
+                "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+            },
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+
+        created = group_ai_chat.build_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.scheduled_at.asc())))
+        refreshed_task = session.get(Task, task.id)
+
+    assert 1 <= created < 60
+    assert len(actions) == created
+    assert max(action.scheduled_at for action in actions) <= now_value + timedelta(hours=1)
+    assert {action.payload["context_snapshot_message_id"] for action in actions}
+    assert refreshed_task.stats["context_bound_requested_turns"] == 60
+    assert refreshed_task.stats["context_bound_planned_turns"] == created
+
+
+@pytest.mark.no_postgres
+def test_group_ai_context_bound_limit_does_not_cap_hard_hourly(monkeypatch):
+    now_value = datetime(2026, 6, 29, 4, 0)
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    task = Task(id="task-hard-context", tenant_id=1, name="硬目标", type="group_ai_chat", stats={})
+    planned_times = [now_value + timedelta(minutes=index * 10) for index in range(12)]
+
+    turn_count, limited_times = group_ai_chat._limit_context_bound_turns(
+        task,
+        {"context_expire_after_messages": 1},
+        has_context=True,
+        progress={"deficit": 12},
+        turn_count=12,
+        planned_times=planned_times,
+    )
+
+    assert turn_count == 12
+    assert limited_times == planned_times
+    assert "context_bound_requested_turns" not in (task.stats or {})
 
 
 @pytest.mark.no_postgres
