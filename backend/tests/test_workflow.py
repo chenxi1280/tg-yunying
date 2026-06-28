@@ -3402,8 +3402,8 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
 
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert detail["task"]["status"] == "running"
-        assert detail["task"]["stats"]["success_count"] >= 1
         actions = task_detail_actions(client, headers, task_id, action_type="send_message")
+        assert detail["task"]["stats"]["success_count"] >= 1, {"stats": detail["task"]["stats"], "actions": actions}
         assert actions[0]["action_type"] == "send_message"
 
 
@@ -3510,7 +3510,9 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
                 action.result = {"success": False, "error_code": "test_cycle_boundary", "error_message": "test cycle boundary"}
             session.commit()
         first_context_send_count = len(sends)
-        assert first_context_send_count >= 1
+        actions = task_detail_actions(client, headers, task_id, action_type="send_message")
+        detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert first_context_send_count >= 1, {"stats": detail["task"]["stats"], "actions": actions}
 
         messages.append((f"ai-context-2-{context_suffix}", f"第二条真人上下文 {context_suffix}"))
         from app.services.group_listeners import collect_group_context
@@ -4435,7 +4437,8 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
         assert reset.status_code == 200, reset.text
         post_reset_count = len(task_detail_actions(client, headers, task_id))
-        assert post_reset_count >= 1
+        detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
+        assert post_reset_count >= 1, {"initial_detail": initial_detail["task"], "after_reset": detail_after_reset["task"]}
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
