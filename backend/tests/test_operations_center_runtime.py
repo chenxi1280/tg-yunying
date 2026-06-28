@@ -3846,7 +3846,7 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
                 pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
                 type_config={
                     "target_group_id": 7,
-                    "topic_hint": "MiMo 续聊",
+                    "topic_directions": [{"title": "MiMo 续聊", "weight": 1}],
                     "ai_model": "MiMo-V2.5",
                     "slang_prompt_template_id": 91,
                     "messages_per_round_mode": "manual",
@@ -3972,7 +3972,7 @@ def _fixed_pacing_config() -> dict[str, object]:
 def _mimo_quota_rotation_config() -> dict[str, object]:
     return {
         "target_group_id": 7,
-        "topic_hint": "MiMo 续聊",
+        "topic_directions": [{"title": "MiMo 续聊", "weight": 1}],
         "ai_model": "MiMo-V2.5",
         "messages_per_round_mode": "manual",
         "messages_per_round": 1,
