@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -277,15 +278,19 @@ def _handle_draft_message(session: Session, tenant_id: int, chat_id: str, text: 
         return None
     task_id = conversation.task_id
     if not text.strip():
-        return _reply(chat_id, "内容不能为空，请按每行一个继续发送。", _task_settings_keyboard(task_id))
+        return _reply(chat_id, "内容不能为空，请按每行一个继续发送。", _draft_keyboard(task_id))
     if conversation.step == "topics":
-        task = apply_group_ai_settings_from_bot(session, tenant_id=tenant_id, chat_id=chat_id, task_id=task_id, payload={"topic_directions": text})
+        task = _save_draft_settings(session, tenant_id=tenant_id, chat_id=chat_id, task_id=task_id, payload={"topic_directions": text})
+        if isinstance(task, str):
+            return _reply(chat_id, task, _draft_keyboard(task_id))
         count = len(_topic_titles(task.type_config or {}))
         session.delete(conversation)
         session.commit()
         return _reply(chat_id, f"已保存话题方向 {count} 条。", _task_settings_keyboard(task_id))
     if conversation.step == "teachers":
-        task = apply_group_ai_settings_from_bot(session, tenant_id=tenant_id, chat_id=chat_id, task_id=task_id, payload={"teacher_targets": text})
+        task = _save_draft_settings(session, tenant_id=tenant_id, chat_id=chat_id, task_id=task_id, payload={"teacher_targets": text})
+        if isinstance(task, str):
+            return _reply(chat_id, task, _draft_keyboard(task_id))
         count = len(_target_names(task.type_config or {}))
         session.delete(conversation)
         session.commit()
@@ -307,7 +312,7 @@ def _start_draft(session: Session, tenant_id: int, chat_id: str, task_id: str, s
         text = "请发送话题方向，每行一个，越靠前权重越高。"
     else:
         text = "请发送讨论老师，每行一个，越靠前优先级越高。"
-    return _reply(chat_id, f"{text}\n发送 /cancel 可取消。", _task_settings_keyboard(task_id))
+    return _reply(chat_id, f"{text}\n发送 /cancel 可取消。", _draft_keyboard(task_id))
 
 
 def _cancel_draft(session: Session, tenant_id: int, chat_id: str) -> dict[str, Any]:
@@ -329,6 +334,33 @@ def _task_or_error(session: Session, tenant_id: int, task_id: str) -> Task:
     if not task or task.tenant_id != tenant_id or task.type != "group_ai_chat":
         raise ValueError("AI 活群任务不存在")
     return task
+
+
+def _save_draft_settings(
+    session: Session,
+    *,
+    tenant_id: int,
+    chat_id: str,
+    task_id: str,
+    payload: dict[str, Any],
+) -> Task | str:
+    try:
+        return apply_group_ai_settings_from_bot(session, tenant_id=tenant_id, chat_id=chat_id, task_id=task_id, payload=payload)
+    except (ValueError, ValidationError) as exc:
+        session.rollback()
+        return f"保存失败：{_validation_message(exc)}。请修改后重新发送，或发送 /cancel 取消。"
+
+
+def _validation_message(exc: Exception) -> str:
+    if isinstance(exc, ValidationError):
+        errors = exc.errors()
+        if errors:
+            return str(errors[0].get("msg") or "配置格式不正确")
+    return str(exc)
+
+
+def _draft_keyboard(task_id: str) -> dict[str, Any]:
+    return {"inline_keyboard": [[{"text": "取消编辑", "callback_data": f"ai_group:cancel:{task_id}"}]]}
 
 
 def _reply(chat_id: str, text: str, reply_markup: dict[str, Any] | None = None) -> dict[str, Any]:

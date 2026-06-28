@@ -422,6 +422,55 @@ def test_telegram_bot_edit_topics_callback_saves_multiline_topics() -> None:
 
 
 @pytest.mark.no_postgres
+def test_telegram_bot_draft_prompt_does_not_reenter_settings_buttons() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间", admin_chat_id="1001", telegram_bot_token_ciphertext="encrypted", ai_group_bot_enabled=True))
+        session.add(Task(id="task-ai", tenant_id=1, name="AI 活群", type="group_ai_chat", status="running", type_config={"target_group_id": 7}))
+        session.commit()
+
+        result = handle_group_ai_bot_update(
+            session,
+            tenant_id=1,
+            update={"callback_query": {"message": {"chat": {"id": "1001"}}, "data": "ai_group:edit_topics:task-ai"}},
+        )
+
+    keyboard_text = str(result["reply_markup"]["inline_keyboard"])
+    assert "请发送话题方向" in result["text"]
+    assert "设置话题方向" not in keyboard_text
+    assert "设置讨论老师" not in keyboard_text
+    assert "取消编辑" in keyboard_text
+
+
+@pytest.mark.no_postgres
+def test_telegram_bot_draft_validation_error_keeps_webhook_successful() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间", admin_chat_id="1001", telegram_bot_token_ciphertext="encrypted", ai_group_bot_enabled=True))
+        session.add(Task(id="task-ai", tenant_id=1, name="AI 活群", type="group_ai_chat", status="running", type_config={"target_group_id": 7}))
+        session.add(TelegramBotConversation(tenant_id=1, chat_id="1001", task_id="task-ai", step="topics", draft_config={}))
+        session.commit()
+
+        result = handle_group_ai_bot_update(
+            session,
+            tenant_id=1,
+            update={"message": {"chat": {"id": "1001"}, "text": "话题" * 40}},
+        )
+        conversation = session.scalar(select(TelegramBotConversation).where(TelegramBotConversation.tenant_id == 1, TelegramBotConversation.chat_id == "1001"))
+        task = session.get(Task, "task-ai")
+
+    assert result["method"] == "sendMessage"
+    assert "保存失败" in result["text"]
+    assert "请修改后重新发送" in result["text"]
+    assert conversation is not None
+    assert "topic_directions" not in task.type_config
+
+
+@pytest.mark.no_postgres
 def test_telegram_bot_edit_teachers_callback_saves_multiline_discussion_teachers() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

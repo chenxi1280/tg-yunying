@@ -45,3 +45,14 @@
 - Removed Web edit-form fallback from legacy `topic_hint`; old data must be migrated into `topic_directions` by migration `0070_migrate_group_ai_topic_hint`.
 - TG bot task summaries no longer display legacy `topic_hint`; any bot write removes stale `topic_hint` before backend validation.
 - Local targeted verification before release: `backend/.venv/bin/python -m pytest -q -m no_postgres` passed with 334 passed, 839 deselected.
+
+## Follow-up Bot Draft Loop Fix
+
+- Incident: operator reported TG bot repeatedly asking to configure after entering the AI group topic/teacher setting flow.
+- Root cause group:
+  - Draft prompt reused the full task settings keyboard, so the prompt itself still exposed “设置话题方向 / 设置讨论老师” buttons and allowed re-entering the same draft flow.
+  - Draft validation errors could bubble out as webhook errors, which risks Telegram retrying the same update instead of showing an editable error to the operator.
+- Fix:
+  - Draft prompts now only expose “取消编辑”; they no longer include re-entrant setting buttons.
+  - Draft save validation failures now return a visible “保存失败” message, keep the draft, and let the operator resend corrected multi-line content.
+- Targeted verification: `backend/.venv/bin/python -m pytest -q backend/tests/test_telegram_bot_group_ai_settings.py -m no_postgres` passed with 16 tests.
