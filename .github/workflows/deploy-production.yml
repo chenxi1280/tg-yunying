@@ -33,6 +33,11 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      reconcile_account_profiles:
+        description: Inspect active TG account profiles and queue Chinese profile/avatar initialization batches
+        required: false
+        default: false
+        type: boolean
       run_tianjin_blocked_account_diagnostics:
         description: Run production diagnostics for blocked Tianjin account 84
         required: false
@@ -425,6 +430,15 @@ jobs:
           ssh silicon-valley-production-server 'timeout 120 docker exec -i tgyunying-backend python -' \
             < .github/scripts/tianjin_cleanup_admission_backlog.py
           echo "TIANJIN_ADMISSION_BACKLOG_CLEANUP_END"
+
+      - name: Reconcile account profile initialization
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.reconcile_account_profiles }}
+        run: |
+          set -euo pipefail
+          echo "ACCOUNT_PROFILE_RECONCILE_START"
+          ssh silicon-valley-production-server 'timeout 300 docker exec -e ACCOUNT_PROFILE_RECONCILE_APPLY=true -e ACCOUNT_PROFILE_RECONCILE_DRAIN_ONCE=true -i tgyunying-backend python -' \
+            < .github/scripts/account_profile_initialization_reconcile.py
+          echo "ACCOUNT_PROFILE_RECONCILE_END"
 
       - name: Diagnose Tianjin blocked account
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tianjin_blocked_account_diagnostics }}

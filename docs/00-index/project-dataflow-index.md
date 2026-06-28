@@ -5,7 +5,7 @@
 ## 1. 覆盖范围
 
 - HTTP API 流转记录：319 条，覆盖 `backend/app/api/routers/*.py` 中解析到的全部路由。
-- 后台/内部流转记录：12 条，覆盖启动、API client、worker、dispatcher、listener、recovery、metrics、账号安全批次、素材缓存、旧任务兼容和 Telethon 生命周期。
+- 后台/内部流转记录：13 条，覆盖启动、API client、worker、dispatcher、listener、recovery、metrics、账号登录后资料初始化、账号安全批次、素材缓存、旧任务兼容和 Telethon 生命周期。
 - 前端入口来自 `frontend/src/app/**/*.{ts,tsx}` 和 `frontend/src/shared/api/client.ts` 的 API path 扫描；若未能静态匹配动态路径，则使用同业务域的页面/action 作为维护入口提示。
 - “后端流转”以 router handler 内直接调用的 service/helper 为主；复杂下游继续沿用 `docs/00-index/project-structure-index.md` 的文件级方法索引下钻。
 
@@ -477,10 +477,11 @@
 | BG-006 | 任务中心 listener runtime | worker role=listener 或 all | `worker.py -> drain_task_listener -> listener_runtime.drain_listener_runtime -> group/channel context collection` | listener cache / GroupContextMessage / TenantLearningSample / listener errors | Telegram Gateway | test_listener_center_dataflow.py, test_zz_group_listeners.py, test_tenant_learning_runtime_contract.py |
 | BG-007 | 任务中心 recovery | worker role=recovery 或 all | `worker.py -> drain_task_recovery -> membership_recovery / group_rescue / runtime repair / unknown membership reprobe` | unknown_after_send Action / membership item / operation issue；同一账号+目标的 unknown membership 每轮限一次复核，避免批量拉起重复 TG 风险 | Telegram Gateway | test_membership_recovery_gate.py, test_group_rescue.py, test_channel_membership_strategy.py, test_task_center_capacity_dispatch.py |
 | BG-008 | 任务中心 metrics | worker role=metrics 或 all | `worker.py -> drain_task_metrics -> refresh_task_stats/runtime_summary -> RuntimeMetricSnapshot` | TaskRuntimeSummary / TargetRuntimeSummary / AccountRuntimeSummary / OperationIssue | 数据库聚合 | test_runtime_summary_models.py, test_task_center_role_drains.py, test_operations_center_runtime.py |
-| BG-009 | 账号安全批次后台执行 | worker role=account-security 或 legacy/all | `worker.py -> drain_account_security_batches -> account_security/service.py -> gateway profile/device/2FA actions` | TgAccountSecurityBatch / TgAccountSecurityBatchItem / SecuritySnapshot | Telegram Gateway、素材缓存账号 | test_account_security.py, test_worker_roles.py |
-| BG-010 | 素材缓存后台执行 | worker role=material-cache 或 legacy/all | `worker.py -> drain_material_cache -> material_cache.py -> Telegram media cache` | Material cache status / media refs / cache errors | Telegram Gateway、文件/媒体存储 | test_materials_view_dataflow.py, test_ai_settings_dataflow.py |
-| BG-011 | 旧消息任务与 Campaign 兼容执行 | worker role=legacy 或 all | `worker.py:_drain_legacy_once -> dispatch_task / drain_continuous_campaigns / drain_operation_tasks / drain_archives` | MessageTask / Campaign / OperationTask / GroupArchive | Telegram Gateway、AI Gateway、任务队列 | test_zzz_continuous_campaigns.py, test_frontend_message_sending_dataflow.py, test_workflow.py |
-| BG-012 | Telethon client 生命周期 | 业务 Gateway 调用或应用关闭 | `telethon_lifecycle.py -> get_or_create_loop/run/new_client -> shutdown_telethon_lifecycle` | client cache by session/proxy / idle pruning | Telethon 网络连接、代理 | test_telethon_lifecycle.py |
+| BG-009 | 账号登录后自动资料初始化入队 | 验证码登录 / 扫码登录成功 | `accounts.py:verify_login/check_qr_login -> account_profile_auto_init.py -> create_account_security_batch` | TgAccountSecurityBatch / TgAccountSecurityBatchItem / TgAccountProfileBatchRule | 数据库、素材中心头像池 | test_account_profile_auto_initialization.py |
+| BG-010 | 账号安全批次后台执行 | worker role=account-security 或 legacy/all | `worker.py -> drain_account_security_batches -> account_security/service.py -> gateway profile/device/2FA actions` | TgAccountSecurityBatch / TgAccountSecurityBatchItem / SecuritySnapshot | Telegram Gateway、素材缓存账号 | test_account_security.py, test_worker_roles.py |
+| BG-011 | 素材缓存后台执行 | worker role=material-cache 或 legacy/all | `worker.py -> drain_material_cache -> material_cache.py -> Telegram media cache` | Material cache status / media refs / cache errors | Telegram Gateway、文件/媒体存储 | test_materials_view_dataflow.py, test_ai_settings_dataflow.py |
+| BG-012 | 旧消息任务与 Campaign 兼容执行 | worker role=legacy 或 all | `worker.py:_drain_legacy_once -> dispatch_task / drain_continuous_campaigns / drain_operation_tasks / drain_archives` | MessageTask / Campaign / OperationTask / GroupArchive | Telegram Gateway、AI Gateway、任务队列 | test_zzz_continuous_campaigns.py, test_frontend_message_sending_dataflow.py, test_workflow.py |
+| BG-013 | Telethon client 生命周期 | 业务 Gateway 调用或应用关闭 | `telethon_lifecycle.py -> get_or_create_loop/run/new_client -> shutdown_telethon_lifecycle` | client cache by session/proxy / idle pruning | Telethon 网络连接、代理 | test_telethon_lifecycle.py |
 
 ## 6. 维护口径
 

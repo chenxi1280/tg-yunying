@@ -36,6 +36,7 @@ from app.storage import object_path, preview_url, save_avatar_bytes
 
 from ._common import _is_expired, _now, audit, gateway, get_account_phone, mask_phone, require_tenant
 from .account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery, is_proxy_recovery_signal
+from .account_profile_auto_init import queue_login_profile_initialization
 from .account_search import filter_accounts_by_search
 from .account_two_fa import rotate_managed_two_fa_after_login
 from .developer_apps import credentials_for_account, first_assignable_developer_app
@@ -822,6 +823,7 @@ def verify_login(session: Session, account_id: int, code: str | None, password_2
     session.commit()
     if should_sync:
         run_account_sync_now(session, account.id, actor, trigger_source="login")
+        queue_login_profile_initialization(session, account.id, actor)
     session.refresh(account)
     return account
 
@@ -853,6 +855,7 @@ def check_qr_login(session: Session, account_id: int, actor: str = "普通用户
     session.commit()
     if should_sync:
         run_account_sync_now(session, account.id, actor, trigger_source="login")
+        queue_login_profile_initialization(session, account.id, actor)
     session.refresh(account)
     return account
 
