@@ -10,7 +10,7 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult
-from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services._common import _now
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
@@ -369,6 +369,13 @@ def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[
         if db_account:
             db_account.status = AccountStatus.ACTIVE.value
             db_account.session_ciphertext = db_account.session_ciphertext or f"pytest-session-{account['id']}"
+            online_state = session.query(TgAccountOnlineState).filter_by(tenant_id=1, account_id=account["id"]).first()
+            if online_state is None:
+                online_state = TgAccountOnlineState(tenant_id=1, account_id=account["id"])
+                session.add(online_state)
+            online_state.desired_online = True
+            online_state.online_status = "online"
+            online_state.stale_after_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=30)
         db_group = session.get(TgGroup, group["id"])
         if db_group:
             db_group.auth_status = "已授权运营"
