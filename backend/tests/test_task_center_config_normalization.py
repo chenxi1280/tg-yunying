@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import create_engine
@@ -9,6 +11,9 @@ from app.database import Base
 from app.models import OperationTarget, Tenant
 from app.schemas.task_center import GroupAIChatTaskCreate
 from app.services.task_center.config_normalization import normalize_operation_target_references
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.no_postgres
@@ -59,6 +64,17 @@ def test_group_ai_config_accepts_plain_line_topic_and_chat_targets() -> None:
     assert [item["weight"] for item in data["topic_directions"]] == [3.0, 2.0, 1.0]
     assert [item["name"] for item in data["teacher_targets"]] == ["花花老师身材服务真好", "新人榜单妹子"]
     assert [item["priority"] for item in data["teacher_targets"]] == [2, 1]
+
+
+@pytest.mark.no_postgres
+def test_topic_hint_migration_moves_legacy_hint_to_topic_directions() -> None:
+    migration = PROJECT_ROOT / "backend/migrations/versions/0070_migrate_group_ai_topic_hint.py"
+    source = migration.read_text()
+
+    assert "topic_hint" in source
+    assert "topic_directions" in source
+    assert "jsonb_set" in source
+    assert "- 'topic_hint'" in source
 
 
 @pytest.mark.no_postgres

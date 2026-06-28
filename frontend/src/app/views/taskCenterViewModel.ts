@@ -211,9 +211,11 @@ export function parseChatTargetLines(value?: string | unknown[], existingItems?:
   return lines.map((name, index) => ({ ...existingChatTarget(name, existingItems), name, priority: lines.length - index }));
 }
 
-export function formatTopicDirectionLines(value?: unknown[]): string {
-  if (!Array.isArray(value)) return '';
-  return value.map((item) => (item as { title?: unknown })?.title).filter(Boolean).join('\n');
+export function formatTopicDirectionLines(value?: unknown[], legacyHint?: unknown): string {
+  if (Array.isArray(value) && value.length) {
+    return value.map((item) => (item as { title?: unknown })?.title).filter(Boolean).join('\n');
+  }
+  return typeof legacyHint === 'string' ? legacyHint.trim() : '';
 }
 
 export function formatChatTargetLines(value?: unknown[]): string {
@@ -565,7 +567,6 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'target_operation_target_id',
       'rule_set_id',
       'rule_set_version_id',
-      'topic_hint',
       'topic_directions',
       'teacher_targets',
       'slang_prompt_template_id',
@@ -646,7 +647,6 @@ export function editFieldsForSubmit(taskType: TaskCenterTaskType, accountMode: s
       'target_operation_target_id',
       'rule_set_id',
       'rule_set_version_id',
-      'topic_hint',
       'topic_directions',
       'teacher_targets',
       'chat_history_depth',

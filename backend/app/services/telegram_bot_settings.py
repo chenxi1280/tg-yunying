@@ -8,8 +8,10 @@ from sqlalchemy.orm import Session
 from app.models import Task, TelegramBotConversation, Tenant
 from app.admin_chats import admin_chat_is_allowed
 from app.config import get_settings
+from app.schemas.task_center import GroupAIChatConfig
 
-CONFIG_WRITE_UNSUPPORTED_MESSAGE = "TG bot 仅支持查看 AI 活群设置，完整配置请到 Web 任务详情编辑。"
+CONFIG_WRITE_UNSUPPORTED_MESSAGE = "TG bot 仅支持查看摘要，以及配置话题方向和讨论老师；其它完整配置请到 Web 任务详情编辑。"
+BOT_WRITABLE_FIELDS = frozenset({"topic_directions", "teacher_targets"})
 SUMMARY_LIMIT = 8
 
 
@@ -31,7 +33,17 @@ def apply_group_ai_settings_from_bot(
     task = session.get(Task, task_id)
     if not task or task.tenant_id != tenant_id or task.type != "group_ai_chat":
         raise ValueError("AI 活群任务不存在")
-    raise ValueError(CONFIG_WRITE_UNSUPPORTED_MESSAGE)
+    unsupported = sorted(set(payload) - BOT_WRITABLE_FIELDS)
+    if unsupported:
+        raise ValueError(CONFIG_WRITE_UNSUPPORTED_MESSAGE)
+    next_config = {**(task.type_config or {}), **payload}
+    if "topic_directions" in payload:
+        next_config.pop("topic_hint", None)
+    normalized = GroupAIChatConfig(**next_config).model_dump(mode="json", exclude_none=True)
+    task.type_config = normalized
+    session.commit()
+    session.refresh(task)
+    return task
 
 
 def handle_group_ai_bot_update(session: Session, *, tenant_id: int, update: dict[str, Any]) -> dict[str, Any]:
@@ -60,6 +72,8 @@ def handle_group_ai_bot_update(session: Session, *, tenant_id: int, update: dict
     if text.startswith("/ai_group_settings "):
         task_id = text.split(maxsplit=1)[1].strip()
         return _reply(chat_id, _task_settings_text(session, tenant_id, task_id), _task_settings_keyboard(task_id))
+    if text == "/cancel":
+        return _cancel_draft(session, tenant_id, chat_id)
     if text.startswith("/ai_group_set "):
         return _reply(chat_id, CONFIG_WRITE_UNSUPPORTED_MESSAGE, _main_menu_keyboard(tenant))
     draft_reply = _handle_draft_message(session, tenant_id, chat_id, text)
@@ -136,12 +150,12 @@ def _task_settings_text(session: Session, tenant_id: int, task_id: str) -> str:
         [
             f"任务：{task.name} ({task.id})",
             f"话题数：{len(topics)}",
-            f"聊天对象数：{len(targets)}",
+            f"讨论老师数：{len(targets)}",
             f"话题摘要：{_compact_list(topics) or config.get('topic_hint') or '-'}",
-            f"聊天对象摘要：{_compact_list(targets) or '-'}",
+            f"讨论老师摘要：{_compact_list(targets) or '-'}",
             f"连发：{config.get('consecutive_message_enabled', False)} {config.get('consecutive_message_min', 2)}-{config.get('consecutive_message_max', 4)}",
             f"全账号日覆盖：{config.get('account_coverage_mode', 'natural')} {config.get('per_account_daily_min_messages', 1)}-{config.get('per_account_daily_max_messages', 2)}",
-            "配置入口：Web 任务详情",
+            "Bot 可设置：话题方向、讨论老师；其它配置请到 Web 任务详情。",
         ]
     )
 
@@ -156,9 +170,9 @@ def _topic_summary_text(session: Session, tenant_id: int, task_id: str) -> str:
             f"任务：{task.name} ({task.id})",
             "话题摘要",
             topics or "-",
-            "聊天对象摘要",
+            "讨论老师摘要",
             targets or "-",
-            "完整配置请到 Web 任务详情编辑。",
+            "可在 Bot 中继续设置话题方向和讨论老师。",
         ]
     )
 
@@ -216,9 +230,11 @@ def _handle_callback_query(session: Session, tenant_id: int, callback_query: dic
         _task_or_error(session, tenant_id, task_id)
         return _reply(chat_id, _web_edit_text(), _task_settings_keyboard(task_id))
     if data.startswith("ai_group:edit_topics:"):
-        return _reply(chat_id, CONFIG_WRITE_UNSUPPORTED_MESSAGE, _task_settings_keyboard(data.rsplit(":", 1)[-1]))
+        task_id = data.rsplit(":", 1)[-1]
+        return _start_draft(session, tenant_id, chat_id, task_id, "topics")
     if data.startswith("ai_group:edit_teachers:"):
-        return _reply(chat_id, CONFIG_WRITE_UNSUPPORTED_MESSAGE, _task_settings_keyboard(data.rsplit(":", 1)[-1]))
+        task_id = data.rsplit(":", 1)[-1]
+        return _start_draft(session, tenant_id, chat_id, task_id, "teachers")
     if data.startswith("ai_group:edit_burst:"):
         return _reply(chat_id, CONFIG_WRITE_UNSUPPORTED_MESSAGE, _task_settings_keyboard(data.rsplit(":", 1)[-1]))
     if data.startswith("ai_group:edit_coverage:"):
@@ -245,6 +261,8 @@ def _task_list_keyboard(session: Session, tenant_id: int) -> dict[str, Any]:
 
 def _task_settings_keyboard(task_id: str) -> dict[str, Any]:
     keyboard = [[{"text": "查看话题摘要", "callback_data": f"ai_group:summary:{task_id}"}]]
+    keyboard.append([{"text": "设置话题方向", "callback_data": f"ai_group:edit_topics:{task_id}"}])
+    keyboard.append([{"text": "设置讨论老师", "callback_data": f"ai_group:edit_teachers:{task_id}"}])
     edit_url = _web_task_center_url()
     if edit_url:
         keyboard.append([{"text": "打开 Web 编辑", "url": edit_url}])
@@ -259,9 +277,38 @@ def _handle_draft_message(session: Session, tenant_id: int, chat_id: str, text: 
     if not conversation:
         return None
     task_id = conversation.task_id
+    if not text.strip():
+        return _reply(chat_id, "内容不能为空，请按每行一个继续发送。", _task_settings_keyboard(task_id))
+    if conversation.step == "topics":
+        task = apply_group_ai_settings_from_bot(session, tenant_id=tenant_id, chat_id=chat_id, task_id=task_id, payload={"topic_directions": text})
+        count = len(_topic_titles(task.type_config or {}))
+        session.delete(conversation)
+        session.commit()
+        return _reply(chat_id, f"已保存话题方向 {count} 条。", _task_settings_keyboard(task_id))
+    if conversation.step == "teachers":
+        task = apply_group_ai_settings_from_bot(session, tenant_id=tenant_id, chat_id=chat_id, task_id=task_id, payload={"teacher_targets": text})
+        count = len(_target_names(task.type_config or {}))
+        session.delete(conversation)
+        session.commit()
+        return _reply(chat_id, f"已保存讨论老师 {count} 条。", _task_settings_keyboard(task_id))
     session.delete(conversation)
     session.commit()
     return _reply(chat_id, f"旧草稿已取消。{CONFIG_WRITE_UNSUPPORTED_MESSAGE}", _task_settings_keyboard(task_id))
+
+
+def _start_draft(session: Session, tenant_id: int, chat_id: str, task_id: str, step: str) -> dict[str, Any]:
+    _task_or_error(session, tenant_id, task_id)
+    existing = _conversation(session, tenant_id, chat_id)
+    if existing:
+        session.delete(existing)
+        session.flush()
+    session.add(TelegramBotConversation(tenant_id=tenant_id, chat_id=chat_id, task_id=task_id, step=step, draft_config={}))
+    session.commit()
+    if step == "topics":
+        text = "请发送话题方向，每行一个，越靠前权重越高。"
+    else:
+        text = "请发送讨论老师，每行一个，越靠前优先级越高。"
+    return _reply(chat_id, f"{text}\n发送 /cancel 可取消。", _task_settings_keyboard(task_id))
 
 
 def _cancel_draft(session: Session, tenant_id: int, chat_id: str) -> dict[str, Any]:

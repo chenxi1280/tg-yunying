@@ -349,9 +349,8 @@ export function TaskCenterDetailModal({
             size="small"
             column={2}
             items={[
-              { key: 'topic_hint', label: '兼容话题', children: detail.task.type_config?.topic_hint || '-' },
               { key: 'topic_directions', label: '话题方向', children: topicDirectionTags(detail.task.type_config?.topic_directions) },
-              { key: 'teacher_targets', label: '聊天对象', children: teacherTargetTags(detail.task.type_config?.teacher_targets) },
+              { key: 'teacher_targets', label: '讨论老师', children: teacherTargetTags(detail.task.type_config?.teacher_targets) },
               { key: 'burst_enabled', label: '同账号连发', children: detail.task.type_config?.consecutive_message_enabled ? '开启' : '关闭' },
               { key: 'burst_window', label: '连发窗口', children: `${detail.task.type_config?.consecutive_message_min ?? 2}-${detail.task.type_config?.consecutive_message_max ?? 4}` },
               { key: 'burst_probability', label: '连发概率', children: detail.task.type_config?.consecutive_message_probability ?? 0.3 },

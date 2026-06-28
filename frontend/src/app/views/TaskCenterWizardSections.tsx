@@ -164,11 +164,10 @@ export function WizardTypeConfig({
         <Alert type="info" showIcon message="小时上限控制总量；当天未参与账号会优先补齐，并在预算内抬高本轮下限。" />
         {ruleFields}
         <div className="form-grid">
-          <Form.Item name="topic_hint" label="话题方向（可选）"><Input.TextArea rows={2} placeholder="不填时系统会按群目标方向或自然开场自动起聊" /></Form.Item>
-          <Form.Item name="topic_directions" label="多个话题方向（每行一个）">
+          <Form.Item name="topic_directions" label="话题方向（每行一个）">
             <Input.TextArea rows={5} placeholder={'郑州楼凤妹子怎么样\n主任最近约新妹子了\n精品榜的妹子真好'} />
           </Form.Item>
-          <Form.Item name="teacher_targets" label="聊天对象（每行一个）">
+          <Form.Item name="teacher_targets" label="讨论老师（每行一个）">
             <Input.TextArea rows={5} placeholder={'花花老师身材服务真好\n新人榜单妹子'} />
           </Form.Item>
           <Form.Item name="tone" label="语气"><Select options={[{ value: 'auto', label: '自动' }, { value: 'casual', label: '口语' }, { value: 'professional', label: '正式' }, { value: 'mixed', label: '混合' }]} /></Form.Item>

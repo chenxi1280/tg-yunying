@@ -48,22 +48,20 @@ def test_telegram_bot_group_ai_settings_allows_any_configured_admin_chat() -> No
         )
         session.commit()
 
-        with pytest.raises(ValueError, match="请到 Web 任务详情编辑"):
-            apply_group_ai_settings_from_bot(
-                session,
-                tenant_id=1,
-                chat_id="admin-two",
-                task_id="task-ai",
-                payload={"topic_directions": [{"title": "升学规划", "weight": 1}]},
-            )
+        task = apply_group_ai_settings_from_bot(
+            session,
+            tenant_id=1,
+            chat_id="admin-two",
+            task_id="task-ai",
+            payload={"topic_directions": "升学规划\n材料准备"},
+        )
 
-        task = session.get(Task, "task-ai")
-
-    assert task.type_config.get("topic_directions") is None
+    assert [item["title"] for item in task.type_config["topic_directions"]] == ["升学规划", "材料准备"]
+    assert [item["weight"] for item in task.type_config["topic_directions"]] == [2.0, 1.0]
 
 
 @pytest.mark.no_postgres
-def test_telegram_bot_group_ai_settings_rejects_direct_config_writes() -> None:
+def test_telegram_bot_group_ai_settings_reuses_backend_validation() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -88,27 +86,20 @@ def test_telegram_bot_group_ai_settings_rejects_direct_config_writes() -> None:
         )
         session.commit()
 
-        with pytest.raises(ValueError, match="TG bot 仅支持查看"):
+        with pytest.raises(ValueError):
             apply_group_ai_settings_from_bot(
                 session,
                 tenant_id=1,
                 chat_id="admin-chat",
                 task_id="task-ai",
-                payload={
-                    "topic_directions": [{"title": "升学规划", "description": "择校节奏", "weight": 1}],
-                    "teacher_targets": [{"name": "王老师", "description": "报名答疑", "priority": 10}],
-                    "consecutive_message_enabled": True,
-                    "consecutive_message_min": 2,
-                    "consecutive_message_max": 3,
-                    "consecutive_message_probability": 0.5,
-                },
+                payload={"topic_directions": [{"title": "", "weight": 1}]},
             )
 
         task = session.get(Task, "task-ai")
 
     assert task.type_config["topic_hint"] == "旧话题"
+    assert "topic_directions" not in task.type_config
     assert "teacher_targets" not in task.type_config
-    assert "consecutive_message_max" not in task.type_config
 
 
 @pytest.mark.no_postgres
@@ -336,10 +327,11 @@ def test_telegram_bot_callback_selects_task_settings() -> None:
 
     assert result["method"] == "sendMessage"
     assert "话题数：1" in result["text"]
-    assert "聊天对象数：1" in result["text"]
+    assert "讨论老师数：1" in result["text"]
     keyboard_text = str(result["reply_markup"]["inline_keyboard"])
     assert "查看话题摘要" in keyboard_text
-    assert "设置话题方向" not in keyboard_text
+    assert "设置话题方向" in keyboard_text
+    assert "设置讨论老师" in keyboard_text
     assert result["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "ai_group:summary:task-ai"
 
 
@@ -375,13 +367,13 @@ def test_telegram_bot_summary_callback_shows_readable_topic_package() -> None:
     assert "话题摘要" in result["text"]
     assert "1. 郑州楼凤妹子怎么样" in result["text"]
     assert "2. 主任最近约新妹子了" in result["text"]
-    assert "聊天对象摘要" in result["text"]
+    assert "讨论老师摘要" in result["text"]
     assert "1. 花花老师身材服务真好" in result["text"]
-    assert "Web 任务详情" in result["text"]
+    assert "设置话题方向" in str(result["reply_markup"]["inline_keyboard"])
 
 
 @pytest.mark.no_postgres
-def test_telegram_bot_legacy_edit_callback_does_not_create_draft_or_write_task() -> None:
+def test_telegram_bot_edit_topics_callback_saves_multiline_topics() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -410,16 +402,27 @@ def test_telegram_bot_legacy_edit_callback_does_not_create_draft_or_write_task()
             tenant_id=1,
             update={"callback_query": {"message": {"chat": {"id": "1001"}}, "data": "ai_group:edit_topics:task-ai"}},
         )
+        assert "请发送话题方向" in result["text"]
+        conversation = session.scalar(select(TelegramBotConversation).where(TelegramBotConversation.tenant_id == 1, TelegramBotConversation.chat_id == "1001"))
+        assert conversation is not None
+        assert conversation.step == "topics"
+
+        saved = handle_group_ai_bot_update(
+            session,
+            tenant_id=1,
+            update={"message": {"chat": {"id": "1001"}, "text": "郑州楼凤妹子怎么样\n主任最近约新妹子了\n精品榜的妹子真好"}},
+        )
         conversation = session.scalar(select(TelegramBotConversation).where(TelegramBotConversation.tenant_id == 1, TelegramBotConversation.chat_id == "1001"))
         task = session.get(Task, "task-ai")
 
-    assert "TG bot 仅支持查看" in result["text"]
     assert conversation is None
-    assert "topic_directions" not in task.type_config
+    assert "已保存话题方向 3 条" in saved["text"]
+    assert [item["title"] for item in task.type_config["topic_directions"]] == ["郑州楼凤妹子怎么样", "主任最近约新妹子了", "精品榜的妹子真好"]
+    assert "topic_hint" not in task.type_config
 
 
 @pytest.mark.no_postgres
-def test_telegram_bot_legacy_draft_message_is_cancelled_without_writing_task() -> None:
+def test_telegram_bot_edit_teachers_callback_saves_multiline_discussion_teachers() -> None:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -446,8 +449,8 @@ def test_telegram_bot_legacy_draft_message_is_cancelled_without_writing_task() -
                 tenant_id=1,
                 chat_id="1001",
                 task_id="task-ai",
-                step="topics",
-                draft_config={"target_group_id": 7},
+                step="teachers",
+                draft_config={},
             )
         )
         session.commit()
@@ -460,10 +463,9 @@ def test_telegram_bot_legacy_draft_message_is_cancelled_without_writing_task() -
         task = session.get(Task, "task-ai")
         conversation = session.scalar(select(TelegramBotConversation).where(TelegramBotConversation.tenant_id == 1, TelegramBotConversation.chat_id == "1001"))
 
-    assert "旧草稿已取消" in result["text"]
-    assert "Web 任务详情" in result["text"]
+    assert "已保存讨论老师 2 条" in result["text"]
     assert conversation is None
-    assert "teacher_targets" not in task.type_config
+    assert [item["name"] for item in task.type_config["teacher_targets"]] == ["花花老师身材服务真好", "新人榜单妹子"]
 
 
 @pytest.mark.no_postgres
