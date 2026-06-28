@@ -368,6 +368,7 @@ def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[
         db_account = session.get(TgAccount, account["id"])
         if db_account:
             db_account.status = AccountStatus.ACTIVE.value
+            db_account.session_ciphertext = db_account.session_ciphertext or f"pytest-session-{account['id']}"
         db_group = session.get(TgGroup, group["id"])
         if db_group:
             db_group.auth_status = "已授权运营"
