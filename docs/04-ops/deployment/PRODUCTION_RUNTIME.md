@@ -57,6 +57,7 @@ Repository variables:
 - `ADMIN_BOOTSTRAP_PASSWORD`
 - `CORS_ORIGINS`
 - `TGYUNYING_WEB_HOST`
+- `PUBLIC_APP_BASE_URL`，例如 `https://tgyunying.telema.cn`，用于生成 Telegram Bot webhook 公网回调地址
 - `TGYUNYING_FRONTEND_STATIC_BASE_DIR`
 
 后端在 `APP_ENV=production` 时会拒绝默认 bootstrap 管理员密码 `admin123`，因此 `ADMIN_BOOTSTRAP_PASSWORD` / `ADMIN_PASSWORD` 必须显式设置为强随机值。
@@ -97,3 +98,5 @@ docker compose exec -T worker-planner python -m app.worker_health --role planner
 如果本机 API 正常但公网失败，优先检查宿主 Nginx 配置和域名证书，不要先改应用代码。
 
 如果 Actions 在 `Checking SSH connectivity` 或 `Uploading release archive` 阶段出现 `Connection timed out during banner exchange`，说明失败发生在 SSH 握手/服务端 banner 返回之前，应用容器还没有进入发布流程。优先检查生产服务器 SSH 端口、安全组/防火墙、`sshd` 负载或 `MaxStartups` 限制，以及 GitHub secret 里的端口是否真的是 SSH 服务。
+
+租户 TG Bot 保存 token 和管理员 Chat ID 后，会用 `PUBLIC_APP_BASE_URL` 生成 `https://<host>/api/telegram-bot/webhook/{tenant_id}/{webhook_secret}` 并注册到 Telegram。生产部署必须把该变量传入 backend/worker 容器；只配置 `TGYUNYING_WEB_HOST` 只能通过健康检查，不能保证 webhook 注册可用。

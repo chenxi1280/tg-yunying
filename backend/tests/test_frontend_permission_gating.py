@@ -1829,6 +1829,16 @@ def test_deploy_scripts_timeout_planner_smoke_and_remote_install():
     assert 'timeout "$timeout_seconds" docker exec tgyunying-worker-planner' in check_web
 
 
+def test_production_deploy_passes_public_app_base_url_for_tenant_bot_webhook():
+    release = (PROJECT_ROOT / "deploy/release.sh").read_text()
+    compose = (PROJECT_ROOT / "docker-compose.server.yml").read_text()
+    example_env = (PROJECT_ROOT / ".env.production.example").read_text()
+
+    assert "PUBLIC_APP_BASE_URL=https://tgyunying.example.com" in example_env
+    assert "PUBLIC_APP_BASE_URL: ${PUBLIC_APP_BASE_URL:?PUBLIC_APP_BASE_URL is required}" in compose
+    assert "PUBLIC_APP_BASE_URL=${PUBLIC_APP_BASE_URL:-https://${TGYUNYING_WEB_HOST}}" in release
+
+
 def test_production_deploy_starts_four_dispatcher_workers():
     compose = (PROJECT_ROOT / "docker-compose.server.yml").read_text()
     compose_up = (PROJECT_ROOT / "deploy/compose-up.sh").read_text()

@@ -63,6 +63,7 @@ ensure_runtime_env() {
     SESSION_SECRET_KEY
     CORS_ORIGINS
     ADMIN_BOOTSTRAP_PASSWORD
+    PUBLIC_APP_BASE_URL
   )
 
   local missing=()

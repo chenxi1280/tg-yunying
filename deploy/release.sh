@@ -193,6 +193,10 @@ fi
 if [[ -n "${TGYUNYING_WEB_HOST:-}" ]]; then
   printf 'TGYUNYING_WEB_HOST=%s\n' "$TGYUNYING_WEB_HOST" >>"$image_env_path"
 fi
+if [[ -n "${PUBLIC_APP_BASE_URL:-}" || -n "${TGYUNYING_WEB_HOST:-}" ]]; then
+  PUBLIC_APP_BASE_URL=${PUBLIC_APP_BASE_URL:-https://${TGYUNYING_WEB_HOST}}
+  printf 'PUBLIC_APP_BASE_URL=%s\n' "$PUBLIC_APP_BASE_URL" >>"$image_env_path"
+fi
 
 shell_quote() {
   printf '%q' "$1"
