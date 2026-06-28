@@ -56,6 +56,30 @@ def task_detail_actions(client: TestClient, headers: dict[str, str], task_id: st
     return response.json()
 
 
+def compact_task_debug(task: dict) -> dict:
+    return {
+        "status": task.get("status"),
+        "next_run_at": task.get("next_run_at"),
+        "last_error": task.get("last_error"),
+        "stats": task.get("stats"),
+    }
+
+
+def compact_action_debug(actions: list[dict]) -> list[dict]:
+    return [
+        {
+            "type": item.get("action_type"),
+            "status": item.get("status"),
+            "scheduled_at": item.get("scheduled_at"),
+            "executed_at": item.get("executed_at"),
+            "result": item.get("result"),
+            "memory_id": (item.get("payload") or {}).get("ai_message_memory_id"),
+            "message": (item.get("payload") or {}).get("message_text"),
+        }
+        for item in actions
+    ]
+
+
 def task_detail_message_groups(client: TestClient, headers: dict[str, str], task_id: str) -> list[dict]:
     response = client.get(f"/api/tasks/{task_id}/message-groups?page=1&page_size=100", headers=headers)
     assert response.status_code == 200, response.text
@@ -3403,7 +3427,10 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         assert detail["task"]["status"] == "running"
         actions = task_detail_actions(client, headers, task_id, action_type="send_message")
-        assert detail["task"]["stats"]["success_count"] >= 1, {"stats": detail["task"]["stats"], "actions": actions}
+        assert detail["task"]["stats"]["success_count"] >= 1, {
+            "task": compact_task_debug(detail["task"]),
+            "actions": compact_action_debug(actions),
+        }
         assert actions[0]["action_type"] == "send_message"
 
 
@@ -3512,7 +3539,11 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         first_context_send_count = len(sends)
         actions = task_detail_actions(client, headers, task_id, action_type="send_message")
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert first_context_send_count >= 1, {"stats": detail["task"]["stats"], "actions": actions}
+        assert first_context_send_count >= 1, {
+            "task": compact_task_debug(detail["task"]),
+            "actions": compact_action_debug(actions),
+            "sends": sends,
+        }
 
         messages.append((f"ai-context-2-{context_suffix}", f"第二条真人上下文 {context_suffix}"))
         from app.services.group_listeners import collect_group_context
@@ -4438,7 +4469,10 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
         assert reset.status_code == 200, reset.text
         post_reset_count = len(task_detail_actions(client, headers, task_id))
         detail_after_reset = client.get(f"/api/tasks/{task_id}", headers=headers).json()
-        assert post_reset_count >= 1, {"initial_detail": initial_detail["task"], "after_reset": detail_after_reset["task"]}
+        assert detail_after_reset["task"]["status"] == "running", {
+            "initial": compact_task_debug(initial_detail["task"]),
+            "after_reset": compact_task_debug(detail_after_reset["task"]),
+        }
 
         drain_task_center(SessionLocal, 10)
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
