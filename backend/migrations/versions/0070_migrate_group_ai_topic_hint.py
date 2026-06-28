@@ -26,7 +26,7 @@ def upgrade() -> None:
             """
             UPDATE tasks
             SET type_config = jsonb_set(
-                type_config - 'topic_hint',
+                type_config::jsonb - 'topic_hint',
                 '{topic_directions}',
                 jsonb_build_array(
                     jsonb_build_object(
@@ -36,14 +36,14 @@ def upgrade() -> None:
                     )
                 ),
                 true
-            )
+            )::json
             WHERE type = 'group_ai_chat'
-              AND type_config ? 'topic_hint'
+              AND type_config::jsonb ? 'topic_hint'
               AND btrim(coalesce(type_config->>'topic_hint', '')) <> ''
               AND (
-                  NOT (type_config ? 'topic_directions')
-                  OR jsonb_typeof(type_config->'topic_directions') <> 'array'
-                  OR jsonb_array_length(type_config->'topic_directions') = 0
+                  NOT (type_config::jsonb ? 'topic_directions')
+                  OR jsonb_typeof(type_config::jsonb->'topic_directions') <> 'array'
+                  OR jsonb_array_length(type_config::jsonb->'topic_directions') = 0
               )
             """
         )
@@ -52,9 +52,9 @@ def upgrade() -> None:
         sa.text(
             """
             UPDATE tasks
-            SET type_config = type_config - 'topic_hint'
+            SET type_config = (type_config::jsonb - 'topic_hint')::json
             WHERE type = 'group_ai_chat'
-              AND type_config ? 'topic_hint'
+              AND type_config::jsonb ? 'topic_hint'
             """
         )
     )
