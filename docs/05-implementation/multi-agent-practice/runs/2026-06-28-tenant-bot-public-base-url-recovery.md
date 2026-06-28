@@ -49,11 +49,18 @@
 
 - release_mode: github_actions
 - release_owner: main
-- status: pending
+- status: passed
 - production_verification_required: true
 
 ## 发布后复核
 
-- 触发 `Deploy Production` 成功。
-- 再次调用 `POST /api/tenant-bot-settings/webhook/refresh`，期望 `telegram_bot_webhook_status=registered` 且 Telegram 当前 URL 等于系统期望 URL。
-- 真实 Telegram 私聊 Bot `/start` 或 `/admin` 有可见回复后，prod-diagnosis 才能写 `production_fixed`。
+- GitHub Actions `Deploy Production` run `28315046294` 成功，commit `25c2c1b62581e2fa20f6f2efddb08720b8f480bb`。
+- 部署后 `GET /api/tenant-bot-settings` 已能生成 `telegram_bot_webhook_url=https://tgyunying.telema.cn/api/telegram-bot/webhook/...`。
+- 再次调用 `POST /api/tenant-bot-settings/webhook/refresh` 后，`telegram_bot_webhook_status=registered`，`telegram_bot_webhook_current_url` 与系统期望 URL 一致。
+- 向生产 webhook 模拟管理员 `/admin` 入站 update，返回 `method=sendMessage`、`chat_id=7677366761`，回复文本包含 `Bot 已连接`、`Webhook：registered`、`AI 活群：已启用`。
+
+## Production Result
+
+- status: production_fixed
+- evidence_level: E4
+- production_fixed_at: 2026-06-28 15:30 Asia/Shanghai
