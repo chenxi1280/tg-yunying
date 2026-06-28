@@ -57,7 +57,16 @@ def _add_tenant(session: Session) -> None:
 def _add_group(session: Session, account_count: int) -> None:
     session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="测试群", auth_status="已授权运营"))
     for account_id in range(101, 101 + account_count):
-        session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+        session.add(
+            TgAccount(
+                id=account_id,
+                tenant_id=1,
+                display_name=f"账号{account_id}",
+                phone_masked=str(account_id),
+                status="在线",
+                session_ciphertext=f"session-{account_id}",
+            )
+        )
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
     session.add(
         GroupContextMessage(

@@ -588,7 +588,7 @@ def _online_ready_accounts(session: Session, task: Task, accounts: list, progres
 
 def _reconcile_online_sources_for_plan(session: Session, task: Task, accounts: list) -> None:
     if accounts:
-        reconcile_runtime_online_sources(session, tenant_id=task.tenant_id, now=_now())
+        reconcile_runtime_online_sources(session, tenant_id=task.tenant_id)
 
 
 def _daily_coverage_uncovered_count(

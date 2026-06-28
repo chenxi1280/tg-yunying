@@ -4600,7 +4600,7 @@ def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
         task = session.get(Task, "ai-idle-hallucination")
         action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-idle-hallucination"))
 
-    assert len(generated) == 2
+    assert len(generated) == 4
     assert action_count == 1
     assert task.stats["context_mode"] == "idle_continuation"
     assert task.stats["chat_mode"] == "idle_warmup"
