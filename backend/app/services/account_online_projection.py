@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, Task, TgAccount, TgAccountOnlineState
 from app.services._common import _now
+from app.timezone import as_beijing
 
 
 def task_account_online_summary(session: Session, task: Task, *, now: datetime | None = None) -> dict[str, Any]:
@@ -97,7 +98,9 @@ def _state_projection(state: TgAccountOnlineState, now: datetime) -> dict[str, A
 
 
 def _state_bucket(state: TgAccountOnlineState, now: datetime) -> str:
-    if state.stale_after_at and state.stale_after_at <= now:
+    stale_after = as_beijing(state.stale_after_at)
+    current_time = as_beijing(now) or now
+    if stale_after and stale_after <= current_time:
         return "stale"
     if state.failure_type in {"session_invalid", "login_required", "relogin_required"}:
         return "relogin_required"

@@ -151,7 +151,7 @@ def test_stale_online_state_is_not_ready_for_dispatch():
         assert is_account_online_ready(session, tenant_id=1, account_id=101, now=now) is False
 
 
-def test_planning_ready_allows_uninitialized_tenant_but_respects_existing_states():
+def test_planning_ready_allows_missing_state_but_respects_existing_account_state():
     now = _now()
     with _session() as session:
         _account(session)
@@ -160,6 +160,11 @@ def test_planning_ready_allows_uninitialized_tenant_but_respects_existing_states
         assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=now) is True
 
         session.add(TgAccountOnlineState(tenant_id=1, account_id=202, desired_online=True, online_status="online"))
+        session.commit()
+
+        assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=now) is True
+
+        session.add(TgAccountOnlineState(tenant_id=1, account_id=101, desired_online=True, online_status="warming"))
         session.commit()
 
         assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=now) is False

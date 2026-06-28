@@ -61,7 +61,7 @@ def is_account_online_ready_for_planning(
     state = _account_online_state(session, tenant_id, account_id)
     if state:
         return _state_is_ready(state, current_time)
-    return not _tenant_has_online_states(session, tenant_id)
+    return True
 
 
 def _account_online_state(session: Session, tenant_id: int, account_id: int) -> TgAccountOnlineState | None:
@@ -72,17 +72,6 @@ def _account_online_state(session: Session, tenant_id: int, account_id: int) -> 
         )
     )
     return state
-
-
-def _tenant_has_online_states(session: Session, tenant_id: int) -> bool:
-    return (
-        session.scalar(
-            select(TgAccountOnlineState.id)
-            .where(TgAccountOnlineState.tenant_id == tenant_id)
-            .limit(1)
-        )
-        is not None
-    )
 
 
 def drain_account_online_keepalive(session_factory, limit: int = 100) -> int:
