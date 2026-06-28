@@ -18,6 +18,47 @@ depends_on = None
 
 
 def upgrade() -> None:
+    _create_ai_group_message_memory()
+    _create_ai_account_voice_profiles()
+    _create_ai_account_group_stance_memory()
+    _create_tg_account_online_state()
+
+
+def downgrade() -> None:
+    _drop_index_if_exists("ix_tg_account_online_state_next_probe", "tg_account_online_state")
+    _drop_index_if_exists("ix_tg_account_online_state_status", "tg_account_online_state")
+    _drop_table_if_exists("tg_account_online_state")
+    _drop_index_if_exists("ix_ai_account_group_stance_group", "ai_account_group_stance_memory")
+    _drop_table_if_exists("ai_account_group_stance_memory")
+    _drop_index_if_exists("ix_ai_account_voice_profiles_account_status", "ai_account_voice_profiles")
+    _drop_table_if_exists("ai_account_voice_profiles")
+    _drop_index_if_exists("uq_ai_group_message_memory_reservation_key", "ai_group_message_memory")
+    _drop_index_if_exists("ix_ai_group_message_memory_task", "ai_group_message_memory")
+    _drop_index_if_exists("ix_ai_group_message_memory_expiry", "ai_group_message_memory")
+    _drop_index_if_exists("ix_ai_group_message_memory_dedupe", "ai_group_message_memory")
+    _drop_table_if_exists("ai_group_message_memory")
+
+
+def _create_ai_group_message_memory() -> None:
+    if not _has_table("ai_group_message_memory"):
+        _create_ai_group_message_memory_table()
+    _create_index_if_missing(
+        "ix_ai_group_message_memory_dedupe",
+        "ai_group_message_memory",
+        ["tenant_id", "group_id", "text_fingerprint", "status", "planned_at"],
+    )
+    _create_index_if_missing("ix_ai_group_message_memory_expiry", "ai_group_message_memory", ["status", "expires_at"])
+    _create_index_if_missing("ix_ai_group_message_memory_task", "ai_group_message_memory", ["tenant_id", "task_id", "planned_at"])
+    _create_index_if_missing(
+        "uq_ai_group_message_memory_reservation_key",
+        "ai_group_message_memory",
+        ["reservation_key"],
+        unique=True,
+        postgresql_where=sa.text("reservation_key <> ''"),
+    )
+
+
+def _create_ai_group_message_memory_table() -> None:
     op.create_table(
         "ai_group_message_memory",
         sa.Column("id", sa.String(length=36), primary_key=True),
@@ -47,21 +88,19 @@ def upgrade() -> None:
         sa.Column("result", sa.JSON(), nullable=False, server_default=sa.text("'{}'")),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
-    op.create_index(
-        "ix_ai_group_message_memory_dedupe",
-        "ai_group_message_memory",
-        ["tenant_id", "group_id", "text_fingerprint", "status", "planned_at"],
-    )
-    op.create_index("ix_ai_group_message_memory_expiry", "ai_group_message_memory", ["status", "expires_at"])
-    op.create_index("ix_ai_group_message_memory_task", "ai_group_message_memory", ["tenant_id", "task_id", "planned_at"])
-    op.create_index(
-        "uq_ai_group_message_memory_reservation_key",
-        "ai_group_message_memory",
-        ["reservation_key"],
-        unique=True,
-        postgresql_where=sa.text("reservation_key <> ''"),
+
+
+def _create_ai_account_voice_profiles() -> None:
+    if not _has_table("ai_account_voice_profiles"):
+        _create_ai_account_voice_profiles_table()
+    _create_index_if_missing(
+        "ix_ai_account_voice_profiles_account_status",
+        "ai_account_voice_profiles",
+        ["tenant_id", "account_id", "status"],
     )
 
+
+def _create_ai_account_voice_profiles_table() -> None:
     op.create_table(
         "ai_account_voice_profiles",
         sa.Column("id", sa.String(length=36), primary_key=True),
@@ -87,12 +126,19 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.UniqueConstraint("tenant_id", "account_id", "version", name="uq_ai_account_voice_profiles_version"),
     )
-    op.create_index(
-        "ix_ai_account_voice_profiles_account_status",
-        "ai_account_voice_profiles",
-        ["tenant_id", "account_id", "status"],
+
+
+def _create_ai_account_group_stance_memory() -> None:
+    if not _has_table("ai_account_group_stance_memory"):
+        _create_ai_account_group_stance_memory_table()
+    _create_index_if_missing(
+        "ix_ai_account_group_stance_group",
+        "ai_account_group_stance_memory",
+        ["tenant_id", "group_id", "account_id"],
     )
 
+
+def _create_ai_account_group_stance_memory_table() -> None:
     op.create_table(
         "ai_account_group_stance_memory",
         sa.Column("id", sa.String(length=36), primary_key=True),
@@ -112,12 +158,24 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.UniqueConstraint("tenant_id", "group_id", "account_id", name="uq_ai_account_group_stance"),
     )
-    op.create_index(
-        "ix_ai_account_group_stance_group",
-        "ai_account_group_stance_memory",
-        ["tenant_id", "group_id", "account_id"],
+
+
+def _create_tg_account_online_state() -> None:
+    if not _has_table("tg_account_online_state"):
+        _create_tg_account_online_state_table()
+    _create_index_if_missing(
+        "ix_tg_account_online_state_status",
+        "tg_account_online_state",
+        ["tenant_id", "desired_online", "online_status"],
+    )
+    _create_index_if_missing(
+        "ix_tg_account_online_state_next_probe",
+        "tg_account_online_state",
+        ["tenant_id", "next_probe_at"],
     )
 
+
+def _create_tg_account_online_state_table() -> None:
     op.create_table(
         "tg_account_online_state",
         sa.Column("id", sa.String(length=36), primary_key=True),
@@ -142,20 +200,28 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.UniqueConstraint("tenant_id", "account_id", name="uq_tg_account_online_state_account"),
     )
-    op.create_index("ix_tg_account_online_state_status", "tg_account_online_state", ["tenant_id", "desired_online", "online_status"])
-    op.create_index("ix_tg_account_online_state_next_probe", "tg_account_online_state", ["tenant_id", "next_probe_at"])
 
 
-def downgrade() -> None:
-    op.drop_index("ix_tg_account_online_state_next_probe", table_name="tg_account_online_state")
-    op.drop_index("ix_tg_account_online_state_status", table_name="tg_account_online_state")
-    op.drop_table("tg_account_online_state")
-    op.drop_index("ix_ai_account_group_stance_group", table_name="ai_account_group_stance_memory")
-    op.drop_table("ai_account_group_stance_memory")
-    op.drop_index("ix_ai_account_voice_profiles_account_status", table_name="ai_account_voice_profiles")
-    op.drop_table("ai_account_voice_profiles")
-    op.drop_index("uq_ai_group_message_memory_reservation_key", table_name="ai_group_message_memory")
-    op.drop_index("ix_ai_group_message_memory_task", table_name="ai_group_message_memory")
-    op.drop_index("ix_ai_group_message_memory_expiry", table_name="ai_group_message_memory")
-    op.drop_index("ix_ai_group_message_memory_dedupe", table_name="ai_group_message_memory")
-    op.drop_table("ai_group_message_memory")
+def _has_table(name: str) -> bool:
+    return sa.inspect(op.get_bind()).has_table(name)
+
+
+def _has_index(table_name: str, index_name: str) -> bool:
+    if not _has_table(table_name):
+        return False
+    return index_name in {item["name"] for item in sa.inspect(op.get_bind()).get_indexes(table_name)}
+
+
+def _create_index_if_missing(index_name: str, table_name: str, columns: list[str], **kwargs) -> None:
+    if not _has_index(table_name, index_name):
+        op.create_index(index_name, table_name, columns, **kwargs)
+
+
+def _drop_index_if_exists(index_name: str, table_name: str) -> None:
+    if _has_index(table_name, index_name):
+        op.drop_index(index_name, table_name=table_name)
+
+
+def _drop_table_if_exists(table_name: str) -> None:
+    if _has_table(table_name):
+        op.drop_table(table_name)
