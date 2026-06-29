@@ -329,7 +329,6 @@ def _find_exact_duplicate(
         select(AiGroupMessageMemory)
         .where(
             AiGroupMessageMemory.tenant_id == tenant_id,
-            AiGroupMessageMemory.group_id == group_id,
             AiGroupMessageMemory.text_fingerprint == fingerprint,
             AiGroupMessageMemory.status.in_(DEDUP_STATUSES),
             AiGroupMessageMemory.planned_at >= cutoff,
@@ -407,7 +406,6 @@ def _find_template_shell_duplicate(
         select(AiGroupMessageMemory)
         .where(
             AiGroupMessageMemory.tenant_id == tenant_id,
-            AiGroupMessageMemory.group_id == group_id,
             AiGroupMessageMemory.template_shell_key == template_shell_key,
             AiGroupMessageMemory.status.in_(DEDUP_STATUSES),
             AiGroupMessageMemory.planned_at >= now - THIRTY_DAY_WINDOW,
@@ -424,7 +422,6 @@ def _window_memories(session: Session, tenant_id: int, group_id: int, cutoff: da
             select(AiGroupMessageMemory)
             .where(
                 AiGroupMessageMemory.tenant_id == tenant_id,
-                AiGroupMessageMemory.group_id == group_id,
                 AiGroupMessageMemory.status.in_(DEDUP_STATUSES),
                 AiGroupMessageMemory.planned_at >= cutoff,
                 AiGroupMessageMemory.id != exclude_id,
@@ -476,7 +473,7 @@ def _template_shell_key(normalized: str) -> str:
 
 
 def _reservation_key(tenant_id: int, group_id: int, fingerprint: str, now: datetime) -> str:
-    return f"{tenant_id}:{group_id}:{fingerprint}:{int(now.timestamp()) // int(FIVE_MINUTE_WINDOW.total_seconds())}"
+    return f"{tenant_id}:all-groups:{fingerprint}:{int(now.timestamp()) // int(FIVE_MINUTE_WINDOW.total_seconds())}"
 
 
 __all__ = [
