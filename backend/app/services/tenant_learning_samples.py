@@ -144,7 +144,7 @@ def _ingest_group_messages(session: Session, source: TenantLearningSource, targe
             sender_username=row.sender_username,
             sender_name=row.sender_name,
             is_bot=row.is_bot,
-            is_managed=False,
+            is_managed=_is_managed_group_sender(session, group, row),
             is_media=row.message_type != "text",
             sent_at=row.sent_at,
         )

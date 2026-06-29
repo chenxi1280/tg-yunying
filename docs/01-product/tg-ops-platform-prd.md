@@ -3990,7 +3990,7 @@ action / attempt 写入完成
 - `desired_online` 必须按全局保活、任务、监听源等来源引用计数维护；任务暂停、停止、删除、账号范围变更和存量任务迁移都必须触发 reconcile，不能留下孤儿在线需求或 stale 在线状态。
 - 在线状态必须记录 session 和代理维度；超过 `stale_after_at` 未成功探测的账号不得继续参与 Planner / Dispatcher，必须转为 warming / offline 并展示最近失败或未探测原因。
 - 发布迁移后必须为运行中 AI 活跃群、转发任务、监听源和全局保活配置回填 `desired_online` 来源；否则上线后不能把所有账号都当作离线，也不能让缺状态账号绕过在线前置。
-- AI 已发送内容默认不得进入正向运营学习画像；只有人工确认、真实互动效果明确或高质量复用标记的 AI 内容才可低权重进入学习候选。
+- AI 已发送内容默认不得进入正向运营学习画像；实时监听同步和历史拉取都必须按账号身份排除平台托管账号 / 自身账号 / 机器人发送内容，不能只靠用户名或文案关键词判断。只有人工确认、真实互动效果明确或高质量复用标记的 AI 内容才可低权重进入学习候选。
 - 任务详情必须展示 AI 质量漏斗和代表样例，至少覆盖候选数、通过数、重复拦截、模板壳拦截、画像低分、事实锚点不足、同批次多样性降权和最终发送数。
 - 任务详情必须区分 `duplicate_message`、`template_shell_limited`、`voice_profile_mismatch`、`stance_conflict`、`account_offline`、`context_insufficient`、`quality_fallback`，不能把所有减少原因折叠成 AI 失败。
 - AI 活跃群必须在 action payload / result 中记录 `slot_id`、`act_type`、上下文锚点、账号表达卡版本、账号表达卡摘要、表达卡匹配分 / 原因、短期立场摘要、消息记忆 ID、语义簇、重写次数和真人感过滤结论；任务详情 AI 轮次分页必须展示这些字段，便于确认 TG bot / Web 配置是否真实参与生成。

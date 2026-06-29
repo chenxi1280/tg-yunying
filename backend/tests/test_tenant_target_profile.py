@@ -322,6 +322,44 @@ def test_source_sync_and_history_pull_write_visible_runs() -> None:
     assert sample_rule_version == 1
 
 
+def test_source_history_pull_rejects_managed_context_sender() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=31, tenant_id=1, target_type="group", tg_peer_id="-10031", title="活群"))
+        session.add(TgGroup(id=41, tenant_id=1, tg_peer_id="-10031", title="活群", listener_enabled=True))
+        session.add(TgAccount(id=51, tenant_id=1, phone_masked="+10000000001", display_name="监听号", status="在线"))
+        session.add(TgAccount(id=52, tenant_id=1, phone_masked="+10000000002", display_name="花花", status="在线", username="yy001"))
+        session.add(TgGroupAccount(id=61, tenant_id=1, group_id=41, account_id=51, is_listener=True))
+        session.add(TgGroupAccount(id=62, tenant_id=1, group_id=41, account_id=52, is_listener=False))
+        source = TenantLearningSource(tenant_id=1, target_id=31, source_kind="group")
+        session.add(source)
+        session.add(
+            GroupContextMessage(
+                tenant_id=1,
+                group_id=41,
+                listener_account_id=51,
+                sender_peer_id="account:52",
+                sender_name="花花",
+                sender_username="yy001",
+                content="AI 自己发过的话不能回流学习",
+                remote_message_id="managed-history-m1",
+            )
+        )
+        session.commit()
+        source_id = source.id
+
+        run = start_source_run(session, 1, source_id, "pull_history", actor="tester")
+        sample = session.scalar(select(TenantLearningSample).where(TenantLearningSample.source_message_id == "managed-history-m1"))
+        sample_status = sample.learning_status if sample else ""
+        reject_reason = sample.reject_reason if sample else ""
+        session.commit()
+
+    assert run["sample_count"] == 1
+    assert sample is not None
+    assert sample_status == "rejected"
+    assert reject_reason == "managed_account"
+
+
 def test_sampling_requires_explicit_enabled_learning_source() -> None:
     with _session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
