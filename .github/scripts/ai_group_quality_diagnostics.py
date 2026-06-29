@@ -36,6 +36,7 @@ ONLINE_BLOCK_KEYS = (
     "relogin_required_count",
     "offline_count",
 )
+EFFECTIVE_DUPLICATE_STATUSES = ("success", "unknown_after_send", "pending", "claiming", "executing")
 
 
 def iso(value: datetime | None) -> str | None:
@@ -61,6 +62,10 @@ def jsonable(value: Any) -> Any:
 def preview_text(value: object) -> str:
     text = str(value or "").replace("\n", " ").strip()
     return text[:TEXT_PREVIEW_LIMIT]
+
+
+def normalized_text(value: object) -> str:
+    return " ".join(str(value or "").split())
 
 
 def now_local() -> datetime:
@@ -314,10 +319,50 @@ def recent_action_duplicate_snapshot(session, since: datetime) -> dict[str, Any]
             .limit(ACTION_LIMIT)
         )
     )
-    texts = [preview_text((action.payload or {}).get("message_text")) for action in actions]
-    counts = Counter(text for text in texts if text)
-    repeats = [{"text": text, "count": int(count)} for text, count in counts.most_common(10) if count > 1]
-    return {"action_count": len(actions), "repeated_texts": repeats, "status_counts": dict(Counter(action.status for action in actions))}
+    return recent_action_duplicate_summary(actions)
+
+
+def recent_action_duplicate_summary(actions: list[Action]) -> dict[str, Any]:
+    grouped = _group_actions_by_text(actions)
+    repeated_texts = [
+        {"text": preview_text(text), "count": len(items)}
+        for text, items in sorted(grouped.items(), key=lambda row: len(row[1]), reverse=True)
+        if len(items) > 1
+    ][:10]
+    return {
+        "action_count": len(actions),
+        "repeated_texts": repeated_texts,
+        "duplicate_blockers": _duplicate_blockers(grouped),
+        "status_counts": dict(Counter(action.status for action in actions)),
+    }
+
+
+def _group_actions_by_text(actions: list[Action]) -> dict[str, list[Action]]:
+    grouped: dict[str, list[Action]] = {}
+    for action in actions:
+        text = normalized_text((action.payload or {}).get("message_text"))
+        if not text:
+            continue
+        grouped.setdefault(text, []).append(action)
+    return grouped
+
+
+def _duplicate_blockers(grouped: dict[str, list[Action]]) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    for text, actions in grouped.items():
+        effective = [action for action in actions if action.status in EFFECTIVE_DUPLICATE_STATUSES]
+        if len(effective) <= 1:
+            continue
+        status_counts = dict(Counter(action.status for action in effective))
+        blockers.append(
+            {
+                "text": preview_text(text),
+                "effective_count": len(effective),
+                "status_counts": dict(sorted(status_counts.items())),
+                "action_ids": [str(action.id) for action in effective[:10]],
+            }
+        )
+    return sorted(blockers, key=lambda item: int(item["effective_count"]), reverse=True)[:10]
 
 
 def main() -> None:
@@ -327,7 +372,11 @@ def main() -> None:
         json_line("AI_GROUP_QUALITY_WORKERS", worker_snapshot(session, captured_at))
         json_line("AI_GROUP_QUALITY_VOICE_PROFILES", voice_profile_snapshot(session))
         json_line("AI_GROUP_QUALITY_MEMORY", memory_status_snapshot(session, captured_at))
-        json_line("AI_GROUP_QUALITY_RECENT_ACTIONS", recent_action_duplicate_snapshot(session, since))
+        recent_duplicates = recent_action_duplicate_snapshot(session, since)
+        json_line("AI_GROUP_QUALITY_RECENT_ACTIONS", recent_duplicates)
+        if recent_duplicates["duplicate_blockers"]:
+            json_line("AI_GROUP_QUALITY_RECENT_DUPLICATE_GATE_FAILED", recent_duplicates)
+            raise SystemExit("AI group recent duplicate quality gate failed")
         for snapshot in wait_for_online_gate(session, since):
             json_line("AI_GROUP_QUALITY_TASK", snapshot)
         json_line("AI_GROUP_QUALITY_DONE", {"captured_at": iso(captured_at), "window_hours": WINDOW_HOURS})

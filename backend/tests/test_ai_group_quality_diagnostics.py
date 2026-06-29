@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -81,3 +82,37 @@ def test_ai_group_quality_diagnostics_accepts_fully_online_state():
     )
 
     assert blockers == []
+
+
+def test_ai_group_quality_diagnostics_blocks_recent_effective_duplicate_text():
+    module = load_quality_diagnostics_module()
+    actions = [
+        SimpleNamespace(id="a1", status="success", payload={"message_text": "嫩是真嫩 就是不知道稳不稳"}),
+        SimpleNamespace(id="a2", status="pending", payload={"message_text": "嫩是真嫩 就是不知道稳不稳"}),
+        SimpleNamespace(id="a3", status="failed", payload={"message_text": "没发送成功不用阻断"}),
+        SimpleNamespace(id="a4", status="skipped", payload={"message_text": "没发送成功不用阻断"}),
+    ]
+
+    snapshot = module.recent_action_duplicate_summary(actions)
+
+    assert snapshot["duplicate_blockers"] == [
+        {
+            "text": "嫩是真嫩 就是不知道稳不稳",
+            "effective_count": 2,
+            "status_counts": {"pending": 1, "success": 1},
+            "action_ids": ["a1", "a2"],
+        }
+    ]
+
+
+def test_ai_group_quality_diagnostics_ignores_failed_only_duplicate_text():
+    module = load_quality_diagnostics_module()
+    actions = [
+        SimpleNamespace(id="a1", status="failed", payload={"message_text": "失败文本重复"}),
+        SimpleNamespace(id="a2", status="skipped", payload={"message_text": "失败文本重复"}),
+    ]
+
+    snapshot = module.recent_action_duplicate_summary(actions)
+
+    assert snapshot["repeated_texts"] == [{"text": "失败文本重复", "count": 2}]
+    assert snapshot["duplicate_blockers"] == []

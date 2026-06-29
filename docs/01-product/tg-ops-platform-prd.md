@@ -3987,6 +3987,7 @@ action / attempt 写入完成
 - AI 活跃群归一化、文本指纹、语义簇和模板壳句 key 在 Planner 与 Dispatcher 中必须一致；相同输入在重复运行中必须得到相同去重结果。
 - AI 活跃群 Planner 写入 action 前必须先原子写入消息记忆预占位；并发写入相同归一化指纹时只能有一个成功，其余必须得到可见重复原因。
 - AI 活跃群短时间相同内容问题必须同时覆盖同一轮、本小时、已规划未发送、发送未知和历史成功消息；不能只在 AI Prompt 中提示“不要重复”，也不能只在发送成功后记录。
+- AI 活跃群生产质量诊断必须把近 24 小时有效状态中的重复文本作为 release gate blocker；`success`、`unknown_after_send`、`pending`、`claiming`、`executing` 任一组合出现相同有效文本重复时，必须输出可见失败并阻断发布，失败 / 跳过记录不能单独触发该 blocker。
 - `ai_group_message_memory.reservation_key` 必须有数据库唯一约束或等价原子锁，重复冲突必须暴露为质量拦截，不得通过查询后插入的竞态窗口放过并发重复。
 - AI 活跃群 Planner 和 Dispatcher 必须把 `tg_account_online_state` 作为主互动硬前置；离线、需重登、session 失效或代理异常的账号不得生成 / 发送文本或表情 slot，失败原因必须记录为账号在线问题，不能归为 AI 质量不足或用 `emoji_react` 兜底。
 - 在线保活只能做连接、session warm、轻量探测和必要自愈，不得通过目标群可见消息、点赞、关注等动作制造在线证据；探测必须分批、带抖动并落库。
