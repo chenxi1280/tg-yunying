@@ -252,6 +252,42 @@ def test_generate_voice_profiles_uses_compact_token_budget(monkeypatch):
     assert profiles[0]["account_id"] == "101"
 
 
+def test_generate_voice_profiles_refills_missing_accounts(monkeypatch):
+    calls: list[str] = []
+
+    def fake_post(credentials, prompt, temperature, max_tokens, **kwargs):  # noqa: ANN001
+        calls.append(prompt)
+        if "account_id=102" in prompt and "account_id=101" not in prompt:
+            return (
+                "102|中年|常帮朋友踩点|约过天津场子|中句|先讲经历；偶尔吐槽|谨慎|稳一点；别急|不用表情|感觉挺靠谱|"
+                "中年中句先讲踩点经历说话谨慎不急",
+                SimpleNamespace(total_tokens=90),
+            )
+        return (
+            "101|青年|做过夜场熟客|常点花花老师|短句|先问位置；爱追问照片|轻松|我看看；别跑空|少用|确实不错|"
+            "青年短句先问位置和照片偶尔说别跑空",
+            SimpleNamespace(total_tokens=120),
+        )
+
+    monkeypatch.setattr("app.services.task_center.account_voice_profiles.ai_gateway._post_openai_compatible", fake_post)
+
+    with _session() as session:
+        _account(session, 101, "测试号1")
+        _account(session, 102, "测试号2")
+        profiles = _generate_voice_profile_payloads(
+            session,
+            1,
+            [101, 102],
+            SimpleNamespace(model_name="mimo-v2.5"),
+            SimpleNamespace(temperature=0.7, max_tokens=8192),
+        )
+
+    assert [profile["account_id"] for profile in profiles] == ["101", "102"]
+    assert len(calls) == 2
+    assert "account_id=102" in calls[1]
+    assert "account_id=101" not in calls[1]
+
+
 def test_ensure_voice_profiles_retries_overly_similar_batch_before_insert():
     calls = 0
 

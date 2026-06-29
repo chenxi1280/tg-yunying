@@ -390,6 +390,18 @@ def _provider_usable(provider: AiProvider | None) -> bool:
 
 def _generate_voice_profile_payloads(session: Session, tenant_id: int, account_ids: list[int], credentials, setting) -> list[dict[str, Any]]:
     accounts = _accounts_for_generation(session, tenant_id, account_ids)
+    profiles = _request_voice_profile_payloads(credentials, setting, accounts)
+    account_by_id = {account.id: account for account in accounts}
+    missing_ids = [account.id for account in accounts if account.id not in profiles]
+    for account_id in missing_ids:
+        profiles.update(_request_voice_profile_payloads(credentials, setting, [account_by_id[account_id]]))
+    final_missing = [account.id for account in accounts if account.id not in profiles]
+    if final_missing:
+        raise RuntimeError(f"AI 表达卡缺少账号: {final_missing}")
+    return [_normalize_generated_profile(profiles[account.id]) for account in accounts]
+
+
+def _request_voice_profile_payloads(credentials, setting, accounts: list[TgAccount]) -> dict[int, dict[str, Any]]:
     raw, _usage = ai_gateway._post_openai_compatible(  # noqa: SLF001 - project adapter has no public JSON generation API yet.
         credentials,
         _voice_profile_prompt(accounts),
@@ -400,7 +412,7 @@ def _generate_voice_profile_payloads(session: Session, tenant_id: int, account_i
         reasoning_retry_max_tokens=VOICE_PROFILE_RETRY_MAX_TOKENS,
         timeout=VOICE_PROFILE_AI_TIMEOUT_SECONDS,
     )
-    return _parse_voice_profile_payloads(raw, [account.id for account in accounts])
+    return _parse_voice_profile_payload_map(raw)
 
 
 def _accounts_for_generation(session: Session, tenant_id: int, account_ids: list[int]) -> list[TgAccount]:
@@ -423,15 +435,19 @@ def _voice_profile_prompt(accounts: list[TgAccount]) -> str:
 
 
 def _parse_voice_profile_payloads(raw: str, expected_account_ids: list[int]) -> list[dict[str, Any]]:
-    lines = [line.strip() for line in _clean_profile_lines(raw).splitlines() if line.strip()]
-    items = [_profile_from_pipe_line(line) for line in lines]
-    if len(items) < len(expected_account_ids):
-        raise RuntimeError("AI 表达卡输出数量不足")
-    profiles = _profiles_by_account(items)
+    profiles = _parse_voice_profile_payload_map(raw)
     missing = [account_id for account_id in expected_account_ids if account_id not in profiles]
     if missing:
         raise RuntimeError(f"AI 表达卡缺少账号: {missing}")
     return [_normalize_generated_profile(profiles[account_id]) for account_id in expected_account_ids]
+
+
+def _parse_voice_profile_payload_map(raw: str) -> dict[int, dict[str, Any]]:
+    lines = [line.strip() for line in _clean_profile_lines(raw).splitlines() if line.strip()]
+    if not lines:
+        raise RuntimeError("AI 表达卡输出为空")
+    items = [_profile_from_pipe_line(line) for line in lines]
+    return _profiles_by_account(items)
 
 
 def _clean_profile_lines(raw: str) -> str:
