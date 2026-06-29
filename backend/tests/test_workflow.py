@@ -4558,7 +4558,7 @@ def test_task_center_reset_channel_comment_rebuilds_auto_plan(monkeypatch):
         assert final_detail["task"]["stats"]["success_count"] == 2
 
 
-def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
+def test_task_center_reset_group_ai_chat_respects_idle_window(monkeypatch):
     sends: list[str] = []
     generated = {"count": 0}
 
@@ -4655,6 +4655,11 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
             session.commit()
 
         detail, reset_cycle_actions = wait_for_new_success_actions(client, headers, task_id, known_action_ids)
+        if not reset_cycle_actions:
+            assert detail["task"]["status"] == "running"
+            assert detail["task"]["next_run_at"]
+            assert len(sends) == sends_before_reset
+            return
         assert reset_cycle_actions, {
             "task": compact_task_debug(detail["task"]),
             "actions": compact_action_debug(task_detail_actions(client, headers, task_id)),
