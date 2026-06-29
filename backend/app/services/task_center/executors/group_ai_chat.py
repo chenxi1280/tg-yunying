@@ -576,7 +576,6 @@ def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
     hard_progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
     hard_progress = hard_progress if int(hard_progress.get("deficit") or 0) > 0 else {}
     accounts = _select_accounts_for_plan(session, task, group, hard_progress, config)
-    _reconcile_online_sources_for_plan(session, task, accounts)
     accounts = _online_ready_accounts(session, task, accounts, hard_progress)
     if not accounts:
         return 0
