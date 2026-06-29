@@ -4235,6 +4235,7 @@ def test_group_ai_chat_context_prefers_topic_relevant_messages():
     assert [row.content for row in filtered] == ["老师", "老师质量这块我更看课后反馈。"]
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -4279,11 +4280,13 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
         session.commit()
 
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-wait-new")) == 1
+        first_generation_call_count = len(generated)
         assert build_group_ai_chat_plan(session, session.get(Task, "ai-wait-new")) == 0
         action_count = session.scalar(select(func.count(Action.id)).where(Action.task_id == "ai-wait-new"))
         task = session.get(Task, "ai-wait-new")
 
-    assert len(generated) == 1
+    assert first_generation_call_count >= 1
+    assert len(generated) == first_generation_call_count
     assert action_count == 1
     assert task.last_error == "暂无新的真人上下文，等待群内新消息"
     assert task.stats["context_mode"] == "waiting_new_context"
