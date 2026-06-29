@@ -4603,7 +4603,8 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
         )
         assert created.status_code == 200, created.text
         task_id = created.json()["id"]
-        client.post(f"/api/tasks/{task_id}/start", headers=headers)
+        started = client.post(f"/api/tasks/{task_id}/start", headers=headers)
+        assert started.status_code == 200, started.text
         from app.services.task_center.service import drain_task_center
 
         drain_task_center(SessionLocal, 10)
@@ -4612,7 +4613,11 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
         initial_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         initial_actions = task_detail_actions(client, headers, task_id)
         initial_action_count = len(initial_actions)
-        assert initial_action_count >= 1
+        assert initial_action_count >= 1, {
+            "task": compact_task_debug(initial_detail["task"]),
+            "actions": compact_action_debug(initial_actions),
+            "generated_count": generated["count"],
+        }
         known_action_ids = {str(action.get("id") or "") for action in initial_actions}
         sends_before_reset = len(sends)
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
