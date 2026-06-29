@@ -12,6 +12,7 @@ from .executors.common import quantity_jitter_bounds
 from .executors.group_ai_chat import account_profile_summaries
 from .executors.group_relay import relay_source_filter_reason
 from .fingerprints import content_fingerprint
+from .ai_act_types import canonical_ai_group_act_type
 from .membership_recovery import classify_membership_recovery
 from .account_coverage import task_account_coverage
 from app.services.task_runtime_stage import derive_task_runtime_stage
@@ -797,7 +798,7 @@ def _ai_turn_payload(action: Action, payload: dict[str, Any], default_turn_index
         "topic_thread": str(payload.get("topic_thread") or ""),
         "topic_plan": str(payload.get("topic_plan") or ""),
         "intent": str(payload.get("intent") or ""),
-        "act_type": str(payload.get("act_type") or ""),
+        "act_type": canonical_ai_group_act_type(str(payload.get("act_type") or "")),
         "generation_source": _generation_source_from_payload(payload),
         "quality_decision": str(payload.get("human_quality_decision") or ""),
         "quality_fallback": str(payload.get("quality_fallback") or ""),

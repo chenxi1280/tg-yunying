@@ -25,6 +25,7 @@ from app.services.rule_engine import apply_output_policy, bound_rule_version, ev
 from app.services.material_rules import select_material_for_policy
 
 from ..account_pool import DAILY_COVERAGE_SUCCESS_STATUSES, daily_account_coverage_counts, daily_uncovered_account_count, select_task_accounts
+from ..ai_act_types import canonical_ai_group_act_type
 from ..ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages, generate_group_reply_messages
 from ..ai_message_memory import DuplicateMessageReservation, mark_group_ai_message_result, reserve_group_ai_message
 from ..account_voice_profiles import group_stance_summaries, voice_profile_prompt_details
@@ -902,19 +903,11 @@ def _act_type_for_turn(index: int, quality_item: dict) -> str:
     if quality_item.get("quality_fallback") == "emoji_react":
         return "emoji_react"
     if quality_item.get("act_type"):
-        return _canonical_act_type(str(quality_item.get("act_type")))
+        return canonical_ai_group_act_type(str(quality_item.get("act_type")))
     if _reply_target_message_id(quality_item) is not None:
         return "context_reply"
     act_types = ("short_react", "detail_follow", "question", "light_disagree", "topic_shift")
     return act_types[index % len(act_types)]
-
-
-def _canonical_act_type(act_type: str) -> str:
-    aliases = {
-        "light_question": "question",
-        "side_comment": "light_disagree",
-    }
-    return aliases.get(act_type, act_type)
 
 
 def _reserve_planned_message_memory(
@@ -1096,7 +1089,7 @@ def _planned_item(content: str, reply_target: dict | None, slot: dict | None) ->
     if slot:
         item["slot"] = dict(slot)
         item["slot_id"] = str(slot.get("slot_id") or "")
-        item["act_type"] = str(slot.get("act_type") or "")
+        item["act_type"] = canonical_ai_group_act_type(str(slot.get("act_type") or ""))
     return item
 
 
@@ -1444,7 +1437,7 @@ def _attach_planned_metadata(item: dict, planned: dict) -> dict:
     if planned.get("slot_id"):
         result["slot_id"] = planned["slot_id"]
     if planned.get("act_type"):
-        result["act_type"] = planned["act_type"]
+        result["act_type"] = canonical_ai_group_act_type(str(planned["act_type"]))
     return result
 
 

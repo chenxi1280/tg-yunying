@@ -934,7 +934,7 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
         assert total_cycles == 1
         turn = cycles[0]["turns"][0]
         assert turn["generation_source"] == "human_context"
-        assert turn["act_type"] == "experience"
+        assert turn["act_type"] == "detail_follow"
         assert turn["account_voice_profile_version"] == 3
         assert turn["account_voice_profile_summary"] == "青年号，短句追问，少用表情"
         assert turn["account_voice_profile_match_score"] == 86
@@ -1206,7 +1206,7 @@ def test_group_ai_send_success_updates_account_stance_memory(monkeypatch):
     assert stance.group_id == 7
     assert stance.topic_direction == "郑州楼凤妹子怎么样"
     assert stance.teacher_target == "花花老师"
-    assert stance.last_act_type == "追问"
+    assert stance.last_act_type == "question"
     assert stance.last_semantic_cluster == "teacher_price_question"
     assert stance.last_message_id == "tg-stance-ok"
     assert "花花老师这个感觉可以问问" in stance.summary

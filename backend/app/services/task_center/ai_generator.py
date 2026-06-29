@@ -12,6 +12,7 @@ from app.models import AiProvider, AiProviderHealthStatus, PromptTemplate, Tenan
 from app.services._common import _now, ai_gateway
 from app.services.ai_config import ai_provider_credentials
 from app.services.content_filters import looks_like_generated_template_noise, looks_like_operator_ui_content
+from app.services.task_center.ai_act_types import canonical_ai_group_act_type
 
 
 AI_GENERATION_UNAVAILABLE_MESSAGE = "AI 生成不可用，等待恢复后继续执行"
@@ -698,7 +699,7 @@ def _generation_slot_line(slot: dict) -> str:
     index = str(slot.get("sequence_index") or "").strip()
     slot_id = str(slot.get("slot_id") or "").strip()
     account_id = str(slot.get("account_id") or "").strip()
-    act_type = _canonical_act_type(str(slot.get("act_type") or "").strip())
+    act_type = canonical_ai_group_act_type(str(slot.get("act_type") or "").strip())
     profile = str(slot.get("account_profile") or "").strip()
     reply = str(slot.get("reply_to_content") or "").strip()
     if not index or not slot_id:
@@ -713,14 +714,6 @@ def _generation_slot_line(slot: dict) -> str:
     if reply:
         parts.append(f"引用 {reply[:120]}")
     return "；".join(parts)
-
-
-def _canonical_act_type(act_type: str) -> str:
-    aliases = {
-        "light_question": "question",
-        "side_comment": "light_disagree",
-    }
-    return aliases.get(act_type, act_type)
 
 
 def generate_group_messages(session: Session, tenant_id: int, config: dict, *, count: int, target_label: str, history: str = "") -> tuple[list[str], int]:

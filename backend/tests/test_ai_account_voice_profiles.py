@@ -311,7 +311,9 @@ def test_group_stance_summaries_backfills_redis_cache(monkeypatch):
     assert result == {101: "刚围绕花花老师表示观望，别突然强夸"}
     assert fake_redis.mget_calls == [["ai_group:stance:1:7:101"]]
     assert fake_redis.setex_calls
-    assert "刚围绕花花老师表示观望" in fake_redis.setex_calls[0][2]
+    refreshed = json.loads(fake_redis.setex_calls[0][2])
+    assert refreshed["summary"] == "刚围绕花花老师表示观望，别突然强夸"
+    assert refreshed["last_act_type"] == "light_disagree"
 
 
 def test_upsert_group_stance_memory_refreshes_redis_cache(monkeypatch):
@@ -338,7 +340,9 @@ def test_upsert_group_stance_memory_refreshes_redis_cache(monkeypatch):
     key, ttl, value = fake_redis.setex_calls[0]
     assert key == "ai_group:stance:1:7:101"
     assert ttl >= 86400
-    assert "主任这个可以先问价格" in value
+    refreshed = json.loads(value)
+    assert refreshed["summary"] == "追问：主任这个可以先问价格"
+    assert refreshed["last_act_type"] == "question"
 
 
 def test_parse_voice_profile_pipe_lines_requires_complete_fields():

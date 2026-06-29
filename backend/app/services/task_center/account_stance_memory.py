@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import AiAccountGroupStanceMemory
 from app.services._common import _now
+from app.services.task_center.ai_act_types import canonical_ai_group_act_type
 from app.services.task_center.runtime_resources import _redis_client
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ def upsert_group_stance_memory(
     row.topic_direction = topic_direction
     row.teacher_target = teacher_target
     row.stance = stance
-    row.last_act_type = act_type
+    row.last_act_type = canonical_ai_group_act_type(act_type)
     row.last_semantic_cluster = semantic_cluster
     row.last_message_id = message_id
     row.last_spoken_at = now
@@ -154,7 +155,7 @@ def _cache_payload(row: AiAccountGroupStanceMemory) -> str:
         "topic_direction": row.topic_direction,
         "teacher_target": row.teacher_target,
         "stance": row.stance,
-        "last_act_type": row.last_act_type,
+        "last_act_type": canonical_ai_group_act_type(row.last_act_type),
         "last_semantic_cluster": row.last_semantic_cluster,
         "last_message_id": row.last_message_id,
         "last_spoken_at": row.last_spoken_at.isoformat() if row.last_spoken_at else "",
