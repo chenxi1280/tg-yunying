@@ -4565,9 +4565,9 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
     def fake_generate_drafts(_credentials, _prompt, **_kwargs):
         generated["count"] += 1
         contents = [
-            "reset ai 今天先聊报名体验和前台接待细节。",
-            "换个角度问下晚场名额和路口集合安排。",
-            "顺手补一句群里最近有没有临时加钟说法。",
+            "reset ai 我先问下大家现在聊哪块。",
+            "换个角度问一句，群里现在有人在吗。",
+            "顺手接一句，这个话题先听你们说。",
         ]
         count = int(_kwargs.get("count") or 1)
         candidates = []
