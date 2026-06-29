@@ -18,6 +18,7 @@ from app.services.account_online_state import (
     reconcile_account_online_sources,
     reconcile_runtime_online_sources,
 )
+from app.services.account_online_constants import ONLINE_PROBE_INTERVAL
 from app.services.account_online_projection import task_account_online_summary
 
 
@@ -326,6 +327,65 @@ def test_runtime_reconcile_backfills_running_ai_relay_and_listener_sources():
         }
         assert rows[103].desired_sources == [{"source_type": "task", "source_id": "relay-running:target:602"}]
         assert rows[103].active_task_count == 1
+
+
+def test_runtime_reconcile_retains_paused_task_as_low_frequency_keepalive_source():
+    with _session() as session:
+        _account(session, 101)
+        group = _group(session, 501)
+        _link(session, group.id, 101, can_send=True)
+        session.add(
+            Task(
+                id="ai-paused",
+                tenant_id=1,
+                name="暂停 AI 活群",
+                type="group_ai_chat",
+                status="paused",
+                account_config={"selection_mode": "manual", "account_ids": [101]},
+                type_config={"target_group_id": group.id},
+            )
+        )
+        session.commit()
+
+        changed = reconcile_runtime_online_sources(session, tenant_id=1, include_global=False)
+        session.commit()
+
+        state = session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.account_id == 101))
+        assert changed == 1
+        assert state is not None
+        assert state.desired_online is True
+        assert state.desired_sources == [
+            {"source_type": "task", "source_id": "ai-paused", "keepalive_mode": "low_frequency"}
+        ]
+        assert state.active_task_count == 0
+
+
+def test_probe_due_online_states_uses_longer_interval_for_low_frequency_sources(monkeypatch):
+    now = _now()
+    with _session() as session:
+        _account(session)
+        state = TgAccountOnlineState(
+            tenant_id=1,
+            account_id=101,
+            desired_online=True,
+            desired_sources=[{"source_type": "task", "source_id": "ai-paused", "keepalive_mode": "low_frequency"}],
+            online_status="warming",
+            next_probe_at=now - timedelta(seconds=1),
+        )
+        session.add(state)
+        session.commit()
+
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda _session, _account: object())
+        monkeypatch.setattr(
+            "app.services.account_online_probe.gateway.check_account_health",
+            lambda _session_ciphertext, _credentials: AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用"),
+        )
+
+        assert probe_due_online_states(session, limit=10, now=now) == 1
+        session.commit()
+
+        assert state.online_status == "online"
+        assert state.next_probe_at > now + ONLINE_PROBE_INTERVAL
 
 
 def test_task_account_online_summary_counts_statuses_and_failure_samples():

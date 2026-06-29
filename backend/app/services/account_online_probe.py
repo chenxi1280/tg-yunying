@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,6 +9,7 @@ from app.models import AccountStatus, TgAccount, TgAccountOnlineState
 from app.services._common import _now, gateway
 from app.services.account_online_constants import (
     ONLINE_LOGIN_REQUIRED_RETRY_AFTER,
+    ONLINE_LOW_FREQUENCY_PROBE_INTERVAL,
     ONLINE_PROBE_FAILURE_RETRY_AFTER,
     ONLINE_PROBE_INTERVAL,
     ONLINE_STALE_AFTER,
@@ -64,7 +65,7 @@ def _mark_probe_online(account: TgAccount, state: TgAccountOnlineState, now: dat
     state.failure_detail = detail
     state.last_seen_at = now
     state.last_probe_at = now
-    state.next_probe_at = now + ONLINE_PROBE_INTERVAL
+    state.next_probe_at = now + _probe_interval_for_state(state)
     state.stale_after_at = now + ONLINE_STALE_AFTER
     state.updated_at = now
 
@@ -91,6 +92,19 @@ def _mark_probe_blocked(state: TgAccountOnlineState, now: datetime, failure_type
     state.last_probe_at = now
     state.next_probe_at = now + ONLINE_PROBE_FAILURE_RETRY_AFTER
     state.updated_at = now
+
+
+def _probe_interval_for_state(state: TgAccountOnlineState) -> timedelta:
+    if _only_low_frequency_sources(state):
+        return ONLINE_LOW_FREQUENCY_PROBE_INTERVAL
+    return ONLINE_PROBE_INTERVAL
+
+
+def _only_low_frequency_sources(state: TgAccountOnlineState) -> bool:
+    sources = state.desired_sources if isinstance(state.desired_sources, list) else []
+    if not sources:
+        return False
+    return all(isinstance(source, dict) and source.get("keepalive_mode") == "low_frequency" for source in sources)
 
 
 __all__ = ["probe_due_online_states"]

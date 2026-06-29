@@ -13,9 +13,9 @@ from app.services.account_online_constants import ONLINE_STALE_AFTER
 from app.services.account_online_probe import probe_due_online_states
 from app.timezone import as_beijing
 
-ONLINE_TASK_STATUSES = {"running"}
+ONLINE_TASK_STATUSES = {"running", "paused"}
 ONLINE_AVAILABLE_STATUSES = {"online", "warming", "recovering"}
-
+LOW_FREQUENCY_KEEPALIVE = "low_frequency"
 
 def reconcile_account_online_sources(
     session: Session,
@@ -197,10 +197,10 @@ def _group_ai_task_sources(session: Session, task: Task) -> list[dict[str, Any]]
     config = task.type_config if isinstance(task.type_config, dict) else {}
     target_group_id = _as_int(config.get("target_group_id"))
     accounts = _configured_online_accounts(session, task.tenant_id, task.account_config or {}, target_group_id)
-    sources = [_source_for_account("task", task.id, account) for account in accounts]
+    sources = [_task_source_for_account(task, task.id, account) for account in accounts]
     history_account = _active_session_account(session, task.tenant_id, _as_int(config.get("history_fetch_account_id")))
     if history_account:
-        sources.append(_source_for_account("task", f"{task.id}:history", history_account))
+        sources.append(_task_source_for_account(task, f"{task.id}:history", history_account))
     return sources
 
 
@@ -209,10 +209,10 @@ def _group_relay_task_sources(session: Session, task: Task) -> list[dict[str, An
     sources: list[dict[str, Any]] = []
     for source_id in _relay_source_group_ids(config):
         monitor_accounts = _relay_monitor_accounts(session, task, config, source_id)
-        sources.extend(_source_for_account("task", f"{task.id}:source:{source_id}", account) for account in monitor_accounts)
+        sources.extend(_task_source_for_account(task, f"{task.id}:source:{source_id}", account) for account in monitor_accounts)
     for target_id in _relay_target_group_ids(config):
         accounts = _relay_target_accounts(session, task, config, target_id)
-        sources.extend(_source_for_account("task", f"{task.id}:target:{target_id}", account) for account in accounts)
+        sources.extend(_task_source_for_account(task, f"{task.id}:target:{target_id}", account) for account in accounts)
     return sources
 
 
@@ -222,7 +222,7 @@ def _desired_accounts_from_sources(sources: list[dict[str, Any]]) -> dict[int, d
         for account_id in source.get("account_ids", []):
             meta = desired.setdefault(int(account_id), {"sources": [], "active_task_count": 0})
             meta["sources"].append(_source_ref(source))
-            if source.get("source_type") == "task":
+            if source.get("source_type") == "task" and source.get("keepalive_mode") != LOW_FREQUENCY_KEEPALIVE:
                 meta["active_task_count"] += 1
             _copy_probe_meta(meta, source)
     return desired
@@ -361,6 +361,13 @@ def _source_for_account(source_type: str, source_id: str, account: TgAccount) ->
     }
 
 
+def _task_source_for_account(task: Task, source_id: str, account: TgAccount) -> dict[str, Any]:
+    source = _source_for_account("task", source_id, account)
+    if task.status == "paused":
+        source["keepalive_mode"] = LOW_FREQUENCY_KEEPALIVE
+    return source
+
+
 def _dedupe_source_refs(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, int]] = set()
     result: list[dict[str, Any]] = []
@@ -394,10 +401,13 @@ def _as_int_list(value: Any) -> list[int]:
 
 
 def _source_ref(source: dict[str, Any]) -> dict[str, str]:
-    return {
+    ref = {
         "source_type": str(source.get("source_type") or "global"),
         "source_id": str(source.get("source_id") or "global"),
     }
+    if source.get("keepalive_mode"):
+        ref["keepalive_mode"] = str(source["keepalive_mode"])
+    return ref
 
 
 def _copy_probe_meta(meta: dict[str, Any], source: dict[str, Any]) -> None:
