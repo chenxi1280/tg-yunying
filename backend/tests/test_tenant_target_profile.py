@@ -9,9 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram.contracts import GroupMessageSnapshot
-from app.models import ChannelMessage, GroupContextMessage, OperationTarget, Task, Tenant, TenantLearningProfile, TenantLearningQualityRule, TenantLearningRun, TenantLearningSample, TenantLearningSource, TgAccount, TgGroup, TgGroupAccount
+from app.models import ChannelMessage, ChannelMessageComment, GroupContextMessage, OperationTarget, Task, Tenant, TenantLearningProfile, TenantLearningQualityRule, TenantLearningRun, TenantLearningSample, TenantLearningSource, TgAccount, TgGroup, TgGroupAccount
 from app.services.group_listeners import collect_group_context
-from app.services.tenant_learning_samples import record_group_learning_sample
+from app.services.tenant_learning_samples import record_channel_comment_sample, record_group_learning_sample
 from app.services.tenant_target_profile import (
     clear_profile,
     get_target_profile_overview,
@@ -355,6 +355,37 @@ def test_source_history_pull_rejects_managed_context_sender() -> None:
         session.commit()
 
     assert run["sample_count"] == 1
+    assert sample is not None
+    assert sample_status == "rejected"
+    assert reject_reason == "managed_account"
+
+
+def test_channel_comment_learning_rejects_managed_author_identity() -> None:
+    with _session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(OperationTarget(id=31, tenant_id=1, target_type="channel", tg_peer_id="-10031", title="频道"))
+        session.add(TgAccount(id=52, tenant_id=1, phone_masked="+10000000002", display_name="花花", status="在线", username="yy001"))
+        source = TenantLearningSource(tenant_id=1, target_id=31, source_kind="channel")
+        session.add(source)
+        session.add(ChannelMessage(id=41, tenant_id=1, channel_target_id=31, message_id=9101, content_preview="频道消息"))
+        comment = ChannelMessageComment(
+            tenant_id=1,
+            channel_target_id=31,
+            channel_message_id=41,
+            comment_message_id=8101,
+            author_peer_id="account:52",
+            author_username="yy001",
+            author_name="花花",
+            content_preview="这条评论是平台账号发的，不能回流学习",
+        )
+        session.add(comment)
+        session.flush()
+
+        sample = record_channel_comment_sample(session, comment)
+        sample_status = sample.learning_status if sample else ""
+        reject_reason = sample.reject_reason if sample else ""
+        session.commit()
+
     assert sample is not None
     assert sample_status == "rejected"
     assert reject_reason == "managed_account"

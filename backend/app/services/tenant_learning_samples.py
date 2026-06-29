@@ -78,7 +78,7 @@ def record_channel_comment_sample(session: Session, comment: ChannelMessageComme
         sender_username=comment.author_username,
         sender_name=comment.author_name,
         is_bot=comment.is_bot,
-        is_managed=False,
+        is_managed=_is_managed_comment_author(session, comment),
         is_media=False,
         sent_at=comment.published_at,
     )
@@ -318,6 +318,29 @@ def _managed_group_sender_keys(session: Session, group: TgGroup) -> set[str]:
         username = str(account.username or "").strip().lower().lstrip("@")
         if username:
             keys.add(username)
+    return {key for key in keys if key}
+
+
+def _is_managed_comment_author(session: Session, comment: ChannelMessageComment) -> bool:
+    sender_values = {
+        str(comment.author_peer_id or "").strip().lower(),
+        str(comment.author_name or "").strip().lower(),
+        str(comment.author_username or "").strip().lower().lstrip("@"),
+    }
+    rows = session.scalars(
+        select(TgAccount).where(
+            TgAccount.tenant_id == comment.tenant_id,
+            TgAccount.deleted_at.is_(None),
+        )
+    )
+    return any(sender_values & _account_identity_keys(account) for account in rows)
+
+
+def _account_identity_keys(account: TgAccount) -> set[str]:
+    keys = {str(account.id), f"account:{account.id}", str(account.display_name or "").strip().lower()}
+    username = str(account.username or "").strip().lower().lstrip("@")
+    if username:
+        keys.add(username)
     return {key for key in keys if key}
 
 
