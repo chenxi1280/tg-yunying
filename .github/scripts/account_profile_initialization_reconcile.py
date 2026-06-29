@@ -8,7 +8,7 @@ from collections import Counter
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.models import AccountStatus, Material, TgAccount
+from app.models import AccountStatus, AiAccountVoiceProfile, Material, TgAccount
 from app.services.account_profile_auto_init import profile_is_ready, queue_profile_initialization_for_accounts
 
 
@@ -23,12 +23,12 @@ def main() -> int:
     before = _inspect_accounts()
     result = None
     processed = 0
-    if APPLY and before["not_ready_count"]:
+    if APPLY and _should_apply_reconcile(before):
         with SessionLocal() as session:
             result = queue_profile_initialization_for_accounts(
                 session,
                 tenant_id=TENANT_ID,
-                account_ids=before["not_ready_account_ids"],
+                account_ids=_reconcile_account_ids(before),
                 actor="github-actions",
                 reason="生产账号资料初始化补齐：全量检查后自动创建",
             )
@@ -54,16 +54,45 @@ def main() -> int:
 def _inspect_accounts() -> dict[str, object]:
     with SessionLocal() as session:
         accounts = _active_accounts(session)
+        missing_voice_ids = _missing_voice_profile_account_ids(session, accounts)
         samples = [_account_summary(account) for account in accounts if not profile_is_ready(account)]
         return {
             "active_account_count": len(accounts),
             "ready_count": len(accounts) - len(samples),
             "not_ready_count": len(samples),
             "not_ready_account_ids": [item["account_id"] for item in samples],
+            "missing_voice_profile_count": len(missing_voice_ids),
+            "missing_voice_profile_account_ids": missing_voice_ids,
             "not_ready_reason_counts": dict(Counter(reason for item in samples for reason in item["reasons"])),
             "not_ready_samples": samples[:MAX_SAMPLE],
             "avatar_materials": _avatar_material_summary(session),
         }
+
+
+def _should_apply_reconcile(before: dict[str, object]) -> bool:
+    return bool(int(before.get("not_ready_count") or 0) or int(before.get("missing_voice_profile_count") or 0))
+
+
+def _reconcile_account_ids(before: dict[str, object]) -> list[int]:
+    raw_ids = list(before.get("not_ready_account_ids") or []) + list(before.get("missing_voice_profile_account_ids") or [])
+    return list(dict.fromkeys(int(account_id) for account_id in raw_ids))
+
+
+def _missing_voice_profile_account_ids(session, accounts: list[TgAccount]) -> list[int]:
+    account_ids = [account.id for account in accounts]
+    if not account_ids:
+        return []
+    ready_ids = set(
+        session.scalars(
+            select(AiAccountVoiceProfile.account_id).where(
+                AiAccountVoiceProfile.tenant_id == TENANT_ID,
+                AiAccountVoiceProfile.account_id.in_(account_ids),
+                AiAccountVoiceProfile.status == "active",
+                AiAccountVoiceProfile.quality_status == "active",
+            )
+        )
+    )
+    return [account_id for account_id in account_ids if account_id not in ready_ids]
 
 
 def _active_accounts(session) -> list[TgAccount]:

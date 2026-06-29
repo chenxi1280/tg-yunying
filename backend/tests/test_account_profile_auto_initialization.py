@@ -143,3 +143,24 @@ def test_login_does_not_queue_profile_initialization_when_profile_is_ready(monke
 
         batch = session.scalar(select(TgAccountSecurityBatch))
         assert batch is None
+
+
+def test_profile_reconcile_script_applies_when_only_voice_profiles_are_missing():
+    from importlib.util import module_from_spec, spec_from_file_location
+    from pathlib import Path
+
+    script_path = Path(__file__).resolve().parents[2] / ".github/scripts/account_profile_initialization_reconcile.py"
+    spec = spec_from_file_location("account_profile_initialization_reconcile", script_path)
+    assert spec and spec.loader
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    before = {
+        "not_ready_count": 0,
+        "not_ready_account_ids": [],
+        "missing_voice_profile_count": 2,
+        "missing_voice_profile_account_ids": [11, 12],
+    }
+
+    assert module._should_apply_reconcile(before)
+    assert module._reconcile_account_ids(before) == [11, 12]

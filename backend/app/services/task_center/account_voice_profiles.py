@@ -16,6 +16,7 @@ from app.services.task_center.account_voice_profile_search import filter_voice_p
 
 GENERIC_SUMMARY_TERMS = {"自然", "随意", "真实", "像真人"}
 VOICE_PROFILE_AI_TIMEOUT_SECONDS = 45
+VOICE_PROFILE_BATCH_SIZE = 30
 EDITABLE_PROFILE_FIELDS = {
     "age_band", "persona_experiences", "consumption_experiences", "sentence_length", "interaction_habits",
     "tone_strength", "lexical_preferences", "emoji_policy", "forbidden_expressions", "short_prompt_summary",
@@ -237,15 +238,22 @@ def _batch_insert_generated(
     generator: Callable[[list[int]], list[dict[str, Any]]],
     actor: str,
 ) -> int:
-    profiles, diversity_scores = generate_diverse_voice_profile_batch(generator, account_ids)
-    for account_id in account_ids:
-        profile = profiles.get(account_id)
-        row = _profile_from_generated(tenant_id, account_id, profile, _valid_summary(profile, account_id))
-        row.similarity_score = diversity_scores.get(account_id)
-        session.add(row)
-        _audit(session, tenant_id, actor, "批量生成账号表达卡", account_id, f"version={row.version}")
+    created = 0
+    for chunk in _chunked_account_ids(account_ids):
+        profiles, diversity_scores = generate_diverse_voice_profile_batch(generator, chunk)
+        for account_id in chunk:
+            profile = profiles.get(account_id)
+            row = _profile_from_generated(tenant_id, account_id, profile, _valid_summary(profile, account_id))
+            row.similarity_score = diversity_scores.get(account_id)
+            session.add(row)
+            _audit(session, tenant_id, actor, "批量生成账号表达卡", account_id, f"version={row.version}")
+            created += 1
     session.flush()
-    return len(account_ids)
+    return created
+
+
+def _chunked_account_ids(account_ids: list[int]) -> list[list[int]]:
+    return [account_ids[index:index + VOICE_PROFILE_BATCH_SIZE] for index in range(0, len(account_ids), VOICE_PROFILE_BATCH_SIZE)]
 
 
 def _search_accounts(session: Session, tenant_id: int, search: str) -> list[TgAccount]:
@@ -492,7 +500,7 @@ def _profile_from_generated(
     )
 
 __all__ = [
-    "batch_rebuild_voice_profiles", "ensure_voice_profiles_for_accounts", "generate_voice_profiles_with_ai",
+    "VOICE_PROFILE_BATCH_SIZE", "batch_rebuild_voice_profiles", "ensure_voice_profiles_for_accounts", "generate_voice_profiles_with_ai",
     "group_stance_summaries", "list_voice_profiles", "patch_voice_profile", "rebuild_voice_profile",
     "upsert_group_stance_memory", "voice_profile_prompt_details", "voice_profile_prompt_summaries",
 ]

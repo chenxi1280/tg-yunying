@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AuditLog, TgAccount
 from app.services.task_center.account_voice_profiles import (
+    VOICE_PROFILE_BATCH_SIZE,
     batch_rebuild_voice_profiles,
     list_voice_profiles,
     patch_voice_profile,
@@ -114,6 +115,45 @@ def test_ensure_voice_profiles_uses_batch_generator_and_rejects_generic_summary(
             101: "青年短句，爱追问价格，少表情，偶尔说我看看",
             102: "中年中句，谨慎补经历，偶尔轻吐槽，不用表情",
         }
+
+
+def test_ensure_voice_profiles_splits_large_generation_batches():
+    account_ids = list(range(1000, 1000 + VOICE_PROFILE_BATCH_SIZE + 2))
+    calls: list[list[int]] = []
+    habits = ["追问价格", "补充体验", "吐槽排队", "爱问位置", "只接半句", "喜欢附和", "先观望", "爱问照片"]
+    words = ["我看看", "别急", "稳点", "有谱", "空了说", "别跑空", "试过", "还行"]
+    summaries = {
+        account_id: "".join(chr(0x4E00 + ((account_id * 37 + index * 97) % 1800)) for index in range(18))
+        for account_id in account_ids
+    }
+
+    def generator(ids: list[int]) -> list[dict]:
+        calls.append(ids)
+        return [
+            {
+                "account_id": account_id,
+                "age_band": "青年" if account_id % 2 else "中年",
+                "sentence_length": "短句" if account_id % 3 else "中句",
+                "interaction_habits": [habits[account_id % len(habits)], "少发表情"],
+                "tone_strength": "轻松" if account_id % 5 else "谨慎",
+                "lexical_preferences": [words[account_id % len(words)], str(account_id)],
+                "emoji_policy": "少用" if account_id % 7 else "不用表情",
+                "forbidden_expressions": ["确实不错"],
+                "short_prompt_summary": summaries[account_id],
+            }
+            for account_id in ids
+        ]
+
+    with _session() as session:
+        for account_id in account_ids:
+            _account(session, account_id, f"账号{account_id}")
+
+        created = ensure_voice_profiles_for_accounts(session, tenant_id=1, account_ids=account_ids, generator=generator)
+        session.commit()
+
+        assert created == len(account_ids)
+        assert [len(call) for call in calls] == [VOICE_PROFILE_BATCH_SIZE, 2]
+        assert session.scalar(select(func.count(AiAccountVoiceProfile.id))) == len(account_ids)
 
 
 def test_ensure_voice_profiles_rejects_vague_summary():
