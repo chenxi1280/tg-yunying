@@ -4565,9 +4565,9 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
     def fake_generate_drafts(_credentials, _prompt, **_kwargs):
         generated["count"] += 1
         contents = [
-            "reset ai 我先问下大家现在聊哪块。",
-            "换个角度问一句，群里现在有人在吗。",
-            "顺手接一句，这个话题先听你们说。",
+            "reset ai 先问下群里现在聊哪块。",
+            "有人在的话我跟着看一眼。",
+            "我先蹲会儿，等你们说。",
         ]
         count = int(_kwargs.get("count") or 1)
         candidates = []
@@ -4598,6 +4598,7 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
                 "topic_directions": [{"title": "reset ai", "weight": 1}],
                 "participation_rate": 1,
                 "participation_jitter": 0,
+                "messages_per_round_mode": "manual",
                 "messages_per_round": 1,
             },
         )
