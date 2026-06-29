@@ -1943,9 +1943,26 @@ export default function TaskCenterView({
     { title: '角色', dataIndex: 'account_role', width: 140 },
     { title: '账号记忆', dataIndex: 'account_memory', width: 260, ellipsis: true, render: (value) => value || '-' },
     { title: '长期画像', dataIndex: 'account_profile', width: 260, ellipsis: true, render: (value) => value || '-' },
+    {
+      title: '表达卡',
+      key: 'voice_profile',
+      width: 260,
+      ellipsis: true,
+      render: (_, turn) => turn.account_voice_profile_summary
+        ? `v${turn.account_voice_profile_version || 0} / ${turn.account_voice_profile_match_score || 0} / ${turn.account_voice_profile_summary}`
+        : '-',
+    },
+    {
+      title: '立场/记忆',
+      key: 'stance_memory',
+      width: 260,
+      ellipsis: true,
+      render: (_, turn) => turn.stance_summary || turn.ai_message_memory_id || '-',
+    },
     { title: '话题脉络', dataIndex: 'topic_thread', width: 280, ellipsis: true, render: (value) => value || '-' },
     { title: '话题计划', dataIndex: 'topic_plan', width: 280, ellipsis: true, render: (value) => value || '-' },
     { title: '意图', dataIndex: 'intent', width: 140 },
+    { title: '类型', dataIndex: 'act_type', width: 120, render: (value) => value || '-' },
     {
       title: '引用回复',
       key: 'reply_target',

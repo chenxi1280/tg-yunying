@@ -2224,6 +2224,19 @@ def test_task_center_ai_generation_records_show_generation_source():
     assert "bootstrap: '冷启动'" in view
 
 
+def test_task_center_ai_turns_show_voice_profile_and_memory_fields():
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+
+    assert "account_voice_profile_version: number" in types
+    assert "account_voice_profile_summary: string" in types
+    assert "stance_summary: string" in types
+    assert "ai_message_memory_id: string" in types
+    assert "表达卡" in view
+    assert "立场/记忆" in view
+    assert "act_type" in view
+
+
 def test_task_center_create_refreshes_after_long_timeout_and_capacity_summary_types():
     view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()

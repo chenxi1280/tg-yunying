@@ -101,7 +101,7 @@ export default function TelegramBotSettingsView({ tenants, botSettings, canManag
   return (
     <Card className="panel" title="TG Bot 配置" extra={<Typography.Text type="secondary">运营空间全局生效</Typography.Text>}>
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        <Typography.Paragraph type="secondary">先完成租户级 Bot 配置，再在 AI 活群任务详情或 TG bot 内设置话题、老师和连发策略。</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">先完成租户级 Bot 配置，再在 AI 活群任务详情或 TG bot 内设置话题方向和讨论老师。</Typography.Paragraph>
         <div className="cards-grid developer-grid">
           {tenants.map((tenant) => (
             <TenantBotCard

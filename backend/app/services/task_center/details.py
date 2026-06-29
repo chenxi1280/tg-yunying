@@ -762,34 +762,58 @@ def _ai_cycles(actions: list[Action]) -> list[dict[str, Any]]:
                 "turns": [],
             },
         )
-        item["turns"].append(
-            {
-                "action_id": action.id,
-                "turn_index": int(payload.get("turn_index") or len(item["turns"]) + 1),
-                "account_id": action.account_id,
-                "account_role": str(payload.get("account_role") or ""),
-                "account_memory": str(payload.get("account_memory") or ""),
-                "account_profile": str(payload.get("account_profile") or ""),
-                "topic_thread": str(payload.get("topic_thread") or ""),
-                "topic_plan": str(payload.get("topic_plan") or ""),
-                "intent": str(payload.get("intent") or ""),
-                "generation_source": _generation_source_from_payload(payload),
-                "content": str(payload.get("message_text") or ""),
-                "reply_to_message_id": int(payload.get("reply_to_message_id")) if payload.get("reply_to_message_id") else None,
-                "reply_target_label": str(payload.get("reply_target_label") or ""),
-                "reply_target_author": str(payload.get("reply_target_author") or ""),
-                "reply_target_preview": str(payload.get("reply_target_preview") or ""),
-                "reply_target_source": str(payload.get("reply_target_source") or ""),
-                "status": action.status,
-                "scheduled_at": action.scheduled_at,
-                "executed_at": action.executed_at,
-                "result": action.result or {},
-            }
-        )
+        item["turns"].append(_ai_turn_payload(action, payload, len(item["turns"]) + 1))
         _group_stats_inc(item["stats"], action.status)
     for item in cycles.values():
         item["turns"].sort(key=lambda row: (row["turn_index"], row["scheduled_at"]))
     return sorted(cycles.values(), key=lambda item: item["cycle_id"])
+
+
+def _payload_int(payload: dict[str, Any], key: str) -> int:
+    try:
+        return int(payload.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _payload_optional_int(payload: dict[str, Any], key: str) -> int | None:
+    value = _payload_int(payload, key)
+    return value or None
+
+
+def _ai_turn_payload(action: Action, payload: dict[str, Any], default_turn_index: int) -> dict[str, Any]:
+    return {
+        "action_id": action.id,
+        "turn_index": _payload_int(payload, "turn_index") or default_turn_index,
+        "account_id": action.account_id,
+        "account_role": str(payload.get("account_role") or ""),
+        "account_memory": str(payload.get("account_memory") or ""),
+        "account_profile": str(payload.get("account_profile") or ""),
+        "account_voice_profile_version": _payload_int(payload, "account_voice_profile_version"),
+        "account_voice_profile_summary": str(payload.get("account_voice_profile_summary") or ""),
+        "account_voice_profile_match_score": _payload_int(payload, "account_voice_profile_match_score"),
+        "account_voice_profile_match_reason": str(payload.get("account_voice_profile_match_reason") or ""),
+        "stance_summary": str(payload.get("stance_summary") or ""),
+        "topic_thread": str(payload.get("topic_thread") or ""),
+        "topic_plan": str(payload.get("topic_plan") or ""),
+        "intent": str(payload.get("intent") or ""),
+        "act_type": str(payload.get("act_type") or ""),
+        "generation_source": _generation_source_from_payload(payload),
+        "quality_decision": str(payload.get("human_quality_decision") or ""),
+        "quality_fallback": str(payload.get("quality_fallback") or ""),
+        "ai_message_memory_id": str(payload.get("ai_message_memory_id") or ""),
+        "semantic_cluster": str(payload.get("semantic_cluster") or ""),
+        "content": str(payload.get("message_text") or ""),
+        "reply_to_message_id": _payload_optional_int(payload, "reply_to_message_id"),
+        "reply_target_label": str(payload.get("reply_target_label") or ""),
+        "reply_target_author": str(payload.get("reply_target_author") or ""),
+        "reply_target_preview": str(payload.get("reply_target_preview") or ""),
+        "reply_target_source": str(payload.get("reply_target_source") or ""),
+        "status": action.status,
+        "scheduled_at": action.scheduled_at,
+        "executed_at": action.executed_at,
+        "result": action.result or {},
+    }
 
 
 def _ai_generation_records(actions: list[Action]) -> list[dict[str, Any]]:

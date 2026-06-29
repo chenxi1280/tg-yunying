@@ -821,11 +821,19 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
                     executed_at=now_value,
                     payload={
                         "message_text": "花花这个服务我上次看反馈还行",
+                        "cycle_id": "cycle-1",
                         "ai_generation_id": "cycle-1",
                         "ai_generation_count": 8,
                         "generation_source": "human_context",
                         "human_quality_decision": "accepted",
                         "act_type": "experience",
+                        "account_voice_profile_version": 3,
+                        "account_voice_profile_summary": "青年号，短句追问，少用表情",
+                        "account_voice_profile_match_score": 86,
+                        "account_voice_profile_match_reason": "voice_profile_matched",
+                        "stance_summary": "前面认可花花服务，后续保持谨慎夸",
+                        "ai_message_memory_id": "memory-quality-ok",
+                        "semantic_cluster": "huahua_service_feedback",
                     },
                 ),
                 Action(
@@ -922,6 +930,18 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
         assert funnel["samples"]["profile_low_match"][0]["action_id"] == "quality-profile-low"
         assert funnel["samples"]["voice_profile_mismatch"][0]["content"] == "😀😀"
         assert detail["ai_generation_records"][0]["generation_source"] == "human_context"
+        cycles, total_cycles = task_service.list_ai_cycles_page(session, 1, task.id)
+        assert total_cycles == 1
+        turn = cycles[0]["turns"][0]
+        assert turn["generation_source"] == "human_context"
+        assert turn["act_type"] == "experience"
+        assert turn["account_voice_profile_version"] == 3
+        assert turn["account_voice_profile_summary"] == "青年号，短句追问，少用表情"
+        assert turn["account_voice_profile_match_score"] == 86
+        assert turn["account_voice_profile_match_reason"] == "voice_profile_matched"
+        assert turn["stance_summary"] == "前面认可花花服务，后续保持谨慎夸"
+        assert turn["ai_message_memory_id"] == "memory-quality-ok"
+        assert turn["semantic_cluster"] == "huahua_service_feedback"
         online = detail["account_online_summary"]
         assert online["desired_count"] == 2
         assert online["online_count"] == 1

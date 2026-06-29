@@ -496,7 +496,7 @@ export function TaskCenterDetailModal({
             pagination={{ ...aiCyclePagination, showSizeChanger: true, onChange: (page, pageSize) => onDetailSectionPageChange('aiCycles', page, pageSize) }}
             scroll={{ x: 820 }}
             expandable={{
-              expandedRowRender: (item) => <Table rowKey="action_id" columns={aiTurnColumns} dataSource={item.turns} pagination={false} size="small" scroll={{ x: 1540 }} />,
+              expandedRowRender: (item) => <Table rowKey="action_id" columns={aiTurnColumns} dataSource={item.turns} pagination={false} size="small" scroll={{ x: 2060 }} />,
             }}
           />
         </Space>

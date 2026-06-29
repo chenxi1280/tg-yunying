@@ -35,6 +35,7 @@ def test_prd_permission_vocabulary_for_ai_prompt_and_proxy_controls():
     assert required_permission("POST", "/api/ai-account-voice-profiles/12/rebuild") == ("ai_voice_profiles.manage",)
     assert required_permission("POST", "/api/ai-account-voice-profiles/12/rollback") == ("ai_voice_profiles.manage",)
     assert required_permission("POST", "/api/ai-account-voice-profiles/batch-rebuild") == ("ai_voice_profiles.manage",)
+    assert required_permission("POST", "/api/ai-account-voice-profiles/batch-status") == ("ai_voice_profiles.manage",)
     assert required_permission("POST", "/api/prompt-templates") == ("prompt_templates.manage",)
     assert required_permission("PATCH", "/api/prompt-templates/12") == ("prompt_templates.manage",)
     assert required_permission("POST", "/api/account-proxies") == ("proxies.manage",)

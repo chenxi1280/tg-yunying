@@ -38,6 +38,8 @@ def test_tg_bot_settings_view_has_self_service_fields() -> None:
     assert "测试发送只验证出站 sendMessage" in source
     assert "每行或逗号分隔多个 Telegram 管理员 chat id" in source
     assert "Bot Token 保存后不会明文回显" in source
+    assert "TG bot 内设置话题方向和讨论老师" in source
+    assert "连发策略" not in source
 
 
 def test_task_detail_surfaces_bot_configuration_status() -> None:
