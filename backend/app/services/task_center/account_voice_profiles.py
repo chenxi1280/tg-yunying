@@ -16,7 +16,7 @@ from app.services.task_center.account_voice_profile_search import filter_voice_p
 
 GENERIC_SUMMARY_TERMS = {"自然", "随意", "真实", "像真人"}
 VOICE_PROFILE_AI_TIMEOUT_SECONDS = 45
-VOICE_PROFILE_BATCH_SIZE = 30
+VOICE_PROFILE_BATCH_SIZE = 8
 EDITABLE_PROFILE_FIELDS = {
     "age_band", "persona_experiences", "consumption_experiences", "sentence_length", "interaction_habits",
     "tone_strength", "lexical_preferences", "emoji_policy", "forbidden_expressions", "short_prompt_summary",
