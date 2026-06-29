@@ -16,6 +16,8 @@ from app.services.task_center.account_voice_profile_search import filter_voice_p
 GENERIC_SUMMARY_TERMS = {"自然", "随意", "真实", "像真人"}
 VOICE_PROFILE_AI_TIMEOUT_SECONDS = 45
 VOICE_PROFILE_BATCH_SIZE = 2
+VOICE_PROFILE_INITIAL_MAX_TOKENS = 512
+VOICE_PROFILE_RETRY_MAX_TOKENS = 2048
 EDITABLE_PROFILE_FIELDS = {
     "age_band", "persona_experiences", "consumption_experiences", "sentence_length", "interaction_habits",
     "tone_strength", "lexical_preferences", "emoji_policy", "forbidden_expressions", "short_prompt_summary",
@@ -392,10 +394,10 @@ def _generate_voice_profile_payloads(session: Session, tenant_id: int, account_i
         credentials,
         _voice_profile_prompt(accounts),
         setting.temperature,
-        max(setting.max_tokens, len(accounts) * 220, 900),
+        VOICE_PROFILE_INITIAL_MAX_TOKENS,
         system_prompt="你是账号表达卡生成器，只输出指定格式的纯文本行，不解释。",
         response_format_json=False,
-        reasoning_retry_max_tokens=max(setting.max_tokens, len(accounts) * 320, 1200),
+        reasoning_retry_max_tokens=VOICE_PROFILE_RETRY_MAX_TOKENS,
         timeout=VOICE_PROFILE_AI_TIMEOUT_SECONDS,
     )
     return _parse_voice_profile_payloads(raw, [account.id for account in accounts])

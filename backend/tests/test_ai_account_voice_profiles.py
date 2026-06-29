@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
@@ -7,7 +9,10 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AuditLog, TgAccount
 from app.services.task_center.account_voice_profiles import (
+    VOICE_PROFILE_INITIAL_MAX_TOKENS,
+    VOICE_PROFILE_RETRY_MAX_TOKENS,
     VOICE_PROFILE_BATCH_SIZE,
+    _generate_voice_profile_payloads,
     _parse_voice_profile_payloads,
     batch_rebuild_voice_profiles,
     list_voice_profiles,
@@ -214,6 +219,37 @@ def test_parse_voice_profile_pipe_lines_requires_complete_fields():
 def test_parse_voice_profile_pipe_lines_rejects_incomplete_line():
     with pytest.raises(RuntimeError, match="字段数量错误"):
         _parse_voice_profile_payloads("101|青年|字段太少", [101])
+
+
+def test_generate_voice_profiles_uses_compact_token_budget(monkeypatch):
+    captured: dict[str, int] = {}
+
+    def fake_post(credentials, prompt, temperature, max_tokens, **kwargs):  # noqa: ANN001
+        captured["max_tokens"] = max_tokens
+        captured["reasoning_retry_max_tokens"] = kwargs["reasoning_retry_max_tokens"]
+        return (
+            "101|青年|做过夜场熟客|常点花花老师|短句|先问位置；爱追问照片|轻松|我看看；别跑空|少用|确实不错|"
+            "青年短句先问位置和照片偶尔说别跑空",
+            SimpleNamespace(total_tokens=120),
+        )
+
+    monkeypatch.setattr("app.services.task_center.account_voice_profiles.ai_gateway._post_openai_compatible", fake_post)
+
+    with _session() as session:
+        _account(session, 101, "测试号")
+        profiles = _generate_voice_profile_payloads(
+            session,
+            1,
+            [101],
+            SimpleNamespace(model_name="mimo-v2.5"),
+            SimpleNamespace(temperature=0.7, max_tokens=8192),
+        )
+
+    assert captured == {
+        "max_tokens": VOICE_PROFILE_INITIAL_MAX_TOKENS,
+        "reasoning_retry_max_tokens": VOICE_PROFILE_RETRY_MAX_TOKENS,
+    }
+    assert profiles[0]["account_id"] == "101"
 
 
 def test_ensure_voice_profiles_retries_overly_similar_batch_before_insert():

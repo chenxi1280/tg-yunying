@@ -739,6 +739,45 @@ def test_mimo_image_verification_uses_openai_compatible_image_payload(monkeypatc
     assert result.usage.total_tokens == 14
 
 
+@pytest.mark.no_postgres
+def test_mimo_generation_disables_thinking(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"drafts":[{"sequence_index":1,"persona":"A",'
+                                '"content":"接一句就行","risk_level":"低"}]}'
+                            )
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = AiGateway().generate_drafts(
+        credentials(),
+        "请输出 json drafts",
+        count=1,
+        topic="群聊",
+        tone="自然",
+        persona_set=["A"],
+        temperature=0.1,
+        max_tokens=512,
+    )
+
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
+    assert result.candidates[0].content == "接一句就行"
+
+
 def test_mimo_image_verification_retries_reasoning_only_empty_content(monkeypatch):
     requests: list[dict[str, Any]] = []
     responses = [

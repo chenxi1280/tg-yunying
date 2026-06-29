@@ -382,7 +382,7 @@ class AiGateway:
             "max_tokens": max_tokens,
             "stream": False,
         }
-        if self._is_deepseek(credentials) or self._is_minimax_reasoning_model(credentials):
+        if self._should_disable_thinking(credentials):
             payload["thinking"] = {"type": "disabled"}
         if response_format_json and self._is_deepseek(credentials):
             payload["response_format"] = {"type": "json_object"}
@@ -419,6 +419,13 @@ class AiGateway:
     def _is_mimo(self, credentials: AiProviderCredentials) -> bool:
         text = " ".join([credentials.model_name, credentials.provider_name, credentials.base_url]).lower()
         return "xiaomimimo" in text or "xiaomimino" in text or bool({token for token in re.split(r"[^a-z0-9]+", text) if token} & {"mimo", "mino"})
+
+    def _should_disable_thinking(self, credentials: AiProviderCredentials) -> bool:
+        return (
+            self._is_deepseek(credentials)
+            or self._is_minimax_reasoning_model(credentials)
+            or self._is_mimo(credentials)
+        )
 
     def _extract_message_content(self, data: dict[str, Any]) -> str:
         choice = self._first_choice(data)
