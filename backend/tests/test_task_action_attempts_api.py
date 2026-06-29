@@ -96,6 +96,32 @@ def test_task_actions_page_supports_planned_and_executed_status_groups() -> None
     assert {row["id"] for row in executed_rows} == {"executed-1", "executed-2"}
 
 
+@pytest.mark.no_postgres
+def test_group_ai_actions_page_normalizes_legacy_act_type() -> None:
+    now = _now()
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(Task(id="task-actions-act-type", tenant_id=1, name="AI", type="group_ai_chat", status="running"))
+        session.add(
+            Action(
+                id="legacy-act-type-action",
+                tenant_id=1,
+                task_id="task-actions-act-type",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                status="pending",
+                scheduled_at=now,
+                payload={"group_id": 1, "message_text": "不错", "act_type": "experience"},
+            )
+        )
+        session.commit()
+
+        rows, total = list_actions_page(session, 1, "task-actions-act-type", page=1, page_size=10)
+
+    assert total == 1
+    assert rows[0]["payload"]["act_type"] == "detail_follow"
+
+
 def test_ai_cycle_page_returns_complete_cycle_groups() -> None:
     now = _now()
     with _sqlite_session() as session:

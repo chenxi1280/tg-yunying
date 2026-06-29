@@ -35,7 +35,7 @@
 ```json
 {
   "hard_hourly_target_enabled": true,
-  "hourly_min_messages": 60,
+  "hourly_min_messages": 10,
   "hard_hourly_strategy": "force_planning"
 }
 ```
@@ -152,8 +152,8 @@ AI 活跃群任务高级设置增加“每小时硬目标”区域：
 AI 活跃群任务卡片增加硬目标摘要：
 
 ```text
-本小时硬目标 45 / 60
-缺口 15
+本小时硬目标 7 / 10
+缺口 3
 状态：追赶中 / 已达标 / 未达标
 ```
 
@@ -230,13 +230,13 @@ AI 活跃群任务卡片增加硬目标摘要：
   "hard_hourly_target_enabled": true,
   "hard_hourly_goal": 10,
   "hard_hourly_bucket": "2026-06-07T20:00:00+08:00",
-  "hard_hourly_success_count": 45,
-  "hard_hourly_open_count": 3,
+  "hard_hourly_success_count": 7,
+  "hard_hourly_open_count": 0,
   "hard_hourly_overdue_open_count": 0,
-  "hard_hourly_deficit": 12,
+  "hard_hourly_deficit": 3,
   "hard_hourly_status": "catching_up",
   "hard_hourly_last_check_at": "2026-06-07T20:42:15+08:00",
-  "hard_hourly_last_planned_count": 15,
+  "hard_hourly_last_planned_count": 3,
   "hard_hourly_pipeline": {
     "membership": "ready",
     "verification": "ready",
@@ -246,9 +246,8 @@ AI 活跃群任务卡片增加硬目标摘要：
     "hourly_target": "catching_up"
   },
   "hard_hourly_last_blockers": {
-    "account_capacity": 7,
-    "quality_filter": 3,
-    "tg_rate_limit": 2
+    "account_capacity": 2,
+    "quality_filter": 1
   }
 }
 ```
@@ -270,16 +269,15 @@ AI 活跃群任务卡片增加硬目标摘要：
   "hard_hourly_recent_buckets": [
     {
       "bucket": "2026-06-07T20:00:00+08:00",
-      "goal": 60,
-      "success_count": 45,
-      "future_open_count": 3,
-      "overdue_open_count": 2,
-      "deficit": 12,
+      "goal": 10,
+      "success_count": 7,
+      "future_open_count": 0,
+      "overdue_open_count": 0,
+      "deficit": 3,
       "status": "missed",
       "blockers": {
-        "account_capacity": 7,
-        "quality_filter": 3,
-        "tg_rate_limit": 2
+        "account_capacity": 2,
+        "quality_filter": 1
       }
     }
   ]
@@ -418,7 +416,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 ```json
 {
   "hard_hourly_target_enabled": true,
-  "hourly_min_messages": 60,
+  "hourly_min_messages": 10,
   "hard_hourly_strategy": "force_planning"
 }
 ```
@@ -443,9 +441,9 @@ AI 活跃群任务卡片增加硬目标摘要：
 {
   "hard_hourly_target": {
     "enabled": true,
-    "hourly_min_messages": 60,
-    "estimated_hourly_capacity": 42,
-    "capacity_gap": 18,
+    "hourly_min_messages": 10,
+    "estimated_hourly_capacity": 7,
+    "capacity_gap": 3,
     "warnings": [
       "硬目标高于当前账号容量，可能持续未达标"
     ]
@@ -491,7 +489,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 ### 11.1 后端验收
 
 - 旧任务未配置硬目标时，行为不变。
-- 开启 `hourly_min_messages=60` 后，当前小时成功 + 待执行小于 60 时，planner 创建补量发送动作。
+- 开启 `hourly_min_messages=10` 后，当前小时成功 + 待执行小于 10 时，planner 创建补量发送动作。
 - 补量动作带 `hard_hourly_target=true` 和小时桶。
 - 当前小时达标后，不再继续为硬目标追加动作。
 - 目标群未加入时先生成 / 执行 `ensure_target_membership`，发送动作不会绕过准入阶段。

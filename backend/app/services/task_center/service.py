@@ -41,6 +41,7 @@ from app.services.developer_apps import credentials_for_account
 from app.timezone import as_beijing
 
 from .account_pool import select_task_accounts
+from .ai_act_types import canonical_ai_group_act_type
 from .ai_generator import AiGenerationUnavailable, generate_channel_comments, generate_group_messages
 from .channel_membership import (
     ACTION_TYPE as TARGET_MEMBERSHIP_ACTION_TYPE,
@@ -1847,7 +1848,7 @@ def _action_payload(action: Action, issue: OperationIssue | None = None, account
         "scheduled_at": action.scheduled_at,
         "executed_at": action.executed_at,
         "status": action.status,
-        "payload": action.payload or {},
+        "payload": _observable_action_payload(action),
         "result": result,
         "retry_count": action.retry_count,
         "failure_type": failure_type,
@@ -1860,6 +1861,13 @@ def _action_payload(action: Action, issue: OperationIssue | None = None, account
         "operation_issue_rolled_up": bool(issue),
         "created_at": action.created_at,
     })
+
+
+def _observable_action_payload(action: Action) -> dict[str, Any]:
+    payload = dict(action.payload or {})
+    if action.task_type == "group_ai_chat" and action.action_type == "send_message" and payload.get("act_type"):
+        payload["act_type"] = canonical_ai_group_act_type(str(payload["act_type"]))
+    return payload
 
 
 def _action_failure_type(action: Action) -> str:
