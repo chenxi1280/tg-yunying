@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -26,6 +27,15 @@ TASK_LIMIT = 8
 ACTION_LIMIT = 250
 WORKER_FRESH_MINUTES = 5
 TEXT_PREVIEW_LIMIT = 64
+ONLINE_SETTLE_SECONDS = 300
+ONLINE_SETTLE_POLL_SECONDS = 15
+ONLINE_BLOCK_KEYS = (
+    "stale_count",
+    "missing_state_count",
+    "blocked_count",
+    "relogin_required_count",
+    "offline_count",
+)
 
 
 def iso(value: datetime | None) -> str | None:
@@ -199,6 +209,56 @@ def task_snapshot(session, task: Task, since: datetime) -> dict[str, Any]:
     }
 
 
+def task_snapshots(session, since: datetime) -> list[dict[str, Any]]:
+    return [task_snapshot(session, task, since) for task in active_group_tasks(session)]
+
+
+def online_gate_blockers(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        summary = snapshot.get("online_summary") or {}
+        desired_count = int(summary.get("desired_count") or 0)
+        if desired_count <= 0:
+            continue
+        online_count = int(summary.get("online_count") or 0)
+        counts = {key: int(summary.get(key) or 0) for key in ONLINE_BLOCK_KEYS}
+        non_online_count = max(desired_count - online_count, 0)
+        if non_online_count <= 0 and not any(counts.values()):
+            continue
+        blockers.append(
+            {
+                "task_id": str(snapshot.get("task_id") or ""),
+                "name": str(snapshot.get("name") or ""),
+                "status": str(snapshot.get("status") or ""),
+                "desired_count": desired_count,
+                "online_count": online_count,
+                "non_online_count": non_online_count,
+                **counts,
+            }
+        )
+    return blockers
+
+
+def wait_for_online_gate(session, since: datetime) -> list[dict[str, Any]]:
+    deadline = now_local() + timedelta(seconds=ONLINE_SETTLE_SECONDS)
+    while True:
+        snapshots = task_snapshots(session, since)
+        blockers = online_gate_blockers(snapshots)
+        if not blockers:
+            return snapshots
+        payload = {
+            "remaining_seconds": max(int((deadline - now_local()).total_seconds()), 0),
+            "blocker_count": len(blockers),
+            "blockers": blockers[:TASK_LIMIT],
+        }
+        json_line("AI_GROUP_QUALITY_ONLINE_WAIT", payload)
+        if now_local() >= deadline:
+            json_line("AI_GROUP_QUALITY_ONLINE_GATE_FAILED", payload)
+            raise SystemExit("AI group online quality gate failed")
+        time.sleep(ONLINE_SETTLE_POLL_SECONDS)
+        session.expire_all()
+
+
 def recent_task_actions(session, task_id: str, since: datetime) -> list[Action]:
     return list(
         session.scalars(
@@ -268,8 +328,8 @@ def main() -> None:
         json_line("AI_GROUP_QUALITY_VOICE_PROFILES", voice_profile_snapshot(session))
         json_line("AI_GROUP_QUALITY_MEMORY", memory_status_snapshot(session, captured_at))
         json_line("AI_GROUP_QUALITY_RECENT_ACTIONS", recent_action_duplicate_snapshot(session, since))
-        for task in active_group_tasks(session):
-            json_line("AI_GROUP_QUALITY_TASK", task_snapshot(session, task, since))
+        for snapshot in wait_for_online_gate(session, since):
+            json_line("AI_GROUP_QUALITY_TASK", snapshot)
         json_line("AI_GROUP_QUALITY_DONE", {"captured_at": iso(captured_at), "window_hours": WINDOW_HOURS})
 
 

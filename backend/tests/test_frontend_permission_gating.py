@@ -1963,6 +1963,8 @@ def test_production_ai_hourly_probe_reports_membership_failures():
     assert "AI_GROUP_QUALITY_VOICE_PROFILES" in quality_diagnostics
     assert "AI_GROUP_QUALITY_MEMORY" in quality_diagnostics
     assert "AI_GROUP_QUALITY_RECENT_ACTIONS" in quality_diagnostics
+    assert "AI_GROUP_QUALITY_ONLINE_WAIT" in quality_diagnostics
+    assert "AI_GROUP_QUALITY_ONLINE_GATE_FAILED" in quality_diagnostics
     assert "AI_GROUP_QUALITY_TASK" in quality_diagnostics
 
 

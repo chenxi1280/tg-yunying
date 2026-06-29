@@ -40,7 +40,7 @@ Repository variables:
 `workflow_dispatch` 常用诊断开关：
 
 - `run_production_diagnostics`: 部署后探测 planner drain 和 AI 硬小时任务量。
-- `run_ai_group_quality_diagnostics`: 部署后只读检查 AI 活群质量链路，输出 worker 心跳、账号表达卡覆盖、30 天消息记忆状态、近 24 小时重复文本风险、每个 AI 活群任务的话题 / 讨论老师配置、账号在线摘要、最近 action 的 `ai_message_memory_id` 和表达卡版本。
+- `run_ai_group_quality_diagnostics`: 部署后只读检查 AI 活群质量链路，输出 worker 心跳、账号表达卡覆盖、30 天消息记忆状态、近 24 小时重复文本风险、每个 AI 活群任务的话题 / 讨论老师配置、账号在线摘要、最近 action 的 `ai_message_memory_id` 和表达卡版本。诊断会等待账号在线摘要刷新；仍存在 desired 账号未 online、stale、missing、blocked、需重登或 offline 时输出 `AI_GROUP_QUALITY_ONLINE_GATE_FAILED` 并让 release gate 失败，不能用 worker 存活掩盖账号在线缺口。
 - `reconcile_account_profiles`: 检查并补齐账号资料初始化，同时补齐缺失的 AI 活群账号表达卡；表达卡按小批次调用真实 AI 供应商生成，生成协议使用紧凑 JSONL 并保留旧 pipe 行解析兼容，按提交批次独立落库。批量结构化输出格式错误时，系统会拆成单账号继续请求同一个真实 AI 供应商；单账号仍格式错误、或真实 AI 供应商返回 429 / quota exhausted 时，脚本必须输出 `ACCOUNT_PROFILE_RECONCILE_PROGRESS` / `ACCOUNT_PROFILE_RECONCILE` 结构化进度并让 release gate 失败，下次额度恢复或协议修复后从剩余缺失账号继续跑，不能伪造成功或静默生成通用表达卡。
 - `run_tianjin_diagnostics` / `run_tianjin_blocked_account_diagnostics`: 天津目标群准入和阻塞账号专项诊断。
 
