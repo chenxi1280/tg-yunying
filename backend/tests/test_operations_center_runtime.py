@@ -2695,6 +2695,63 @@ def test_task_settings_update_accepts_group_ai_chat_quality_fields():
     assert config["context_expire_after_messages"] == 25
 
 
+@pytest.mark.no_postgres
+def test_task_settings_update_rejects_legacy_group_ai_topic_hint():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TgGroup(
+                    id=7,
+                    tenant_id=1,
+                    tg_peer_id="-1007",
+                    title="目标群",
+                    auth_status="已授权运营",
+                    can_send=True,
+                ),
+                OperationTarget(
+                    id=21,
+                    tenant_id=1,
+                    target_type="group",
+                    tg_peer_id="-1007",
+                    title="目标群",
+                    can_send=True,
+                    auth_status="已授权运营",
+                ),
+                Task(
+                    id="ai-legacy-topic-settings",
+                    tenant_id=1,
+                    name="郑州楼凤",
+                    type="group_ai_chat",
+                    status="running",
+                    type_config={
+                        "target_group_id": 7,
+                        "topic_directions": [{"title": "郑州楼凤妹子怎么样", "weight": 1}],
+                    },
+                ),
+            ]
+        )
+        session.commit()
+
+        with pytest.raises(ValueError, match="topic_hint"):
+            update_task_settings(
+                session,
+                1,
+                "ai-legacy-topic-settings",
+                TaskSettingsUpdate(topic_hint="旧话题"),
+                "pytest",
+            )
+
+        task = session.get(Task, "ai-legacy-topic-settings")
+        config = dict(task.type_config)
+
+    assert "topic_hint" not in config
+    assert config["topic_directions"] == [{"title": "郑州楼凤妹子怎么样", "weight": 1}]
+
+
 def test_group_executors_resolve_operation_targets_without_normalized_group_ids(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -3632,7 +3689,7 @@ def test_group_ai_chat_bootstraps_without_history(monkeypatch):
                 status="running",
                 account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
                 pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
-                type_config={"target_group_id": 7, "messages_per_round_mode": "auto", "topic_hint": "", "silent_mode_enabled": False, "account_personas": {"101": "欢迎新人账号", "102": "提问型账号"}},
+                type_config={"target_group_id": 7, "messages_per_round_mode": "auto", "silent_mode_enabled": False, "account_personas": {"101": "欢迎新人账号", "102": "提问型账号"}},
             )
         )
         session.commit()
@@ -4038,6 +4095,7 @@ def test_group_ai_chat_invalid_slang_template_sets_visible_error(monkeypatch):
     assert task.last_error == "AI 黑话配置不存在或已禁用"
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -4097,7 +4155,7 @@ def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeyp
                 pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
                 type_config={
                     "target_group_id": 7,
-                    "topic_hint": "DeepSeek V4 续聊",
+                    "topic_directions": [{"title": "DeepSeek V4 续聊", "weight": 1}],
                     "ai_model": "DeepSeek V4 Flash",
                     "messages_per_round_mode": "manual",
                     "messages_per_round": 1,
@@ -4188,7 +4246,7 @@ def _add_minimax_model_override_task(session: Session) -> None:
             pacing_config=_fixed_pacing_config(),
             type_config={
                 "target_group_id": 7,
-                "topic_hint": "Minimax 续聊",
+                "topic_directions": [{"title": "Minimax 续聊", "weight": 1}],
                 "ai_model": "minimax m3",
                 "messages_per_round_mode": "manual",
                 "messages_per_round": 1,
@@ -4219,7 +4277,7 @@ def test_group_ai_chat_without_ai_provider_does_not_create_actions(monkeypatch):
                 status="running",
                 account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
                 pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
-                type_config={"target_group_id": 7, "messages_per_round_mode": "auto", "topic_hint": ""},
+                type_config={"target_group_id": 7, "messages_per_round_mode": "auto"},
             )
         )
         session.commit()
@@ -4282,7 +4340,7 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
                 status="running",
                 account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
                 pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
-                type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 2, "topic_hint": ""},
+                type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 2},
             )
         )
         session.commit()
@@ -4353,7 +4411,7 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
                 status="running",
                 account_config={"selection_mode": "all", "max_concurrent": 20, "cooldown_per_account_minutes": 0},
                 pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0, "jitter_percent": 0},
-                type_config={"target_group_id": 7, "messages_per_round_mode": "auto", "topic_hint": ""},
+                type_config={"target_group_id": 7, "messages_per_round_mode": "auto"},
             )
         )
         session.commit()
