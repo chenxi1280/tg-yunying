@@ -87,6 +87,7 @@ def compact_action_debug(actions: list[dict]) -> list[dict]:
             "scheduled_at": item.get("scheduled_at"),
             "executed_at": item.get("executed_at"),
             "result": item.get("result"),
+            "id": item.get("id"),
             "memory_id": (item.get("payload") or {}).get("ai_message_memory_id"),
             "cycle_id": (item.get("payload") or {}).get("cycle_id"),
             "message": (item.get("payload") or {}).get("message_text"),
@@ -4563,7 +4564,11 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
 
     def fake_generate_drafts(_credentials, _prompt, **_kwargs):
         generated["count"] += 1
-        contents = ["reset ai 今天先聊报名体验。", "重置之后我再问问活动安排。"]
+        contents = [
+            "reset ai 今天先聊报名体验和前台接待细节。",
+            "换个角度问下晚场名额和路口集合安排。",
+            "顺手补一句群里最近有没有临时加钟说法。",
+        ]
         count = int(_kwargs.get("count") or 1)
         candidates = []
         for index in range(count):
