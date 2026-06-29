@@ -9,12 +9,12 @@ from sqlalchemy import func, select
 
 from app.database import SessionLocal
 from app.models import (
+    AccountStatus,
     Action,
     AiAccountVoiceProfile,
     AiGroupMessageMemory,
     Task,
     TgAccount,
-    TgAccountOnlineState,
     WorkerHeartbeat,
 )
 from app.services.account_online_projection import task_account_online_summary
@@ -33,7 +33,19 @@ def iso(value: datetime | None) -> str | None:
 
 
 def json_line(label: str, payload: dict[str, Any] | list[Any]) -> None:
-    print(f"{label}={json.dumps(payload, ensure_ascii=False, sort_keys=True)}", flush=True)
+    print(f"{label}={json.dumps(jsonable(payload), ensure_ascii=False, sort_keys=True)}", flush=True)
+
+
+def jsonable(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return iso(value)
+    if isinstance(value, dict):
+        return {str(key): jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [jsonable(item) for item in value]
+    return value
 
 
 def preview_text(value: object) -> str:
@@ -72,7 +84,7 @@ def voice_profile_snapshot(session) -> dict[str, Any]:
     active_accounts = int(
         session.scalar(
             select(func.count(TgAccount.id)).where(
-                TgAccount.status == "active",
+                TgAccount.status == AccountStatus.ACTIVE.value,
                 TgAccount.deleted_at.is_(None),
             )
         )
@@ -140,7 +152,7 @@ def memory_risk_clusters(session, since: datetime) -> list[dict[str, Any]]:
             func.count(AiGroupMessageMemory.id),
             func.max(AiGroupMessageMemory.raw_text),
         )
-        .where(AiGroupMessageMemory.planned_at >= since, AiGroupMessageMemory.status.in_(("sent", "reserved", "unknown_after_send")))
+        .where(AiGroupMessageMemory.planned_at >= since, AiGroupMessageMemory.status.in_(("success", "reserved", "unknown_after_send")))
         .group_by(AiGroupMessageMemory.group_id, AiGroupMessageMemory.text_fingerprint)
         .having(func.count(AiGroupMessageMemory.id) > 1)
         .order_by(func.count(AiGroupMessageMemory.id).desc())
