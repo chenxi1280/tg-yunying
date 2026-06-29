@@ -4620,7 +4620,7 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
             "generated_count": generated["count"],
         }
         with SessionLocal() as session:
-            past_time = _now() - timedelta(minutes=2)
+            past_time = _now() - timedelta(minutes=10)
             for action in session.scalars(select(Action).where(Action.task_id == task_id)):
                 action.scheduled_at = past_time
                 if action.status == "success":
