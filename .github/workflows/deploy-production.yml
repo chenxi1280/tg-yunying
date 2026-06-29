@@ -441,7 +441,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "ACCOUNT_PROFILE_RECONCILE_START"
-          ssh silicon-valley-production-server 'timeout 300 docker exec -e ACCOUNT_PROFILE_RECONCILE_APPLY=true -e ACCOUNT_PROFILE_RECONCILE_DRAIN_ONCE=true -i tgyunying-backend python -' \
+          ssh silicon-valley-production-server 'timeout 1200 docker exec -e ACCOUNT_PROFILE_RECONCILE_APPLY=true -e ACCOUNT_PROFILE_RECONCILE_DRAIN_ONCE=true -i tgyunying-backend python -' \
             < .github/scripts/account_profile_initialization_reconcile.py
           echo "ACCOUNT_PROFILE_RECONCILE_END"
 
