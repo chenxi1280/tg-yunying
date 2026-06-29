@@ -1351,9 +1351,10 @@ def _used_group_reply_target_ids(session: Session, task: Task, group: TgGroup, c
         return set()
     rows = session.scalars(
         select(Action.payload["reply_to_message_id"].as_integer()).where(
-            Action.task_id == task.id,
+            Action.tenant_id == task.tenant_id,
             Action.task_type == "group_ai_chat",
             Action.action_type == "send_message",
+            Action.status.in_(RECENT_TARGET_USAGE_STATUSES),
             Action.payload["group_id"].as_integer() == group.id,
             Action.payload["reply_to_message_id"].as_integer().in_(candidate_ids),
         )

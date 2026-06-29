@@ -4210,6 +4210,50 @@ def test_group_ai_build_plan_records_memory_duplicate_as_quality_rejection(monke
 
 
 @pytest.mark.no_postgres
+def test_group_ai_reply_target_pool_excludes_targets_used_by_other_tasks():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        group = TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True)
+        session.add(group)
+        task = Task(id="task-current", tenant_id=1, name="当前任务", type="group_ai_chat", status="running")
+        session.add(task)
+        session.add(
+            Action(
+                id="other-task-reply",
+                tenant_id=1,
+                task_id="task-other",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                status="success",
+                payload={"group_id": 7, "reply_to_message_id": 7001, "message_text": "这句接过了"},
+                created_at=now_value - timedelta(minutes=3),
+                executed_at=now_value - timedelta(minutes=3),
+            )
+        )
+        context_row = GroupContextMessage(
+            tenant_id=1,
+            group_id=7,
+            listener_account_id=11,
+            sender_peer_id="9001",
+            sender_name="真人A",
+            content="停车位快没了",
+            message_type="text",
+            remote_message_id="7001",
+            sent_at=now_value,
+        )
+        session.add(context_row)
+        session.commit()
+
+        targets = group_ai_chat._group_reply_target_pool(session, task, group, [context_row])
+
+    assert targets == []
+
+
+@pytest.mark.no_postgres
 def test_group_ai_context_bound_round_limits_far_future_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
