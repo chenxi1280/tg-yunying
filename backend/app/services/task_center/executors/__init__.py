@@ -33,4 +33,12 @@ def build_task_plan(session: Session, task: Task) -> int:
     return executor.build_plan(session, task)
 
 
-__all__ = ["EXECUTORS", "build_task_plan"]
+def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
+    executor = EXECUTORS.get(task.type)
+    prepare = getattr(executor, "prepare_open_actions_for_planning", None)
+    if not prepare:
+        return 0
+    return int(prepare(session, task) or 0)
+
+
+__all__ = ["EXECUTORS", "build_task_plan", "prepare_open_actions_for_planning"]

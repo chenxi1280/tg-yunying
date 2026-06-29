@@ -347,6 +347,66 @@ def test_planner_does_not_exclude_due_ai_open_actions_with_beijing_clock(monkeyp
         assert task.next_run_at == due_at
 
 
+@pytest.mark.no_postgres
+def test_planner_prepares_open_ai_actions_before_skip(monkeypatch):
+    SessionFactory = _session_factory()
+    now_value = _now()
+    built_task_ids: list[str] = []
+
+    def fake_prepare_open_actions(session, task):
+        action = session.get(Action, "action-ai-profileless-open")
+        action.status = "skipped"
+        return 1
+
+    def fake_build_task_plan(_session, task):
+        built_task_ids.append(task.id)
+        return 2
+
+    monkeypatch.setattr(service, "prepare_open_actions_for_planning", fake_prepare_open_actions)
+    monkeypatch.setattr(service, "build_task_plan", fake_build_task_plan)
+
+    with SessionFactory() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            Task(
+                id="task-ai-profileless-open",
+                tenant_id=1,
+                name="天津",
+                type="group_ai_chat",
+                status="running",
+                next_run_at=now_value - timedelta(seconds=1),
+                account_config={},
+                pacing_config={},
+                failure_policy={},
+                type_config={},
+                stats={},
+            )
+        )
+        session.add(
+            Action(
+                id="action-ai-profileless-open",
+                tenant_id=1,
+                task_id="task-ai-profileless-open",
+                task_type="group_ai_chat",
+                action_type="send_message",
+                status="pending",
+                scheduled_at=now_value + timedelta(minutes=1),
+                payload={"chat_id": "-1001", "message_text": "old"},
+                result={},
+            )
+        )
+        session.commit()
+
+    processed, future_open_action_task_ids = service._drain_task_planner(SessionFactory, limit=5, process_type=None)
+
+    assert processed == 3
+    assert built_task_ids == ["task-ai-profileless-open"]
+    assert future_open_action_task_ids == set()
+    with SessionFactory() as session:
+        action = session.get(Action, "action-ai-profileless-open")
+        assert action.status == "skipped"
+
+
 def test_update_task_settings_restarts_running_task_with_business_clock(monkeypatch):
     SessionFactory = _session_factory()
     beijing_now = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=8)

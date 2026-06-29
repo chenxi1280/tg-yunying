@@ -49,7 +49,7 @@ from .channel_membership import (
     mark_channel_membership_joined,
 )
 from .dispatcher import claim_actions, dispatch_action, due_actions, recover_expired_claims, recover_expired_hard_hourly_actions
-from .executors import build_task_plan
+from .executors import build_task_plan, prepare_open_actions_for_planning
 from .details import (
     _accounts_by_id,
     _ai_account_profiles,
@@ -1181,6 +1181,8 @@ def _drain_task_planner(session_factory, *, limit: int, process_type: str | None
                 session.commit()
                 continue
             processed += retry_failed_actions(session, task)
+            prepared_open_actions = prepare_open_actions_for_planning(session, task)
+            processed += prepared_open_actions
             has_open_actions, open_actions_are_future = _open_actions_state(session, task)
             if task.type == "group_ai_chat" and has_open_actions and not hard_hourly_requires_planning(session, task, _now()):
                 if open_actions_are_future:

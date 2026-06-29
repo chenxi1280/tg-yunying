@@ -561,6 +561,33 @@ def build_plan(session: Session, task: Task) -> int:
     return created
 
 
+def prepare_open_actions_for_planning(session: Session, task: Task) -> int:
+    config = {**(task.type_config or {}), "pacing_config": task.pacing_config or {}}
+    config = _canonicalized_task_config(session, task, config)
+    group = group_from_reference(
+        session,
+        task.tenant_id,
+        group_id=int(config.get("target_group_id") or 0) or None,
+        operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
+        require_authorized=False,
+    )
+    if not group:
+        return 0
+    hard_progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
+    hard_progress = hard_progress if int(hard_progress.get("deficit") or 0) > 0 else {}
+    accounts = _select_accounts_for_plan(session, task, group, hard_progress, config)
+    _reconcile_online_sources_for_plan(session, task, accounts)
+    accounts = _online_ready_accounts(session, task, accounts, hard_progress)
+    if not accounts:
+        return 0
+    ready_voice_profiles = voice_profile_prompt_details(
+        session,
+        tenant_id=task.tenant_id,
+        account_ids=[account.id for account in accounts],
+    )
+    return _expire_open_profileless_actions(session, task, ready_voice_profiles.keys())
+
+
 def _canonicalized_task_config(session: Session, task: Task, config: dict) -> dict:
     normalized = normalize_operation_target_references(session, task.tenant_id, task.type, config)
     if normalized != config:
