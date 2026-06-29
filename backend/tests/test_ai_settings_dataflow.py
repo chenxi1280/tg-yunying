@@ -115,3 +115,15 @@ def test_system_config_exposes_ai_account_voice_profile_management_tab():
     assert "批量恢复" in profile_view
     assert "版本历史" in profile_view
     assert "回滚到此版本" in profile_view
+
+
+def test_tenant_ai_modal_uses_selected_model_token_limit():
+    app_modals = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
+    modal_block = app_modals[app_modals.index("modal?.type === 'tenantAiEdit'"):app_modals.index("modal?.type === 'changePassword'")]
+
+    assert "function tenantAiMaxTokensLimit" in app_modals
+    assert "const DEFAULT_AI_MAX_TOKENS_LIMIT = 100000;" in app_modals
+    assert "const MINIMAX_AI_MAX_TOKENS_LIMIT = 250000;" in app_modals
+    assert "const selectedAiProvider = aiProviders.find((provider) => provider.id === selectedAiProviderId);" in app_modals
+    assert "max={tenantAiMaxTokensLimit(selectedAiProvider)}" in modal_block
+    assert "max={8192}" not in modal_block

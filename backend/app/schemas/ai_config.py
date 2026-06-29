@@ -6,6 +6,9 @@ from pydantic import BaseModel, Field
 
 from .api import ApiModel
 
+DEFAULT_AI_MAX_TOKENS_LIMIT = 100000
+MINIMAX_MAX_TOKENS_LIMIT = 250000
+
 
 # ── AI Provider ──
 
@@ -95,7 +98,7 @@ class TenantAiSettingUpdate(BaseModel):
     ai_enabled: bool | None = None
     fallback_to_mock: bool | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)
-    max_tokens: int | None = Field(default=None, ge=128, le=8192)
+    max_tokens: int | None = Field(default=None, ge=128, le=MINIMAX_MAX_TOKENS_LIMIT)
 
 
 class TenantAiSettingOut(ApiModel):

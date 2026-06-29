@@ -191,7 +191,10 @@ def patch_tenant_ai_settings(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> TenantAiSetting:
     require_core_feature_access(current_user)
-    return update_tenant_ai_setting(session, resolve_tenant_id(current_user, tenant_id), payload, current_user.name)
+    try:
+        return update_tenant_ai_setting(session, resolve_tenant_id(current_user, tenant_id), payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ── AI Account Voice Profiles ──

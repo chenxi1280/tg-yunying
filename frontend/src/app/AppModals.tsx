@@ -5,8 +5,18 @@ import { FormActions, StatusBadge } from './components/shared';
 import { AccountDetailModal, AccountPoolDetailModal } from './views/AccountModals';
 import { formatBeijingDateTime } from './time';
 import { hasPermission } from './utils';
+import type { AiProvider } from './types/content';
+
+const DEFAULT_AI_MAX_TOKENS_LIMIT = 100000;
+const MINIMAX_AI_MAX_TOKENS_LIMIT = 250000;
 
 const accountPhone = (account: { phone_number?: string | null; phone_masked: string }) => account.phone_number || account.phone_masked;
+
+function tenantAiMaxTokensLimit(provider?: AiProvider | null) {
+  if (!provider) return DEFAULT_AI_MAX_TOKENS_LIMIT;
+  const text = `${provider.provider_name} ${provider.base_url} ${provider.model_name}`.toLowerCase();
+  return text.includes('minimax') || text.includes('minimaxi') ? MINIMAX_AI_MAX_TOKENS_LIMIT : DEFAULT_AI_MAX_TOKENS_LIMIT;
+}
 
 function riskControlReturnSearch(search: string) {
   const source = new URLSearchParams(search);
@@ -118,6 +128,7 @@ export function AppModals() {
     // Misc
     openAccountCreate, openAccountDetail, openConfirm, accountContacts, accountName, groupName, busy, isActionPending, currentUser,
   } = ctx;
+  const selectedAiProvider = aiProviders.find((provider) => provider.id === selectedAiProviderId);
 
   if (!modal) return null;
   const isManualVerificationTask = modal.type === 'verificationTaskDetail' && modal.payload.suggested_action === '人工处理';
@@ -281,7 +292,7 @@ export function AppModals() {
           <div className="policy-grid">
             <label>默认模型<Select<number | ''> value={selectedAiProviderId || ''} disabled={!aiProviders.length} onChange={(value) => setSelectedAiProviderId(Number(value) || '')} options={aiProviders.length ? aiProviders.map((provider) => ({ value: provider.id, label: `${provider.provider_name} / ${provider.model_name}` })) : [{ value: '', label: '请先新增 AI 供应商' }]} /></label>
             <label>温度<InputNumber min={0} max={2} step={0.1} value={tenantAiSetting.temperature} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, temperature: Number(value ?? 0) })} /></label>
-            <label>最大 Token<InputNumber min={128} max={8192} value={tenantAiSetting.max_tokens} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, max_tokens: Number(value ?? 128) })} /></label>
+            <label>最大 Token<InputNumber min={128} max={tenantAiMaxTokensLimit(selectedAiProvider)} value={tenantAiSetting.max_tokens} onChange={(value) => setTenantAiSetting({ ...tenantAiSetting, max_tokens: Number(value ?? 128) })} /></label>
             <Checkbox checked={tenantAiSetting.ai_enabled} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, ai_enabled: event.target.checked })}>启用 AI 内容生成</Checkbox>
             <Checkbox checked={tenantAiSetting.fallback_to_mock} onChange={(event) => setTenantAiSetting({ ...tenantAiSetting, fallback_to_mock: event.target.checked })}>失败回退模板</Checkbox>
           </div>

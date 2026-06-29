@@ -59,10 +59,12 @@ from app.schemas import (
 from app.schemas.ai_config import (
     CacheChannelConfigOut,
     CacheExecutionAccountOut,
+    DEFAULT_AI_MAX_TOKENS_LIMIT,
     MaterialCacheConfigOut,
     MaterialCacheErrorItem,
     MaterialCacheHealthOut,
     MaterialCacheStatusCount,
+    MINIMAX_MAX_TOKENS_LIMIT,
     MaterialGroupCreate,
     MaterialGroupOut,
     MaterialGroupUpdate,
@@ -478,6 +480,8 @@ def get_tenant_ai_setting(session: Session, tenant_id: int) -> TenantAiSetting:
 def update_tenant_ai_setting(session: Session, tenant_id: int, payload: TenantAiSettingUpdate, actor: str) -> TenantAiSetting:
     setting = get_tenant_ai_setting(session, tenant_id)
     data = payload.model_dump(exclude_unset=True)
+    provider_id = data.get("default_provider_id", setting.default_provider_id)
+    _validate_tenant_ai_token_limit(session, provider_id, data.get("max_tokens"))
     for field in ["default_provider_id", "ai_enabled", "fallback_to_mock", "temperature", "max_tokens"]:
         if field in data:
             setattr(setting, field, data[field])
@@ -486,6 +490,26 @@ def update_tenant_ai_setting(session: Session, tenant_id: int, payload: TenantAi
     session.commit()
     session.refresh(setting)
     return setting
+
+
+def _validate_tenant_ai_token_limit(session: Session, provider_id: int | None, max_tokens: int | None) -> None:
+    if max_tokens is None:
+        return
+    provider = session.get(AiProvider, provider_id) if provider_id else None
+    limit = _tenant_ai_token_limit(provider)
+    if max_tokens > limit:
+        raise ValueError(f"最大 Token 超过当前模型上限：{limit}")
+
+
+def _tenant_ai_token_limit(provider: AiProvider | None) -> int:
+    if provider and _is_minimax_provider(provider):
+        return MINIMAX_MAX_TOKENS_LIMIT
+    return DEFAULT_AI_MAX_TOKENS_LIMIT
+
+
+def _is_minimax_provider(provider: AiProvider) -> bool:
+    text = f"{provider.provider_name} {provider.base_url} {provider.model_name}".lower()
+    return "minimax" in text or "minimaxi" in text
 
 
 def get_scheduling_setting(session: Session, tenant_id: int | None) -> SchedulingSetting:
