@@ -65,8 +65,8 @@ def _upsert_provider(config: MinimaxProviderConfig) -> dict[str, object]:
         if provider is None:
             provider = AiProvider(provider_name="MiniMax", provider_type="openai_compatible")
             session.add(provider)
-            session.flush()
         _apply_provider_config(provider, config)
+        session.flush()
         default_updated = _set_default_provider(session, config.tenant_id, provider.id)
         session.commit()
         session.refresh(provider)

@@ -62,6 +62,35 @@ def test_update_minimax_provider_upserts_checked_provider_without_leaking_key(mo
         assert setting.fallback_to_mock is False
 
 
+def test_update_minimax_provider_creates_configured_provider_before_flush(monkeypatch):
+    module = _load_script()
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    secret_key = "sk-cp-test-secret"
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TenantAiSetting(tenant_id=1, ai_enabled=False, fallback_to_mock=True))
+        session.commit()
+
+    monkeypatch.setenv("MINIMAX_API_KEY", secret_key)
+    monkeypatch.setattr(module, "SessionLocal", session_factory)
+    monkeypatch.setattr(module, "_check_provider", lambda _config: (True, "provider ready"))
+
+    payload = module._upsert_provider(module._config_from_env())
+
+    assert payload["created"] is True
+    assert payload["base_url"] == "https://api.minimaxi.com/v1"
+    assert payload["model_name"] == "MiniMax-M3"
+    with Session(engine) as session:
+        provider = session.scalar(select(AiProvider).where(AiProvider.provider_name == "MiniMax"))
+        assert provider is not None
+        assert provider.base_url == "https://api.minimaxi.com/v1"
+        assert provider.model_name == "MiniMax-M3"
+        assert decrypt_secret(provider.api_key_ciphertext) == secret_key
+
+
 def _load_script():
     path = Path(__file__).resolve().parents[2] / ".github" / "scripts" / "update_minimax_provider.py"
     spec = importlib.util.spec_from_file_location("update_minimax_provider", path)
