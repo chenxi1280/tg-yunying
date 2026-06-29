@@ -172,6 +172,48 @@ def test_profile_reconcile_script_fails_when_voice_profiles_remain_missing():
     module._assert_reconcile_effective(before, after, False)
 
 
+def test_profile_reconcile_script_commits_voice_profiles_per_batch(monkeypatch):
+    module = _load_profile_reconcile_script()
+    committed_batches = []
+
+    class FakeSession:
+        batch = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def commit(self):
+            committed_batches.append(list(self.batch or []))
+
+    def fake_session_factory():
+        return FakeSession()
+
+    def fake_generate_voice_profiles_with_ai(session, *, tenant_id):
+        return object()
+
+    def fake_ensure(session, *, tenant_id, account_ids, generator):
+        if account_ids == [13, 14]:
+            raise RuntimeError("AI provider HTTP 429: quota exhausted")
+        session.batch = list(account_ids)
+        return len(account_ids)
+
+    monkeypatch.setattr(module, "VOICE_PROFILE_COMMIT_CHUNK_SIZE", 2)
+    monkeypatch.setattr(module, "SessionLocal", fake_session_factory)
+    monkeypatch.setattr(module, "generate_voice_profiles_with_ai", fake_generate_voice_profiles_with_ai)
+    monkeypatch.setattr(module, "ensure_voice_profiles_for_accounts", fake_ensure)
+
+    result = module._reconcile_voice_profiles([11, 12, 13, 14])
+
+    assert result["created"] == 2
+    assert result["completed_account_ids"] == [11, 12]
+    assert result["failed_batch_account_ids"] == [13, 14]
+    assert result["error"]["message"] == "AI provider HTTP 429: quota exhausted"
+    assert committed_batches == [[11, 12]]
+
+
 def _load_profile_reconcile_script():
     from importlib.util import module_from_spec, spec_from_file_location
     from pathlib import Path

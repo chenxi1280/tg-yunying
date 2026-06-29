@@ -4,6 +4,7 @@ import json
 import os
 import re
 from collections import Counter
+from typing import Any
 
 from sqlalchemy import select
 
@@ -18,25 +19,20 @@ TENANT_ID = int(os.getenv("ACCOUNT_PROFILE_RECONCILE_TENANT_ID", "1"))
 APPLY = os.getenv("ACCOUNT_PROFILE_RECONCILE_APPLY", "false").lower() in {"1", "true", "yes"}
 DRAIN_ONCE = os.getenv("ACCOUNT_PROFILE_RECONCILE_DRAIN_ONCE", "false").lower() in {"1", "true", "yes"}
 MAX_SAMPLE = 50
+VOICE_PROFILE_COMMIT_CHUNK_SIZE = int(os.getenv("ACCOUNT_PROFILE_RECONCILE_VOICE_COMMIT_CHUNK_SIZE", "2"))
 
 
 def main() -> int:
     before = _inspect_accounts()
     result = None
     processed = 0
-    created_voice_profiles = 0
+    voice_profile_result = _empty_voice_profile_result()
     if APPLY and _should_apply_reconcile(before):
         profile_account_ids = _not_ready_account_ids(before)
         voice_profile_account_ids = _missing_voice_profile_account_ids_from_payload(before)
+        if voice_profile_account_ids:
+            voice_profile_result = _reconcile_voice_profiles(voice_profile_account_ids)
         with SessionLocal() as session:
-            if voice_profile_account_ids:
-                generator = generate_voice_profiles_with_ai(session, tenant_id=TENANT_ID)
-                created_voice_profiles = ensure_voice_profiles_for_accounts(
-                    session,
-                    tenant_id=TENANT_ID,
-                    account_ids=voice_profile_account_ids,
-                    generator=generator,
-                )
             if profile_account_ids:
                 result = queue_profile_initialization_for_accounts(
                     session,
@@ -58,13 +54,66 @@ def main() -> int:
         "worker_processed": processed,
         "before": before,
         "after": after,
-        "created_voice_profiles": created_voice_profiles,
+        "created_voice_profiles": voice_profile_result["created"],
+        "voice_profile_reconcile": voice_profile_result,
         "queued_account_ids": list(result.queued_account_ids) if result else [],
         "batch_ids": list(result.batch_ids) if result else [],
     }
     print("ACCOUNT_PROFILE_RECONCILE=" + json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
-    _assert_reconcile_effective(before, after, APPLY)
+    _assert_reconcile_effective(before, after, APPLY, voice_profile_result.get("error"))
     return 0
+
+
+def _reconcile_voice_profiles(account_ids: list[int]) -> dict[str, object]:
+    result = _empty_voice_profile_result()
+    for batch in _chunks(account_ids, VOICE_PROFILE_COMMIT_CHUNK_SIZE):
+        try:
+            created = _commit_voice_profile_batch(batch)
+        except Exception as exc:  # noqa: BLE001 - print structured progress before failing the gate.
+            result["failed_batch_account_ids"] = batch
+            result["error"] = _error_summary(exc)
+            return result
+        result["created"] = int(result["created"]) + int(created)
+        result["completed_account_ids"].extend(batch)
+        _print_voice_profile_progress(result)
+    return result
+
+
+def _commit_voice_profile_batch(account_ids: list[int]) -> int:
+    with SessionLocal() as session:
+        generator = generate_voice_profiles_with_ai(session, tenant_id=TENANT_ID)
+        created = ensure_voice_profiles_for_accounts(
+            session,
+            tenant_id=TENANT_ID,
+            account_ids=account_ids,
+            generator=generator,
+        )
+        session.commit()
+        return created
+
+
+def _empty_voice_profile_result() -> dict[str, Any]:
+    return {
+        "created": 0,
+        "completed_account_ids": [],
+        "failed_batch_account_ids": [],
+        "commit_chunk_size": VOICE_PROFILE_COMMIT_CHUNK_SIZE,
+        "error": None,
+    }
+
+
+def _print_voice_profile_progress(result: dict[str, object]) -> None:
+    print("ACCOUNT_PROFILE_RECONCILE_PROGRESS=" + json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)
+
+
+def _chunks(values: list[int], size: int) -> list[list[int]]:
+    if size <= 0:
+        raise ValueError("ACCOUNT_PROFILE_RECONCILE_VOICE_COMMIT_CHUNK_SIZE must be positive")
+    return [values[index:index + size] for index in range(0, len(values), size)]
+
+
+def _error_summary(exc: Exception) -> dict[str, str]:
+    return {"type": type(exc).__name__, "message": str(exc)}
 
 
 def _inspect_accounts() -> dict[str, object]:
@@ -102,9 +151,16 @@ def _missing_voice_profile_account_ids_from_payload(before: dict[str, object]) -
     return [int(account_id) for account_id in list(before.get("missing_voice_profile_account_ids") or [])]
 
 
-def _assert_reconcile_effective(before: dict[str, object], after: dict[str, object], apply: bool) -> None:
+def _assert_reconcile_effective(
+    before: dict[str, object],
+    after: dict[str, object],
+    apply: bool,
+    voice_error: object | None = None,
+) -> None:
     if not apply:
         return
+    if voice_error:
+        raise RuntimeError(f"voice profile reconcile failed: {voice_error}")
     before_missing = int(before.get("missing_voice_profile_count") or 0)
     after_missing = int(after.get("missing_voice_profile_count") or 0)
     if before_missing and after_missing:
