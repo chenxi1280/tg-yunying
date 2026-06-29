@@ -146,14 +146,7 @@ def test_login_does_not_queue_profile_initialization_when_profile_is_ready(monke
 
 
 def test_profile_reconcile_script_applies_when_only_voice_profiles_are_missing():
-    from importlib.util import module_from_spec, spec_from_file_location
-    from pathlib import Path
-
-    script_path = Path(__file__).resolve().parents[2] / ".github/scripts/account_profile_initialization_reconcile.py"
-    spec = spec_from_file_location("account_profile_initialization_reconcile", script_path)
-    assert spec and spec.loader
-    module = module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_profile_reconcile_script()
 
     before = {
         "not_ready_count": 0,
@@ -164,3 +157,28 @@ def test_profile_reconcile_script_applies_when_only_voice_profiles_are_missing()
 
     assert module._should_apply_reconcile(before)
     assert module._reconcile_account_ids(before) == [11, 12]
+
+
+def test_profile_reconcile_script_fails_when_voice_profiles_remain_missing():
+    module = _load_profile_reconcile_script()
+
+    before = {"missing_voice_profile_count": 2}
+    after = {"missing_voice_profile_count": 2}
+
+    with pytest.raises(RuntimeError, match="did not complete"):
+        module._assert_reconcile_effective(before, after, True)
+
+    module._assert_reconcile_effective(before, {"missing_voice_profile_count": 0}, True)
+    module._assert_reconcile_effective(before, after, False)
+
+
+def _load_profile_reconcile_script():
+    from importlib.util import module_from_spec, spec_from_file_location
+    from pathlib import Path
+
+    script_path = Path(__file__).resolve().parents[2] / ".github/scripts/account_profile_initialization_reconcile.py"
+    spec = spec_from_file_location("account_profile_initialization_reconcile", script_path)
+    assert spec and spec.loader
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module

@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.models import AccountStatus, AiAccountVoiceProfile, Material, TgAccount
 from app.services.account_profile_auto_init import profile_is_ready, queue_profile_initialization_for_accounts
+from app.services.task_center.account_voice_profiles import ensure_voice_profiles_for_accounts, generate_voice_profiles_with_ai
 
 
 ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
@@ -23,15 +24,28 @@ def main() -> int:
     before = _inspect_accounts()
     result = None
     processed = 0
+    created_voice_profiles = 0
     if APPLY and _should_apply_reconcile(before):
+        profile_account_ids = _not_ready_account_ids(before)
+        voice_profile_account_ids = _missing_voice_profile_account_ids_from_payload(before)
         with SessionLocal() as session:
-            result = queue_profile_initialization_for_accounts(
-                session,
-                tenant_id=TENANT_ID,
-                account_ids=_reconcile_account_ids(before),
-                actor="github-actions",
-                reason="生产账号资料初始化补齐：全量检查后自动创建",
-            )
+            if voice_profile_account_ids:
+                generator = generate_voice_profiles_with_ai(session, tenant_id=TENANT_ID)
+                created_voice_profiles = ensure_voice_profiles_for_accounts(
+                    session,
+                    tenant_id=TENANT_ID,
+                    account_ids=voice_profile_account_ids,
+                    generator=generator,
+                )
+            if profile_account_ids:
+                result = queue_profile_initialization_for_accounts(
+                    session,
+                    tenant_id=TENANT_ID,
+                    account_ids=profile_account_ids,
+                    actor="github-actions",
+                    reason="生产账号资料初始化补齐：全量检查后自动创建",
+                )
+            session.commit()
         if DRAIN_ONCE:
             from app.worker import drain_once
 
@@ -44,10 +58,12 @@ def main() -> int:
         "worker_processed": processed,
         "before": before,
         "after": after,
+        "created_voice_profiles": created_voice_profiles,
         "queued_account_ids": list(result.queued_account_ids) if result else [],
         "batch_ids": list(result.batch_ids) if result else [],
     }
     print("ACCOUNT_PROFILE_RECONCILE=" + json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
+    _assert_reconcile_effective(before, after, APPLY)
     return 0
 
 
@@ -74,8 +90,25 @@ def _should_apply_reconcile(before: dict[str, object]) -> bool:
 
 
 def _reconcile_account_ids(before: dict[str, object]) -> list[int]:
-    raw_ids = list(before.get("not_ready_account_ids") or []) + list(before.get("missing_voice_profile_account_ids") or [])
+    raw_ids = _not_ready_account_ids(before) + _missing_voice_profile_account_ids_from_payload(before)
     return list(dict.fromkeys(int(account_id) for account_id in raw_ids))
+
+
+def _not_ready_account_ids(before: dict[str, object]) -> list[int]:
+    return [int(account_id) for account_id in list(before.get("not_ready_account_ids") or [])]
+
+
+def _missing_voice_profile_account_ids_from_payload(before: dict[str, object]) -> list[int]:
+    return [int(account_id) for account_id in list(before.get("missing_voice_profile_account_ids") or [])]
+
+
+def _assert_reconcile_effective(before: dict[str, object], after: dict[str, object], apply: bool) -> None:
+    if not apply:
+        return
+    before_missing = int(before.get("missing_voice_profile_count") or 0)
+    after_missing = int(after.get("missing_voice_profile_count") or 0)
+    if before_missing and after_missing:
+        raise RuntimeError(f"voice profile reconcile did not complete: before={before_missing}, after={after_missing}")
 
 
 def _missing_voice_profile_account_ids(session, accounts: list[TgAccount]) -> list[int]:
