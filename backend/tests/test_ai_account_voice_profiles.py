@@ -221,6 +221,23 @@ def test_parse_voice_profile_pipe_lines_rejects_incomplete_line():
         _parse_voice_profile_payloads("101|青年|字段太少", [101])
 
 
+def test_parse_voice_profile_json_lines_accepts_compact_fields():
+    raw = (
+        '{"id":101,"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
+        '"habits":["先问位置","爱追问照片"],"tone":"轻松","words":["我看看","别跑空"],'
+        '"emoji":"少用","ban":["确实不错"],"summary":"青年短句先问位置和照片偶尔说别跑空"}\n'
+        '{"id":102,"age":"中年","px":["常帮朋友踩点"],"cx":["约过天津场子"],"len":"中句",'
+        '"habits":["先讲经历","偶尔吐槽"],"tone":"谨慎","words":["稳一点","别急"],'
+        '"emoji":"不用表情","ban":["感觉挺靠谱"],"summary":"中年中句先讲踩点经历说话谨慎不急"}'
+    )
+
+    profiles = _parse_voice_profile_payloads(raw, [101, 102])
+
+    assert [profile["account_id"] for profile in profiles] == [101, 102]
+    assert profiles[0]["lexical_preferences"] == ["我看看", "别跑空"]
+    assert profiles[1]["emoji_policy"] == "不用表情"
+
+
 def test_generate_voice_profiles_uses_compact_token_budget(monkeypatch):
     captured: dict[str, int] = {}
 

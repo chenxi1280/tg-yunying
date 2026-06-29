@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import timedelta
+import json
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -16,7 +17,7 @@ from app.services.task_center.account_voice_profile_search import filter_voice_p
 GENERIC_SUMMARY_TERMS = {"自然", "随意", "真实", "像真人"}
 VOICE_PROFILE_AI_TIMEOUT_SECONDS = 45
 VOICE_PROFILE_BATCH_SIZE = 2
-VOICE_PROFILE_INITIAL_MAX_TOKENS = 512
+VOICE_PROFILE_INITIAL_MAX_TOKENS = 768
 VOICE_PROFILE_RETRY_MAX_TOKENS = 2048
 EDITABLE_PROFILE_FIELDS = {
     "age_band", "persona_experiences", "consumption_experiences", "sentence_length", "interaction_habits",
@@ -426,11 +427,10 @@ def _voice_profile_prompt(accounts: list[TgAccount]) -> str:
     account_lines = "\n".join(f"- account_id={item.id}, name={item.display_name}, username={item.username or '-'}" for item in accounts)
     return (
         f"为以下 {len(accounts)} 个 Telegram 运营账号生成互相差异明显的账号表达卡。\n{account_lines}\n"
-        "每个账号只输出一行，禁止输出标题、解释、Markdown、JSON。\n"
-        "每行必须 11 段，用英文竖线 | 分隔：account_id|age_band|persona_experiences|consumption_experiences|"
-        "sentence_length|interaction_habits|tone_strength|lexical_preferences|emoji_policy|forbidden_expressions|short_prompt_summary。\n"
-        "列表字段内部用中文分号；分隔，任何字段内容都禁止出现 |。\n"
-        "short_prompt_summary 必须具体可执行，写成 18-36 个汉字；禁止只写自然、随意、真实；同批账号句长、口头习惯、互动偏好、表情倾向要明显不同。"
+        "每个账号只输出一行 JSON，不要输出数组、标题、解释、Markdown。\n"
+        "每行字段固定为：id,age,px,cx,len,habits,tone,words,emoji,ban,summary。\n"
+        "px/cx/habits/words/ban 必须是短字符串数组；summary 必须具体可执行，写成 18-36 个汉字。\n"
+        "禁止只写自然、随意、真实；同批账号句长、口头习惯、互动偏好、表情倾向要明显不同。"
     )
 
 
@@ -446,15 +446,40 @@ def _parse_voice_profile_payload_map(raw: str) -> dict[int, dict[str, Any]]:
     lines = [line.strip() for line in _clean_profile_lines(raw).splitlines() if line.strip()]
     if not lines:
         raise RuntimeError("AI 表达卡输出为空")
-    items = [_profile_from_pipe_line(line) for line in lines]
+    items = [_profile_from_line(line) for line in lines]
     return _profiles_by_account(items)
 
 
 def _clean_profile_lines(raw: str) -> str:
     value = str(raw or "").strip()
     if value.startswith("```"):
-        value = value.strip("`").removeprefix("text").strip()
+        value = value.strip("`").removeprefix("jsonl").removeprefix("json").removeprefix("text").strip()
     return value
+
+
+def _profile_from_line(line: str) -> dict[str, Any]:
+    if line.startswith("{"):
+        return _profile_from_json_line(line)
+    return _profile_from_pipe_line(line)
+
+
+def _profile_from_json_line(line: str) -> dict[str, Any]:
+    payload = json.loads(line)
+    if not isinstance(payload, dict):
+        raise RuntimeError("AI 表达卡 JSON 行不是对象")
+    return {
+        "account_id": payload.get("id"),
+        "age_band": payload.get("age"),
+        "persona_experiences": payload.get("px"),
+        "consumption_experiences": payload.get("cx"),
+        "sentence_length": payload.get("len"),
+        "interaction_habits": payload.get("habits"),
+        "tone_strength": payload.get("tone"),
+        "lexical_preferences": payload.get("words"),
+        "emoji_policy": payload.get("emoji"),
+        "forbidden_expressions": payload.get("ban"),
+        "short_prompt_summary": payload.get("summary"),
+    }
 
 
 def _profile_from_pipe_line(line: str) -> dict[str, Any]:
