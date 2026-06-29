@@ -653,7 +653,7 @@ operation_issue_accounts
 - `max_accounts` 表示该开发者应用可承载的账号分配上限。达到上限后，新账号登录不得继续分配到该应用；已有账号不因达到上限被强制迁移。
 - 停用开发者应用前必须展示影响范围：已绑定账号数、主授权数、备用授权数、最近 24 小时执行账号数。停用后不再分配新授权；已有授权进入“应用停用风险”提示，按账号授权资产迁移流程处理。
 - AI 生成资料、AI 活跃群、AI 评论和 AI 改写都依赖健康 AI 供应商。
-- 文本生成供应商支持 OpenAI-compatible 的 DeepSeek、MiMo/Mino 和 MiniMax。MiniMax 文本模型按 `base_url=https://api.minimax.io/v1`、`api_key_header=Authorization`、`model_name=MiniMax-M3/MiniMax-M2.7/MiniMax-M2.7-highspeed/MiniMax-M2.5` 配置；`MiniMax-M3` 调用时必须显式关闭 thinking，避免推理内容挤占最终 JSON draft。MiniMax 属于文本生成供应商，不能替代 MiMo 视觉供应商处理图片验证码。
+- 文本生成供应商支持 OpenAI-compatible 的 DeepSeek、MiMo/Mino 和 MiniMax。MiniMax 文本模型按 `base_url=https://api.minimax.io/v1` 或 `https://api.minimaxi.com/v1`、`api_key_header=Authorization`、`model_name=MiniMax-M3/MiniMax-M2.7/MiniMax-M2.7-highspeed/MiniMax-M2.5` 配置；`MiniMax-M3` 调用时必须显式关闭 thinking，避免推理内容挤占最终 JSON draft。MiniMax 属于文本生成供应商，不能替代 MiMo 视觉供应商处理图片验证码。
 - 素材日常上传、批量上传、分组、编辑和禁用不在系统设置处理，必须进入素材中心。
 - 素材运行配置面向普通管理员时只能要求填写 Telegram 频道链接、公开用户名或 `t.me/c/...` 链接，不能要求用户手动填写 `-100...` peer id；系统保存用户输入的原始链接，并归一化为执行层可用的缓存目标。
 - 权限配置修改后必须更新 `permission_version` 并写审计。
