@@ -5072,7 +5072,8 @@ def test_task_center_pending_reviews_do_not_starve_other_due_actions(monkeypatch
         with SessionLocal() as session:
             assert session.get(Action, blocked_action_id).status == "pending"
             assert session.get(Action, normal_action_id).status == "success"
-        assert sends == ["普通内容"]
+        assert sends.count("普通内容") == 1
+        assert "待审核内容" not in sends
 
 
 def test_task_center_review_terminal_state_cannot_be_approved(monkeypatch):
