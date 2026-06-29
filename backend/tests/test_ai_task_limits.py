@@ -44,6 +44,18 @@ from app.services.task_center.service import precheck_task_creation, reset_task,
 NOW = datetime(2026, 5, 30, 10, 0, 0)
 
 
+@pytest.fixture(autouse=True)
+def assume_group_ai_accounts_ready_for_limit_tests(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.dispatcher.is_account_online_ready",
+        lambda *args, **kwargs: True,
+    )
+
+
 def _session():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

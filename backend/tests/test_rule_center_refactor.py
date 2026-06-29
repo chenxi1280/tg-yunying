@@ -7,6 +7,7 @@ from os import utime
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -45,6 +46,14 @@ from app.services.source_media import (
 )
 from app.services.material_cache import drain_material_cache
 from app.services.temp_files import TEMP_FILE_TTL_SECONDS, cleanup_temp_files, temp_dir
+
+
+@pytest.fixture(autouse=True)
+def assume_group_ai_accounts_ready_for_rule_tests(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
+        lambda *args, **kwargs: True,
+    )
 
 
 def test_rule_set_create_persists_task_scope_and_output_checks():

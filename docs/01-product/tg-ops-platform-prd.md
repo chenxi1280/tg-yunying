@@ -3989,7 +3989,7 @@ action / attempt 写入完成
 - AI 活跃群短时间相同内容问题必须同时覆盖同一轮、本小时、已规划未发送、发送未知和历史成功消息；不能只在 AI Prompt 中提示“不要重复”，也不能只在发送成功后记录。
 - AI 活跃群生产质量诊断必须把近 24 小时仍可能继续发送的重复文本作为 release gate blocker；`pending`、`claiming`、`executing` 与已发送 / 发送未知文本构成重复时，必须输出 `AI_GROUP_QUALITY_RECENT_DUPLICATE_GATE_FAILED` 并阻断发布。已 `success` / `unknown_after_send` 的历史重复必须继续输出为 `sent_duplicate_observations`，用于追踪历史质量债，但不能把已不可回滚的历史消息单独作为当前发布 blocker。
 - `ai_group_message_memory.reservation_key` 必须有数据库唯一约束或等价原子锁，重复冲突必须暴露为质量拦截，不得通过查询后插入的竞态窗口放过并发重复。
-- AI 活跃群 Planner 和 Dispatcher 必须把 `tg_account_online_state` 作为主互动硬前置；离线、需重登、session 失效或代理异常的账号不得生成 / 发送文本或表情 slot，失败原因必须记录为账号在线问题，不能归为 AI 质量不足或用 `emoji_react` 兜底。
+- AI 活跃群 Planner 和 Dispatcher 必须把 `tg_account_online_state` 作为主互动硬前置；只有 `online` 且未超过 `stale_after_at` 的账号才能生成 / 发送文本或表情 slot。`warming`、`recovering` 只表示保活准备或恢复中，离线、需重登、session 失效或代理异常的账号不得生成 / 发送文本或表情 slot，失败原因必须记录为账号在线问题，不能归为 AI 质量不足或用 `emoji_react` 兜底。
 - 在线保活只能做连接、session warm、轻量探测和必要自愈，不得通过目标群可见消息、点赞、关注等动作制造在线证据；探测必须分批、带抖动并落库。
 - `desired_online` 必须按全局保活、任务、监听源等来源引用计数维护；任务暂停、停止、删除、账号范围变更和存量任务迁移都必须触发 reconcile，不能留下孤儿在线需求或 stale 在线状态。
 - 在线状态必须记录 session 和代理维度；超过 `stale_after_at` 未成功探测的账号不得继续参与 Planner / Dispatcher，必须转为 warming / offline 并展示最近失败或未探测原因。

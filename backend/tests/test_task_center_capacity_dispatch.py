@@ -762,6 +762,53 @@ def _expired_cycle_payload(
     }
 
 
+def _add_group_ai_send_action_with_online_state(
+    session: Session,
+    now_value: datetime,
+    *,
+    online_status: str,
+    action_id: str,
+    memory_id: str,
+    text: str,
+) -> None:
+    session.add(
+        TgAccountOnlineState(
+            tenant_id=1,
+            account_id=11,
+            desired_online=True,
+            online_status=online_status,
+            stale_after_at=now_value + timedelta(minutes=1),
+        )
+    )
+    session.add(
+        AiGroupMessageMemory(
+            id=memory_id,
+            tenant_id=1,
+            group_id=7,
+            task_id="task-cycle-skip",
+            account_id=11,
+            raw_text=text,
+            normalized_text=text,
+            text_fingerprint=memory_id,
+            status="reserved",
+            planned_at=now_value,
+        )
+    )
+    session.add(
+        _cycle_action(
+            action_id,
+            now_value,
+            {
+                "group_id": 7,
+                "message_text": text,
+                "review_approved": True,
+                "slot_id": "task-cycle-skip:cycle:1:turn:1",
+                "ai_message_memory_id": memory_id,
+            },
+        )
+    )
+
+
 @pytest.mark.no_postgres
 def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
     engine = create_engine("sqlite:///:memory:", future=True)
@@ -1010,41 +1057,13 @@ def test_group_ai_send_requires_online_state_before_gateway(monkeypatch):
 
     with Session(engine) as session:
         _add_cycle_skip_basics(session, now_value)
-        session.add(
-            TgAccountOnlineState(
-                tenant_id=1,
-                account_id=11,
-                desired_online=True,
-                online_status="offline",
-                stale_after_at=now_value + timedelta(minutes=1),
-            )
-        )
-        session.add(
-            AiGroupMessageMemory(
-                id="memory-offline-send",
-                tenant_id=1,
-                group_id=7,
-                task_id="task-cycle-skip",
-                account_id=11,
-                raw_text="这条不应该发送",
-                normalized_text="这条不应该发送",
-                text_fingerprint="offline-send",
-                status="reserved",
-                planned_at=now_value,
-            )
-        )
-        session.add(
-            _cycle_action(
-                "action-offline-send",
-                now_value,
-                {
-                    "group_id": 7,
-                    "message_text": "这条不应该发送",
-                    "review_approved": True,
-                    "slot_id": "task-cycle-skip:cycle:1:turn:1",
-                    "ai_message_memory_id": "memory-offline-send",
-                },
-            )
+        _add_group_ai_send_action_with_online_state(
+            session,
+            now_value,
+            online_status="offline",
+            action_id="action-offline-send",
+            memory_id="memory-offline-send",
+            text="这条不应该发送",
         )
         session.commit()
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
@@ -1065,6 +1084,40 @@ def test_group_ai_send_requires_online_state_before_gateway(monkeypatch):
         memory = session.get(AiGroupMessageMemory, "memory-offline-send")
         assert memory.status == "account_offline"
         assert memory.action_id == "action-offline-send"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_send_requires_ready_not_warming_before_gateway(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        _add_group_ai_send_action_with_online_state(
+            session,
+            now_value,
+            online_status="warming",
+            action_id="action-warming-send",
+            memory_id="memory-warming-send",
+            text="预热中账号不应该发送",
+        )
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("warming account must not call TG")),
+        )
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert dispatcher.dispatch_action(session, claimed) is True
+        action = session.get(Action, "action-warming-send")
+        assert action.status == "failed"
+        assert action.result["validation_stage"] == "account_online"
+        memory = session.get(AiGroupMessageMemory, "memory-warming-send")
+        assert memory.status == "account_offline"
 
 
 @pytest.mark.no_postgres
@@ -3563,7 +3616,7 @@ def test_group_ai_build_plan_reconciles_missing_online_state_before_main_chat(mo
         assert states[0].active_task_count == 1
         assert states[0].proxy_id == 5
         assert states[2].desired_sources == [{"source_type": "global", "source_id": "global_keepalive"}]
-        assert "在线状态" not in (task.last_error or "")
+        assert "在线状态不可用" in (task.last_error or "")
 
 
 @pytest.mark.no_postgres

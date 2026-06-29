@@ -56,6 +56,14 @@ def _online_state(account_id: int, now: datetime) -> TgAccountOnlineState:
     )
 
 
+@pytest.fixture(autouse=True)
+def assume_group_ai_accounts_ready_for_runtime_tests(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
+        lambda *args, **kwargs: True,
+    )
+
+
 def test_listener_runtime_deduplicates_same_object_within_window():
     reset_listener_runtime_cache()
 

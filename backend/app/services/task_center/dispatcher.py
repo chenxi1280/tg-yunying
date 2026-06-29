@@ -16,7 +16,7 @@ from app.integrations.telegram import OperationResult, OutboundSegment
 from app.config import get_settings
 from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
 from app.services._common import _now, audit, gateway
-from app.services.account_online_state import is_account_online_available
+from app.services.account_online_state import is_account_online_ready
 from app.services.account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery
 from app.services.account_capacity import account_capacity_decision
 from app.services.content_filters import filter_outbound_content, rewrite_rejected_content
@@ -922,7 +922,7 @@ def _group_ai_account_online_ready(
         return True
     if not payload.slot_id and not payload.ai_message_memory_id:
         return True
-    return is_account_online_available(session, tenant_id=action.tenant_id, account_id=account.id)
+    return is_account_online_ready(session, tenant_id=action.tenant_id, account_id=account.id)
 
 
 def _group_ai_message_memory_sendable(session: Session, action: Action, payload: SendMessagePayload) -> bool:

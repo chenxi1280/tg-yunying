@@ -171,7 +171,7 @@ def test_planning_ready_requires_traceable_online_state():
 
         assert is_account_online_ready(session, tenant_id=1, account_id=101, now=now) is False
         assert is_account_online_available(session, tenant_id=1, account_id=101, now=now) is True
-        assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=now) is True
+        assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=now) is False
 
 
 def test_probe_due_online_states_marks_healthy_account_online(monkeypatch):

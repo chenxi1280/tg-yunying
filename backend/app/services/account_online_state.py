@@ -59,9 +59,7 @@ def is_account_online_ready_for_planning(
 ) -> bool:
     current_time = now or _now()
     state = _account_online_state(session, tenant_id, account_id)
-    if state:
-        return _state_is_available(state, current_time)
-    return False
+    return _state_is_ready(state, current_time)
 
 
 def is_account_online_available(
