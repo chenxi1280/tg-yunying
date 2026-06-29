@@ -183,12 +183,16 @@ def task_snapshot(session, task: Task, since: datetime) -> dict[str, Any]:
         "task_id": task.id,
         "name": task.name,
         "status": task.status,
+        "last_error": task.last_error,
+        "next_run_at": task.next_run_at,
+        "stats": task.stats or {},
         "topic_count": len(config.get("topic_directions") or []),
         "teacher_target_count": len(config.get("teacher_targets") or []),
         "legacy_topic_hint_present": bool(str(config.get("topic_hint") or "").strip()),
         "recent_send_count": len(recent_actions),
         "memory_payload_count": sum(1 for payload in payloads if payload.get("ai_message_memory_id")),
         "voice_profile_payload_count": sum(1 for payload in payloads if int(payload.get("account_voice_profile_version") or 0) > 0),
+        "open_action_counts": open_action_counts(session, task.id),
         "quality_rejection_counts": dict((task.stats or {}).get("quality_rejection_counts") or {}),
         "online_summary": task_account_online_summary(session, task),
         "recent_action_samples": action_samples(recent_actions[:8]),
@@ -209,6 +213,18 @@ def recent_task_actions(session, task_id: str, since: datetime) -> list[Action]:
             .limit(ACTION_LIMIT)
         )
     )
+
+
+def open_action_counts(session, task_id: str) -> dict[str, int]:
+    rows = session.execute(
+        select(Action.status, func.count(Action.id)).where(
+            Action.task_id == task_id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status.in_(("pending", "claiming", "executing", "retryable_failed")),
+        ).group_by(Action.status)
+    ).all()
+    return {str(status): int(count) for status, count in rows}
 
 
 def action_samples(actions: list[Action]) -> list[dict[str, Any]]:
