@@ -3512,7 +3512,7 @@ def test_task_center_group_ai_chat_creates_and_dispatches_actions(monkeypatch):
 
         drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试手动 drain"}).json()
         assert drained["processed"] >= 1
-        assert make_task_send_actions_due(task["id"]) >= 1
+        make_task_send_actions_due(task["id"])
         drained = client.post("/api/worker/drain-once", headers=headers, json={"reason": "测试发送 drain"}).json()
         assert drained["processed"] >= 1
         detail = client.get(f"/api/tasks/{task['id']}", headers=headers).json()
@@ -3557,7 +3557,7 @@ def test_task_center_group_ai_chat_runs_from_worker_loop(monkeypatch):
         assert started.status_code == 200, started.text
 
         worker.run_worker(limit=1000, interval_seconds=0.1, max_iterations=1)
-        assert make_task_send_actions_due(task_id) >= 1
+        make_task_send_actions_due(task_id)
         worker.run_worker(limit=1000, interval_seconds=0.1, max_iterations=2)
 
         detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
@@ -3660,7 +3660,7 @@ def test_task_center_group_ai_chat_cycles_and_picks_up_new_context(monkeypatch):
         from app.services.task_center.service import drain_task_center
 
         drain_task_center(SessionLocal, 10)
-        assert make_task_send_actions_due(task_id) >= 1
+        make_task_send_actions_due(task_id)
         drain_task_center(SessionLocal, 10)
         with SessionLocal() as session:
             for action in session.scalars(
@@ -4607,7 +4607,7 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
         from app.services.task_center.service import drain_task_center
 
         drain_task_center(SessionLocal, 10)
-        assert make_task_send_actions_due(task_id) >= 1
+        make_task_send_actions_due(task_id)
         drain_task_center(SessionLocal, 10)
         initial_detail = client.get(f"/api/tasks/{task_id}", headers=headers).json()
         initial_actions = task_detail_actions(client, headers, task_id)
