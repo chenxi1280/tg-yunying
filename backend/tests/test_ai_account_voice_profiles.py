@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AuditLog, TgAccount
+from app.services.task_center import account_stance_memory
 from app.services.task_center.account_voice_profiles import (
     VOICE_PROFILE_INITIAL_MAX_TOKENS,
     VOICE_PROFILE_RETRY_MAX_TOKENS,
@@ -70,6 +71,21 @@ def _profile(account_id: int, summary: str, *, version: int = 1, status: str = "
         status=status,
         quality_status="active",
     )
+
+
+class FakeStanceRedis:
+    def __init__(self, values: list[str | None] | None = None) -> None:
+        self.values = values or []
+        self.mget_calls: list[list[str]] = []
+        self.setex_calls: list[tuple[str, int, str]] = []
+
+    def mget(self, keys):  # noqa: ANN001
+        self.mget_calls.append([str(key) for key in keys])
+        return self.values[: len(keys)]
+
+    def setex(self, key, ttl, value):  # noqa: ANN001
+        self.setex_calls.append((str(key), int(ttl), str(value)))
+        return True
 
 
 def test_missing_voice_profile_requires_explicit_ai_generator():
@@ -202,6 +218,63 @@ def test_ensure_voice_profiles_rejects_overly_similar_batch():
             ensure_voice_profiles_for_accounts(session, tenant_id=1, account_ids=[101, 102], generator=generator)
 
 
+def test_group_stance_summaries_backfills_redis_cache(monkeypatch):
+    fake_redis = FakeStanceRedis(values=[None])
+    monkeypatch.setattr(account_stance_memory, "_redis_client", lambda _redis_url: fake_redis)
+    monkeypatch.setattr(account_stance_memory, "get_settings", lambda: SimpleNamespace(queue_backend="redis", redis_url="redis://test"))
+
+    with _session() as session:
+        session.add(
+            AiAccountGroupStanceMemory(
+                tenant_id=1,
+                group_id=7,
+                account_id=101,
+                summary="刚围绕花花老师表示观望，别突然强夸",
+                topic_direction="郑州楼凤妹子怎么样",
+                teacher_target="花花老师",
+                stance="sent",
+                last_act_type="观望",
+                last_semantic_cluster="teacher_watch",
+                last_message_id="tg-101",
+            )
+        )
+        session.commit()
+
+        result = group_stance_summaries(session, tenant_id=1, group_id=7, account_ids=[101])
+
+    assert result == {101: "刚围绕花花老师表示观望，别突然强夸"}
+    assert fake_redis.mget_calls == [["ai_group:stance:1:7:101"]]
+    assert fake_redis.setex_calls
+    assert "刚围绕花花老师表示观望" in fake_redis.setex_calls[0][2]
+
+
+def test_upsert_group_stance_memory_refreshes_redis_cache(monkeypatch):
+    fake_redis = FakeStanceRedis()
+    monkeypatch.setattr(account_stance_memory, "_redis_client", lambda _redis_url: fake_redis)
+    monkeypatch.setattr(account_stance_memory, "get_settings", lambda: SimpleNamespace(queue_backend="redis", redis_url="redis://test"))
+
+    with _session() as session:
+        upsert_group_stance_memory(
+            session,
+            tenant_id=1,
+            group_id=7,
+            account_id=101,
+            topic_direction="精品榜",
+            teacher_target="主任",
+            stance="sent",
+            act_type="追问",
+            semantic_cluster="teacher_price_question",
+            message_id="tg-stance-ok",
+            summary="追问：主任这个可以先问价格",
+        )
+
+    assert fake_redis.setex_calls
+    key, ttl, value = fake_redis.setex_calls[0]
+    assert key == "ai_group:stance:1:7:101"
+    assert ttl >= 86400
+    assert "主任这个可以先问价格" in value
+
+
 def test_parse_voice_profile_pipe_lines_requires_complete_fields():
     raw = (
         "101|青年|做过夜场熟客|常点花花老师|短句|先问位置；爱追问照片|轻松|我看看；别跑空|少用|确实不错|"
@@ -250,7 +323,7 @@ def test_generate_voice_profiles_uses_compact_token_budget(monkeypatch):
             SimpleNamespace(total_tokens=120),
         )
 
-    monkeypatch.setattr("app.services.task_center.account_voice_profiles.ai_gateway._post_openai_compatible", fake_post)
+    monkeypatch.setattr("app.services.task_center.account_voice_profile_generation.ai_gateway._post_openai_compatible", fake_post)
 
     with _session() as session:
         _account(session, 101, "测试号")
@@ -286,7 +359,7 @@ def test_generate_voice_profiles_refills_missing_accounts(monkeypatch):
             SimpleNamespace(total_tokens=120),
         )
 
-    monkeypatch.setattr("app.services.task_center.account_voice_profiles.ai_gateway._post_openai_compatible", fake_post)
+    monkeypatch.setattr("app.services.task_center.account_voice_profile_generation.ai_gateway._post_openai_compatible", fake_post)
 
     with _session() as session:
         _account(session, 101, "测试号1")
@@ -326,7 +399,7 @@ def test_generate_voice_profiles_retries_malformed_batch_as_single_accounts(monk
             SimpleNamespace(total_tokens=90),
         )
 
-    monkeypatch.setattr("app.services.task_center.account_voice_profiles.ai_gateway._post_openai_compatible", fake_post)
+    monkeypatch.setattr("app.services.task_center.account_voice_profile_generation.ai_gateway._post_openai_compatible", fake_post)
 
     with _session() as session:
         _account(session, 101, "测试号1")
