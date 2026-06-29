@@ -105,6 +105,26 @@ def test_ai_group_quality_diagnostics_blocks_recent_effective_duplicate_text():
     ]
 
 
+def test_ai_group_quality_diagnostics_reports_success_only_duplicates_without_blocking():
+    module = load_quality_diagnostics_module()
+    actions = [
+        SimpleNamespace(id="a1", status="success", payload={"message_text": "已发历史重复"}),
+        SimpleNamespace(id="a2", status="success", payload={"message_text": "已发历史重复"}),
+    ]
+
+    snapshot = module.recent_action_duplicate_summary(actions)
+
+    assert snapshot["sent_duplicate_observations"] == [
+        {
+            "text": "已发历史重复",
+            "sent_count": 2,
+            "status_counts": {"success": 2},
+            "action_ids": ["a1", "a2"],
+        }
+    ]
+    assert snapshot["duplicate_blockers"] == []
+
+
 def test_ai_group_quality_diagnostics_ignores_failed_only_duplicate_text():
     module = load_quality_diagnostics_module()
     actions = [

@@ -37,6 +37,8 @@ ONLINE_BLOCK_KEYS = (
     "offline_count",
 )
 EFFECTIVE_DUPLICATE_STATUSES = ("success", "unknown_after_send", "pending", "claiming", "executing")
+OPEN_DUPLICATE_STATUSES = ("pending", "claiming", "executing")
+SENT_DUPLICATE_STATUSES = ("success", "unknown_after_send")
 
 
 def iso(value: datetime | None) -> str | None:
@@ -333,6 +335,7 @@ def recent_action_duplicate_summary(actions: list[Action]) -> dict[str, Any]:
         "action_count": len(actions),
         "repeated_texts": repeated_texts,
         "duplicate_blockers": _duplicate_blockers(grouped),
+        "sent_duplicate_observations": _sent_duplicate_observations(grouped),
         "status_counts": dict(Counter(action.status for action in actions)),
     }
 
@@ -351,7 +354,7 @@ def _duplicate_blockers(grouped: dict[str, list[Action]]) -> list[dict[str, Any]
     blockers: list[dict[str, Any]] = []
     for text, actions in grouped.items():
         effective = [action for action in actions if action.status in EFFECTIVE_DUPLICATE_STATUSES]
-        if len(effective) <= 1:
+        if len(effective) <= 1 or not any(action.status in OPEN_DUPLICATE_STATUSES for action in effective):
             continue
         status_counts = dict(Counter(action.status for action in effective))
         blockers.append(
@@ -363,6 +366,24 @@ def _duplicate_blockers(grouped: dict[str, list[Action]]) -> list[dict[str, Any]
             }
         )
     return sorted(blockers, key=lambda item: int(item["effective_count"]), reverse=True)[:10]
+
+
+def _sent_duplicate_observations(grouped: dict[str, list[Action]]) -> list[dict[str, Any]]:
+    observations: list[dict[str, Any]] = []
+    for text, actions in grouped.items():
+        sent = [action for action in actions if action.status in SENT_DUPLICATE_STATUSES]
+        if len(sent) <= 1:
+            continue
+        status_counts = dict(Counter(action.status for action in sent))
+        observations.append(
+            {
+                "text": preview_text(text),
+                "sent_count": len(sent),
+                "status_counts": dict(sorted(status_counts.items())),
+                "action_ids": [str(action.id) for action in sent[:10]],
+            }
+        )
+    return sorted(observations, key=lambda item: int(item["sent_count"]), reverse=True)[:10]
 
 
 def main() -> None:
