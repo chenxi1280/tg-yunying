@@ -157,7 +157,7 @@ def wait_for_new_success_actions(
 
 
 def make_task_send_actions_due(task_id: str) -> int:
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = _now()
     with SessionLocal() as session:
         actions = list(
             session.scalars(
@@ -4639,12 +4639,12 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
                     content=f"reset ai 新上下文 {_workflow_ai_token(9)}",
                     message_type="text",
                     remote_message_id=f"reset-ai-context-{uuid4().hex[:8]}",
-                    sent_at=datetime.now(UTC).replace(tzinfo=None),
+                    sent_at=_now(),
                 )
             )
             task = session.get(Task, task_id)
             assert task is not None
-            task.next_run_at = datetime.now(UTC).replace(tzinfo=None)
+            task.next_run_at = _now()
             session.commit()
 
         detail, reset_cycle_actions = wait_for_new_success_actions(client, headers, task_id, known_action_ids)

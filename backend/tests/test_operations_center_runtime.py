@@ -2765,7 +2765,15 @@ def test_group_executors_resolve_operation_targets_without_normalized_group_ids(
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add_all(
             [
-                TgAccount(id=101, tenant_id=1, display_name="账号A", phone_masked="101", status=AccountStatus.ACTIVE.value, health_score=100),
+                TgAccount(
+                    id=101,
+                    tenant_id=1,
+                    display_name="账号A",
+                    phone_masked="101",
+                    status=AccountStatus.ACTIVE.value,
+                    session_ciphertext="session-101",
+                    health_score=100,
+                ),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群资产", auth_status="已授权运营", can_send=True, listener_context_limit=20),
                 TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群资产", auth_status="已授权运营", can_send=True, listener_context_limit=20),
                 OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="源群目标", can_send=True, auth_status="已授权运营"),
