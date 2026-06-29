@@ -183,6 +183,18 @@ def test_group_ai_quality_fallback_avoids_recent_baseline_emojis(monkeypatch):
     assert stats["quality_fallback_count"] == 2
 
 
+def test_group_ai_online_ready_clears_stale_offline_count(monkeypatch):
+    task = SimpleNamespace(tenant_id=1, stats={"account_offline_count": 2, "other": "kept"})
+    accounts = [SimpleNamespace(id=11), SimpleNamespace(id=12)]
+
+    monkeypatch.setattr(group_ai_chat, "is_account_online_ready_for_planning", lambda *args, **kwargs: True)
+
+    ready = group_ai_chat._online_ready_accounts(None, task, accounts, {})
+
+    assert ready == accounts
+    assert task.stats == {"other": "kept"}
+
+
 def test_group_ai_chat_keeps_target_profile_out_of_fact_thread():
     config = group_ai_chat._generation_config_with_profile(
         {"active_topic_direction": {"title": "日常闲聊"}},

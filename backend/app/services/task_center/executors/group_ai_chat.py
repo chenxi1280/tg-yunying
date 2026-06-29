@@ -719,12 +719,15 @@ def _online_ready_accounts(session: Session, task: Task, accounts: list, progres
         if is_account_online_ready_for_planning(session, tenant_id=task.tenant_id, account_id=account.id)
     ]
     offline_count = max(0, len(accounts) - len(ready))
+    stats = dict(task.stats or {})
     if offline_count:
-        stats = dict(task.stats or {})
         stats["account_offline_count"] = offline_count
         task.stats = stats
         if progress:
             progress["account_offline_count"] = offline_count
+        return ready
+    if stats.pop("account_offline_count", None) is not None:
+        task.stats = stats
     return ready
 
 
