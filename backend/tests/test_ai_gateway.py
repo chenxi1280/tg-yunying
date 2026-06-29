@@ -657,6 +657,52 @@ def test_deepseek_health_check_also_disables_thinking(monkeypatch):
     assert requests[1]["response_format"] == {"type": "json_object"}
 
 
+@pytest.mark.no_postgres
+def test_minimax_m3_generation_disables_thinking_without_json_response_format(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001 - mirrors urllib signature.
+        captured["url"] = request.full_url
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"drafts":[{"sequence_index":1,"persona":"A","content":"Minimax 接话正常。","risk_level":"低"}]}'
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    minimax_credentials = AiProviderCredentials(
+        provider_name="MiniMax",
+        provider_type="openai_compatible",
+        base_url="https://api.minimax.io/v1",
+        model_name="MiniMax-M3",
+        api_key="test-key",
+    )
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = AiGateway().generate_drafts(
+        minimax_credentials,
+        "请输出 json drafts",
+        count=1,
+        topic="产品讨论",
+        tone="自然",
+        persona_set=["A"],
+        temperature=0.1,
+        max_tokens=512,
+    )
+
+    assert captured["url"] == "https://api.minimax.io/v1/chat/completions"
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
+    assert "response_format" not in captured["payload"]
+    assert result.candidates[0].content == "Minimax 接话正常。"
+
+
 def test_mimo_image_verification_uses_openai_compatible_image_payload(monkeypatch):
     captured: dict[str, Any] = {}
 
@@ -1247,10 +1293,14 @@ def test_generate_drafts_retries_reasoning_only_empty_content(monkeypatch):
     assert result.usage.total_tokens == 30
 
 
+@pytest.mark.no_postgres
 def test_known_ai_model_names_are_normalized():
     assert normalize_ai_model_name("DeepSeek V4 Flash") == "deepseek-v4-flash"
     assert normalize_ai_model_name("DeepSeek-V4-Pro") == "deepseek-v4-pro"
     assert normalize_ai_model_name("MiMo-V2.5") == "mimo-v2.5"
     assert normalize_ai_model_name("mino-v2.5") == "mimo-v2.5"
     assert normalize_ai_model_name("Xiaomi Mino V2.5") == "mimo-v2.5"
+    assert normalize_ai_model_name("minimax m3") == "MiniMax-M3"
+    assert normalize_ai_model_name("MiniMax M2.7") == "MiniMax-M2.7"
+    assert normalize_ai_model_name("MiniMax M2.7 Highspeed") == "MiniMax-M2.7-highspeed"
     assert normalize_ai_model_name("custom-model") == "custom-model"

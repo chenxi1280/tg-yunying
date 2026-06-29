@@ -4120,6 +4120,85 @@ def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeyp
     assert action.payload["ai_generation_tokens"] == 66
 
 
+@pytest.mark.no_postgres
+def test_group_ai_chat_model_override_selects_matching_minimax_provider(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    captured: dict[str, object] = {}
+
+    def fake_generate_drafts(credentials, _prompt, **_kwargs):  # noqa: ANN001
+        captured["provider_name"] = credentials.provider_name
+        captured["base_url"] = credentials.base_url
+        captured["model_name"] = credentials.model_name
+        return AiGenerationResult(
+            candidates=[AiDraftCandidate(persona="A", content="Minimax 这轮也能接上。", risk_level="低")],
+            usage=AiUsage(total_tokens=77, billable=True),
+        )
+
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        _add_minimax_model_override_task(session)
+        created = build_group_ai_chat_plan(session, session.get(Task, "ai-minimax-provider-model"))
+        action = session.scalar(select(Action).where(Action.task_id == "ai-minimax-provider-model"))
+
+    assert created == 1
+    assert captured == {
+        "provider_name": "MiniMax",
+        "base_url": "https://api.minimax.io/v1",
+        "model_name": "MiniMax-M3",
+    }
+    assert action is not None
+    assert action.payload["message_text"] == "Minimax 这轮也能接上"
+    assert action.payload["ai_generation_tokens"] == 77
+
+
+def _add_minimax_model_override_task(session: Session) -> None:
+    session.add(Tenant(id=1, name="默认运营空间"))
+    session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="Minimax 活跃群", auth_status="已授权运营"))
+    session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+    session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
+    provider_rows = [
+        (1, "DeepSeek", "https://api.deepseek.com", "deepseek-v4-flash"),
+        (2, "MiniMax", "https://api.minimax.io/v1", "MiniMax-M3"),
+    ]
+    for provider_id, name, base_url, model_name in provider_rows:
+        session.add(
+            AiProvider(
+                id=provider_id,
+                provider_name=name,
+                provider_type="openai_compatible",
+                base_url=base_url,
+                model_name=model_name,
+                api_key_ciphertext=encrypt_secret(f"key-{provider_id}"),
+                is_active=True,
+                health_status="健康",
+            )
+        )
+    session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, temperature=0.6, max_tokens=1024))
+    session.add(
+        Task(
+            id="ai-minimax-provider-model",
+            tenant_id=1,
+            name="Minimax 模型覆盖",
+            type="group_ai_chat",
+            status="running",
+            account_config=_single_account_config(),
+            pacing_config=_fixed_pacing_config(),
+            type_config={
+                "target_group_id": 7,
+                "topic_hint": "Minimax 续聊",
+                "ai_model": "minimax m3",
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 1,
+                "silent_mode_enabled": False,
+            },
+        )
+    )
+    session.commit()
+
+
 def test_group_ai_chat_without_ai_provider_does_not_create_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

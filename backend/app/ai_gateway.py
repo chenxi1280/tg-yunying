@@ -71,6 +71,14 @@ MODEL_ALIASES = {
     "mino-v2.5-pro": "mimo-v2.5-pro",
     "xiaomi mino v2.5 pro": "mimo-v2.5-pro",
     "xiaomi mino-v2.5-pro": "mimo-v2.5-pro",
+    "minimax m3": "MiniMax-M3",
+    "minimax-m3": "MiniMax-M3",
+    "minimax m2.7": "MiniMax-M2.7",
+    "minimax-m2.7": "MiniMax-M2.7",
+    "minimax m2.7 highspeed": "MiniMax-M2.7-highspeed",
+    "minimax-m2.7-highspeed": "MiniMax-M2.7-highspeed",
+    "minimax m2.5": "MiniMax-M2.5",
+    "minimax-m2.5": "MiniMax-M2.5",
 }
 DEFAULT_AI_REQUEST_TIMEOUT_SECONDS = 30
 IMAGE_VERIFICATION_MAX_TOKENS = 512
@@ -374,7 +382,7 @@ class AiGateway:
             "max_tokens": max_tokens,
             "stream": False,
         }
-        if self._is_deepseek(credentials):
+        if self._is_deepseek(credentials) or self._is_minimax_reasoning_model(credentials):
             payload["thinking"] = {"type": "disabled"}
         if response_format_json and self._is_deepseek(credentials):
             payload["response_format"] = {"type": "json_object"}
@@ -403,6 +411,10 @@ class AiGateway:
 
     def _is_deepseek_base_url(self, base_url: str) -> bool:
         return "api.deepseek.com" in base_url.lower()
+
+    def _is_minimax_reasoning_model(self, credentials: AiProviderCredentials) -> bool:
+        text = " ".join([credentials.model_name, credentials.provider_name, credentials.base_url]).lower()
+        return "minimax" in text and "m3" in re.sub(r"[^a-z0-9]+", "", text)
 
     def _is_mimo(self, credentials: AiProviderCredentials) -> bool:
         text = " ".join([credentials.model_name, credentials.provider_name, credentials.base_url]).lower()

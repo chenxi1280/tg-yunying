@@ -133,6 +133,8 @@ def _model_family(value: str) -> str:
     normalized = value.lower()
     if "deepseek" in normalized:
         return "deepseek"
+    if "minimax" in normalized:
+        return "minimax"
     if _looks_like_mimo_family(normalized):
         return "mimo"
     return ""
