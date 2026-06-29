@@ -4619,6 +4619,13 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
             "actions": compact_action_debug(initial_actions),
             "generated_count": generated["count"],
         }
+        with SessionLocal() as session:
+            past_time = _now() - timedelta(minutes=2)
+            for action in session.scalars(select(Action).where(Action.task_id == task_id)):
+                action.scheduled_at = past_time
+                if action.status == "success":
+                    action.executed_at = past_time
+            session.commit()
         known_action_ids = {str(action.get("id") or "") for action in initial_actions}
         sends_before_reset = len(sends)
         reset = client.post(f"/api/tasks/{task_id}/reset", headers=headers, json={"reason": "测试重置任务"})
