@@ -98,6 +98,15 @@ def test_group_ai_quality_filter_records_rejection_samples():
     assert stats["ai_generation_candidate_count"] == 3
 
 
+def test_group_ai_pre_filter_drops_same_semantic_cluster_history():
+    remaining = group_ai_chat._drop_repeated_ai_messages(
+        ["照片没p", "价格问清楚了再说"],
+        ["昨天照片准"],
+    )
+
+    assert remaining == ["价格问清楚了再说"]
+
+
 def test_group_ai_quality_filter_rejects_vague_ai_filler_before_memory():
     accepted, stats = group_ai_chat._quality_filter_ai_messages(
         ["这个确实不错", "感觉挺靠谱", "花花老师价格大概多少", "可以关注一下"],

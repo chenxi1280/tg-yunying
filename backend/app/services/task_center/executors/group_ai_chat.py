@@ -2494,7 +2494,7 @@ def _is_similarity_duplicate(normalized: str, cluster: str, previous: str, *, th
     if not previous_normalized:
         return False
     if cluster and cluster == _semantic_cluster(previous):
-        return False
+        return True
     return _similarity(normalized, previous_normalized) >= threshold
 
 
