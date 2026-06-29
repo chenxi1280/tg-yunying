@@ -3683,6 +3683,59 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
 
 
 @pytest.mark.no_postgres
+def test_group_ai_expires_open_actions_without_voice_profile_before_replan():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        task = Task(id="task-replan-profile", tenant_id=1, name="活群", type="group_ai_chat", status="running")
+        memory = AiGroupMessageMemory(
+            id="memory-old-profileless",
+            tenant_id=1,
+            group_id=7,
+            task_id=task.id,
+            account_id=11,
+            raw_text="旧文案",
+            status="reserved",
+        )
+        profileless = Action(
+            id="action-old-profileless",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="pending",
+            scheduled_at=now_value,
+            payload={"message_text": "旧文案", "ai_message_memory_id": memory.id},
+        )
+        profiled = Action(
+            id="action-profiled",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="pending",
+            scheduled_at=now_value,
+            payload={"message_text": "新文案", "account_voice_profile_version": 2},
+        )
+        session.add_all([task, memory, profileless, profiled])
+        session.commit()
+
+        expired = group_ai_chat._expire_open_profileless_actions(session, task, [11])
+        session.flush()
+
+        assert expired == 1
+        assert profileless.status == "skipped"
+        assert profileless.result["error_code"] == "voice_profile_replan"
+        assert memory.status == "expired_before_send"
+        assert profiled.status == "pending"
+        assert task.stats["voice_profile_replanned_open_action_count"] == 1
+
+
+@pytest.mark.no_postgres
 def test_group_ai_build_plan_sends_fixed_slots_to_ai_and_keeps_slot_accounts(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

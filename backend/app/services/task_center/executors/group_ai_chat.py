@@ -86,6 +86,7 @@ RECENT_PLANNED_AI_STATUSES = ("pending", "claiming", "executing", "unknown_after
 RECENT_TARGET_USAGE_STATUSES = (*RECENT_PLANNED_AI_STATUSES, "success")
 RECENT_TARGET_USAGE_MEMORY_STATUSES = ("reserved", "success", "unknown_after_send")
 RECENT_TARGET_USAGE_SCAN_LIMIT = 120
+VOICE_PROFILE_REPLAN_OPEN_STATUSES = ("pending", "claiming")
 ACTIVE_PROFILE_MATCH_SCORE = 100
 UNAVAILABLE_PROFILE_MATCH_SCORE = 0
 CAUTIOUS_STANCE_MARKERS = ("观望", "质疑", "别突然强夸", "保留", "再看看", "谨慎")
@@ -148,6 +149,8 @@ def build_plan(session: Session, task: Task) -> int:
         if hard_progress:
             mark_plan_result(task, hard_progress, 0, {reason: max(1, int(hard_progress.get("deficit") or 1))})
         return 0
+    ready_voice_profiles = voice_profile_prompt_details(session, tenant_id=task.tenant_id, account_ids=[account.id for account in accounts])
+    _expire_open_profileless_actions(session, task, ready_voice_profiles.keys())
     history_depth = int(config.get("chat_history_depth") or 50)
     needs_context_refresh = _should_refresh_context_for_plan(session, group, history_depth, hard_progress)
     if should_collect_listener("group", group.id, window_seconds=group.listener_interval_seconds) and needs_context_refresh:
@@ -2152,6 +2155,55 @@ def _recent_group_memory_messages(session: Session, task: Task, group: TgGroup, 
     )
     messages = [str(row.normalized_text or row.raw_text or "").strip() for row in rows]
     return list(reversed([message for message in messages if message and not _looks_like_internal_prompt(message)]))
+
+
+def _expire_open_profileless_actions(session: Session, task: Task, active_profile_account_ids) -> int:
+    account_ids = [int(account_id) for account_id in active_profile_account_ids if int(account_id or 0) > 0]
+    if not account_ids:
+        return 0
+    actions = list(
+        session.scalars(
+            select(Action).where(
+                Action.task_id == task.id,
+                Action.task_type == "group_ai_chat",
+                Action.action_type == "send_message",
+                Action.status.in_(VOICE_PROFILE_REPLAN_OPEN_STATUSES),
+                Action.account_id.in_(account_ids),
+            )
+        )
+    )
+    expired = 0
+    current_time = _now()
+    for action in actions:
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        if int(payload.get("account_voice_profile_version") or 0) > 0:
+            continue
+        _skip_profileless_action_for_replan(session, action, current_time)
+        expired += 1
+    if expired:
+        stats = dict(task.stats or {})
+        stats["voice_profile_replanned_open_action_count"] = int(stats.get("voice_profile_replanned_open_action_count") or 0) + expired
+        task.stats = stats
+    return expired
+
+
+def _skip_profileless_action_for_replan(session: Session, action: Action, current_time: datetime) -> None:
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    action.status = "skipped"
+    action.executed_at = current_time
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    action.claim_owner = ""
+    action.claim_token = ""
+    action.claim_expires_at = None
+    action.result = {"error_code": "voice_profile_replan", "message": "账号表达卡已生效，旧规划已跳过等待重新生成"}
+    if memory_id := str(payload.get("ai_message_memory_id") or "").strip():
+        mark_group_ai_message_result(
+            session,
+            memory_id,
+            status="expired_before_send",
+            result={"error_code": "voice_profile_replan", "action_id": action.id},
+        )
 
 
 def _recent_account_memories(session: Session, task: Task, account_ids: list[int], *, depth: int) -> dict[str, str]:

@@ -74,6 +74,12 @@ def test_group_ai_quality_fill_retries_until_shortfall_is_filled(monkeypatch):
     assert stats["quality_fill_rounds"] == 1
 
 
+def test_group_ai_expires_profileless_actions_before_duplicate_baseline():
+    source = Path("backend/app/services/task_center/executors/group_ai_chat.py").read_text()
+
+    assert source.index("_expire_open_profileless_actions(") < source.index("planned_ai_messages = _recent_planned_ai_messages(")
+
+
 def test_group_ai_quality_filter_records_rejection_samples():
     accepted, stats = group_ai_chat._quality_filter_ai_messages(
         ["照片准", "照片没p", "价格问清楚了再说"],
