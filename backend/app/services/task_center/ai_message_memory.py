@@ -29,6 +29,8 @@ SPECIFIC_TEMPLATE_TERMS = (
 _COSMETIC_EMOJI = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]+")
 _REPEATED_PUNCT = re.compile(r"([!?！？。,.，、])\1+")
 _SPACE = re.compile(r"\s+")
+_MENTION = re.compile(r"@[a-z0-9_]{3,32}")
+_VARIABLE_PERSON_LABEL = re.compile(r"[\u4e00-\u9fffa-z0-9_]{1,8}(老师|主任|哥|姐)")
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,7 @@ def normalize_group_ai_text(text: str) -> str:
     original = str(text or "").strip().lower()
     value = _COSMETIC_EMOJI.sub("", original)
     value = _SPACE.sub("", value)
+    value = _collapse_variable_labels(value)
     value = _REPEATED_PUNCT.sub(r"\1", value)
     value = value.replace("！", "!").replace("？", "?").replace("，", ",").replace("。", ".")
     value = value.strip("!?.,;:，。！？；：、")
@@ -48,6 +51,11 @@ def normalize_group_ai_text(text: str) -> str:
         return value
     fallback = _SPACE.sub("", original)
     return _REPEATED_PUNCT.sub(r"\1", fallback).strip("!?.,;:，。！？；：、")
+
+
+def _collapse_variable_labels(value: str) -> str:
+    value = _MENTION.sub("@user", value)
+    return _VARIABLE_PERSON_LABEL.sub("<person>", value)
 
 
 def reserve_group_ai_message(
