@@ -2,24 +2,26 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from difflib import SequenceMatcher
+from json import JSONDecodeError
 from typing import Any
 
 SUMMARY_SIMILARITY_BLOCK_THRESHOLD = 0.82
 BATCH_DIVERSITY_MAX_ATTEMPTS = 3
+RECOVERABLE_GENERATION_ERRORS = (ValueError, RuntimeError, TimeoutError, JSONDecodeError)
 
 
 def generate_diverse_voice_profile_batch(
     generator: Callable[[list[int]], list[dict[str, Any]]],
     account_ids: list[int],
 ) -> tuple[dict[int, dict[str, Any]], dict[int, int]]:
-    last_error: ValueError | None = None
+    last_error: Exception | None = None
     for _attempt in range(BATCH_DIVERSITY_MAX_ATTEMPTS):
-        profiles = _profiles_by_account(generator(account_ids))
         try:
+            profiles = _profiles_by_account(generator(account_ids))
             _validate_complete_batch(profiles, account_ids)
             scores = validate_batch_voice_profile_diversity(profiles, account_ids)
             return profiles, scores
-        except ValueError as exc:
+        except RECOVERABLE_GENERATION_ERRORS as exc:
             last_error = exc
     raise last_error or ValueError("voice profile batch generation failed")
 
