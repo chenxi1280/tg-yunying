@@ -698,7 +698,7 @@ def _generation_slot_line(slot: dict) -> str:
     index = str(slot.get("sequence_index") or "").strip()
     slot_id = str(slot.get("slot_id") or "").strip()
     account_id = str(slot.get("account_id") or "").strip()
-    act_type = str(slot.get("act_type") or "").strip()
+    act_type = _canonical_act_type(str(slot.get("act_type") or "").strip())
     profile = str(slot.get("account_profile") or "").strip()
     reply = str(slot.get("reply_to_content") or "").strip()
     if not index or not slot_id:
@@ -713,6 +713,14 @@ def _generation_slot_line(slot: dict) -> str:
     if reply:
         parts.append(f"引用 {reply[:120]}")
     return "；".join(parts)
+
+
+def _canonical_act_type(act_type: str) -> str:
+    aliases = {
+        "light_question": "question",
+        "side_comment": "light_disagree",
+    }
+    return aliases.get(act_type, act_type)
 
 
 def generate_group_messages(session: Session, tenant_id: int, config: dict, *, count: int, target_label: str, history: str = "") -> tuple[list[str], int]:

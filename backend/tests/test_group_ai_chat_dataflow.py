@@ -11,6 +11,24 @@ from app.services.task_center.executors import group_ai_chat
 pytestmark = pytest.mark.no_postgres
 
 
+def test_group_ai_generated_slots_use_prd_act_type_vocabulary():
+    accounts = [SimpleNamespace(id=account_id) for account_id in [11, 12, 13, 14, 15]]
+
+    slots = group_ai_chat._generation_slots_for_plan(
+        cycle_id="task-1:cycle:1",
+        accounts=accounts,
+        turn_count=5,
+        reply_targets=[],
+        account_prompt_profiles={},
+        allow_account_repeat=False,
+    )
+
+    act_types = [slot["act_type"] for slot in slots]
+    assert act_types == ["short_react", "detail_follow", "question", "light_disagree", "topic_shift"]
+    assert "light_question" not in act_types
+    assert "side_comment" not in act_types
+
+
 def test_group_ai_chat_normal_candidate_shortfall_is_visible_failure(monkeypatch):
     task = SimpleNamespace(tenant_id=1, stats={})
 
@@ -342,7 +360,8 @@ def test_group_ai_prompt_includes_fixed_generation_slots(monkeypatch):
     assert "固定发言 slots" in captured["requirements"]
     assert "slot 1：task-1:cycle:1:turn:1；账号 11；行为 short_react" in captured["requirements"]
     assert "青年短句，少表情，爱接别人话" in captured["requirements"]
-    assert "slot 2：task-1:cycle:1:turn:2；账号 12；行为 light_question" in captured["requirements"]
+    assert "slot 2：task-1:cycle:1:turn:2；账号 12；行为 question" in captured["requirements"]
+    assert "行为 light_question" not in captured["requirements"]
     assert "中年谨慎，常追问价格和位置" in captured["requirements"]
     assert "讨论老师：花花老师\n对象说明：身材服务反馈" in captured["requirements"]
     assert "聊天对象" not in captured["requirements"]

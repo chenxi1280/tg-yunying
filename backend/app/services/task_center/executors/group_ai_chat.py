@@ -902,11 +902,19 @@ def _act_type_for_turn(index: int, quality_item: dict) -> str:
     if quality_item.get("quality_fallback") == "emoji_react":
         return "emoji_react"
     if quality_item.get("act_type"):
-        return str(quality_item.get("act_type"))
+        return _canonical_act_type(str(quality_item.get("act_type")))
     if _reply_target_message_id(quality_item) is not None:
         return "context_reply"
-    act_types = ("short_react", "detail_follow", "light_question", "side_comment")
+    act_types = ("short_react", "detail_follow", "question", "light_disagree", "topic_shift")
     return act_types[index % len(act_types)]
+
+
+def _canonical_act_type(act_type: str) -> str:
+    aliases = {
+        "light_question": "question",
+        "side_comment": "light_disagree",
+    }
+    return aliases.get(act_type, act_type)
 
 
 def _reserve_planned_message_memory(
