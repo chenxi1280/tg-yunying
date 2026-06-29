@@ -4565,9 +4565,9 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
     def fake_generate_drafts(_credentials, _prompt, **_kwargs):
         generated["count"] += 1
         contents = [
-            "reset ai 先问下群里现在聊哪块。",
-            "有人在的话我跟着看一眼。",
-            "我先蹲会儿，等你们说。",
+            "接刚才真人那句，郑州楼凤最近哪家反馈稳点？",
+            "上面说的郑州楼凤新上下文我看到了，最近上榜那几个咋样？",
+            "主任最近有试新妹子的吗，群里谁知道服务细节？",
         ]
         count = int(_kwargs.get("count") or 1)
         candidates = []
@@ -4636,7 +4636,7 @@ def test_task_center_reset_group_ai_chat_rebuilds_plan(monkeypatch):
                     group_id=group["id"],
                     listener_account_id=account["id"],
                     sender_name="真人用户",
-                    content=f"reset ai 新上下文 {_workflow_ai_token(9)}",
+                    content=f"郑州楼凤 reset ai 新上下文 {_workflow_ai_token(9)} 最近哪家反馈稳点",
                     message_type="text",
                     remote_message_id=f"reset-ai-context-{uuid4().hex[:8]}",
                     sent_at=_now(),
