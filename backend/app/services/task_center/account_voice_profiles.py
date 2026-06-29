@@ -413,7 +413,28 @@ def _request_voice_profile_payloads(credentials, setting, accounts: list[TgAccou
         reasoning_retry_max_tokens=VOICE_PROFILE_RETRY_MAX_TOKENS,
         timeout=VOICE_PROFILE_AI_TIMEOUT_SECONDS,
     )
-    return _parse_voice_profile_payload_map(raw)
+    try:
+        return _parse_voice_profile_payload_map(raw)
+    except (json.JSONDecodeError, RuntimeError) as exc:
+        if len(accounts) <= 1 or not _is_voice_profile_structure_error(exc):
+            raise
+        return _request_voice_profile_payloads_individually(credentials, setting, accounts)
+
+
+def _request_voice_profile_payloads_individually(credentials, setting, accounts: list[TgAccount]) -> dict[int, dict[str, Any]]:
+    profiles: dict[int, dict[str, Any]] = {}
+    for account in accounts:
+        profiles.update(_request_voice_profile_payloads(credentials, setting, [account]))
+    return profiles
+
+
+def _is_voice_profile_structure_error(exc: BaseException) -> bool:
+    if isinstance(exc, json.JSONDecodeError):
+        return True
+    if not isinstance(exc, RuntimeError):
+        return False
+    message = str(exc)
+    return any(fragment in message for fragment in ("输出为空", "字段数量错误", "JSON 行不是对象"))
 
 
 def _accounts_for_generation(session: Session, tenant_id: int, account_ids: list[int]) -> list[TgAccount]:

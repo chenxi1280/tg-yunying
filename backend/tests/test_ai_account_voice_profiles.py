@@ -305,6 +305,46 @@ def test_generate_voice_profiles_refills_missing_accounts(monkeypatch):
     assert "account_id=101" not in calls[1]
 
 
+def test_generate_voice_profiles_retries_malformed_batch_as_single_accounts(monkeypatch):
+    calls: list[str] = []
+
+    def fake_post(credentials, prompt, temperature, max_tokens, **kwargs):  # noqa: ANN001
+        calls.append(prompt)
+        if "account_id=101" in prompt and "account_id=102" in prompt:
+            return ('{"id":101,"age":"青年" "px":["缺逗号"]}', SimpleNamespace(total_tokens=60))
+        if "account_id=101" in prompt:
+            return (
+                '{"id":101,"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
+                '"habits":["先问位置"],"tone":"轻松","words":["我看看"],"emoji":"少用",'
+                '"ban":["确实不错"],"summary":"青年短句先问位置偶尔说我看看"}',
+                SimpleNamespace(total_tokens=90),
+            )
+        return (
+            '{"id":102,"age":"中年","px":["常帮朋友踩点"],"cx":["约过天津场子"],"len":"中句",'
+            '"habits":["先讲经历"],"tone":"谨慎","words":["稳一点"],"emoji":"不用表情",'
+            '"ban":["感觉挺靠谱"],"summary":"中年中句先讲踩点经历说话谨慎"}',
+            SimpleNamespace(total_tokens=90),
+        )
+
+    monkeypatch.setattr("app.services.task_center.account_voice_profiles.ai_gateway._post_openai_compatible", fake_post)
+
+    with _session() as session:
+        _account(session, 101, "测试号1")
+        _account(session, 102, "测试号2")
+        profiles = _generate_voice_profile_payloads(
+            session,
+            1,
+            [101, 102],
+            SimpleNamespace(model_name="mimo-v2.5"),
+            SimpleNamespace(temperature=0.7, max_tokens=8192),
+        )
+
+    assert [profile["account_id"] for profile in profiles] == [101, 102]
+    assert len(calls) == 3
+    assert "account_id=101" in calls[1]
+    assert "account_id=102" not in calls[1]
+
+
 def test_ensure_voice_profiles_retries_overly_similar_batch_before_insert():
     calls = 0
 
