@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.auth import CurrentUser, get_current_user, require_core_feature_access, resolve_tenant_id
+from app.auth import CurrentUser, ensure_permission, get_current_user, require_core_feature_access, resolve_tenant_id
 from app.database import get_session
 from app.common.http import forbidden, not_found
 from app.models import ContentKeywordRule, Material, PromptTemplate, SchedulingSetting, TenantAiSetting
@@ -77,6 +77,8 @@ from app.services.ai_config import (
 )
 
 router = APIRouter()
+
+AI_VOICE_PROFILE_MANAGE_PERMISSION = "ai_voice_profiles.manage"
 
 
 # ── AI Providers ──
@@ -199,6 +201,10 @@ def patch_tenant_ai_settings(
 
 # ── AI Account Voice Profiles ──
 
+def _require_voice_profile_manage(current_user: CurrentUser) -> None:
+    ensure_permission(current_user, AI_VOICE_PROFILE_MANAGE_PERMISSION)
+
+
 @router.get("/api/ai-account-voice-profiles", response_model=list[AiAccountVoiceProfileOut])
 def get_ai_account_voice_profiles(
     search: str = "",
@@ -223,6 +229,7 @@ def patch_ai_account_voice_profile(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    _require_voice_profile_manage(current_user)
     target_tenant_id = resolve_tenant_id(current_user, tenant_id)
     try:
         patch_voice_profile(session, tenant_id=target_tenant_id, account_id=account_id, patch=payload.model_dump(exclude_unset=True), actor=current_user.name)
@@ -240,6 +247,7 @@ def rebuild_ai_account_voice_profile(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    _require_voice_profile_manage(current_user)
     target_tenant_id = resolve_tenant_id(current_user, tenant_id)
     try:
         rebuild_voice_profile(
@@ -290,6 +298,7 @@ def rollback_ai_account_voice_profile(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    _require_voice_profile_manage(current_user)
     target_tenant_id = resolve_tenant_id(current_user, tenant_id)
     try:
         rollback_voice_profile(
@@ -313,6 +322,7 @@ def batch_rebuild_ai_account_voice_profiles(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    _require_voice_profile_manage(current_user)
     target_tenant_id = resolve_tenant_id(current_user, tenant_id)
     try:
         result = batch_rebuild_voice_profiles(
@@ -337,6 +347,7 @@ def batch_update_ai_account_voice_profile_status(
     session: Session = Depends(get_session),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    _require_voice_profile_manage(current_user)
     target_tenant_id = resolve_tenant_id(current_user, tenant_id)
     try:
         result = batch_update_voice_profile_status(

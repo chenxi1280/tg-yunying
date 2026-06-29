@@ -778,6 +778,32 @@ def test_system_config_tab_lazy_loads_bind_tab_and_request_sequence():
     assert "await loadSystemConfigTabData(systemConfigTab, requestSeq);" in refresh_body
 
 
+def test_ai_voice_profile_manage_permission_is_assignable():
+    system_config_source = (PROJECT_ROOT / "frontend/src/app/views/SystemConfigView.tsx").read_text()
+    app_modals_source = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
+
+    assert "hasPermission(currentUser, 'ai_voice_profiles.manage')" in system_config_source
+    assert "['ai_voice_profiles.manage', '账号表达卡管理']" in app_modals_source
+
+
+def test_ai_voice_profile_write_routes_have_explicit_manage_guard():
+    source = (PROJECT_ROOT / "backend/app/api/routers/ai_config.py").read_text()
+    guarded_routes = [
+        "patch_ai_account_voice_profile",
+        "rebuild_ai_account_voice_profile",
+        "rollback_ai_account_voice_profile",
+        "batch_rebuild_ai_account_voice_profiles",
+        "batch_update_ai_account_voice_profile_status",
+    ]
+
+    assert "AI_VOICE_PROFILE_MANAGE_PERMISSION = \"ai_voice_profiles.manage\"" in source
+    for route_name in guarded_routes:
+        route_start = source.index(f"def {route_name}")
+        next_route_start = source.find("\n\n@router.", route_start + 1)
+        route_source = source[route_start:next_route_start if next_route_start != -1 else len(source)]
+        assert "_require_voice_profile_manage(current_user)" in route_source
+
+
 def test_blob_export_fetches_use_api_error_for_backend_detail():
     client_source = (PROJECT_ROOT / "frontend/src/shared/api/client.ts").read_text()
     audit_source = (PROJECT_ROOT / "frontend/src/app/views/AuditsView.tsx").read_text()
