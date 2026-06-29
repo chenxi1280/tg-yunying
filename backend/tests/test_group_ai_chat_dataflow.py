@@ -107,6 +107,59 @@ def test_group_ai_pre_filter_drops_same_semantic_cluster_history():
     assert remaining == ["价格问清楚了再说"]
 
 
+def test_group_ai_prefilter_keeps_two_argument_helper_contract(monkeypatch):
+    monkeypatch.setattr(group_ai_chat, "_drop_repeated_planned_items", lambda items, _previous: items)
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_quality_filter_ai_messages",
+        lambda contents, _previous, **_kwargs: ([{"content": content} for content in contents], {}),
+    )
+
+    accepted = group_ai_chat._accept_quality_round(
+        [],
+        [{"content": "今晚照片准不准", "reply_target": None}],
+        [],
+        chat_mode=group_ai_chat.CHAT_MODE_REPLY,
+        context_message_ids=[],
+        fact_anchor_required=False,
+        low_confidence_silence_enabled=False,
+        remaining=1,
+        stats={},
+        rewrite_attempts=0,
+    )
+
+    assert accepted[0]["content"] == "今晚照片准不准"
+    assert accepted[0]["rewrite_attempts"] == 0
+
+
+def test_group_ai_prefilter_records_duplicate_rejection_stats(monkeypatch):
+    monkeypatch.setattr(
+        group_ai_chat,
+        "_quality_filter_ai_messages",
+        lambda contents, _previous, **_kwargs: ([{"content": content} for content in contents], {}),
+    )
+    stats: dict[str, object] = {}
+
+    accepted = group_ai_chat._accept_quality_round(
+        [],
+        [{"content": "照片没p"}, {"content": "价格问清楚了再说"}],
+        ["昨天照片准"],
+        chat_mode=group_ai_chat.CHAT_MODE_REPLY,
+        context_message_ids=[],
+        fact_anchor_required=False,
+        low_confidence_silence_enabled=False,
+        remaining=2,
+        stats=stats,
+        rewrite_attempts=0,
+    )
+
+    assert [item["content"] for item in accepted] == ["价格问清楚了再说"]
+    assert stats["duplicate_risk"] == "semantic_cluster"
+    assert stats["skip_reason"] == "duplicate_risk"
+    assert stats["quality_rejection_counts"]["duplicate_message"] == 1
+    assert stats["quality_rejection_samples"][0]["content"] == "照片没p"
+
+
 def test_group_ai_quality_filter_rejects_vague_ai_filler_before_memory():
     accepted, stats = group_ai_chat._quality_filter_ai_messages(
         ["这个确实不错", "感觉挺靠谱", "花花老师价格大概多少", "可以关注一下"],

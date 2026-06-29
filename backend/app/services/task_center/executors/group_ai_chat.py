@@ -1196,7 +1196,9 @@ def _accept_quality_round(
 ) -> list[dict[str, str]]:
     previous_messages = [*duplicate_baseline_messages, *[item["content"] for item in accepted]]
     clean_items = [item for item in planned_items if not _looks_like_generated_noise(item["content"])]
-    clean_items = _drop_repeated_planned_items(clean_items, previous_messages, stats)
+    pre_filter_items = clean_items
+    clean_items = _drop_repeated_planned_items(clean_items, previous_messages)
+    _record_prefilter_rejections(stats, pre_filter_items, clean_items)
     quality_items, quality_stats = _quality_filter_ai_messages(
         [item["content"] for item in clean_items],
         previous_messages,
@@ -1380,7 +1382,7 @@ def _reply_target_from_action(action: Action, group: TgGroup) -> dict | None:
     }
 
 
-def _drop_repeated_planned_items(items: list[dict], previous_messages: list[str], stats: dict[str, object] | None = None) -> list[dict]:
+def _drop_repeated_planned_items(items: list[dict], previous_messages: list[str]) -> list[dict]:
     normal_contents = [item["content"] for item in items if not item.get("reply_target")]
     remaining = _drop_repeated_ai_messages(normal_contents, previous_messages)
     accepted: list[dict] = []
@@ -1389,11 +1391,24 @@ def _drop_repeated_planned_items(items: list[dict], previous_messages: list[str]
             accepted.append(item)
             continue
         if not remaining or item["content"] != remaining[0]:
-            _record_prefilter_duplicate(stats, str(item["content"]))
             continue
         accepted.append(item)
         remaining.pop(0)
     return accepted
+
+
+def _record_prefilter_rejections(stats: dict[str, object] | None, before_items: list[dict], after_items: list[dict]) -> None:
+    if stats is None:
+        return
+    remaining = [str(item["content"]) for item in after_items if not item.get("reply_target")]
+    for item in before_items:
+        if item.get("reply_target"):
+            continue
+        content = str(item["content"])
+        if remaining and content == remaining[0]:
+            remaining.pop(0)
+            continue
+        _record_prefilter_duplicate(stats, content)
 
 
 def _record_prefilter_duplicate(stats: dict[str, object] | None, content: str) -> None:
