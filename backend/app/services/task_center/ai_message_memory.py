@@ -23,6 +23,9 @@ THIRTY_DAY_WINDOW = timedelta(days=30)
 HIGH_SIMILARITY_THRESHOLD = 0.78
 SEMANTIC_SIMILARITY_THRESHOLD = 0.80
 VAGUE_TEMPLATE_TERMS = ("确实", "感觉", "靠谱", "不错", "可以")
+SPECIFIC_TEMPLATE_TERMS = (
+    "价格", "多少", "怎么", "哪", "问", "照片", "位置", "反馈", "身材", "服务", "新妹子", "上榜", "药",
+)
 _COSMETIC_EMOJI = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]+")
 _REPEATED_PUNCT = re.compile(r"([!?！？。,.，、])\1+")
 _SPACE = re.compile(r"\s+")
@@ -459,8 +462,8 @@ def _semantic_cluster(normalized: str) -> str:
 
 def _template_shell_key(normalized: str) -> str:
     hits = [term for term in VAGUE_TEMPLATE_TERMS if term in normalized]
-    if "感觉" in hits and "确实" in hits and len(hits) >= 3:
-        return "vague-positive:感觉|确实"
+    if len(hits) >= 2 and not any(term in normalized for term in SPECIFIC_TEMPLATE_TERMS):
+        return "vague-positive:generic"
     return ""
 
 

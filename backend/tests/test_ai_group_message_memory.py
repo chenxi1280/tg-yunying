@@ -229,7 +229,7 @@ def test_thirty_day_template_shell_limits_vague_summary_phrase():
             group_id=22,
             task_id="task-1",
             account_id=101,
-            raw_text="这个确实不错，感觉挺靠谱",
+            raw_text="这个确实不错",
             now=now,
         )
         mark_group_ai_message_result(session, first.id, status="success", action_id="action-1")
@@ -242,7 +242,7 @@ def test_thirty_day_template_shell_limits_vague_summary_phrase():
                 group_id=22,
                 task_id="task-1",
                 account_id=102,
-                raw_text="这个确实可以，感觉挺靠谱",
+                raw_text="确实挺不错的",
                 now=now + timedelta(days=20),
             )
 
