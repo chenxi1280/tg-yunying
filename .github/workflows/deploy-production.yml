@@ -48,6 +48,11 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      update_minimax_provider:
+        description: Upsert MiniMax provider from GitHub secret TGYUNYING_MINIMAX_API_KEY after deploy
+        required: false
+        default: false
+        type: boolean
       force_cancel_in_progress:
         description: Explicitly cancel a stuck in-progress Deploy Production run before this manual run
         required: false
@@ -444,6 +449,19 @@ jobs:
           ssh silicon-valley-production-server 'timeout 1200 docker exec -e ACCOUNT_PROFILE_RECONCILE_APPLY=true -e ACCOUNT_PROFILE_RECONCILE_DRAIN_ONCE=true -i tgyunying-backend python -' \
             < .github/scripts/account_profile_initialization_reconcile.py
           echo "ACCOUNT_PROFILE_RECONCILE_END"
+
+      - name: Update MiniMax AI provider
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_minimax_provider }}
+        env:
+          MINIMAX_API_KEY: ${{ secrets.TGYUNYING_MINIMAX_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${MINIMAX_API_KEY}"
+          echo "MINIMAX_PROVIDER_UPDATE_START"
+          ssh silicon-valley-production-server \
+            'timeout 120 docker exec -e MINIMAX_API_KEY -e MINIMAX_BASE_URL=https://api.minimaxi.com/v1 -e MINIMAX_MODEL_NAME=MiniMax-M3 -e MINIMAX_TENANT_ID=1 -i tgyunying-backend python -' \
+            < .github/scripts/update_minimax_provider.py
+          echo "MINIMAX_PROVIDER_UPDATE_END"
 
       - name: Diagnose Tianjin blocked account
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tianjin_blocked_account_diagnostics }}
