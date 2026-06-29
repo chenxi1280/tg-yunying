@@ -989,7 +989,7 @@ def _update_group_ai_stance_memory(
         teacher_target=_target_label(payload.teacher_target, "name"),
         stance="sent",
         act_type=payload.act_type,
-        semantic_cluster="",
+        semantic_cluster=payload.semantic_cluster,
         message_id=remote_message_id,
         summary=_stance_summary(payload),
     )

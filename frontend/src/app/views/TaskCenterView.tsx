@@ -68,6 +68,16 @@ function ActionStatusBadge({ status }: { status?: string | null }) {
   return <StatusBadge status={status} label={actionStatusLabel(status)} />;
 }
 
+function aiGenerationSourceLabel(source?: string | null): string {
+  const labels: Record<string, string> = {
+    human_context: '真人上下文',
+    idle_continuation: '无人续聊',
+    bootstrap: '冷启动',
+  };
+  const key = String(source || '').trim();
+  return labels[key] || key || '-';
+}
+
 function localAccountCoverageLabel(actions: Array<{ account_id: number | null }>, total?: number | null): string {
   const accountIds = actions.map((action) => action.account_id).filter((accountId): accountId is number => Boolean(accountId));
   const covered = new Set(accountIds).size;
@@ -1953,6 +1963,7 @@ export default function TaskCenterView({
   const aiGenerationColumns: ColumnsType<TaskCenterDetail['ai_generation_records'][number]> = [
     { title: '生成记录', dataIndex: 'generation_id', width: 260 },
     { title: '生成状态', dataIndex: 'status', width: 110, render: (value) => <TaskStatusBadge status={value || 'success'} /> },
+    { title: '生成来源', dataIndex: 'generation_source', width: 120, render: (value) => aiGenerationSourceLabel(value) },
     { title: '生成条数', dataIndex: 'generated_count', width: 100 },
     { title: 'Token', dataIndex: 'token_count', width: 100 },
     { title: '上下文', dataIndex: 'context_message_count', width: 90 },

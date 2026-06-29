@@ -8,7 +8,7 @@ import re
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Action, OperationTarget, RuleSet, Task, TgGroup
+from app.models import Action, AiGroupMessageMemory, OperationTarget, RuleSet, Task, TgGroup
 from app.services._common import _now
 from app.services.account_online_state import is_account_online_ready_for_planning, reconcile_runtime_online_sources
 from app.services.account_capacity import (
@@ -76,8 +76,36 @@ DEFERRED_AI_HISTORY_MAX_CHARS = 1000
 AI_GENERATION_REQUEST_BATCH_SIZE = 30
 MAX_AI_QUALITY_GENERATION_ROUNDS = 3
 LOW_RISK_EMOJI_FALLBACK_POOL = ("👍", "👌", "👀", "🤔", "😅", "😂", "🙈", "🤝", "💯", "🤣", "🫡", "🙂")
+QUALITY_REJECTION_SAMPLE_LIMIT = 5
+VOICE_PROFILE_MATCH_SCORE = 100
+VOICE_PROFILE_MISMATCH_SCORE = 0
+VOICE_PROFILE_LONG_SHORT_SENTENCE_LIMIT = 80
+EMOJI_PATTERN = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]")
 RECENT_CYCLE_SCAN_LIMIT = 200
 RECENT_PLANNED_AI_STATUSES = ("pending", "claiming", "executing", "unknown_after_send")
+RECENT_TARGET_USAGE_STATUSES = (*RECENT_PLANNED_AI_STATUSES, "success")
+RECENT_TARGET_USAGE_MEMORY_STATUSES = ("reserved", "success", "unknown_after_send")
+RECENT_TARGET_USAGE_SCAN_LIMIT = 120
+ACTIVE_PROFILE_MATCH_SCORE = 100
+UNAVAILABLE_PROFILE_MATCH_SCORE = 0
+CAUTIOUS_STANCE_MARKERS = ("观望", "质疑", "别突然强夸", "保留", "再看看", "谨慎")
+STRONG_POSITIVE_MARKERS = ("绝对可以", "闭眼冲", "非常靠谱", "很靠谱", "稳了", "必须冲", "放心冲", "强推", "真好")
+VAGUE_AI_FILLER_MARKERS = ("确实不错", "感觉挺靠谱", "挺靠谱", "可以关注一下", "有点意思", "看起来还行")
+VAGUE_AI_FILLER_DETAIL_MARKERS = (
+    "价格",
+    "多少",
+    "怎么",
+    "哪",
+    "问",
+    "照片",
+    "位置",
+    "反馈",
+    "身材",
+    "服务",
+    "新妹子",
+    "上榜",
+    "药",
+)
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -108,7 +136,7 @@ def build_plan(session: Session, task: Task) -> int:
             mark_plan_result(task, hard_progress, 0, {"target_permission": max(1, int(hard_progress.get("deficit") or 1))})
         return 0
     target_label = target.title if target and target.tenant_id == task.tenant_id else group.title
-    config = _with_active_conversation_targets(config, group)
+    config = _with_active_conversation_targets(session, task, config, group)
     accounts = _select_accounts_for_plan(session, task, group, hard_progress, config)
     _reconcile_online_sources_for_plan(session, task, accounts)
     accounts = _online_ready_accounts(session, task, accounts, hard_progress)
@@ -150,7 +178,8 @@ def build_plan(session: Session, task: Task) -> int:
     repeat_window = _semantic_repeat_window(config)
     previous_ai_messages = _recent_ai_messages(session, task, limit=repeat_window)
     planned_ai_messages = _recent_planned_ai_messages(session, task, limit=repeat_window)
-    duplicate_baseline_messages = [*previous_ai_messages, *planned_ai_messages]
+    memory_ai_messages = _recent_group_memory_messages(session, task, group, limit=repeat_window)
+    duplicate_baseline_messages = [*previous_ai_messages, *planned_ai_messages, *memory_ai_messages]
     idle_continuation = False
     if not hard_progress and not force_bootstrap_once and _should_wait_for_human_context(session, task, usable_context_rows, unprocessed_rows):
         idle_decision = _idle_continuation_decision(session, task, config)
@@ -211,11 +240,27 @@ def build_plan(session: Session, task: Task) -> int:
     profile_preview = tenant_learning_profile_preview(session, task.tenant_id, GROUP_CHAT_SCENE)
     audit_learning_profile_use(session, task, profile_preview, "AI活群任务")
     account_prompt_profiles = _account_prompt_profiles(account_profiles, voice_profiles, stance_summaries)
+    coverage_counts = _coverage_counts_for_plan(session, task, selected, round_config)
+    selected = _prioritize_accounts_for_plan(selected, account_memories, coverage_counts, round_config)
     generation_config = _generation_config_with_profile(round_config, account_memories, account_prompt_profiles, topic_thread, topic_plan, profile_preview)
     cycle_id = f"{task.id}:cycle:{cycle_index}"
     reply_targets = _reply_targets_for_plan(session, task, group, usable_context_rows, turn_count, config, hard_progress)
     if reply_targets is None:
         return 0
+    allow_account_repeat = bool(round_config.get("allow_account_repeat", True))
+    burst_plan = _consecutive_burst_plan(round_config, turn_count, allow_account_repeat, cycle_id)
+    burst_account = _slot_account(selected, min(burst_plan), allow_account_repeat) if burst_plan else None
+    generation_slots = _generation_slots_for_plan(
+        cycle_id=cycle_id,
+        accounts=selected,
+        turn_count=turn_count,
+        reply_targets=reply_targets,
+        account_prompt_profiles=account_prompt_profiles,
+        allow_account_repeat=allow_account_repeat,
+        burst_plan=burst_plan,
+        burst_account=burst_account,
+    )
+    generation_config = {**generation_config, "generation_slots": generation_slots}
     requested_reply_count = len(reply_targets)
     normal_count = max(0, turn_count - len(reply_targets))
     defer_ai_generation = _defer_ai_generation_for_plan(config, hard_progress)
@@ -259,8 +304,6 @@ def build_plan(session: Session, task: Task) -> int:
         if hard_progress:
             mark_plan_result(task, hard_progress, 0, {"quality_filter": int(hard_progress.get("deficit") or 1)})
         return 0
-    coverage_counts = _coverage_counts_for_plan(session, task, selected, round_config)
-    selected = _prioritize_accounts_for_plan(selected, account_memories, coverage_counts, round_config)
     add_tokens(task, tokens)
     times = _schedule_times_for_plan(task, hard_progress, len(quality_items), mode)
     quality_items, times = _limit_context_bound_quality_schedule(
@@ -276,14 +319,14 @@ def build_plan(session: Session, task: Task) -> int:
         stats_inc(task, "skipped_count")
         return 0
     context_snapshot_message_id = max(context_message_ids) if context_message_ids else None
+    generation_source = _generation_source(usable_context_rows, idle_continuation)
     used_account_ids: set[int] = set()
-    allow_account_repeat = bool(round_config.get("allow_account_repeat", True))
     hard_blockers: dict[str, int] = {}
     prepared_actions: list[tuple[int, datetime, SendMessagePayload]] = []
     capacity_reservations: list[AccountCapacityReservation] = []
     capacity_cache = AccountCapacityCache()
-    burst_plan = _consecutive_burst_plan(round_config, len(quality_items), allow_account_repeat, cycle_id)
-    burst_account = None
+    account_by_id = {account.id: account for account in selected}
+    action_burst_account = None
     created = 0
     for index, quality_item in enumerate(quality_items):
         content = str(quality_item.get("content") or "")
@@ -296,7 +339,13 @@ def build_plan(session: Session, task: Task) -> int:
                 continue
             content = policy_result.content
         planned_at = times[index]
-        candidate_accounts = [burst_account] if burst_account and index in burst_plan else selected
+        slot_account = account_by_id.get(_quality_slot_account_id(quality_item))
+        if action_burst_account and index in burst_plan:
+            candidate_accounts = [action_burst_account]
+        elif slot_account:
+            candidate_accounts = [slot_account]
+        else:
+            candidate_accounts = selected
         account, planned_at = _choose_capacity_slot(
             session,
             task,
@@ -314,7 +363,7 @@ def build_plan(session: Session, task: Task) -> int:
             stats_inc(task, "skipped_count")
             continue
         if burst_plan and index == min(burst_plan):
-            burst_account = account
+            action_burst_account = account
         used_account_ids.add(account.id)
         has_native_reply = _reply_target_message_id(quality_item) is not None
         filtered_content = content
@@ -339,13 +388,41 @@ def build_plan(session: Session, task: Task) -> int:
         media_segments = [material_result.segment] if material_result.ok and material_result.segment else []
         coverage_payload = _coverage_payload_for_account(round_config, account.id, coverage_counts)
         act_type = _act_type_for_turn(index, quality_item)
-        try:
-            memory = _reserve_planned_message_memory(session, task, group, account.id, filtered_content, config)
-        except DuplicateMessageReservation:
-            _hard_blocker_inc(hard_blockers, "duplicate_message", hard_progress)
+        voice_profile = voice_profiles.get(account.id, {})
+        voice_decision = _voice_profile_match_decision(filtered_content, voice_profile)
+        if voice_decision["score"] <= VOICE_PROFILE_MISMATCH_SCORE:
+            _record_quality_rejection(
+                quality_stats,
+                "voice_profile_mismatch",
+                filtered_content,
+                detail=voice_decision["reason"],
+                account_id=account.id,
+            )
+            _hard_blocker_inc(hard_blockers, "voice_profile_mismatch", hard_progress)
             stats_inc(task, "skipped_count")
             continue
-        voice_profile = voice_profiles.get(account.id, {})
+        stance_summary = stance_summaries.get(account.id, "")
+        if stance_reason := _stance_conflict_reason(filtered_content, stance_summary):
+            _record_quality_rejection(
+                quality_stats,
+                "stance_conflict",
+                filtered_content,
+                detail=stance_reason,
+                account_id=account.id,
+            )
+            _hard_blocker_inc(hard_blockers, "stance_conflict", hard_progress)
+            stats_inc(task, "skipped_count")
+            continue
+        try:
+            memory = _reserve_planned_message_memory(session, task, group, account.id, filtered_content, config, profile_preview)
+        except DuplicateMessageReservation as exc:
+            rejection_reason = _duplicate_window_quality_reason(exc.duplicate_window)
+            _record_quality_rejection(quality_stats, rejection_reason, filtered_content, detail=exc.duplicate_window, account_id=account.id)
+            if rejection_reason == "duplicate_message":
+                quality_stats["duplicate_risk"] = exc.duplicate_window
+            _hard_blocker_inc(hard_blockers, rejection_reason, hard_progress)
+            stats_inc(task, "skipped_count")
+            continue
         prepared_actions.append(
             (
                 account.id,
@@ -363,13 +440,15 @@ def build_plan(session: Session, task: Task) -> int:
                     account_role=_role_for_account(account.id, index, config),
                     account_memory=account_memories.get(str(account.id), ""),
                     account_profile=account_prompt_profiles.get(str(account.id), ""),
-                    slot_id=_slot_id(cycle_id, index),
+                    slot_id=_quality_slot_id(quality_item) or _slot_id(cycle_id, index),
                     act_type=act_type,
                     account_voice_profile_version=int(voice_profile.get("version") or 0),
                     account_voice_profile_summary=str(voice_profile.get("summary") or ""),
-                    stance_summary=stance_summaries.get(account.id, ""),
+                    account_voice_profile_match_score=int(voice_decision["score"]),
+                    account_voice_profile_match_reason=str(voice_decision["reason"]),
+                    stance_summary=stance_summary,
                     ai_message_memory_id=memory.id if memory else "",
-                    rewrite_attempts=0,
+                    rewrite_attempts=int(quality_item.get("rewrite_attempts") or 0),
                     human_quality_decision=str(quality_item.get("human_quality_decision") or "accepted"),
                     topic_direction=dict(config.get("active_topic_direction") or {}),
                     teacher_target=dict(config.get("active_teacher_target") or {}),
@@ -389,6 +468,7 @@ def build_plan(session: Session, task: Task) -> int:
                     context_expire_after_messages=int(config.get("context_expire_after_messages") or 0),
                     ai_generation_id=cycle_id,
                     ai_generation_status="pending" if deferred_ai else "success",
+                    generation_source=generation_source,
                     ai_generation_history=_deferred_ai_history(history) if deferred_ai else "",
                     ai_generation_tokens=tokens,
                     ai_generation_count=len(quality_items),
@@ -399,6 +479,8 @@ def build_plan(session: Session, task: Task) -> int:
                     ai_generation_memory_count=len(account_memories),
                     profile_scene=str(profile_preview.get("profile_scene") or GROUP_CHAT_SCENE),
                     profile_version=int(profile_preview.get("profile_version") or 0),
+                    profile_match_score=_profile_match_score(profile_preview),
+                    profile_match_reason=_profile_match_reason(profile_preview),
                     profile_hit_summary=str(profile_preview.get("profile_hit_summary") or ""),
                     profile_unavailable_reason=str(profile_preview.get("profile_unavailable_reason") or ""),
                     rule_set_id=rule_version.rule_set_id if rule_version else None,
@@ -443,6 +525,7 @@ def build_plan(session: Session, task: Task) -> int:
     stats["ramp_ratio"] = ramp_ratio
     stats["context_mode"] = _context_mode(usable_context_rows, idle_continuation)
     stats["chat_mode"] = chat_mode
+    stats["generation_source"] = generation_source
     stats["reply_planned_count"] = prepared_reply_count
     if quality_stats.get("duplicate_risk"):
         stats["duplicate_risk"] = quality_stats["duplicate_risk"]
@@ -458,6 +541,12 @@ def build_plan(session: Session, task: Task) -> int:
         stats["quality_fill_rounds"] = quality_stats["quality_fill_rounds"]
     if quality_stats.get("quality_fallback_count"):
         stats["quality_fallback_count"] = quality_stats["quality_fallback_count"]
+    if quality_stats.get("ai_generation_candidate_count"):
+        stats["ai_generation_candidate_count"] = quality_stats["ai_generation_candidate_count"]
+    if quality_stats.get("quality_rejection_counts"):
+        stats["quality_rejection_counts"] = quality_stats["quality_rejection_counts"]
+    if quality_stats.get("quality_rejection_samples"):
+        stats["quality_rejection_samples"] = quality_stats["quality_rejection_samples"]
     stats.pop("skip_reason", None)
     stats.pop("idle_continuation_next_run_at", None)
     stats.pop("force_bootstrap_once", None)
@@ -707,6 +796,72 @@ def _account_prompt_profiles(
     return result
 
 
+def _generation_slots_for_plan(
+    *,
+    cycle_id: str,
+    accounts: list,
+    turn_count: int,
+    reply_targets: list[dict],
+    account_prompt_profiles: dict[str, str],
+    allow_account_repeat: bool,
+    burst_plan: dict[int, dict] | None = None,
+    burst_account=None,
+) -> list[dict]:
+    slots: list[dict] = []
+    for index in range(max(0, int(turn_count or 0))):
+        account = (
+            burst_account
+            if burst_plan and index in burst_plan and burst_account
+            else _slot_account(accounts, index, allow_account_repeat)
+        )
+        if not account:
+            break
+        reply_target = reply_targets[index] if index < len(reply_targets) else None
+        slots.append(_generation_slot(cycle_id, index, account, reply_target, account_prompt_profiles))
+    return slots
+
+
+def _slot_account(accounts: list, index: int, allow_account_repeat: bool):
+    if not accounts:
+        return None
+    if allow_account_repeat:
+        return accounts[index % len(accounts)]
+    return accounts[index] if index < len(accounts) else None
+
+
+def _generation_slot(cycle_id: str, index: int, account, reply_target: dict | None, profiles: dict[str, str]) -> dict:
+    quality_item = {"reply_target": reply_target} if reply_target else {}
+    content = str((reply_target or {}).get("content") or "")
+    return {
+        "slot_id": _slot_id(cycle_id, index),
+        "sequence_index": index + 1,
+        "account_id": account.id,
+        "act_type": _act_type_for_turn(index, quality_item),
+        "account_profile": profiles.get(str(account.id), ""),
+        "reply_to_message_id": _reply_target_message_id(quality_item),
+        "reply_to_content": content,
+    }
+
+
+def _generation_slots(config: dict) -> list[dict]:
+    slots = config.get("generation_slots") if isinstance(config.get("generation_slots"), list) else []
+    return [dict(slot) for slot in slots if isinstance(slot, dict)]
+
+
+def _quality_slot(quality_item: dict) -> dict:
+    slot = quality_item.get("slot") if isinstance(quality_item, dict) else {}
+    return dict(slot) if isinstance(slot, dict) else {}
+
+
+def _quality_slot_id(quality_item: dict) -> str:
+    return str(quality_item.get("slot_id") or _quality_slot(quality_item).get("slot_id") or "")
+
+
+def _quality_slot_account_id(quality_item: dict) -> int:
+    value = quality_item.get("slot_account_id") or _quality_slot(quality_item).get("account_id")
+    return int(value or 0) if str(value or "").isdigit() else 0
+
+
 def _slot_id(cycle_id: str, index: int) -> str:
     return f"{cycle_id}:turn:{index + 1}"
 
@@ -714,6 +869,8 @@ def _slot_id(cycle_id: str, index: int) -> str:
 def _act_type_for_turn(index: int, quality_item: dict) -> str:
     if quality_item.get("quality_fallback") == "emoji_react":
         return "emoji_react"
+    if quality_item.get("act_type"):
+        return str(quality_item.get("act_type"))
     if _reply_target_message_id(quality_item) is not None:
         return "context_reply"
     act_types = ("short_react", "detail_follow", "light_question", "side_comment")
@@ -727,6 +884,7 @@ def _reserve_planned_message_memory(
     account_id: int,
     content: str,
     config: dict,
+    profile_preview: dict,
 ):
     if not content.strip():
         return None
@@ -739,7 +897,23 @@ def _reserve_planned_message_memory(
         raw_text=content,
         topic_direction=_active_topic_text(config, group),
         teacher_target=_active_teacher_text(config),
+        profile_version=int(profile_preview.get("profile_version") or 0) or None,
+        profile_match_score=_profile_match_score(profile_preview),
+        profile_match_reason=_profile_match_reason(profile_preview),
     )
+
+
+def _profile_match_score(profile_preview: dict) -> int:
+    if str(profile_preview.get("profile_hit_summary") or "").strip():
+        return ACTIVE_PROFILE_MATCH_SCORE
+    return UNAVAILABLE_PROFILE_MATCH_SCORE
+
+
+def _profile_match_reason(profile_preview: dict) -> str:
+    hit_summary = str(profile_preview.get("profile_hit_summary") or "").strip()
+    if hit_summary:
+        return hit_summary
+    return str(profile_preview.get("profile_unavailable_reason") or "profile_unavailable").strip()
 
 
 def _increment_coverage_count(config: dict, account_id: int, counts: dict[int, int]) -> None:
@@ -812,6 +986,10 @@ def _deferred_ai_history(history: str) -> str:
     return value[-DEFERRED_AI_HISTORY_MAX_CHARS:] if value else ""
 
 
+def _generation_config_for_slots(config: dict, slots: list[dict]) -> dict:
+    return {**config, "generation_slots": slots}
+
+
 def _generate_group_planned_items(
     session: Session,
     task: Task,
@@ -825,11 +1003,14 @@ def _generate_group_planned_items(
 ) -> tuple[list[dict], int]:
     items: list[dict] = []
     tokens = 0
+    generation_slots = _generation_slots(config)
+    reply_slots = generation_slots[: len(reply_targets)]
+    normal_slots = generation_slots[len(reply_targets):]
     if reply_targets:
         contents, used_tokens = generate_group_reply_messages(
             session,
             task.tenant_id,
-            config,
+            _generation_config_for_slots(config, reply_slots),
             reply_targets=reply_targets,
             target_label=target_label,
             history=history,
@@ -841,13 +1022,18 @@ def _generate_group_planned_items(
                 raise AiGenerationUnavailable("AI 引用回复候选不足，已跳过本轮")
             normal_count += shortfall
         tokens += used_tokens
-        items.extend({"content": content, "reply_target": target} for content, target in zip(contents, reply_targets, strict=False))
+        items.extend(
+            _planned_item(content, target, _slot_at(reply_slots, index))
+            for index, (content, target) in enumerate(zip(contents, reply_targets, strict=False))
+        )
     if normal_count > 0:
+        normal_offset = 0
         for batch_count in _normal_generation_batches(normal_count):
+            batch_slots = normal_slots[normal_offset: normal_offset + batch_count]
             contents, used_tokens = generate_group_messages(
                 session,
                 task.tenant_id,
-                config,
+                _generation_config_for_slots(config, batch_slots),
                 count=batch_count,
                 target_label=target_label,
                 history=history,
@@ -856,8 +1042,22 @@ def _generate_group_planned_items(
                 stats_inc(task, "normal_candidate_shortfall_count")
                 raise AiGenerationUnavailable(AI_NORMAL_CANDIDATE_SHORTFALL_MESSAGE)
             tokens += used_tokens
-            items.extend({"content": content, "reply_target": None} for content in contents)
+            items.extend(_planned_item(content, None, _slot_at(batch_slots, index)) for index, content in enumerate(contents))
+            normal_offset += batch_count
     return items, tokens
+
+
+def _slot_at(slots: list[dict], index: int) -> dict | None:
+    return slots[index] if 0 <= index < len(slots) else None
+
+
+def _planned_item(content: str, reply_target: dict | None, slot: dict | None) -> dict:
+    item = {"content": content, "reply_target": reply_target}
+    if slot:
+        item["slot"] = dict(slot)
+        item["slot_id"] = str(slot.get("slot_id") or "")
+        item["act_type"] = str(slot.get("act_type") or "")
+    return item
 
 
 def _generate_quality_filled_items(
@@ -874,10 +1074,11 @@ def _generate_quality_filled_items(
         remaining = max(0, int(turn_count or 0) - len(accepted))
         if remaining <= 0:
             break
+        round_config = _generation_config_for_pending_slots(config, accepted, remaining)
         planned_items, used_tokens = _generate_quality_round_planned_items(
             session,
             task,
-            config,
+            round_config,
             reply_targets=reply_targets,
             normal_count=normal_count,
             target_label=target_label,
@@ -897,12 +1098,13 @@ def _generate_quality_filled_items(
             low_confidence_silence_enabled=low_confidence_silence_enabled,
             remaining=remaining,
             stats=stats,
+            rewrite_attempts=round_index,
         )
         stats["ai_generation_rounds"] = round_index + 1
         if len(accepted) < int(turn_count or 0):
             stats["quality_fill_rounds"] = round_index + 1
     if len(accepted) < int(turn_count or 0) and enable_quality_fallback:
-        fallback = _emoji_fallback_items(int(turn_count or 0) - len(accepted), accepted)
+        fallback = _emoji_fallback_items(int(turn_count or 0) - len(accepted), accepted, duplicate_baseline_messages)
         accepted.extend(fallback)
         stats["quality_fallback_count"] = len(fallback)
     return accepted[: max(0, int(turn_count or 0))], tokens, stats
@@ -933,6 +1135,20 @@ def _generate_quality_round_planned_items(
     )
 
 
+def _generation_config_for_pending_slots(config: dict, accepted: list[dict[str, str]], remaining: int) -> dict:
+    pending_slots = _pending_generation_slots(config, accepted, remaining)
+    return _generation_config_for_slots(config, pending_slots) if pending_slots else config
+
+
+def _pending_generation_slots(config: dict, accepted: list[dict[str, str]], remaining: int) -> list[dict]:
+    slots = _generation_slots(config)
+    if not slots:
+        return []
+    accepted_slot_ids = {_quality_slot_id(item) for item in accepted}
+    pending = [slot for slot in slots if str(slot.get("slot_id") or "") not in accepted_slot_ids]
+    return pending[: max(0, int(remaining or 0))]
+
+
 def _accept_quality_round(
     accepted: list[dict[str, str]],
     planned_items: list[dict],
@@ -944,6 +1160,7 @@ def _accept_quality_round(
     low_confidence_silence_enabled: bool,
     remaining: int,
     stats: dict[str, object],
+    rewrite_attempts: int,
 ) -> list[dict[str, str]]:
     previous_messages = [*duplicate_baseline_messages, *[item["content"] for item in accepted]]
     clean_items = [item for item in planned_items if not _looks_like_generated_noise(item["content"])]
@@ -957,12 +1174,51 @@ def _accept_quality_round(
         low_confidence_silence_enabled=low_confidence_silence_enabled,
         limit=remaining,
     )
-    stats.update({key: value for key, value in quality_stats.items() if value})
-    return [*accepted, *_attach_reply_targets(quality_items, clean_items)[:remaining]]
+    _merge_quality_stats(stats, quality_stats)
+    attached = _attach_reply_targets(quality_items, clean_items)[:remaining]
+    return [*accepted, *_attach_rewrite_attempts(attached, rewrite_attempts)]
 
 
-def _emoji_fallback_items(count: int, accepted: list[dict[str, str]]) -> list[dict[str, str]]:
-    used = {item["content"] for item in accepted}
+def _attach_rewrite_attempts(items: list[dict], rewrite_attempts: int) -> list[dict]:
+    return [{**item, "rewrite_attempts": max(0, int(rewrite_attempts or 0))} for item in items]
+
+
+def _merge_quality_stats(target: dict[str, object], source: dict[str, object]) -> None:
+    for key, value in source.items():
+        if not value:
+            continue
+        if key == "quality_rejection_counts":
+            _merge_quality_rejection_counts(target, value)
+            continue
+        if key == "quality_rejection_samples":
+            _merge_quality_rejection_samples(target, value)
+            continue
+        if key == "ai_generation_candidate_count":
+            target[key] = int(target.get(key) or 0) + int(value or 0)
+            continue
+        target[key] = value
+
+
+def _merge_quality_rejection_counts(target: dict[str, object], value: object) -> None:
+    existing = dict(target.get("quality_rejection_counts") or {})
+    for reason, count in dict(value or {}).items():
+        existing[str(reason)] = int(existing.get(str(reason)) or 0) + int(count or 0)
+    target["quality_rejection_counts"] = existing
+
+
+def _merge_quality_rejection_samples(target: dict[str, object], value: object) -> None:
+    samples = list(target.get("quality_rejection_samples") or [])
+    for sample in list(value or []):
+        reason = str((sample or {}).get("reason") or "")
+        same_reason_count = sum(1 for item in samples if str(item.get("reason") or "") == reason)
+        if same_reason_count < QUALITY_REJECTION_SAMPLE_LIMIT:
+            samples.append(dict(sample or {}))
+    target["quality_rejection_samples"] = samples
+
+
+def _emoji_fallback_items(count: int, accepted: list[dict[str, str]], duplicate_baseline_messages: list[str]) -> list[dict[str, str]]:
+    used = {str(item["content"]).strip() for item in accepted}
+    used.update(str(message).strip() for message in duplicate_baseline_messages)
     available = [emoji for emoji in LOW_RISK_EMOJI_FALLBACK_POOL if emoji not in used]
     selected = random.sample(available, k=min(max(0, int(count or 0)), len(available)))
     return [
@@ -974,6 +1230,7 @@ def _emoji_fallback_items(count: int, accepted: list[dict[str, str]]) -> list[di
             "quality_skip_reason": "quality_fallback",
             "quality_fallback": "emoji_react",
             "human_quality_decision": "quality_fallback",
+            "rewrite_attempts": MAX_AI_QUALITY_GENERATION_ROUNDS - 1,
         }
         for emoji in selected
     ]
@@ -1107,8 +1364,23 @@ def _drop_repeated_planned_items(items: list[dict], previous_messages: list[str]
 
 
 def _attach_reply_targets(quality_items: list[dict[str, str]], planned_items: list[dict]) -> list[dict]:
-    by_content: dict[str, dict | None] = {item["content"]: item.get("reply_target") for item in planned_items}
-    return [{**item, "reply_target": by_content.get(item["content"])} for item in quality_items]
+    by_content: dict[str, dict] = {item["content"]: item for item in planned_items}
+    attached: list[dict] = []
+    for item in quality_items:
+        planned = by_content.get(item["content"]) or {}
+        attached.append(_attach_planned_metadata(item, planned))
+    return attached
+
+
+def _attach_planned_metadata(item: dict, planned: dict) -> dict:
+    result = {**item, "reply_target": planned.get("reply_target")}
+    if planned.get("slot"):
+        result["slot"] = dict(planned["slot"])
+    if planned.get("slot_id"):
+        result["slot_id"] = planned["slot_id"]
+    if planned.get("act_type"):
+        result["act_type"] = planned["act_type"]
+    return result
 
 
 def _reply_target_message_id(item: dict) -> int | None:
@@ -1515,15 +1787,17 @@ def _prioritize_accounts_for_plan(
     )
 
 
-def _with_active_conversation_targets(config: dict, group: TgGroup) -> dict:
-    topic = _choose_topic_direction(config, group)
-    teacher = _choose_teacher_target(config)
+def _with_active_conversation_targets(session: Session, task: Task, config: dict, group: TgGroup) -> dict:
+    usage = _recent_conversation_target_usage(session, task, group)
+    topic = _choose_topic_direction(config, group, usage.get("topics", {}))
+    teacher = _choose_teacher_target(config, usage.get("teachers", {}))
     return {**config, "active_topic_direction": topic, "active_teacher_target": teacher}
 
 
-def _choose_topic_direction(config: dict, group: TgGroup) -> dict:
+def _choose_topic_direction(config: dict, group: TgGroup, recent_counts: dict[str, int] | None = None) -> dict:
     directions = [item for item in config.get("topic_directions") or [] if str(item.get("title") or "").strip()]
     if directions:
+        directions = _least_recently_used_items(directions, recent_counts or {}, label_key="title")
         total = sum(max(0.01, float(item.get("weight") or 1)) for item in directions)
         marker = random.random() * total
         cursor = 0.0
@@ -1535,11 +1809,85 @@ def _choose_topic_direction(config: dict, group: TgGroup) -> dict:
     return {"title": fallback, "description": "", "weight": 1}
 
 
-def _choose_teacher_target(config: dict) -> dict:
+def _choose_teacher_target(config: dict, recent_counts: dict[str, int] | None = None) -> dict:
     teachers = [item for item in config.get("teacher_targets") or [] if str(item.get("name") or "").strip()]
     if not teachers:
         return {}
+    teachers = _least_recently_used_items(teachers, recent_counts or {}, label_key="name")
     return dict(sorted(teachers, key=lambda item: int(item.get("priority") or 1), reverse=True)[0])
+
+
+def _least_recently_used_items(items: list[dict], recent_counts: dict[str, int], *, label_key: str) -> list[dict]:
+    if len(items) <= 1:
+        return items
+    usage_counts = [_usage_count(item, recent_counts, label_key) for item in items]
+    least_used = min(usage_counts)
+    return [item for item, count in zip(items, usage_counts) if count == least_used]
+
+
+def _recent_conversation_target_usage(session: Session, task: Task, group: TgGroup) -> dict[str, dict[str, int]]:
+    usage = {"topics": {}, "teachers": {}}
+    memory_rows = session.scalars(
+        select(AiGroupMessageMemory)
+        .where(
+            AiGroupMessageMemory.tenant_id == task.tenant_id,
+            AiGroupMessageMemory.group_id == group.id,
+            AiGroupMessageMemory.status.in_(RECENT_TARGET_USAGE_MEMORY_STATUSES),
+        )
+        .order_by(AiGroupMessageMemory.planned_at.desc())
+        .limit(RECENT_TARGET_USAGE_SCAN_LIMIT)
+    )
+    for memory in memory_rows:
+        _increment_usage(usage["topics"], _normalize_conversation_label(memory.topic_direction))
+        _increment_usage(usage["teachers"], _normalize_conversation_label(memory.teacher_target))
+    if _has_conversation_usage(usage):
+        return usage
+    rows = session.scalars(
+        select(Action)
+        .where(
+            Action.tenant_id == task.tenant_id,
+            Action.task_type == "group_ai_chat",
+            Action.action_type == "send_message",
+            Action.status.in_(RECENT_TARGET_USAGE_STATUSES),
+        )
+        .order_by(Action.created_at.desc())
+        .limit(RECENT_TARGET_USAGE_SCAN_LIMIT)
+    )
+    for action in rows:
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        if _payload_group_id(payload) != group.id:
+            continue
+        _increment_usage(usage["topics"], _conversation_label(payload.get("topic_direction"), "title"))
+        _increment_usage(usage["teachers"], _conversation_label(payload.get("teacher_target"), "name"))
+    return usage
+
+
+def _has_conversation_usage(usage: dict[str, dict[str, int]]) -> bool:
+    return bool(usage.get("topics") or usage.get("teachers"))
+
+
+def _usage_count(item: dict, recent_counts: dict[str, int], label_key: str) -> int:
+    return int(recent_counts.get(_normalize_conversation_label(str(item.get(label_key) or "")), 0) or 0)
+
+
+def _increment_usage(container: dict[str, int], label: str) -> None:
+    if label:
+        container[label] = int(container.get(label, 0) or 0) + 1
+
+
+def _conversation_label(value: object, key: str) -> str:
+    if isinstance(value, dict):
+        return _normalize_conversation_label(str(value.get(key) or ""))
+    return _normalize_conversation_label(str(value or ""))
+
+
+def _normalize_conversation_label(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+
+def _payload_group_id(payload: dict) -> int:
+    raw = str(payload.get("group_id") or "").strip()
+    return int(raw) if raw.isdigit() else 0
 
 
 def _active_topic_text(config: dict, group: TgGroup) -> str:
@@ -1597,6 +1945,12 @@ def _context_mode(context_rows: list, idle_continuation: bool) -> str:
     if idle_continuation:
         return "idle_continuation"
     return "history" if context_rows else "bootstrap"
+
+
+def _generation_source(context_rows: list, idle_continuation: bool) -> str:
+    if idle_continuation:
+        return "idle_continuation"
+    return "human_context" if context_rows else "bootstrap"
 
 
 def _chat_mode(context_rows: list, idle_continuation: bool) -> str:
@@ -1783,6 +2137,21 @@ def _recent_planned_ai_messages(session: Session, task: Task, *, limit: int) -> 
         if content and not _looks_like_internal_prompt(content):
             messages.append(content)
     return list(reversed(messages))
+
+
+def _recent_group_memory_messages(session: Session, task: Task, group: TgGroup, *, limit: int) -> list[str]:
+    rows = session.scalars(
+        select(AiGroupMessageMemory)
+        .where(
+            AiGroupMessageMemory.tenant_id == task.tenant_id,
+            AiGroupMessageMemory.group_id == group.id,
+            AiGroupMessageMemory.status.in_(RECENT_TARGET_USAGE_MEMORY_STATUSES),
+        )
+        .order_by(AiGroupMessageMemory.planned_at.desc())
+        .limit(max(1, int(limit)))
+    )
+    messages = [str(row.normalized_text or row.raw_text or "").strip() for row in rows]
+    return list(reversed([message for message in messages if message and not _looks_like_internal_prompt(message)]))
 
 
 def _recent_account_memories(session: Session, task: Task, account_ids: list[int], *, depth: int) -> dict[str, str]:
@@ -2057,12 +2426,12 @@ def _quality_filter_ai_messages(
     fact_anchor_required: bool,
     low_confidence_silence_enabled: bool,
     limit: int,
-) -> tuple[list[dict[str, str]], dict[str, str]]:
+) -> tuple[list[dict[str, str]], dict[str, object]]:
     accepted: list[dict[str, str]] = []
     accepted_clusters: set[str] = set()
     previous_clusters = {_semantic_cluster(message) for message in previous_messages}
     previous_clusters.discard("")
-    stats: dict[str, str] = {}
+    stats: dict[str, object] = {"ai_generation_candidate_count": len(contents)}
     for content in contents:
         cluster = _semantic_cluster(content)
         item = {
@@ -2072,15 +2441,22 @@ def _quality_filter_ai_messages(
             "hallucination_risk": "",
             "quality_skip_reason": "",
         }
+        if _looks_like_vague_ai_filler(content):
+            _record_quality_rejection(stats, "template_shell_limited", content, detail="vague_ai_filler")
+            stats["skip_reason"] = stats.get("skip_reason") or "template_shell_limited"
+            continue
         if cluster and (cluster in accepted_clusters or cluster in previous_clusters):
+            _record_quality_rejection(stats, "duplicate_message", content, detail="semantic_cluster")
             stats["duplicate_risk"] = "semantic_cluster"
             stats["skip_reason"] = stats.get("skip_reason") or "duplicate_risk"
             continue
         if fact_anchor_required and _has_unanchored_idle_fact(content, chat_mode=chat_mode, anchor_message_ids=anchor_message_ids):
+            _record_quality_rejection(stats, "hallucination_risk", content, detail="unanchored_idle_fact")
             stats["hallucination_risk"] = "high"
             stats["skip_reason"] = "hallucination_risk"
             continue
         if low_confidence_silence_enabled and chat_mode == CHAT_MODE_BOOTSTRAP and _looks_like_fact_claim(content):
+            _record_quality_rejection(stats, "context_insufficient", content, detail="low_confidence_bootstrap")
             stats["hallucination_risk"] = "low_confidence_bootstrap"
             stats["skip_reason"] = "hallucination_risk"
             continue
@@ -2090,6 +2466,76 @@ def _quality_filter_ai_messages(
         if len(accepted) >= max(1, int(limit or 1)):
             break
     return accepted, stats
+
+
+def _looks_like_vague_ai_filler(content: str) -> bool:
+    text = _normalize_for_similarity(content)
+    if not text or not any(marker in text for marker in VAGUE_AI_FILLER_MARKERS):
+        return False
+    if "?" in str(content) or "？" in str(content):
+        return False
+    return not any(marker in text for marker in VAGUE_AI_FILLER_DETAIL_MARKERS)
+
+
+def _duplicate_window_quality_reason(duplicate_window: str) -> str:
+    return "template_shell_limited" if str(duplicate_window or "").startswith("30d_template_shell") else "duplicate_message"
+
+
+def _record_quality_rejection(
+    stats: dict[str, object],
+    reason: str,
+    content: str,
+    *,
+    detail: str = "",
+    account_id: int | None = None,
+) -> None:
+    counts = dict(stats.get("quality_rejection_counts") or {})
+    counts[reason] = int(counts.get(reason) or 0) + 1
+    stats["quality_rejection_counts"] = counts
+    samples = list(stats.get("quality_rejection_samples") or [])
+    same_reason_count = sum(1 for item in samples if str(item.get("reason") or "") == reason)
+    if same_reason_count >= QUALITY_REJECTION_SAMPLE_LIMIT:
+        return
+    samples.append({"reason": reason, "content": content, "status": "filtered", "account_id": account_id, "detail": detail})
+    stats["quality_rejection_samples"] = samples
+
+
+def _voice_profile_match_decision(content: str, voice_profile: dict) -> dict[str, object]:
+    summary = str(voice_profile.get("summary") or "")
+    if not summary.strip():
+        return {"score": VOICE_PROFILE_MATCH_SCORE, "reason": ""}
+    normalized_summary = _normalize_for_similarity(summary)
+    emoji_count = len(EMOJI_PATTERN.findall(content))
+    normalized_content = _normalize_for_similarity(content)
+    if _profile_rejects_emoji(normalized_summary) and (emoji_count >= 2 or _is_emoji_only_message(content)):
+        return {"score": VOICE_PROFILE_MISMATCH_SCORE, "reason": "账号表达卡要求少表情"}
+    if "短句" in normalized_summary and len(normalized_content) > VOICE_PROFILE_LONG_SHORT_SENTENCE_LIMIT:
+        return {"score": VOICE_PROFILE_MISMATCH_SCORE, "reason": "账号表达卡要求短句"}
+    return {"score": VOICE_PROFILE_MATCH_SCORE, "reason": summary[:80]}
+
+
+def _stance_conflict_reason(content: str, stance_summary: str) -> str:
+    if not stance_summary.strip():
+        return ""
+    normalized_stance = _normalize_for_similarity(stance_summary)
+    normalized_content = _normalize_for_similarity(content)
+    if _has_marker(normalized_stance, CAUTIOUS_STANCE_MARKERS) and _has_marker(normalized_content, STRONG_POSITIVE_MARKERS):
+        return "观望立场不能突然强肯定"
+    return ""
+
+
+def _has_marker(normalized_text: str, markers: tuple[str, ...]) -> bool:
+    return any(_normalize_for_similarity(marker) in normalized_text for marker in markers)
+
+
+def _profile_rejects_emoji(normalized_summary: str) -> bool:
+    markers = ("少表情", "不发表情", "不用表情", "不连续发表情", "少emoji", "不用emoji")
+    return any(marker in normalized_summary for marker in markers)
+
+
+def _is_emoji_only_message(content: str) -> bool:
+    stripped = re.sub(r"\s+", "", content)
+    return bool(stripped) and not EMOJI_PATTERN.sub("", stripped)
 
 
 def _semantic_cluster(content: str) -> str:

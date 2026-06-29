@@ -133,6 +133,11 @@ export type AiAccountVoiceProfileBatchRebuildOut = {
   skipped: number;
 };
 
+export type AiAccountVoiceProfileBatchStatusOut = {
+  updated: number;
+  skipped: number;
+};
+
 export type AiAccountVoiceProfileVersion = {
   version: number;
   status: string;

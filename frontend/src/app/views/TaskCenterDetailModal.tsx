@@ -486,7 +486,7 @@ export function TaskCenterDetailModal({
           )}
           <TaskAccountOnlineSummaryPanel summary={detail.account_online_summary} />
           <TaskAIQualityFunnelPanel funnel={detail.ai_quality_funnel} />
-          {detail.ai_generation_records.length > 0 && <Table rowKey="generation_id" columns={aiGenerationColumns} dataSource={detail.ai_generation_records} pagination={false} size="small" scroll={{ x: 950 }} />}
+          {detail.ai_generation_records.length > 0 && <Table rowKey="generation_id" columns={aiGenerationColumns} dataSource={detail.ai_generation_records} pagination={false} size="small" scroll={{ x: 1070 }} />}
           {detail.ai_account_profiles.length > 0 && <Table rowKey="account_id" columns={aiAccountProfileColumns} dataSource={detail.ai_account_profiles} pagination={false} size="small" scroll={{ x: 900 }} />}
           <Table<TaskCenterDetail['ai_cycles'][number]>
             rowKey="cycle_id"

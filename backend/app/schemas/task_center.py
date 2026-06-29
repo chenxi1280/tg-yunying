@@ -850,6 +850,7 @@ class TaskAIGenerationRecordOut(BaseModel):
     generation_id: str
     cycle_id: str
     status: str = ""
+    generation_source: str = ""
     generated_count: int = 0
     token_count: int = 0
     context_message_count: int = 0

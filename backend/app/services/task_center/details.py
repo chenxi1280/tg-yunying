@@ -773,6 +773,7 @@ def _ai_cycles(actions: list[Action]) -> list[dict[str, Any]]:
                 "topic_thread": str(payload.get("topic_thread") or ""),
                 "topic_plan": str(payload.get("topic_plan") or ""),
                 "intent": str(payload.get("intent") or ""),
+                "generation_source": _generation_source_from_payload(payload),
                 "content": str(payload.get("message_text") or ""),
                 "reply_to_message_id": int(payload.get("reply_to_message_id")) if payload.get("reply_to_message_id") else None,
                 "reply_target_label": str(payload.get("reply_target_label") or ""),
@@ -806,6 +807,7 @@ def _ai_generation_records(actions: list[Action]) -> list[dict[str, Any]]:
                 "generation_id": generation_id,
                 "cycle_id": str(payload.get("cycle_id") or generation_id),
                 "status": str(payload.get("ai_generation_status") or ""),
+                "generation_source": _generation_source_from_payload(payload),
                 "generated_count": int(payload.get("ai_generation_count") or 0),
                 "token_count": int(payload.get("ai_generation_tokens") or 0),
                 "context_message_count": int(payload.get("ai_generation_context_count") or 0),
@@ -825,6 +827,8 @@ def _ai_generation_records(actions: list[Action]) -> list[dict[str, Any]]:
         record["token_count"] = max(record["token_count"], int(payload.get("ai_generation_tokens") or 0))
         record["context_message_count"] = max(record["context_message_count"], int(payload.get("ai_generation_context_count") or 0))
         record["account_memory_count"] = max(record["account_memory_count"], int(payload.get("ai_generation_memory_count") or 0))
+        if not record.get("generation_source"):
+            record["generation_source"] = _generation_source_from_payload(payload)
         if action.created_at < record["created_at"]:
             record["created_at"] = action.created_at
         if action.scheduled_at < record["scheduled_at"]:
@@ -832,8 +836,23 @@ def _ai_generation_records(actions: list[Action]) -> list[dict[str, Any]]:
     return sorted(records.values(), key=lambda item: item["created_at"], reverse=True)
 
 
-def _ai_quality_funnel(actions: list[Action]) -> dict[str, Any]:
+def _generation_source_from_payload(payload: dict[str, Any]) -> str:
+    source = str(payload.get("generation_source") or "").strip()
+    if source:
+        return source
+    chat_mode = str(payload.get("chat_mode") or "").strip()
+    if chat_mode == "reply":
+        return "human_context"
+    if chat_mode == "idle_warmup":
+        return "idle_continuation"
+    if chat_mode == "bootstrap":
+        return "bootstrap"
+    return ""
+
+
+def _ai_quality_funnel(actions: list[Action], stats: dict[str, Any] | None = None) -> dict[str, Any]:
     rows = [action for action in actions if action.task_type == "group_ai_chat" and action.action_type == "send_message"]
+    stats = stats or {}
     reason_counts = {reason: 0 for reason in _quality_reason_order()}
     samples = {reason: [] for reason in _quality_reason_order()}
     candidate_count = max([_generation_count(action) for action in rows] or [0])
@@ -848,6 +867,8 @@ def _ai_quality_funnel(actions: list[Action]) -> dict[str, Any]:
             final_send_count += 1
         if _is_quality_accepted_text(action):
             passed_count += 1
+    _merge_quality_stats_into_funnel(reason_counts, samples, stats)
+    candidate_count = max(candidate_count, int(stats.get("ai_generation_candidate_count") or 0))
     return {
         "totals": {
             "candidate_count": max(candidate_count, len(rows)),
@@ -860,10 +881,34 @@ def _ai_quality_funnel(actions: list[Action]) -> dict[str, Any]:
     }
 
 
+def _merge_quality_stats_into_funnel(reason_counts: dict[str, int], samples: dict[str, list[dict[str, Any]]], stats: dict[str, Any]) -> None:
+    for reason, count in dict(stats.get("quality_rejection_counts") or {}).items():
+        normalized = _normalize_quality_reason(str(reason))
+        reason_counts[normalized] = int(reason_counts.get(normalized) or 0) + int(count or 0)
+    for sample in list(stats.get("quality_rejection_samples") or []):
+        reason = _normalize_quality_reason(str((sample or {}).get("reason") or ""))
+        if not reason:
+            continue
+        bucket = samples.setdefault(reason, [])
+        if len(bucket) >= 5:
+            continue
+        bucket.append(
+            {
+                "action_id": "",
+                "account_id": (sample or {}).get("account_id"),
+                "status": str((sample or {}).get("status") or "filtered"),
+                "content": str((sample or {}).get("content") or ""),
+                "scheduled_at": (sample or {}).get("scheduled_at"),
+                "detail": str((sample or {}).get("detail") or ""),
+            }
+        )
+
+
 def _quality_reason_order() -> list[str]:
     return [
         "duplicate_message",
         "template_shell_limited",
+        "profile_low_match",
         "voice_profile_mismatch",
         "stance_conflict",
         "account_offline",
@@ -893,6 +938,8 @@ def _quality_reason(action: Action) -> str:
         return "duplicate_message"
     if payload.get("hallucination_risk"):
         return "hallucination_risk"
+    if _is_profile_low_match(payload):
+        return "profile_low_match"
     return ""
 
 
@@ -920,6 +967,14 @@ def _append_quality_sample(samples: dict[str, list[dict[str, Any]]], reason: str
             "scheduled_at": action.scheduled_at,
         }
     )
+
+
+def _is_profile_low_match(payload: dict[str, Any]) -> bool:
+    try:
+        score = int(payload.get("profile_match_score") or 0)
+    except (TypeError, ValueError):
+        score = 0
+    return score <= 0 and bool(payload.get("profile_match_reason") or payload.get("profile_unavailable_reason"))
 
 
 def _is_quality_accepted_text(action: Action) -> bool:

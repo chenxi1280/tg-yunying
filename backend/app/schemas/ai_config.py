@@ -136,6 +136,16 @@ class AiAccountVoiceProfileBatchRebuildOut(ApiModel):
     skipped: int = 0
 
 
+class AiAccountVoiceProfileBatchStatusRequest(BaseModel):
+    account_ids: list[int] = Field(default_factory=list)
+    status: str
+
+
+class AiAccountVoiceProfileBatchStatusOut(ApiModel):
+    updated: int = 0
+    skipped: int = 0
+
+
 class AiAccountVoiceProfileRollbackRequest(BaseModel):
     source_version: int = Field(..., ge=1)
 

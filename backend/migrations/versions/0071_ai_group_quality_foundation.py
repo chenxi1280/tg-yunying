@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.exc import NoInspectionAvailable
 
 
 revision = "0071_ai_group_quality_foundation"
@@ -203,25 +204,37 @@ def _create_tg_account_online_state_table() -> None:
 
 
 def _has_table(name: str) -> bool:
-    return sa.inspect(op.get_bind()).has_table(name)
+    if _is_offline_sql():
+        return False
+    try:
+        return sa.inspect(op.get_bind()).has_table(name)
+    except NoInspectionAvailable:
+        return False
 
 
 def _has_index(table_name: str, index_name: str) -> bool:
     if not _has_table(table_name):
         return False
-    return index_name in {item["name"] for item in sa.inspect(op.get_bind()).get_indexes(table_name)}
+    try:
+        return index_name in {item["name"] for item in sa.inspect(op.get_bind()).get_indexes(table_name)}
+    except NoInspectionAvailable:
+        return False
 
 
 def _create_index_if_missing(index_name: str, table_name: str, columns: list[str], **kwargs) -> None:
-    if not _has_index(table_name, index_name):
+    if _is_offline_sql() or not _has_index(table_name, index_name):
         op.create_index(index_name, table_name, columns, **kwargs)
 
 
 def _drop_index_if_exists(index_name: str, table_name: str) -> None:
-    if _has_index(table_name, index_name):
+    if _is_offline_sql() or _has_index(table_name, index_name):
         op.drop_index(index_name, table_name=table_name)
 
 
 def _drop_table_if_exists(table_name: str) -> None:
-    if _has_table(table_name):
+    if _is_offline_sql() or _has_table(table_name):
         op.drop_table(table_name)
+
+
+def _is_offline_sql() -> bool:
+    return bool(getattr(op.get_context(), "as_sql", False))

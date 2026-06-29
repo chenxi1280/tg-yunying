@@ -31,6 +31,8 @@ class SendMessagePayload(BaseModel):
     act_type: str = ""
     account_voice_profile_version: int = 0
     account_voice_profile_summary: str = ""
+    account_voice_profile_match_score: int = 100
+    account_voice_profile_match_reason: str = ""
     stance_summary: str = ""
     ai_message_memory_id: str = ""
     rewrite_attempts: int = 0
@@ -65,6 +67,7 @@ class SendMessagePayload(BaseModel):
     context_expire_after_messages: int = 0
     ai_generation_id: str = ""
     ai_generation_status: str = ""
+    generation_source: str = ""
     ai_generation_history: str = ""
     ai_generation_tokens: int = 0
     ai_generation_count: int = 0
@@ -75,6 +78,8 @@ class SendMessagePayload(BaseModel):
     ai_generation_memory_count: int = 0
     profile_scene: str = ""
     profile_version: int = 0
+    profile_match_score: int = 0
+    profile_match_reason: str = ""
     profile_hit_summary: str = ""
     profile_unavailable_reason: str = ""
     relay_batch_id: str = ""

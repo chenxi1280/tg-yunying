@@ -65,6 +65,7 @@ def test_ai_account_voice_profile_routes_exist_and_require_real_service():
     assert '"/api/ai-account-voice-profiles/{account_id}/audits"' in router
     assert '"/api/ai-account-voice-profiles/{account_id}/rollback"' in router
     assert '"/api/ai-account-voice-profiles/batch-rebuild"' in router
+    assert '"/api/ai-account-voice-profiles/batch-status"' in router
     assert "list_voice_profiles(" in router
     assert "patch_voice_profile(" in router
     assert "rebuild_voice_profile(" in router
@@ -72,6 +73,7 @@ def test_ai_account_voice_profile_routes_exist_and_require_real_service():
     assert "list_voice_profile_audits(" in router
     assert "rollback_voice_profile(" in router
     assert "batch_rebuild_voice_profiles(" in router
+    assert "batch_update_voice_profile_status(" in router
     assert "generate_voice_profiles_with_ai(" in router
     assert "AiAccountVoiceProfileOut" in schemas
     assert "AiAccountVoiceProfileVersionOut" in schemas
@@ -79,6 +81,8 @@ def test_ai_account_voice_profile_routes_exist_and_require_real_service():
     assert "AiAccountVoiceProfileRollbackRequest" in schemas
     assert "AiAccountVoiceProfileUpdate" in schemas
     assert "AiAccountVoiceProfileBatchRebuildRequest" in schemas
+    assert "AiAccountVoiceProfileBatchStatusRequest" in schemas
+    assert "AiAccountVoiceProfileBatchStatusOut" in schemas
 
 
 def test_system_config_exposes_ai_account_voice_profile_management_tab():
@@ -102,7 +106,12 @@ def test_system_config_exposes_ai_account_voice_profile_management_tab():
     assert "api<AiAccountVoiceProfileAudit[]>(`/ai-account-voice-profiles/${profile.account_id}/audits`" in profile_view
     assert "api<AiAccountVoiceProfile>(`/ai-account-voice-profiles/${profile.account_id}/rollback`" in profile_view
     assert "api<AiAccountVoiceProfileBatchRebuildOut>('/ai-account-voice-profiles/batch-rebuild'" in profile_view
+    assert "missing_only: false" in profile_view
+    assert "api<AiAccountVoiceProfileBatchStatusOut>('/ai-account-voice-profiles/batch-status'" in profile_view
     assert "缺表达卡" in profile_view
     assert "批量补齐缺卡账号" in profile_view
+    assert "批量重建" in profile_view
+    assert "批量停用" in profile_view
+    assert "批量恢复" in profile_view
     assert "版本历史" in profile_view
     assert "回滚到此版本" in profile_view

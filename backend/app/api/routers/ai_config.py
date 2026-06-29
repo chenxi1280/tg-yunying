@@ -24,6 +24,8 @@ from app.schemas.ai_config import (
     AiAccountVoiceProfileAuditOut,
     AiAccountVoiceProfileBatchRebuildOut,
     AiAccountVoiceProfileBatchRebuildRequest,
+    AiAccountVoiceProfileBatchStatusOut,
+    AiAccountVoiceProfileBatchStatusRequest,
     AiAccountVoiceProfileOut,
     AiAccountVoiceProfileRollbackRequest,
     AiAccountVoiceProfileUpdate,
@@ -45,6 +47,7 @@ from app.services.task_center.account_voice_profiles import (
     patch_voice_profile,
     rebuild_voice_profile,
 )
+from app.services.task_center.account_voice_profile_bulk import batch_update_voice_profile_status
 from app.services.task_center.account_voice_profile_versions import (
     list_voice_profile_audits,
     list_voice_profile_versions,
@@ -320,6 +323,29 @@ def batch_rebuild_ai_account_voice_profiles(
         session.commit()
         return result
     except (RuntimeError, ValueError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/ai-account-voice-profiles/batch-status", response_model=AiAccountVoiceProfileBatchStatusOut)
+def batch_update_ai_account_voice_profile_status(
+    payload: AiAccountVoiceProfileBatchStatusRequest,
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    target_tenant_id = resolve_tenant_id(current_user, tenant_id)
+    try:
+        result = batch_update_voice_profile_status(
+            session,
+            tenant_id=target_tenant_id,
+            account_ids=payload.account_ids,
+            status=payload.status,
+            actor=current_user.name,
+        )
+        session.commit()
+        return result
+    except ValueError as exc:
         session.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from app.models import AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AiProvider, AiProviderHealthStatus, AuditLog, TgAccount
 from app.services._common import _now, ai_gateway
 from app.services.ai_config import ai_provider_credentials, get_tenant_ai_setting
+from app.services.task_center.account_voice_profile_quality import generate_diverse_voice_profile_batch
+from app.services.task_center.account_voice_profile_search import filter_voice_profile_rows
 
 GENERIC_SUMMARY_TERMS = {"自然", "随意", "真实", "像真人"}
 VOICE_PROFILE_AI_TIMEOUT_SECONDS = 45
@@ -20,7 +22,6 @@ EDITABLE_PROFILE_FIELDS = {
     "status", "quality_status",
 }
 
-
 def list_voice_profiles(
     session: Session,
     *,
@@ -28,9 +29,10 @@ def list_voice_profiles(
     search: str = "",
     profile_status: str = "",
 ) -> list[dict[str, Any]]:
-    accounts = _search_accounts(session, tenant_id, search)
+    accounts = _search_accounts(session, tenant_id, "")
     latest = _latest_profiles(session, tenant_id, [account.id for account in accounts])
     rows = [_profile_projection(account, latest.get(account.id)) for account in accounts]
+    rows = filter_voice_profile_rows(rows, search)
     if profile_status:
         rows = [row for row in rows if row["profile_status"] == profile_status]
     return rows
@@ -235,13 +237,11 @@ def _batch_insert_generated(
     generator: Callable[[list[int]], list[dict[str, Any]]],
     actor: str,
 ) -> int:
-    generated = generator(account_ids)
-    profiles = _profiles_by_account(generated)
+    profiles, diversity_scores = generate_diverse_voice_profile_batch(generator, account_ids)
     for account_id in account_ids:
         profile = profiles.get(account_id)
-        if not profile:
-            raise ValueError(f"voice profile missing for account {account_id}")
         row = _profile_from_generated(tenant_id, account_id, profile, _valid_summary(profile, account_id))
+        row.similarity_score = diversity_scores.get(account_id)
         session.add(row)
         _audit(session, tenant_id, actor, "批量生成账号表达卡", account_id, f"version={row.version}")
     session.flush()
@@ -490,7 +490,6 @@ def _profile_from_generated(
         quality_status="active",
         last_rebuilt_at=_now(),
     )
-
 
 __all__ = [
     "batch_rebuild_voice_profiles", "ensure_voice_profiles_for_accounts", "generate_voice_profiles_with_ai",

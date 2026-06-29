@@ -1,8 +1,15 @@
 from configparser import ConfigParser
 import ast
 from pathlib import Path
+import subprocess
+import sys
+
+import pytest
 
 from app.database import _escape_configparser_value
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_escape_configparser_value_allows_url_encoded_password() -> None:
@@ -49,3 +56,17 @@ def test_repair_admin_tables_downgrade_preserves_existing_auth_tables() -> None:
 
     assert "app_users" not in dropped_tables
     assert "user_token_ledgers" not in dropped_tables
+
+
+@pytest.mark.no_postgres
+def test_ai_group_quality_migration_generates_offline_sql() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "0070:0071", "--sql"],
+        cwd=PROJECT_ROOT / "backend",
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "CREATE TABLE ai_group_message_memory" in result.stdout

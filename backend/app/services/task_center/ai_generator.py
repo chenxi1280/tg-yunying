@@ -686,6 +686,36 @@ def _active_teacher_prompt(config: dict) -> str:
     return f"讨论老师：{name}\n对象说明：{description}" if description else f"讨论老师：{name}"
 
 
+def _generation_slots_prompt(config: dict) -> str:
+    slots = config.get("generation_slots") if isinstance(config.get("generation_slots"), list) else []
+    lines = [_generation_slot_line(slot) for slot in slots if isinstance(slot, dict)]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
+    return "固定发言 slots：\n" + "\n".join(lines)
+
+
+def _generation_slot_line(slot: dict) -> str:
+    index = str(slot.get("sequence_index") or "").strip()
+    slot_id = str(slot.get("slot_id") or "").strip()
+    account_id = str(slot.get("account_id") or "").strip()
+    act_type = str(slot.get("act_type") or "").strip()
+    profile = str(slot.get("account_profile") or "").strip()
+    reply = str(slot.get("reply_to_content") or "").strip()
+    if not index or not slot_id:
+        return ""
+    parts = [f"slot {index}：{slot_id}"]
+    if account_id:
+        parts.append(f"账号 {account_id}")
+    if act_type:
+        parts.append(f"行为 {act_type}")
+    if profile:
+        parts.append(f"表达 {profile}")
+    if reply:
+        parts.append(f"引用 {reply[:120]}")
+    return "；".join(parts)
+
+
 def generate_group_messages(session: Session, tenant_id: int, config: dict, *, count: int, target_label: str, history: str = "") -> tuple[list[str], int]:
     personas = config.get("account_personas") if isinstance(config.get("account_personas"), dict) else {}
     persona_prompt = ""
@@ -715,6 +745,7 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
             topic_thread_prompt,
             topic_plan_prompt,
             target_profile_prompt,
+            _generation_slots_prompt(config),
             persona_prompt,
             memory_prompt,
             profile_prompt,
@@ -761,6 +792,7 @@ def generate_group_reply_messages(
             f"引用目标：\n{reply_lines}" if reply_lines else "",
             f"群聊上下文：\n{history}" if history else "",
             target_profile_prompt,
+            _generation_slots_prompt(config),
             config.get("system_prompt_override") or "",
         ]
         if part

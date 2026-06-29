@@ -3877,7 +3877,7 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="MiMo 活跃群", auth_status="已授权运营"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
             AiProvider(
@@ -3990,7 +3990,7 @@ def test_group_ai_chat_rotates_mimo_provider_after_quota_exhausted(monkeypatch):
 def _add_mimo_quota_rotation_task(session: Session) -> None:
     session.add(Tenant(id=1, name="默认运营空间"))
     session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="MiMo 备用群", auth_status="已授权运营"))
-    session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+    session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
     session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
     provider_rows = [
         (1, "MiMo exhausted", "https://api.xiaomimimo.com/v1", "mimo-v2.5"),
@@ -4067,7 +4067,7 @@ def test_group_ai_chat_invalid_slang_template_sets_visible_error(monkeypatch):
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="黑话失效群", auth_status="已授权运营"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
             Task(
@@ -4117,7 +4117,8 @@ def test_group_ai_chat_model_override_selects_matching_deepseek_provider(monkeyp
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="DeepSeek 活跃群", auth_status="已授权运营"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
+        session.add(_online_state(101, datetime(2026, 5, 11, 10, 0, 0)))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
             AiProvider(
@@ -4215,7 +4216,8 @@ def test_group_ai_chat_model_override_selects_matching_minimax_provider(monkeypa
 def _add_minimax_model_override_task(session: Session) -> None:
     session.add(Tenant(id=1, name="默认运营空间"))
     session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="Minimax 活跃群", auth_status="已授权运营"))
-    session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+    session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
+    session.add(_online_state(101, datetime(2026, 5, 11, 10, 0, 0)))
     session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
     provider_rows = [
         (1, "DeepSeek", "https://api.deepseek.com", "deepseek-v4-flash"),
@@ -4388,7 +4390,8 @@ def test_group_ai_chat_waits_when_no_new_real_context(monkeypatch):
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="校园日常"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session-101"))
+        session.add(_online_state(101, datetime(2026, 5, 11, 10, 0, 0)))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
             GroupContextMessage(

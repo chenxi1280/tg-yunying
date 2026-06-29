@@ -5,6 +5,7 @@ import type {
   AiAccountVoiceProfile,
   AiAccountVoiceProfileAudit,
   AiAccountVoiceProfileBatchRebuildOut,
+  AiAccountVoiceProfileBatchStatusOut,
   AiAccountVoiceProfileVersion,
 } from '../types';
 
@@ -112,6 +113,7 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
   const [audits, setAudits] = React.useState<AiAccountVoiceProfileAudit[]>([]);
   const [historyLoading, setHistoryLoading] = React.useState(false);
   const [draft, setDraft] = React.useState<EditableProfile | null>(null);
+  const [selectedAccountIds, setSelectedAccountIds] = React.useState<number[]>([]);
   const loadSeqRef = React.useRef(0);
 
   React.useEffect(() => {
@@ -238,6 +240,50 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
     }
   }
 
+  async function batchRebuildSelected() {
+    setSavingKey('batch-rebuild-selected');
+    setError('');
+    try {
+      const result = await api<AiAccountVoiceProfileBatchRebuildOut>('/ai-account-voice-profiles/batch-rebuild', {
+        method: 'POST',
+        body: JSON.stringify({ account_ids: selectedAccountIds, missing_only: false }),
+        timeoutMs: 60_000,
+      });
+      setNotice(`批量重建完成：新增 ${result.created}，跳过 ${result.skipped}`);
+      setSelectedAccountIds([]);
+      await loadProfiles();
+    } catch (batchError) {
+      setError(errorText(batchError));
+    } finally {
+      setSavingKey('');
+    }
+  }
+
+  async function batchUpdateStatus(status: 'active' | 'disabled') {
+    const actionKey = `batch-status:${status}`;
+    setSavingKey(actionKey);
+    setError('');
+    try {
+      const result = await api<AiAccountVoiceProfileBatchStatusOut>('/ai-account-voice-profiles/batch-status', {
+        method: 'POST',
+        body: JSON.stringify({ account_ids: selectedAccountIds, status }),
+      });
+      setNotice(`批量${status === 'active' ? '恢复' : '停用'}完成：更新 ${result.updated}，跳过 ${result.skipped}`);
+      setSelectedAccountIds([]);
+      await loadProfiles();
+    } catch (batchError) {
+      setError(errorText(batchError));
+    } finally {
+      setSavingKey('');
+    }
+  }
+
+  const rowSelection = canManageVoiceProfiles ? {
+    selectedRowKeys: selectedAccountIds,
+    preserveSelectedRowKeys: true,
+    onChange: (keys: React.Key[]) => setSelectedAccountIds(keys.map((key) => Number(key))),
+  } : undefined;
+
   const columns = [
     { title: '账号', render: (_: unknown, profile: AiAccountVoiceProfile) => <Space direction="vertical" size={0}><Typography.Text>{accountTitle(profile)}</Typography.Text><Typography.Text type="secondary">{profile.phone_masked || '-'}</Typography.Text></Space> },
     { title: '状态', render: (_: unknown, profile: AiAccountVoiceProfile) => <Space>{profileStatusTag(profile.profile_status)}<Tag>{profile.account_status || '-'}</Tag></Space> },
@@ -296,6 +342,9 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
           <Select value={profileStatus} onChange={setProfileStatus} options={PROFILE_STATUS_OPTIONS} style={{ width: 160 }} />
           <Button onClick={() => loadProfiles()} loading={loading}>刷新</Button>
           <Button type="primary" disabled={!canManageVoiceProfiles} loading={savingKey === 'batch-rebuild-missing'} onClick={batchRebuildMissing}>批量补齐缺卡账号</Button>
+          <Button disabled={!canManageVoiceProfiles || !selectedAccountIds.length} loading={savingKey === 'batch-rebuild-selected'} onClick={batchRebuildSelected}>批量重建</Button>
+          <Button disabled={!canManageVoiceProfiles || !selectedAccountIds.length} loading={savingKey === 'batch-status:disabled'} onClick={() => batchUpdateStatus('disabled')}>批量停用</Button>
+          <Button disabled={!canManageVoiceProfiles || !selectedAccountIds.length} loading={savingKey === 'batch-status:active'} onClick={() => batchUpdateStatus('active')}>批量恢复</Button>
         </Space>
         <Table
           rowKey="account_id"
@@ -303,6 +352,7 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
           loading={loading}
           dataSource={profiles}
           columns={columns}
+          rowSelection={rowSelection}
           locale={{ emptyText: <Empty description="暂无账号表达卡数据" /> }}
           pagination={{ pageSize: 20, showSizeChanger: false }}
         />

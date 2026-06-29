@@ -317,6 +317,7 @@ export type TaskCenterDetail = {
     generation_id: string;
     cycle_id: string;
     status: string;
+    generation_source?: string;
     generated_count: number;
     token_count: number;
     context_message_count: number;

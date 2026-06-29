@@ -1786,6 +1786,13 @@ def test_group_ai_plain_line_edit_preserves_existing_descriptions():
     assert "...existingChatTarget(name, existingItems)" in view_model
 
 
+def test_group_ai_quality_funnel_labels_profile_low_match():
+    source = (PROJECT_ROOT / "frontend/src/app/views/TaskAIQualityFunnelPanel.tsx").read_text()
+
+    assert "profile_low_match: '画像低分'" in source
+    assert "voice_profile_mismatch: '表达卡低分'" in source
+
+
 def test_task_center_runtime_form_exposes_hour_limit_without_task_daily_cap():
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
@@ -2193,6 +2200,18 @@ def test_task_center_failure_diagnosis_is_visible_before_attempt_table():
     assert "task.status === 'paused' ? 'resume' : 'start'" in source
     assert ">{task.status === 'paused' ? '恢复' : '启动'}</Button>" not in source
     assert "disabled={task.status !== 'running'}" not in source
+
+
+def test_task_center_ai_generation_records_show_generation_source():
+    view = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+
+    assert "generation_source?: string" in types
+    assert "function aiGenerationSourceLabel" in view
+    assert "生成来源" in view
+    assert "human_context: '真人上下文'" in view
+    assert "idle_continuation: '无人续聊'" in view
+    assert "bootstrap: '冷启动'" in view
 
 
 def test_task_center_create_refreshes_after_long_timeout_and_capacity_summary_types():

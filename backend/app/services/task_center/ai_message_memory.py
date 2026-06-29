@@ -50,7 +50,8 @@ def normalize_group_ai_text(text: str) -> str:
 def reserve_group_ai_message(
     session: Session, *, tenant_id: int, group_id: int, task_id: str, account_id: int | None,
     raw_text: str, now: datetime | None = None, reservation_ttl: timedelta = DEFAULT_RESERVATION_TTL,
-    topic_direction: str = "", teacher_target: str = "",
+    topic_direction: str = "", teacher_target: str = "", profile_version: int | None = None,
+    profile_match_score: int | None = None, profile_match_reason: str = "",
 ) -> AiGroupMessageMemory:
     current_time = now or _now()
     normalized = normalize_group_ai_text(raw_text)
@@ -82,6 +83,9 @@ def reserve_group_ai_message(
         reservation_ttl=reservation_ttl,
         topic_direction=topic_direction,
         teacher_target=teacher_target,
+        profile_version=profile_version,
+        profile_match_score=profile_match_score,
+        profile_match_reason=profile_match_reason,
     )
     try:
         with session.begin_nested():
@@ -110,6 +114,9 @@ def _new_reserved_memory(
     reservation_ttl: timedelta,
     topic_direction: str,
     teacher_target: str,
+    profile_version: int | None,
+    profile_match_score: int | None,
+    profile_match_reason: str,
 ) -> AiGroupMessageMemory:
     return AiGroupMessageMemory(
         tenant_id=tenant_id,
@@ -129,6 +136,9 @@ def _new_reserved_memory(
         expires_at=current_time + reservation_ttl,
         duplicate_window="5m_exact",
         quality_decision="reserved",
+        profile_version=profile_version,
+        profile_match_score=profile_match_score,
+        profile_match_reason=profile_match_reason,
     )
 
 

@@ -21,6 +21,7 @@ from app.services.task_center.account_voice_profile_versions import (
     list_voice_profile_versions,
     rollback_voice_profile,
 )
+from app.services.task_center.account_voice_profile_bulk import batch_update_voice_profile_status
 
 
 pytestmark = pytest.mark.no_postgres
@@ -107,6 +108,8 @@ def test_ensure_voice_profiles_uses_batch_generator_and_rejects_generic_summary(
         assert [row.account_id for row in rows] == [101, 102]
         assert rows[0].version == 1
         assert rows[0].quality_status == "active"
+        assert rows[0].similarity_score is not None
+        assert rows[1].similarity_score is not None
         assert voice_profile_prompt_summaries(session, tenant_id=1, account_ids=[101, 102]) == {
             101: "青年短句，爱追问价格，少表情，偶尔说我看看",
             102: "中年中句，谨慎补经历，偶尔轻吐槽，不用表情",
@@ -122,6 +125,66 @@ def test_ensure_voice_profiles_rejects_vague_summary():
             ensure_voice_profiles_for_accounts(session, tenant_id=1, account_ids=[101], generator=generator)
 
 
+def test_ensure_voice_profiles_rejects_overly_similar_batch():
+    def generator(account_ids: list[int]) -> list[dict]:
+        assert account_ids == [101, 102]
+        return [
+            {
+                "account_id": 101,
+                "age_band": "青年",
+                "sentence_length": "短句",
+                "interaction_habits": ["爱追问价格"],
+                "tone_strength": "轻松",
+                "lexical_preferences": ["我看看"],
+                "emoji_policy": "少用",
+                "short_prompt_summary": "青年短句，爱追问价格，少表情，偶尔说我看看",
+            },
+            {
+                "account_id": 102,
+                "age_band": "青年",
+                "sentence_length": "短句",
+                "interaction_habits": ["爱追问价格"],
+                "tone_strength": "轻松",
+                "lexical_preferences": ["我看看"],
+                "emoji_policy": "少用",
+                "short_prompt_summary": "青年短句，爱追问价格，少表情，偶尔说我看看",
+            },
+        ]
+
+    with _session() as session:
+        with pytest.raises(ValueError, match="too similar"):
+            ensure_voice_profiles_for_accounts(session, tenant_id=1, account_ids=[101, 102], generator=generator)
+
+        rows = list(session.scalars(select(AiAccountVoiceProfile)))
+        assert rows == []
+
+
+def test_ensure_voice_profiles_retries_overly_similar_batch_before_insert():
+    calls = 0
+
+    def generator(account_ids: list[int]) -> list[dict]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return [
+                {"account_id": account_id, "short_prompt_summary": "青年短句，爱追问价格，少表情"}
+                for account_id in account_ids
+            ]
+        return [
+            {"account_id": 101, "short_prompt_summary": "青年短句，先问价格再看反馈"},
+            {"account_id": 102, "short_prompt_summary": "中年中句，先看服务态度再接话"},
+        ]
+
+    with _session() as session:
+        created = ensure_voice_profiles_for_accounts(session, tenant_id=1, account_ids=[101, 102], generator=generator)
+        session.commit()
+
+        rows = list(session.scalars(select(AiAccountVoiceProfile).order_by(AiAccountVoiceProfile.account_id)))
+        assert calls == 2
+        assert created == 2
+        assert [row.short_prompt_summary for row in rows] == ["青年短句，先问价格再看反馈", "中年中句，先看服务态度再接话"]
+
+
 def test_list_voice_profiles_searches_accounts_and_marks_missing_cards():
     with _session() as session:
         _account(session, 101, "花花号", "huahua")
@@ -135,6 +198,25 @@ def test_list_voice_profiles_searches_accounts_and_marks_missing_cards():
         assert rows[0]["account_id"] == 102
         assert rows[0]["profile_status"] == "missing"
         assert rows[0]["short_prompt_summary"] == ""
+
+
+def test_list_voice_profiles_searches_status_and_updated_date():
+    with _session() as session:
+        _account(session, 101, "花花号", "huahua")
+        _account(session, 102, "新人号", "newgirl")
+        disabled = _profile(101, "青年短句，爱追问价格，少表情", status="disabled")
+        session.add(disabled)
+        session.add(_profile(102, "中年中句，谨慎补经历，偶尔轻吐槽"))
+        session.commit()
+
+        by_account_status = list_voice_profiles(session, tenant_id=1, search=AccountStatus.ACTIVE.value)
+        by_profile_status = list_voice_profiles(session, tenant_id=1, search="disabled")
+        updated_prefix = str(disabled.updated_at.date())
+        by_updated_at = list_voice_profiles(session, tenant_id=1, search=updated_prefix)
+
+        assert {row["account_id"] for row in by_account_status} == {101, 102}
+        assert [row["account_id"] for row in by_profile_status] == [101]
+        assert {row["account_id"] for row in by_updated_at} == {101, 102}
 
 
 def test_patch_voice_profile_creates_next_version_and_audit_log():
@@ -269,6 +351,43 @@ def test_batch_rebuild_missing_with_empty_account_ids_scans_all_active_accounts(
         rows = list(session.scalars(select(AiAccountVoiceProfile).order_by(AiAccountVoiceProfile.account_id)))
         assert result == {"created": 2, "skipped": 1}
         assert [row.account_id for row in rows] == [101, 102, 103]
+
+
+def test_batch_update_voice_profile_status_disables_and_restores_profiles():
+    with _session() as session:
+        _account(session, 101, "花花号")
+        _account(session, 102, "新人号")
+        session.add(_profile(101, "青年短句，爱追问价格，少表情"))
+        session.add(_profile(102, "中年中句，谨慎补经历，偶尔轻吐槽"))
+        session.commit()
+
+        disabled = batch_update_voice_profile_status(
+            session,
+            tenant_id=1,
+            account_ids=[101, 102],
+            status="disabled",
+            actor="tester",
+        )
+        session.commit()
+
+        assert disabled == {"updated": 2, "skipped": 0}
+        assert voice_profile_prompt_summaries(session, tenant_id=1, account_ids=[101, 102]) == {}
+
+        restored = batch_update_voice_profile_status(
+            session,
+            tenant_id=1,
+            account_ids=[101],
+            status="active",
+            actor="tester",
+        )
+        session.commit()
+
+        assert restored == {"updated": 1, "skipped": 0}
+        assert voice_profile_prompt_summaries(session, tenant_id=1, account_ids=[101, 102]) == {
+            101: "青年短句，爱追问价格，少表情",
+        }
+        audits = list(session.scalars(select(AuditLog).order_by(AuditLog.id)))
+        assert [audit.action for audit in audits] == ["批量停用账号表达卡", "批量停用账号表达卡", "批量恢复账号表达卡"]
 
 
 def test_group_stance_memory_upserts_and_reads_summary():

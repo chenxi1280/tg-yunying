@@ -24,6 +24,7 @@ from app.models import (
     SchedulingSetting,
     Task,
     Tenant,
+    TenantLearningProfile,
     TgAccount,
     TgAccountOnlineState,
     TgGroup,
@@ -33,6 +34,7 @@ from app.models import (
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center import payloads as task_payloads
+from app.services.task_center.ai_message_memory import mark_group_ai_message_result, reserve_group_ai_message
 from app.services.task_center.executors import group_ai_chat
 from app.services.task_center import service as task_service
 from app.services.task_center import account_pool
@@ -773,6 +775,18 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
             type="group_ai_chat",
             status="running",
             account_config={"selection_mode": "manual", "account_ids": [11, 12]},
+            stats={
+                "quality_rejection_counts": {"voice_profile_mismatch": 1},
+                "quality_rejection_samples": [
+                    {
+                        "reason": "voice_profile_mismatch",
+                        "content": "😀😀",
+                        "status": "filtered",
+                        "account_id": 11,
+                        "detail": "账号表达卡要求少表情",
+                    }
+                ],
+            },
         )
         online_now = _now()
         session.add(task)
@@ -809,6 +823,7 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
                         "message_text": "花花这个服务我上次看反馈还行",
                         "ai_generation_id": "cycle-1",
                         "ai_generation_count": 8,
+                        "generation_source": "human_context",
                         "human_quality_decision": "accepted",
                         "act_type": "experience",
                     },
@@ -869,6 +884,24 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
                         "human_quality_decision": "quality_fallback",
                     },
                 ),
+                Action(
+                    id="quality-profile-low",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    account_id=16,
+                    status="success",
+                    scheduled_at=now_value,
+                    executed_at=now_value,
+                    payload={
+                        "message_text": "先看看群里怎么说",
+                        "human_quality_decision": "accepted",
+                        "profile_match_score": 0,
+                        "profile_match_reason": "profile_unavailable",
+                        "profile_unavailable_reason": "画像样本不足",
+                    },
+                ),
             ]
         )
         session.commit()
@@ -877,13 +910,18 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
 
         funnel = detail["ai_quality_funnel"]
         assert funnel["totals"]["candidate_count"] == 8
-        assert funnel["totals"]["passed_count"] == 1
-        assert funnel["totals"]["final_send_count"] == 2
+        assert funnel["totals"]["passed_count"] == 2
+        assert funnel["totals"]["final_send_count"] == 3
         assert funnel["reason_counts"]["duplicate_message"] == 1
         assert funnel["reason_counts"]["template_shell_limited"] == 1
         assert funnel["reason_counts"]["account_offline"] == 1
         assert funnel["reason_counts"]["quality_fallback"] == 1
+        assert funnel["reason_counts"]["profile_low_match"] == 1
+        assert funnel["reason_counts"]["voice_profile_mismatch"] == 1
         assert funnel["samples"]["duplicate_message"][0]["content"] == "这个确实不错"
+        assert funnel["samples"]["profile_low_match"][0]["action_id"] == "quality-profile-low"
+        assert funnel["samples"]["voice_profile_mismatch"][0]["content"] == "😀😀"
+        assert detail["ai_generation_records"][0]["generation_source"] == "human_context"
         online = detail["account_online_summary"]
         assert online["desired_count"] == 2
         assert online["online_count"] == 1
@@ -1131,6 +1169,7 @@ def test_group_ai_send_success_updates_account_stance_memory(monkeypatch):
                     "topic_direction": {"title": "郑州楼凤妹子怎么样"},
                     "teacher_target": {"name": "花花老师"},
                     "act_type": "追问",
+                    "semantic_cluster": "teacher_price_question",
                 },
             )
         )
@@ -1148,6 +1187,7 @@ def test_group_ai_send_success_updates_account_stance_memory(monkeypatch):
     assert stance.topic_direction == "郑州楼凤妹子怎么样"
     assert stance.teacher_target == "花花老师"
     assert stance.last_act_type == "追问"
+    assert stance.last_semantic_cluster == "teacher_price_question"
     assert stance.last_message_id == "tg-stance-ok"
     assert "花花老师这个感觉可以问问" in stance.summary
 
@@ -3527,6 +3567,15 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
 
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            TenantLearningProfile(
+                tenant_id=1,
+                profile_version=3,
+                status="active",
+                style_summary="群友偏短句追问，少总结",
+                source_sample_count=8,
+            )
+        )
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
         session.add_all(
             [
@@ -3606,6 +3655,7 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
 
     assert generated_configs[0]["active_topic_direction"]["title"] == "升学规划"
     assert generated_configs[0]["active_teacher_target"]["name"] == "王老师"
+    assert [slot["account_id"] for slot in generated_configs[0]["generation_slots"][:2]] == [11, 11]
     assert [action.account_id for action in actions[:2]] == [11, 11]
     assert actions[0].payload["burst_id"] == actions[1].payload["burst_id"]
     assert actions[0].payload["burst_index"] == 1
@@ -3618,12 +3668,460 @@ def test_group_ai_build_plan_writes_topic_teacher_and_burst_payload(monkeypatch)
     assert actions[0].payload["account_voice_profile_version"] == 2
     assert actions[0].payload["account_voice_profile_summary"] == "青年短句，爱追问价格，少表情"
     assert actions[0].payload["stance_summary"] == "刚围绕王老师表达过观望，别突然强夸"
+    assert actions[0].payload["profile_version"] == 3
+    assert actions[0].payload["profile_match_score"] == 100
+    assert actions[0].payload["profile_match_reason"] == "群友偏短句追问，少总结"
     assert actions[0].payload["ai_message_memory_id"]
     assert actions[0].payload["human_quality_decision"] == "accepted"
     memory = memory_by_id.get(actions[0].payload["ai_message_memory_id"])
     assert memory is not None
     assert memory.action_id == actions[0].id
     assert memory.status == "reserved"
+    assert memory.profile_version == 3
+    assert memory.profile_match_score == 100
+    assert memory.profile_match_reason == "群友偏短句追问，少总结"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_build_plan_sends_fixed_slots_to_ai_and_keeps_slot_accounts(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+
+    generated_configs: list[dict] = []
+
+    def fake_generate(_session, _tenant_id, config, *, count, target_label, history):  # noqa: ANN001
+        generated_configs.append(dict(config))
+        return ["花花老师价格大概多少", "主任最近约新妹子了吗"][:count], 8
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),
+                TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"),
+            ]
+        )
+        session.add_all(
+            [
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
+                TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
+                TgAccountOnlineState(tenant_id=1, account_id=12, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
+            ]
+        )
+        task = Task(
+            id="task-slot-first",
+            tenant_id=1,
+            name="slot first",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
+            pacing_config={"max_actions_per_hour": 120},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 2,
+                "reply_min_per_round": 0,
+                "allow_account_repeat": False,
+                "silent_mode_enabled": False,
+                "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+            },
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+
+        assert group_ai_chat.build_plan(session, task) == 2
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.payload["turn_index"])))
+
+    slots = generated_configs[0]["generation_slots"]
+    assert [slot["slot_id"] for slot in slots] == ["task-slot-first:cycle:1:turn:1", "task-slot-first:cycle:1:turn:2"]
+    assert [slot["account_id"] for slot in slots] == [11, 12]
+    assert [slot["act_type"] for slot in slots] == ["short_react", "detail_follow"]
+    assert [action.account_id for action in actions] == [11, 12]
+    assert [action.payload["slot_id"] for action in actions] == [slot["slot_id"] for slot in slots]
+    assert [action.payload["act_type"] for action in actions] == [slot["act_type"] for slot in slots]
+    assert [action.payload["generation_source"] for action in actions] == ["bootstrap", "bootstrap"]
+
+
+@pytest.mark.no_postgres
+def test_group_ai_quality_retry_only_requests_failed_slots(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+
+    generated_configs: list[dict] = []
+    rounds = iter([
+        ["花花老师价格大概多少", "昨天照片准"],
+        ["主任最近约新妹子了吗"],
+    ])
+
+    def fake_generate(_session, _tenant_id, config, *, count, target_label, history):  # noqa: ANN001
+        generated_configs.append(dict(config))
+        return next(rounds)[:count], 5
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add_all(
+            [
+                TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"),
+                TgAccount(id=12, tenant_id=1, display_name="账号B", phone_masked="+861***0012", status="在线", session_ciphertext="session-b"),
+            ]
+        )
+        session.add_all(
+            [
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True),
+                TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
+                TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
+                TgAccountOnlineState(tenant_id=1, account_id=12, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
+                AiGroupMessageMemory(
+                    id="previous-photo-memory",
+                    tenant_id=1,
+                    group_id=7,
+                    task_id="another-task",
+                    account_id=11,
+                    raw_text="昨天照片准",
+                    normalized_text="昨天照片准",
+                    text_fingerprint="previous-photo-memory",
+                    semantic_cluster="photo_accuracy",
+                    status="success",
+                    planned_at=now_value - timedelta(minutes=1),
+                    sent_at=now_value - timedelta(minutes=1),
+                ),
+            ]
+        )
+        task = Task(
+            id="task-slot-retry",
+            tenant_id=1,
+            name="slot retry",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
+            pacing_config={"max_actions_per_hour": 120},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 2,
+                "reply_min_per_round": 0,
+                "allow_account_repeat": False,
+                "silent_mode_enabled": False,
+                "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+            },
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+
+        assert group_ai_chat.build_plan(session, task) == 2
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.status == "pending").order_by(Action.payload["turn_index"])))
+
+    assert len(generated_configs) == 2
+    assert [slot["slot_id"] for slot in generated_configs[1]["generation_slots"]] == ["task-slot-retry:cycle:1:turn:2"]
+    assert [slot["account_id"] for slot in generated_configs[1]["generation_slots"]] == [12]
+    assert [action.account_id for action in actions] == [11, 12]
+    assert [action.payload["slot_id"] for action in actions] == ["task-slot-retry:cycle:1:turn:1", "task-slot-retry:cycle:1:turn:2"]
+    assert actions[1].payload["rewrite_attempts"] == 1
+
+
+@pytest.mark.no_postgres
+def test_group_ai_build_plan_blocks_voice_profile_mismatch(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+
+    def fake_quality_items(_session, _task, _config, **_kwargs):  # noqa: ANN001
+        return (
+            [{"content": "😀😀", "human_quality_decision": "accepted"}],
+            3,
+            {"ai_generation_rounds": 1, "ai_generation_candidate_count": 1},
+        )
+
+    monkeypatch.setattr(group_ai_chat, "_generate_quality_filled_items", fake_quality_items)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
+        session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)))
+        session.add(
+            AiAccountVoiceProfile(
+                tenant_id=1,
+                account_id=11,
+                version=2,
+                short_prompt_summary="青年短句，少表情，不连续发表情",
+                emoji_policy="少表情，不连续发表情",
+                quality_status="active",
+                status="active",
+            )
+        )
+        task = Task(
+            id="task-voice-profile-mismatch",
+            tenant_id=1,
+            name="表达卡校验",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+            pacing_config={"max_actions_per_hour": 120},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 1,
+                "reply_min_per_round": 0,
+                "silent_mode_enabled": False,
+                "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+            },
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+
+        assert group_ai_chat.build_plan(session, task) == 0
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        session.refresh(task)
+
+    assert actions == []
+    assert task.stats["quality_rejection_counts"]["voice_profile_mismatch"] == 1
+    assert task.stats["quality_rejection_samples"][0]["content"] == "😀😀"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_build_plan_blocks_stance_conflict(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+
+    def fake_quality_items(_session, _task, _config, **_kwargs):  # noqa: ANN001
+        return (
+            [{"content": "王老师这个绝对可以，闭眼冲就行", "human_quality_decision": "accepted"}],
+            3,
+            {"ai_generation_rounds": 1, "ai_generation_candidate_count": 1},
+        )
+
+    monkeypatch.setattr(group_ai_chat, "_generate_quality_filled_items", fake_quality_items)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
+        session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)))
+        session.add(
+            AiAccountGroupStanceMemory(
+                tenant_id=1,
+                group_id=7,
+                account_id=11,
+                summary="刚围绕王老师表达过观望，别突然强夸",
+            )
+        )
+        task = Task(
+            id="task-stance-conflict",
+            tenant_id=1,
+            name="立场冲突",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+            pacing_config={"max_actions_per_hour": 120},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 1,
+                "reply_min_per_round": 0,
+                "silent_mode_enabled": False,
+                "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+            },
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+
+        assert group_ai_chat.build_plan(session, task) == 0
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        session.refresh(task)
+
+    assert actions == []
+    assert task.stats["quality_rejection_counts"]["stance_conflict"] == 1
+    assert task.stats["quality_rejection_samples"][0]["detail"] == "观望立场不能突然强肯定"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_build_plan_deprioritizes_recent_topic_and_teacher(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+
+    generated_configs: list[dict] = []
+
+    def fake_quality_items(_session, _task, config, **_kwargs):  # noqa: ANN001
+        generated_configs.append(dict(config))
+        return (
+            [{"content": "李老师这边可以先看资料节奏", "human_quality_decision": "accepted"}],
+            5,
+            {"ai_generation_rounds": 1},
+        )
+
+    monkeypatch.setattr(group_ai_chat, "_generate_quality_filled_items", fake_quality_items)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=11,
+                desired_online=True,
+                online_status="online",
+                stale_after_at=now_value + timedelta(minutes=5),
+            )
+        )
+        task = Task(
+            id="task-topic-teacher-rotation",
+            tenant_id=1,
+            name="话题老师轮换",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 1,
+                "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+                "topic_directions": [
+                    {"title": "升学规划", "weight": 10},
+                    {"title": "资料准备", "weight": 1},
+                ],
+                "teacher_targets": [
+                    {"name": "王老师", "priority": 10},
+                    {"name": "李老师", "priority": 1},
+                ],
+            },
+            stats={"force_bootstrap_once": True},
+        )
+        session.add(task)
+        session.add(
+            AiGroupMessageMemory(
+                tenant_id=1,
+                group_id=7,
+                task_id=task.id,
+                account_id=11,
+                topic_direction="升学规划",
+                teacher_target="王老师",
+                raw_text="王老师之前聊过升学规划",
+                normalized_text="王老师之前聊过升学规划",
+                text_fingerprint="recent-topic-teacher-memory",
+                semantic_cluster="recent-topic-teacher",
+                status="success",
+                planned_at=now_value - timedelta(minutes=3),
+                sent_at=now_value - timedelta(minutes=3),
+            )
+        )
+        session.add(
+            Action(
+                id="recent-topic-teacher",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="send_message",
+                status="success",
+                account_id=11,
+                payload={
+                    "group_id": 7,
+                    "message_text": "王老师之前聊过升学规划",
+                    "topic_direction": {"title": "升学规划"},
+                    "teacher_target": {"name": "王老师"},
+                },
+                created_at=now_value - timedelta(minutes=3),
+                executed_at=now_value - timedelta(minutes=3),
+            )
+        )
+        session.commit()
+
+        created = group_ai_chat.build_plan(session, task)
+        assert created == 1, f"last_error={task.last_error!r} stats={task.stats!r}"
+        action = session.scalar(select(Action).where(Action.task_id == task.id, Action.id != "recent-topic-teacher"))
+
+    assert generated_configs[0]["active_topic_direction"]["title"] == "资料准备"
+    assert generated_configs[0]["active_teacher_target"]["name"] == "李老师"
+    assert action is not None
+    assert action.payload["topic_direction"]["title"] == "资料准备"
+    assert action.payload["teacher_target"]["name"] == "李老师"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_build_plan_records_memory_duplicate_as_quality_rejection(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+
+    def fake_quality_items(_session, _task, _config, **_kwargs):  # noqa: ANN001
+        return (
+            [{"content": "花花老师身材服务真好", "human_quality_decision": "accepted"}],
+            5,
+            {"ai_generation_rounds": 1},
+        )
+
+    monkeypatch.setattr(group_ai_chat, "_generate_quality_filled_items", fake_quality_items)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
+        session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)))
+        task = Task(
+            id="task-memory-duplicate",
+            tenant_id=1,
+            name="记忆重复",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
+            type_config={"target_group_id": 7, "messages_per_round_mode": "manual", "messages_per_round": 1, "fact_anchor_required": False},
+            stats={"force_bootstrap_once": True},
+        )
+        session.add(task)
+        memory = reserve_group_ai_message(
+            session,
+            tenant_id=1,
+            group_id=7,
+            task_id="previous-task",
+            account_id=11,
+            raw_text="花花老师身材服务真好",
+            now=now_value - timedelta(minutes=1),
+        )
+        mark_group_ai_message_result(session, memory.id, status="success", action_id="previous-action")
+        session.commit()
+
+        assert group_ai_chat.build_plan(session, task) == 0
+
+    assert task.stats["quality_rejection_counts"]["duplicate_message"] == 1
+    assert task.stats["quality_rejection_samples"][0]["content"] == "花花老师身材服务真好"
+    assert task.stats["quality_rejection_samples"][0]["detail"] == "5m_exact"
 
 
 @pytest.mark.no_postgres
@@ -3650,7 +4148,7 @@ def test_group_ai_context_bound_round_limits_far_future_actions(monkeypatch):
 
     memory_ids: list[str] = []
 
-    def fake_reserve(_session, _task, _group, _account_id, _content, _config):  # noqa: ANN001
+    def fake_reserve(_session, _task, _group, _account_id, _content, _config, _profile_preview):  # noqa: ANN001
         memory_id = f"memory-{len(memory_ids)}"
         memory_ids.append(memory_id)
         return SimpleNamespace(id=memory_id)
@@ -3857,6 +4355,22 @@ def test_group_ai_build_plan_uses_unique_emoji_fallback_after_quality_retries(mo
             )
         )
         session.add(
+            AiGroupMessageMemory(
+                id="recent-emoji-memory",
+                tenant_id=1,
+                group_id=7,
+                task_id="another-task",
+                account_id=99,
+                raw_text="👍",
+                normalized_text="👍",
+                text_fingerprint="recent-emoji",
+                semantic_cluster="",
+                status="success",
+                planned_at=now_value - timedelta(minutes=2),
+                sent_at=now_value - timedelta(minutes=2),
+            )
+        )
+        session.add(
             GroupContextMessage(
                 tenant_id=1,
                 group_id=7,
@@ -3885,6 +4399,7 @@ def test_group_ai_build_plan_uses_unique_emoji_fallback_after_quality_retries(mo
     assert [action.payload["act_type"] for action in actions] == ["emoji_react", "emoji_react"]
     assert [action.payload["human_quality_decision"] for action in actions] == ["quality_fallback", "quality_fallback"]
     assert len({action.payload["message_text"] for action in actions}) == 2
+    assert "👍" not in {action.payload["message_text"] for action in actions}
     assert len(memories) == 2
     assert len({memory.normalized_text for memory in memories}) == 2
 
