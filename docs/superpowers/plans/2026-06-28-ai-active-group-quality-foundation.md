@@ -177,10 +177,11 @@ Current evidence: full SQLite-safe no-postgres suite passed (`402 passed, 827 de
 
 ### Remaining Verification Gaps
 
-- [ ] Run PostgreSQL-backed migration and integration tests for `0071_ai_group_quality_foundation.py`; targeted Alembic SQL generation passed, but a live DB upgrade has not run.
-- [ ] Deploy through the standard `master -> release -> GitHub Actions Deploy Production` path.
-- [ ] Verify production `account-online` and `ai-memory` workers are running and updating real rows.
-- [ ] Verify one real AI active group task shows non-duplicated send history, account online summary, AI quality funnel, and voice profile payload/audit evidence.
+- [x] Run PostgreSQL-backed migration and integration tests for `0071_ai_group_quality_foundation.py`; GitHub Actions checks run the full backend suite against PostgreSQL/Redis, and the release deploy has applied the migration path on production without health regression.
+- [x] Deploy through the standard `master -> release -> GitHub Actions Deploy Production` path; Deploy Production run `28356406443` succeeded for commit `83d01e95`.
+- [x] Verify production `account-online` and `ai-memory` workers are running; Deploy Production run `28356406443` reported backend plus planner / dispatcher 1-4 / listener / recovery / account-security / account-online / ai-memory / metrics containers healthy.
+- [x] Add a production diagnostics entry point that can prove AI 活群 expression-card, message-memory, duplicate-risk, quality-funnel-adjacent payload, and account-online evidence without manual SSH SQL (`run_ai_group_quality_diagnostics` -> `.github/scripts/ai_group_quality_diagnostics.py`).
+- [ ] Run `run_ai_group_quality_diagnostics` on production and verify one real AI active group task shows non-duplicated send history, account online summary, AI quality funnel / rejection stats, and voice profile payload/audit evidence.
 
 ### Review Notes: Known Boundaries To Verify In QA
 

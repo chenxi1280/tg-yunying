@@ -37,6 +37,13 @@ Repository variables:
 
 正式自动部署只监听 `release` 分支，也保留 `workflow_dispatch` 手动触发。
 
+`workflow_dispatch` 常用诊断开关：
+
+- `run_production_diagnostics`: 部署后探测 planner drain 和 AI 硬小时任务量。
+- `run_ai_group_quality_diagnostics`: 部署后只读检查 AI 活群质量链路，输出 worker 心跳、账号表达卡覆盖、30 天消息记忆状态、近 24 小时重复文本风险、每个 AI 活群任务的话题 / 讨论老师配置、账号在线摘要、最近 action 的 `ai_message_memory_id` 和表达卡版本。
+- `reconcile_account_profiles`: 检查并补齐账号资料初始化。
+- `run_tianjin_diagnostics` / `run_tianjin_blocked_account_diagnostics`: 天津目标群准入和阻塞账号专项诊断。
+
 ## 首次服务器准备
 
 服务器需要已经具备：

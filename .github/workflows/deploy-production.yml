@@ -43,6 +43,11 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      run_ai_group_quality_diagnostics:
+        description: Run production diagnostics for AI group quality, dedupe, voice profiles, and online state
+        required: false
+        default: false
+        type: boolean
       force_cancel_in_progress:
         description: Explicitly cancel a stuck in-progress Deploy Production run before this manual run
         required: false
@@ -1049,3 +1054,12 @@ jobs:
             exit "${status}"
           fi
           echo "AI_HOURLY_INSPECT_END"
+
+      - name: Inspect AI group quality diagnostics
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ai_group_quality_diagnostics }}
+        run: |
+          set -euo pipefail
+          echo "AI_GROUP_QUALITY_DIAGNOSTICS_START"
+          ssh silicon-valley-production-server 'timeout 120 docker exec -i tgyunying-backend python -' \
+            < .github/scripts/ai_group_quality_diagnostics.py
+          echo "AI_GROUP_QUALITY_DIAGNOSTICS_END"

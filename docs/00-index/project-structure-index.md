@@ -32,6 +32,7 @@
 | 前端壳 | `frontend/src/app/AppShell.tsx` | 菜单、页面切换、系统配置/素材等跨页资源入口。 |
 | 前端状态 | `frontend/src/app/context.tsx` + `frontend/src/app/context/*.ts` | 全局状态、刷新、账号/系统/内容/消息动作。 |
 | 部署 | `deploy/*.sh`、`Dockerfile.*`、`docker-compose*.yml` | release、compose、nginx 检查和服务器安装脚本。 |
+| 生产诊断 | `.github/workflows/deploy-production.yml`、`.github/scripts/*.py` | GitHub Actions 发布、生产只读诊断和专项修复脚本；AI 活群质量诊断由 `.github/scripts/ai_group_quality_diagnostics.py` 输出表达卡、消息记忆、重复风险、在线摘要和最近 action payload 证据。 |
 
 ## 3. 业务域与代码边界
 

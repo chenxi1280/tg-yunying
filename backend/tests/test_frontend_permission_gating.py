@@ -1898,14 +1898,17 @@ def test_production_deploy_starts_four_dispatcher_workers():
 def test_production_ai_hourly_probe_reports_membership_failures():
     workflow = (PROJECT_ROOT / ".github/workflows/deploy-production.yml").read_text()
     tianjin_diagnostics = (PROJECT_ROOT / ".github/scripts/tianjin_admission_diagnostics.py").read_text()
+    quality_diagnostics = (PROJECT_ROOT / ".github/scripts/ai_group_quality_diagnostics.py").read_text()
 
     assert "run_production_diagnostics:" in workflow
     assert "run_tianjin_diagnostics:" in workflow
+    assert "run_ai_group_quality_diagnostics:" in workflow
     assert "cleanup_tianjin_admission_backlog:" in workflow
     assert "force_cancel_in_progress:" in workflow
     assert "cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.force_cancel_in_progress }}" in workflow
     assert "Run production planner drain and AI hourly volume diagnostics after deploy" in workflow
     assert "Run lightweight Tianjin admission diagnostics without planner probing" in workflow
+    assert "Run production diagnostics for AI group quality, dedupe, voice profiles, and online state" in workflow
     assert "Deduplicate stale Tianjin target-admission retry backlog" in workflow
     assert "default: false" in workflow
     assert workflow.count("if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_production_diagnostics }}") == 2
@@ -1928,6 +1931,13 @@ def test_production_ai_hourly_probe_reports_membership_failures():
     assert "AI_HOURLY_TASK_VOLUME_TASK=" in workflow
     assert "AI_HOURLY_TASK_VOLUME_SUMMARY=" in workflow
     assert "AI_HOURLY_INSPECT_END" in workflow
+    assert ".github/scripts/ai_group_quality_diagnostics.py" in workflow
+    assert "AI_GROUP_QUALITY_DIAGNOSTICS_START" in workflow
+    assert "AI_GROUP_QUALITY_DIAGNOSTICS_END" in workflow
+    assert "AI_GROUP_QUALITY_VOICE_PROFILES" in quality_diagnostics
+    assert "AI_GROUP_QUALITY_MEMORY" in quality_diagnostics
+    assert "AI_GROUP_QUALITY_RECENT_ACTIONS" in quality_diagnostics
+    assert "AI_GROUP_QUALITY_TASK" in quality_diagnostics
 
 
 def test_api_error_message_supports_trace_id_in_structured_detail_objects():
