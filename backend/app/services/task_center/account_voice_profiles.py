@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
@@ -393,13 +392,13 @@ def _generate_voice_profile_payloads(session: Session, tenant_id: int, account_i
         credentials,
         _voice_profile_prompt(accounts),
         setting.temperature,
-        max(setting.max_tokens, len(accounts) * 360, 1600),
-        system_prompt="你是账号表达卡生成器，只输出紧凑 JSON，不解释。",
-        response_format_json=True,
-        reasoning_retry_max_tokens=max(setting.max_tokens, len(accounts) * 520, 2400),
+        max(setting.max_tokens, len(accounts) * 220, 900),
+        system_prompt="你是账号表达卡生成器，只输出指定格式的纯文本行，不解释。",
+        response_format_json=False,
+        reasoning_retry_max_tokens=max(setting.max_tokens, len(accounts) * 320, 1200),
         timeout=VOICE_PROFILE_AI_TIMEOUT_SECONDS,
     )
-    return _parse_voice_profile_payloads(raw, len(accounts))
+    return _parse_voice_profile_payloads(raw, [account.id for account in accounts])
 
 
 def _accounts_for_generation(session: Session, tenant_id: int, account_ids: list[int]) -> list[TgAccount]:
@@ -413,26 +412,54 @@ def _voice_profile_prompt(accounts: list[TgAccount]) -> str:
     account_lines = "\n".join(f"- account_id={item.id}, name={item.display_name}, username={item.username or '-'}" for item in accounts)
     return (
         f"为以下 {len(accounts)} 个 Telegram 运营账号生成互相差异明显的账号表达卡。\n{account_lines}\n"
-        "必须输出 JSON：{\"items\":[...]}。\n"
-        "每项字段：account_id, age_band, persona_experiences, consumption_experiences, sentence_length, "
-        "interaction_habits, tone_strength, lexical_preferences, emoji_policy, forbidden_expressions, short_prompt_summary。\n"
-        "要求：short_prompt_summary 必须具体可执行，禁止只写自然、随意、真实；同批账号句长、口头习惯、互动偏好、表情倾向要明显不同。"
+        "每个账号只输出一行，禁止输出标题、解释、Markdown、JSON。\n"
+        "每行必须 11 段，用英文竖线 | 分隔：account_id|age_band|persona_experiences|consumption_experiences|"
+        "sentence_length|interaction_habits|tone_strength|lexical_preferences|emoji_policy|forbidden_expressions|short_prompt_summary。\n"
+        "列表字段内部用中文分号；分隔，任何字段内容都禁止出现 |。\n"
+        "short_prompt_summary 必须具体可执行，写成 18-36 个汉字；禁止只写自然、随意、真实；同批账号句长、口头习惯、互动偏好、表情倾向要明显不同。"
     )
 
 
-def _parse_voice_profile_payloads(raw: str, expected_count: int) -> list[dict[str, Any]]:
-    payload = json.loads(_clean_json_payload(raw))
-    items = payload.get("items") if isinstance(payload, dict) else payload
-    if not isinstance(items, list) or len(items) < expected_count:
+def _parse_voice_profile_payloads(raw: str, expected_account_ids: list[int]) -> list[dict[str, Any]]:
+    lines = [line.strip() for line in _clean_profile_lines(raw).splitlines() if line.strip()]
+    items = [_profile_from_pipe_line(line) for line in lines]
+    if len(items) < len(expected_account_ids):
         raise RuntimeError("AI 表达卡输出数量不足")
-    return [_normalize_generated_profile(item) for item in items[:expected_count]]
+    profiles = _profiles_by_account(items)
+    missing = [account_id for account_id in expected_account_ids if account_id not in profiles]
+    if missing:
+        raise RuntimeError(f"AI 表达卡缺少账号: {missing}")
+    return [_normalize_generated_profile(profiles[account_id]) for account_id in expected_account_ids]
 
 
-def _clean_json_payload(raw: str) -> str:
+def _clean_profile_lines(raw: str) -> str:
     value = str(raw or "").strip()
     if value.startswith("```"):
-        value = value.strip("`").removeprefix("json").strip()
+        value = value.strip("`").removeprefix("text").strip()
     return value
+
+
+def _profile_from_pipe_line(line: str) -> dict[str, Any]:
+    parts = [part.strip() for part in line.split("|")]
+    if len(parts) != 11:
+        raise RuntimeError("AI 表达卡输出行字段数量错误")
+    return {
+        "account_id": parts[0],
+        "age_band": parts[1],
+        "persona_experiences": _semicolon_list(parts[2]),
+        "consumption_experiences": _semicolon_list(parts[3]),
+        "sentence_length": parts[4],
+        "interaction_habits": _semicolon_list(parts[5]),
+        "tone_strength": parts[6],
+        "lexical_preferences": _semicolon_list(parts[7]),
+        "emoji_policy": parts[8],
+        "forbidden_expressions": _semicolon_list(parts[9]),
+        "short_prompt_summary": parts[10],
+    }
+
+
+def _semicolon_list(value: str) -> list[str]:
+    return [item.strip() for item in value.replace("；", ";").split(";") if item.strip()]
 
 
 def _normalize_generated_profile(item: Any) -> dict[str, Any]:

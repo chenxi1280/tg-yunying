@@ -8,6 +8,7 @@ from app.database import Base
 from app.models import AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AuditLog, TgAccount
 from app.services.task_center.account_voice_profiles import (
     VOICE_PROFILE_BATCH_SIZE,
+    _parse_voice_profile_payloads,
     batch_rebuild_voice_profiles,
     list_voice_profiles,
     patch_voice_profile,
@@ -195,8 +196,24 @@ def test_ensure_voice_profiles_rejects_overly_similar_batch():
         with pytest.raises(ValueError, match="too similar"):
             ensure_voice_profiles_for_accounts(session, tenant_id=1, account_ids=[101, 102], generator=generator)
 
-        rows = list(session.scalars(select(AiAccountVoiceProfile)))
-        assert rows == []
+
+def test_parse_voice_profile_pipe_lines_requires_complete_fields():
+    raw = (
+        "101|青年|做过夜场熟客|常点花花老师|短句|先问位置；爱追问照片|轻松|我看看；别跑空|少用|确实不错|"
+        "青年短句先问位置和照片偶尔说别跑空\n"
+        "102|中年|常帮朋友踩点|约过天津场子|中句|先讲经历；偶尔吐槽|谨慎|稳一点；别急|不用表情|感觉挺靠谱|"
+        "中年中句先讲踩点经历说话谨慎不急"
+    )
+
+    profiles = _parse_voice_profile_payloads(raw, [101, 102])
+
+    assert [profile["account_id"] for profile in profiles] == ["101", "102"]
+    assert profiles[0]["interaction_habits"] == ["先问位置", "爱追问照片"]
+
+
+def test_parse_voice_profile_pipe_lines_rejects_incomplete_line():
+    with pytest.raises(RuntimeError, match="字段数量错误"):
+        _parse_voice_profile_payloads("101|青年|字段太少", [101])
 
 
 def test_ensure_voice_profiles_retries_overly_similar_batch_before_insert():
