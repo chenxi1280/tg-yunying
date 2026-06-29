@@ -483,7 +483,7 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
         for account_id in [101, 102, 103, 104, 105]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         task = Task(
             id="ai-hard-hourly-plan",
@@ -695,7 +695,7 @@ def test_group_ai_chat_hard_hourly_target_plans_large_deficit_in_batches(monkeyp
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
         for account_id in range(101, 111):
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         task = Task(
             id="ai-hard-hourly-large-deficit",
@@ -754,7 +754,7 @@ def test_group_ai_chat_hard_hourly_ignores_configured_round_size_for_deficit(mon
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
         for account_id in range(101, 161):
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         task = Task(
             id="ai-hard-hourly-configured-round-size",
@@ -866,7 +866,7 @@ def test_group_ai_chat_hard_hourly_reuses_selected_accounts_when_front_accounts_
         session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
         for account_id in range(101, 201):
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         task = Task(
             id="ai-hard-hourly-scan-beyond-front-accounts",
@@ -932,7 +932,7 @@ def test_group_ai_chat_hard_hourly_uses_current_slot_when_account_cools_down_lat
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(SchedulingSetting(tenant_id=1, jitter_min_seconds=0, jitter_max_seconds=0, default_account_cooldown_seconds=120))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线", session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         task = Task(
             id="ai-hard-hourly-later-capacity",
@@ -995,7 +995,7 @@ def test_group_ai_chat_hard_hourly_reuses_accounts_in_same_round(monkeypatch):
         session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
         for account_id in [101, 102, 103]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         task = Task(
             id="ai-hard-hourly-prepared-capacity",
@@ -1080,7 +1080,7 @@ def test_group_ai_chat_hard_hourly_plans_when_accounts_are_full(monkeypatch):
         session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
         for account_id in range(101, 111):
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         task = Task(
             id="ai-hard-hourly-accounts-full",
@@ -1138,7 +1138,7 @@ def test_group_ai_chat_hard_hourly_skips_history_refresh_and_plans(monkeypatch):
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营", listener_interval_seconds=1))
         for account_id in [101, 102, 103]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         task = Task(
             id="ai-hard-hourly-history-permission",
@@ -1197,7 +1197,7 @@ def test_group_ai_chat_hard_hourly_reuses_existing_context_without_refresh(monke
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营", listener_interval_seconds=1))
         for account_id in [101, 102, 103]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         session.add(
             GroupContextMessage(
@@ -1256,7 +1256,7 @@ def test_group_ai_chat_non_hard_history_permission_still_blocks(monkeypatch):
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="普通活群", auth_status="已授权运营", listener_interval_seconds=1))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线", session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         task = Task(
             id="ai-normal-history-permission",
@@ -1304,7 +1304,7 @@ def test_group_ai_chat_hard_hourly_defers_history_account_fallback(monkeypatch):
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营", listener_interval_seconds=1))
         for account_id in [101, 102, 103]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         task = Task(
             id="ai-hard-hourly-history-fallback",
@@ -1352,7 +1352,7 @@ def test_group_ai_chat_non_hard_history_collect_exposes_non_permission_errors(mo
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="普通活群", auth_status="已授权运营", listener_interval_seconds=1))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线", session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         task = Task(
             id="ai-normal-history-non-permission",
@@ -1390,7 +1390,7 @@ def test_group_ai_chat_hard_hourly_membership_permission_blocker(monkeypatch):
                 can_send=True,
             )
         )
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线", session_ciphertext="session-101"))
         task = Task(
             id="ai-hard-hourly-membership-permission",
             tenant_id=1,
@@ -1897,7 +1897,7 @@ def test_group_ai_chat_hard_hourly_reply_shortfall_fills_with_normal_turns(monke
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线", session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         task = Task(
             id="ai-hard-hourly-reply-shortfall",
@@ -1959,7 +1959,7 @@ def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(m
             )
         )
         for account_id in [101, 102, 103]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
         session.commit()
 
         result = precheck_task_creation(

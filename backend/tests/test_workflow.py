@@ -496,7 +496,7 @@ def ensure_test_workspace(client: TestClient, headers: dict[str, str]) -> tuple[
                 session.add(online_state)
             online_state.desired_online = True
             online_state.online_status = "online"
-            online_state.stale_after_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=30)
+            online_state.stale_after_at = _now() + timedelta(minutes=30)
         db_group = session.get(TgGroup, group["id"])
         if db_group:
             db_group.auth_status = "已授权运营"

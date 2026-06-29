@@ -2044,7 +2044,7 @@ def test_listener_runtime_collects_shared_sources_once_and_recovers_listener(mon
         future_run = _now() + timedelta(hours=6)
         session.add_all(
             [
-                TgAccount(id=101, tenant_id=1, display_name="备用监听号", phone_masked="101", status="在线", health_score=90),
+                TgAccount(id=101, tenant_id=1, display_name="备用监听号", phone_masked="101", status="在线", session_ciphertext="session-101", health_score=90),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群", auth_status="已授权运营", listener_interval_seconds=60, listener_last_error="上一轮监听失败"),
                 TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群", auth_status="已授权运营"),
                 OperationTarget(id=21, tenant_id=1, target_type="group", tg_peer_id="-1007", title="源群目标", can_send=True, auth_status="已授权运营"),
@@ -2914,7 +2914,7 @@ def test_group_relay_rule_account_strategy_controls_sender(monkeypatch):
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add_all(
             [
-                TgAccount(id=101, tenant_id=1, display_name="账号A", phone_masked="101", status="在线", health_score=100),
+                TgAccount(id=101, tenant_id=1, display_name="账号A", phone_masked="101", status="在线", session_ciphertext="session-101", health_score=100),
                 TgAccount(id=102, tenant_id=1, display_name="账号B", phone_masked="102", status="在线", health_score=90),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群", auth_status="已授权运营", listener_context_limit=20),
                 TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群", auth_status="已授权运营", listener_context_limit=20),
@@ -3219,7 +3219,7 @@ def test_group_relay_uses_source_group_accounts_when_monitor_accounts_empty(monk
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add_all(
             [
-                TgAccount(id=101, tenant_id=1, display_name="源群账号", phone_masked="101", status="在线", health_score=80),
+                TgAccount(id=101, tenant_id=1, display_name="源群账号", phone_masked="101", status="在线", session_ciphertext="session-101", health_score=80),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群", auth_status="已授权运营", listener_context_limit=20),
                 TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群", auth_status="已授权运营", listener_context_limit=20),
                 TgGroupAccount(id=701, tenant_id=1, group_id=7, account_id=101, can_send=True, is_listener=False),
@@ -3732,7 +3732,7 @@ def test_group_ai_chat_uses_recent_account_memory(monkeypatch):
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=8, tenant_id=1, tg_peer_id="-1008", title="记忆测试群", auth_status="已授权运营"))
         for account_id in [101, 102]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=8, account_id=account_id, can_send=True))
         session.add(
             GroupContextMessage(
@@ -4268,7 +4268,7 @@ def test_group_ai_chat_without_ai_provider_does_not_create_actions(monkeypatch):
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="新人欢迎和日常问候"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线", session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
             Task(
@@ -4323,7 +4323,7 @@ def test_group_ai_chat_filters_recursive_context_and_duplicate_ai_drafts(monkeyp
         session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, temperature=0.8, max_tokens=1024))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="校园日常"))
         for account_id in [101, 102, 103]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         session.add_all(
             [
@@ -4451,7 +4451,7 @@ def test_group_ai_chat_idle_continuation_waits_until_interval(monkeypatch):
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="校园日常"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线", session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
             GroupContextMessage(
@@ -4519,7 +4519,7 @@ def test_group_ai_chat_idle_continuation_generates_after_interval(monkeypatch):
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="校园日常"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线", session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
             GroupContextMessage(
@@ -4591,7 +4591,7 @@ def test_group_ai_chat_rotates_single_turn_accounts_between_cycles(monkeypatch):
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营"))
         for account_id in [101, 102, 103]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         session.add(GroupContextMessage(id=43, tenant_id=1, group_id=7, listener_account_id=101, sender_name="真人用户", content="今天郑州天气咋样", remote_message_id="real-once", sent_at=now_value - timedelta(minutes=10)))
         session.add(
@@ -4660,7 +4660,7 @@ def test_group_ai_chat_manual_round_spreads_messages_across_accounts(monkeypatch
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营"))
         for account_id in range(101, 121):
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         session.add(GroupContextMessage(id=43, tenant_id=1, group_id=7, listener_account_id=101, sender_name="真人用户", content="今天郑州天气咋样", remote_message_id="real-once", sent_at=now_value - timedelta(minutes=10)))
         session.add(
@@ -4703,7 +4703,7 @@ def test_group_ai_chat_blocks_unanchored_idle_experience_claims(monkeypatch):
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="校园日常"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线", session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
             GroupContextMessage(
@@ -4771,7 +4771,7 @@ def test_group_ai_chat_semantic_clusters_drop_repeated_experience_templates(monk
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="群内接话"))
         for account_id in [101, 102, 103, 104]:
-            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线"))
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
             session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
         session.add(
             GroupContextMessage(
@@ -4963,7 +4963,7 @@ def test_group_ai_chat_idle_continuation_can_be_disabled(monkeypatch):
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="新群", auth_status="已授权运营", topic_direction="校园日常"))
-        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线"))
+        session.add(TgAccount(id=101, tenant_id=1, display_name="账号101", phone_masked="101", status="在线", session_ciphertext="session-101"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=101, can_send=True))
         session.add(
             GroupContextMessage(
@@ -5427,7 +5427,7 @@ def test_rule_tester_previews_transform_routing_accounts_and_rate_limits():
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add_all(
             [
-                TgAccount(id=101, tenant_id=1, display_name="账号A", phone_masked="101", status="在线", health_score=100),
+                TgAccount(id=101, tenant_id=1, display_name="账号A", phone_masked="101", status="在线", session_ciphertext="session-101", health_score=100),
                 TgAccount(id=102, tenant_id=1, display_name="账号B", phone_masked="102", status="在线", health_score=90),
                 TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="源群", auth_status="已授权运营", can_send=True),
                 TgGroup(id=9, tenant_id=1, tg_peer_id="-1009", title="目标群", auth_status="已授权运营", can_send=True),
