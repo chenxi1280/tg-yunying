@@ -392,7 +392,7 @@ def build_plan(session: Session, task: Task) -> int:
         coverage_payload = _coverage_payload_for_account(round_config, account.id, coverage_counts)
         act_type = _act_type_for_turn(index, quality_item)
         voice_profile = voice_profiles.get(account.id, {})
-        voice_decision = _voice_profile_match_decision(filtered_content, voice_profile)
+        voice_decision = _voice_profile_match_decision_for_item(filtered_content, voice_profile, quality_item)
         if voice_decision["score"] <= VOICE_PROFILE_MISMATCH_SCORE:
             _record_quality_rejection(
                 quality_stats,
@@ -2603,6 +2603,12 @@ def _record_quality_rejection(
         return
     samples.append({"reason": reason, "content": content, "status": "filtered", "account_id": account_id, "detail": detail})
     stats["quality_rejection_samples"] = samples
+
+
+def _voice_profile_match_decision_for_item(content: str, voice_profile: dict, quality_item: dict) -> dict[str, object]:
+    if quality_item.get("quality_fallback") == "emoji_react":
+        return {"score": VOICE_PROFILE_MATCH_SCORE, "reason": "质量兜底表情"}
+    return _voice_profile_match_decision(content, voice_profile)
 
 
 def _voice_profile_match_decision(content: str, voice_profile: dict) -> dict[str, object]:

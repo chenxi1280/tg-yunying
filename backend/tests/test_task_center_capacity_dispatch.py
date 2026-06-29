@@ -4489,6 +4489,98 @@ def test_group_ai_build_plan_uses_unique_emoji_fallback_after_quality_retries(mo
     assert len({memory.normalized_text for memory in memories}) == 2
 
 
+@pytest.mark.no_postgres
+def test_group_ai_emoji_fallback_bypasses_voice_emoji_rejection(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(group_ai_chat.random, "sample", lambda pool, k: list(pool)[:k])
+
+    def fake_generate(_session, _tenant_id, _config, *, count, target_label, history):  # noqa: ANN001
+        return ["照片准", "照片没p"][:count], 1
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        for account_id in [11, 12]:
+            session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
+            session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+            session.add(TgAccountOnlineState(tenant_id=1, account_id=account_id, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)))
+            session.add(
+                AiAccountVoiceProfile(
+                    tenant_id=1,
+                    account_id=account_id,
+                    version=1,
+                    status="active",
+                    short_prompt_summary="青年短句，少表情，不用表情",
+                    emoji_policy="不用表情",
+                )
+            )
+        task = Task(
+            id="task-emoji-fallback-voice",
+            tenant_id=1,
+            name="表情兜底不被表达卡误杀",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},
+            pacing_config={"max_actions_per_hour": 120},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 2,
+                "reply_min_per_round": 0,
+                "silent_mode_enabled": False,
+                "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+                "account_coverage_mode": "all_accounts_daily",
+            },
+            stats={},
+        )
+        session.add(task)
+        session.add(
+            Action(
+                id="previous-ai-photo",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                status="success",
+                scheduled_at=now_value - timedelta(minutes=1),
+                executed_at=now_value - timedelta(minutes=1),
+                payload={"message_text": "昨天照片准"},
+            )
+        )
+        session.add(
+            GroupContextMessage(
+                tenant_id=1,
+                group_id=7,
+                listener_account_id=11,
+                sender_peer_id="9001",
+                sender_name="真人A",
+                content="昨天照片准，今天别一直重复这句",
+                message_type="text",
+                remote_message_id="7001",
+                sent_at=now_value,
+            )
+        )
+        session.commit()
+
+        created = group_ai_chat.build_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id, Action.action_type == "send_message", Action.status == "pending").order_by(Action.created_at)))
+        refreshed = session.get(Task, task.id)
+
+    assert created == 2
+    assert [action.payload["act_type"] for action in actions] == ["emoji_react", "emoji_react"]
+    assert [action.payload["human_quality_decision"] for action in actions] == ["quality_fallback", "quality_fallback"]
+    assert len({action.payload["message_text"] for action in actions}) == 2
+    assert "voice_profile_mismatch" not in (refreshed.stats or {}).get("quality_rejection_counts", {})
+
+
 def test_retry_failed_only_requeues_unknown_after_send_actions():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
