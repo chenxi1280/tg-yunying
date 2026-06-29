@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AiAccountVoiceProfile, AuditLog, TgAccount
 from app.services._common import _now
+from app.services.task_center.account_voice_profile_cache import refresh_voice_profile_cache
 
 
 PROFILE_COPY_FIELDS = (
@@ -66,6 +67,7 @@ def rollback_voice_profile(
     session.add(restored)
     session.add(_rollback_audit(tenant_id, actor, account_id, source_version, restored.version))
     session.flush()
+    refresh_voice_profile_cache(restored)
     return restored
 
 

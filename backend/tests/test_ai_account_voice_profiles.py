@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import AccountStatus, AiAccountGroupStanceMemory, AiAccountVoiceProfile, AuditLog, TgAccount
-from app.services.task_center import account_stance_memory
+from app.services.task_center import account_stance_memory, account_voice_profile_cache
 from app.services.task_center.account_voice_profiles import (
     VOICE_PROFILE_INITIAL_MAX_TOKENS,
     VOICE_PROFILE_RETRY_MAX_TOKENS,
@@ -22,6 +23,7 @@ from app.services.task_center.account_voice_profiles import (
     ensure_voice_profiles_for_accounts,
     group_stance_summaries,
     upsert_group_stance_memory,
+    voice_profile_prompt_details,
     voice_profile_prompt_summaries,
 )
 from app.services.task_center.account_voice_profile_versions import (
@@ -86,6 +88,70 @@ class FakeStanceRedis:
     def setex(self, key, ttl, value):  # noqa: ANN001
         self.setex_calls.append((str(key), int(ttl), str(value)))
         return True
+
+
+class FakeVoiceProfileRedis(FakeStanceRedis):
+    def __init__(self, values: list[str | None] | None = None) -> None:
+        super().__init__(values)
+        self.delete_calls: list[str] = []
+
+    def delete(self, key):  # noqa: ANN001
+        self.delete_calls.append(str(key))
+        return 1
+
+
+def _enable_voice_profile_redis(monkeypatch, fake_redis: FakeVoiceProfileRedis) -> None:
+    monkeypatch.setattr(
+        account_voice_profile_cache,
+        "get_settings",
+        lambda: SimpleNamespace(queue_backend="redis", redis_url="redis://cache"),
+    )
+    monkeypatch.setattr(account_voice_profile_cache, "_redis_client", lambda _url: fake_redis)
+
+
+def test_voice_profile_prompt_details_backfills_redis_cache(monkeypatch):
+    fake_redis = FakeVoiceProfileRedis([None])
+    _enable_voice_profile_redis(monkeypatch, fake_redis)
+    with _session() as session:
+        _account(session, 101, "花花号")
+        session.add(_profile(101, "青年短句，先问价格再看反馈", version=3))
+        session.commit()
+
+        details = voice_profile_prompt_details(session, tenant_id=1, account_ids=[101])
+
+        assert details == {101: {"version": 3, "summary": "青年短句，先问价格再看反馈"}}
+        assert fake_redis.mget_calls == [["ai_group:voice_profile:1:101"]]
+        assert fake_redis.setex_calls
+        assert json.loads(fake_redis.setex_calls[0][2]) == {
+            "account_id": 101,
+            "version": 3,
+            "summary": "青年短句，先问价格再看反馈",
+        }
+
+
+def test_voice_profile_patch_refreshes_redis_cache(monkeypatch):
+    fake_redis = FakeVoiceProfileRedis()
+    _enable_voice_profile_redis(monkeypatch, fake_redis)
+    with _session() as session:
+        _account(session, 101, "花花号")
+        session.add(_profile(101, "青年短句，先问价格再看反馈", version=1))
+        session.commit()
+
+        patch_voice_profile(
+            session,
+            tenant_id=1,
+            account_id=101,
+            patch={"short_prompt_summary": "中年中句，先看反馈再轻吐槽"},
+            actor="tester",
+        )
+
+        assert fake_redis.setex_calls
+        refreshed = json.loads(fake_redis.setex_calls[-1][2])
+        assert refreshed == {
+            "account_id": 101,
+            "version": 2,
+            "summary": "中年中句，先看反馈再轻吐槽",
+        }
 
 
 def test_missing_voice_profile_requires_explicit_ai_generator():

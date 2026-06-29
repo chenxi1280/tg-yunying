@@ -10,6 +10,11 @@ from app.models import AccountStatus, AiAccountVoiceProfile, AuditLog, TgAccount
 from app.services._common import _now
 from app.services.ai_config import ai_provider_credentials
 from app.services.task_center.account_stance_memory import group_stance_summaries, upsert_group_stance_memory
+from app.services.task_center.account_voice_profile_cache import (
+    cached_voice_profile_prompt_details,
+    refresh_voice_profile_cache,
+    refresh_voice_profile_cache_many,
+)
 from app.services.task_center.account_voice_profile_generation import (
     VOICE_PROFILE_INITIAL_MAX_TOKENS,
     VOICE_PROFILE_RETRY_MAX_TOKENS,
@@ -62,6 +67,7 @@ def patch_voice_profile(
     session.add(next_profile)
     _audit(session, tenant_id, actor, "编辑账号表达卡", account_id, f"version={next_profile.version}")
     session.flush()
+    refresh_voice_profile_cache(next_profile)
     return next_profile
 
 
@@ -82,6 +88,7 @@ def rebuild_voice_profile(
     session.add(profile)
     _audit(session, tenant_id, actor, "重建账号表达卡", account_id, f"version={profile.version}")
     session.flush()
+    refresh_voice_profile_cache(profile)
     return profile
 
 
@@ -145,20 +152,26 @@ def voice_profile_prompt_details(
     tenant_id: int,
     account_ids: list[int],
 ) -> dict[int, dict[str, str | int]]:
+    cached, missed_ids = cached_voice_profile_prompt_details(tenant_id, account_ids)
+    if not missed_ids:
+        return cached
     rows = session.scalars(
         select(AiAccountVoiceProfile).where(
             AiAccountVoiceProfile.tenant_id == tenant_id,
-            AiAccountVoiceProfile.account_id.in_(account_ids),
+            AiAccountVoiceProfile.account_id.in_(missed_ids),
             AiAccountVoiceProfile.status == "active",
             AiAccountVoiceProfile.quality_status == "active",
         )
     )
-    result: dict[int, dict[str, str | int]] = {}
+    result: dict[int, dict[str, str | int]] = dict(cached)
+    backfill_rows: list[AiAccountVoiceProfile] = []
     for row in rows:
         current = result.get(row.account_id)
         if current and int(current["version"]) >= int(row.version or 0):
             continue
         result[row.account_id] = {"version": int(row.version or 0), "summary": row.short_prompt_summary}
+        backfill_rows.append(row)
+    refresh_voice_profile_cache_many(backfill_rows)
     return result
 
 
@@ -186,14 +199,17 @@ def _batch_insert_generated(
     created = 0
     for chunk in _chunked_account_ids(account_ids):
         profiles, diversity_scores = generate_diverse_voice_profile_batch(generator, chunk)
+        chunk_rows: list[AiAccountVoiceProfile] = []
         for account_id in chunk:
             profile = profiles.get(account_id)
             row = _profile_from_generated(tenant_id, account_id, profile, _valid_summary(profile, account_id))
             row.similarity_score = diversity_scores.get(account_id)
             session.add(row)
+            chunk_rows.append(row)
             _audit(session, tenant_id, actor, "批量生成账号表达卡", account_id, f"version={row.version}")
             created += 1
-    session.flush()
+        session.flush()
+        refresh_voice_profile_cache_many(chunk_rows)
     return created
 
 

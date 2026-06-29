@@ -4,6 +4,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.models import AiAccountVoiceProfile, AuditLog
+from app.services.task_center.account_voice_profile_cache import refresh_voice_profile_cache
 
 VOICE_PROFILE_MUTABLE_STATUSES = {"active", "disabled"}
 
@@ -27,6 +28,7 @@ def batch_update_voice_profile_status(
         profile.status = target_status
         profile.updated_by = actor
         _audit_status_change(session, tenant_id, actor, account_id, target_status)
+        refresh_voice_profile_cache(profile)
         updated += 1
     session.flush()
     return {"updated": updated, "skipped": max(0, len(_unique_account_ids(account_ids)) - updated)}
