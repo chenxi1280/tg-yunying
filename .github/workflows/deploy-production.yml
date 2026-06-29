@@ -458,9 +458,16 @@ jobs:
           set -euo pipefail
           test -n "${MINIMAX_API_KEY}"
           echo "MINIMAX_PROVIDER_UPDATE_START"
-          ssh silicon-valley-production-server \
-            'timeout 120 docker exec -e MINIMAX_API_KEY -e MINIMAX_BASE_URL=https://api.minimaxi.com/v1 -e MINIMAX_MODEL_NAME=MiniMax-M3 -e MINIMAX_TENANT_ID=1 -i tgyunying-backend python -' \
-            < .github/scripts/update_minimax_provider.py
+          {
+            printf '%s\n' "$(printf '%s' "${MINIMAX_API_KEY}" | base64 | tr -d '\n')"
+            base64 < .github/scripts/update_minimax_provider.py | tr -d '\n'
+            printf '\n'
+          } | ssh silicon-valley-production-server 'set -euo pipefail
+            read -r minimax_key_b64
+            read -r script_b64
+            export MINIMAX_API_KEY="$(printf "%s" "${minimax_key_b64}" | base64 -d)"
+            printf "%s" "${script_b64}" | base64 -d | timeout 120 docker exec -e MINIMAX_API_KEY -e MINIMAX_BASE_URL=https://api.minimaxi.com/v1 -e MINIMAX_MODEL_NAME=MiniMax-M3 -e MINIMAX_TENANT_ID=1 -i tgyunying-backend python -
+          '
           echo "MINIMAX_PROVIDER_UPDATE_END"
 
       - name: Diagnose Tianjin blocked account
