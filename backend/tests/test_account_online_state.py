@@ -386,7 +386,7 @@ def test_probe_due_online_states_uses_longer_interval_for_low_frequency_sources(
 
         assert state.online_status == "online"
         assert state.next_probe_at > now + ONLINE_PROBE_INTERVAL
-
+        assert state.stale_after_at > state.next_probe_at
 
 def test_task_account_online_summary_counts_statuses_and_failure_samples():
     now = _now()

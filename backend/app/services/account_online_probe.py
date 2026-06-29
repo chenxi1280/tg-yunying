@@ -13,6 +13,7 @@ from app.services.account_online_constants import (
     ONLINE_PROBE_FAILURE_RETRY_AFTER,
     ONLINE_PROBE_INTERVAL,
     ONLINE_STALE_AFTER,
+    ONLINE_STALE_GRACE,
 )
 from app.services.developer_apps import credentials_for_account
 
@@ -66,7 +67,7 @@ def _mark_probe_online(account: TgAccount, state: TgAccountOnlineState, now: dat
     state.last_seen_at = now
     state.last_probe_at = now
     state.next_probe_at = now + _probe_interval_for_state(state)
-    state.stale_after_at = now + ONLINE_STALE_AFTER
+    state.stale_after_at = stale_deadline_for_state(state, now)
     state.updated_at = now
 
 
@@ -100,6 +101,12 @@ def _probe_interval_for_state(state: TgAccountOnlineState) -> timedelta:
     return ONLINE_PROBE_INTERVAL
 
 
+def stale_deadline_for_state(state: TgAccountOnlineState, now: datetime) -> datetime:
+    probe_window = _probe_interval_for_state(state) + ONLINE_STALE_GRACE
+    stale_window = probe_window if probe_window > ONLINE_STALE_AFTER else ONLINE_STALE_AFTER
+    return now + stale_window
+
+
 def _only_low_frequency_sources(state: TgAccountOnlineState) -> bool:
     sources = state.desired_sources if isinstance(state.desired_sources, list) else []
     if not sources:
@@ -107,4 +114,4 @@ def _only_low_frequency_sources(state: TgAccountOnlineState) -> bool:
     return all(isinstance(source, dict) and source.get("keepalive_mode") == "low_frequency" for source in sources)
 
 
-__all__ = ["probe_due_online_states"]
+__all__ = ["probe_due_online_states", "stale_deadline_for_state"]

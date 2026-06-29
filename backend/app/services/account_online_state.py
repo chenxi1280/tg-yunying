@@ -9,8 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import AccountStatus, Task, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.services._common import _now
-from app.services.account_online_constants import ONLINE_STALE_AFTER
-from app.services.account_online_probe import probe_due_online_states
+from app.services.account_online_probe import probe_due_online_states, stale_deadline_for_state
 from app.timezone import as_beijing
 
 ONLINE_TASK_STATUSES = {"running", "paused"}
@@ -143,7 +142,7 @@ def mark_stale_online_states(session: Session, *, limit: int = 100, now: datetim
         state.online_status = "offline"
         state.failure_type = "stale_probe"
         state.failure_detail = "在线状态超过 stale_after_at 未刷新"
-        state.next_probe_at = current_time + ONLINE_STALE_AFTER
+        state.next_probe_at = current_time
         state.updated_at = current_time
     return len(rows)
 
@@ -430,7 +429,7 @@ def _apply_desired_state(state: TgAccountOnlineState, meta: dict[str, Any], now:
     state.session_id = str(meta.get("session_id") or state.session_id or "")
     state.proxy_id = meta.get("proxy_id") if meta.get("proxy_id") is not None else state.proxy_id
     state.online_status = _next_desired_status(state)
-    state.stale_after_at = now + ONLINE_STALE_AFTER
+    state.stale_after_at = stale_deadline_for_state(state, now)
     state.failure_type = "" if state.online_status != "blocked" else state.failure_type
     state.reconciled_at = now
     state.updated_at = now
