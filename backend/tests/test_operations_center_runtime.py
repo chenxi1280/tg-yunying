@@ -3962,6 +3962,7 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
     assert task.last_error == ""
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_rotates_mimo_provider_after_quota_exhausted(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

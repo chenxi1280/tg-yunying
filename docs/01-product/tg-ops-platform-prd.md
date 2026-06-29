@@ -3331,6 +3331,7 @@ AI 活跃群的默认策略是“接话为主、低频暖场为辅”：
 AI 活跃群质量管线必须先做确定性约束，再做 AI 生成，最后做发送前复查：
 
 - Planner 启动本轮前先读取 ready pool、`tg_account_online_state`、账号表达卡、账号群内短期立场、最近真人上下文、同任务历史成功消息和 `ai_group_message_memory`。任一账号在线状态为 `stale`、`offline`、`login_required`、`session_invalid`、`proxy_failed` 时，不得进入文本生成候选。
+- AI 活跃群文本生成未显式配置 `ai_model` 时，必须使用任务指定 `ai_provider_id` 或租户默认健康 AI 供应商，不得硬绑定 MiMo/Mino；只有任务显式选择 MiMo/Mino 模型时，才要求健康的 MiMo/Mino 文本供应商并启用同族配额轮换。图片验证码等视觉验证仍按验证链路要求使用 MiMo 视觉能力。
 - 每个 Turn 先确定 `slot_id`、`act_type`、引用对象、账号、话题方向和讨论对象，再进入批量 Prompt。AI 只能填充 slot 内容，不能反向新增账号、增加本轮 Turn 数或改变引用关系。
 - 一轮默认一次批量生成；只有局部 slot 未通过质量过滤时，才携带失败原因、已接受候选、已占用语义簇和账号表达卡发起补位生成。补位最多 2 次，整轮最多 3 次 AI 调用。
 - 质量过滤顺序固定为：空内容 / 禁词 / 事实锚点缺失 -> 账号表达卡不匹配 -> 同批语义重复 -> 5 分钟归一化硬重复 -> 1 小时高相似短期重复 -> 7 天语义硬重复 -> 30 天模板壳句限频 -> 同账号短期立场冲突。任何阶段失败都必须留下具体 `quality_decision` 和 `quality_reason`。

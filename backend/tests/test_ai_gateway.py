@@ -976,7 +976,8 @@ def test_group_chat_generation_uses_short_message_token_budget(monkeypatch):
     assert captured["max_tokens"] == 300 * 96
 
 
-def test_group_chat_generation_prefers_xiaomi_mino_provider(monkeypatch):
+@pytest.mark.no_postgres
+def test_group_chat_generation_uses_tenant_default_provider_without_model(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     captured: dict[str, str] = {}
@@ -984,7 +985,7 @@ def test_group_chat_generation_prefers_xiaomi_mino_provider(monkeypatch):
     def fake_generate_drafts(credentials, _prompt, **_kwargs):
         captured["provider_name"] = credentials.provider_name
         captured["model_name"] = credentials.model_name
-        return mock_generation_result("这句用小米模型")
+        return mock_generation_result("这句用默认模型")
 
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
@@ -1017,11 +1018,12 @@ def test_group_chat_generation_prefers_xiaomi_mino_provider(monkeypatch):
 
         contents, _tokens = generate_group_messages(session, 1, {}, count=1, target_label="活跃群", history="已有上下文")
 
-    assert contents == ["这句用小米模型"]
-    assert captured == {"provider_name": "Xiaomi Mino", "model_name": "mimo-v2.5"}
+    assert contents == ["这句用默认模型"]
+    assert captured == {"provider_name": "DeepSeek", "model_name": "deepseek-v4-flash"}
 
 
-def test_group_chat_generation_overrides_non_mino_task_provider(monkeypatch):
+@pytest.mark.no_postgres
+def test_group_chat_generation_honors_task_provider_without_model(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     captured: dict[str, str] = {}
@@ -1029,7 +1031,7 @@ def test_group_chat_generation_overrides_non_mino_task_provider(monkeypatch):
     def fake_generate_drafts(credentials, _prompt, **_kwargs):
         captured["provider_name"] = credentials.provider_name
         captured["model_name"] = credentials.model_name
-        return mock_generation_result("旧任务也切小米")
+        return mock_generation_result("任务供应商接话")
 
     monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
 
@@ -1062,11 +1064,47 @@ def test_group_chat_generation_overrides_non_mino_task_provider(monkeypatch):
 
         contents, _tokens = generate_group_messages(session, 1, {"ai_provider_id": 1}, count=1, target_label="活跃群", history="已有上下文")
 
-    assert contents == ["旧任务也切小米"]
-    assert captured == {"provider_name": "Xiaomi MiMo", "model_name": "mimo-v2.5"}
+    assert contents == ["任务供应商接话"]
+    assert captured == {"provider_name": "DeepSeek", "model_name": "deepseek-v4-flash"}
 
 
-def test_group_chat_generation_does_not_fallback_when_mino_missing():
+@pytest.mark.no_postgres
+def test_group_chat_generation_uses_default_provider_when_mimo_missing(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    captured: dict[str, str] = {}
+
+    def fake_generate_drafts(credentials, _prompt, **_kwargs):
+        captured["provider_name"] = credentials.provider_name
+        captured["model_name"] = credentials.model_name
+        return mock_generation_result("默认供应商继续生成")
+
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="DeepSeek",
+                provider_type="openai_compatible",
+                base_url="https://api.deepseek.com/v1",
+                model_name="deepseek-v4-flash",
+                api_key_ciphertext=encrypt_secret("deepseek-key"),
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
+        session.commit()
+
+        contents, _tokens = generate_group_messages(session, 1, {}, count=1, target_label="活跃群", history="已有上下文")
+
+    assert contents == ["默认供应商继续生成"]
+    assert captured == {"provider_name": "DeepSeek", "model_name": "deepseek-v4-flash"}
+
+
+@pytest.mark.no_postgres
+def test_group_chat_generation_requires_mimo_when_model_configured():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
 
@@ -1087,7 +1125,7 @@ def test_group_chat_generation_does_not_fallback_when_mino_missing():
         session.commit()
 
         with pytest.raises(AiGenerationUnavailable, match="小米 MiMo/mino"):
-            generate_group_messages(session, 1, {}, count=1, target_label="活跃群", history="已有上下文")
+            generate_group_messages(session, 1, {"ai_model": "mimo-v2.5"}, count=1, target_label="活跃群", history="已有上下文")
 
 
 def test_channel_comment_allows_adult_service_context_in_ai_prompt(monkeypatch):

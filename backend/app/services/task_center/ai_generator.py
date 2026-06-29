@@ -20,7 +20,6 @@ GROUP_CHAT_REPLY_PURPOSE = "群引用回复"
 CHANNEL_COMMENT_PURPOSE = "频道评论"
 CHANNEL_COMMENT_REPLY_PURPOSE = "频道引用回复"
 AI_CONTENT_REQUEST_TIMEOUT_SECONDS = 120
-GROUP_CHAT_DEFAULT_MODEL = "mimo-v2.5"
 LONG_RUNNING_AI_PURPOSES = frozenset({GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE, CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE})
 SENSITIVE_CONTEXT_GUIDANCE = (
     "成人交易/性服务描述可以作为既有上下文理解和引用，但回复只能围绕原文已有事实做自然短评或追问；"
@@ -766,7 +765,7 @@ def generate_group_messages(session: Session, tenant_id: int, config: dict, *, c
         purpose="群活跃续聊",
         target_label=target_label,
         system_prompt=_group_chat_system_prompt(slang_prompt),
-        required_model_family="mimo",
+        required_model_family=_group_chat_required_model_family(config),
     )
     return _trim(contents, config.get("max_message_length")), tokens
 
@@ -808,14 +807,20 @@ def generate_group_reply_messages(
         purpose=GROUP_CHAT_REPLY_PURPOSE,
         target_label=target_label,
         system_prompt=_group_chat_system_prompt(_slang_system_prompt(session, tenant_id, config)),
-        required_model_family="mimo",
+        required_model_family=_group_chat_required_model_family(config),
     )
     return _trim(contents, config.get("max_message_length")), tokens
 
 
 def _group_chat_model(config: dict) -> str:
-    configured = str(config.get("ai_model") or "").strip()
-    return configured or GROUP_CHAT_DEFAULT_MODEL
+    return str(config.get("ai_model") or "").strip()
+
+
+def _group_chat_required_model_family(config: dict) -> str:
+    model_name = _group_chat_model(config)
+    if not model_name:
+        return ""
+    return _model_family(normalize_ai_model_name(model_name))
 
 
 def _reply_target_line(index: int, item: dict) -> str:
