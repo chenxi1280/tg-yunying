@@ -3710,6 +3710,17 @@ def test_group_ai_expires_open_actions_without_voice_profile_before_replan():
             scheduled_at=now_value,
             payload={"message_text": "旧文案", "ai_message_memory_id": memory.id},
         )
+        retryable_profileless = Action(
+            id="action-retryable-profileless",
+            tenant_id=1,
+            task_id=task.id,
+            task_type="group_ai_chat",
+            action_type="send_message",
+            account_id=11,
+            status="retryable_failed",
+            scheduled_at=now_value,
+            payload={"message_text": "旧失败文案"},
+        )
         profiled = Action(
             id="action-profiled",
             tenant_id=1,
@@ -3721,18 +3732,19 @@ def test_group_ai_expires_open_actions_without_voice_profile_before_replan():
             scheduled_at=now_value,
             payload={"message_text": "新文案", "account_voice_profile_version": 2},
         )
-        session.add_all([task, memory, profileless, profiled])
+        session.add_all([task, memory, profileless, retryable_profileless, profiled])
         session.commit()
 
         expired = group_ai_chat._expire_open_profileless_actions(session, task, [11])
         session.flush()
 
-        assert expired == 1
+        assert expired == 2
         assert profileless.status == "skipped"
+        assert retryable_profileless.status == "skipped"
         assert profileless.result["error_code"] == "voice_profile_replan"
         assert memory.status == "expired_before_send"
         assert profiled.status == "pending"
-        assert task.stats["voice_profile_replanned_open_action_count"] == 1
+        assert task.stats["voice_profile_replanned_open_action_count"] == 2
 
 
 @pytest.mark.no_postgres
