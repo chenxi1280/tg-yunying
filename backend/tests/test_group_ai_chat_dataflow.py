@@ -75,7 +75,8 @@ def test_group_ai_quality_fill_retries_until_shortfall_is_filled(monkeypatch):
 
 
 def test_group_ai_expires_profileless_actions_before_duplicate_baseline():
-    source = Path("backend/app/services/task_center/executors/group_ai_chat.py").read_text()
+    source_path = Path(__file__).resolve().parents[1] / "app/services/task_center/executors/group_ai_chat.py"
+    source = source_path.read_text()
 
     assert source.index("_expire_open_profileless_actions(") < source.index("planned_ai_messages = _recent_planned_ai_messages(")
 
