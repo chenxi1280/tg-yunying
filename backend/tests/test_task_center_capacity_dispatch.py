@@ -4379,8 +4379,8 @@ def test_group_ai_context_bound_round_limits_far_future_actions(monkeypatch):
     Base.metadata.create_all(engine)
     now_value = datetime(2026, 6, 29, 4, 0)
     monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr("app.services.account_online_state._now", lambda: now_value)
     monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
-
     def fake_quality_items(_session, _task, _config, **kwargs):  # noqa: ANN001
         turn_count = int(kwargs["turn_count"])
         return (
