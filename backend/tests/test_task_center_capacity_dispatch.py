@@ -92,6 +92,17 @@ class FakeRedisAccountLock:
         return 1
 
 
+def _voice_profile(account_id: int, summary: str = "青年短句，少总结，偶尔追问") -> AiAccountVoiceProfile:
+    return AiAccountVoiceProfile(
+        tenant_id=1,
+        account_id=account_id,
+        version=1,
+        status="active",
+        quality_status="active",
+        short_prompt_summary=summary,
+    )
+
+
 def _redis_bucket_settings(**overrides):
     defaults = {
         "enable_redis_token_bucket": True,
@@ -3918,6 +3929,8 @@ def test_group_ai_build_plan_sends_fixed_slots_to_ai_and_keeps_slot_accounts(mon
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
                 TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
                 TgAccountOnlineState(tenant_id=1, account_id=12, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
+                AiAccountVoiceProfile(tenant_id=1, account_id=11, version=1, status="active", quality_status="active", short_prompt_summary="青年短句，偶尔表情"),
+                AiAccountVoiceProfile(tenant_id=1, account_id=12, version=1, status="active", quality_status="active", short_prompt_summary="中年短句，轻吐槽"),
             ]
         )
         task = Task(
@@ -3991,6 +4004,8 @@ def test_group_ai_quality_retry_only_requests_failed_slots(monkeypatch):
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
                 TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
                 TgAccountOnlineState(tenant_id=1, account_id=12, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
+                _voice_profile(11, "青年短句，爱问价格"),
+                _voice_profile(12, "中年短句，接话补充"),
                 AiGroupMessageMemory(
                     id="previous-photo-memory",
                     tenant_id=1,
@@ -4039,6 +4054,61 @@ def test_group_ai_quality_retry_only_requests_failed_slots(monkeypatch):
     assert [action.account_id for action in actions] == [11, 12]
     assert [action.payload["slot_id"] for action in actions] == ["task-slot-retry:cycle:1:turn:1", "task-slot-retry:cycle:1:turn:2"]
     assert actions[1].payload["rewrite_attempts"] == 1
+
+
+@pytest.mark.no_postgres
+def test_group_ai_build_plan_blocks_missing_voice_profile(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+    monkeypatch.setattr(group_ai_chat, "_now", lambda: now_value)
+    monkeypatch.setattr(group_ai_chat, "should_collect_listener", lambda *_args, **_kwargs: False)
+
+    def fake_quality_items(_session, _task, _config, **_kwargs):  # noqa: ANN001
+        return (
+            [{"content": "花花老师最近反馈挺多", "human_quality_decision": "accepted"}],
+            3,
+            {"ai_generation_rounds": 1, "ai_generation_candidate_count": 1},
+        )
+
+    monkeypatch.setattr(group_ai_chat, "_generate_quality_filled_items", fake_quality_items)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
+        session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)))
+        task = Task(
+            id="task-missing-voice-profile",
+            tenant_id=1,
+            name="缺表达卡校验",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "all", "max_concurrent": 1, "cooldown_per_account_minutes": 0},
+            pacing_config={"max_actions_per_hour": 120},
+            type_config={
+                "target_group_id": 7,
+                "messages_per_round_mode": "manual",
+                "messages_per_round": 1,
+                "reply_min_per_round": 0,
+                "silent_mode_enabled": False,
+                "fact_anchor_required": False,
+                "low_confidence_silence_enabled": False,
+            },
+            stats={},
+        )
+        session.add(task)
+        session.commit()
+
+        assert group_ai_chat.build_plan(session, task) == 0
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id)))
+        session.refresh(task)
+
+    assert actions == []
+    assert task.last_error == group_ai_chat.VOICE_PROFILE_MISSING_MESSAGE
+    assert task.stats["voice_profile_missing_count"] == 1
+    assert task.stats["quality_rejection_counts"]["voice_profile_missing"] == 1
 
 
 @pytest.mark.no_postgres
@@ -4129,6 +4199,7 @@ def test_group_ai_build_plan_blocks_stance_conflict(monkeypatch):
         session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
         session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)))
+        session.add(_voice_profile(11, "青年短句，谨慎接话"))
         session.add(
             AiAccountGroupStanceMemory(
                 tenant_id=1,
@@ -4193,6 +4264,7 @@ def test_group_ai_build_plan_deprioritizes_recent_topic_and_teacher(monkeypatch)
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True))
         session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
+        session.add(_voice_profile(11, "青年短句，按话题接话"))
         session.add(
             TgAccountOnlineState(
                 tenant_id=1,
@@ -4299,6 +4371,7 @@ def test_group_ai_build_plan_records_memory_duplicate_as_quality_rejection(monke
         session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
         session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)))
+        session.add(_voice_profile(11, "青年短句，少总结"))
         task = Task(
             id="task-memory-duplicate",
             tenant_id=1,
@@ -4430,6 +4503,7 @@ def test_group_ai_context_bound_round_limits_far_future_actions(monkeypatch):
                     stale_after_at=now_value + timedelta(minutes=5),
                 )
             )
+            session.add(_voice_profile(account_id, f"账号{account_id}短句，接真人上下文"))
         session.add(
             GroupContextMessage(
                 tenant_id=1,
@@ -4566,6 +4640,8 @@ def test_group_ai_build_plan_uses_unique_emoji_fallback_after_quality_retries(mo
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
                 TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
                 TgAccountOnlineState(tenant_id=1, account_id=12, desired_online=True, online_status="online", stale_after_at=now_value + timedelta(minutes=5)),
+                AiAccountVoiceProfile(tenant_id=1, account_id=11, version=1, status="active", quality_status="active", short_prompt_summary="青年短句，偶尔表情"),
+                AiAccountVoiceProfile(tenant_id=1, account_id=12, version=1, status="active", quality_status="active", short_prompt_summary="中年短句，轻吐槽"),
             ]
         )
         task = Task(

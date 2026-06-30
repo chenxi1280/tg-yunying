@@ -48,6 +48,7 @@ AI_NORMAL_CANDIDATE_SHORTFALL_MESSAGE = "AI 普通发言候选不足，已跳过
 ACCOUNT_CAPACITY_BLOCKED_MESSAGE = "账号容量已排满，等待账号额度恢复后继续执行"
 ACCOUNT_COOLDOWN_BLOCKED_MESSAGE = "账号冷却中，等待冷却后继续执行"
 ACCOUNT_UNAVAILABLE_MESSAGE = "没有可用账号，等待账号恢复后继续执行"
+VOICE_PROFILE_MISSING_MESSAGE = "账号表达卡缺失，等待账号表达卡初始化后继续执行"
 DEFAULT_IDLE_CONTINUATION_SECONDS = 300
 DEFAULT_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 3600
 MIN_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 60
@@ -152,6 +153,14 @@ def build_plan(session: Session, task: Task) -> int:
         return 0
     ready_voice_profiles = voice_profile_prompt_details(session, tenant_id=task.tenant_id, account_ids=[account.id for account in accounts])
     _expire_open_profileless_actions(session, task, ready_voice_profiles.keys())
+    accounts, missing_voice_profile_ids = _accounts_with_ready_voice_profiles(accounts, ready_voice_profiles)
+    if missing_voice_profile_ids:
+        _record_missing_voice_profiles(task, missing_voice_profile_ids)
+    if not accounts:
+        task.last_error = VOICE_PROFILE_MISSING_MESSAGE
+        if hard_progress:
+            _mark_hard_blocked(task, hard_progress, "voice_profile_missing")
+        return 0
     history_depth = int(config.get("chat_history_depth") or 50)
     needs_context_refresh = _should_refresh_context_for_plan(session, group, history_depth, hard_progress)
     if should_collect_listener("group", group.id, window_seconds=group.listener_interval_seconds) and needs_context_refresh:
@@ -812,6 +821,45 @@ def _coverage_payload_for_account(config: dict, account_id: int, counts: dict[in
         "coverage_account_remaining_before_action": remaining,
         "coverage_reason": "daily_account_coverage" if remaining else "",
     }
+
+
+def _accounts_with_ready_voice_profiles(accounts: list, voice_profiles: dict[int, dict[str, str | int]]) -> tuple[list, list[int]]:
+    ready_accounts = []
+    missing_ids: list[int] = []
+    for account in accounts:
+        if _voice_profile_ready(voice_profiles.get(int(account.id))):
+            ready_accounts.append(account)
+        else:
+            missing_ids.append(int(account.id))
+    return ready_accounts, missing_ids
+
+
+def _voice_profile_ready(profile: dict[str, str | int] | None) -> bool:
+    if not profile:
+        return False
+    return int(profile.get("version") or 0) > 0 and bool(str(profile.get("summary") or "").strip())
+
+
+def _record_missing_voice_profiles(task: Task, account_ids: list[int]) -> None:
+    stats_inc(task, "skipped_count", len(account_ids))
+    stats = dict(task.stats or {})
+    stats["voice_profile_missing_count"] = int(stats.get("voice_profile_missing_count") or 0) + len(account_ids)
+    counts = dict(stats.get("quality_rejection_counts") or {})
+    counts["voice_profile_missing"] = int(counts.get("voice_profile_missing") or 0) + len(account_ids)
+    stats["quality_rejection_counts"] = counts
+    stats["quality_rejection_samples"] = _missing_voice_profile_samples(stats, account_ids)
+    task.stats = stats
+
+
+def _missing_voice_profile_samples(stats: dict[str, object], account_ids: list[int]) -> list[dict[str, object]]:
+    samples = list(stats.get("quality_rejection_samples") or [])
+    existing = sum(1 for item in samples if str(item.get("reason") or "") == "voice_profile_missing")
+    for account_id in account_ids:
+        if existing >= QUALITY_REJECTION_SAMPLE_LIMIT:
+            break
+        samples.append({"reason": "voice_profile_missing", "content": "", "status": "blocked", "account_id": account_id, "detail": VOICE_PROFILE_MISSING_MESSAGE})
+        existing += 1
+    return samples
 
 
 def _account_prompt_profiles(
