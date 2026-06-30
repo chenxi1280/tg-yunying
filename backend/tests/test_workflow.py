@@ -4754,6 +4754,10 @@ def test_task_center_channel_task_reports_no_collect_account():
 
 def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
     sends: list[str] = []
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_relay.should_collect_listener",
+        lambda *args, **kwargs: False,
+    )
 
     def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
         sends.append(content)
@@ -4814,6 +4818,10 @@ def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
 
 def test_group_relay_waits_for_source_media_cache_and_preserves_album_order(monkeypatch):
     send_calls: list[list[tuple[str, str | None, str]]] = []
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_relay.should_collect_listener",
+        lambda *args, **kwargs: False,
+    )
 
     def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
         send_calls.append([(segment.segment_type, segment.source, segment.caption) for segment in outbound_segments])
@@ -4926,6 +4934,10 @@ def test_group_relay_waits_for_source_media_cache_and_preserves_album_order(monk
 
 def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
     sends: list[str] = []
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_relay.should_collect_listener",
+        lambda *args, **kwargs: False,
+    )
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.send_message",
         lambda *args, **kwargs: sends.append(args[2]) or SendResult(True, remote_message_id=f"relay-continuous-{len(sends)}"),
