@@ -314,3 +314,74 @@ def test_ai_group_quality_diagnostics_ignores_failed_only_duplicate_text():
 
     assert snapshot["repeated_texts"] == [{"text": "失败文本重复", "count": 2}]
     assert snapshot["duplicate_blockers"] == []
+
+
+def test_ai_group_quality_diagnostics_blocks_unmet_hard_hourly_target():
+    module = load_quality_diagnostics_module()
+
+    blockers = module.hard_hourly_gate_blockers(
+        [
+            {
+                "task_id": "task-ai",
+                "name": "郑州楼凤",
+                "status": "running",
+                "stats": {
+                    "hard_hourly_target_enabled": True,
+                    "hard_hourly_goal": 10,
+                    "hard_hourly_success_count": 7,
+                    "hard_hourly_open_count": 2,
+                    "hard_hourly_overdue_open_count": 1,
+                    "hard_hourly_deficit": 3,
+                    "hard_hourly_status": "blocked",
+                    "hard_hourly_bucket": "2026-07-01T15:00:00+08:00",
+                    "hard_hourly_last_blockers": {"dispatcher_lag": 1},
+                },
+            }
+        ]
+    )
+
+    assert blockers == [
+        {
+            "task_id": "task-ai",
+            "name": "郑州楼凤",
+            "status": "running",
+            "bucket": "2026-07-01T15:00:00+08:00",
+            "goal": 10,
+            "success_count": 7,
+            "future_open_count": 2,
+            "overdue_open_count": 1,
+            "deficit": 3,
+            "hard_hourly_status": "blocked",
+            "blockers": {"dispatcher_lag": 1},
+            "reason": "hard_hourly_not_met",
+        }
+    ]
+
+
+def test_ai_group_quality_diagnostics_ignores_paused_or_disabled_hard_hourly_target():
+    module = load_quality_diagnostics_module()
+
+    blockers = module.hard_hourly_gate_blockers(
+        [
+            {
+                "task_id": "paused-ai",
+                "name": "暂停任务",
+                "status": "paused",
+                "stats": {
+                    "hard_hourly_target_enabled": True,
+                    "hard_hourly_goal": 10,
+                    "hard_hourly_success_count": 0,
+                    "hard_hourly_deficit": 10,
+                    "hard_hourly_status": "missed",
+                },
+            },
+            {
+                "task_id": "normal-ai",
+                "name": "未开启硬目标",
+                "status": "running",
+                "stats": {"hard_hourly_target_enabled": False},
+            },
+        ]
+    )
+
+    assert blockers == []

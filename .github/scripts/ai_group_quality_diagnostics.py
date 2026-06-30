@@ -20,6 +20,7 @@ from app.models import (
     WorkerHeartbeat,
 )
 from app.services.account_online_projection import task_account_online_summary
+from app.services.task_center.hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from app.timezone import as_beijing
 
 
@@ -34,6 +35,7 @@ ONLINE_SETTLE_SECONDS = 900
 ONLINE_SETTLE_POLL_SECONDS = 15
 QUALITY_PAYLOAD_BLOCKER_LIMIT = 20
 MATERIAL_TRACE_SAMPLE_LIMIT = 8
+ACTIVE_TASK_STATUSES = {"running"}
 ONLINE_BLOCK_KEYS = (
     "stale_count",
     "missing_state_count",
@@ -206,6 +208,7 @@ def active_group_tasks(session) -> list[Task]:
 
 def task_snapshot(session, task: Task, since: datetime) -> dict[str, Any]:
     config = task.type_config or {}
+    stats = diagnostic_task_stats(session, task)
     recent_actions = recent_task_actions(session, task.id, since)
     payloads = [action.payload or {} for action in recent_actions]
     material_traces = material_trace_samples(recent_actions)
@@ -215,7 +218,7 @@ def task_snapshot(session, task: Task, since: datetime) -> dict[str, Any]:
         "status": task.status,
         "last_error": task.last_error,
         "next_run_at": task.next_run_at,
-        "stats": task.stats or {},
+        "stats": stats,
         "topic_count": len(config.get("topic_directions") or []),
         "teacher_target_count": len(config.get("teacher_targets") or []),
         "legacy_topic_hint_present": bool(str(config.get("topic_hint") or "").strip()),
@@ -225,14 +228,62 @@ def task_snapshot(session, task: Task, since: datetime) -> dict[str, Any]:
         "material_trace_count": len(material_traces),
         "material_trace_samples": material_traces[:MATERIAL_TRACE_SAMPLE_LIMIT],
         "open_action_counts": open_action_counts(session, task.id),
-        "quality_rejection_counts": dict((task.stats or {}).get("quality_rejection_counts") or {}),
+        "quality_rejection_counts": dict(stats.get("quality_rejection_counts") or {}),
         "online_summary": task_account_online_summary(session, task),
         "recent_action_samples": action_samples(recent_actions[:8]),
     }
 
 
+def diagnostic_task_stats(session, task: Task) -> dict[str, Any]:
+    stats = dict(task.stats or {})
+    if task.type == "group_ai_chat" and hard_hourly_enabled(task):
+        return hard_hourly_stats(session, task, now_local(), stats)
+    return stats
+
+
 def task_snapshots(session, since: datetime) -> list[dict[str, Any]]:
     return [task_snapshot(session, task, since) for task in active_group_tasks(session)]
+
+
+def hard_hourly_gate_blockers(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        stats = snapshot.get("stats") if isinstance(snapshot.get("stats"), dict) else {}
+        if str(snapshot.get("status") or "") not in ACTIVE_TASK_STATUSES:
+            continue
+        if not stats.get("hard_hourly_target_enabled"):
+            continue
+        goal = _safe_int(stats.get("hard_hourly_goal"))
+        success = _safe_int(stats.get("hard_hourly_success_count"))
+        status = str(stats.get("hard_hourly_status") or "")
+        if goal <= 0 or (success >= goal and status == "met"):
+            continue
+        blockers.append(_hard_hourly_blocker(snapshot, stats, goal, success, status))
+    return blockers[:TASK_LIMIT]
+
+
+def _hard_hourly_blocker(snapshot: dict[str, Any], stats: dict[str, Any], goal: int, success: int, status: str) -> dict[str, Any]:
+    return {
+        "task_id": str(snapshot.get("task_id") or ""),
+        "name": str(snapshot.get("name") or ""),
+        "status": str(snapshot.get("status") or ""),
+        "bucket": str(stats.get("hard_hourly_bucket") or ""),
+        "goal": goal,
+        "success_count": success,
+        "future_open_count": _safe_int(stats.get("hard_hourly_open_count")),
+        "overdue_open_count": _safe_int(stats.get("hard_hourly_overdue_open_count")),
+        "deficit": _safe_int(stats.get("hard_hourly_deficit")),
+        "hard_hourly_status": status,
+        "blockers": dict(stats.get("hard_hourly_last_blockers") or {}),
+        "reason": "hard_hourly_not_met",
+    }
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def online_gate_blockers(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -593,8 +644,14 @@ def main() -> None:
         if recent_duplicates["quality_payload_blockers"]:
             json_line("AI_GROUP_QUALITY_PAYLOAD_GATE_FAILED", recent_duplicates)
             raise SystemExit("AI group quality payload gate failed")
-        for snapshot in wait_for_online_gate(session, since):
+        snapshots = wait_for_online_gate(session, since)
+        for snapshot in snapshots:
             json_line("AI_GROUP_QUALITY_TASK", snapshot)
+        hard_hourly_blockers = hard_hourly_gate_blockers(snapshots)
+        if hard_hourly_blockers:
+            payload = {"blocker_count": len(hard_hourly_blockers), "blockers": hard_hourly_blockers}
+            json_line("AI_GROUP_QUALITY_HARD_HOURLY_GATE_FAILED", payload)
+            raise SystemExit("AI group hard hourly quality gate failed")
         json_line("AI_GROUP_QUALITY_DONE", {"captured_at": iso(captured_at), "window_hours": WINDOW_HOURS})
 
 

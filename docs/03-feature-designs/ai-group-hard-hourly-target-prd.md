@@ -523,7 +523,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 - 新建一个测试 AI 活跃群任务，设置最低硬目标 10 条 / 小时，确认当前小时缺口会触发追加规划。
 - 设置高于账号容量的硬目标，确认系统不会伪造成功，会展示容量不足或 TG 限制。
 - 对 3 个线上 AI 活跃群逐一核对：入群完成、验证完成、`can_send`、MiMo/Mino draft、dispatcher 消化和硬目标完成度，不允许只用任务 running 或 pending 数量证明达标。
-- 线上验收只认 3 个目标各自当前小时 `send_message success >= hourly_min_messages` 且 `hard_hourly_status=met`；任一目标不是 `10 / 10` 时，结论仍是未验收。
+- 线上验收只认 3 个目标各自当前小时 `send_message success >= hourly_min_messages` 且 `hard_hourly_status=met`；任一目标不是 `10 / 10` 时，结论仍是未验收。生产 AI 活群质量诊断必须使用当前 action 现场重算 hard-hourly stats，发现 running 任务未达标时输出 `AI_GROUP_QUALITY_HARD_HOURLY_GATE_FAILED`，不能仅凭任务 running、pending 或旧 stats 放行。
 - 用至少一个需要验证码 / 加减验证 / 关注多个频道的目标验证准入链路；未完成时应停在 membership / verification blocker，完成后应写回 `can_send=true` 并进入发送规划。
 - 人为让 MiMo/Mino 返回 malformed JSON 或关闭健康供应商时，任务必须显示 AI draft 阻塞，不能生成 mock 成功消息。
 - 对比 `/api/overview`、`/api/tasks`、`/api/tasks/{id}/stats` 和 action 明细，确认成功数、待执行数和缺口一致。
