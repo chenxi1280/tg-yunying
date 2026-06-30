@@ -4473,7 +4473,16 @@ def test_group_ai_context_bound_round_limits_far_future_actions(monkeypatch):
 
     memory_ids: list[str] = []
 
-    def fake_reserve(_session, _task, _group, _account_id, _content, _config, _profile_preview):  # noqa: ANN001
+    def fake_reserve(
+        _session,
+        _task,
+        _group,
+        _account_id,
+        _content,
+        _config,
+        _profile_preview,
+        _quality_item,
+    ):  # noqa: ANN001
         memory_id = f"memory-{len(memory_ids)}"
         memory_ids.append(memory_id)
         return SimpleNamespace(id=memory_id)

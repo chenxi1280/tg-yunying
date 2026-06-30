@@ -781,6 +781,7 @@ def _runtime_group_ai_config(task: Task, batch: list[tuple[Action, SendMessagePa
     config["account_personas"] = _payload_map(batch, "account_role")
     config["account_memories"] = _payload_map(batch, "account_memory")
     config["account_profiles"] = _payload_map(batch, "account_profile")
+    config["generation_slots"] = _payload_generation_slots(batch)
     first_payload = batch[0][1]
     if first_payload.topic_thread:
         config["topic_thread"] = first_payload.topic_thread
@@ -796,6 +797,35 @@ def _payload_map(batch: list[tuple[Action, SendMessagePayload]], attr: str) -> d
         if value and action.account_id:
             values[str(action.account_id)] = value
     return values
+
+
+def _payload_generation_slots(batch: list[tuple[Action, SendMessagePayload]]) -> list[dict]:
+    slots: list[dict] = []
+    for index, (action, payload) in enumerate(batch, start=1):
+        slot = _payload_generation_slot(action, payload, index)
+        if slot:
+            slots.append(slot)
+    return slots
+
+
+def _payload_generation_slot(action: Action, payload: SendMessagePayload, index: int) -> dict:
+    slot_id = str(payload.slot_id or "").strip()
+    if not slot_id:
+        return {}
+    slot = {
+        "slot_id": slot_id,
+        "sequence_index": int(payload.turn_index or index),
+        "account_id": action.account_id,
+        "act_type": payload.act_type,
+        "account_profile": payload.account_profile,
+        "reply_to_message_id": payload.reply_to_message_id,
+        "reply_to_content": payload.reply_target_preview,
+    }
+    if payload.topic_direction:
+        slot["topic_direction"] = dict(payload.topic_direction)
+    if payload.teacher_target:
+        slot["teacher_target"] = dict(payload.teacher_target)
+    return slot
 
 
 def _store_generated_send_payloads(session: Session, batch: list[tuple[Action, SendMessagePayload]], contents: list[str], tokens: int) -> None:

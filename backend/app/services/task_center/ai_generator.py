@@ -748,6 +748,8 @@ def _generation_slot_line(slot: dict) -> str:
     act_type = canonical_ai_group_act_type(str(slot.get("act_type") or "").strip())
     profile = str(slot.get("account_profile") or "").strip()
     reply = str(slot.get("reply_to_content") or "").strip()
+    topic = _slot_target_text(slot.get("topic_direction"), "title")
+    teacher = _slot_target_text(slot.get("teacher_target"), "name")
     if not index or not slot_id:
         return ""
     parts = [f"slot {index}：{slot_id}"]
@@ -755,11 +757,23 @@ def _generation_slot_line(slot: dict) -> str:
         parts.append(f"账号 {account_id}")
     if act_type:
         parts.append(f"行为 {act_type}")
+    if topic:
+        parts.append(f"话题 {topic}")
+    if teacher:
+        parts.append(f"讨论老师 {teacher}")
     if profile:
         parts.append(f"表达 {profile}")
     if reply:
         parts.append(f"引用 {reply[:120]}")
     return "；".join(parts)
+
+
+def _slot_target_text(value: object, label_key: str) -> str:
+    if not isinstance(value, dict):
+        return ""
+    label = str(value.get(label_key) or "").strip()
+    description = str(value.get("description") or "").strip()
+    return f"{label}：{description}" if label and description else label
 
 
 def generate_group_messages(session: Session, tenant_id: int, config: dict, *, count: int, target_label: str, history: str = "") -> tuple[list[str], int]:

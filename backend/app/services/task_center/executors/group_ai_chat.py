@@ -267,6 +267,7 @@ def build_plan(session: Session, task: Task) -> int:
     allow_account_repeat = bool(round_config.get("allow_account_repeat", True))
     burst_plan = _consecutive_burst_plan(round_config, turn_count, allow_account_repeat, cycle_id)
     burst_account = _slot_account(selected, min(burst_plan), allow_account_repeat) if burst_plan else None
+    target_usage = _conversation_target_usage_config(round_config)
     generation_slots = _generation_slots_for_plan(
         cycle_id=cycle_id,
         accounts=selected,
@@ -276,13 +277,18 @@ def build_plan(session: Session, task: Task) -> int:
         allow_account_repeat=allow_account_repeat,
         burst_plan=burst_plan,
         burst_account=burst_account,
+        topic_directions=_slot_topic_directions(round_config),
+        teacher_targets=_slot_teacher_targets(round_config),
+        recent_topic_counts=target_usage.get("topics", {}),
+        recent_teacher_counts=target_usage.get("teachers", {}),
     )
     generation_config = {**generation_config, "generation_slots": generation_slots}
     requested_reply_count = len(reply_targets)
     normal_count = max(0, turn_count - len(reply_targets))
     defer_ai_generation = _defer_ai_generation_for_plan(config, hard_progress)
     if defer_ai_generation:
-        planned_items, tokens = _deferred_ai_planned_items(normal_count), 0
+        normal_slots = generation_slots[len(reply_targets):]
+        planned_items, tokens = _deferred_ai_planned_items(normal_count, normal_slots), 0
     else:
         try:
             quality_items, tokens, quality_stats = _generate_quality_filled_items(
@@ -433,7 +439,7 @@ def build_plan(session: Session, task: Task) -> int:
             stats_inc(task, "skipped_count")
             continue
         try:
-            memory = _reserve_planned_message_memory(session, task, group, account.id, filtered_content, config, profile_preview)
+            memory = _reserve_planned_message_memory(session, task, group, account.id, filtered_content, config, profile_preview, quality_item)
         except DuplicateMessageReservation as exc:
             rejection_reason = _duplicate_window_quality_reason(exc.duplicate_window)
             _record_quality_rejection(quality_stats, rejection_reason, filtered_content, detail=exc.duplicate_window, account_id=account.id)
@@ -469,8 +475,8 @@ def build_plan(session: Session, task: Task) -> int:
                     ai_message_memory_id=memory.id if memory else "",
                     rewrite_attempts=int(quality_item.get("rewrite_attempts") or 0),
                     human_quality_decision=str(quality_item.get("human_quality_decision") or "accepted"),
-                    topic_direction=dict(config.get("active_topic_direction") or {}),
-                    teacher_target=dict(config.get("active_teacher_target") or {}),
+                    topic_direction=_quality_topic_direction(quality_item, config),
+                    teacher_target=_quality_teacher_target(quality_item, config),
                     **burst_plan.get(index, {}),
                     **coverage_payload,
                     topic_thread=topic_thread,
@@ -896,8 +902,26 @@ def _generation_slots_for_plan(
     allow_account_repeat: bool,
     burst_plan: dict[int, dict] | None = None,
     burst_account=None,
+    topic_directions: list[dict] | None = None,
+    teacher_targets: list[dict] | None = None,
+    recent_topic_counts: dict[str, int] | None = None,
+    recent_teacher_counts: dict[str, int] | None = None,
 ) -> list[dict]:
     slots: list[dict] = []
+    topics = _conversation_target_sequence(
+        topic_directions or [],
+        turn_count,
+        label_key="title",
+        rank_key="weight",
+        recent_counts=recent_topic_counts,
+    )
+    teachers = _conversation_target_sequence(
+        teacher_targets or [],
+        turn_count,
+        label_key="name",
+        rank_key="priority",
+        recent_counts=recent_teacher_counts,
+    )
     for index in range(max(0, int(turn_count or 0))):
         account = (
             burst_account
@@ -907,7 +931,17 @@ def _generation_slots_for_plan(
         if not account:
             break
         reply_target = reply_targets[index] if index < len(reply_targets) else None
-        slots.append(_generation_slot(cycle_id, index, account, reply_target, account_prompt_profiles))
+        slots.append(
+            _generation_slot(
+                cycle_id,
+                index,
+                account,
+                reply_target,
+                account_prompt_profiles,
+                _slot_target(topics, index),
+                _slot_target(teachers, index),
+            )
+        )
     return slots
 
 
@@ -919,10 +953,18 @@ def _slot_account(accounts: list, index: int, allow_account_repeat: bool):
     return accounts[index] if index < len(accounts) else None
 
 
-def _generation_slot(cycle_id: str, index: int, account, reply_target: dict | None, profiles: dict[str, str]) -> dict:
+def _generation_slot(
+    cycle_id: str,
+    index: int,
+    account,
+    reply_target: dict | None,
+    profiles: dict[str, str],
+    topic_direction: dict | None = None,
+    teacher_target: dict | None = None,
+) -> dict:
     quality_item = {"reply_target": reply_target} if reply_target else {}
     content = str((reply_target or {}).get("content") or "")
-    return {
+    slot = {
         "slot_id": _slot_id(cycle_id, index),
         "sequence_index": index + 1,
         "account_id": account.id,
@@ -931,6 +973,60 @@ def _generation_slot(cycle_id: str, index: int, account, reply_target: dict | No
         "reply_to_message_id": _reply_target_message_id(quality_item),
         "reply_to_content": content,
     }
+    if topic_direction:
+        slot["topic_direction"] = dict(topic_direction)
+    if teacher_target:
+        slot["teacher_target"] = dict(teacher_target)
+    return slot
+
+
+def _conversation_target_sequence(
+    items: list[dict],
+    count: int,
+    *,
+    label_key: str,
+    rank_key: str,
+    recent_counts: dict[str, int] | None = None,
+) -> list[dict]:
+    candidates = [dict(item) for item in items if str(item.get(label_key) or "").strip()]
+    usage = {
+        _normalize_conversation_label(str(item.get(label_key) or "")): _usage_count(
+            item,
+            recent_counts or {},
+            label_key,
+        )
+        for item in candidates
+    }
+    sequence: list[dict] = []
+    for _index in range(max(0, int(count or 0))):
+        target = _next_conversation_target(candidates, usage, label_key=label_key, rank_key=rank_key)
+        if not target:
+            break
+        sequence.append(dict(target))
+        _increment_usage(usage, _normalize_conversation_label(str(target.get(label_key) or "")))
+    return sequence
+
+
+def _next_conversation_target(
+    candidates: list[dict],
+    usage: dict[str, int],
+    *,
+    label_key: str,
+    rank_key: str,
+) -> dict | None:
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda item: (
+            int(usage.get(_normalize_conversation_label(str(item.get(label_key) or "")), 0) or 0),
+            -float(item.get(rank_key) or 1),
+        ),
+    )[0]
+
+
+def _slot_target(targets: list[dict], index: int) -> dict | None:
+    return targets[index] if 0 <= index < len(targets) else None
 
 
 def _generation_slots(config: dict) -> list[dict]:
@@ -981,9 +1077,12 @@ def _reserve_planned_message_memory(
     content: str,
     config: dict,
     profile_preview: dict,
+    quality_item: dict,
 ):
     if not content.strip():
         return None
+    topic = _quality_topic_direction(quality_item, config)
+    teacher = _quality_teacher_target(quality_item, config)
     return reserve_group_ai_message(
         session,
         tenant_id=task.tenant_id,
@@ -991,8 +1090,8 @@ def _reserve_planned_message_memory(
         task_id=task.id,
         account_id=account_id,
         raw_text=content,
-        topic_direction=_active_topic_text(config, group),
-        teacher_target=_active_teacher_text(config),
+        topic_direction=_topic_target_text(topic, group),
+        teacher_target=_teacher_target_text(teacher),
         profile_version=int(profile_preview.get("profile_version") or 0) or None,
         profile_match_score=_profile_match_score(profile_preview),
         profile_match_reason=_profile_match_reason(profile_preview),
@@ -1073,8 +1172,23 @@ def _defer_ai_generation_for_plan(config: dict, progress: dict[str, object]) -> 
     return int(progress.get("goal") or 0) >= HARD_HOURLY_DEFER_AI_MIN_GOAL
 
 
-def _deferred_ai_planned_items(count: int) -> list[dict]:
-    return [{"content": "", "reply_target": None, "defer_ai_generation": True} for _index in range(max(0, int(count or 0)))]
+def _deferred_ai_planned_items(count: int, slots: list[dict] | None = None) -> list[dict]:
+    items: list[dict] = []
+    for index in range(max(0, int(count or 0))):
+        item = {"content": "", "reply_target": None, "defer_ai_generation": True}
+        slot = _slot_at(slots or [], index)
+        if slot:
+            item.update(_deferred_slot_metadata(slot))
+        items.append(item)
+    return items
+
+
+def _deferred_slot_metadata(slot: dict) -> dict:
+    return {
+        "slot": dict(slot),
+        "slot_id": str(slot.get("slot_id") or ""),
+        "act_type": canonical_ai_group_act_type(str(slot.get("act_type") or "")),
+    }
 
 
 def _deferred_ai_history(history: str) -> str:
@@ -1927,7 +2041,12 @@ def _with_active_conversation_targets(session: Session, task: Task, config: dict
     usage = _recent_conversation_target_usage(session, task, group)
     topic = _choose_topic_direction(config, group, usage.get("topics", {}))
     teacher = _choose_teacher_target(config, usage.get("teachers", {}))
-    return {**config, "active_topic_direction": topic, "active_teacher_target": teacher}
+    return {
+        **config,
+        "active_topic_direction": topic,
+        "active_teacher_target": teacher,
+        "conversation_target_usage": usage,
+    }
 
 
 def _choose_topic_direction(config: dict, group: TgGroup, recent_counts: dict[str, int] | None = None) -> dict:
@@ -2026,15 +2145,73 @@ def _payload_group_id(payload: dict) -> int:
     return int(raw) if raw.isdigit() else 0
 
 
+def _conversation_target_usage_config(config: dict) -> dict[str, dict[str, int]]:
+    usage = config.get("conversation_target_usage") if isinstance(config.get("conversation_target_usage"), dict) else {}
+    return {
+        "topics": dict(usage.get("topics") or {}) if isinstance(usage.get("topics"), dict) else {},
+        "teachers": dict(usage.get("teachers") or {}) if isinstance(usage.get("teachers"), dict) else {},
+    }
+
+
+def _slot_topic_directions(config: dict) -> list[dict]:
+    directions = [
+        dict(item)
+        for item in config.get("topic_directions") or []
+        if str(item.get("title") or "").strip()
+    ]
+    if directions:
+        return directions
+    active = config.get("active_topic_direction") if isinstance(config.get("active_topic_direction"), dict) else {}
+    return [dict(active)] if str(active.get("title") or "").strip() else []
+
+
+def _slot_teacher_targets(config: dict) -> list[dict]:
+    teachers = [
+        dict(item)
+        for item in config.get("teacher_targets") or []
+        if str(item.get("name") or "").strip()
+    ]
+    if teachers:
+        return teachers
+    active = config.get("active_teacher_target") if isinstance(config.get("active_teacher_target"), dict) else {}
+    return [dict(active)] if str(active.get("name") or "").strip() else []
+
+
+def _quality_topic_direction(quality_item: dict, config: dict) -> dict:
+    slot_topic = _quality_slot(quality_item).get("topic_direction")
+    if isinstance(slot_topic, dict) and str(slot_topic.get("title") or "").strip():
+        return dict(slot_topic)
+    active = config.get("active_topic_direction") if isinstance(config.get("active_topic_direction"), dict) else {}
+    return dict(active) if active else {}
+
+
+def _quality_teacher_target(quality_item: dict, config: dict) -> dict:
+    slot_teacher = _quality_slot(quality_item).get("teacher_target")
+    if isinstance(slot_teacher, dict) and str(slot_teacher.get("name") or "").strip():
+        return dict(slot_teacher)
+    active = config.get("active_teacher_target") if isinstance(config.get("active_teacher_target"), dict) else {}
+    return dict(active) if active else {}
+
+
 def _active_topic_text(config: dict, group: TgGroup) -> str:
     topic = config.get("active_topic_direction") or _choose_topic_direction(config, group)
+    return _topic_target_text(topic, group)
+
+
+def _topic_target_text(topic: dict, group: TgGroup) -> str:
     title = str(topic.get("title") or "").strip()
     description = str(topic.get("description") or "").strip()
+    if not title:
+        title = str(group.topic_direction or "群聊日常活跃").strip()
     return f"{title}：{description}" if title and description else title
 
 
 def _active_teacher_text(config: dict) -> str:
     teacher = config.get("active_teacher_target") or {}
+    return _teacher_target_text(teacher)
+
+
+def _teacher_target_text(teacher: dict) -> str:
     name = str(teacher.get("name") or "").strip()
     description = str(teacher.get("description") or "").strip()
     return f"{name}：{description}" if name and description else name

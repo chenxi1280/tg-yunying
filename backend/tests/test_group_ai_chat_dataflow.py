@@ -29,6 +29,57 @@ def test_group_ai_generated_slots_use_prd_act_type_vocabulary():
     assert "side_comment" not in act_types
 
 
+def test_group_ai_generated_slots_rotate_topic_and_teacher_targets():
+    accounts = [SimpleNamespace(id=account_id) for account_id in [11, 12, 13]]
+
+    slots = group_ai_chat._generation_slots_for_plan(
+        cycle_id="task-1:cycle:1",
+        accounts=accounts,
+        turn_count=3,
+        reply_targets=[],
+        account_prompt_profiles={},
+        allow_account_repeat=False,
+        topic_directions=[
+            {"title": "郑州楼凤妹子怎么样", "weight": 3},
+            {"title": "主任最近约新妹子了", "weight": 2},
+        ],
+        teacher_targets=[
+            {"name": "花花老师身材服务真好", "priority": 2},
+            {"name": "新人榜单妹子", "priority": 1},
+        ],
+    )
+
+    assert [slot["topic_direction"]["title"] for slot in slots] == [
+        "郑州楼凤妹子怎么样",
+        "主任最近约新妹子了",
+        "郑州楼凤妹子怎么样",
+    ]
+    assert [slot["teacher_target"]["name"] for slot in slots] == [
+        "花花老师身材服务真好",
+        "新人榜单妹子",
+        "花花老师身材服务真好",
+    ]
+
+
+def test_group_ai_deferred_items_preserve_slot_topic_and_teacher_targets():
+    slots = [
+        {
+            "slot_id": "task-1:cycle:1:turn:1",
+            "act_type": "short_react",
+            "topic_direction": {"title": "郑州楼凤妹子怎么样"},
+            "teacher_target": {"name": "花花老师"},
+        }
+    ]
+
+    items = group_ai_chat._deferred_ai_planned_items(1, slots)
+
+    assert items[0]["defer_ai_generation"] is True
+    assert items[0]["slot"]["topic_direction"]["title"] == "郑州楼凤妹子怎么样"
+    assert items[0]["slot"]["teacher_target"]["name"] == "花花老师"
+    assert items[0]["slot_id"] == "task-1:cycle:1:turn:1"
+    assert items[0]["act_type"] == "short_react"
+
+
 def test_group_ai_chat_normal_candidate_shortfall_is_visible_failure(monkeypatch):
     task = SimpleNamespace(tenant_id=1, stats={})
 
@@ -389,6 +440,8 @@ def test_group_ai_prompt_includes_fixed_generation_slots(monkeypatch):
                     "account_id": 11,
                     "act_type": "short_react",
                     "account_profile": "青年短句，少表情，爱接别人话",
+                    "topic_direction": {"title": "郑州楼凤妹子怎么样"},
+                    "teacher_target": {"name": "花花老师"},
                 },
                 {
                     "slot_id": "task-1:cycle:1:turn:2",
@@ -396,6 +449,8 @@ def test_group_ai_prompt_includes_fixed_generation_slots(monkeypatch):
                     "account_id": 12,
                     "act_type": "light_question",
                     "account_profile": "中年谨慎，常追问价格和位置",
+                    "topic_direction": {"title": "主任最近约新妹子了"},
+                    "teacher_target": {"name": "新人榜单妹子"},
                 },
             ],
         },
@@ -406,8 +461,10 @@ def test_group_ai_prompt_includes_fixed_generation_slots(monkeypatch):
 
     assert "固定发言 slots" in captured["requirements"]
     assert "slot 1：task-1:cycle:1:turn:1；账号 11；行为 short_react" in captured["requirements"]
+    assert "话题 郑州楼凤妹子怎么样；讨论老师 花花老师" in captured["requirements"]
     assert "青年短句，少表情，爱接别人话" in captured["requirements"]
     assert "slot 2：task-1:cycle:1:turn:2；账号 12；行为 question" in captured["requirements"]
+    assert "话题 主任最近约新妹子了；讨论老师 新人榜单妹子" in captured["requirements"]
     assert "行为 light_question" not in captured["requirements"]
     assert "中年谨慎，常追问价格和位置" in captured["requirements"]
     assert "讨论老师：花花老师\n对象说明：身材服务反馈" in captured["requirements"]
