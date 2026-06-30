@@ -36,6 +36,7 @@ export function TaskAIQualityFunnelPanel({ funnel }: { funnel: TaskCenterDetail[
     { title: '账号', dataIndex: 'account_id', width: 90, render: (value) => value || '-' },
     { title: '状态', dataIndex: 'status', width: 100 },
     { title: '内容样例', dataIndex: 'content', ellipsis: true },
+    { title: '细节', dataIndex: 'detail', width: 180, ellipsis: true, render: (value) => value || '-' },
   ];
   if (!totals.action_count && !totals.candidate_count) return null;
   return (

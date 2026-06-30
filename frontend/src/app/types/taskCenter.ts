@@ -369,6 +369,7 @@ export type TaskCenterDetail = {
       account_id: number | null;
       status: string;
       content: string;
+      detail: string;
       scheduled_at: string | null;
     }>>;
   };

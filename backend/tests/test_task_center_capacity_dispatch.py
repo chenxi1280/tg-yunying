@@ -1050,6 +1050,7 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
         assert funnel["samples"]["duplicate_message"][0]["content"] == "这个确实不错"
         assert funnel["samples"]["profile_low_match"][0]["action_id"] == "quality-profile-low"
         assert funnel["samples"]["voice_profile_mismatch"][0]["content"] == "😀😀"
+        assert funnel["samples"]["voice_profile_mismatch"][0]["detail"] == "账号表达卡要求少表情"
         assert detail["ai_generation_records"][0]["generation_source"] == "human_context"
         cycles, total_cycles = task_service.list_ai_cycles_page(session, 1, task.id)
         assert total_cycles == 1

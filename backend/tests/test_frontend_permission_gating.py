@@ -1822,9 +1822,13 @@ def test_group_ai_plain_line_edit_preserves_existing_descriptions():
 
 def test_group_ai_quality_funnel_labels_profile_low_match():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskAIQualityFunnelPanel.tsx").read_text()
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
 
     assert "profile_low_match: '画像低分'" in source
     assert "voice_profile_mismatch: '表达卡低分'" in source
+    assert "detail: string" in types
+    assert "title: '细节'" in source
+    assert "dataIndex: 'detail'" in source
 
 
 def test_task_center_runtime_form_exposes_hour_limit_without_task_daily_cap():

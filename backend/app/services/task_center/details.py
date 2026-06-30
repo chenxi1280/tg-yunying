@@ -997,6 +997,7 @@ def _append_quality_sample(samples: dict[str, list[dict[str, Any]]], reason: str
     if len(bucket) >= 5:
         return
     payload = action.payload if isinstance(action.payload, dict) else {}
+    result = action.result if isinstance(action.result, dict) else {}
     bucket.append(
         {
             "action_id": action.id,
@@ -1004,6 +1005,7 @@ def _append_quality_sample(samples: dict[str, list[dict[str, Any]]], reason: str
             "status": action.status,
             "content": str(payload.get("message_text") or ""),
             "scheduled_at": action.scheduled_at,
+            "detail": str(payload.get("quality_detail") or result.get("detail") or result.get("error_message") or ""),
         }
     )
 
