@@ -1925,6 +1925,7 @@ def test_draft_rule_version_cannot_be_resolved_for_real_task_execution():
 
 
 @pytest.mark.no_postgres
+@pytest.mark.allow_missing_rule_binding
 def test_ai_group_requires_rule_binding_before_target_resolution():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1942,6 +1943,7 @@ def test_ai_group_requires_rule_binding_before_target_resolution():
 
 
 @pytest.mark.no_postgres
+@pytest.mark.allow_missing_rule_binding
 def test_channel_comment_requires_rule_binding_before_target_resolution():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1959,6 +1961,7 @@ def test_channel_comment_requires_rule_binding_before_target_resolution():
 
 
 @pytest.mark.no_postgres
+@pytest.mark.allow_missing_rule_binding
 def test_group_relay_requires_rule_binding_before_listener_collect(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

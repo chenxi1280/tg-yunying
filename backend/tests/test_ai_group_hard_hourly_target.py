@@ -6,11 +6,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Action, GroupContextMessage, OperationTarget, RuleSet, RuleSetVersion, SchedulingSetting, Task, Tenant, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
+from app.models import Action, GroupContextMessage, OperationTarget, SchedulingSetting, Task, Tenant, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.hard_hourly import hard_schedule_times, requires_planning as hard_hourly_requires_planning
@@ -24,64 +24,6 @@ from app.services.task_center.service import (
 from app.services.task_center.stats import next_run_after_task, refresh_task_stats
 from app.timezone import BEIJING_TZ
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
-
-TEST_RULE_SET_ID = -820001
-TEST_RULE_VERSION_ID = -820002
-
-
-@pytest.fixture(autouse=True)
-def bind_default_rule_for_hard_hourly_executor_tests():
-    def before_flush(session, _flush_context, _instances):  # noqa: ANN001
-        for task in [item for item in session.new if isinstance(item, Task) and item.type == "group_ai_chat"]:
-            if (task.type_config or {}).get("rule_set_id") or (task.type_config or {}).get("rule_set_version_id"):
-                continue
-            _ensure_test_rule_version(session, task.tenant_id)
-            task.type_config = {**(task.type_config or {}), "rule_set_version_id": TEST_RULE_VERSION_ID}
-
-    event.listen(Session, "before_flush", before_flush)
-    try:
-        yield
-    finally:
-        event.remove(Session, "before_flush", before_flush)
-
-
-def _ensure_test_rule_version(session: Session, tenant_id: int) -> None:
-    cache_key = f"test_rule_version:{tenant_id}"
-    if session.info.get(cache_key):
-        return
-    session.info[cache_key] = True
-    if session.get(RuleSetVersion, TEST_RULE_VERSION_ID):
-        return
-    session.add(
-        RuleSet(
-            id=TEST_RULE_SET_ID,
-            tenant_id=tenant_id,
-            name="测试默认 AI 活群规则",
-            status="active",
-            task_types=["group_ai_chat"],
-            active_version_id=TEST_RULE_VERSION_ID,
-        )
-    )
-    session.add(
-        RuleSetVersion(
-            id=TEST_RULE_VERSION_ID,
-            tenant_id=tenant_id,
-            rule_set_id=TEST_RULE_SET_ID,
-            version=1,
-            status="published",
-            filters={},
-            output_checks={},
-            transforms={},
-            routing={},
-            account_strategy={},
-            rate_limits={},
-            retry_policy={},
-            created_by="test",
-            published_by="test",
-            published_at=datetime.now(),
-        )
-    )
-
 
 def _send_action(
     action_id: str,

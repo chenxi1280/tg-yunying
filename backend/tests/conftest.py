@@ -6,8 +6,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 
 os.environ.setdefault("APP_ENV", "test")
@@ -31,6 +32,10 @@ os.environ["ACCOUNT_SHARD_INDEX"] = "0"
 os.environ["ENABLE_REDIS_ACCOUNT_INFLIGHT"] = "false"
 os.environ.setdefault("AUTO_MIGRATE_ON_START", "true")
 os.environ["ENABLE_EMBEDDED_WORKER"] = "false"
+
+RULE_BINDING_REQUIRED_TEST_TASK_TYPES = frozenset({"group_relay", "group_ai_chat", "channel_comment"})
+TEST_RULE_SET_ID_BASE = 900_000_000
+TEST_RULE_VERSION_ID_BASE = 901_000_000
 
 
 def _normalize_postgres_url(raw_url: str) -> str:
@@ -69,6 +74,94 @@ def _selected_tests_require_postgres(items: list[pytest.Item]) -> bool:
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "no_postgres: does not require PostgreSQL test database reset")
+    config.addinivalue_line(
+        "markers",
+        "allow_missing_rule_binding: opt out of default test rule binding for negative runtime-gate cases",
+    )
+
+
+@pytest.fixture(autouse=True)
+def bind_required_rule_versions_for_executor_tests(request):
+    if request.node.get_closest_marker("allow_missing_rule_binding"):
+        yield
+        return
+
+    def before_flush(session, _flush_context, _instances):  # noqa: ANN001
+        _bind_required_rule_versions(session)
+
+    event.listen(Session, "before_flush", before_flush)
+    try:
+        yield
+    finally:
+        event.remove(Session, "before_flush", before_flush)
+
+
+def _bind_required_rule_versions(session: Session) -> None:
+    from app.models import Task
+
+    for task in [item for item in session.new if isinstance(item, Task)]:
+        if task.type not in RULE_BINDING_REQUIRED_TEST_TASK_TYPES:
+            continue
+        if _has_rule_binding(task.type_config or {}):
+            continue
+        tenant_id = int(task.tenant_id or 1)
+        _ensure_test_rule_version(session, tenant_id)
+        task.type_config = {**(task.type_config or {}), "rule_set_version_id": _test_rule_version_id(tenant_id)}
+
+
+def _has_rule_binding(type_config: dict) -> bool:
+    return bool(type_config.get("rule_set_id") or type_config.get("rule_set_version_id"))
+
+
+def _ensure_test_rule_version(session: Session, tenant_id: int) -> None:
+    from app.models import RuleSet, RuleSetVersion
+    from app.services._common import _now
+
+    version_id = _test_rule_version_id(tenant_id)
+    cache_key = f"test_rule_version:{tenant_id}"
+    if session.info.get(cache_key):
+        return
+    session.info[cache_key] = True
+    if session.get(RuleSetVersion, version_id):
+        return
+    rule_set_id = _test_rule_set_id(tenant_id)
+    session.add(
+        RuleSet(
+            id=rule_set_id,
+            tenant_id=tenant_id,
+            name="测试默认已发布规则",
+            status="active",
+            task_types=sorted(RULE_BINDING_REQUIRED_TEST_TASK_TYPES),
+            active_version_id=version_id,
+        )
+    )
+    session.add(
+        RuleSetVersion(
+            id=version_id,
+            tenant_id=tenant_id,
+            rule_set_id=rule_set_id,
+            version=1,
+            status="published",
+            filters={},
+            output_checks={},
+            transforms={},
+            routing={},
+            account_strategy={},
+            rate_limits={},
+            retry_policy={},
+            created_by="test",
+            published_by="test",
+            published_at=_now(),
+        )
+    )
+
+
+def _test_rule_set_id(tenant_id: int) -> int:
+    return -(TEST_RULE_SET_ID_BASE + tenant_id)
+
+
+def _test_rule_version_id(tenant_id: int) -> int:
+    return -(TEST_RULE_VERSION_ID_BASE + tenant_id)
 
 
 @pytest.hookimpl(trylast=True)
