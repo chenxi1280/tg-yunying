@@ -23,6 +23,7 @@ from app.schemas import CampaignCreate, GenerateDraftsRequest
 
 from ._common import SUBSCRIPTION_INACTIVE_DETAIL, _now, audit, gateway, require_system_user_core_features
 from .campaigns import approve_all_drafts, create_campaign, generate_drafts
+from .group_context_messages import try_insert_context_message
 from .developer_apps import credentials_for_account
 from .required_channel_prompts import apply_required_channel_prompt_admission
 from .source_media import ensure_source_media_asset
@@ -326,8 +327,8 @@ def collect_group_context(
                 remote_message_id=str(snapshot.remote_message_id),
                 sent_at=snapshot.sent_at,
             )
-            session.add(message)
-            session.flush()
+            if not try_insert_context_message(session, message):
+                continue
             apply_required_channel_prompt_admission(
                 session,
                 group,

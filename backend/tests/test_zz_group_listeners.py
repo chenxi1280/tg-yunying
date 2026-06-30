@@ -179,6 +179,61 @@ def test_group_listener_collects_context_without_legacy_auto_reply(monkeypatch):
             assert session.query(SourceMediaAsset).filter_by(source_group_id=group["id"], source_message_id="remote-media-1").count() == 0
 
 
+def test_group_listener_context_insert_is_idempotent_on_unique_race(monkeypatch):
+    with TestClient(app) as client:
+        headers = auth_headers(client)
+        listener, group = ensure_test_workspace(client, headers)
+
+        snapshots = [
+            GroupMessageSnapshot(
+                remote_message_id="race-context-1",
+                sender_peer_id="real-race-user",
+                sender_name="真人用户",
+                content="这条消息已经被另一个监听进程写入了。",
+            )
+        ]
+        monkeypatch.setattr("app.services.group_listeners.gateway.fetch_group_messages", lambda *args, **kwargs: snapshots)
+
+        with SessionLocal() as session:
+            db_group = session.get(TgGroup, group["id"])
+            db_group.listener_enabled = True
+            db_group.listener_last_polled_at = None
+            for link in session.query(TgGroupAccount).filter_by(group_id=group["id"]):
+                link.is_listener = link.account_id == listener["id"]
+            session.add(
+                GroupContextMessage(
+                    tenant_id=db_group.tenant_id,
+                    group_id=db_group.id,
+                    listener_account_id=listener["id"],
+                    sender_peer_id="real-race-user",
+                    sender_name="真人用户",
+                    content="这条消息已经被另一个监听进程写入了。",
+                    remote_message_id="race-context-1",
+                )
+            )
+            session.commit()
+
+        with SessionLocal() as session:
+            original_scalar = session.scalar
+
+            def miss_context_exists(statement, *args, **kwargs):
+                text = str(statement)
+                if "group_context_messages" in text and "remote_message_id" in text:
+                    return None
+                return original_scalar(statement, *args, **kwargs)
+
+            monkeypatch.setattr(session, "scalar", miss_context_exists)
+            processed = process_group_listener(session, group["id"])
+            listener_error = session.get(TgGroup, group["id"]).listener_last_error
+
+        with SessionLocal() as session:
+            context_count = session.query(GroupContextMessage).filter_by(group_id=group["id"], remote_message_id="race-context-1").count()
+
+        assert processed == 0
+        assert listener_error == ""
+        assert context_count == 1
+
+
 def test_group_listener_learning_records_human_samples_and_rejects_bot_or_managed(monkeypatch):
     with TestClient(app) as client:
         headers = auth_headers(client)
