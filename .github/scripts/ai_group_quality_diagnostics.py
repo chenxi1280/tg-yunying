@@ -256,10 +256,18 @@ def hard_hourly_gate_blockers(snapshots: list[dict[str, Any]]) -> list[dict[str,
         goal = _safe_int(stats.get("hard_hourly_goal"))
         success = _safe_int(stats.get("hard_hourly_success_count"))
         status = str(stats.get("hard_hourly_status") or "")
-        if goal <= 0 or (success >= goal and status == "met"):
+        if goal <= 0 or _hard_hourly_gate_passed(stats, goal, success, status):
             continue
         blockers.append(_hard_hourly_blocker(snapshot, stats, goal, success, status))
     return blockers[:TASK_LIMIT]
+
+
+def _hard_hourly_gate_passed(stats: dict[str, Any], goal: int, success: int, status: str) -> bool:
+    if success >= goal and status == "met":
+        return True
+    future_open = _safe_int(stats.get("hard_hourly_open_count"))
+    overdue_open = _safe_int(stats.get("hard_hourly_overdue_open_count"))
+    return status == "catching_up" and overdue_open == 0 and success + future_open >= goal
 
 
 def _hard_hourly_blocker(snapshot: dict[str, Any], stats: dict[str, Any], goal: int, success: int, status: str) -> dict[str, Any]:
@@ -273,6 +281,7 @@ def _hard_hourly_blocker(snapshot: dict[str, Any], stats: dict[str, Any], goal: 
         "future_open_count": _safe_int(stats.get("hard_hourly_open_count")),
         "overdue_open_count": _safe_int(stats.get("hard_hourly_overdue_open_count")),
         "deficit": _safe_int(stats.get("hard_hourly_deficit")),
+        "planning_deficit": _safe_int(stats.get("hard_hourly_planning_deficit")),
         "hard_hourly_status": status,
         "blockers": dict(stats.get("hard_hourly_last_blockers") or {}),
         "reason": "hard_hourly_not_met",

@@ -351,6 +351,7 @@ def test_ai_group_quality_diagnostics_blocks_unmet_hard_hourly_target():
             "future_open_count": 2,
             "overdue_open_count": 1,
             "deficit": 3,
+            "planning_deficit": 0,
             "hard_hourly_status": "blocked",
             "blockers": {"dispatcher_lag": 1},
             "reason": "hard_hourly_not_met",
@@ -385,3 +386,70 @@ def test_ai_group_quality_diagnostics_ignores_paused_or_disabled_hard_hourly_tar
     )
 
     assert blockers == []
+
+
+def test_ai_group_quality_diagnostics_allows_queued_current_hour_catchup():
+    module = load_quality_diagnostics_module()
+
+    blockers = module.hard_hourly_gate_blockers(
+        [
+            {
+                "task_id": "queued-ai",
+                "name": "郑州楼凤",
+                "status": "running",
+                "stats": {
+                    "hard_hourly_target_enabled": True,
+                    "hard_hourly_goal": 10,
+                    "hard_hourly_success_count": 5,
+                    "hard_hourly_open_count": 5,
+                    "hard_hourly_overdue_open_count": 0,
+                    "hard_hourly_deficit": 5,
+                    "hard_hourly_status": "catching_up",
+                },
+            }
+        ]
+    )
+
+    assert blockers == []
+
+
+def test_ai_group_quality_diagnostics_blocks_unqueued_current_hour_catchup():
+    module = load_quality_diagnostics_module()
+
+    blockers = module.hard_hourly_gate_blockers(
+        [
+            {
+                "task_id": "unqueued-ai",
+                "name": "天津",
+                "status": "running",
+                "stats": {
+                    "hard_hourly_target_enabled": True,
+                    "hard_hourly_goal": 10,
+                    "hard_hourly_success_count": 0,
+                    "hard_hourly_open_count": 0,
+                    "hard_hourly_overdue_open_count": 0,
+                    "hard_hourly_deficit": 10,
+                    "hard_hourly_planning_deficit": 10,
+                    "hard_hourly_status": "catching_up",
+                },
+            }
+        ]
+    )
+
+    assert blockers == [
+        {
+            "task_id": "unqueued-ai",
+            "name": "天津",
+            "status": "running",
+            "bucket": "",
+            "goal": 10,
+            "success_count": 0,
+            "future_open_count": 0,
+            "overdue_open_count": 0,
+            "deficit": 10,
+            "planning_deficit": 10,
+            "hard_hourly_status": "catching_up",
+            "blockers": {},
+            "reason": "hard_hourly_not_met",
+        }
+    ]
