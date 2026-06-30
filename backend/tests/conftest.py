@@ -36,6 +36,7 @@ os.environ["ENABLE_EMBEDDED_WORKER"] = "false"
 RULE_BINDING_REQUIRED_TEST_TASK_TYPES = frozenset({"group_relay", "group_ai_chat", "channel_comment"})
 TEST_RULE_SET_ID_BASE = 900_000_000
 TEST_RULE_VERSION_ID_BASE = 901_000_000
+AUTO_RULE_BINDING_MARKER = "_test_auto_rule_binding"
 
 
 def _normalize_postgres_url(raw_url: str) -> str:
@@ -78,6 +79,10 @@ def pytest_configure(config):
         "markers",
         "allow_missing_rule_binding: opt out of default test rule binding for negative runtime-gate cases",
     )
+    config.addinivalue_line(
+        "markers",
+        "default_rule_binding: enable default test rule binding for sqlite executor tests",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -85,20 +90,25 @@ def bind_required_rule_versions_for_executor_tests(request):
     if request.node.get_closest_marker("allow_missing_rule_binding"):
         yield
         return
+    cleanup_tenant_ids: set[int] = set()
+    force_sqlite = bool(request.node.get_closest_marker("default_rule_binding"))
 
     def before_flush(session, _flush_context, _instances):  # noqa: ANN001
-        _bind_required_rule_versions(session)
+        _bind_required_rule_versions(session, cleanup_tenant_ids=cleanup_tenant_ids, force_sqlite=force_sqlite)
 
     event.listen(Session, "before_flush", before_flush)
     try:
         yield
     finally:
         event.remove(Session, "before_flush", before_flush)
+        _soft_delete_auto_bound_tasks(cleanup_tenant_ids)
 
 
-def _bind_required_rule_versions(session: Session) -> None:
+def _bind_required_rule_versions(session: Session, *, cleanup_tenant_ids: set[int], force_sqlite: bool) -> None:
     from app.models import Task
 
+    if _session_uses_sqlite(session) and not force_sqlite:
+        return
     for task in [item for item in session.new if isinstance(item, Task)]:
         if task.type not in RULE_BINDING_REQUIRED_TEST_TASK_TYPES:
             continue
@@ -106,7 +116,13 @@ def _bind_required_rule_versions(session: Session) -> None:
             continue
         tenant_id = int(task.tenant_id or 1)
         _ensure_test_rule_version(session, tenant_id)
-        task.type_config = {**(task.type_config or {}), "rule_set_version_id": _test_rule_version_id(tenant_id)}
+        task.type_config = {
+            **(task.type_config or {}),
+            "rule_set_version_id": _test_rule_version_id(tenant_id),
+            AUTO_RULE_BINDING_MARKER: True,
+        }
+        if not _session_uses_sqlite(session):
+            cleanup_tenant_ids.add(tenant_id)
 
 
 def _has_rule_binding(type_config: dict) -> bool:
@@ -154,6 +170,36 @@ def _ensure_test_rule_version(session: Session, tenant_id: int) -> None:
             published_at=_now(),
         )
     )
+
+
+def _soft_delete_auto_bound_tasks(tenant_ids: set[int]) -> None:
+    if not tenant_ids:
+        return
+    from app.database import SessionLocal
+    from app.models import Task
+    from app.services._common import _now
+
+    with SessionLocal() as session:
+        tasks = (
+            session.query(Task)
+            .filter(
+                Task.tenant_id.in_(sorted(tenant_ids)),
+                Task.type.in_(sorted(RULE_BINDING_REQUIRED_TEST_TASK_TYPES)),
+                Task.deleted_at.is_(None),
+            )
+            .all()
+        )
+        for task in tasks:
+            if not (task.type_config or {}).get(AUTO_RULE_BINDING_MARKER):
+                continue
+            task.deleted_at = _now()
+            task.deleted_by = "test"
+            task.delete_reason = "auto rule binding cleanup"
+        session.commit()
+
+
+def _session_uses_sqlite(session: Session) -> bool:
+    return session.get_bind().url.get_backend_name() == "sqlite"
 
 
 def _test_rule_set_id(tenant_id: int) -> int:

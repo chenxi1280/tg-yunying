@@ -25,6 +25,9 @@ from app.services.task_center.stats import next_run_after_task, refresh_task_sta
 from app.timezone import BEIJING_TZ
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
+pytestmark = pytest.mark.default_rule_binding
+
+
 def _send_action(
     action_id: str,
     task: Task,

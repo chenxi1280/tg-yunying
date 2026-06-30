@@ -31,6 +31,7 @@ from app.models import (
     TgGroupAccount,
     VerificationTask,
 )
+from app.schemas.task_center import TaskRetryRequest
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center import payloads as task_payloads
@@ -44,7 +45,7 @@ from app.services.task_center.service import _recover_stale_executing_actions, r
 from app.services.task_center.stats import planner_backlog_snapshot, refresh_task_stats, retry_failed_actions
 from app.timezone import BEIJING_TZ
 
-from app.schemas.task_center import TaskRetryRequest
+pytestmark = pytest.mark.default_rule_binding
 
 
 @pytest.fixture(autouse=True)

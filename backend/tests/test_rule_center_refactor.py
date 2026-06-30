@@ -460,6 +460,8 @@ def test_group_relay_skips_existing_source_channel_self_messages(monkeypatch):
         assert session.query(Action).filter_by(task_id=task.id, action_type="send_message").count() == 0
 
 
+@pytest.mark.no_postgres
+@pytest.mark.default_rule_binding
 def test_group_relay_keeps_real_users_when_id_or_name_matches_source_channel(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
