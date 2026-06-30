@@ -16,6 +16,9 @@ from app.services.account_online_state import mark_stale_online_states, probe_du
 
 pytestmark = pytest.mark.no_postgres
 
+MIN_ACTIVE_PROBE_INTERVAL = timedelta(minutes=5)
+MIN_ACTIVE_STALE_WINDOW = timedelta(minutes=10)
+
 
 def _session() -> Session:
     engine = create_engine("sqlite:///:memory:", future=True)
@@ -64,6 +67,8 @@ def test_probe_due_online_states_keeps_stale_window_after_next_probe(monkeypatch
 
         assert state.next_probe_at == now + ONLINE_PROBE_INTERVAL
         assert state.stale_after_at > state.next_probe_at
+        assert state.next_probe_at >= now + MIN_ACTIVE_PROBE_INTERVAL
+        assert state.stale_after_at >= now + MIN_ACTIVE_STALE_WINDOW
 
 
 def test_mark_stale_online_states_requeues_probe_immediately():
