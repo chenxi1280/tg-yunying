@@ -227,6 +227,14 @@ def test_api_error_message_formats_fastapi_detail_for_direct_error_message_views
     assert "JSON.parse(error.body)" not in modal_state
 
 
+def test_frontend_operator_template_can_open_and_manage_ai_voice_profiles():
+    source = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
+    operator_template = source[source.index("'运营管理员'"):source.index("'账号添加专员'")]
+
+    assert "'system.view'" in operator_template
+    assert "'ai_voice_profiles.manage'" in operator_template
+
+
 def test_page_error_formatters_reuse_api_error_message():
     formatter_files = [
         PROJECT_ROOT / "frontend/src/app/context/authActions.ts",

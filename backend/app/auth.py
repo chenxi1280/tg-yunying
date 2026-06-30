@@ -295,6 +295,7 @@ ROLE_TEMPLATE_PERMISSIONS = {
         "materials.view",
         "materials.upload",
         "materials.manage",
+        "system.view",
         "ai_voice_profiles.manage",
         "manual.view",
         "audits.view",

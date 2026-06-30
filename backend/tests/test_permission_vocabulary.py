@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.auth import all_permissions, normalize_permissions
+from app.auth import ROLE_TEMPLATE_PERMISSIONS, all_permissions, normalize_permissions
 from app.permission_middleware import required_permission
 
 
@@ -41,6 +41,13 @@ def test_prd_permission_vocabulary_for_ai_prompt_and_proxy_controls():
     assert required_permission("POST", "/api/account-proxies") == ("proxies.manage",)
     assert required_permission("POST", "/api/accounts/12/proxy-binding") == ("proxies.manage",)
     assert required_permission("POST", "/api/proxy-alerts/34/resolve") == ("proxies.manage",)
+
+
+def test_operator_template_can_open_and_manage_ai_voice_profiles():
+    operator_permissions = ROLE_TEMPLATE_PERMISSIONS["运营管理员"]
+
+    assert "system.view" in operator_permissions
+    assert "ai_voice_profiles.manage" in operator_permissions
 
 
 def test_operation_issue_read_routes_are_view_only_and_status_actions_require_manage():
