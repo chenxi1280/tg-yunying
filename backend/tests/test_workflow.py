@@ -4770,16 +4770,20 @@ def _disable_relay_context_collection(monkeypatch) -> None:
 
 def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
     sends: list[str] = []
+    target_group_id: int | None = None
     _disable_relay_context_collection(monkeypatch)
 
     def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
-        sends.append(content)
+        if target_group_id is not None and int(group_id) == target_group_id:
+            sends.append(content)
         return SendResult(True, remote_message_id=f"relay-{len(sends)}")
 
     monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", fake_send_message)
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
+        group = make_isolated_ai_group(account["id"], "pytest-relay-review")
+        target_group_id = group["id"]
         with SessionLocal() as session:
             _clear_relay_source_context(session, group["id"])
             db_account = session.get(TgAccount, account["id"])
@@ -4832,16 +4836,20 @@ def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
 
 def test_group_relay_waits_for_source_media_cache_and_preserves_album_order(monkeypatch):
     send_calls: list[list[tuple[str, str | None, str]]] = []
+    target_group_id: int | None = None
     _disable_relay_context_collection(monkeypatch)
 
     def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
-        send_calls.append([(segment.segment_type, segment.source, segment.caption) for segment in outbound_segments])
+        if target_group_id is not None and int(group_id) == target_group_id:
+            send_calls.append([(segment.segment_type, segment.source, segment.caption) for segment in outbound_segments])
         return SendResult(True, remote_message_id=f"relay-media-{len(send_calls)}")
 
     monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", fake_send_message)
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
+        group = make_isolated_ai_group(account["id"], "pytest-relay-media")
+        target_group_id = group["id"]
         remote_id = f"album-{uuid4().hex[:8]}"
         with SessionLocal() as session:
             _clear_relay_source_context(session, group["id"])
@@ -4946,14 +4954,20 @@ def test_group_relay_waits_for_source_media_cache_and_preserves_album_order(monk
 
 def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
     sends: list[str] = []
+    target_group_id: int | None = None
     _disable_relay_context_collection(monkeypatch)
-    monkeypatch.setattr(
-        "app.services.task_center.dispatcher.gateway.send_message",
-        lambda *args, **kwargs: sends.append(args[2]) or SendResult(True, remote_message_id=f"relay-continuous-{len(sends)}"),
-    )
+
+    def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
+        if target_group_id is not None and int(group_id) == target_group_id:
+            sends.append(content)
+        return SendResult(True, remote_message_id=f"relay-continuous-{len(sends)}")
+
+    monkeypatch.setattr("app.services.task_center.dispatcher.gateway.send_message", fake_send_message)
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
+        group = make_isolated_ai_group(account["id"], "pytest-relay-continuous")
+        target_group_id = group["id"]
         with SessionLocal() as session:
             _clear_relay_source_context(session, group["id"])
             session.add(
