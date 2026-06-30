@@ -87,6 +87,12 @@ def test_ai_group_quality_diagnostics_accepts_fully_online_state():
     assert blockers == []
 
 
+def test_ai_group_quality_diagnostics_waits_for_full_active_probe_window():
+    module = load_quality_diagnostics_module()
+
+    assert module.ONLINE_SETTLE_SECONDS >= 15 * 60
+
+
 def test_ai_group_quality_diagnostics_formats_online_failure_row():
     module = load_quality_diagnostics_module()
     now = datetime(2026, 6, 30, 12, 0, 0)

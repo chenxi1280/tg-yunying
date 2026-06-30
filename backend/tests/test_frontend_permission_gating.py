@@ -1960,7 +1960,7 @@ def test_production_ai_hourly_probe_reports_membership_failures():
     assert ".github/scripts/ai_group_quality_diagnostics.py" in workflow
     assert "AI_GROUP_QUALITY_DIAGNOSTICS_START" in workflow
     assert "AI_GROUP_QUALITY_DIAGNOSTICS_END" in workflow
-    assert "timeout 420 docker exec -i tgyunying-backend python -" in workflow
+    assert "timeout 1020 docker exec -i tgyunying-backend python -" in workflow
     assert "AI_GROUP_QUALITY_VOICE_PROFILES" in quality_diagnostics
     assert "AI_GROUP_QUALITY_MEMORY" in quality_diagnostics
     assert "AI_GROUP_QUALITY_RECENT_ACTIONS" in quality_diagnostics
