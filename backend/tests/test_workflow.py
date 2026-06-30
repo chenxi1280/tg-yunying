@@ -4752,6 +4752,11 @@ def test_task_center_channel_task_reports_no_collect_account():
         assert detail["last_error"] == "没有可用于采集频道消息的账号"
 
 
+def _clear_relay_source_context(session, group_id: int) -> None:
+    session.query(SourceMediaAsset).filter(SourceMediaAsset.source_group_id == group_id).delete(synchronize_session=False)
+    session.query(GroupContextMessage).filter(GroupContextMessage.group_id == group_id).delete(synchronize_session=False)
+
+
 def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
     sends: list[str] = []
     monkeypatch.setattr(
@@ -4768,6 +4773,7 @@ def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
         with SessionLocal() as session:
+            _clear_relay_source_context(session, group["id"])
             db_account = session.get(TgAccount, account["id"])
             db_account.status = AccountStatus.ACTIVE.value
             session.add(
@@ -4833,6 +4839,7 @@ def test_group_relay_waits_for_source_media_cache_and_preserves_album_order(monk
         account, group = ensure_test_workspace(client, headers)
         remote_id = f"album-{uuid4().hex[:8]}"
         with SessionLocal() as session:
+            _clear_relay_source_context(session, group["id"])
             db_account = session.get(TgAccount, account["id"])
             db_account.status = AccountStatus.ACTIVE.value
             for link in session.query(TgGroupAccount).filter_by(group_id=group["id"]):
@@ -4946,6 +4953,7 @@ def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
         headers = auth_headers(client)
         account, group = ensure_test_workspace(client, headers)
         with SessionLocal() as session:
+            _clear_relay_source_context(session, group["id"])
             session.add(
                 GroupContextMessage(
                     tenant_id=1,
