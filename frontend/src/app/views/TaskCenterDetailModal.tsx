@@ -64,6 +64,21 @@ const teacherTargetTags = (value: unknown) => {
   );
 };
 
+const botWebhookIssue = (settings?: TenantBotSettings | null) => {
+  if (!settings?.telegram_bot_configured) return '';
+  const status = settings.telegram_bot_webhook_status || 'not_configured';
+  if (status === 'registered') return '';
+  const detail = settings.telegram_bot_last_error || status;
+  return `Webhook 异常：${detail}`;
+};
+
+const botAvailabilityReasons = (settings?: TenantBotSettings | null) => [
+  !settings?.telegram_bot_configured ? 'TG bot 未配置' : '',
+  !settings?.admin_chat_id ? '管理员 Chat ID 未配置' : '',
+  settings && !settings.ai_group_bot_enabled ? 'AI 活群 Bot 设置未启用' : '',
+  botWebhookIssue(settings),
+].filter(Boolean);
+
 interface TaskCenterDetailModalProps {
   detail: TaskCenterDetail | null;
   canManageTasks: boolean;
@@ -332,11 +347,7 @@ export function TaskCenterDetailModal({
   ];
   const admissionTotal = Number(detail?.membership_admission_phase?.snapshot_total ?? admissionItemPagination.total ?? 0);
   const showAiTab = detail?.task.type === 'group_ai_chat';
-  const botMissingReasons = [
-    !telegramBotSettings?.telegram_bot_configured ? 'TG bot 未配置' : '',
-    !telegramBotSettings?.admin_chat_id ? '管理员 Chat ID 未配置' : '',
-    telegramBotSettings && !telegramBotSettings.ai_group_bot_enabled ? 'AI 活群 Bot 设置未启用' : '',
-  ].filter(Boolean);
+  const botMissingReasons = botAvailabilityReasons(telegramBotSettings);
   const showTargetTab = detail ? ['group_relay', 'channel_view', 'channel_like', 'channel_comment'].includes(detail.task.type) : false;
   const accountCoverage = detail?.task.stats?.account_coverage;
   const detailTabs = detail ? [
@@ -345,7 +356,14 @@ export function TaskCenterDetailModal({
       label: 'AI 设置',
       children: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          {botMissingReasons.length > 0 && <Alert type="warning" showIcon message={botMissingReasons.join('；')} />}
+          {botMissingReasons.length > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message={botMissingReasons.join('；')}
+              description="请到系统设置 / TG Bot 配置处理后，再通过 bot 查看或设置 AI 活群轻量配置。"
+            />
+          )}
           <Descriptions
             bordered
             size="small"

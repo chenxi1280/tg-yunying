@@ -48,3 +48,6 @@ def test_task_detail_surfaces_bot_configuration_status() -> None:
     assert "telegramBotSettings" in source
     assert "TG bot 未配置" in source
     assert "AI 活群 Bot 设置未启用" in source
+    assert "telegram_bot_webhook_status" in source
+    assert "telegram_bot_last_error" in source
+    assert "TG Bot 配置" in source
