@@ -195,6 +195,53 @@ def test_ai_group_quality_diagnostics_blocks_missing_human_quality_payload():
     ]
 
 
+def test_ai_group_quality_diagnostics_reports_material_trace_samples():
+    module = load_quality_diagnostics_module()
+    actions = [
+        SimpleNamespace(
+            id="a1",
+            status="success",
+            account_id=11,
+            scheduled_at=None,
+            executed_at=None,
+            payload={
+                "message_text": "这个表情包挺合适",
+                "rule_trace": {
+                    "material_intent": "表情包:围观",
+                    "material_matched_tags": ["围观", "吃瓜"],
+                    "material_ok": True,
+                },
+            },
+        ),
+        SimpleNamespace(
+            id="a2",
+            status="success",
+            account_id=12,
+            scheduled_at=None,
+            executed_at=None,
+            payload={"message_text": "普通文本"},
+        ),
+    ]
+
+    samples = module.material_trace_samples(actions)
+    action_samples = module.action_samples(actions)
+
+    assert samples == [
+        {
+            "action_id": "a1",
+            "status": "success",
+            "account_id": 11,
+            "material_intent": "表情包:围观",
+            "material_matched_tags": ["围观", "吃瓜"],
+            "material_ok": True,
+            "text": "这个表情包挺合适",
+        }
+    ]
+    assert action_samples[0]["material_intent"] == "表情包:围观"
+    assert action_samples[0]["material_matched_tags"] == ["围观", "吃瓜"]
+    assert action_samples[1]["material_intent"] == ""
+
+
 def test_ai_group_quality_diagnostics_reports_success_only_duplicates_without_blocking():
     module = load_quality_diagnostics_module()
     actions = [

@@ -33,6 +33,7 @@ ONLINE_FAILURE_SAMPLE_LIMIT = 10
 ONLINE_SETTLE_SECONDS = 900
 ONLINE_SETTLE_POLL_SECONDS = 15
 QUALITY_PAYLOAD_BLOCKER_LIMIT = 20
+MATERIAL_TRACE_SAMPLE_LIMIT = 8
 ONLINE_BLOCK_KEYS = (
     "stale_count",
     "missing_state_count",
@@ -207,6 +208,7 @@ def task_snapshot(session, task: Task, since: datetime) -> dict[str, Any]:
     config = task.type_config or {}
     recent_actions = recent_task_actions(session, task.id, since)
     payloads = [action.payload or {} for action in recent_actions]
+    material_traces = material_trace_samples(recent_actions)
     return {
         "task_id": task.id,
         "name": task.name,
@@ -220,6 +222,8 @@ def task_snapshot(session, task: Task, since: datetime) -> dict[str, Any]:
         "recent_send_count": len(recent_actions),
         "memory_payload_count": sum(1 for payload in payloads if payload.get("ai_message_memory_id")),
         "voice_profile_payload_count": sum(1 for payload in payloads if int(payload.get("account_voice_profile_version") or 0) > 0),
+        "material_trace_count": len(material_traces),
+        "material_trace_samples": material_traces[:MATERIAL_TRACE_SAMPLE_LIMIT],
         "open_action_counts": open_action_counts(session, task.id),
         "quality_rejection_counts": dict((task.stats or {}).get("quality_rejection_counts") or {}),
         "online_summary": task_account_online_summary(session, task),
@@ -394,10 +398,50 @@ def action_samples(actions: list[Action]) -> list[dict[str, Any]]:
             "profile_version": int((action.payload or {}).get("account_voice_profile_version") or 0),
             "quality_decision": str((action.payload or {}).get("human_quality_decision") or ""),
             "generation_source": str((action.payload or {}).get("generation_source") or ""),
+            "material_intent": _payload_material_intent(action.payload or {}),
+            "material_matched_tags": _payload_material_tags(action.payload or {}),
             "text": preview_text((action.payload or {}).get("message_text")),
         }
         for action in actions
     ]
+
+
+def material_trace_samples(actions: list[Action]) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    for action in actions:
+        payload = action.payload or {}
+        intent = _payload_material_intent(payload)
+        tags = _payload_material_tags(payload)
+        if not intent and not tags:
+            continue
+        samples.append(
+            {
+                "action_id": action.id,
+                "status": action.status,
+                "account_id": action.account_id,
+                "material_intent": intent,
+                "material_matched_tags": tags,
+                "material_ok": _payload_rule_trace(payload).get("material_ok"),
+                "text": preview_text(payload.get("message_text")),
+            }
+        )
+    return samples
+
+
+def _payload_rule_trace(payload: dict[str, Any]) -> dict[str, Any]:
+    trace = payload.get("rule_trace") if isinstance(payload, dict) else {}
+    return trace if isinstance(trace, dict) else {}
+
+
+def _payload_material_intent(payload: dict[str, Any]) -> str:
+    return str(_payload_rule_trace(payload).get("material_intent") or "").strip()
+
+
+def _payload_material_tags(payload: dict[str, Any]) -> list[str]:
+    tags = _payload_rule_trace(payload).get("material_matched_tags") or []
+    if not isinstance(tags, list):
+        return []
+    return [str(tag) for tag in tags if str(tag).strip()]
 
 
 def recent_action_duplicate_snapshot(session, since: datetime) -> dict[str, Any]:
