@@ -4766,6 +4766,10 @@ def _disable_relay_context_collection(monkeypatch) -> None:
         "app.services.task_center.executors.group_relay.collect_group_context",
         lambda *args, **kwargs: None,
     )
+    monkeypatch.setattr(
+        "app.services.task_center.listener_runtime.collect_group_context",
+        lambda *args, **kwargs: None,
+    )
 
 
 def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
