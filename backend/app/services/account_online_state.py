@@ -90,8 +90,10 @@ def drain_account_online_keepalive(session_factory, limit: int = 100) -> int:
     with session_factory() as session:
         record_worker_heartbeat(session, process_type="account-online", metadata={"limit": limit})
         reconcile_runtime_online_sources(session)
-        processed = probe_due_online_states(session, limit=limit)
-        processed += mark_stale_online_states(session, limit=limit)
+        batch_limit = max(1, limit)
+        processed = probe_due_online_states(session, limit=batch_limit)
+        if processed < batch_limit:
+            processed += mark_stale_online_states(session, limit=batch_limit)
         session.commit()
         return processed
 

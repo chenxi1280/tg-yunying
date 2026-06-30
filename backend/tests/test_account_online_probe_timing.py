@@ -17,7 +17,7 @@ from app.services.account_online_state import mark_stale_online_states, probe_du
 pytestmark = pytest.mark.no_postgres
 
 MIN_ACTIVE_PROBE_INTERVAL = timedelta(minutes=5)
-MIN_ACTIVE_STALE_WINDOW = timedelta(minutes=10)
+MIN_ACTIVE_STALE_WINDOW = timedelta(minutes=15)
 
 
 def _session() -> Session:
@@ -93,3 +93,18 @@ def test_mark_stale_online_states_requeues_probe_immediately():
         assert state.online_status == "offline"
         assert state.failure_type == "stale_probe"
         assert state.next_probe_at <= now
+
+
+def test_drain_account_online_keepalive_defers_stale_marking_when_probe_batch_is_full(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    calls: list[str] = []
+
+    monkeypatch.setattr("app.services.account_online_state.reconcile_runtime_online_sources", lambda _session: calls.append("reconcile") or 0)
+    monkeypatch.setattr("app.services.account_online_state.probe_due_online_states", lambda _session, limit: calls.append(f"probe:{limit}") or limit)
+    monkeypatch.setattr("app.services.account_online_state.mark_stale_online_states", lambda _session, limit: calls.append(f"stale:{limit}") or 1)
+
+    from app.services.account_online_state import drain_account_online_keepalive
+
+    assert drain_account_online_keepalive(lambda: Session(engine), limit=3) == 3
+    assert calls == ["reconcile", "probe:3"]
