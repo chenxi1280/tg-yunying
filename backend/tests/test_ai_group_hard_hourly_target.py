@@ -23,6 +23,7 @@ from app.services.task_center.service import (
 )
 from app.services.task_center.stats import next_run_after_task, refresh_task_stats
 from app.timezone import BEIJING_TZ
+from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
 
 def _send_action(
@@ -59,6 +60,7 @@ def _online_state(account_id: int, now: datetime) -> TgAccountOnlineState:
 
 @pytest.fixture(autouse=True)
 def assume_group_ai_accounts_ready_for_hard_hourly_tests(monkeypatch):
+    assume_default_ai_group_voice_profiles(monkeypatch)
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
         lambda *args, **kwargs: True,

@@ -17,9 +17,15 @@ from app.services.task_center.listener_runtime import reset_listener_runtime_cac
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import inspect, select
+from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
 
 _workspace_phone_suffix = 1000
+
+
+@pytest.fixture(autouse=True)
+def assume_group_ai_voice_profiles_for_workflow_tests(monkeypatch):
+    assume_default_ai_group_voice_profiles(monkeypatch)
 
 
 def workflow_ai_active_pacing() -> dict:

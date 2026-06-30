@@ -44,6 +44,7 @@ from app.services.task_center.payloads import ViewMessagePayload, create_view_ac
 from app.services.task_center.stats import planner_backlog_snapshot, refresh_task_stats
 from app.services.runtime_summary import get_operation_issue_detail, refresh_task_summary, upsert_operation_issue
 from app.timezone import BEIJING_TZ, beijing_day_bounds
+from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
 
 def _online_state(account_id: int, now: datetime) -> TgAccountOnlineState:
@@ -58,6 +59,7 @@ def _online_state(account_id: int, now: datetime) -> TgAccountOnlineState:
 
 @pytest.fixture(autouse=True)
 def assume_group_ai_accounts_ready_for_runtime_tests(monkeypatch):
+    assume_default_ai_group_voice_profiles(monkeypatch)
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
         lambda *args, **kwargs: True,

@@ -47,10 +47,12 @@ from app.services.source_media import (
 from app.services.material_cache import drain_material_cache
 from app.services.material_rules import select_material_for_policy
 from app.services.temp_files import TEMP_FILE_TTL_SECONDS, cleanup_temp_files, temp_dir
+from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
 
 @pytest.fixture(autouse=True)
 def assume_group_ai_accounts_ready_for_rule_tests(monkeypatch):
+    assume_default_ai_group_voice_profiles(monkeypatch)
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
         lambda *args, **kwargs: True,

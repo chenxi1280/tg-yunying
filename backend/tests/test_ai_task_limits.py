@@ -39,6 +39,7 @@ from app.services.task_center.dispatcher import claim_actions, dispatch_action
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
 from app.services.task_center.service import precheck_task_creation, reset_task, update_group_ai_chat_config
+from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
 
 NOW = datetime(2026, 5, 30, 10, 0, 0)
@@ -46,6 +47,7 @@ NOW = datetime(2026, 5, 30, 10, 0, 0)
 
 @pytest.fixture(autouse=True)
 def assume_group_ai_accounts_ready_for_limit_tests(monkeypatch):
+    assume_default_ai_group_voice_profiles(monkeypatch)
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
         lambda *args, **kwargs: True,
