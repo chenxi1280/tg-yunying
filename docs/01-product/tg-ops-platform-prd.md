@@ -2113,7 +2113,7 @@ Planner 和 Dispatcher 必须把在线状态作为主互动硬前置：
 - 任务创建、启动、恢复、账号范围变更时，重算 `desired_sources` 和 `active_task_count`。
 - 任务暂停时保留任务来源但标记为低频保活；任务停止、删除、结束或账号从任务范围移除时必须移除对应来源。
 - 全局保活关闭、账号禁用、账号封禁、session 失效或账号要求重新登录时，必须清理可执行保活来源并展示阻断原因。
-- 定时 reconcile 必须扫描运行中任务、监听源和全局保活配置，修正漏写、重复来源、孤儿 `desired_online=true` 和 stale 在线状态。
+- 定时 reconcile 必须扫描运行中任务、监听源和全局保活配置，修正漏写、重复来源、孤儿 `desired_online=true` 和 stale 在线状态；reconcile 只能维护需求来源和待探测状态，不能刷新已有 `online` 状态的 `stale_after_at`，只有真实探测成功才允许续期。
 - 存量运行中任务迁移时必须批量补建在线状态行，初始状态为 `warming` 或 `unknown`，不得把缺历史探测记录的账号直接标成在线或离线。
 
 在线保活需要受容量和风控约束：探测和 warm 必须分批、带抖动、可观测，避免同一时刻批量连接所有账号造成 Telegram、代理或开发者应用压力。遇到 FloodWait、代理失败、session 错误或 Telegram 网络异常时必须按账号 / 代理 / session 维度 backoff，写入 `next_probe_at` 和失败原因，不得高频重试。Redis 可以保存连接锁、近期探测热状态和 worker 租约，但账号在线状态事实源必须落库，保证任务详情、运营中心和排障日志一致。
@@ -3992,7 +3992,7 @@ action / attempt 写入完成
 - AI 活跃群 Planner 和 Dispatcher 必须把 `tg_account_online_state` 作为主互动硬前置；只有 `online` 且未超过 `stale_after_at` 的账号才能生成 / 发送文本或表情 slot。`warming`、`recovering` 只表示保活准备或恢复中，离线、需重登、session 失效或代理异常的账号不得生成 / 发送文本或表情 slot，失败原因必须记录为账号在线问题，不能归为 AI 质量不足或用 `emoji_react` 兜底。
 - 在线保活只能做连接、session warm、轻量探测和必要自愈，不得通过目标群可见消息、点赞、关注等动作制造在线证据；探测必须分批、带抖动并落库。
 - `desired_online` 必须按全局保活、任务、监听源等来源引用计数维护；任务暂停、停止、删除、账号范围变更和存量任务迁移都必须触发 reconcile，不能留下孤儿在线需求或 stale 在线状态。
-- 在线状态必须记录 session 和代理维度；超过 `stale_after_at` 未成功探测的账号不得继续参与 Planner / Dispatcher，必须转为 warming / offline 并展示最近失败或未探测原因。
+- 在线状态必须记录 session 和代理维度；超过 `stale_after_at` 未成功探测的账号不得继续参与 Planner / Dispatcher，必须转为 warming / offline 并展示最近失败或未探测原因；周期 reconcile 不得把已 stale 的 `online` 状态重新续期。
 - 发布迁移后必须为运行中 AI 活跃群、转发任务、监听源和全局保活配置回填 `desired_online` 来源；否则上线后不能把所有账号都当作离线，也不能让缺状态账号绕过在线前置。
 - AI 已发送内容默认不得进入正向运营学习画像；实时监听同步、历史拉取和频道评论采集都必须按账号身份排除平台托管账号 / 自身账号 / 机器人发送内容，不能只靠用户名或文案关键词判断。只有人工确认、真实互动效果明确或高质量复用标记的 AI 内容才可低权重进入学习候选。
 - 任务详情必须展示 AI 质量漏斗和代表样例，至少覆盖候选数、通过数、重复拦截、模板壳拦截、画像低分、事实锚点不足、同批次多样性降权和最终发送数。

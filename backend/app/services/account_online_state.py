@@ -427,7 +427,8 @@ def _apply_desired_state(state: TgAccountOnlineState, meta: dict[str, Any], now:
     state.session_id = str(meta.get("session_id") or state.session_id or "")
     state.proxy_id = meta.get("proxy_id") if meta.get("proxy_id") is not None else state.proxy_id
     state.online_status = _next_desired_status(state)
-    state.stale_after_at = stale_deadline_for_state(state, now)
+    if state.online_status != "online" or state.stale_after_at is None:
+        state.stale_after_at = stale_deadline_for_state(state, now)
     state.failure_type = "" if state.online_status != "blocked" else state.failure_type
     state.reconciled_at = now
     state.updated_at = now
