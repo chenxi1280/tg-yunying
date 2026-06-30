@@ -648,7 +648,26 @@ def test_batch_rebuild_voice_profiles_generates_missing_accounts_only():
         session.commit()
 
         rows = list(session.scalars(select(AiAccountVoiceProfile).order_by(AiAccountVoiceProfile.account_id)))
-        assert result == {"created": 1, "skipped": 1}
+        assert result["created"] == 1
+        assert result["skipped"] == 1
+        assert result["items"] == [
+            {
+                "account_id": 101,
+                "status": "skipped",
+                "version": 1,
+                "similarity_score": None,
+                "failure_reason": "",
+                "skipped_reason": "已有生效表达卡",
+            },
+            {
+                "account_id": 102,
+                "status": "created",
+                "version": 1,
+                "similarity_score": 100,
+                "failure_reason": "",
+                "skipped_reason": "",
+            },
+        ]
         assert [row.account_id for row in rows] == [101, 102]
 
 
@@ -678,8 +697,73 @@ def test_batch_rebuild_missing_with_empty_account_ids_scans_all_active_accounts(
         session.commit()
 
         rows = list(session.scalars(select(AiAccountVoiceProfile).order_by(AiAccountVoiceProfile.account_id)))
-        assert result == {"created": 2, "skipped": 1}
+        assert result["created"] == 2
+        assert result["skipped"] == 1
+        assert [item["status"] for item in result["items"]] == ["skipped", "created", "created"]
+        assert result["items"][0]["skipped_reason"] == "已有生效表达卡"
+        assert all(isinstance(item["similarity_score"], int) for item in result["items"][1:])
         assert [row.account_id for row in rows] == [101, 102, 103]
+
+
+def test_batch_rebuild_voice_profiles_reports_quality_failures_without_insert():
+    def generator(account_ids: list[int]) -> list[dict]:
+        assert account_ids == [101, 102]
+        return [
+            {"account_id": account_id, "short_prompt_summary": "自然、随意、真实"}
+            for account_id in account_ids
+        ]
+
+    with _session() as session:
+        _account(session, 101, "花花号")
+        _account(session, 102, "新人号")
+
+        result = batch_rebuild_voice_profiles(
+            session,
+            tenant_id=1,
+            account_ids=[101, 102],
+            generator=generator,
+            actor="tester",
+            missing_only=False,
+        )
+        session.commit()
+
+        assert result["created"] == 0
+        assert result["skipped"] == 0
+        assert [item["account_id"] for item in result["items"]] == [101, 102]
+        assert [item["status"] for item in result["items"]] == ["failed", "failed"]
+        assert all(item["version"] == 0 for item in result["items"])
+        assert all(item["similarity_score"] is None for item in result["items"])
+        assert all("too similar" in item["failure_reason"] for item in result["items"])
+        assert all(item["skipped_reason"] == "" for item in result["items"])
+        assert session.scalar(select(func.count(AiAccountVoiceProfile.id))) == 0
+
+
+def test_batch_rebuild_voice_profiles_supersedes_existing_versions():
+    def generator(account_ids: list[int]) -> list[dict]:
+        assert account_ids == [101]
+        return [{"account_id": 101, "short_prompt_summary": "中年中句，先看服务态度再接话"}]
+
+    with _session() as session:
+        _account(session, 101, "花花号")
+        session.add(_profile(101, "青年短句，爱追问价格，少表情"))
+        session.commit()
+
+        result = batch_rebuild_voice_profiles(
+            session,
+            tenant_id=1,
+            account_ids=[101],
+            generator=generator,
+            actor="tester",
+            missing_only=False,
+        )
+        session.commit()
+
+        rows = list(session.scalars(select(AiAccountVoiceProfile).order_by(AiAccountVoiceProfile.version)))
+        assert result["created"] == 1
+        assert result["skipped"] == 0
+        assert result["items"][0]["version"] == 2
+        assert [row.status for row in rows] == ["superseded", "active"]
+        assert rows[1].short_prompt_summary == "中年中句，先看服务态度再接话"
 
 
 def test_batch_update_voice_profile_status_disables_and_restores_profiles():

@@ -81,6 +81,7 @@ def test_ai_account_voice_profile_routes_exist_and_require_real_service():
     assert "AiAccountVoiceProfileRollbackRequest" in schemas
     assert "AiAccountVoiceProfileUpdate" in schemas
     assert "AiAccountVoiceProfileBatchRebuildRequest" in schemas
+    assert "AiAccountVoiceProfileBatchItemOut" in schemas
     assert "AiAccountVoiceProfileBatchStatusRequest" in schemas
     assert "AiAccountVoiceProfileBatchStatusOut" in schemas
 
@@ -97,6 +98,7 @@ def test_system_config_exposes_ai_account_voice_profile_management_tab():
     assert "<AIAccountVoiceProfilesView" in system_view
 
     assert "export type AiAccountVoiceProfile" in system_types
+    assert "export type AiAccountVoiceProfileBatchResultItem" in system_types
     assert "export type AiAccountVoiceProfileVersion" in system_types
     assert "export type AiAccountVoiceProfileAudit" in system_types
     assert "api<AiAccountVoiceProfile[]>('/ai-account-voice-profiles" in profile_view
@@ -108,6 +110,9 @@ def test_system_config_exposes_ai_account_voice_profile_management_tab():
     assert "api<AiAccountVoiceProfileBatchRebuildOut>('/ai-account-voice-profiles/batch-rebuild'" in profile_view
     assert "missing_only: false" in profile_view
     assert "api<AiAccountVoiceProfileBatchStatusOut>('/ai-account-voice-profiles/batch-status'" in profile_view
+    assert "批量生成结果" in profile_view
+    assert "title: '失败原因'" in profile_view
+    assert "title: '跳过原因'" in profile_view
     assert "缺表达卡" in profile_view
     assert "批量补齐缺卡账号" in profile_view
     assert "批量重建" in profile_view

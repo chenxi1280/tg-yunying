@@ -131,6 +131,16 @@ export type AiAccountVoiceProfile = {
 export type AiAccountVoiceProfileBatchRebuildOut = {
   created: number;
   skipped: number;
+  items: AiAccountVoiceProfileBatchResultItem[];
+};
+
+export type AiAccountVoiceProfileBatchResultItem = {
+  account_id: number;
+  status: string;
+  version: number;
+  similarity_score: number | null;
+  failure_reason: string;
+  skipped_reason: string;
 };
 
 export type AiAccountVoiceProfileBatchStatusOut = {

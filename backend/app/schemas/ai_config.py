@@ -134,9 +134,19 @@ class AiAccountVoiceProfileBatchRebuildRequest(BaseModel):
     missing_only: bool = True
 
 
+class AiAccountVoiceProfileBatchItemOut(ApiModel):
+    account_id: int
+    status: str
+    version: int = 0
+    similarity_score: int | None = None
+    failure_reason: str = ""
+    skipped_reason: str = ""
+
+
 class AiAccountVoiceProfileBatchRebuildOut(ApiModel):
     created: int = 0
     skipped: int = 0
+    items: list[AiAccountVoiceProfileBatchItemOut] = Field(default_factory=list)
 
 
 class AiAccountVoiceProfileBatchStatusRequest(BaseModel):

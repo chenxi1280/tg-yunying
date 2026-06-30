@@ -5,6 +5,7 @@ import type {
   AiAccountVoiceProfile,
   AiAccountVoiceProfileAudit,
   AiAccountVoiceProfileBatchRebuildOut,
+  AiAccountVoiceProfileBatchResultItem,
   AiAccountVoiceProfileBatchStatusOut,
   AiAccountVoiceProfileVersion,
 } from '../types';
@@ -99,6 +100,18 @@ function profileStatusTag(status: string) {
   return <Tag>{status || '-'}</Tag>;
 }
 
+function batchResultStatusTag(status: string) {
+  if (status === 'created') return <Tag color="green">已生成</Tag>;
+  if (status === 'failed') return <Tag color="red">失败</Tag>;
+  if (status === 'skipped') return <Tag color="default">跳过</Tag>;
+  return <Tag>{status || '-'}</Tag>;
+}
+
+function batchResultNotice(prefix: string, result: AiAccountVoiceProfileBatchRebuildOut) {
+  const failed = result.items.filter((item) => item.status === 'failed').length;
+  return `${prefix}完成：新增 ${result.created}，跳过 ${result.skipped}，失败 ${failed}`;
+}
+
 export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = false }: Props) {
   const [profiles, setProfiles] = React.useState<AiAccountVoiceProfile[]>([]);
   const [search, setSearch] = React.useState('');
@@ -114,6 +127,7 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
   const [historyLoading, setHistoryLoading] = React.useState(false);
   const [draft, setDraft] = React.useState<EditableProfile | null>(null);
   const [selectedAccountIds, setSelectedAccountIds] = React.useState<number[]>([]);
+  const [batchResultItems, setBatchResultItems] = React.useState<AiAccountVoiceProfileBatchResultItem[]>([]);
   const loadSeqRef = React.useRef(0);
 
   React.useEffect(() => {
@@ -231,7 +245,8 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
         body: JSON.stringify({ account_ids: [], missing_only: true }),
         timeoutMs: 60_000,
       });
-      setNotice(`批量补齐完成：新增 ${result.created}，跳过 ${result.skipped}`);
+      setBatchResultItems(result.items || []);
+      setNotice(batchResultNotice('批量补齐', result));
       await loadProfiles();
     } catch (batchError) {
       setError(errorText(batchError));
@@ -249,7 +264,8 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
         body: JSON.stringify({ account_ids: selectedAccountIds, missing_only: false }),
         timeoutMs: 60_000,
       });
-      setNotice(`批量重建完成：新增 ${result.created}，跳过 ${result.skipped}`);
+      setBatchResultItems(result.items || []);
+      setNotice(batchResultNotice('批量重建', result));
       setSelectedAccountIds([]);
       await loadProfiles();
     } catch (batchError) {
@@ -324,6 +340,15 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
     { title: '详情', dataIndex: 'detail', ellipsis: true },
   ];
 
+  const batchResultColumns = [
+    { title: '账号', dataIndex: 'account_id', width: 100, render: (value: number) => `#${value}` },
+    { title: '结果', dataIndex: 'status', width: 90, render: (status: string) => batchResultStatusTag(status) },
+    { title: '版本', dataIndex: 'version', width: 70 },
+    { title: '差异度', dataIndex: 'similarity_score', width: 90, render: (value: number | null) => value ?? '-' },
+    { title: '失败原因', dataIndex: 'failure_reason', ellipsis: true, render: (value: string) => value || '-' },
+    { title: '跳过原因', dataIndex: 'skipped_reason', ellipsis: true, render: (value: string) => value || '-' },
+  ];
+
   return (
     <Card className="panel" title="账号表达卡" extra={<Typography.Text type="secondary">账号级全局真人感原则</Typography.Text>}>
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -356,6 +381,19 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
           locale={{ emptyText: <Empty description="暂无账号表达卡数据" /> }}
           pagination={{ pageSize: 20, showSizeChanger: false }}
         />
+        {batchResultItems.length > 0 && (
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Typography.Title level={5} style={{ margin: 0 }}>批量生成结果</Typography.Title>
+            <Table
+              rowKey={(item) => `${item.account_id}:${item.status}:${item.version}`}
+              size="small"
+              dataSource={batchResultItems}
+              columns={batchResultColumns}
+              pagination={false}
+              scroll={{ x: 760 }}
+            />
+          </Space>
+        )}
       </Space>
       <Modal
         className="tg-modal large"

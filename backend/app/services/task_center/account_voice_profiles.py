@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
@@ -29,10 +30,28 @@ from app.services.task_center.account_voice_profile_search import filter_voice_p
 
 VOICE_PROFILE_BATCH_SIZE = 2
 EDITABLE_PROFILE_FIELDS = {
-    "age_band", "persona_experiences", "consumption_experiences", "sentence_length", "interaction_habits",
-    "tone_strength", "lexical_preferences", "emoji_policy", "forbidden_expressions", "short_prompt_summary",
-    "status", "quality_status",
+    "age_band", "persona_experiences", "consumption_experiences", "sentence_length", "interaction_habits", "tone_strength",
+    "lexical_preferences", "emoji_policy", "forbidden_expressions", "short_prompt_summary", "status", "quality_status",
 }
+
+@dataclass(frozen=True)
+class VoiceProfileBatchContext:
+    session: Session
+    tenant_id: int
+    generator: Callable[[list[int]], list[dict[str, Any]]]
+    actor: str
+    current_by_id: dict[int, AiAccountVoiceProfile]
+    fail_fast: bool = False
+
+@dataclass(frozen=True)
+class GeneratedVoiceProfilePayload:
+    profile: dict[str, Any] | None
+    similarity_score: int | None
+
+@dataclass(frozen=True)
+class GeneratedVoiceProfileBatch:
+    profiles: dict[int, dict[str, Any]]
+    diversity_scores: dict[int, int]
 
 def list_voice_profiles(
     session: Session,
@@ -100,13 +119,15 @@ def batch_rebuild_voice_profiles(
     generator: Callable[[list[int]], list[dict[str, Any]]],
     actor: str,
     missing_only: bool = False,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     candidate_ids = _batch_candidate_account_ids(session, tenant_id, account_ids, missing_only)
     target_ids = _missing_account_ids(session, tenant_id, candidate_ids) if missing_only else candidate_ids
+    skipped_items = _skipped_existing_profile_items(session, tenant_id=tenant_id, candidate_ids=candidate_ids, target_ids=target_ids)
     if not target_ids:
-        return {"created": 0, "skipped": len(candidate_ids)}
-    created = _batch_insert_generated(session, tenant_id, target_ids, generator, actor)
-    return {"created": created, "skipped": max(0, len(candidate_ids) - created)}
+        return {"created": 0, "skipped": len(skipped_items), "items": skipped_items}
+    result = _batch_insert_generated_with_items(session, tenant_id, target_ids, generator, actor)
+    items = _ordered_batch_items(candidate_ids, skipped_items + result["items"])
+    return {"created": result["created"], "skipped": len(skipped_items), "items": items}
 
 
 def generate_voice_profiles_with_ai(session: Session, *, tenant_id: int) -> Callable[[list[int]], list[dict[str, Any]]]:
@@ -196,21 +217,133 @@ def _batch_insert_generated(
     generator: Callable[[list[int]], list[dict[str, Any]]],
     actor: str,
 ) -> int:
+    result = _batch_insert_generated_with_items(session, tenant_id, account_ids, generator, actor, fail_fast=True)
+    return int(result["created"])
+
+
+def _batch_insert_generated_with_items(
+    session: Session,
+    tenant_id: int,
+    account_ids: list[int],
+    generator: Callable[[list[int]], list[dict[str, Any]]],
+    actor: str,
+    fail_fast: bool = False,
+) -> dict[str, Any]:
+    current_by_id = _latest_profiles(session, tenant_id, account_ids)
+    context = VoiceProfileBatchContext(session, tenant_id, generator, actor, current_by_id, fail_fast)
+    items: list[dict[str, Any]] = []
     created = 0
     for chunk in _chunked_account_ids(account_ids):
-        profiles, diversity_scores = generate_diverse_voice_profile_batch(generator, chunk)
-        chunk_rows: list[AiAccountVoiceProfile] = []
-        for account_id in chunk:
-            profile = profiles.get(account_id)
-            row = _profile_from_generated(tenant_id, account_id, profile, _valid_summary(profile, account_id))
-            row.similarity_score = diversity_scores.get(account_id)
-            session.add(row)
-            chunk_rows.append(row)
-            _audit(session, tenant_id, actor, "批量生成账号表达卡", account_id, f"version={row.version}")
-            created += 1
-        session.flush()
-        refresh_voice_profile_cache_many(chunk_rows)
-    return created
+        chunk_created, chunk_items = _insert_generated_chunk(context, chunk)
+        created += chunk_created
+        items.extend(chunk_items)
+    return {"created": created, "items": items}
+
+
+def _insert_generated_chunk(
+    context: VoiceProfileBatchContext,
+    account_ids: list[int],
+) -> tuple[int, list[dict[str, Any]]]:
+    try:
+        profiles, diversity_scores = generate_diverse_voice_profile_batch(context.generator, account_ids)
+    except (RuntimeError, ValueError, TimeoutError) as exc:
+        if context.fail_fast:
+            raise
+        return 0, [_failed_item(account_id, str(exc), context.current_by_id.get(account_id)) for account_id in account_ids]
+    batch = GeneratedVoiceProfileBatch(profiles, diversity_scores)
+    return _insert_valid_generated_profiles(context, account_ids, batch)
+
+
+def _insert_valid_generated_profiles(
+    context: VoiceProfileBatchContext,
+    account_ids: list[int],
+    batch: GeneratedVoiceProfileBatch,
+) -> tuple[int, list[dict[str, Any]]]:
+    rows: list[AiAccountVoiceProfile] = []
+    items: list[dict[str, Any]] = []
+    for account_id in account_ids:
+        payload = GeneratedVoiceProfilePayload(batch.profiles.get(account_id), batch.diversity_scores.get(account_id))
+        row, failure_reason = _build_generated_row(context, account_id, payload)
+        if row is None:
+            items.append(_failed_item(account_id, failure_reason, context.current_by_id.get(account_id)))
+            continue
+        _activate_generated_row(context.session, row, context.current_by_id.get(account_id))
+        rows.append(row)
+        items.append(_created_item(row))
+    if rows:
+        context.session.flush()
+        refresh_voice_profile_cache_many(rows)
+    return len(rows), items
+
+
+def _build_generated_row(
+    context: VoiceProfileBatchContext,
+    account_id: int,
+    payload: GeneratedVoiceProfilePayload,
+) -> tuple[AiAccountVoiceProfile | None, str]:
+    try:
+        if payload.profile is None:
+            raise ValueError(f"voice profile missing for account {account_id}")
+        summary = _valid_summary(payload.profile, account_id)
+        row = _profile_from_generated(context.tenant_id, account_id, payload.profile, summary)
+        current = context.current_by_id.get(account_id)
+        row.version = int(current.version if current else 0) + 1
+        row.updated_by = context.actor
+        row.similarity_score = payload.similarity_score
+        return row, ""
+    except (RuntimeError, ValueError) as exc:
+        if context.fail_fast:
+            raise
+        return None, str(exc)
+
+
+def _activate_generated_row(session: Session, row: AiAccountVoiceProfile, current: AiAccountVoiceProfile | None) -> None:
+    if current and current.status == "active":
+        current.status = "superseded"
+    session.add(row)
+    _audit(session, row.tenant_id, row.updated_by, "批量生成账号表达卡", row.account_id, f"version={row.version}")
+
+
+def _skipped_existing_profile_items(
+    session: Session,
+    *,
+    tenant_id: int,
+    candidate_ids: list[int],
+    target_ids: list[int],
+) -> list[dict[str, Any]]:
+    latest = _latest_profiles(session, tenant_id, candidate_ids)
+    target_set = set(target_ids)
+    return [
+        _result_item(account_id, "skipped", latest.get(account_id), skipped_reason="已有生效表达卡")
+        for account_id in candidate_ids
+        if account_id not in target_set
+    ]
+
+
+def _ordered_batch_items(candidate_ids: list[int], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    order = {account_id: index for index, account_id in enumerate(candidate_ids)}
+    return sorted(items, key=lambda item: order.get(int(item["account_id"]), len(order)))
+
+
+def _created_item(row: AiAccountVoiceProfile) -> dict[str, Any]:
+    return _result_item(row.account_id, "created", row)
+
+
+def _failed_item(account_id: int, reason: str, current: AiAccountVoiceProfile | None) -> dict[str, Any]:
+    return _result_item(account_id, "failed", current, failure_reason=reason)
+
+
+def _result_item(
+    account_id: int,
+    status: str,
+    profile: AiAccountVoiceProfile | None,
+    *,
+    failure_reason: str = "",
+    skipped_reason: str = "",
+) -> dict[str, Any]:
+    version = int(profile.version if profile else 0)
+    similarity_score = profile.similarity_score if profile else None
+    return {"account_id": account_id, "status": status, "version": version, "similarity_score": similarity_score, "failure_reason": failure_reason, "skipped_reason": skipped_reason}
 
 
 def _chunked_account_ids(account_ids: list[int]) -> list[list[int]]:
@@ -363,8 +496,4 @@ def _profile_from_generated(
         last_rebuilt_at=_now(),
     )
 
-__all__ = [
-    "VOICE_PROFILE_BATCH_SIZE", "batch_rebuild_voice_profiles", "ensure_voice_profiles_for_accounts", "generate_voice_profiles_with_ai",
-    "group_stance_summaries", "list_voice_profiles", "patch_voice_profile", "rebuild_voice_profile",
-    "upsert_group_stance_memory", "voice_profile_prompt_details", "voice_profile_prompt_summaries",
-]
+__all__ = ["VOICE_PROFILE_BATCH_SIZE", "batch_rebuild_voice_profiles", "ensure_voice_profiles_for_accounts", "generate_voice_profiles_with_ai", "group_stance_summaries", "list_voice_profiles", "patch_voice_profile", "rebuild_voice_profile", "upsert_group_stance_memory", "voice_profile_prompt_details", "voice_profile_prompt_summaries"]
