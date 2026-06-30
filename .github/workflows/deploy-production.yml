@@ -8,6 +8,11 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      run_ai_group_quality_diagnostics:
+        description: Run AI group message quality diagnostics after deploy
+        required: false
+        default: false
+        type: boolean
       run_tianjin_admission_retry:
         description: Queue all failed Tianjin target-admission accounts for retry after deploy
         required: false
