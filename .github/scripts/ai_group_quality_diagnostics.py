@@ -16,9 +16,11 @@ from app.models import (
     AiGroupMessageMemory,
     Task,
     TgAccount,
+    TgAccountOnlineState,
     WorkerHeartbeat,
 )
 from app.services.account_online_projection import task_account_online_summary
+from app.timezone import as_beijing
 
 
 WINDOW_HOURS = 24
@@ -27,6 +29,7 @@ TASK_LIMIT = 8
 ACTION_LIMIT = 250
 WORKER_FRESH_MINUTES = 5
 TEXT_PREVIEW_LIMIT = 64
+ONLINE_FAILURE_SAMPLE_LIMIT = 10
 ONLINE_SETTLE_SECONDS = 300
 ONLINE_SETTLE_POLL_SECONDS = 15
 ONLINE_BLOCK_KEYS = (
@@ -240,6 +243,7 @@ def online_gate_blockers(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]
                 "desired_count": desired_count,
                 "online_count": online_count,
                 "non_online_count": non_online_count,
+                "samples": list(summary.get("samples") or [])[:ONLINE_FAILURE_SAMPLE_LIMIT],
                 **counts,
             }
         )
@@ -260,10 +264,86 @@ def wait_for_online_gate(session, since: datetime) -> list[dict[str, Any]]:
         }
         json_line("AI_GROUP_QUALITY_ONLINE_WAIT", payload)
         if now_local() >= deadline:
+            json_line("AI_GROUP_QUALITY_ONLINE_FAILURE_DETAILS", online_failure_details(session, blockers, now_local()))
             json_line("AI_GROUP_QUALITY_ONLINE_GATE_FAILED", payload)
             raise SystemExit("AI group online quality gate failed")
         time.sleep(ONLINE_SETTLE_POLL_SECONDS)
         session.expire_all()
+
+
+def online_failure_details(session, blockers: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+    task_ids = [str(item.get("task_id") or "") for item in blockers if item.get("task_id")]
+    if not task_ids:
+        return []
+    tasks = list(session.scalars(select(Task).where(Task.id.in_(task_ids))).all())
+    return [task_online_failure_detail(session, task, now) for task in tasks]
+
+
+def task_online_failure_detail(session, task: Task, now: datetime) -> dict[str, Any]:
+    rows = _task_desired_online_rows(session, task)
+    failures = [_online_failure_row(state, account, now) for state, account in rows if _online_failure_bucket(state, now)]
+    return {
+        "task_id": task.id,
+        "name": task.name,
+        "status": task.status,
+        "failure_count": len(failures),
+        "bucket_counts": dict(Counter(row["bucket"] for row in failures)),
+        "failure_type_counts": dict(Counter(row["failure_type"] or "none" for row in failures)),
+        "account_status_counts": dict(Counter(row["account_status"] or "unknown" for row in failures)),
+        "sample_rows": failures[:ONLINE_FAILURE_SAMPLE_LIMIT],
+    }
+
+
+def _task_desired_online_rows(session, task: Task) -> list[tuple[TgAccountOnlineState, TgAccount]]:
+    rows = session.execute(
+        select(TgAccountOnlineState, TgAccount)
+        .join(TgAccount, TgAccount.id == TgAccountOnlineState.account_id)
+        .where(TgAccountOnlineState.tenant_id == task.tenant_id, TgAccountOnlineState.desired_online.is_(True))
+    ).all()
+    return [(state, account) for state, account in rows if _has_task_source(state, task.id)]
+
+
+def _has_task_source(state: TgAccountOnlineState, task_id: str) -> bool:
+    sources = state.desired_sources if isinstance(state.desired_sources, list) else []
+    for source in sources:
+        if isinstance(source, dict) and _source_matches_task(source, task_id):
+            return True
+    return False
+
+
+def _source_matches_task(source: dict[str, Any], task_id: str) -> bool:
+    source_id = str(source.get("source_id") or "")
+    return source.get("source_type") == "task" and (source_id == task_id or source_id.startswith(f"{task_id}:"))
+
+
+def _online_failure_row(state: TgAccountOnlineState, account: TgAccount, now: datetime) -> dict[str, Any]:
+    return {
+        "account_id": state.account_id,
+        "display_name": account.display_name,
+        "account_status": account.status,
+        "health_score": account.health_score,
+        "bucket": _online_failure_bucket(state, now),
+        "online_status": state.online_status,
+        "failure_type": state.failure_type,
+        "failure_detail": preview_text(state.failure_detail),
+        "last_probe_at": state.last_probe_at,
+        "next_probe_at": state.next_probe_at,
+        "stale_after_at": state.stale_after_at,
+    }
+
+
+def _online_failure_bucket(state: TgAccountOnlineState, now: datetime) -> str:
+    current_time = as_beijing(now) or now
+    stale_after = as_beijing(state.stale_after_at)
+    if stale_after and stale_after <= current_time:
+        return "stale"
+    if state.online_status == "online":
+        return ""
+    if state.failure_type in {"session_invalid", "login_required", "relogin_required"}:
+        return "relogin_required"
+    if state.online_status in {"blocked", "proxy_failed", "restricted"}:
+        return "blocked"
+    return state.online_status or "offline"
 
 
 def recent_task_actions(session, task_id: str, since: datetime) -> list[Action]:

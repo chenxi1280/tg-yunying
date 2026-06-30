@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -37,6 +38,7 @@ def test_ai_group_quality_diagnostics_blocks_stale_online_state():
                     "blocked_count": 0,
                     "relogin_required_count": 0,
                     "offline_count": 0,
+                    "samples": [{"account_id": 7, "bucket": "stale"}],
                 },
             }
         ]
@@ -50,6 +52,7 @@ def test_ai_group_quality_diagnostics_blocks_stale_online_state():
             "desired_count": 10,
             "online_count": 9,
             "non_online_count": 1,
+            "samples": [{"account_id": 7, "bucket": "stale"}],
             "stale_count": 1,
             "missing_state_count": 0,
             "blocked_count": 0,
@@ -82,6 +85,37 @@ def test_ai_group_quality_diagnostics_accepts_fully_online_state():
     )
 
     assert blockers == []
+
+
+def test_ai_group_quality_diagnostics_formats_online_failure_row():
+    module = load_quality_diagnostics_module()
+    now = datetime(2026, 6, 30, 12, 0, 0)
+    state = SimpleNamespace(
+        account_id=42,
+        online_status="offline",
+        failure_type="account_unavailable",
+        failure_detail="账号没有可用 session，需要重新登录",
+        last_probe_at=now - timedelta(minutes=1),
+        next_probe_at=now + timedelta(minutes=2),
+        stale_after_at=now + timedelta(minutes=9),
+    )
+    account = SimpleNamespace(display_name="账号42", status="会话过期", health_score=0)
+
+    row = module._online_failure_row(state, account, now)
+
+    assert row == {
+        "account_id": 42,
+        "display_name": "账号42",
+        "account_status": "会话过期",
+        "health_score": 0,
+        "bucket": "offline",
+        "online_status": "offline",
+        "failure_type": "account_unavailable",
+        "failure_detail": "账号没有可用 session，需要重新登录",
+        "last_probe_at": now - timedelta(minutes=1),
+        "next_probe_at": now + timedelta(minutes=2),
+        "stale_after_at": now + timedelta(minutes=9),
+    }
 
 
 def test_ai_group_quality_diagnostics_blocks_recent_effective_duplicate_text():
