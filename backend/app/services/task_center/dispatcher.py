@@ -36,7 +36,7 @@ from app.timezone import BEIJING_TZ, as_beijing
 from .account_pool import account_matches_current_shard, current_account_shard, select_task_accounts
 from .account_voice_profiles import upsert_group_stance_memory
 from .ai_generator import AI_GENERATION_UNAVAILABLE_MESSAGE, AiGenerationUnavailable, generate_group_messages
-from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_message_sendable, mark_group_ai_message_result
+from .ai_message_memory import DuplicateMessageReservation, ensure_group_ai_message_sendable, mark_group_ai_message_result, reserve_group_ai_message
 from .channel_membership import account_satisfies_authorized_target, linked_channel_group, mark_channel_membership_joined
 from .executors.common import quantity_jitter_bounds, stats_inc
 from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
@@ -736,8 +736,10 @@ def _ensure_send_message_content(session: Session, action: Action, account: TgAc
     if len(contents) < len(batch):
         stats_inc(task, "normal_candidate_shortfall_count")
         raise AiGenerationUnavailable(AI_DISPATCH_CANDIDATE_SHORTFALL_MESSAGE)
-    _store_generated_send_payloads(batch, contents, tokens)
+    _store_generated_send_payloads(session, batch, contents, tokens)
     refreshed = SendMessagePayload.model_validate(action.payload or {})
+    if refreshed.quality_skip_reason == "duplicate_message":
+        raise AiGenerationUnavailable("AI 活群生成内容重复，已拦截")
     if not refreshed.message_text.strip():
         raise AiGenerationUnavailable(AI_GENERATION_UNAVAILABLE_MESSAGE)
     return refreshed
@@ -796,13 +798,53 @@ def _payload_map(batch: list[tuple[Action, SendMessagePayload]], attr: str) -> d
     return values
 
 
-def _store_generated_send_payloads(batch: list[tuple[Action, SendMessagePayload]], contents: list[str], tokens: int) -> None:
+def _store_generated_send_payloads(session: Session, batch: list[tuple[Action, SendMessagePayload]], contents: list[str], tokens: int) -> None:
     for index, ((action, payload), content) in enumerate(zip(batch, contents, strict=False)):
         payload_data = payload.model_dump(mode="json")
         payload_data["message_text"] = str(content or "").strip()
         payload_data["ai_generation_status"] = "success"
         payload_data["ai_generation_tokens"] = int(tokens or 0) if index == 0 else 0
+        _attach_generated_message_memory(session, action, payload, payload_data)
         action.payload = payload_data
+
+
+def _attach_generated_message_memory(session: Session, action: Action, payload: SendMessagePayload, payload_data: dict) -> None:
+    content = str(payload_data.get("message_text") or "").strip()
+    if action.task_type != "group_ai_chat" or not payload.group_id or not content:
+        return
+    try:
+        memory = reserve_group_ai_message(
+            session,
+            tenant_id=action.tenant_id,
+            group_id=int(payload.group_id),
+            task_id=action.task_id,
+            account_id=action.account_id,
+            raw_text=content,
+            topic_direction=_target_label(payload.topic_direction, "title"),
+            teacher_target=_target_label(payload.teacher_target, "name"),
+            profile_version=payload.profile_version or None,
+            profile_match_score=payload.profile_match_score or None,
+            profile_match_reason=payload.profile_match_reason,
+        )
+    except DuplicateMessageReservation as exc:
+        _mark_generated_duplicate(action, payload_data, exc)
+        return
+    mark_group_ai_message_result(session, memory.id, status="reserved", action_id=action.id)
+    payload_data["ai_message_memory_id"] = memory.id
+    payload_data["semantic_cluster"] = payload_data.get("semantic_cluster") or memory.semantic_cluster
+
+
+def _mark_generated_duplicate(action: Action, payload_data: dict, exc: DuplicateMessageReservation) -> None:
+    payload_data["ai_generation_status"] = "duplicate_rejected"
+    payload_data["quality_skip_reason"] = "duplicate_message"
+    payload_data["duplicate_risk"] = exc.duplicate_window
+    action.payload = payload_data
+    _fail(action, "duplicate_message", f"AI 活群生成内容重复：{exc.duplicate_window}", auto_check="拦截", validation_stage="ai_message_memory")
+    action.result = {
+        **(action.result or {}),
+        "duplicate_reference_id": exc.reference_id,
+        "duplicate_window": exc.duplicate_window,
+    }
 
 
 def _dispatch_send_message(session: Session, action: Action, account: TgAccount, credentials, payload: SendMessagePayload) -> bool:
@@ -815,6 +857,8 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
         try:
             payload = _ensure_send_message_content(session, action, account, payload)
         except AiGenerationUnavailable as exc:
+            if action.status == "failed" and (action.result or {}).get("validation_stage") == "ai_message_memory":
+                return True
             _fail_with_policy(action, FailureType.UNKNOWN.value, str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE, auto_check="失败", validation_stage="ai_generation")
             return True
         content = payload.message_text

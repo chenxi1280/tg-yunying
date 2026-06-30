@@ -782,6 +782,19 @@ def _payload_optional_int(payload: dict[str, Any], key: str) -> int | None:
     return value or None
 
 
+def _ai_material_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    trace = payload.get("rule_trace")
+    if not isinstance(trace, dict):
+        trace = {}
+    matched_tags = trace.get("material_matched_tags")
+    return {
+        "material_intent": str(trace.get("material_intent") or ""),
+        "material_matched_tags": [str(tag) for tag in matched_tags] if isinstance(matched_tags, list) else [],
+        "material_id": _payload_optional_int(trace, "material_id"),
+        "material_failure_reason": str(trace.get("material_failure_reason") or ""),
+    }
+
+
 def _ai_turn_payload(action: Action, payload: dict[str, Any], default_turn_index: int) -> dict[str, Any]:
     return {
         "action_id": action.id,
@@ -810,6 +823,7 @@ def _ai_turn_payload(action: Action, payload: dict[str, Any], default_turn_index
         "reply_target_author": str(payload.get("reply_target_author") or ""),
         "reply_target_preview": str(payload.get("reply_target_preview") or ""),
         "reply_target_source": str(payload.get("reply_target_source") or ""),
+        **_ai_material_trace_payload(payload),
         "status": action.status,
         "scheduled_at": action.scheduled_at,
         "executed_at": action.executed_at,

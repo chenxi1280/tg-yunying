@@ -845,6 +845,10 @@ class TaskAITurnOut(BaseModel):
     reply_target_author: str = ""
     reply_target_preview: str = ""
     reply_target_source: str = ""
+    material_intent: str = ""
+    material_matched_tags: list[str] = Field(default_factory=list)
+    material_id: int | None = None
+    material_failure_reason: str = ""
     status: str
     scheduled_at: datetime
     executed_at: datetime | None = None

@@ -1964,6 +1964,21 @@ export default function TaskCenterView({
     { title: '意图', dataIndex: 'intent', width: 140 },
     { title: '类型', dataIndex: 'act_type', width: 120, render: (value) => value || '-' },
     {
+      title: '素材意图',
+      key: 'material_intent',
+      width: 220,
+      ellipsis: true,
+      render: (_, turn) => turn.material_intent
+        ? (
+          <Space size={4} wrap>
+            <span>{turn.material_intent}</span>
+            {turn.material_matched_tags.map((tag) => <Tag key={tag}>{tag}</Tag>)}
+            {turn.material_failure_reason && <Tag color="orange">{turn.material_failure_reason}</Tag>}
+          </Space>
+        )
+        : '-',
+    },
+    {
       title: '引用回复',
       key: 'reply_target',
       width: 260,

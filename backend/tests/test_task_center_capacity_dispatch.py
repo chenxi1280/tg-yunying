@@ -447,6 +447,7 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
         assert action.result["telegram_msg_id"] == "tg-hard-hourly"
 
 
+@pytest.mark.no_postgres
 def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -457,6 +458,7 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypat
     with Session(engine) as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
+        session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", last_seen_at=now_value, stale_after_at=now_value + timedelta(minutes=10)))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
         session.add(
@@ -551,8 +553,63 @@ def test_dispatch_hard_hourly_generates_pending_ai_message_before_send(monkeypat
         assert sibling.payload["message_text"] == "第二条我也等等看"
         assert action.payload["ai_generation_status"] == "success"
         assert sibling.payload["ai_generation_status"] == "success"
+        assert action.payload["ai_message_memory_id"]
+        assert sibling.payload["ai_message_memory_id"]
         assert action.payload["ai_generation_tokens"] == 17
         assert action.status == "success"
+        action_memory = session.get(AiGroupMessageMemory, action.payload["ai_message_memory_id"])
+        sibling_memory = session.get(AiGroupMessageMemory, sibling.payload["ai_message_memory_id"])
+        assert action_memory is not None
+        assert sibling_memory is not None
+        assert action_memory.action_id == action.id
+        assert action_memory.status == "success"
+        assert sibling_memory.action_id == sibling.id
+        assert sibling_memory.status == "reserved"
+
+
+@pytest.mark.no_postgres
+def test_dispatch_hard_hourly_pending_ai_duplicate_is_blocked(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgAccount(id=11, tenant_id=1, display_name="账号A", phone_masked="+861***0011", status="在线", session_ciphertext="session-a"))
+        session.add(TgAccountOnlineState(tenant_id=1, account_id=11, desired_online=True, online_status="online", last_seen_at=now_value, stale_after_at=now_value + timedelta(minutes=10)))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
+        task = Task(id="task-hard-hourly-ai-dup", tenant_id=1, name="硬目标重复", type="group_ai_chat", status="running", priority=1, type_config={"target_group_id": 7, "topic_directions": [{"title": "日常活跃", "weight": 1}]})
+        session.add(task)
+        reserve_group_ai_message(session, tenant_id=1, group_id=7, task_id="old-ai", account_id=99, raw_text="今天先看看群公告", now=now_value - timedelta(minutes=1))
+        session.add(
+            Action(
+                id="action-hard-hourly-ai-dup",
+                tenant_id=1,
+                task_id=task.id,
+                task_type="group_ai_chat",
+                action_type="send_message",
+                account_id=11,
+                status="pending",
+                scheduled_at=now_value,
+                payload={"group_id": 7, "target_display": "运营群", "message_text": "", "review_approved": True, "hard_hourly_target": True, "ai_generation_status": "pending", "ai_generation_id": "cycle-hard-hourly-ai-dup", "cycle_id": "cycle-hard-hourly-ai-dup", "ai_generation_history": "真人: 今天怎么安排"},
+            )
+        )
+        session.commit()
+
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(dispatcher, "generate_group_messages", lambda *_args, **_kwargs: (["今天先看看群公告"], 9))
+        monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate must not call TG")))
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert dispatcher.dispatch_action(session, claimed) is True
+
+        action = session.get(Action, "action-hard-hourly-ai-dup")
+        assert action.status == "failed"
+        assert action.result["error_code"] == "duplicate_message"
+        assert action.result["validation_stage"] == "ai_message_memory"
+        assert action.payload["quality_skip_reason"] == "duplicate_message"
 
 
 @pytest.mark.no_postgres
@@ -881,6 +938,12 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
                         "stance_summary": "前面认可花花服务，后续保持谨慎夸",
                         "ai_message_memory_id": "memory-quality-ok",
                         "semantic_cluster": "huahua_service_feedback",
+                        "rule_trace": {
+                            "material_intent": "表情包:围观",
+                            "material_matched_tags": ["围观", "吃瓜"],
+                            "material_id": 9301,
+                            "material_failure_reason": "",
+                        },
                     },
                 ),
                 Action(
@@ -989,6 +1052,10 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
         assert turn["stance_summary"] == "前面认可花花服务，后续保持谨慎夸"
         assert turn["ai_message_memory_id"] == "memory-quality-ok"
         assert turn["semantic_cluster"] == "huahua_service_feedback"
+        assert turn["material_intent"] == "表情包:围观"
+        assert turn["material_matched_tags"] == ["围观", "吃瓜"]
+        assert turn["material_id"] == 9301
+        assert turn["material_failure_reason"] == ""
         online = detail["account_online_summary"]
         assert online["desired_count"] == 2
         assert online["online_count"] == 1
