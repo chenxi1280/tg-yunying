@@ -4757,12 +4757,20 @@ def _clear_relay_source_context(session, group_id: int) -> None:
     session.query(GroupContextMessage).filter(GroupContextMessage.group_id == group_id).delete(synchronize_session=False)
 
 
-def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
-    sends: list[str] = []
+def _disable_relay_context_collection(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.task_center.executors.group_relay.should_collect_listener",
         lambda *args, **kwargs: False,
     )
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_relay.collect_group_context",
+        lambda *args, **kwargs: None,
+    )
+
+
+def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
+    sends: list[str] = []
+    _disable_relay_context_collection(monkeypatch)
 
     def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
         sends.append(content)
@@ -4824,10 +4832,7 @@ def test_task_center_group_relay_auto_executes_and_dedupes(monkeypatch):
 
 def test_group_relay_waits_for_source_media_cache_and_preserves_album_order(monkeypatch):
     send_calls: list[list[tuple[str, str | None, str]]] = []
-    monkeypatch.setattr(
-        "app.services.task_center.executors.group_relay.should_collect_listener",
-        lambda *args, **kwargs: False,
-    )
+    _disable_relay_context_collection(monkeypatch)
 
     def fake_send_message(account_id, group_id, content, outbound_segments, account_session, peer_id=None, developer_credentials=None):
         send_calls.append([(segment.segment_type, segment.source, segment.caption) for segment in outbound_segments])
@@ -4941,10 +4946,7 @@ def test_group_relay_waits_for_source_media_cache_and_preserves_album_order(monk
 
 def test_task_center_group_relay_continues_for_new_source_messages(monkeypatch):
     sends: list[str] = []
-    monkeypatch.setattr(
-        "app.services.task_center.executors.group_relay.should_collect_listener",
-        lambda *args, **kwargs: False,
-    )
+    _disable_relay_context_collection(monkeypatch)
     monkeypatch.setattr(
         "app.services.task_center.dispatcher.gateway.send_message",
         lambda *args, **kwargs: sends.append(args[2]) or SendResult(True, remote_message_id=f"relay-continuous-{len(sends)}"),
