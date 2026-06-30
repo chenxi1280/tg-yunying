@@ -32,6 +32,7 @@ TEXT_PREVIEW_LIMIT = 64
 ONLINE_FAILURE_SAMPLE_LIMIT = 10
 ONLINE_SETTLE_SECONDS = 900
 ONLINE_SETTLE_POLL_SECONDS = 15
+QUALITY_PAYLOAD_BLOCKER_LIMIT = 20
 ONLINE_BLOCK_KEYS = (
     "stale_count",
     "missing_state_count",
@@ -42,6 +43,13 @@ ONLINE_BLOCK_KEYS = (
 EFFECTIVE_DUPLICATE_STATUSES = ("success", "unknown_after_send", "pending", "claiming", "executing")
 OPEN_DUPLICATE_STATUSES = ("pending", "claiming", "executing")
 SENT_DUPLICATE_STATUSES = ("success", "unknown_after_send")
+QUALITY_PAYLOAD_REQUIRED_FIELDS = (
+    "account_voice_profile_version",
+    "ai_message_memory_id",
+    "human_quality_decision",
+    "generation_source",
+    "act_type",
+)
 
 
 def iso(value: datetime | None) -> str | None:
@@ -416,6 +424,7 @@ def recent_action_duplicate_summary(actions: list[Action]) -> dict[str, Any]:
         "repeated_texts": repeated_texts,
         "duplicate_blockers": _duplicate_blockers(grouped),
         "sent_duplicate_observations": _sent_duplicate_observations(grouped),
+        "quality_payload_blockers": _quality_payload_blockers(actions),
         "status_counts": dict(Counter(action.status for action in actions)),
     }
 
@@ -466,6 +475,40 @@ def _sent_duplicate_observations(grouped: dict[str, list[Action]]) -> list[dict[
     return sorted(observations, key=lambda item: int(item["sent_count"]), reverse=True)[:10]
 
 
+def _quality_payload_blockers(actions: list[Action]) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    for action in actions:
+        if action.status not in EFFECTIVE_DUPLICATE_STATUSES:
+            continue
+        missing_fields = _missing_quality_payload_fields(action.payload or {})
+        if not missing_fields:
+            continue
+        blockers.append(
+            {
+                "action_id": str(action.id),
+                "account_id": getattr(action, "account_id", None),
+                "status": str(action.status),
+                "missing_fields": missing_fields,
+                "text": preview_text((action.payload or {}).get("message_text")),
+            }
+        )
+    return blockers[:QUALITY_PAYLOAD_BLOCKER_LIMIT]
+
+
+def _missing_quality_payload_fields(payload: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    for field in QUALITY_PAYLOAD_REQUIRED_FIELDS:
+        if not _quality_payload_field_present(payload, field):
+            missing.append(field)
+    return missing
+
+
+def _quality_payload_field_present(payload: dict[str, Any], field: str) -> bool:
+    if field == "account_voice_profile_version":
+        return int(payload.get(field) or 0) > 0
+    return bool(str(payload.get(field) or "").strip())
+
+
 def main() -> None:
     captured_at = now_local()
     since = captured_at - timedelta(hours=WINDOW_HOURS)
@@ -478,6 +521,9 @@ def main() -> None:
         if recent_duplicates["duplicate_blockers"]:
             json_line("AI_GROUP_QUALITY_RECENT_DUPLICATE_GATE_FAILED", recent_duplicates)
             raise SystemExit("AI group recent duplicate quality gate failed")
+        if recent_duplicates["quality_payload_blockers"]:
+            json_line("AI_GROUP_QUALITY_PAYLOAD_GATE_FAILED", recent_duplicates)
+            raise SystemExit("AI group quality payload gate failed")
         for snapshot in wait_for_online_gate(session, since):
             json_line("AI_GROUP_QUALITY_TASK", snapshot)
         json_line("AI_GROUP_QUALITY_DONE", {"captured_at": iso(captured_at), "window_hours": WINDOW_HOURS})

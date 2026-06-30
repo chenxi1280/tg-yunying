@@ -145,6 +145,56 @@ def test_ai_group_quality_diagnostics_blocks_recent_effective_duplicate_text():
     ]
 
 
+def test_ai_group_quality_diagnostics_blocks_missing_human_quality_payload():
+    module = load_quality_diagnostics_module()
+    actions = [
+        SimpleNamespace(
+            id="a1",
+            status="pending",
+            account_id=11,
+            payload={
+                "message_text": "花花老师这个接话还行",
+                "account_voice_profile_version": 0,
+                "ai_message_memory_id": "",
+                "human_quality_decision": "",
+                "generation_source": "",
+                "act_type": "",
+            },
+        ),
+        SimpleNamespace(
+            id="a2",
+            status="success",
+            account_id=12,
+            payload={
+                "message_text": "我先看看反馈",
+                "account_voice_profile_version": 2,
+                "ai_message_memory_id": "memory-2",
+                "human_quality_decision": "accepted",
+                "generation_source": "ai",
+                "act_type": "short_react",
+            },
+        ),
+    ]
+
+    snapshot = module.recent_action_duplicate_summary(actions)
+
+    assert snapshot["quality_payload_blockers"] == [
+        {
+            "action_id": "a1",
+            "account_id": 11,
+            "status": "pending",
+            "missing_fields": [
+                "account_voice_profile_version",
+                "ai_message_memory_id",
+                "human_quality_decision",
+                "generation_source",
+                "act_type",
+            ],
+            "text": "花花老师这个接话还行",
+        }
+    ]
+
+
 def test_ai_group_quality_diagnostics_reports_success_only_duplicates_without_blocking():
     module = load_quality_diagnostics_module()
     actions = [
