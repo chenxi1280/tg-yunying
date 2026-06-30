@@ -14,11 +14,14 @@ GENERIC_SUMMARY_TERMS = {"自然", "随意", "真实", "像真人"}
 VOICE_PROFILE_AI_TIMEOUT_SECONDS = 45
 VOICE_PROFILE_INITIAL_MAX_TOKENS = 768
 VOICE_PROFILE_RETRY_MAX_TOKENS = 2048
+ACTIONABLE_LIST_FIELDS = ("interaction_habits", "forbidden_expressions")
+MIN_ACTIONABLE_LIST_ITEMS = 3
+MAX_ACTIONABLE_LIST_ITEMS = 5
 
 
 def _valid_summary(profile: dict[str, Any], account_id: int) -> str:
+    _validate_generated_profile(profile, account_id)
     summary = str(profile.get("short_prompt_summary") or "").strip()
-    _validate_summary(summary, account_id)
     return summary
 
 
@@ -63,6 +66,22 @@ def _validate_summary(summary: str, account_id: int) -> None:
     generic_hits = sum(1 for term in GENERIC_SUMMARY_TERMS if term in summary)
     if generic_hits >= 2:
         raise ValueError(f"voice profile summary too generic for account {account_id}")
+
+
+def _validate_generated_profile(profile: dict[str, Any], account_id: int) -> None:
+    summary = str(profile.get("short_prompt_summary") or "").strip()
+    _validate_summary(summary, account_id)
+    for field in ACTIONABLE_LIST_FIELDS:
+        _validate_actionable_list(field, profile.get(field), account_id)
+
+
+def _validate_actionable_list(field: str, value: Any, account_id: int) -> None:
+    items = _string_list(value)
+    if MIN_ACTIONABLE_LIST_ITEMS <= len(items) <= MAX_ACTIONABLE_LIST_ITEMS:
+        return
+    raise ValueError(
+        f"voice profile {field} requires {MIN_ACTIONABLE_LIST_ITEMS}-{MAX_ACTIONABLE_LIST_ITEMS} items for account {account_id}"
+    )
 
 
 def _provider_usable(provider: AiProvider | None) -> bool:
@@ -125,7 +144,8 @@ def _voice_profile_prompt(accounts: list[TgAccount]) -> str:
         f"为以下 {len(accounts)} 个 Telegram 运营账号生成互相差异明显的账号表达卡。\n{account_lines}\n"
         "每个账号只输出一行 JSON，不要输出数组、标题、解释、Markdown。\n"
         "每行字段固定为：id,age,px,cx,len,habits,tone,words,emoji,ban,summary。\n"
-        "px/cx/habits/words/ban 必须是短字符串数组；summary 必须具体可执行，写成 18-36 个汉字。\n"
+        "px/cx/words 必须是短字符串数组；habits 和 ban 必须各写 3-5 条短句。\n"
+        "summary 必须具体可执行，写成 18-36 个汉字。\n"
         "禁止只写自然、随意、真实；同批账号句长、口头习惯、互动偏好、表情倾向要明显不同。"
     )
 
@@ -197,6 +217,7 @@ def _normalize_generated_profile(item: Any) -> dict[str, Any]:
     result = dict(item)
     for key in ("persona_experiences", "consumption_experiences", "interaction_habits", "lexical_preferences", "forbidden_expressions"):
         result[key] = _string_list(result.get(key))
+    _validate_generated_profile(result, int(result.get("account_id") or 0))
     return result
 
 

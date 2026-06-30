@@ -65,14 +65,36 @@ def _profile(account_id: int, summary: str, *, version: int = 1, status: str = "
         version=version,
         short_prompt_summary=summary,
         sentence_length="短句",
-        interaction_habits=["爱追问"],
+        interaction_habits=["先接别人话", "爱追问细节", "少量补经历"],
         tone_strength="轻松",
         lexical_preferences=["我看看"],
         emoji_policy="少用",
-        forbidden_expressions=["确实不错"],
+        forbidden_expressions=["确实不错", "感觉挺靠谱", "这个不错"],
         status=status,
         quality_status="active",
     )
+
+
+def _generated_profile_payload(
+    account_id: int,
+    summary: str,
+    *,
+    age_band: str = "青年",
+    sentence_length: str = "短句",
+    tone_strength: str = "轻松",
+    emoji_policy: str = "少用",
+) -> dict:
+    return {
+        "account_id": account_id,
+        "age_band": age_band,
+        "sentence_length": sentence_length,
+        "interaction_habits": ["先接别人话", "爱追问细节", "少量补经历"],
+        "tone_strength": tone_strength,
+        "lexical_preferences": ["我看看", "别跑空", str(account_id)],
+        "emoji_policy": emoji_policy,
+        "forbidden_expressions": ["确实不错", "感觉挺靠谱", "这个不错"],
+        "short_prompt_summary": summary,
+    }
 
 
 class FakeStanceRedis:
@@ -168,22 +190,22 @@ def test_ensure_voice_profiles_uses_batch_generator_and_rejects_generic_summary(
                 "account_id": 101,
                 "age_band": "青年",
                 "sentence_length": "短句",
-                "interaction_habits": ["爱追问价格", "少发表情"],
+                "interaction_habits": ["爱追问价格", "少发表情", "先接别人一句"],
                 "tone_strength": "轻松",
                 "lexical_preferences": ["还行", "我看看"],
                 "emoji_policy": "少用",
-                "forbidden_expressions": ["确实不错"],
+                "forbidden_expressions": ["确实不错", "感觉挺靠谱", "这个不错"],
                 "short_prompt_summary": "青年短句，爱追问价格，少表情，偶尔说我看看",
             },
             {
                 "account_id": 102,
                 "age_band": "中年",
                 "sentence_length": "中句",
-                "interaction_habits": ["爱补经历", "偶尔轻吐槽"],
+                "interaction_habits": ["爱补经历", "偶尔轻吐槽", "先观望再接话"],
                 "tone_strength": "谨慎",
                 "lexical_preferences": ["稳一点", "别急"],
                 "emoji_policy": "不用表情",
-                "forbidden_expressions": ["感觉挺靠谱"],
+                "forbidden_expressions": ["确实不错", "感觉挺靠谱", "这个不错"],
                 "short_prompt_summary": "中年中句，谨慎补经历，偶尔轻吐槽，不用表情",
             },
         ]
@@ -218,19 +240,19 @@ def test_ensure_voice_profiles_splits_large_generation_batches():
     def generator(ids: list[int]) -> list[dict]:
         calls.append(ids)
         return [
-            {
-                "account_id": account_id,
-                "age_band": "青年" if account_id % 2 else "中年",
-                "sentence_length": "短句" if account_id % 3 else "中句",
-                "interaction_habits": [habits[account_id % len(habits)], "少发表情"],
-                "tone_strength": "轻松" if account_id % 5 else "谨慎",
-                "lexical_preferences": [words[account_id % len(words)], str(account_id)],
-                "emoji_policy": "少用" if account_id % 7 else "不用表情",
-                "forbidden_expressions": ["确实不错"],
-                "short_prompt_summary": summaries[account_id],
-            }
-            for account_id in ids
-        ]
+                {
+                    "account_id": account_id,
+                    "age_band": "青年" if account_id % 2 else "中年",
+                    "sentence_length": "短句" if account_id % 3 else "中句",
+                    "interaction_habits": [habits[account_id % len(habits)], "少发表情", "先接别人一句"],
+                    "tone_strength": "轻松" if account_id % 5 else "谨慎",
+                    "lexical_preferences": [words[account_id % len(words)], str(account_id)],
+                    "emoji_policy": "少用" if account_id % 7 else "不用表情",
+                    "forbidden_expressions": ["确实不错", "感觉挺靠谱", "这个不错"],
+                    "short_prompt_summary": summaries[account_id],
+                }
+                for account_id in ids
+            ]
 
     with _session() as session:
         for account_id in account_ids:
@@ -347,16 +369,16 @@ def test_upsert_group_stance_memory_refreshes_redis_cache(monkeypatch):
 
 def test_parse_voice_profile_pipe_lines_requires_complete_fields():
     raw = (
-        "101|青年|做过夜场熟客|常点花花老师|短句|先问位置；爱追问照片|轻松|我看看；别跑空|少用|确实不错|"
+        "101|青年|做过夜场熟客|常点花花老师|短句|先问位置；爱追问照片；先接别人话|轻松|我看看；别跑空|少用|确实不错；感觉挺靠谱；这个不错|"
         "青年短句先问位置和照片偶尔说别跑空\n"
-        "102|中年|常帮朋友踩点|约过天津场子|中句|先讲经历；偶尔吐槽|谨慎|稳一点；别急|不用表情|感觉挺靠谱|"
+        "102|中年|常帮朋友踩点|约过天津场子|中句|先讲经历；偶尔吐槽；追问服务细节|谨慎|稳一点；别急|不用表情|确实不错；感觉挺靠谱；这个不错|"
         "中年中句先讲踩点经历说话谨慎不急"
     )
 
     profiles = _parse_voice_profile_payloads(raw, [101, 102])
 
     assert [profile["account_id"] for profile in profiles] == ["101", "102"]
-    assert profiles[0]["interaction_habits"] == ["先问位置", "爱追问照片"]
+    assert profiles[0]["interaction_habits"] == ["先问位置", "爱追问照片", "先接别人话"]
 
 
 def test_parse_voice_profile_pipe_lines_rejects_incomplete_line():
@@ -367,11 +389,11 @@ def test_parse_voice_profile_pipe_lines_rejects_incomplete_line():
 def test_parse_voice_profile_json_lines_accepts_compact_fields():
     raw = (
         '{"id":101,"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
-        '"habits":["先问位置","爱追问照片"],"tone":"轻松","words":["我看看","别跑空"],'
-        '"emoji":"少用","ban":["确实不错"],"summary":"青年短句先问位置和照片偶尔说别跑空"}\n'
+        '"habits":["先问位置","爱追问照片","先接别人话"],"tone":"轻松","words":["我看看","别跑空"],'
+        '"emoji":"少用","ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"青年短句先问位置和照片偶尔说别跑空"}\n'
         '{"id":102,"age":"中年","px":["常帮朋友踩点"],"cx":["约过天津场子"],"len":"中句",'
-        '"habits":["先讲经历","偶尔吐槽"],"tone":"谨慎","words":["稳一点","别急"],'
-        '"emoji":"不用表情","ban":["感觉挺靠谱"],"summary":"中年中句先讲踩点经历说话谨慎不急"}'
+        '"habits":["先讲经历","偶尔吐槽","追问服务细节"],"tone":"谨慎","words":["稳一点","别急"],'
+        '"emoji":"不用表情","ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"中年中句先讲踩点经历说话谨慎不急"}'
     )
 
     profiles = _parse_voice_profile_payloads(raw, [101, 102])
@@ -381,6 +403,17 @@ def test_parse_voice_profile_json_lines_accepts_compact_fields():
     assert profiles[1]["emoji_policy"] == "不用表情"
 
 
+def test_parse_voice_profile_rejects_sparse_actionable_fields():
+    raw = (
+        '{"id":101,"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
+        '"habits":["先问位置","爱追问照片"],"tone":"轻松","words":["我看看","别跑空"],'
+        '"emoji":"少用","ban":["确实不错"],"summary":"青年短句先问位置和照片偶尔说别跑空"}'
+    )
+
+    with pytest.raises(ValueError, match="interaction_habits requires 3-5 items"):
+        _parse_voice_profile_payloads(raw, [101])
+
+
 def test_generate_voice_profiles_uses_compact_token_budget(monkeypatch):
     captured: dict[str, int] = {}
 
@@ -388,7 +421,7 @@ def test_generate_voice_profiles_uses_compact_token_budget(monkeypatch):
         captured["max_tokens"] = max_tokens
         captured["reasoning_retry_max_tokens"] = kwargs["reasoning_retry_max_tokens"]
         return (
-            "101|青年|做过夜场熟客|常点花花老师|短句|先问位置；爱追问照片|轻松|我看看；别跑空|少用|确实不错|"
+            "101|青年|做过夜场熟客|常点花花老师|短句|先问位置；爱追问照片；先接别人话|轻松|我看看；别跑空|少用|确实不错；感觉挺靠谱；这个不错|"
             "青年短句先问位置和照片偶尔说别跑空",
             SimpleNamespace(total_tokens=120),
         )
@@ -419,12 +452,12 @@ def test_generate_voice_profiles_refills_missing_accounts(monkeypatch):
         calls.append(prompt)
         if "account_id=102" in prompt and "account_id=101" not in prompt:
             return (
-                "102|中年|常帮朋友踩点|约过天津场子|中句|先讲经历；偶尔吐槽|谨慎|稳一点；别急|不用表情|感觉挺靠谱|"
+                "102|中年|常帮朋友踩点|约过天津场子|中句|先讲经历；偶尔吐槽；追问服务细节|谨慎|稳一点；别急|不用表情|确实不错；感觉挺靠谱；这个不错|"
                 "中年中句先讲踩点经历说话谨慎不急",
                 SimpleNamespace(total_tokens=90),
             )
         return (
-            "101|青年|做过夜场熟客|常点花花老师|短句|先问位置；爱追问照片|轻松|我看看；别跑空|少用|确实不错|"
+            "101|青年|做过夜场熟客|常点花花老师|短句|先问位置；爱追问照片；先接别人话|轻松|我看看；别跑空|少用|确实不错；感觉挺靠谱；这个不错|"
             "青年短句先问位置和照片偶尔说别跑空",
             SimpleNamespace(total_tokens=120),
         )
@@ -458,14 +491,14 @@ def test_generate_voice_profiles_retries_malformed_batch_as_single_accounts(monk
         if "account_id=101" in prompt:
             return (
                 '{"id":101,"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
-                '"habits":["先问位置"],"tone":"轻松","words":["我看看"],"emoji":"少用",'
-                '"ban":["确实不错"],"summary":"青年短句先问位置偶尔说我看看"}',
+                '"habits":["先问位置","爱追问照片","先接别人话"],"tone":"轻松","words":["我看看"],"emoji":"少用",'
+                '"ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"青年短句先问位置偶尔说我看看"}',
                 SimpleNamespace(total_tokens=90),
             )
         return (
             '{"id":102,"age":"中年","px":["常帮朋友踩点"],"cx":["约过天津场子"],"len":"中句",'
-            '"habits":["先讲经历"],"tone":"谨慎","words":["稳一点"],"emoji":"不用表情",'
-            '"ban":["感觉挺靠谱"],"summary":"中年中句先讲踩点经历说话谨慎"}',
+            '"habits":["先讲经历","偶尔吐槽","追问服务细节"],"tone":"谨慎","words":["稳一点"],"emoji":"不用表情",'
+            '"ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"中年中句先讲踩点经历说话谨慎"}',
             SimpleNamespace(total_tokens=90),
         )
 
@@ -496,12 +529,12 @@ def test_ensure_voice_profiles_retries_overly_similar_batch_before_insert():
         calls += 1
         if calls == 1:
             return [
-                {"account_id": account_id, "short_prompt_summary": "青年短句，爱追问价格，少表情"}
+                _generated_profile_payload(account_id, "青年短句，爱追问价格，少表情")
                 for account_id in account_ids
             ]
         return [
-            {"account_id": 101, "short_prompt_summary": "青年短句，先问价格再看反馈"},
-            {"account_id": 102, "short_prompt_summary": "中年中句，先看服务态度再接话"},
+            _generated_profile_payload(101, "青年短句，先问价格再看反馈"),
+            _generated_profile_payload(102, "中年中句，先看服务态度再接话", age_band="中年", sentence_length="中句", tone_strength="谨慎", emoji_policy="不用表情"),
         ]
 
     with _session() as session:
@@ -629,7 +662,7 @@ def test_rebuild_voice_profile_keeps_existing_profile_when_generator_is_invalid(
 def test_batch_rebuild_voice_profiles_generates_missing_accounts_only():
     def generator(account_ids: list[int]) -> list[dict]:
         assert account_ids == [102]
-        return [{"account_id": 102, "short_prompt_summary": "中年中句，谨慎补经历，偶尔轻吐槽"}]
+        return [_generated_profile_payload(102, "中年中句，谨慎补经历，偶尔轻吐槽", age_band="中年", sentence_length="中句")]
 
     with _session() as session:
         _account(session, 101, "花花号")
@@ -675,8 +708,8 @@ def test_batch_rebuild_missing_with_empty_account_ids_scans_all_active_accounts(
     def generator(account_ids: list[int]) -> list[dict]:
         assert account_ids == [102, 103]
         return [
-            {"account_id": 102, "short_prompt_summary": "青年短句，先问价格再看反馈"},
-            {"account_id": 103, "short_prompt_summary": "中年短句，先看服务态度再接话"},
+            _generated_profile_payload(102, "青年短句，先问价格再看反馈"),
+            _generated_profile_payload(103, "中年短句，先看服务态度再接话", age_band="中年", tone_strength="谨慎"),
         ]
 
     with _session() as session:
@@ -741,7 +774,7 @@ def test_batch_rebuild_voice_profiles_reports_quality_failures_without_insert():
 def test_batch_rebuild_voice_profiles_supersedes_existing_versions():
     def generator(account_ids: list[int]) -> list[dict]:
         assert account_ids == [101]
-        return [{"account_id": 101, "short_prompt_summary": "中年中句，先看服务态度再接话"}]
+        return [_generated_profile_payload(101, "中年中句，先看服务态度再接话", age_band="中年", sentence_length="中句")]
 
     with _session() as session:
         _account(session, 101, "花花号")
