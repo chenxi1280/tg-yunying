@@ -92,6 +92,53 @@ def test_group_ai_quality_fill_retries_until_shortfall_is_filled(monkeypatch):
     assert stats["quality_fill_rounds"] == 1
 
 
+def test_group_ai_quality_round_preserves_generated_material_metadata(monkeypatch):
+    class ContentWithMetadata(str):
+        def __new__(cls, value: str):
+            obj = str.__new__(cls, value)
+            obj.material_intent = "表情包:围观"
+            obj.allow_material = True
+            obj.intent = "附和"
+            obj.mood = "轻松"
+            return obj
+
+    task = SimpleNamespace(tenant_id=1, stats={})
+
+    def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
+        assert count == 1
+        return [ContentWithMetadata("这个先蹲一下")], 3
+
+    def fake_quality_filter(messages, *_args, **_kwargs):
+        assert messages == ["这个先蹲一下"]
+        return [{"content": "这个先蹲一下"}], {"ai_generation_candidate_count": 1}
+
+    monkeypatch.setattr(group_ai_chat, "generate_group_messages", fake_generate_group_messages)
+    monkeypatch.setattr(group_ai_chat, "_quality_filter_ai_messages", fake_quality_filter)
+
+    quality_items, _tokens, _stats = group_ai_chat._generate_quality_filled_items(
+        None,
+        task,
+        {},
+        reply_targets=[],
+        normal_count=1,
+        target_label="测试群",
+        history="真人A: 今天先看看",
+        turn_count=1,
+        duplicate_baseline_messages=[],
+        chat_mode=group_ai_chat.CHAT_MODE_REPLY,
+        context_message_ids=[1],
+        fact_anchor_required=False,
+        low_confidence_silence_enabled=False,
+        fill_reply_shortfall_with_normal=False,
+        enable_quality_fallback=False,
+    )
+
+    assert quality_items[0]["material_intent"] == "表情包:围观"
+    assert quality_items[0]["allow_material"] is True
+    assert quality_items[0]["intent"] == "附和"
+    assert quality_items[0]["mood"] == "轻松"
+
+
 def test_group_ai_expires_profileless_actions_before_duplicate_baseline():
     source_path = Path(__file__).resolve().parents[1] / "app/services/task_center/executors/group_ai_chat.py"
     source = source_path.read_text()

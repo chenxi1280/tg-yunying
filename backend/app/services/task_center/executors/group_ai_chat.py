@@ -378,12 +378,14 @@ def build_plan(session: Session, task: Task) -> int:
                 stats_inc(task, "failure_count")
                 continue
             filtered_content = filtered.content
+        material_intent = _material_intent_for_turn(quality_item)
         material_result = select_material_for_policy(
             session,
             task.tenant_id,
             (rule_version.routing or {}).get("material_policy") if rule_version else {},
             context_key=f"{cycle_id}:{index}:{filtered_content or 'pending-ai'}",
             default_caption="",
+            material_intent=material_intent,
         )
         if material_result.failure_reason and material_result.fallback == "skip":
             _hard_blocker_inc(hard_blockers, "content_policy", hard_progress)
@@ -501,6 +503,8 @@ def build_plan(session: Session, task: Task) -> int:
                     rule_trace={
                         "material_policy": (rule_version.routing or {}).get("material_policy") if rule_version else {},
                         "material_action": material_result.action,
+                        "material_intent": material_intent,
+                        "material_matched_tags": material_result.matched_tags or [],
                         "material_id": material_result.selected.id if material_result.selected else None,
                         "material_failure_reason": material_result.failure_reason,
                     },
@@ -910,6 +914,12 @@ def _act_type_for_turn(index: int, quality_item: dict) -> str:
     return act_types[index % len(act_types)]
 
 
+def _material_intent_for_turn(quality_item: dict) -> str:
+    if not isinstance(quality_item, dict) or quality_item.get("allow_material") is False:
+        return ""
+    return str(quality_item.get("material_intent") or "").strip()
+
+
 def _reserve_planned_message_memory(
     session: Session,
     task: Task,
@@ -1085,12 +1095,24 @@ def _slot_at(slots: list[dict], index: int) -> dict | None:
 
 
 def _planned_item(content: str, reply_target: dict | None, slot: dict | None) -> dict:
-    item = {"content": content, "reply_target": reply_target}
+    item = {"content": str(content), "reply_target": reply_target}
     if slot:
         item["slot"] = dict(slot)
         item["slot_id"] = str(slot.get("slot_id") or "")
         item["act_type"] = canonical_ai_group_act_type(str(slot.get("act_type") or ""))
+    item.update(_generated_content_metadata(content))
     return item
+
+
+def _generated_content_metadata(content: str) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key in ("material_intent", "intent", "mood"):
+        value = str(getattr(content, key, "") or "").strip()
+        if value:
+            result[key] = value
+    if hasattr(content, "allow_material") and (bool(getattr(content, "allow_material")) or result.get("material_intent")):
+        result["allow_material"] = bool(getattr(content, "allow_material"))
+    return result
 
 
 def _generate_quality_filled_items(
@@ -1438,6 +1460,9 @@ def _attach_planned_metadata(item: dict, planned: dict) -> dict:
         result["slot_id"] = planned["slot_id"]
     if planned.get("act_type"):
         result["act_type"] = canonical_ai_group_act_type(str(planned["act_type"]))
+    for key in ("material_intent", "allow_material", "intent", "mood"):
+        if key in planned:
+            result[key] = planned[key]
     return result
 
 

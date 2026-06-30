@@ -56,6 +56,24 @@ class AiGenerationUnavailable(RuntimeError):
     pass
 
 
+class GeneratedContent(str):
+    def __new__(
+        cls,
+        value: str,
+        *,
+        material_intent: str = "",
+        allow_material: bool = False,
+        intent: str = "",
+        mood: str = "",
+    ):
+        obj = str.__new__(cls, value)
+        obj.material_intent = str(material_intent or "").strip()
+        obj.allow_material = bool(allow_material)
+        obj.intent = str(intent or "").strip()
+        obj.mood = str(mood or "").strip()
+        return obj
+
+
 def _provider(
     session: Session,
     tenant_id: int,
@@ -190,12 +208,12 @@ def generate_contents(
         allow_quota_rotation=not provider_id,
         purpose=purpose,
     )
-    contents = _clean_generated_contents(
-        [candidate.content.strip() for candidate in result.candidates if candidate.content.strip()],
-        purpose,
-        count,
-        mock_provider=_is_mock_provider(provider),
-    )
+    raw_contents = [
+        _generated_content_from_candidate(candidate)
+        for candidate in result.candidates
+        if str(candidate.content or "").strip()
+    ]
+    contents = _clean_generated_contents(raw_contents, purpose, count, mock_provider=_is_mock_provider(provider))
     usage = getattr(result, "usage", None)
     tokens = int(getattr(usage, "total_tokens", 0) or 0)
     if purpose in LONG_RUNNING_AI_PURPOSES:
@@ -276,6 +294,32 @@ def _mark_provider_quota_exhausted(provider: AiProvider, exc: Exception) -> None
     provider.updated_at = _now()
 
 
+def _generated_content_from_candidate(candidate) -> GeneratedContent:
+    return GeneratedContent(
+        str(getattr(candidate, "content", "") or "").strip(),
+        material_intent=getattr(candidate, "material_intent", ""),
+        allow_material=bool(getattr(candidate, "allow_material", False)),
+        intent=getattr(candidate, "intent", ""),
+        mood=getattr(candidate, "mood", ""),
+    )
+
+
+def _copy_generated_content_metadata(value: str, source: str) -> str:
+    if not _has_generated_content_metadata(source):
+        return value
+    return GeneratedContent(
+        value,
+        material_intent=getattr(source, "material_intent", ""),
+        allow_material=bool(getattr(source, "allow_material", False)),
+        intent=getattr(source, "intent", ""),
+        mood=getattr(source, "mood", ""),
+    )
+
+
+def _has_generated_content_metadata(value: str) -> bool:
+    return any(hasattr(value, key) for key in ("material_intent", "allow_material", "intent", "mood"))
+
+
 def _prompt_profile(
     *,
     count: int,
@@ -338,7 +382,7 @@ def _clean_mock_group_chat_contents(contents: list[str]) -> list[str]:
     for content in contents:
         item = _clean_generated_content(content)
         if item and not _looks_like_bad_group_chat_content(item):
-            cleaned.append(item)
+            cleaned.append(_copy_generated_content_metadata(item, content))
     return cleaned
 
 
@@ -520,7 +564,7 @@ def clean_group_chat_contents(contents: list[str], *, restrict_sensitive_trade: 
         if any(SequenceMatcher(None, normalized, _normalize_for_similarity(item)).ratio() >= 0.68 for item in accepted):
             continue
         starts.add(start_key)
-        accepted.append(cleaned)
+        accepted.append(_copy_generated_content_metadata(cleaned, content))
     return accepted
 
 
@@ -551,7 +595,7 @@ def clean_channel_comment_contents(
             continue
         if any(SequenceMatcher(None, normalized, _normalize_for_similarity(item)).ratio() >= 0.68 for item in accepted):
             continue
-        accepted.append(cleaned)
+        accepted.append(_copy_generated_content_metadata(cleaned, content))
         if cluster:
             clusters.add(cluster)
         if limit and len(accepted) >= max(1, int(limit)):
@@ -999,12 +1043,13 @@ def rewrite_relay_content(session: Session, tenant_id: int, config: dict, conten
 def _trim(contents: list[str], max_length: int | None) -> list[str]:
     if not max_length:
         return contents
-    return [item[: int(max_length)] for item in contents]
+    return [_copy_generated_content_metadata(str(item)[: int(max_length)], item) for item in contents]
 
 
 __all__ = [
     "AI_GENERATION_UNAVAILABLE_MESSAGE",
     "AiGenerationUnavailable",
+    "GeneratedContent",
     "clean_channel_comment_contents",
     "clean_group_chat_contents",
     "generate_channel_comments",

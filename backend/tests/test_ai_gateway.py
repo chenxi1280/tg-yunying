@@ -61,6 +61,78 @@ def test_group_chat_rejects_provider_refusal_text():
     assert contents == []
 
 
+@pytest.mark.no_postgres
+def test_ai_draft_candidate_preserves_material_intent_metadata():
+    raw = json.dumps(
+        {
+            "drafts": [
+                {
+                    "persona": "围观群友",
+                    "content": "这个先蹲一下",
+                    "material_intent": "表情包:围观",
+                    "allow_material": True,
+                    "intent": "附和",
+                    "mood": "轻松",
+                }
+            ]
+        }
+    )
+
+    candidates = AiGateway()._parse_candidates(raw, 1, ["默认群友"], None)
+
+    assert candidates[0].material_intent == "表情包:围观"
+    assert candidates[0].allow_material is True
+    assert candidates[0].intent == "附和"
+    assert candidates[0].mood == "轻松"
+
+
+@pytest.mark.no_postgres
+def test_group_chat_generation_preserves_ai_material_metadata(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    def fake_generate_drafts(_credentials, _prompt, **_kwargs):
+        return AiGenerationResult(
+            candidates=[
+                AiDraftCandidate(
+                    persona="围观号",
+                    content="这个先蹲一下",
+                    material_intent="表情包:围观",
+                    allow_material=True,
+                    intent="附和",
+                    mood="轻松",
+                )
+            ],
+            usage=AiUsage(total_tokens=11),
+        )
+
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="DeepSeek",
+                provider_type="openai_compatible",
+                base_url="https://api.deepseek.com/v1",
+                model_name="deepseek-chat",
+                api_key_ciphertext=encrypt_secret("test-key"),
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
+        session.commit()
+
+        contents, _tokens = generate_group_messages(session, 1, {}, count=1, target_label="活跃群", history="已有上下文")
+
+    assert contents == ["这个先蹲一下"]
+    assert contents[0].material_intent == "表情包:围观"
+    assert contents[0].allow_material is True
+    assert contents[0].intent == "附和"
+    assert contents[0].mood == "轻松"
+
+
 def test_channel_comment_rejects_provider_refusal_text():
     contents = clean_channel_comment_contents(["The request was rejected because it was considered high risk"], limit=1)
 

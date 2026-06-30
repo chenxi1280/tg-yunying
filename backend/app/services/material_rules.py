@@ -18,6 +18,8 @@ class MaterialRuleResult:
     fallback: str = "text_only"
     failure_reason: str = ""
     candidate_count: int = 0
+    material_intent: str = ""
+    matched_tags: list[str] | None = None
 
     @property
     def ok(self) -> bool:
@@ -31,16 +33,20 @@ def select_material_for_policy(
     *,
     context_key: str = "",
     default_caption: str = "",
+    material_intent: str = "",
 ) -> MaterialRuleResult:
     policy = policy or {}
     if not policy or not bool(policy.get("enabled", True)):
         return MaterialRuleResult()
     fallback = str(policy.get("fallback") or "text_only")
     action = str(policy.get("action") or policy.get("mode_action") or "append_media")
-    material = _select_ready_material(session, tenant_id, policy, context_key=context_key)
-    candidates = _ready_material_candidates(session, tenant_id, policy)
+    effective_policy = _policy_with_material_intent(policy, material_intent)
+    if effective_policy is None:
+        return MaterialRuleResult(action=action, fallback=fallback, failure_reason="material_intent_unmapped", material_intent=material_intent)
+    candidates = _ready_material_candidates(session, tenant_id, effective_policy)
+    material = _select_ready_material(candidates, effective_policy, context_key=context_key)
     if not material:
-        return MaterialRuleResult(action=action, fallback=fallback, failure_reason="cache_not_ready", candidate_count=len(candidates))
+        return MaterialRuleResult(action=action, fallback=fallback, failure_reason="cache_not_ready", candidate_count=len(candidates), material_intent=material_intent)
     caption = str(policy.get("caption") if policy.get("caption") is not None else default_caption)
     return MaterialRuleResult(
         selected=material,
@@ -48,6 +54,8 @@ def select_material_for_policy(
         action=action,
         fallback=fallback,
         candidate_count=len(candidates),
+        material_intent=material_intent,
+        matched_tags=_str_list(effective_policy.get("required_tags") or effective_policy.get("tags")),
     )
 
 
@@ -67,8 +75,7 @@ def material_to_segment(material: Material, *, caption: str = "") -> dict[str, A
     }
 
 
-def _select_ready_material(session: Session, tenant_id: int, policy: dict[str, Any], *, context_key: str) -> Material | None:
-    candidates = _ready_material_candidates(session, tenant_id, policy)
+def _select_ready_material(candidates: list[Material], policy: dict[str, Any], *, context_key: str) -> Material | None:
     if not candidates:
         return None
     mode = str(policy.get("mode") or "tag_match")
@@ -77,6 +84,23 @@ def _select_ready_material(session: Session, tenant_id: int, policy: dict[str, A
     index_source = context_key or "|".join(str(policy.get(key) or "") for key in ("material_id", "material_ids", "required_tags", "material_type"))
     digest = hashlib.sha256(index_source.encode("utf-8")).hexdigest()
     return candidates[int(digest[:8], 16) % len(candidates)]
+
+
+def _policy_with_material_intent(policy: dict[str, Any], material_intent: str) -> dict[str, Any] | None:
+    intent_map = policy.get("intent_tag_map") or policy.get("material_intent_tags") or {}
+    if not intent_map:
+        return dict(policy)
+    tags = _mapped_intent_tags(intent_map, material_intent)
+    if not tags:
+        return None
+    return {**policy, "required_tags": tags}
+
+
+def _mapped_intent_tags(intent_map: Any, material_intent: str) -> list[str]:
+    intent = str(material_intent or "").strip()
+    if not intent or not isinstance(intent_map, dict):
+        return []
+    return _str_list(intent_map.get(intent))
 
 
 def _ready_material_candidates(session: Session, tenant_id: int, policy: dict[str, Any]) -> list[Material]:

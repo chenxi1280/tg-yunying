@@ -25,6 +25,10 @@ class AiDraftCandidate:
     content: str
     risk_level: str = "低"
     material_id: int | None = None
+    material_intent: str = ""
+    allow_material: bool = False
+    intent: str = ""
+    mood: str = ""
     suggested_account_id: int | None = None
     sequence_index: int = 0
     reply_to_sequence_index: int | None = None
@@ -533,6 +537,10 @@ class AiGateway:
                     content=content[:2000],
                     risk_level=str(item.get("risk_level") or "低"),
                     material_id=material_id,
+                    material_intent=str(item.get("material_intent") or ""),
+                    allow_material=bool(item.get("allow_material")),
+                    intent=str(item.get("intent") or ""),
+                    mood=str(item.get("mood") or ""),
                     suggested_account_id=item.get("suggested_account_id") if isinstance(item.get("suggested_account_id"), int) else None,
                     sequence_index=item.get("sequence_index") if isinstance(item.get("sequence_index"), int) else index + 1,
                     reply_to_sequence_index=(

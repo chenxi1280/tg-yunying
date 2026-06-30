@@ -45,6 +45,7 @@ from app.services.source_media import (
     source_media_cached_event,
 )
 from app.services.material_cache import drain_material_cache
+from app.services.material_rules import select_material_for_policy
 from app.services.temp_files import TEMP_FILE_TTL_SECONDS, cleanup_temp_files, temp_dir
 
 
@@ -138,6 +139,7 @@ def test_rule_tester_simulates_material_cache_edges():
     assert old_event_result.simulation_steps[0].action == "拒绝唤醒"
 
 
+@pytest.mark.no_postgres
 def test_rule_material_policy_selects_ready_material_for_preview_and_ai_action(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -214,6 +216,123 @@ def test_rule_material_policy_selects_ready_material_for_preview_and_ai_action(m
     assert action_payload["media_segments"][0]["material_id"] == 9301
     assert action_payload["media_segments"][0]["source"] == "tg-cache://cache-peer/9301"
     assert action_payload["rule_trace"]["material_id"] == 9301
+
+
+@pytest.mark.no_postgres
+def test_material_policy_filters_candidates_by_ai_material_intent():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                Material(
+                    id=9301,
+                    tenant_id=1,
+                    title="围观表情",
+                    material_type="表情包",
+                    content="https://trusted.example.com/watch.webp",
+                    tags="围观,表情包",
+                    emoji_asset_kind="image_meme",
+                    cache_ready_status="ready",
+                    tg_cache_peer_id="cache-peer",
+                    tg_cache_message_id="9301",
+                    asset_fingerprint="fp-9301",
+                ),
+                Material(
+                    id=9302,
+                    tenant_id=1,
+                    title="欢迎表情",
+                    material_type="表情包",
+                    content="https://trusted.example.com/welcome.webp",
+                    tags="欢迎,表情包",
+                    emoji_asset_kind="image_meme",
+                    cache_ready_status="ready",
+                    tg_cache_peer_id="cache-peer",
+                    tg_cache_message_id="9302",
+                    asset_fingerprint="fp-9302",
+                ),
+            ]
+        )
+        session.commit()
+
+        result = select_material_for_policy(
+            session,
+            1,
+            {
+                "enabled": True,
+                "material_type": "表情包",
+                "mode": "latest",
+                "intent_tag_map": {"表情包:围观": ["围观"]},
+            },
+            material_intent="表情包:围观",
+        )
+
+    assert result.selected.id == 9301
+    assert result.candidate_count == 1
+
+
+@pytest.mark.no_postgres
+def test_ai_group_action_uses_quality_item_material_intent(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat._generate_quality_filled_items",
+        lambda *_args, **_kwargs: ([{"content": "这个先蹲一下", "material_intent": "表情包:围观"}], 0, {}),
+    )
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        account = TgAccount(id=101, tenant_id=1, display_name="AI号", phone_masked="101", status=AccountStatus.ACTIVE.value, session_ciphertext="session")
+        group = TgGroup(id=201, tenant_id=1, tg_peer_id="-100201", title="素材群", auth_status="已授权运营", can_send=True, listener_interval_seconds=0)
+        session.add_all([account, group, TgGroupAccount(tenant_id=1, group_id=201, account_id=101, can_send=True)])
+        session.add_all(
+            [
+                Material(id=9301, tenant_id=1, title="围观表情", material_type="表情包", content="https://trusted.example.com/watch.webp", tags="围观,表情包", emoji_asset_kind="image_meme", cache_ready_status="ready", tg_cache_peer_id="cache-peer", tg_cache_message_id="9301", asset_fingerprint="fp-9301"),
+                Material(id=9302, tenant_id=1, title="欢迎表情", material_type="表情包", content="https://trusted.example.com/welcome.webp", tags="欢迎,表情包", emoji_asset_kind="image_meme", cache_ready_status="ready", tg_cache_peer_id="cache-peer", tg_cache_message_id="9302", asset_fingerprint="fp-9302"),
+            ]
+        )
+        rule_set = create_rule_set(
+            session,
+            1,
+            RuleSetCreate(
+                name="素材意图规则",
+                task_types=["group_ai_chat"],
+                routing={
+                    "material_policy": {
+                        "enabled": True,
+                        "material_type": "表情包",
+                        "mode": "latest",
+                        "intent_tag_map": {"表情包:围观": ["围观"]},
+                        "fallback": "text_only",
+                    }
+                },
+            ),
+            "tester",
+        )
+        task = Task(
+            id="ai-material-intent",
+            tenant_id=1,
+            name="AI素材意图",
+            type="group_ai_chat",
+            status="running",
+            account_config={"selection_mode": "manual", "account_ids": [101], "cooldown_per_account_minutes": 0},
+            pacing_config={"mode": "fixed", "interval_seconds_min": 0, "interval_seconds_max": 0},
+            type_config={"target_group_id": 201, "messages_per_round": 1, "participation_rate": 1, "rule_set_version_id": rule_set.active_version_id},
+            stats={"force_bootstrap_once": True},
+        )
+        session.add(task)
+        session.commit()
+
+        assert build_ai_chat_plan(session, task) == 1
+        action = session.scalar(select(Action).where(Action.task_id == task.id))
+        action_payload = action.payload
+
+    assert action_payload["media_segments"][0]["material_id"] == 9301
+    assert action_payload["rule_trace"]["material_intent"] == "表情包:围观"
+    assert action_payload["rule_trace"]["material_matched_tags"] == ["围观"]
 
 
 def test_source_media_waiting_rejects_stale_event_and_queue_overflow():
