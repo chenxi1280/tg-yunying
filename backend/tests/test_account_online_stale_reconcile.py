@@ -66,3 +66,56 @@ def test_runtime_reconcile_does_not_extend_stale_online_deadline():
         assert state is not None
         assert state.online_status == "offline"
         assert state.failure_type == "stale_probe"
+
+
+def test_runtime_reconcile_schedules_probe_when_online_deadline_precedes_probe():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now = _now()
+
+    with Session(engine) as session:
+        session.add(
+            TgAccount(
+                id=101,
+                tenant_id=1,
+                display_name="账号101",
+                phone_masked="138****101",
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext="session",
+            )
+        )
+        session.add(TgGroup(id=501, tenant_id=1, tg_peer_id="-100501", title="群501"))
+        session.add(TgGroupAccount(id=501101, tenant_id=1, group_id=501, account_id=101, can_send=True))
+        session.add(
+            Task(
+                id="ai-running",
+                tenant_id=1,
+                name="AI活群",
+                type="group_ai_chat",
+                status="running",
+                account_config={"selection_mode": "manual", "account_ids": [101]},
+                type_config={"target_group_id": 501},
+            )
+        )
+        stale_after = now + timedelta(minutes=1)
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=101,
+                desired_online=True,
+                desired_sources=[{"source_type": "task", "source_id": "ai-running"}],
+                online_status="online",
+                stale_after_at=stale_after,
+                next_probe_at=now + timedelta(minutes=30),
+            )
+        )
+        session.commit()
+
+        reconcile_runtime_online_sources(session, tenant_id=1, include_global=False, now=now)
+        session.commit()
+
+        state = session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.account_id == 101))
+        assert state is not None
+        assert state.online_status == "online"
+        assert state.stale_after_at == stale_after
+        assert state.next_probe_at == now

@@ -429,6 +429,8 @@ def _apply_desired_state(state: TgAccountOnlineState, meta: dict[str, Any], now:
     state.online_status = _next_desired_status(state)
     if state.online_status != "online" or state.stale_after_at is None:
         state.stale_after_at = stale_deadline_for_state(state, now)
+    elif _probe_after_stale_deadline(state):
+        state.next_probe_at = now
     state.failure_type = "" if state.online_status != "blocked" else state.failure_type
     state.reconciled_at = now
     state.updated_at = now
@@ -454,6 +456,12 @@ def _next_desired_status(state: TgAccountOnlineState) -> str:
     if state.online_status in {"blocked", "login_required"}:
         return state.online_status
     return "warming"
+
+
+def _probe_after_stale_deadline(state: TgAccountOnlineState) -> bool:
+    stale_after = as_beijing(state.stale_after_at)
+    next_probe = as_beijing(state.next_probe_at)
+    return bool(stale_after and (next_probe is None or next_probe >= stale_after))
 
 
 def _state_is_ready(state: TgAccountOnlineState | None, now: datetime) -> bool:
@@ -486,13 +494,4 @@ def _state_signature(state: TgAccountOnlineState) -> tuple[Any, ...]:
     )
 
 
-__all__ = [
-    "drain_account_online_keepalive",
-    "is_account_online_available",
-    "is_account_online_ready",
-    "is_account_online_ready_for_planning",
-    "mark_stale_online_states",
-    "probe_due_online_states",
-    "reconcile_account_online_sources",
-    "reconcile_runtime_online_sources",
-]
+__all__ = ["drain_account_online_keepalive", "is_account_online_available", "is_account_online_ready", "is_account_online_ready_for_planning", "mark_stale_online_states", "probe_due_online_states", "reconcile_account_online_sources", "reconcile_runtime_online_sources"]
