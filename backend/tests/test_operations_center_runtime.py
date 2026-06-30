@@ -5499,6 +5499,7 @@ def test_rule_tester_previews_transform_routing_accounts_and_rate_limits():
     assert "组合条件未通过" in blocked_expression.filter_reason
 
 
+@pytest.mark.allow_missing_rule_binding
 def test_overview_counts_new_task_center_tasks_not_legacy_campaigns():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

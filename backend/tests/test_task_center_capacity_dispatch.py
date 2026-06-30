@@ -45,8 +45,6 @@ from app.services.task_center.service import _recover_stale_executing_actions, r
 from app.services.task_center.stats import planner_backlog_snapshot, refresh_task_stats, retry_failed_actions
 from app.timezone import BEIJING_TZ
 
-pytestmark = pytest.mark.default_rule_binding
-
 
 @pytest.fixture(autouse=True)
 def clear_dispatcher_runtime_state():
