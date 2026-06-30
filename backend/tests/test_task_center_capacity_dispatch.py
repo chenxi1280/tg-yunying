@@ -369,7 +369,16 @@ def test_claim_actions_reassigns_group_send_action_when_account_lost_permission(
             ]
         )
         session.add(Task(id="task-group-reassign", tenant_id=1, name="claim", type="group_ai_chat", status="running", priority=1, account_config={"selection_mode": "all", "max_concurrent": 2}))
-        session.add(Action(id="action-group-reassign", tenant_id=1, task_id="task-group-reassign", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"group_id": 7, "message_text": "new", "review_approved": True}))
+        gate_payload = _add_group_ai_send_gate_payload(
+            session,
+            now_value,
+            action_id="action-group-reassign",
+            task_id="task-group-reassign",
+            group_id=7,
+            account_id=12,
+            text="new",
+        )
+        session.add(Action(id="action-group-reassign", tenant_id=1, task_id="task-group-reassign", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"group_id": 7, "message_text": "new", "review_approved": True, **gate_payload}))
         session.commit()
 
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
@@ -408,6 +417,15 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True, permission_label="可发言"))
         session.add(Task(id="task-hard-hourly", tenant_id=1, name="硬目标", type="group_ai_chat", status="running", priority=1))
+        gate_payload = _add_group_ai_send_gate_payload(
+            session,
+            now_value,
+            action_id="action-hard-hourly",
+            task_id="task-hard-hourly",
+            group_id=7,
+            account_id=11,
+            text="new",
+        )
         session.add(
             Action(
                 id="action-prior-hourly",
@@ -432,7 +450,7 @@ def test_dispatch_global_policy_excludes_current_executing_hard_hourly_action(mo
                 account_id=11,
                 status="pending",
                 scheduled_at=_now(),
-                payload={"group_id": 7, "message_text": "new", "review_approved": True, "hard_hourly_target": True},
+                payload={"group_id": 7, "message_text": "new", "review_approved": True, "hard_hourly_target": True, **gate_payload},
             )
         )
         session.commit()
@@ -830,6 +848,80 @@ def _expired_cycle_payload(
     }
 
 
+def _add_cycle_ai_send_gate_state(
+    session: Session,
+    now_value: datetime,
+    *,
+    memory_id: str,
+    text: str,
+) -> dict:
+    session.add(
+        TgAccountOnlineState(
+            tenant_id=1,
+            account_id=11,
+            desired_online=True,
+            online_status="online",
+            stale_after_at=now_value + timedelta(minutes=1),
+        )
+    )
+    session.add(
+        AiGroupMessageMemory(
+            id=memory_id,
+            tenant_id=1,
+            group_id=7,
+            task_id="task-cycle-skip",
+            account_id=11,
+            raw_text=text,
+            normalized_text=text,
+            text_fingerprint=memory_id,
+            status="reserved",
+            planned_at=now_value,
+        )
+    )
+    return {
+        "slot_id": f"task-cycle-skip:cycle:1:turn:{memory_id}",
+        "ai_message_memory_id": memory_id,
+    }
+
+
+def _add_group_ai_send_gate_payload(
+    session: Session,
+    now_value: datetime,
+    *,
+    action_id: str,
+    task_id: str,
+    group_id: int,
+    account_id: int,
+    text: str,
+) -> dict:
+    if not session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.tenant_id == 1, TgAccountOnlineState.account_id == account_id)):
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=account_id,
+                desired_online=True,
+                online_status="online",
+                stale_after_at=now_value + timedelta(minutes=5),
+            )
+        )
+    memory_id = f"memory-{action_id}"
+    session.add(
+        AiGroupMessageMemory(
+            id=memory_id,
+            tenant_id=1,
+            group_id=group_id,
+            task_id=task_id,
+            account_id=account_id,
+            raw_text=text,
+            normalized_text=text,
+            text_fingerprint=memory_id,
+            status="reserved",
+            planned_at=now_value,
+        )
+    )
+    return {"slot_id": f"{task_id}:cycle:test:turn:{action_id}", "ai_message_memory_id": memory_id}
+
+
 def _add_group_ai_send_action_with_online_state(
     session: Session,
     now_value: datetime,
@@ -1202,6 +1294,89 @@ def test_group_ai_send_requires_ready_not_warming_before_gateway(monkeypatch):
 
 
 @pytest.mark.no_postgres
+def test_group_ai_send_without_message_memory_is_blocked_before_gateway(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=11,
+                desired_online=True,
+                online_status="online",
+                stale_after_at=now_value + timedelta(minutes=5),
+            )
+        )
+        session.add(
+            _cycle_action(
+                "action-missing-memory",
+                now_value,
+                {
+                    "group_id": 7,
+                    "message_text": "旧规划不能绕过消息记忆",
+                    "review_approved": True,
+                },
+            )
+        )
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("missing memory must not call TG")),
+        )
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert dispatcher.dispatch_action(session, claimed) is True
+        action = session.get(Action, "action-missing-memory")
+        assert action.status == "failed"
+        assert action.result["error_code"] == "ai_message_memory_missing"
+        assert action.result["validation_stage"] == "ai_message_memory"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_permission_failure_marks_message_memory_failed(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = _now()
+
+    with Session(engine) as session:
+        _add_cycle_skip_basics(session, now_value)
+        link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.group_id == 7, TgGroupAccount.account_id == 11))
+        link.can_send = False
+        _add_group_ai_send_action_with_online_state(
+            session,
+            now_value,
+            online_status="online",
+            action_id="action-permission-memory",
+            memory_id="memory-permission-send",
+            text="权限失败也要回写记忆",
+        )
+        session.commit()
+        monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
+        monkeypatch.setattr(
+            dispatcher.gateway,
+            "send_message",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("permission failure must not call TG")),
+        )
+
+        [claimed] = claim_actions(session, limit=1, worker_id="worker-test")
+
+        assert dispatcher.dispatch_action(session, claimed) is True
+        action = session.get(Action, "action-permission-memory")
+        assert action.status == "failed"
+        assert action.result["validation_stage"] == "account_target_permission"
+        memory = session.get(AiGroupMessageMemory, "memory-permission-send")
+        assert memory.status == "failed"
+        assert memory.action_id == "action-permission-memory"
+        assert memory.result["validation_stage"] == "account_target_permission"
+
+
+@pytest.mark.no_postgres
 def test_group_ai_send_rechecks_message_memory_before_gateway(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -1355,8 +1530,15 @@ def test_hard_hourly_plain_send_ignores_context_expiration(monkeypatch):
     with Session(engine) as session:
         _add_cycle_skip_basics(session, now_value)
         old_context, _new_context = _add_cycle_contexts(session, now_value)
+        gate_payload = _add_cycle_ai_send_gate_state(
+            session,
+            now_value,
+            memory_id="memory-hard-hourly-due",
+            text="hard target send",
+        )
         payload = {
             **_expired_cycle_payload(old_context.id, text="hard target send"),
+            **gate_payload,
             "hard_hourly_target": True,
             "hard_hourly_bucket": now_value.replace(minute=0, second=0, microsecond=0).isoformat(),
         }
@@ -1438,7 +1620,22 @@ def test_context_expiration_ignores_backfilled_older_messages(monkeypatch):
             created_at=now_value + timedelta(seconds=1),
         )
         session.add(backfilled_old)
-        session.add(_cycle_action("action-backfill", now_value, _expired_cycle_payload(snapshot.id, cycle_id="cycle-backfill", text="should send")))
+        gate_payload = _add_cycle_ai_send_gate_state(
+            session,
+            now_value,
+            memory_id="memory-backfill-send",
+            text="should send",
+        )
+        session.add(
+            _cycle_action(
+                "action-backfill",
+                now_value,
+                {
+                    **_expired_cycle_payload(snapshot.id, cycle_id="cycle-backfill", text="should send"),
+                    **gate_payload,
+                },
+            )
+        )
         session.commit()
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
         monkeypatch.setattr(dispatcher.gateway, "send_message", lambda *args, **kwargs: SendResult(True, remote_message_id="tg-context-ok"))
@@ -1570,6 +1767,15 @@ def test_group_permission_denied_marks_group_account_not_sendable(monkeypatch):
         session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="已加入"))
+        gate_payload = _add_group_ai_send_gate_payload(
+            session,
+            now_value,
+            action_id="action-permission",
+            task_id="task-permission",
+            group_id=7,
+            account_id=11,
+            text="hello",
+        )
         session.add(
             Action(
                 id="action-permission",
@@ -1580,7 +1786,7 @@ def test_group_permission_denied_marks_group_account_not_sendable(monkeypatch):
                 account_id=11,
                 status="pending",
                 scheduled_at=now_value,
-                payload={"group_id": 7, "message_text": "hello", "review_approved": True},
+                payload={"group_id": 7, "message_text": "hello", "review_approved": True, **gate_payload},
             )
         )
         session.commit()
@@ -1632,6 +1838,15 @@ def test_group_ai_chat_permission_denied_over_threshold_creates_rescue_action(mo
                     result={"success": False, "error_code": FailureType.GROUP_PERMISSION_DENIED.value, "error_message": "群黑名单，无法发言"},
                 )
             )
+        gate_payload = _add_group_ai_send_gate_payload(
+            session,
+            now_value,
+            action_id="current-denied",
+            task_id="task-ai-rescue",
+            group_id=7,
+            account_id=11,
+            text="hello",
+        )
         session.add(
             Action(
                 id="current-denied",
@@ -1642,7 +1857,7 @@ def test_group_ai_chat_permission_denied_over_threshold_creates_rescue_action(mo
                 account_id=11,
                 status="pending",
                 scheduled_at=now_value,
-                payload={"group_id": 7, "operation_target_id": 21, "message_text": "hello", "review_approved": True},
+                payload={"group_id": 7, "operation_target_id": 21, "message_text": "hello", "review_approved": True, **gate_payload},
             )
         )
         session.commit()
@@ -1901,6 +2116,15 @@ def _seed_required_channel_send_action(session: Session, scheduled_at) -> None:
     session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-10021", title="目标群", auth_status="已授权运营", can_send=True))
     session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
     session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
+    gate_payload = _add_group_ai_send_gate_payload(
+        session,
+        scheduled_at,
+        action_id="action-send-follow",
+        task_id="task-send-follow",
+        group_id=7,
+        account_id=11,
+        text="我也关注下这个",
+    )
     session.add(
         Action(
             id="action-send-follow",
@@ -1911,7 +2135,7 @@ def _seed_required_channel_send_action(session: Session, scheduled_at) -> None:
             account_id=11,
             status="pending",
             scheduled_at=scheduled_at,
-            payload={"group_id": 7, "operation_target_id": 21, "target_display": "目标群", "message_text": "我也关注下这个"},
+            payload={"group_id": 7, "operation_target_id": 21, "target_display": "目标群", "message_text": "我也关注下这个", "review_approved": True, **gate_payload},
         )
     )
 

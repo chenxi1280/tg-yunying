@@ -12,7 +12,7 @@ from app.config import Settings
 from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult, _resolve_telethon_target, _telethon_send_target
 from app.integrations.telegram.gateway import TelethonTelegramGateway
-from app.models import AccountPool, AccountStatus, Action, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask, WorkerHeartbeat
+from app.models import AccountPool, AccountStatus, Action, AiGroupMessageMemory, AiProvider, AiUsageLedger, AuditLog, ChannelMessage, ChannelMessageComment, ContentKeywordRule, FailureType, GroupArchive, GroupContextMessage, ListenerSourceState, MessageFingerprint, MessageTask, MessageTaskAttempt, OperationIssue, OperationIssueAccount, OperationIssueSource, OperationTarget, PromptTemplate, ReviewQueue, RuleSet, RuleSetVersion, SchedulingSetting, TargetRuntimeSummary, Task, TaskRuntimeSummary, TaskStatus, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountOnlineState, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask, WorkerHeartbeat
 from app.schemas import ArchiveCreate, ChannelCommentTaskCreate, ChannelLikeTaskCreate, ChannelViewTaskCreate, GroupAIChatTaskCreate, GroupRelayTaskCreate, MaterialCreate, MaterialUpdate, MessageSendTaskCreate, OperationTargetAccountUpdate, OperationTargetAdmissionRetryRequest, OperationTargetUpdate, PromptTemplateCreate, PromptTemplateUpdate, SchedulingSettingUpdate, TaskPrecheckRequest, TaskSettingsUpdate, TaskSourceFilterOverrideRequest
 from app.schemas.operations_center import RuleSetVersionCreate
 from app.schemas.risk_control import RiskControlGlobalPolicyUpdate
@@ -55,6 +55,36 @@ def _online_state(account_id: int, now: datetime) -> TgAccountOnlineState:
         online_status="online",
         stale_after_at=now + timedelta(minutes=5),
     )
+
+
+def _ai_group_send_gate_payload(
+    session: Session,
+    now: datetime,
+    *,
+    action_id: str,
+    task_id: str,
+    group_id: int,
+    account_id: int,
+    text: str,
+) -> dict:
+    if not session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.tenant_id == 1, TgAccountOnlineState.account_id == account_id)):
+        session.add(_online_state(account_id, now))
+    memory_id = f"memory-{action_id}"
+    session.add(
+        AiGroupMessageMemory(
+            id=memory_id,
+            tenant_id=1,
+            group_id=group_id,
+            task_id=task_id,
+            account_id=account_id,
+            raw_text=text,
+            normalized_text=text,
+            text_fingerprint=memory_id,
+            status="reserved",
+            planned_at=now,
+        )
+    )
+    return {"slot_id": f"{task_id}:cycle:test:turn:{action_id}", "ai_message_memory_id": memory_id}
 
 
 @pytest.fixture(autouse=True)
@@ -1020,7 +1050,7 @@ def test_task_center_dispatch_reassigns_when_account_limit_reached(monkeypatch):
         return SendResult(True, remote_message_id="reassigned-ok")
 
     with Session(engine) as session:
-        now_value = datetime.now(UTC).replace(tzinfo=None)
+        now_value = _now()
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(SchedulingSetting(tenant_id=1, default_account_hour_limit=1, jitter_min_seconds=0, jitter_max_seconds=0))
         session.add_all(
@@ -1032,9 +1062,19 @@ def test_task_center_dispatch_reassigns_when_account_limit_reached(monkeypatch):
                 TgGroupAccount(tenant_id=1, group_id=7, account_id=12, can_send=True),
                 Task(id="task-reassign", tenant_id=1, name="转派", type="group_ai_chat", status="running", account_config={"selection_mode": "all", "max_concurrent": 2, "cooldown_per_account_minutes": 0}),
                 Action(id="action-used", tenant_id=1, task_id="task-reassign", task_type="group_ai_chat", action_type="send_message", account_id=11, status="success", scheduled_at=now_value, executed_at=now_value),
-                Action(id="action-send", tenant_id=1, task_id="task-reassign", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"group_id": 7, "message_text": "需要转派", "review_approved": True}, result={}),
             ]
         )
+        gate_payload = _ai_group_send_gate_payload(
+            session,
+            now_value,
+            action_id="action-send",
+            task_id="task-reassign",
+            group_id=7,
+            account_id=12,
+            text="需要转派",
+        )
+        session.add(_online_state(11, now_value))
+        session.add(Action(id="action-send", tenant_id=1, task_id="task-reassign", task_type="group_ai_chat", action_type="send_message", account_id=11, status="pending", scheduled_at=now_value, payload={"group_id": 7, "message_text": "需要转派", "review_approved": True, **gate_payload}, result={}))
         session.commit()
 
         monkeypatch.setattr(dispatcher, "credentials_for_account", lambda *args, **kwargs: object())
@@ -1498,6 +1538,15 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1001", title="运营群", auth_status="已授权运营", can_send=True, daily_limit=999))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True))
         session.add(Task(id="task-failure-policy", tenant_id=1, name="失败策略", type="group_ai_chat", status="running"))
+        limited_gate_payload = _ai_group_send_gate_payload(
+            session,
+            _now(),
+            action_id="action-account-limited",
+            task_id="task-failure-policy",
+            group_id=7,
+            account_id=11,
+            text="触发受限",
+        )
         session.add(
             Action(
                 id="action-account-limited",
@@ -1507,7 +1556,7 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
                 action_type="send_message",
                 account_id=11,
                 status="pending",
-                payload={"group_id": 7, "message_text": "触发受限", "review_approved": True},
+                payload={"group_id": 7, "message_text": "触发受限", "review_approved": True, **limited_gate_payload},
                 result={},
             )
         )
@@ -1527,6 +1576,15 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
 
         task.status = "running"
         task.next_run_at = None
+        flood_gate_payload = _ai_group_send_gate_payload(
+            session,
+            _now(),
+            action_id="action-flood-wait",
+            task_id="task-failure-policy",
+            group_id=7,
+            account_id=11,
+            text="触发限流",
+        )
         session.add(
             Action(
                 id="action-flood-wait",
@@ -1536,7 +1594,7 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
                 action_type="send_message",
                 account_id=11,
                 status="pending",
-                payload={"group_id": 7, "message_text": "触发限流", "review_approved": True},
+                payload={"group_id": 7, "message_text": "触发限流", "review_approved": True, **flood_gate_payload},
                 result={},
             )
         )
@@ -1557,6 +1615,15 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
         setting.default_on_content_rejected = "rewrite_and_retry"
         task.status = "running"
         session.add(ContentKeywordRule(tenant_id=1, keyword="违规词"))
+        content_gate_payload = _ai_group_send_gate_payload(
+            session,
+            _now(),
+            action_id="action-content-rejected",
+            task_id="task-failure-policy",
+            group_id=7,
+            account_id=11,
+            text="包含违规词",
+        )
         session.add(
             Action(
                 id="action-content-rejected",
@@ -1566,7 +1633,7 @@ def test_task_center_dispatch_applies_default_failure_policy(monkeypatch):
                 action_type="send_message",
                 account_id=11,
                 status="pending",
-                payload={"group_id": 7, "message_text": "包含违规词", "review_approved": True},
+                payload={"group_id": 7, "message_text": "包含违规词", "review_approved": True, **content_gate_payload},
                 result={},
             )
         )

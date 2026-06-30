@@ -47,7 +47,8 @@ def is_account_online_ready(
 ) -> bool:
     current_time = now or _now()
     state = _account_online_state(session, tenant_id, account_id)
-    return _state_is_ready(state, current_time)
+    account = session.get(TgAccount, account_id)
+    return _state_is_ready(state, current_time) and _state_matches_account_dimensions(state, account)
 
 
 def is_account_online_ready_for_planning(
@@ -59,7 +60,8 @@ def is_account_online_ready_for_planning(
 ) -> bool:
     current_time = now or _now()
     state = _account_online_state(session, tenant_id, account_id)
-    return _state_is_ready(state, current_time)
+    account = session.get(TgAccount, account_id)
+    return _state_is_ready(state, current_time) and _state_matches_account_dimensions(state, account)
 
 
 def is_account_online_available(
@@ -71,7 +73,8 @@ def is_account_online_available(
 ) -> bool:
     current_time = now or _now()
     state = _account_online_state(session, tenant_id, account_id)
-    return _state_is_available(state, current_time)
+    account = session.get(TgAccount, account_id)
+    return _state_is_available(state, current_time) and _state_matches_account_dimensions(state, account)
 
 
 def _account_online_state(session: Session, tenant_id: int, account_id: int) -> TgAccountOnlineState | None:
@@ -482,6 +485,16 @@ def _state_is_stale(state: TgAccountOnlineState, now: datetime) -> bool:
     stale_after = as_beijing(state.stale_after_at)
     current_time = as_beijing(now) or now
     return bool(stale_after and stale_after <= current_time)
+
+
+def _state_matches_account_dimensions(state: TgAccountOnlineState | None, account: TgAccount | None) -> bool:
+    if not state or not account or account.deleted_at is not None:
+        return False
+    if state.session_id and state.session_id != str(account.id):
+        return False
+    if state.proxy_id is not None and state.proxy_id != account.proxy_id:
+        return False
+    return True
 
 
 def _state_signature(state: TgAccountOnlineState) -> tuple[Any, ...]:

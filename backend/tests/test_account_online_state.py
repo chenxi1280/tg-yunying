@@ -153,6 +153,33 @@ def test_stale_online_state_is_not_ready_for_dispatch():
         assert is_account_online_ready(session, tenant_id=1, account_id=101, now=now) is False
 
 
+def test_online_ready_requires_recorded_proxy_to_match_current_account():
+    now = _now()
+    with _session() as session:
+        account = _account(session)
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=101,
+                desired_online=True,
+                desired_sources=[{"source_type": "task", "source_id": "task-1"}],
+                online_status="online",
+                session_id="101",
+                proxy_id=7,
+                stale_after_at=now + timedelta(minutes=5),
+                last_seen_at=now,
+            )
+        )
+        session.commit()
+
+        account.proxy_id = 8
+        session.commit()
+
+        assert is_account_online_ready(session, tenant_id=1, account_id=101, now=now) is False
+        assert is_account_online_available(session, tenant_id=1, account_id=101, now=now) is False
+        assert is_account_online_ready_for_planning(session, tenant_id=1, account_id=101, now=now) is False
+
+
 def test_planning_ready_requires_traceable_online_state():
     now = _now()
     with _session() as session:

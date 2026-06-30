@@ -401,6 +401,8 @@ def action_samples(actions: list[Action]) -> list[dict[str, Any]]:
             "material_intent": _payload_material_intent(action.payload or {}),
             "material_matched_tags": _payload_material_tags(action.payload or {}),
             "material_candidate_count": _payload_material_candidate_count(action.payload or {}),
+            "material_id": _payload_material_id(action.payload or {}),
+            "material_failure_reason": _payload_material_failure_reason(action.payload or {}),
             "text": preview_text((action.payload or {}).get("message_text")),
         }
         for action in actions
@@ -424,6 +426,8 @@ def material_trace_samples(actions: list[Action]) -> list[dict[str, Any]]:
                 "material_matched_tags": tags,
                 "material_candidate_count": _payload_material_candidate_count(payload),
                 "material_ok": _payload_rule_trace(payload).get("material_ok"),
+                "material_id": _payload_material_id(payload),
+                "material_failure_reason": _payload_material_failure_reason(payload),
                 "text": preview_text(payload.get("message_text")),
             }
         )
@@ -451,6 +455,18 @@ def _payload_material_candidate_count(payload: dict[str, Any]) -> int:
         return int(_payload_rule_trace(payload).get("material_candidate_count") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _payload_material_id(payload: dict[str, Any]) -> int | None:
+    value = _payload_rule_trace(payload).get("material_id")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _payload_material_failure_reason(payload: dict[str, Any]) -> str:
+    return str(_payload_rule_trace(payload).get("material_failure_reason") or "").strip()
 
 
 def recent_action_duplicate_snapshot(session, since: datetime) -> dict[str, Any]:

@@ -889,15 +889,25 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
         except AiGenerationUnavailable as exc:
             if action.status == "failed" and (action.result or {}).get("validation_stage") == "ai_message_memory":
                 return True
-            _fail_with_policy(action, FailureType.UNKNOWN.value, str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE, auto_check="失败", validation_stage="ai_generation")
+            _fail_group_ai_send_before_gateway(
+                session,
+                action,
+                payload,
+                FailureType.UNKNOWN.value,
+                str(exc) or AI_GENERATION_UNAVAILABLE_MESSAGE,
+                auto_check="失败",
+                validation_stage="ai_generation",
+            )
             return True
         content = payload.message_text
         link = session.scalar(select(TgGroupAccount).where(TgGroupAccount.group_id == group.id, TgGroupAccount.account_id == account.id))
         if not link or not link.can_send:
             if link and _defer_send_for_required_channel_admission(action, link):
                 return True
-            _fail_with_policy(
+            _fail_group_ai_send_before_gateway(
+                session,
                 action,
+                payload,
                 FailureType.ACCOUNT_UNAVAILABLE.value,
                 "该账号不可向此群发送",
                 auto_check="拦截",
@@ -909,11 +919,27 @@ def _dispatch_send_message(session: Session, action: Action, account: TgAccount,
             return True
         failure_type, failure_detail = validate_group_send_policy(session, tenant_id=action.tenant_id, group=group, content=content, review_approved=payload.review_approved)
         if failure_type:
-            _fail_with_policy(action, failure_type, failure_detail or failure_type, auto_check="拦截", validation_stage="content_policy")
+            _fail_group_ai_send_before_gateway(
+                session,
+                action,
+                payload,
+                failure_type,
+                failure_detail or failure_type,
+                auto_check="拦截",
+                validation_stage="content_policy",
+            )
             return True
         filtered = filter_outbound_content(session, tenant_id=action.tenant_id, group=group, content=content)
         if not filtered.ok:
-            _fail_with_policy(action, FailureType.CONTENT_REJECTED.value, filtered.reason, auto_check="拦截", validation_stage="content_policy")
+            _fail_group_ai_send_before_gateway(
+                session,
+                action,
+                payload,
+                FailureType.CONTENT_REJECTED.value,
+                filtered.reason,
+                auto_check="拦截",
+                validation_stage="content_policy",
+            )
             return True
         if _context_expired(session, payload):
             _skip_context_expired_cycle(session, action, payload)
@@ -994,14 +1020,26 @@ def _group_ai_account_online_ready(
 ) -> bool:
     if action.task_type != "group_ai_chat":
         return True
-    if not payload.slot_id and not payload.ai_message_memory_id:
-        return True
     return is_account_online_ready(session, tenant_id=action.tenant_id, account_id=account.id)
 
 
 def _group_ai_message_memory_sendable(session: Session, action: Action, payload: SendMessagePayload) -> bool:
-    if action.task_type != "group_ai_chat" or not payload.ai_message_memory_id:
+    if action.task_type != "group_ai_chat":
         return True
+    if not payload.ai_message_memory_id:
+        result = {
+            "error_code": "ai_message_memory_missing",
+            "validation_stage": "ai_message_memory",
+        }
+        _fail(
+            action,
+            "ai_message_memory_missing",
+            "AI 活群发言缺少消息记忆预占，已拦截等待重新规划",
+            auto_check="拦截",
+            validation_stage="ai_message_memory",
+        )
+        action.result = {**(action.result or {}), **result}
+        return False
     try:
         ensure_group_ai_message_sendable(session, payload.ai_message_memory_id)
     except DuplicateMessageReservation as exc:
@@ -1022,6 +1060,26 @@ def _group_ai_message_memory_sendable(session: Session, action: Action, payload:
         )
         return False
     return True
+
+
+def _fail_group_ai_send_before_gateway(
+    session: Session,
+    action: Action,
+    payload: SendMessagePayload,
+    failure_type: str,
+    detail: str,
+    *,
+    auto_check: str,
+    validation_stage: str,
+) -> None:
+    _fail_with_policy(action, failure_type, detail, auto_check=auto_check, validation_stage=validation_stage)
+    _mark_ai_message_memory_result(
+        session,
+        payload,
+        status="failed",
+        action_id=action.id,
+        result=dict(action.result or {}),
+    )
 
 
 def _mark_ai_message_memory_result(

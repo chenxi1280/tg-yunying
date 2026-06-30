@@ -1,14 +1,53 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.integrations.telegram import OperationResult, SendResult
-from app.models import Action, GroupContextMessage, OperationTarget, Task, Tenant, TgAccount, TgGroup, TgGroupAccount
+from app.models import Action, AiGroupMessageMemory, GroupContextMessage, OperationTarget, Task, Tenant, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.services._common import _now
 from app.services.task_center import dispatcher
 from app.services.task_center.dispatcher import claim_actions
+
+
+def _add_group_ai_gate_payload(
+    session: Session,
+    now_value,
+    *,
+    action_id: str,
+    task_id: str,
+    group_id: int,
+    account_id: int,
+    text: str,
+) -> dict:
+    session.add(
+        TgAccountOnlineState(
+            tenant_id=1,
+            account_id=account_id,
+            desired_online=True,
+            online_status="online",
+            stale_after_at=now_value + timedelta(minutes=5),
+        )
+    )
+    memory_id = f"memory-{action_id}"
+    session.add(
+        AiGroupMessageMemory(
+            id=memory_id,
+            tenant_id=1,
+            group_id=group_id,
+            task_id=task_id,
+            account_id=account_id,
+            raw_text=text,
+            normalized_text=text,
+            text_fingerprint=memory_id,
+            status="reserved",
+            planned_at=now_value,
+        )
+    )
+    return {"slot_id": f"{task_id}:cycle:test:turn:{action_id}", "ai_message_memory_id": memory_id}
 
 
 def test_peer_invalid_marks_group_account_not_sendable(monkeypatch):
@@ -22,6 +61,15 @@ def test_peer_invalid_marks_group_account_not_sendable(monkeypatch):
         session.add(TgAccount(id=11, tenant_id=1, display_name="账号", phone_masked="+861***0011", status="在线", session_ciphertext="session"))
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="运营群", auth_status="已授权运营", can_send=True, require_review=False))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
+        gate_payload = _add_group_ai_gate_payload(
+            session,
+            now_value,
+            action_id="action-peer-invalid",
+            task_id="task-peer-invalid",
+            group_id=7,
+            account_id=11,
+            text="hello",
+        )
         session.add(
             Action(
                 id="action-peer-invalid",
@@ -32,7 +80,7 @@ def test_peer_invalid_marks_group_account_not_sendable(monkeypatch):
                 account_id=11,
                 status="pending",
                 scheduled_at=now_value,
-                payload={"group_id": 7, "message_text": "hello", "review_approved": True},
+                payload={"group_id": 7, "message_text": "hello", "review_approved": True, **gate_payload},
             )
         )
         session.commit()
@@ -98,6 +146,15 @@ def test_send_message_follows_required_channel_from_group_prompt_before_sending(
         )
         session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="天津音乐学院", auth_status="已授权运营", can_send=True))
         session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=11, can_send=True, permission_label="可发言"))
+        gate_payload = _add_group_ai_gate_payload(
+            session,
+            now_value,
+            action_id="action-required-channel-prompt",
+            task_id="task-required-channel-prompt",
+            group_id=7,
+            account_id=11,
+            text="hello",
+        )
         session.add(
             GroupContextMessage(
                 tenant_id=1,
@@ -127,6 +184,7 @@ def test_send_message_follows_required_channel_from_group_prompt_before_sending(
                     "target_display": "天津音乐学院",
                     "message_text": "hello",
                     "review_approved": True,
+                    **gate_payload,
                 },
             )
         )

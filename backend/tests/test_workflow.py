@@ -10,7 +10,7 @@ from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
 from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult
-from app.models import AccountStatus, Action, AiDraft, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
+from app.models import AccountStatus, Action, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services._common import _now
 from app.services.notifications import NotificationResult
 from app.services.task_center.listener_runtime import reset_listener_runtime_cache
@@ -43,6 +43,33 @@ def workflow_ai_active_pacing() -> dict:
             "manual_override": True,
         },
     }
+
+
+def _ai_group_memory_payload(
+    session,
+    *,
+    action_id: str,
+    task_id: str,
+    group_id: int,
+    account_id: int,
+    text: str,
+) -> dict:
+    memory_id = f"memory-{action_id}"
+    session.add(
+        AiGroupMessageMemory(
+            id=memory_id,
+            tenant_id=1,
+            group_id=group_id,
+            task_id=task_id,
+            account_id=account_id,
+            raw_text=text,
+            normalized_text=text,
+            text_fingerprint=memory_id,
+            status="reserved",
+            planned_at=_now(),
+        )
+    )
+    return {"slot_id": f"{task_id}:cycle:test:turn:{action_id}", "ai_message_memory_id": memory_id}
 
 
 def _workflow_ai_token(index: int) -> str:
@@ -5106,7 +5133,15 @@ def test_task_center_pending_reviews_do_not_starve_other_due_actions(monkeypatch
             session.add_all([blocked_task, normal_task])
             session.flush()
             blocked_action = Action(tenant_id=1, task_id=blocked_task.id, task_type=blocked_task.type, action_type="send_message", account_id=account["id"], scheduled_at=now, status="pending", payload={"group_id": group["id"], "message_text": "待审核内容"}, result={})
-            normal_action = Action(tenant_id=1, task_id=normal_task.id, task_type=normal_task.type, action_type="send_message", account_id=account["id"], scheduled_at=now, status="pending", payload={"group_id": group["id"], "message_text": "普通内容", "review_approved": True}, result={})
+            normal_gate_payload = _ai_group_memory_payload(
+                session,
+                action_id="normal-action",
+                task_id=normal_task.id,
+                group_id=group["id"],
+                account_id=account["id"],
+                text="普通内容",
+            )
+            normal_action = Action(tenant_id=1, task_id=normal_task.id, task_type=normal_task.type, action_type="send_message", account_id=account["id"], scheduled_at=now, status="pending", payload={"group_id": group["id"], "message_text": "普通内容", "review_approved": True, **normal_gate_payload}, result={})
             session.add_all([blocked_action, normal_action])
             session.flush()
             session.add(ReviewQueue(tenant_id=1, task_id=blocked_task.id, action_id=blocked_action.id, content_preview="待审核内容", status="pending", expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1)))

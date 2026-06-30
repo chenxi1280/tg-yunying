@@ -187,6 +187,8 @@ def voice_profile_prompt_details(
     result: dict[int, dict[str, str | int]] = dict(cached)
     backfill_rows: list[AiAccountVoiceProfile] = []
     for row in rows:
+        if not _voice_profile_usable(row):
+            continue
         current = result.get(row.account_id)
         if current and int(current["version"]) >= int(row.version or 0):
             continue
@@ -198,16 +200,18 @@ def voice_profile_prompt_details(
 
 def _missing_account_ids(session: Session, tenant_id: int, account_ids: list[int]) -> list[int]:
     unique_ids = list(dict.fromkeys(int(account_id) for account_id in account_ids))
-    existing = set(
-        session.scalars(
-            select(AiAccountVoiceProfile.account_id).where(
-                AiAccountVoiceProfile.tenant_id == tenant_id,
-                AiAccountVoiceProfile.account_id.in_(unique_ids),
-                AiAccountVoiceProfile.status == "active",
-            )
-        )
-    )
-    return [account_id for account_id in unique_ids if account_id not in existing]
+    latest = _latest_profiles(session, tenant_id, unique_ids)
+    return [account_id for account_id in unique_ids if not _voice_profile_usable(latest.get(account_id))]
+
+
+def _voice_profile_usable(profile: AiAccountVoiceProfile | None) -> bool:
+    if not profile or profile.status != "active" or profile.quality_status != "active":
+        return False
+    try:
+        _validate_summary(profile.short_prompt_summary, profile.account_id)
+        return True
+    except ValueError:
+        return False
 
 
 def _batch_insert_generated(

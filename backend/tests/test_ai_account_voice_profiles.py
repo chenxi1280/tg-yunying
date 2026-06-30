@@ -58,7 +58,14 @@ def _account(session: Session, account_id: int, name: str, username: str = "") -
     session.commit()
 
 
-def _profile(account_id: int, summary: str, *, version: int = 1, status: str = "active") -> AiAccountVoiceProfile:
+def _profile(
+    account_id: int,
+    summary: str,
+    *,
+    version: int = 1,
+    status: str = "active",
+    quality_status: str = "active",
+) -> AiAccountVoiceProfile:
     return AiAccountVoiceProfile(
         tenant_id=1,
         account_id=account_id,
@@ -71,7 +78,7 @@ def _profile(account_id: int, summary: str, *, version: int = 1, status: str = "
         emoji_policy="少用",
         forbidden_expressions=["确实不错", "感觉挺靠谱", "这个不错"],
         status=status,
-        quality_status="active",
+        quality_status=quality_status,
     )
 
 
@@ -702,6 +709,40 @@ def test_batch_rebuild_voice_profiles_generates_missing_accounts_only():
             },
         ]
         assert [row.account_id for row in rows] == [101, 102]
+
+
+def test_batch_rebuild_missing_only_regenerates_unusable_active_profile():
+    def generator(account_ids: list[int]) -> list[dict]:
+        assert account_ids == [101, 102]
+        return [
+            _generated_profile_payload(101, "青年短句，先问价格再看反馈"),
+            _generated_profile_payload(102, "中年中句，谨慎补经历，偶尔轻吐槽", age_band="中年", sentence_length="中句"),
+        ]
+
+    with _session() as session:
+        _account(session, 101, "花花号")
+        _account(session, 102, "新人号")
+        session.add(_profile(101, "旧卡不可用", quality_status="needs_review"))
+        session.commit()
+
+        result = batch_rebuild_voice_profiles(
+            session,
+            tenant_id=1,
+            account_ids=[101, 102],
+            generator=generator,
+            actor="tester",
+            missing_only=True,
+        )
+        session.commit()
+
+        rows = list(session.scalars(select(AiAccountVoiceProfile).order_by(AiAccountVoiceProfile.account_id, AiAccountVoiceProfile.version)))
+        assert result["created"] == 2
+        assert result["skipped"] == 0
+        assert [(row.account_id, row.version, row.status, row.quality_status) for row in rows] == [
+            (101, 1, "superseded", "needs_review"),
+            (101, 2, "active", "active"),
+            (102, 1, "active", "active"),
+        ]
 
 
 def test_batch_rebuild_missing_with_empty_account_ids_scans_all_active_accounts():

@@ -211,6 +211,8 @@ def test_ai_group_quality_diagnostics_reports_material_trace_samples():
                     "material_matched_tags": ["围观", "吃瓜"],
                     "material_candidate_count": 3,
                     "material_ok": True,
+                    "material_id": 88,
+                    "material_failure_reason": "",
                 },
             },
         ),
@@ -218,6 +220,24 @@ def test_ai_group_quality_diagnostics_reports_material_trace_samples():
             id="a2",
             status="success",
             account_id=12,
+            scheduled_at=None,
+            executed_at=None,
+            payload={
+                "message_text": "想配图但是没找到",
+                "rule_trace": {
+                    "material_intent": "表情包:疑问",
+                    "material_matched_tags": [],
+                    "material_candidate_count": 0,
+                    "material_ok": False,
+                    "material_id": None,
+                    "material_failure_reason": "没有匹配可用素材",
+                },
+            },
+        ),
+        SimpleNamespace(
+            id="a3",
+            status="success",
+            account_id=13,
             scheduled_at=None,
             executed_at=None,
             payload={"message_text": "普通文本"},
@@ -236,13 +256,31 @@ def test_ai_group_quality_diagnostics_reports_material_trace_samples():
             "material_matched_tags": ["围观", "吃瓜"],
             "material_candidate_count": 3,
             "material_ok": True,
+            "material_id": 88,
+            "material_failure_reason": "",
             "text": "这个表情包挺合适",
+        },
+        {
+            "action_id": "a2",
+            "status": "success",
+            "account_id": 12,
+            "material_intent": "表情包:疑问",
+            "material_matched_tags": [],
+            "material_candidate_count": 0,
+            "material_ok": False,
+            "material_id": None,
+            "material_failure_reason": "没有匹配可用素材",
+            "text": "想配图但是没找到",
         }
     ]
     assert action_samples[0]["material_intent"] == "表情包:围观"
     assert action_samples[0]["material_matched_tags"] == ["围观", "吃瓜"]
     assert action_samples[0]["material_candidate_count"] == 3
-    assert action_samples[1]["material_intent"] == ""
+    assert action_samples[0]["material_id"] == 88
+    assert action_samples[0]["material_failure_reason"] == ""
+    assert action_samples[1]["material_id"] is None
+    assert action_samples[1]["material_failure_reason"] == "没有匹配可用素材"
+    assert action_samples[2]["material_intent"] == ""
 
 
 def test_ai_group_quality_diagnostics_reports_success_only_duplicates_without_blocking():
