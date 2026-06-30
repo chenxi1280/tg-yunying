@@ -25,6 +25,8 @@ from app.security import encrypt_secret
 from app.services.task_center.ai_generator import (
     AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
     AiGenerationUnavailable,
+    _group_chat_prompt,
+    _group_chat_reply_prompt,
     clean_channel_comment_contents,
     clean_group_chat_contents,
     generate_channel_comments,
@@ -59,6 +61,21 @@ def test_group_chat_rejects_provider_refusal_text():
     contents = clean_group_chat_contents(["The request was rejected because it was considered high risk"])
 
     assert contents == []
+
+
+@pytest.mark.no_postgres
+def test_group_chat_prompts_request_material_intent_metadata():
+    prompt = _group_chat_prompt(2, "郑州楼凤", "围观新榜", "最近有人问新榜")
+    reply_prompt = _group_chat_reply_prompt(1, "郑州楼凤", "围观新榜", "引用目标 1: 这个咋样")
+
+    for text in (prompt, reply_prompt):
+        assert "material_intent" in text
+        assert "allow_material" in text
+        assert "intent" in text
+        assert "mood" in text
+        assert "只能输出素材意图" in text
+        assert "不能输出素材 ID" in text
+        assert "不能输出" in text and "URL" in text
 
 
 @pytest.mark.no_postgres

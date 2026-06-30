@@ -400,6 +400,7 @@ def action_samples(actions: list[Action]) -> list[dict[str, Any]]:
             "generation_source": str((action.payload or {}).get("generation_source") or ""),
             "material_intent": _payload_material_intent(action.payload or {}),
             "material_matched_tags": _payload_material_tags(action.payload or {}),
+            "material_candidate_count": _payload_material_candidate_count(action.payload or {}),
             "text": preview_text((action.payload or {}).get("message_text")),
         }
         for action in actions
@@ -421,6 +422,7 @@ def material_trace_samples(actions: list[Action]) -> list[dict[str, Any]]:
                 "account_id": action.account_id,
                 "material_intent": intent,
                 "material_matched_tags": tags,
+                "material_candidate_count": _payload_material_candidate_count(payload),
                 "material_ok": _payload_rule_trace(payload).get("material_ok"),
                 "text": preview_text(payload.get("message_text")),
             }
@@ -442,6 +444,13 @@ def _payload_material_tags(payload: dict[str, Any]) -> list[str]:
     if not isinstance(tags, list):
         return []
     return [str(tag) for tag in tags if str(tag).strip()]
+
+
+def _payload_material_candidate_count(payload: dict[str, Any]) -> int:
+    try:
+        return int(_payload_rule_trace(payload).get("material_candidate_count") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def recent_action_duplicate_snapshot(session, since: datetime) -> dict[str, Any]:

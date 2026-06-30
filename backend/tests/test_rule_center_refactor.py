@@ -276,6 +276,46 @@ def test_material_policy_filters_candidates_by_ai_material_intent():
 
 
 @pytest.mark.no_postgres
+def test_material_policy_keeps_intent_tags_when_cache_not_ready():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            Material(
+                id=9301,
+                tenant_id=1,
+                title="围观表情",
+                material_type="表情包",
+                content="https://trusted.example.com/watch.webp",
+                tags="围观,表情包",
+                emoji_asset_kind="image_meme",
+                cache_ready_status="ready",
+                asset_fingerprint="fp-9301",
+            )
+        )
+        session.commit()
+
+        result = select_material_for_policy(
+            session,
+            1,
+            {
+                "enabled": True,
+                "material_type": "表情包",
+                "mode": "latest",
+                "intent_tag_map": {"表情包:围观": ["围观"]},
+            },
+            material_intent="表情包:围观",
+        )
+
+    assert result.failure_reason == "cache_not_ready"
+    assert result.candidate_count == 0
+    assert result.material_intent == "表情包:围观"
+    assert result.matched_tags == ["围观"]
+
+
+@pytest.mark.no_postgres
 def test_ai_group_action_uses_quality_item_material_intent(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -335,6 +375,7 @@ def test_ai_group_action_uses_quality_item_material_intent(monkeypatch):
     assert action_payload["media_segments"][0]["material_id"] == 9301
     assert action_payload["rule_trace"]["material_intent"] == "表情包:围观"
     assert action_payload["rule_trace"]["material_matched_tags"] == ["围观"]
+    assert action_payload["rule_trace"]["material_candidate_count"] == 1
 
 
 def test_source_media_waiting_rejects_stale_event_and_queue_overflow():

@@ -406,7 +406,8 @@ def _group_chat_prompt(count: int, target_label: str, topic: str, requirements: 
         "8. 不要连续使用“我觉得/感觉/确实/这个/大家”开头；不要使用 xx、X老师、某某 这类占位符；不要输出引号套引号；不要带编号、解释、括号备注。\n"
         "9. 黑话词表是理解口径，不是展示内容；该用行业口吻时自然用，不要解释词表。\n"
         f"10. {SENSITIVE_CONTEXT_GUIDANCE}\n"
-        '只输出 JSON：{"drafts":[{"sequence_index":1,"reply_to_sequence_index":null,"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低"}]}'
+        "11. 可为少量消息给出素材意图，但只能输出素材意图，不能输出素材 ID、素材 URL 或文件地址；不需要素材时 material_intent 为空且 allow_material=false。\n"
+        '只输出 JSON：{"drafts":[{"sequence_index":1,"reply_to_sequence_index":null,"persona":"不同群友人设","content":"群里要发送的一句话","risk_level":"低","intent":"附和/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
     )
 
 
@@ -425,7 +426,8 @@ def _group_chat_reply_prompt(count: int, target_label: str, topic: str, requirem
         "5. 不要使用“针对你这条消息”“引用一下”“回复上面”这类暴露机制的话。\n"
         "6. 不要编号、解释、括号备注，不要暴露 AI、任务或提示词。\n"
         f"7. {SENSITIVE_CONTEXT_GUIDANCE}\n"
-        '只输出 JSON：{"drafts":[{"sequence_index":1,"persona":"不同群友人设","content":"引用回复要发送的一句话","risk_level":"低"}]}'
+        "8. 可为少量回复给出素材意图，但只能输出素材意图，不能输出素材 ID、素材 URL 或文件地址；不需要素材时 material_intent 为空且 allow_material=false。\n"
+        '只输出 JSON：{"drafts":[{"sequence_index":1,"persona":"不同群友人设","content":"引用回复要发送的一句话","risk_level":"低","intent":"短答/追问/围观/轻微吐槽","mood":"轻松/谨慎/好奇","material_intent":"表情包:围观 或 空字符串","allow_material":false}]}'
     )
 
 

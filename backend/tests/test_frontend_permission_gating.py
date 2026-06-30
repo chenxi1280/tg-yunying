@@ -2276,6 +2276,7 @@ def test_task_center_ai_turns_show_voice_profile_and_memory_fields():
     assert "ai_message_memory_id: string" in types
     assert "material_intent: string" in types
     assert "material_matched_tags: string[]" in types
+    assert "material_candidate_count: number" in types
     assert "表达卡" in view
     assert "立场/记忆" in view
     assert "素材意图" in view

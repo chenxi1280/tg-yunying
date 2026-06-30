@@ -43,10 +43,18 @@ def select_material_for_policy(
     effective_policy = _policy_with_material_intent(policy, material_intent)
     if effective_policy is None:
         return MaterialRuleResult(action=action, fallback=fallback, failure_reason="material_intent_unmapped", material_intent=material_intent)
+    matched_tags = _material_matched_tags(effective_policy)
     candidates = _ready_material_candidates(session, tenant_id, effective_policy)
     material = _select_ready_material(candidates, effective_policy, context_key=context_key)
     if not material:
-        return MaterialRuleResult(action=action, fallback=fallback, failure_reason="cache_not_ready", candidate_count=len(candidates), material_intent=material_intent)
+        return MaterialRuleResult(
+            action=action,
+            fallback=fallback,
+            failure_reason="cache_not_ready",
+            candidate_count=len(candidates),
+            material_intent=material_intent,
+            matched_tags=matched_tags,
+        )
     caption = str(policy.get("caption") if policy.get("caption") is not None else default_caption)
     return MaterialRuleResult(
         selected=material,
@@ -55,7 +63,7 @@ def select_material_for_policy(
         fallback=fallback,
         candidate_count=len(candidates),
         material_intent=material_intent,
-        matched_tags=_str_list(effective_policy.get("required_tags") or effective_policy.get("tags")),
+        matched_tags=matched_tags,
     )
 
 
@@ -101,6 +109,10 @@ def _mapped_intent_tags(intent_map: Any, material_intent: str) -> list[str]:
     if not intent or not isinstance(intent_map, dict):
         return []
     return _str_list(intent_map.get(intent))
+
+
+def _material_matched_tags(policy: dict[str, Any]) -> list[str]:
+    return _str_list(policy.get("required_tags") or policy.get("tags"))
 
 
 def _ready_material_candidates(session: Session, tenant_id: int, policy: dict[str, Any]) -> list[Material]:

@@ -209,6 +209,7 @@ def test_ai_group_quality_diagnostics_reports_material_trace_samples():
                 "rule_trace": {
                     "material_intent": "表情包:围观",
                     "material_matched_tags": ["围观", "吃瓜"],
+                    "material_candidate_count": 3,
                     "material_ok": True,
                 },
             },
@@ -233,12 +234,14 @@ def test_ai_group_quality_diagnostics_reports_material_trace_samples():
             "account_id": 11,
             "material_intent": "表情包:围观",
             "material_matched_tags": ["围观", "吃瓜"],
+            "material_candidate_count": 3,
             "material_ok": True,
             "text": "这个表情包挺合适",
         }
     ]
     assert action_samples[0]["material_intent"] == "表情包:围观"
     assert action_samples[0]["material_matched_tags"] == ["围观", "吃瓜"]
+    assert action_samples[0]["material_candidate_count"] == 3
     assert action_samples[1]["material_intent"] == ""
 
 

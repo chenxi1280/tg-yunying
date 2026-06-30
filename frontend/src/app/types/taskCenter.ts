@@ -320,6 +320,7 @@ export type TaskCenterDetail = {
       reply_target_source?: string;
       material_intent: string;
       material_matched_tags: string[];
+      material_candidate_count: number;
       material_id?: number | null;
       material_failure_reason: string;
       status: string;

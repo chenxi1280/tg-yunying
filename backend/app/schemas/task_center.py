@@ -847,6 +847,7 @@ class TaskAITurnOut(BaseModel):
     reply_target_source: str = ""
     material_intent: str = ""
     material_matched_tags: list[str] = Field(default_factory=list)
+    material_candidate_count: int = 0
     material_id: int | None = None
     material_failure_reason: str = ""
     status: str

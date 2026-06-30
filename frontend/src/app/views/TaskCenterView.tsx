@@ -1973,6 +1973,7 @@ export default function TaskCenterView({
           <Space size={4} wrap>
             <span>{turn.material_intent}</span>
             {turn.material_matched_tags.map((tag) => <Tag key={tag}>{tag}</Tag>)}
+            {turn.material_candidate_count > 0 && <Tag color="blue">候选 {turn.material_candidate_count}</Tag>}
             {turn.material_failure_reason && <Tag color="orange">{turn.material_failure_reason}</Tag>}
           </Space>
         )

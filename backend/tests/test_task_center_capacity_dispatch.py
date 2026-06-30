@@ -952,6 +952,7 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
                         "rule_trace": {
                             "material_intent": "表情包:围观",
                             "material_matched_tags": ["围观", "吃瓜"],
+                            "material_candidate_count": 3,
                             "material_id": 9301,
                             "material_failure_reason": "",
                         },
@@ -1066,6 +1067,7 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
         assert turn["semantic_cluster"] == "huahua_service_feedback"
         assert turn["material_intent"] == "表情包:围观"
         assert turn["material_matched_tags"] == ["围观", "吃瓜"]
+        assert turn["material_candidate_count"] == 3
         assert turn["material_id"] == 9301
         assert turn["material_failure_reason"] == ""
         online = detail["account_online_summary"]

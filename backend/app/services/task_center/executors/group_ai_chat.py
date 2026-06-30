@@ -514,6 +514,7 @@ def build_plan(session: Session, task: Task) -> int:
                         "material_action": material_result.action,
                         "material_intent": material_intent,
                         "material_matched_tags": material_result.matched_tags or [],
+                        "material_candidate_count": int(material_result.candidate_count or 0),
                         "material_id": material_result.selected.id if material_result.selected else None,
                         "material_failure_reason": material_result.failure_reason,
                     },

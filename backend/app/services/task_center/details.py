@@ -790,6 +790,7 @@ def _ai_material_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "material_intent": str(trace.get("material_intent") or ""),
         "material_matched_tags": [str(tag) for tag in matched_tags] if isinstance(matched_tags, list) else [],
+        "material_candidate_count": _payload_int(trace, "material_candidate_count"),
         "material_id": _payload_optional_int(trace, "material_id"),
         "material_failure_reason": str(trace.get("material_failure_reason") or ""),
     }
