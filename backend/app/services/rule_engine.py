@@ -17,6 +17,8 @@ TASK_TYPE_LABELS = {
     "channel_view": "频道浏览",
     "channel_like": "频道点赞",
 }
+RULE_BINDING_REQUIRED_TASK_TYPES = frozenset({"group_relay", "group_ai_chat", "channel_comment"})
+RULE_BINDING_REQUIRED_MESSAGE = "任务必须绑定已发布规则集版本"
 
 
 @dataclass
@@ -50,6 +52,8 @@ def bound_rule_version(session: Session, task: Task) -> RuleSetVersion | None:
         return None
     rule_set_id = _as_int(config.get("rule_set_id"))
     if not rule_set_id:
+        if task.type in RULE_BINDING_REQUIRED_TASK_TYPES:
+            task.last_error = RULE_BINDING_REQUIRED_MESSAGE
         return None
     rule_set = session.get(RuleSet, rule_set_id)
     if not rule_set or rule_set.tenant_id != task.tenant_id:

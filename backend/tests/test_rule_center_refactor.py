@@ -35,6 +35,7 @@ from app.services.operations_center import (
 from app.services.rule_engine import apply_output_policy, bound_rule_version, transform_content
 from app.services.task_center.executors.group_relay import build_plan as build_relay_plan, effective_relay_config
 from app.services.task_center.executors.group_ai_chat import build_plan as build_ai_chat_plan
+from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.executors.common import channel_scope
 from app.services._common import _now
 from app.services.group_listeners import is_listener_ignored_sender
@@ -1921,3 +1922,71 @@ def test_draft_rule_version_cannot_be_resolved_for_real_task_execution():
 
     assert resolved is None
     assert task.last_error == "绑定的规则版本尚未发布"
+
+
+@pytest.mark.no_postgres
+def test_ai_group_requires_rule_binding_before_target_resolution():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(id="ai-missing-rule", tenant_id=1, name="缺规则活群", type="group_ai_chat", status="running", type_config={})
+        session.add(task)
+        session.commit()
+
+        created = build_ai_chat_plan(session, task)
+
+    assert created == 0
+    assert task.last_error == "任务必须绑定已发布规则集版本"
+
+
+@pytest.mark.no_postgres
+def test_channel_comment_requires_rule_binding_before_target_resolution():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        task = Task(id="comment-missing-rule", tenant_id=1, name="缺规则评论", type="channel_comment", status="running", type_config={})
+        session.add(task)
+        session.commit()
+
+        created = build_channel_comment_plan(session, task)
+
+    assert created == 0
+    assert task.last_error == "任务必须绑定已发布规则集版本"
+
+
+@pytest.mark.no_postgres
+def test_group_relay_requires_rule_binding_before_listener_collect(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    collected = False
+
+    def fake_collect(*_args, **_kwargs):
+        nonlocal collected
+        collected = True
+
+    monkeypatch.setattr("app.services.task_center.executors.group_relay.should_collect_listener", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("app.services.task_center.executors.group_relay.collect_group_context", fake_collect)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="来源群", auth_status="已授权运营"))
+        task = Task(
+            id="relay-missing-rule",
+            tenant_id=1,
+            name="缺规则转发",
+            type="group_relay",
+            status="running",
+            type_config={"source_groups": [{"group_id": 7, "is_active": True}]},
+        )
+        session.add(task)
+        session.commit()
+
+        created = build_relay_plan(session, task)
+
+    assert created == 0
+    assert collected is False
+    assert task.last_error == "任务必须绑定已发布规则集版本"

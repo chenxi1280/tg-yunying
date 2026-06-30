@@ -497,5 +497,6 @@
 
 - 新增、删除或改名 API 路由时，必须同步更新本文件对应流转记录，并核对前端入口、service、数据落点和测试入口。
 - 改 PRD 中的页面数据加载、错误暴露、任务执行、账号登录、准入、风控或素材逻辑时，先在本索引找到对应 `DF-*` 或 `BG-*`，再进入代码文件。
+- 规则中心必绑任务的运行时门槛不只属于页面表单：`group_relay`、`group_ai_chat`、`channel_comment` 在执行器规划入口必须先通过 `rule_engine.bound_rule_version` 解析已发布规则版本；缺失、草稿、跨租户或无活动版本只写 `Task.last_error`，不进入监听采集、目标解析、AI 生成或 Action 创建。
 - 如果一条业务动作同时写主表、runtime summary、operation issue、audit log，记录中优先写主落点；细节以 service 和 migration 为准。
 - 静态扫描无法完全展开动态路径和深层 service 调用；遇到动态路径时以前端业务域入口和 router handler 为起点继续追踪。

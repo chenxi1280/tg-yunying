@@ -117,6 +117,10 @@ def build_plan(session: Session, task: Task) -> int:
     hard_progress = current_progress(session, task, _now()) if hard_hourly_enabled(task) else {}
     hard_progress = hard_progress if int(hard_progress.get("deficit") or 0) > 0 else {}
     rule_version = bound_rule_version(session, task)
+    if not rule_version:
+        if hard_progress:
+            _mark_hard_blocked(task, hard_progress, "rule_binding_missing")
+        return 0
     rule_set = session.get(RuleSet, rule_version.rule_set_id) if rule_version else None
     target = session.get(OperationTarget, int(config.get("target_operation_target_id") or 0)) if int(config.get("target_operation_target_id") or 0) else None
     if target and target.tenant_id == task.tenant_id and target.target_type == "group":

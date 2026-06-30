@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -21,6 +21,8 @@ from app.models import (
     OperationTarget,
     ReviewQueue,
     RuntimeCleanupAudit,
+    RuleSet,
+    RuleSetVersion,
     SchedulingSetting,
     Task,
     Tenant,
@@ -43,6 +45,66 @@ from app.services.task_center.runtime_retention import cleanup_runtime_details
 from app.services.task_center.service import _recover_stale_executing_actions, retry_task
 from app.services.task_center.stats import planner_backlog_snapshot, refresh_task_stats, retry_failed_actions
 from app.timezone import BEIJING_TZ
+
+TEST_RULE_SET_ID = -810001
+TEST_RULE_VERSION_ID = -810002
+RULE_REQUIRED_TASK_TYPES = {"group_relay", "group_ai_chat", "channel_comment"}
+
+
+@pytest.fixture(autouse=True)
+def bind_default_rule_for_executor_tests():
+    def before_flush(session, _flush_context, _instances):  # noqa: ANN001
+        for task in [item for item in session.new if isinstance(item, Task)]:
+            if task.type not in RULE_REQUIRED_TASK_TYPES:
+                continue
+            if (task.type_config or {}).get("rule_set_id") or (task.type_config or {}).get("rule_set_version_id"):
+                continue
+            _ensure_test_rule_version(session, task.tenant_id)
+            task.type_config = {**(task.type_config or {}), "rule_set_version_id": TEST_RULE_VERSION_ID}
+
+    event.listen(Session, "before_flush", before_flush)
+    try:
+        yield
+    finally:
+        event.remove(Session, "before_flush", before_flush)
+
+
+def _ensure_test_rule_version(session: Session, tenant_id: int) -> None:
+    cache_key = f"test_rule_version:{tenant_id}"
+    if session.info.get(cache_key):
+        return
+    session.info[cache_key] = True
+    if session.get(RuleSetVersion, TEST_RULE_VERSION_ID):
+        return
+    session.add(
+        RuleSet(
+            id=TEST_RULE_SET_ID,
+            tenant_id=tenant_id,
+            name="测试默认已发布规则",
+            status="active",
+            task_types=sorted(RULE_REQUIRED_TASK_TYPES),
+            active_version_id=TEST_RULE_VERSION_ID,
+        )
+    )
+    session.add(
+        RuleSetVersion(
+            id=TEST_RULE_VERSION_ID,
+            tenant_id=tenant_id,
+            rule_set_id=TEST_RULE_SET_ID,
+            version=1,
+            status="published",
+            filters={},
+            output_checks={},
+            transforms={},
+            routing={},
+            account_strategy={},
+            rate_limits={},
+            retry_policy={},
+            created_by="test",
+            published_by="test",
+            published_at=_now(),
+        )
+    )
 from app.schemas.task_center import TaskRetryRequest
 
 

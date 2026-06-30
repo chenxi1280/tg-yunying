@@ -11,7 +11,7 @@ from app.models import AccountStatus, GroupAuthStatus, OperationTarget, RuleSet,
 from app.services.account_capacity import available_accounts_by_capacity, next_capacity_window
 from app.services.content_filters import filter_outbound_content
 from app.services.group_listeners import collect_group_context, is_listener_ignored_sender, recent_context_messages
-from app.services.rule_engine import apply_output_policy
+from app.services.rule_engine import apply_output_policy, bound_rule_version
 from app.services.material_rules import select_material_for_policy
 
 from ..account_pool import select_task_accounts
@@ -27,6 +27,8 @@ from .common import add_tokens, stats_inc
 
 
 def build_plan(session: Session, task: Task) -> int:
+    if not bound_rule_version(session, task):
+        return 0
     config = effective_relay_config(session, task)
     account_cache: dict[int, list[Any]] = {}
     candidate_actions: list[dict[str, Any]] = []
@@ -861,35 +863,7 @@ def _content_hash(content: str) -> str:
 
 
 def _bound_rule_version(session: Session, task: Task) -> RuleSetVersion | None:
-    config = task.type_config or {}
-    version_id = int(config.get("rule_set_version_id") or 0)
-    if version_id:
-        version = session.get(RuleSetVersion, version_id)
-        if version and version.tenant_id == task.tenant_id:
-            if version.status == "draft":
-                task.last_error = "绑定的规则版本尚未发布"
-                return None
-            return version
-        task.last_error = "绑定的规则版本不存在"
-        return None
-    rule_set_id = int(config.get("rule_set_id") or 0)
-    if not rule_set_id:
-        return None
-    rule_set = session.get(RuleSet, rule_set_id)
-    if not rule_set or rule_set.tenant_id != task.tenant_id:
-        task.last_error = "绑定的规则集不存在"
-        return None
-    if not rule_set.active_version_id:
-        task.last_error = "绑定的规则集没有已发布版本"
-        return None
-    version = session.get(RuleSetVersion, rule_set.active_version_id)
-    if not version or version.tenant_id != task.tenant_id or version.rule_set_id != rule_set.id:
-        task.last_error = "绑定的活动规则版本不存在"
-        return None
-    if version.status != "published":
-        task.last_error = "绑定的活动规则版本不是已发布状态"
-        return None
-    return version
+    return bound_rule_version(session, task)
 
 
 __all__ = [

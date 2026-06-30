@@ -34,6 +34,8 @@ TOTAL_BUDGET_STATUSES = ("pending", "claiming", "executing", "success", "unknown
 def build_plan(session: Session, task: Task) -> int:
     config = task.type_config or {}
     rule_version = bound_rule_version(session, task)
+    if not rule_version:
+        return 0
     rule_set = session.get(RuleSet, rule_version.rule_set_id) if rule_version else None
     channel = session.get(OperationTarget, int(config.get("target_channel_id") or 0))
     if not channel or channel.tenant_id != task.tenant_id or channel.target_type != "channel":
