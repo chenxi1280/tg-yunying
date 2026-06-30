@@ -6,7 +6,7 @@ def assume_default_ai_group_voice_profiles(monkeypatch) -> None:
         return {
             int(account_id): {
                 "version": 1,
-                "summary": f"账号{int(account_id)}短句接话，少总结，偶尔追问",
+                "summary": f"账号{int(account_id)}接话，偶尔追问",
             }
             for account_id in account_ids
         }

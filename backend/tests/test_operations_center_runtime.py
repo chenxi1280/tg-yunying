@@ -4894,9 +4894,9 @@ def test_group_ai_chat_dedupes_against_pending_planned_messages(monkeypatch):
                 account_id=101,
                 status="pending",
                 scheduled_at=now_value + timedelta(minutes=1),
-                payload={"group_id": 7, "message_text": "这个价格还是得自己问清楚"},
+                    payload={"group_id": 7, "message_text": "这个价格还是得自己问清楚", "account_voice_profile_version": 1},
+                )
             )
-        )
         session.commit()
 
         created = build_group_ai_chat_plan(session, session.get(Task, "ai-pending-dedup"))
