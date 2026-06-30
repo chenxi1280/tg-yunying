@@ -14,6 +14,14 @@ from app.timezone import as_beijing
 
 ONLINE_TASK_STATUSES = {"running", "paused"}
 ONLINE_AVAILABLE_STATUSES = {"online", "warming", "recovering"}
+GLOBAL_KEEPALIVE_EXCLUDED_STATUSES = {
+    AccountStatus.PENDING_LOGIN.value,
+    AccountStatus.WAITING_CODE.value,
+    AccountStatus.WAITING_QR.value,
+    AccountStatus.WAITING_2FA.value,
+    AccountStatus.BANNED.value,
+    AccountStatus.DISABLED.value,
+}
 LOW_FREQUENCY_KEEPALIVE = "low_frequency"
 
 def reconcile_account_online_sources(
@@ -165,7 +173,7 @@ def _runtime_tenant_ids(session: Session, tenant_id: int | None) -> list[int]:
 def _global_keepalive_sources(session: Session, tenant_id: int) -> list[dict[str, Any]]:
     return [
         _source_for_account("global", "global_keepalive", account)
-        for account in _active_session_accounts(session, tenant_id)
+        for account in _keepalive_session_accounts(session, tenant_id)
     ]
 
 
@@ -334,6 +342,21 @@ def _accounts_by_ids(session: Session, tenant_id: int, account_ids: list[int]) -
 
 def _active_session_accounts(session: Session, tenant_id: int) -> list[TgAccount]:
     return list(session.scalars(_active_session_account_stmt(tenant_id).order_by(TgAccount.id.asc())))
+
+
+def _keepalive_session_accounts(session: Session, tenant_id: int) -> list[TgAccount]:
+    stmt = (
+        select(TgAccount)
+        .where(
+            TgAccount.tenant_id == tenant_id,
+            TgAccount.deleted_at.is_(None),
+            TgAccount.status.not_in(GLOBAL_KEEPALIVE_EXCLUDED_STATUSES),
+            TgAccount.session_ciphertext.is_not(None),
+            TgAccount.session_ciphertext != "",
+        )
+        .order_by(TgAccount.id.asc())
+    )
+    return list(session.scalars(stmt))
 
 
 def _active_session_account(session: Session, tenant_id: int, account_id: int | None) -> TgAccount | None:

@@ -516,5 +516,35 @@ def test_runtime_reconcile_can_keep_all_active_session_accounts_online_globally(
         assert rows[101].desired_sources == [{"source_type": "global", "source_id": "global_keepalive"}]
 
 
+def test_global_keepalive_retains_login_required_account_for_recovery():
+    now = _now()
+    with _session() as session:
+        account = _account(session, 101)
+        account.status = AccountStatus.SESSION_EXPIRED.value
+        session.add(
+            TgAccountOnlineState(
+                tenant_id=1,
+                account_id=101,
+                desired_online=True,
+                desired_sources=[{"source_type": "global", "source_id": "global_keepalive"}],
+                online_status="login_required",
+                failure_type="account_unavailable",
+                failure_detail="session 已失效",
+                reconciled_at=now - timedelta(minutes=10),
+            )
+        )
+        session.commit()
+
+        changed = reconcile_runtime_online_sources(session, tenant_id=1, include_global=True, now=now)
+        session.commit()
+
+        state = session.scalar(select(TgAccountOnlineState).where(TgAccountOnlineState.account_id == 101))
+        assert changed == 1
+        assert state is not None
+        assert state.desired_online is True
+        assert state.desired_sources == [{"source_type": "global", "source_id": "global_keepalive"}]
+        assert state.online_status == "login_required"
+
+
 def _source_set(sources: list[dict[str, str]]) -> set[tuple[str, str]]:
     return {(source["source_type"], source["source_id"]) for source in sources}
