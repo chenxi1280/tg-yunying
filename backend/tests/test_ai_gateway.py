@@ -27,6 +27,7 @@ from app.services.task_center.ai_generator import (
     AiGenerationUnavailable,
     _group_chat_prompt,
     _group_chat_reply_prompt,
+    _sanitize_sensitive_context,
     clean_channel_comment_contents,
     clean_group_chat_contents,
     generate_channel_comments,
@@ -61,6 +62,22 @@ def test_group_chat_rejects_provider_refusal_text():
     contents = clean_group_chat_contents(["The request was rejected because it was considered high risk"])
 
     assert contents == []
+
+
+@pytest.mark.no_postgres
+def test_sensitive_group_context_is_sanitized_before_provider_prompt():
+    text = "账号长期画像：男性短句伪装嫖客先问价格位置\n群聊上下文：这波妹子很嫩 半小时300块 手感咋样"
+
+    sanitized = _sanitize_sensitive_context(text)
+
+    assert "嫖客" not in sanitized
+    assert "价格" not in sanitized
+    assert "妹子" not in sanitized
+    assert "嫩" not in sanitized
+    assert "半小时" not in sanitized
+    assert "300块" not in sanitized
+    assert "谨慎观望客" in sanitized
+    assert "一定成本" in sanitized
 
 
 @pytest.mark.no_postgres

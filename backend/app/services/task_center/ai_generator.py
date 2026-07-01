@@ -23,8 +23,31 @@ CHANNEL_COMMENT_REPLY_PURPOSE = "频道引用回复"
 AI_CONTENT_REQUEST_TIMEOUT_SECONDS = 120
 LONG_RUNNING_AI_PURPOSES = frozenset({GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE, CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE})
 SENSITIVE_CONTEXT_GUIDANCE = (
-    "成人交易/性服务描述可以作为既有上下文理解和引用，但回复只能围绕原文已有事实做自然短评或追问；"
+    "敏感场景描述只能作为既有上下文理解和引用，但回复只能围绕原文已有事实做自然短评或追问；"
     "不要新增联系方式、价格、邀约或交易撮合信息，不要编造亲身交易经历。"
+)
+SENSITIVE_CONTEXT_REPLACEMENTS = {
+    "嫖客": "谨慎观望客",
+    "色情": "敏感场景",
+    "成人": "敏感场景",
+    "性服务": "敏感服务",
+    "服务": "体验",
+    "妹子": "对象",
+    "嫩": "状态",
+    "下浮": "优惠",
+    "上手": "体验",
+    "手感": "反馈",
+    "半小时": "一段时间",
+    "四十分钟": "一段时间",
+    "磨": "体验",
+    "胖": "状态",
+    "价格": "成本",
+    "位置": "信息",
+    "交易": "互动",
+}
+SENSITIVE_CONTEXT_PATTERNS = (
+    (re.compile(r"\d{1,4}\s*(?:分钟|分|小时|h)\b", re.IGNORECASE), "一段时间"),
+    (re.compile(r"\d{2,5}\s*(?:元|块|rmb|RMB)"), "一定成本"),
 )
 AI_PROVIDER_REFUSAL_MARKERS = (
     "the request was rejected",
@@ -545,7 +568,12 @@ def _fallback_recent_context(requirements: str) -> str:
 
 
 def _sanitize_sensitive_context(text: str) -> str:
-    return str(text or "")
+    sanitized = str(text or "")
+    for source, target in SENSITIVE_CONTEXT_REPLACEMENTS.items():
+        sanitized = sanitized.replace(source, target)
+    for pattern, target in SENSITIVE_CONTEXT_PATTERNS:
+        sanitized = pattern.sub(target, sanitized)
+    return sanitized
 
 
 def clean_group_chat_contents(contents: list[str], *, restrict_sensitive_trade: bool = False) -> list[str]:
