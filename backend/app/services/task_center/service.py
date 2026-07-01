@@ -147,6 +147,7 @@ from .config_fields import (
 )
 from .hard_hourly import current_progress as hard_hourly_current_progress, enabled as hard_hourly_enabled, requires_planning as hard_hourly_requires_planning
 from .config_normalization import (
+    apply_default_rule_binding,
     apply_default_slang_config,
     normalize_operation_target_references,
     pacing_config_payload,
@@ -207,6 +208,7 @@ def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task
     raw_type_config = payload.model_dump(mode="json", exclude=COMMON_CREATE_FIELDS, exclude_unset=True)
     raw_type_config = normalize_operation_target_references(session, tenant_id, task_type, raw_type_config)
     raw_type_config = apply_default_slang_config(session, tenant_id, task_type, raw_type_config)
+    raw_type_config = apply_default_rule_binding(session, tenant_id, task_type=task_type, config=raw_type_config)
     type_config = validated_type_config(task_type, raw_type_config)
     validate_rule_binding(session, tenant_id, type_config)
     task = Task(
@@ -502,6 +504,7 @@ def add_task_source_filter_override(session: Session, tenant_id: int, task_id: s
         next_config["excluded_sender_names"] = _append_unique_string(next_config.get("excluded_sender_names"), payload.sender_name)
 
     next_config = normalize_operation_target_references(session, tenant_id, task.type, next_config)
+    next_config = apply_default_rule_binding(session, tenant_id, task_type=task.type, config=next_config)
     validate_rule_binding(session, tenant_id, next_config)
     task.type_config = validated_type_config(task.type, next_config)
     _clear_unfinished_plan(session, task)
@@ -1690,6 +1693,7 @@ def _update_type_config(session: Session, tenant_id: int, task_id: str, expected
     update_data = payload.model_dump(mode="json", exclude_unset=True)
     next_config = {**(task.type_config or {}), **update_data}
     next_config = normalize_operation_target_references(session, tenant_id, expected_type, next_config)
+    next_config = apply_default_rule_binding(session, tenant_id, task_type=expected_type, config=next_config)
     next_config = validated_type_config(expected_type, next_config)
     validate_rule_binding(session, tenant_id, next_config)
     task.type_config = next_config

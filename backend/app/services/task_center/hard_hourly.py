@@ -16,6 +16,7 @@ OPEN_STATUSES = {"pending", "claiming", "executing"}
 SEND_FILTER = (Action.task_type == "group_ai_chat", Action.action_type == "send_message")
 STRATEGY_FORCE_PLANNING = "force_planning"
 HARD_HOURLY_FRONTLOAD_WINDOW_SECONDS = 15 * 60
+DERIVED_BUCKET_BLOCKERS = frozenset({"account_capacity", "dispatcher_lag"})
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,7 @@ def hard_hourly_stats(session: Session, task: Task, now: datetime, current_stats
     bucket_start, bucket_end = hour_bounds(task, now)
     buckets = _recent_buckets(session, task, now_local, bucket_start)
     current = buckets[-1]
-    last_blockers = dict(current.get("blockers") or {})
+    last_blockers = _effective_last_blockers(current, current_stats)
     status = _current_status(current, now_local, bucket_end, last_blockers)
     updated = dict(current_stats)
     updated.update(_current_stat_values(task, now_local, current, status))
@@ -335,6 +336,36 @@ def _current_stat_values(task: Task, now_local: datetime, bucket: dict[str, Any]
         "hard_hourly_planning_deficit": bucket["planning_deficit"],
         "hard_hourly_status": status,
     }
+
+
+def _effective_last_blockers(current: dict[str, Any], current_stats: dict[str, Any]) -> dict[str, int]:
+    blockers = _int_blockers(current.get("blockers"))
+    if blockers:
+        return blockers
+    if int(current.get("deficit") or 0) <= 0:
+        return {}
+    return {
+        reason: count
+        for reason, count in _int_blockers(current_stats.get("hard_hourly_last_blockers")).items()
+        if reason not in DERIVED_BUCKET_BLOCKERS
+    }
+
+
+def _int_blockers(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(reason): count
+        for reason, raw_count in value.items()
+        if (count := _positive_int(raw_count)) > 0
+    }
+
+
+def _positive_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _next_check_at(task: Task, blockers: dict[str, int], progress: dict[str, Any], current: datetime) -> datetime:

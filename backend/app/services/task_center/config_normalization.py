@@ -7,6 +7,15 @@ from sqlalchemy.orm import Session
 
 from app.models import GroupAuthStatus, OperationTarget, PromptTemplate, RuleSet, RuleSetVersion, TgGroup
 from app.services._common import _now
+from app.services.operations_center_defaults import (
+    DEFAULT_RULE_SET_DESCRIPTION,
+    DEFAULT_RULE_SET_NAME,
+    DEFAULT_RULE_TASK_TYPES,
+    LEGACY_DEFAULT_RELAY_RULE_SET_NAME,
+    _default_relay_filters,
+    _default_relay_output_checks,
+)
+from app.services.rule_engine import RULE_BINDING_REQUIRED_TASK_TYPES
 
 from .config_fields import (
     CHANNEL_JITTER_FIELDS,
@@ -81,6 +90,13 @@ def apply_default_slang_config(session: Session, tenant_id: int, task_type: str,
     return {**config, "slang_prompt_template_id": int(template_id)}
 
 
+def apply_default_rule_binding(session: Session, tenant_id: int, *, task_type: str, config: dict[str, Any]) -> dict[str, Any]:
+    if task_type not in RULE_BINDING_REQUIRED_TASK_TYPES or _has_rule_binding(config):
+        return config
+    rule_set = _ensure_default_execution_rule_set(session, tenant_id)
+    return {**config, "rule_set_id": rule_set.id}
+
+
 def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any]:
     model = TYPE_CONFIG_MODELS.get(task_type)
     if not model:
@@ -95,6 +111,91 @@ def validated_type_config(task_type: str, data: dict[str, Any]) -> dict[str, Any
     if task_type in {"group_relay", "channel_comment"}:
         normalized["require_review"] = False
     return normalized
+
+
+def _has_rule_binding(config: dict[str, Any]) -> bool:
+    return bool(_as_int(config.get("rule_set_id")) or _as_int(config.get("rule_set_version_id")))
+
+
+def _ensure_default_execution_rule_set(session: Session, tenant_id: int) -> RuleSet:
+    rule_set = _default_execution_rule_set(session, tenant_id)
+    if not rule_set:
+        rule_set = _new_default_execution_rule_set(session, tenant_id)
+    _repair_default_execution_rule_set(session, rule_set)
+    session.flush()
+    return rule_set
+
+
+def _default_execution_rule_set(session: Session, tenant_id: int) -> RuleSet | None:
+    return session.scalar(
+        select(RuleSet)
+        .where(
+            RuleSet.tenant_id == tenant_id,
+            RuleSet.name.in_([DEFAULT_RULE_SET_NAME, LEGACY_DEFAULT_RELAY_RULE_SET_NAME]),
+        )
+        .order_by((RuleSet.name == DEFAULT_RULE_SET_NAME).desc(), RuleSet.id.asc())
+        .limit(1)
+    )
+
+
+def _new_default_execution_rule_set(session: Session, tenant_id: int) -> RuleSet:
+    rule_set = RuleSet(
+        tenant_id=tenant_id,
+        name=DEFAULT_RULE_SET_NAME,
+        description=DEFAULT_RULE_SET_DESCRIPTION,
+        status="active",
+        task_types=DEFAULT_RULE_TASK_TYPES,
+        default_policy={"input_failure": "skip", "output_failure": "transform_once_drop", "version_binding": "follow_current"},
+    )
+    session.add(rule_set)
+    session.flush()
+    return rule_set
+
+
+def _repair_default_execution_rule_set(session: Session, rule_set: RuleSet) -> None:
+    if rule_set.name == LEGACY_DEFAULT_RELAY_RULE_SET_NAME:
+        rule_set.name = DEFAULT_RULE_SET_NAME
+    rule_set.status = "active"
+    rule_set.description = DEFAULT_RULE_SET_DESCRIPTION
+    rule_set.task_types = DEFAULT_RULE_TASK_TYPES
+    rule_set.default_policy = {**(rule_set.default_policy or {}), "version_binding": "follow_current"}
+    if _active_published_rule_version(session, rule_set):
+        return
+    version = _new_default_execution_rule_version(session, rule_set)
+    session.add(version)
+    session.flush()
+    rule_set.active_version_id = version.id
+
+
+def _active_published_rule_version(session: Session, rule_set: RuleSet) -> RuleSetVersion | None:
+    version = session.get(RuleSetVersion, rule_set.active_version_id) if rule_set.active_version_id else None
+    if not version or version.tenant_id != rule_set.tenant_id or version.rule_set_id != rule_set.id:
+        return None
+    return version if version.status == "published" else None
+
+
+def _new_default_execution_rule_version(session: Session, rule_set: RuleSet) -> RuleSetVersion:
+    return RuleSetVersion(
+        tenant_id=rule_set.tenant_id,
+        rule_set_id=rule_set.id,
+        version=_next_default_rule_version_number(session, rule_set),
+        status="published",
+        filters=_default_relay_filters(),
+        output_checks=_default_relay_output_checks(),
+        transforms={},
+        routing={},
+        account_strategy={},
+        rate_limits={},
+        retry_policy={},
+        created_by="system",
+        published_by="system",
+        published_at=_now(),
+    )
+
+
+def _next_default_rule_version_number(session: Session, rule_set: RuleSet) -> int:
+    latest = session.scalar(select(RuleSetVersion.version).where(RuleSetVersion.rule_set_id == rule_set.id).order_by(RuleSetVersion.version.desc()).limit(1))
+    return int(latest or 0) + 1
 
 
 def _normalize_legacy_group_ai_config(task_type: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -326,6 +427,7 @@ def _normalize_target_input(raw_input: str, *, target_type: str) -> dict[str, st
 
 
 __all__ = [
+    "apply_default_rule_binding",
     "apply_default_slang_config",
     "normalize_operation_target_references",
     "pacing_config_payload",

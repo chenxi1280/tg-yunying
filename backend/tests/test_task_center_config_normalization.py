@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -8,12 +10,22 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import OperationTarget, Tenant
+from app.models import OperationTarget, RuleSet, RuleSetVersion, Tenant
 from app.schemas.task_center import GroupAIChatTaskCreate
 from app.services.task_center.config_normalization import normalize_operation_target_references
+from app.services.task_center.service import create_group_ai_chat_task
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_required_rule_binding_migration():
+    migration_path = PROJECT_ROOT / "backend/migrations/versions/0072_backfill_required_task_rule_binding.py"
+    spec = importlib.util.spec_from_file_location("migration_0072_required_rule_binding", migration_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.mark.no_postgres
@@ -41,6 +53,85 @@ def test_group_ai_config_accepts_topic_teacher_and_consecutive_settings() -> Non
     assert data["topic_directions"][0]["title"] == "升学规划"
     assert data["teacher_targets"][0]["name"] == "王老师"
     assert data["consecutive_message_min"] == 2
+
+
+@pytest.mark.no_postgres
+def test_group_ai_task_creation_binds_default_rule_set() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.commit()
+
+        task = create_group_ai_chat_task(
+            session,
+            1,
+            GroupAIChatTaskCreate(name="AI 活群", target_group_id=7, hourly_min_messages=10),
+            actor="tester",
+        )
+        rule_set = session.get(RuleSet, task.type_config["rule_set_id"])
+
+    assert rule_set is not None
+    assert rule_set.name == "默认运营规则集"
+    assert "rule_set_version_id" not in task.type_config
+
+
+@pytest.mark.no_postgres
+def test_default_rule_binding_repairs_draft_active_version() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        rule_set = RuleSet(
+            id=99,
+            tenant_id=1,
+            name="默认运营规则集",
+            status="active",
+            task_types=["group_ai_chat"],
+            active_version_id=100,
+        )
+        session.add(rule_set)
+        session.add(RuleSetVersion(id=100, tenant_id=1, rule_set_id=99, version=1, status="draft"))
+        session.commit()
+
+        task = create_group_ai_chat_task(
+            session,
+            1,
+            GroupAIChatTaskCreate(name="AI 活群", target_group_id=7, hourly_min_messages=10),
+            actor="tester",
+        )
+        session.refresh(rule_set)
+        active = session.get(RuleSetVersion, rule_set.active_version_id)
+
+    assert task.type_config["rule_set_id"] == 99
+    assert active.status == "published"
+    assert active.version == 2
+
+
+@pytest.mark.no_postgres
+def test_required_rule_binding_migration_marks_running_task_for_retry() -> None:
+    migration = _load_required_rule_binding_migration()
+    current_time = datetime(2026, 7, 1, tzinfo=timezone.utc)
+
+    values = migration._task_update_values(
+        {"target_group_id": 7},
+        {
+            "hard_hourly_last_blockers": {"rule_binding_missing": 10},
+            "hard_hourly_next_check_at": "2026-07-01T09:43:13",
+        },
+        status="running",
+        last_error="任务必须绑定已发布规则集版本",
+        rule_set_id=123,
+        current_time=current_time,
+    )
+
+    assert values["type_config"]["rule_set_id"] == 123
+    assert values["last_error"] == ""
+    assert values["next_run_at"] == current_time
+    assert "hard_hourly_last_blockers" not in values["stats"]
+    assert "hard_hourly_next_check_at" not in values["stats"]
 
 
 @pytest.mark.no_postgres

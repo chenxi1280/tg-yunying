@@ -34,7 +34,7 @@ def test_alembic_versions_have_single_head():
             referenced.update(item for item in down_revision if item)
 
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0071_ai_group_quality_foundation"]
+    assert heads == ["0072_required_rule_binding"]
 
 
 def test_backend_test_names_are_unique_per_file():
