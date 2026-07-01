@@ -38,6 +38,11 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      rename_half_account_profiles:
+        description: Re-generate Chinese profile names for half of active production accounts
+        required: false
+        default: false
+        type: boolean
       run_tianjin_blocked_account_diagnostics:
         description: Run production diagnostics for blocked Tianjin account 84
         required: false
@@ -449,6 +454,15 @@ jobs:
           ssh silicon-valley-production-server 'timeout 1200 docker exec -e ACCOUNT_PROFILE_RECONCILE_APPLY=true -e ACCOUNT_PROFILE_RECONCILE_DRAIN_ONCE=true -i tgyunying-backend python -' \
             < .github/scripts/account_profile_initialization_reconcile.py
           echo "ACCOUNT_PROFILE_RECONCILE_END"
+
+      - name: Rename half account profiles
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.rename_half_account_profiles }}
+        run: |
+          set -euo pipefail
+          echo "ACCOUNT_PROFILE_HALF_RENAME_START"
+          ssh silicon-valley-production-server 'timeout 1800 docker exec -i tgyunying-backend python -' \
+            < .github/scripts/account_profile_half_rename.py
+          echo "ACCOUNT_PROFILE_HALF_RENAME_END"
 
       - name: Update MiniMax AI provider
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_minimax_provider }}
