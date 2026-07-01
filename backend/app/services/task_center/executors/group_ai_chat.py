@@ -155,9 +155,15 @@ def build_plan(session: Session, task: Task) -> int:
         if hard_progress:
             mark_plan_result(task, hard_progress, 0, {reason: max(1, int(hard_progress.get("deficit") or 1))})
         return 0
-    ready_voice_profiles = voice_profile_prompt_details(session, tenant_id=task.tenant_id, account_ids=[account.id for account in accounts])
+    accounts, ready_voice_profiles, missing_voice_profile_ids = _profile_ready_accounts_for_plan(
+        session,
+        task,
+        group=group,
+        progress=hard_progress,
+        config=config,
+        accounts=accounts,
+    )
     _expire_open_profileless_actions(session, task, ready_voice_profiles.keys())
-    accounts, missing_voice_profile_ids = _accounts_with_ready_voice_profiles(accounts, ready_voice_profiles)
     if missing_voice_profile_ids:
         _record_missing_voice_profiles(task, missing_voice_profile_ids)
     if not accounts:
@@ -845,6 +851,70 @@ def _accounts_with_ready_voice_profiles(accounts: list, voice_profiles: dict[int
     return ready_accounts, missing_ids
 
 
+def _profile_ready_accounts_for_plan(
+    session: Session,
+    task: Task,
+    *,
+    group: TgGroup,
+    progress: dict[str, object],
+    config: dict,
+    accounts: list,
+) -> tuple[list, dict[int, dict[str, str | int]], list[int]]:
+    initial_count = len(accounts)
+    scanned_count = len(accounts)
+    while True:
+        voice_profiles = voice_profile_prompt_details(
+            session,
+            tenant_id=task.tenant_id,
+            account_ids=[account.id for account in accounts],
+        )
+        ready_accounts, missing_ids = _accounts_with_ready_voice_profiles(accounts, voice_profiles)
+        if not _needs_voice_profile_refill(progress, config, ready_accounts, missing_ids):
+            _record_voice_profile_refill(task, initial_count, len(accounts))
+            return ready_accounts, voice_profiles, missing_ids
+        next_target = _voice_profile_refill_target(scanned_count, ready_accounts, missing_ids)
+        expanded_accounts = _select_accounts_for_plan(
+            session,
+            task,
+            group,
+            {**progress, "account_scan_target": next_target},
+            config,
+        )
+        if len(expanded_accounts) <= scanned_count:
+            _record_voice_profile_refill(task, initial_count, len(accounts))
+            return ready_accounts, voice_profiles, missing_ids
+        scanned_count = len(expanded_accounts)
+        accounts = _online_ready_accounts(session, task, expanded_accounts, progress)
+
+
+def _needs_voice_profile_refill(
+    progress: dict[str, object],
+    config: dict,
+    ready_accounts: list,
+    missing_ids: list[int],
+) -> bool:
+    required = _hard_hourly_batch_size(config, progress) if progress else 0
+    return bool(progress and missing_ids and len(ready_accounts) < required)
+
+
+def _voice_profile_refill_target(
+    scanned_count: int,
+    ready_accounts: list,
+    missing_ids: list[int],
+) -> int:
+    shortfall = max(0, scanned_count - len(ready_accounts))
+    refill_count = max(shortfall, len(missing_ids))
+    return scanned_count + max(1, refill_count)
+
+
+def _record_voice_profile_refill(task: Task, initial_count: int, final_count: int) -> None:
+    if final_count <= initial_count:
+        return
+    stats = dict(task.stats or {})
+    stats["voice_profile_refill_account_count"] = final_count - initial_count
+    task.stats = stats
+
+
 def _voice_profile_ready(profile: dict[str, str | int] | None) -> bool:
     if not profile:
         return False
@@ -1161,6 +1231,9 @@ def _hard_hourly_account_options(progress: dict[str, object]) -> dict[str, objec
 
 
 def _hard_hourly_account_scan_target(progress: dict[str, object]) -> int:
+    requested = max(0, int(progress.get("account_scan_target") or 0))
+    if requested:
+        return requested
     goal = max(0, int(progress.get("goal") or 0))
     deficit = max(0, int(progress.get("deficit") or 0))
     return max(HARD_HOURLY_MIN_BATCH_MESSAGES, goal, deficit)

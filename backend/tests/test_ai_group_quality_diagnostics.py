@@ -145,6 +145,68 @@ def test_ai_group_quality_diagnostics_drains_hard_hourly_after_online_gate(monke
     assert session.commits == 2
 
 
+def test_ai_group_quality_diagnostics_settles_dispatch_lag_after_drain(monkeypatch):
+    module = load_quality_diagnostics_module()
+    since = datetime(2026, 7, 1, 10, 0, 0)
+    session = SimpleNamespace(expired=0)
+    snapshots = [["clear"]]
+    blocker = {
+        "blockers": {"dispatcher_lag": 1},
+        "name": "石家庄",
+        "goal": 10,
+        "success_count": 5,
+        "future_open_count": 4,
+        "overdue_open_count": 1,
+    }
+
+    def expire_all():
+        session.expired += 1
+
+    session.expire_all = expire_all
+    monkeypatch.setattr(module, "now_local", lambda: since)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(module, "task_snapshots", lambda _session, _since: snapshots.pop(0))
+    monkeypatch.setattr(module, "hard_hourly_gate_blockers", lambda value: [blocker] if value == ["blocked"] else [])
+
+    result = module.settle_hard_hourly_gate(session, since, ["blocked"])
+
+    assert result == ["clear"]
+    assert session.expired == 1
+
+
+def test_ai_group_quality_diagnostics_does_not_settle_insufficient_dispatch_lag(monkeypatch):
+    module = load_quality_diagnostics_module()
+    since = datetime(2026, 7, 1, 10, 0, 0)
+    blocker = {
+        "blockers": {"dispatcher_lag": 1},
+        "name": "石家庄",
+        "goal": 10,
+        "success_count": 0,
+        "future_open_count": 0,
+        "overdue_open_count": 1,
+    }
+    session = SimpleNamespace(expire_all=lambda: None)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: pytest.fail("should not wait"))
+    monkeypatch.setattr(module, "hard_hourly_gate_blockers", lambda _snapshots: [blocker])
+
+    result = module.settle_hard_hourly_gate(session, since, ["blocked"])
+
+    assert result == ["blocked"]
+
+
+def test_ai_group_quality_diagnostics_does_not_settle_generation_blocker(monkeypatch):
+    module = load_quality_diagnostics_module()
+    since = datetime(2026, 7, 1, 10, 0, 0)
+    blocker = {"blockers": {"ai_generation_unavailable": 6}, "name": "天津"}
+    session = SimpleNamespace(expire_all=lambda: None)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: pytest.fail("should not wait"))
+    monkeypatch.setattr(module, "hard_hourly_gate_blockers", lambda _snapshots: [blocker])
+
+    result = module.settle_hard_hourly_gate(session, since, ["blocked"])
+
+    assert result == ["blocked"]
+
+
 def test_ai_group_quality_diagnostics_formats_online_failure_row():
     module = load_quality_diagnostics_module()
     now = datetime(2026, 6, 30, 12, 0, 0)

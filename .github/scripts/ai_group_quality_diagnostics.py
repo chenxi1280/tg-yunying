@@ -38,6 +38,8 @@ ONLINE_SETTLE_POLL_SECONDS = 15
 QUALITY_PAYLOAD_BLOCKER_LIMIT = 20
 MATERIAL_TRACE_SAMPLE_LIMIT = 8
 HARD_HOURLY_PLANNER_DRAIN_LIMIT = 100
+HARD_HOURLY_DISPATCH_SETTLE_SECONDS = 120
+HARD_HOURLY_DISPATCH_SETTLE_POLL_SECONDS = 10
 ACTIVE_TASK_STATUSES = {"running"}
 ONLINE_BLOCK_KEYS = (
     "stale_count",
@@ -379,6 +381,43 @@ def _drain_hard_hourly_task(session, task_id: str) -> dict[str, Any] | None:
     return {"task_id": task_id, "name": str(task.name or ""), "created": int(created), "status": "planned"}
 
 
+def settle_hard_hourly_gate(session, since: datetime, snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    blockers = hard_hourly_gate_blockers(snapshots)
+    if not _all_hard_hourly_blockers_settleable(blockers):
+        return snapshots
+    deadline = now_local() + timedelta(seconds=HARD_HOURLY_DISPATCH_SETTLE_SECONDS)
+    while blockers and _all_hard_hourly_blockers_settleable(blockers):
+        payload = {
+            "remaining_seconds": max(int((deadline - now_local()).total_seconds()), 0),
+            "blocker_count": len(blockers),
+            "blockers": blockers[:TASK_LIMIT],
+        }
+        json_line("AI_GROUP_QUALITY_HARD_HOURLY_WAIT", payload)
+        if now_local() >= deadline:
+            return snapshots
+        time.sleep(HARD_HOURLY_DISPATCH_SETTLE_POLL_SECONDS)
+        session.expire_all()
+        snapshots = task_snapshots(session, since)
+        blockers = hard_hourly_gate_blockers(snapshots)
+    return snapshots
+
+
+def _all_hard_hourly_blockers_settleable(blockers: list[dict[str, Any]]) -> bool:
+    return bool(blockers) and all(_is_dispatch_settle_blocker(blocker) for blocker in blockers)
+
+
+def _is_dispatch_settle_blocker(blocker: dict[str, Any]) -> bool:
+    reasons = set(dict(blocker.get("blockers") or {}).keys())
+    if not reasons or reasons != {"dispatcher_lag"}:
+        return False
+    queued_total = (
+        _safe_int(blocker.get("success_count"))
+        + _safe_int(blocker.get("future_open_count"))
+        + _safe_int(blocker.get("overdue_open_count"))
+    )
+    return queued_total >= _safe_int(blocker.get("goal"))
+
+
 def online_failure_details(session, blockers: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
     task_ids = [str(item.get("task_id") or "") for item in blockers if item.get("task_id")]
     if not task_ids:
@@ -693,6 +732,7 @@ def main() -> None:
         json_line("AI_GROUP_QUALITY_HARD_HOURLY_DRAIN", drain_hard_hourly_planner(session))
         session.expire_all()
         snapshots = task_snapshots(session, since)
+        snapshots = settle_hard_hourly_gate(session, since, snapshots)
         for snapshot in snapshots:
             json_line("AI_GROUP_QUALITY_TASK", snapshot)
         hard_hourly_blockers = hard_hourly_gate_blockers(snapshots)

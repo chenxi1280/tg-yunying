@@ -25,6 +25,12 @@ from app.services.task_center.stats import next_run_after_task, refresh_task_sta
 from app.timezone import BEIJING_TZ
 from tests.ai_group_voice_profile_fixtures import assume_default_ai_group_voice_profiles
 
+FIRST_PROFILE_READY_ACCOUNT_ID = 11
+PROFILE_REFILL_ACCOUNT_TOTAL = 20
+PROFILE_REFILL_ONLINE_GAP_ACCOUNT_TOTAL = 30
+PROFILE_REFILL_HOURLY_GOAL = 6
+
+
 def _send_action(
     action_id: str,
     task: Task,
@@ -63,6 +69,46 @@ def assume_group_ai_accounts_ready_for_hard_hourly_tests(monkeypatch):
     monkeypatch.setattr(
         "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
         lambda *args, **kwargs: True,
+    )
+
+
+def _hard_hourly_fake_generate(_session, _tenant_id, _config, *, count, target_label, history):
+    return [f"今晚活动第{index + 1}条" for index in range(count)], 0
+
+
+def _voice_profiles_after_first_ten_accounts(_session, *, tenant_id: int, account_ids: list[int]):
+    return {
+        int(account_id): {"version": 1, "summary": f"账号{int(account_id)}短句，偶尔追问"}
+        for account_id in account_ids
+        if int(account_id) >= FIRST_PROFILE_READY_ACCOUNT_ID
+    }
+
+
+def _add_hard_hourly_profile_refill_fixture(session: Session, *, account_total: int = PROFILE_REFILL_ACCOUNT_TOTAL) -> None:
+    session.add(Tenant(id=1, name="默认运营空间"))
+    session.add(TgGroup(id=7, tenant_id=1, tg_peer_id="-1007", title="硬目标群", auth_status="已授权运营"))
+    for account_id in range(1, account_total + 1):
+        session.add(TgAccount(id=account_id, tenant_id=1, display_name=f"账号{account_id}", phone_masked=str(account_id), status="在线", session_ciphertext=f"session-{account_id}"))
+        session.add(TgGroupAccount(tenant_id=1, group_id=7, account_id=account_id, can_send=True))
+
+
+def _hard_hourly_profile_refill_task(*, max_concurrent: int = PROFILE_REFILL_ACCOUNT_TOTAL) -> Task:
+    return Task(
+        id="ai-hard-hourly-profile-refill",
+        tenant_id=1,
+        name="硬目标表达卡扩池",
+        type="group_ai_chat",
+        status="running",
+        account_config={"selection_mode": "all", "max_concurrent": max_concurrent, "cooldown_per_account_minutes": 0},
+        type_config={
+            "target_group_id": 7,
+            "reply_min_per_round": 0,
+            "hard_hourly_target_enabled": True,
+            "hourly_min_messages": PROFILE_REFILL_HOURLY_GOAL,
+            "hard_hourly_strategy": "force_planning",
+            "fact_anchor_required": False,
+            "low_confidence_silence_enabled": False,
+        },
     )
 
 
@@ -2000,6 +2046,71 @@ def test_group_ai_chat_hard_hourly_reply_shortfall_fills_with_normal_turns(monke
     assert task.stats["hard_hourly_last_planned_count"] == 3
     assert "hard_hourly_last_blockers" not in task.stats
     assert task.stats["hard_hourly_next_check_at"] == "2026-06-07T20:10:30"
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_refills_accounts_after_missing_voice_profiles(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", _hard_hourly_fake_generate)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.voice_profile_prompt_details",
+        _voice_profiles_after_first_ten_accounts,
+    )
+
+    with Session(engine) as session:
+        _add_hard_hourly_profile_refill_fixture(session)
+        task = _hard_hourly_profile_refill_task()
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.account_id)))
+        session.refresh(task)
+
+    assert created == 6
+    assert [action.account_id for action in actions] == [11, 12, 13, 14, 15, 16]
+    assert task.stats["voice_profile_missing_count"] == 10
+    assert task.stats["voice_profile_refill_account_count"] == 10
+    assert task.stats["hard_hourly_last_planned_count"] == 6
+    assert "hard_hourly_last_blockers" not in task.stats
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_refill_rechecks_online_ready_accounts(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 10)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.should_collect_listener", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("app.services.task_center.executors.group_ai_chat.generate_group_messages", _hard_hourly_fake_generate)
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.voice_profile_prompt_details",
+        _voice_profiles_after_first_ten_accounts,
+    )
+    monkeypatch.setattr(
+        "app.services.task_center.executors.group_ai_chat.is_account_online_ready_for_planning",
+        lambda _session, *, tenant_id, account_id: int(account_id) <= 10 or int(account_id) >= 21,
+    )
+
+    with Session(engine) as session:
+        _add_hard_hourly_profile_refill_fixture(session, account_total=PROFILE_REFILL_ONLINE_GAP_ACCOUNT_TOTAL)
+        task = _hard_hourly_profile_refill_task(max_concurrent=PROFILE_REFILL_ONLINE_GAP_ACCOUNT_TOTAL)
+        session.add(task)
+        session.commit()
+
+        created = build_group_ai_chat_plan(session, task)
+        actions = list(session.scalars(select(Action).where(Action.task_id == task.id).order_by(Action.account_id)))
+        session.refresh(task)
+
+    assert created == 6
+    assert [action.account_id for action in actions] == [21, 22, 23, 24, 25, 26]
+    assert task.stats["voice_profile_missing_count"] == 10
+    assert task.stats["voice_profile_refill_account_count"] == 10
+    assert task.stats["account_offline_count"] == 10
 
 
 def test_precheck_reports_hard_hourly_capacity_without_blocking_on_max_actions(monkeypatch):
