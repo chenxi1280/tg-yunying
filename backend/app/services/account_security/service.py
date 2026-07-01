@@ -133,6 +133,54 @@ PROFILE_NAME_SUFFIXES = [
     "日记本",
     "开小差",
 ]
+PROFILE_NAME_SHORTS = [
+    "阿柚",
+    "小葵",
+    "山风",
+    "七七",
+    "橘白",
+    "南星",
+    "一栗",
+    "鹿鹿",
+    "木子",
+    "小满",
+    "青团",
+    "半夏",
+]
+PROFILE_NAME_SCENES = [
+    "凌晨三点还醒着",
+    "便利店门口等雨停",
+    "今天也没想好昵称",
+    "薯条没有番茄酱",
+    "路灯下面看消息",
+    "周末不想出门",
+    "把奶茶喝到见底",
+    "在阳台吹晚风",
+    "刚刚路过这里",
+    "耳机里放小雨",
+    "晚一点再回复",
+    "先把热闹收藏",
+]
+PROFILE_NAME_PLAYFUL = [
+    "不吃香菜",
+    "早睡失败",
+    "奶盖加满",
+    "路过一下",
+    "慢半拍中",
+    "月亮打烊",
+    "橘子汽水",
+    "糯米团团",
+    "薄荷小窗",
+    "西瓜边角",
+    "海盐日记",
+    "芋泥备忘",
+]
+PROFILE_NAME_UNIQUE_TAILS = ["呢", "呀", "喔", "啦", "中", "了", "哈", "哦", "吧", "哇", "慢", "早", "晚", "轻", "小", "新", "晴", "雨", "风", "云"]
+PROFILE_NAME_VARIANT_COUNT = 4
+PROFILE_NAME_POOL_ACCOUNT_FACTOR = 5
+PROFILE_NAME_POOL_INDEX_FACTOR = 6
+PROFILE_NAME_VARIANT_ACCOUNT_FACTOR = 5
+PROFILE_NAME_VARIANT_INDEX_FACTOR = 2
 PROFILE_BIO_POOL = [
     "日常在线，随缘交流",
     "看到有意思的会回两句",
@@ -1601,6 +1649,7 @@ def _generate_profiles_with_ai(session: Session, tenant_id: int, accounts: list[
         f"用户补充命名风格：{style_prompt or '像真实 TG 普通用户的随手昵称，不要正式姓名'}\n"
         "昵称要求：display_name 要像真实用户网名/昵称，随机、生活化、有网感，可以是中文短语、食物、梗名、心情或轻微拟人化；"
         "例如：锅巴洋芋、蕉太狼、早睡失败、小熊便利店、不吃香菜、月亮打烊。不要批量生成“张雨晴、李浩然、王思远”这类正式姓名，避免公司/客服/营销号口吻，避免规律序号。\n"
+        "展示资料语言要求：display_name、first_name、last_name、bio 禁止出现英文字母；不要生成“中文昵称 + 英文长尾”或英文签名，英文只允许出现在 username_candidates。\n"
         "整批差异要求：不要使用同一命名公式、同一字数、同一简介句式或同一 username 前缀批量套壳；"
         "至少混合短昵称、长一点的生活化昵称、无厘头昵称、食物/心情/场景类昵称；简介长度也要有明显差异。\n"
         "姓名字段要求：first_name 可以直接等于 display_name；last_name 可以为空，不要强行拆成中文姓氏和名字。\n"
@@ -1657,6 +1706,8 @@ def _parse_ai_profile_items(raw: str, count: int, strategy) -> list[dict[str, ob
         candidates = [candidate for candidate in candidates if candidate.lower() not in used_usernames]
         if not display_name or display_name in used_names:
             continue
+        if _has_profile_ascii_text(display_name, first_name, bio):
+            continue
         if any(word and (word in display_name or word in bio) for word in forbidden):
             continue
         if strategy.username_enabled and not candidates:
@@ -1686,17 +1737,24 @@ def _clean_ai_profile_last_name(value: object) -> str:
     return text
 
 
+def _has_profile_ascii_text(*values: str) -> bool:
+    return any(ASCII_LETTER_RE.search(value or "") for value in values)
+
+
 def _generate_profiles_from_local_pool(accounts: list[TgAccount], strategy) -> list[dict[str, object]]:
     forbidden = {word.strip() for word in strategy.forbidden_words if word.strip()}
     results: list[dict[str, object]] = []
+    used_names: set[str] = set()
     for index, account in enumerate(accounts):
-        display_name = _local_profile_display_name(account.id, index)
+        display_name = _unique_local_profile_display_name(_local_profile_display_name(account.id, index), used_names)
+        used_names.add(display_name)
         bio = (
             PROFILE_BIO_POOL[(account.id * 3 + index) % len(PROFILE_BIO_POOL)]
             + PROFILE_BIO_TAILS[(account.id * 5 + index) % len(PROFILE_BIO_TAILS)]
         )
         if any(word in display_name for word in forbidden):
             display_name = f"用户{account.id}"
+            used_names.add(display_name)
         first_name = display_name
         last_name = ""
         username_base = (strategy.username_prefix_hint or _local_profile_username_base(account.id, index) or _romanize_name(display_name) or f"user{account.id}").lower()
@@ -1714,15 +1772,47 @@ def _generate_profiles_from_local_pool(accounts: list[TgAccount], strategy) -> l
     return results
 
 
+def _unique_local_profile_display_name(name: str, used_names: set[str]) -> str:
+    if name not in used_names:
+        return name
+    for tail in PROFILE_NAME_UNIQUE_TAILS:
+        candidate = f"{name}{tail}"
+        if candidate not in used_names:
+            return candidate
+    raise RuntimeError("本地随机中文名池不足，无法生成不重复昵称")
+
+
 def _local_profile_display_name(account_id: int, index: int) -> str:
+    seed = _local_profile_name_seed(account_id, index)
+    variant = _local_profile_name_variant(account_id, index)
+    if variant == 0:
+        name = PROFILE_NAME_SHORTS[seed % len(PROFILE_NAME_SHORTS)]
+    elif variant == 1:
+        name = _local_compound_profile_name(seed)
+    elif variant == 2:
+        name = PROFILE_NAME_PLAYFUL[seed % len(PROFILE_NAME_PLAYFUL)]
+    else:
+        name = PROFILE_NAME_SCENES[seed % len(PROFILE_NAME_SCENES)]
+    return name
+
+
+def _local_profile_name_variant(account_id: int, index: int) -> int:
+    return (
+        account_id * PROFILE_NAME_VARIANT_ACCOUNT_FACTOR
+        + index * PROFILE_NAME_VARIANT_INDEX_FACTOR
+    ) % PROFILE_NAME_VARIANT_COUNT
+
+
+def _local_profile_name_seed(account_id: int, index: int) -> int:
+    return account_id * PROFILE_NAME_POOL_ACCOUNT_FACTOR + index * PROFILE_NAME_POOL_INDEX_FACTOR
+
+
+def _local_compound_profile_name(seed: int) -> str:
     combo_count = len(PROFILE_NAME_PREFIXES) * len(PROFILE_NAME_SUFFIXES)
-    combo_index = (account_id * 37 + index * 101) % combo_count
+    combo_index = seed % combo_count
     prefix = PROFILE_NAME_PREFIXES[combo_index // len(PROFILE_NAME_SUFFIXES)]
     suffix = PROFILE_NAME_SUFFIXES[combo_index % len(PROFILE_NAME_SUFFIXES)]
-    name = f"{prefix}{suffix}"
-    if index >= combo_count:
-        return f"{name}{index + 1}"
-    return name
+    return f"{prefix}{suffix}"
 
 
 def _local_profile_username_base(account_id: int, index: int) -> str:

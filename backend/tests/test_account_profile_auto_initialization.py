@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -8,9 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import AccountStatus, AiAccountVoiceProfile, TelegramDeveloperApp, Tenant, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgLoginFlow
+from app.schemas.account_security import AccountSecurityPrecheckRequest, ProfileGenerationStrategy
 from app.security import encrypt_secret, encrypt_session
 from app.services import account_profile_auto_init
 from app.services import accounts as accounts_service
+import app.services.account_security.service as account_security_service
+from app.services.account_security import precheck_account_security_batch
 
 pytestmark = pytest.mark.no_postgres
 
@@ -143,6 +147,71 @@ def test_login_does_not_queue_profile_initialization_when_profile_is_ready(monke
 
         batch = session.scalar(select(TgAccountSecurityBatch))
         assert batch is None
+
+
+def test_local_profile_batch_names_do_not_cluster_on_four_to_six_characters():
+    with _session() as session:
+        _seed_tenant_and_app(session)
+        accounts = [
+            TgAccount(
+                id=index,
+                tenant_id=1,
+                display_name=f"导入0524-8740-{index:03d}",
+                phone_masked=f"138****{index:04d}",
+                developer_app_id=1,
+                status=AccountStatus.ACTIVE.value,
+                session_ciphertext=encrypt_session("session"),
+                health_score=90,
+            )
+            for index in range(1, 61)
+        ]
+        session.add_all(accounts)
+        session.commit()
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id for account in accounts],
+                action_types=["update_profile", "update_username"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="local_random"),
+            ),
+        )
+
+        names = [item.generated_display_name for item in preview.items]
+        clustered_count = sum(1 for name in names if 4 <= len(name) <= 6)
+        assert len(set(names)) == 60
+        assert any(len(name) <= 3 for name in names)
+        assert any(len(name) >= 7 for name in names)
+        assert clustered_count <= 45
+
+
+def test_ai_profile_parser_rejects_english_mixed_display_fields():
+    strategy = ProfileGenerationStrategy(generation_mode="ai_random")
+    raw = json.dumps(
+        {
+            "items": [
+                {
+                    "display_name": "小满 SunshineDailyLong",
+                    "first_name": "小满 SunshineDailyLong",
+                    "last_name": "VeryLongEnglishName",
+                    "bio": "hello there",
+                    "username_candidates": ["xiaoman_daily"],
+                },
+                {
+                    "display_name": "锅巴洋芋",
+                    "first_name": "锅巴洋芋",
+                    "last_name": "",
+                    "bio": "看到有意思的会回两句",
+                    "username_candidates": ["guoba_yangyu"],
+                },
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    with pytest.raises(RuntimeError, match="AI 生成资料不足"):
+        account_security_service._parse_ai_profile_items(raw, 2, strategy)
 
 
 def test_profile_reconcile_script_applies_when_only_voice_profiles_are_missing():
