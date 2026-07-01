@@ -93,6 +93,58 @@ def test_ai_group_quality_diagnostics_waits_for_full_active_probe_window():
     assert module.ONLINE_SETTLE_SECONDS >= 15 * 60
 
 
+def test_ai_group_quality_diagnostics_drains_hard_hourly_after_online_gate(monkeypatch):
+    module = load_quality_diagnostics_module()
+    task = SimpleNamespace(id="hard-ai", name="天津", status="running", next_run_at=None)
+    session = SimpleNamespace(commits=0, get=lambda _model, _task_id: task)
+
+    def commit():
+        session.commits += 1
+
+    class FakeTaskService:
+        @staticmethod
+        def _wake_hard_hourly_tasks(_session, *, limit):
+            assert limit == module.HARD_HOURLY_PLANNER_DRAIN_LIMIT
+            return ["hard-ai"]
+
+        @staticmethod
+        def hard_hourly_requires_planning(_session, _task, _now):
+            return True
+
+        @staticmethod
+        def _check_stop_conditions(_session, _task):
+            return False
+
+        @staticmethod
+        def _planning_backlog_blocked(_session, _task):
+            return False
+
+        @staticmethod
+        def build_task_plan(_session, _task):
+            return 10
+
+        @staticmethod
+        def refresh_task_stats(_session, _task):
+            _task.stats_refreshed = True
+
+        @staticmethod
+        def next_run_after_task(_task):
+            return None
+
+    session.commit = commit
+    monkeypatch.setattr(module, "task_service", FakeTaskService)
+
+    result = module.drain_hard_hourly_planner(session)
+
+    assert result == {
+        "task_count": 1,
+        "processed": 10,
+        "tasks": [{"task_id": "hard-ai", "name": "天津", "created": 10, "status": "planned"}],
+    }
+    assert task.stats_refreshed is True
+    assert session.commits == 2
+
+
 def test_ai_group_quality_diagnostics_formats_online_failure_row():
     module = load_quality_diagnostics_module()
     now = datetime(2026, 6, 30, 12, 0, 0)

@@ -1597,6 +1597,39 @@ def test_hard_hourly_refresh_preserves_plan_blockers_while_deficit_remains(monke
     assert stats["hard_hourly_last_blockers"] == {"rule_binding_missing": 4}
 
 
+@pytest.mark.no_postgres
+def test_hard_hourly_refresh_drops_transient_account_offline_blocker(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-transient-offline",
+            tenant_id=1,
+            name="硬目标账号在线恢复",
+            type="group_ai_chat",
+            status="running",
+            type_config={
+                "target_group_id": 7,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 4,
+                "hard_hourly_strategy": "force_planning",
+            },
+            stats={"hard_hourly_last_blockers": {"account_offline": 4}},
+        )
+        session.add_all([Tenant(id=1, name="默认运营空间"), task])
+        session.commit()
+
+        stats = refresh_task_stats(session, task)
+
+    assert stats["hard_hourly_deficit"] == 4
+    assert stats["hard_hourly_status"] == "catching_up"
+    assert "hard_hourly_last_blockers" not in stats
+
+
 def test_hard_hourly_future_open_over_account_capacity_stays_visible_without_covering_deficit(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

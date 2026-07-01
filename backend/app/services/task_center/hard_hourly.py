@@ -16,7 +16,7 @@ OPEN_STATUSES = {"pending", "claiming", "executing"}
 SEND_FILTER = (Action.task_type == "group_ai_chat", Action.action_type == "send_message")
 STRATEGY_FORCE_PLANNING = "force_planning"
 HARD_HOURLY_FRONTLOAD_WINDOW_SECONDS = 15 * 60
-DERIVED_BUCKET_BLOCKERS = frozenset({"account_capacity", "dispatcher_lag"})
+TRANSIENT_REFRESH_BLOCKERS = frozenset({"account_capacity", "account_offline", "dispatcher_lag"})
 
 
 @dataclass(frozen=True)
@@ -347,7 +347,7 @@ def _effective_last_blockers(current: dict[str, Any], current_stats: dict[str, A
     return {
         reason: count
         for reason, count in _int_blockers(current_stats.get("hard_hourly_last_blockers")).items()
-        if reason not in DERIVED_BUCKET_BLOCKERS
+        if reason not in TRANSIENT_REFRESH_BLOCKERS
     }
 
 

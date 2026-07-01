@@ -32,7 +32,7 @@
 | 前端壳 | `frontend/src/app/AppShell.tsx` | 菜单、页面切换、系统配置/素材等跨页资源入口。 |
 | 前端状态 | `frontend/src/app/context.tsx` + `frontend/src/app/context/*.ts` | 全局状态、刷新、账号/系统/内容/消息动作。 |
 | 部署 | `deploy/*.sh`、`Dockerfile.*`、`docker-compose*.yml` | release、compose、nginx 检查和服务器安装脚本。 |
-| 生产诊断 | `.github/workflows/deploy-production.yml`、`.github/scripts/*.py` | GitHub Actions 发布、生产只读诊断和专项修复脚本；AI 活群质量诊断由 `.github/scripts/ai_group_quality_diagnostics.py` 输出表达卡、消息记忆、重复风险、在线摘要、硬小时目标、素材意图 trace、素材候选数量和最近 action payload 证据，并等待/强制校验 desired 账号全部 online，stale/missing/offline 等在线缺口会让诊断失败；近 24 小时 open-chain 重复文本会输出 `AI_GROUP_QUALITY_RECENT_DUPLICATE_GATE_FAILED` 并阻断 release gate，running AI 活群已结束小时未达 `success >= hourly_min_messages` 或状态不是 `met` 会输出 `AI_GROUP_QUALITY_HARD_HOURLY_GATE_FAILED`，当前小时 `catching_up` 只有在未过期待执行足够覆盖缺口时才放行，否则同样阻断 release gate，历史成功重复作为 `sent_duplicate_observations` 输出；MiniMax 供应商密钥更新由 `.github/scripts/update_minimax_provider.py` 在生产容器内校验后加密落库。 |
+| 生产诊断 | `.github/workflows/deploy-production.yml`、`.github/scripts/*.py` | GitHub Actions 发布、生产诊断和专项修复脚本；AI 活群质量诊断由 `.github/scripts/ai_group_quality_diagnostics.py` 输出表达卡、消息记忆、重复风险、在线摘要、硬小时目标、素材意图 trace、素材候选数量和最近 action payload 证据，并等待/强制校验 desired 账号全部 online，stale/missing/offline 等在线缺口会让诊断失败；online gate 通过后诊断会触发一轮 hard-hourly planner drain 并输出 `AI_GROUP_QUALITY_HARD_HOURLY_DRAIN`，再校验当前小时是否有足够成功或待执行动作；近 24 小时 open-chain 重复文本会输出 `AI_GROUP_QUALITY_RECENT_DUPLICATE_GATE_FAILED` 并阻断 release gate，running AI 活群已结束小时未达 `success >= hourly_min_messages` 或状态不是 `met` 会输出 `AI_GROUP_QUALITY_HARD_HOURLY_GATE_FAILED`，当前小时 `catching_up` 只有在未过期待执行足够覆盖缺口时才放行，否则同样阻断 release gate，历史成功重复作为 `sent_duplicate_observations` 输出；MiniMax 供应商密钥更新由 `.github/scripts/update_minimax_provider.py` 在生产容器内校验后加密落库。 |
 
 ## 3. 业务域与代码边界
 

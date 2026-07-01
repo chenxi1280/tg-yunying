@@ -20,6 +20,8 @@ from app.models import (
     WorkerHeartbeat,
 )
 from app.services.account_online_projection import task_account_online_summary
+from app.services._common import _now
+from app.services.task_center import service as task_service
 from app.services.task_center.hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from app.timezone import as_beijing
 
@@ -35,6 +37,7 @@ ONLINE_SETTLE_SECONDS = 900
 ONLINE_SETTLE_POLL_SECONDS = 15
 QUALITY_PAYLOAD_BLOCKER_LIMIT = 20
 MATERIAL_TRACE_SAMPLE_LIMIT = 8
+HARD_HOURLY_PLANNER_DRAIN_LIMIT = 100
 ACTIVE_TASK_STATUSES = {"running"}
 ONLINE_BLOCK_KEYS = (
     "stale_count",
@@ -341,6 +344,39 @@ def wait_for_online_gate(session, since: datetime) -> list[dict[str, Any]]:
             raise SystemExit("AI group online quality gate failed")
         time.sleep(ONLINE_SETTLE_POLL_SECONDS)
         session.expire_all()
+
+
+def drain_hard_hourly_planner(session) -> dict[str, Any]:
+    task_ids = task_service._wake_hard_hourly_tasks(session, limit=HARD_HOURLY_PLANNER_DRAIN_LIMIT)
+    session.commit()
+    processed = 0
+    drained: list[dict[str, Any]] = []
+    for task_id in task_ids[:HARD_HOURLY_PLANNER_DRAIN_LIMIT]:
+        result = _drain_hard_hourly_task(session, task_id)
+        if result:
+            processed += int(result.get("created") or 0)
+            drained.append(result)
+    return {"task_count": len(task_ids), "processed": processed, "tasks": drained[:TASK_LIMIT]}
+
+
+def _drain_hard_hourly_task(session, task_id: str) -> dict[str, Any] | None:
+    task = session.get(Task, task_id)
+    if not task or task.status != "running":
+        return None
+    if not task_service.hard_hourly_requires_planning(session, task, _now()):
+        return None
+    if task_service._check_stop_conditions(session, task):
+        session.commit()
+        return {"task_id": task_id, "name": str(task.name or ""), "created": 0, "status": "stopped"}
+    if task_service._planning_backlog_blocked(session, task):
+        task_service.refresh_task_stats(session, task)
+        session.commit()
+        return {"task_id": task_id, "name": str(task.name or ""), "created": 0, "status": "backlog_blocked"}
+    created = task_service.build_task_plan(session, task)
+    task_service.refresh_task_stats(session, task)
+    task.next_run_at = task_service.next_run_after_task(task)
+    session.commit()
+    return {"task_id": task_id, "name": str(task.name or ""), "created": int(created), "status": "planned"}
 
 
 def online_failure_details(session, blockers: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
@@ -654,6 +690,9 @@ def main() -> None:
             json_line("AI_GROUP_QUALITY_PAYLOAD_GATE_FAILED", recent_duplicates)
             raise SystemExit("AI group quality payload gate failed")
         snapshots = wait_for_online_gate(session, since)
+        json_line("AI_GROUP_QUALITY_HARD_HOURLY_DRAIN", drain_hard_hourly_planner(session))
+        session.expire_all()
+        snapshots = task_snapshots(session, since)
         for snapshot in snapshots:
             json_line("AI_GROUP_QUALITY_TASK", snapshot)
         hard_hourly_blockers = hard_hourly_gate_blockers(snapshots)
