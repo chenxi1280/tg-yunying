@@ -28,6 +28,8 @@ SENSITIVE_CONTEXT_GUIDANCE = (
 )
 SENSITIVE_CONTEXT_REPLACEMENTS = {
     "嫖客": "谨慎观望客",
+    "妓女": "对象",
+    "楼凤": "本地信息",
     "色情": "敏感场景",
     "成人": "敏感场景",
     "性服务": "敏感服务",

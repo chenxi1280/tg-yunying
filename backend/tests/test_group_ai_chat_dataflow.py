@@ -461,7 +461,7 @@ def test_group_ai_prompt_includes_fixed_generation_slots(monkeypatch):
 
     assert "固定发言 slots" in captured["requirements"]
     assert "slot 1：task-1:cycle:1:turn:1；账号 11；行为 short_react" in captured["requirements"]
-    assert "话题 郑州楼凤对象怎么样；讨论老师 花花老师" in captured["requirements"]
+    assert "话题 郑州本地信息对象怎么样；讨论老师 花花老师" in captured["requirements"]
     assert "青年短句，少表情，爱接别人话" in captured["requirements"]
     assert "slot 2：task-1:cycle:1:turn:2；账号 12；行为 question" in captured["requirements"]
     assert "话题 主任最近约新对象了；讨论老师 新人榜单对象" in captured["requirements"]

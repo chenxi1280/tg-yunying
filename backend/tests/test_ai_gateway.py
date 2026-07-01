@@ -125,7 +125,7 @@ def test_provider_boundary_sanitizes_topic_label_and_system_prompt(monkeypatch):
 
     assert contents == ["先看看大家怎么说"]
     provider_text = "\n".join([captured["prompt"], captured["topic"], captured["system_prompt"]])
-    for raw in ["妹子", "价格", "位置", "嫖客", "半小时", "300块", "成人", "性服务"]:
+    for raw in ["妹子", "价格", "位置", "嫖客", "半小时", "300块", "成人", "性服务", "楼凤"]:
         assert raw not in provider_text
     assert "对象" in provider_text
     assert "成本" in provider_text
