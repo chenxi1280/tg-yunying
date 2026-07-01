@@ -40,6 +40,7 @@ MATERIAL_TRACE_SAMPLE_LIMIT = 8
 HARD_HOURLY_PLANNER_DRAIN_LIMIT = 100
 HARD_HOURLY_DISPATCH_SETTLE_SECONDS = 120
 HARD_HOURLY_DISPATCH_SETTLE_POLL_SECONDS = 10
+HARD_HOURLY_RETRYABLE_BLOCKERS = frozenset({"account_capacity", "account_offline", "dispatcher_lag"})
 ACTIVE_TASK_STATUSES = {"running"}
 ONLINE_BLOCK_KEYS = (
     "stale_count",
@@ -351,14 +352,59 @@ def wait_for_online_gate(session, since: datetime) -> list[dict[str, Any]]:
 def drain_hard_hourly_planner(session) -> dict[str, Any]:
     task_ids = task_service._wake_hard_hourly_tasks(session, limit=HARD_HOURLY_PLANNER_DRAIN_LIMIT)
     session.commit()
+    attempts = 0
     processed = 0
     drained: list[dict[str, Any]] = []
-    for task_id in task_ids[:HARD_HOURLY_PLANNER_DRAIN_LIMIT]:
+    pending_ids = task_ids[:HARD_HOURLY_PLANNER_DRAIN_LIMIT]
+    while pending_ids and attempts < HARD_HOURLY_PLANNER_DRAIN_LIMIT:
+        round_created, round_results = _drain_hard_hourly_tasks(session, pending_ids, attempts)
+        processed += round_created
+        attempts += len(round_results)
+        drained.extend(round_results)
+        if round_created <= 0:
+            break
+        pending_ids = _hard_hourly_planning_task_ids(session, attempts)
+    remaining_ids = _hard_hourly_planning_task_ids(session, attempts)
+    return {
+        "task_count": len(task_ids),
+        "attempts": attempts,
+        "processed": processed,
+        "remaining_task_count": len(remaining_ids),
+        "remaining_task_ids": remaining_ids[:TASK_LIMIT],
+        "tasks": drained[:TASK_LIMIT],
+    }
+
+
+def _drain_hard_hourly_tasks(session, task_ids: list[str], attempts: int) -> tuple[int, list[dict[str, Any]]]:
+    available = max(HARD_HOURLY_PLANNER_DRAIN_LIMIT - attempts, 0)
+    round_results: list[dict[str, Any]] = []
+    for task_id in task_ids[:available]:
         result = _drain_hard_hourly_task(session, task_id)
         if result:
-            processed += int(result.get("created") or 0)
-            drained.append(result)
-    return {"task_count": len(task_ids), "processed": processed, "tasks": drained[:TASK_LIMIT]}
+            round_results.append(result)
+    created = sum(int(result.get("created") or 0) for result in round_results)
+    return created, round_results
+
+
+def _hard_hourly_planning_task_ids(session, attempts: int) -> list[str]:
+    if attempts >= HARD_HOURLY_PLANNER_DRAIN_LIMIT:
+        return []
+    task_ids: list[str] = []
+    for task in active_group_tasks(session):
+        stats = diagnostic_task_stats(session, task)
+        if _has_retryable_hard_hourly_deficit(stats):
+            task_ids.append(str(task.id))
+    remaining = HARD_HOURLY_PLANNER_DRAIN_LIMIT - attempts
+    return task_ids[:remaining]
+
+
+def _has_retryable_hard_hourly_deficit(stats: dict[str, Any]) -> bool:
+    if not stats.get("hard_hourly_target_enabled"):
+        return False
+    if _safe_int(stats.get("hard_hourly_planning_deficit")) <= 0:
+        return False
+    blockers = set(dict(stats.get("hard_hourly_last_blockers") or {}).keys())
+    return blockers <= HARD_HOURLY_RETRYABLE_BLOCKERS
 
 
 def _drain_hard_hourly_task(session, task_id: str) -> dict[str, Any] | None:

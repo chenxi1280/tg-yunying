@@ -133,16 +133,137 @@ def test_ai_group_quality_diagnostics_drains_hard_hourly_after_online_gate(monke
 
     session.commit = commit
     monkeypatch.setattr(module, "task_service", FakeTaskService)
+    monkeypatch.setattr(module, "active_group_tasks", lambda _session: [task])
+    monkeypatch.setattr(
+        module,
+        "diagnostic_task_stats",
+        lambda _session, _task: {"hard_hourly_target_enabled": True, "hard_hourly_planning_deficit": 0},
+    )
 
     result = module.drain_hard_hourly_planner(session)
 
     assert result == {
         "task_count": 1,
+        "attempts": 1,
         "processed": 10,
+        "remaining_task_count": 0,
+        "remaining_task_ids": [],
         "tasks": [{"task_id": "hard-ai", "name": "天津", "created": 10, "status": "planned"}],
     }
     assert task.stats_refreshed is True
     assert session.commits == 2
+
+
+def test_ai_group_quality_diagnostics_drains_hard_hourly_until_planning_deficit_clears(monkeypatch):
+    module = load_quality_diagnostics_module()
+    task = SimpleNamespace(id="hard-ai", name="天津", status="running", next_run_at=None)
+    session = SimpleNamespace(commits=0, get=lambda _model, _task_id: task)
+    stats_queue = [
+        {"hard_hourly_target_enabled": True, "hard_hourly_planning_deficit": 2},
+        {"hard_hourly_target_enabled": True, "hard_hourly_planning_deficit": 0},
+    ]
+
+    class FakeTaskService:
+        @staticmethod
+        def _wake_hard_hourly_tasks(_session, *, limit):
+            assert limit == module.HARD_HOURLY_PLANNER_DRAIN_LIMIT
+            return ["hard-ai"]
+
+        @staticmethod
+        def hard_hourly_requires_planning(_session, _task, _now):
+            return True
+
+        @staticmethod
+        def _check_stop_conditions(_session, _task):
+            return False
+
+        @staticmethod
+        def _planning_backlog_blocked(_session, _task):
+            return False
+
+        @staticmethod
+        def build_task_plan(_session, _task):
+            return 2
+
+        @staticmethod
+        def refresh_task_stats(_session, _task):
+            _task.stats_refreshed = True
+
+        @staticmethod
+        def next_run_after_task(_task):
+            return None
+
+    session.commit = lambda: setattr(session, "commits", session.commits + 1)
+    monkeypatch.setattr(module, "task_service", FakeTaskService)
+    monkeypatch.setattr(module, "active_group_tasks", lambda _session: [task])
+
+    def diagnostic_task_stats(_session, _task):
+        if stats_queue:
+            return stats_queue.pop(0)
+        return {"hard_hourly_target_enabled": True, "hard_hourly_planning_deficit": 0}
+
+    monkeypatch.setattr(module, "diagnostic_task_stats", diagnostic_task_stats)
+
+    result = module.drain_hard_hourly_planner(session)
+
+    assert result["attempts"] == 2
+    assert result["processed"] == 4
+    assert result["remaining_task_count"] == 0
+    assert [row["created"] for row in result["tasks"]] == [2, 2]
+    assert task.stats_refreshed is True
+
+
+def test_ai_group_quality_diagnostics_does_not_redrain_structural_hard_hourly_blocker(monkeypatch):
+    module = load_quality_diagnostics_module()
+    task = SimpleNamespace(id="hard-ai", name="天津", status="running", next_run_at=None)
+    session = SimpleNamespace(commits=0, get=lambda _model, _task_id: task)
+    stats = {
+        "hard_hourly_target_enabled": True,
+        "hard_hourly_planning_deficit": 2,
+        "hard_hourly_last_blockers": {"ai_generation_unavailable": 2},
+    }
+
+    class FakeTaskService:
+        @staticmethod
+        def _wake_hard_hourly_tasks(_session, *, limit):
+            assert limit == module.HARD_HOURLY_PLANNER_DRAIN_LIMIT
+            return ["hard-ai"]
+
+        @staticmethod
+        def hard_hourly_requires_planning(_session, _task, _now):
+            return True
+
+        @staticmethod
+        def _check_stop_conditions(_session, _task):
+            return False
+
+        @staticmethod
+        def _planning_backlog_blocked(_session, _task):
+            return False
+
+        @staticmethod
+        def build_task_plan(_session, _task):
+            return 0
+
+        @staticmethod
+        def refresh_task_stats(_session, _task):
+            _task.stats_refreshed = True
+
+        @staticmethod
+        def next_run_after_task(_task):
+            return None
+
+    session.commit = lambda: setattr(session, "commits", session.commits + 1)
+    monkeypatch.setattr(module, "task_service", FakeTaskService)
+    monkeypatch.setattr(module, "active_group_tasks", lambda _session: [task])
+    monkeypatch.setattr(module, "diagnostic_task_stats", lambda _session, _task: stats)
+
+    result = module.drain_hard_hourly_planner(session)
+
+    assert result["attempts"] == 1
+    assert result["processed"] == 0
+    assert result["remaining_task_count"] == 0
+    assert task.stats_refreshed is True
 
 
 def test_ai_group_quality_diagnostics_settles_dispatch_lag_after_drain(monkeypatch):
