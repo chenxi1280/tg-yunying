@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.models import AccountStatus, TgAccount, TgAccountSecurityBatchItem
+from app.models import AccountStatus, TgAccount, TgAccountSecurityBatch, TgAccountSecurityBatchItem
 from app.schemas.account_security import (
     AccountSecurityBatchCreate,
     AccountSecurityProfileOverride,
@@ -27,18 +27,26 @@ REASON = "生产账号半数中文昵称重抽：去除雷同和中英混名"
 def main() -> int:
     with SessionLocal() as session:
         accounts = _eligible_accounts(session)
-        selected = _selected_half(accounts)
-        before = _account_samples(selected)
-        batch_id = _create_batch(session, selected) if selected else 0
+        existing_batch_id = _existing_batch_id(session)
+        if existing_batch_id:
+            batch_id = existing_batch_id
+            selected_ids = _batch_account_ids(session, batch_id)
+            before = []
+        else:
+            selected = _selected_half(accounts)
+            selected_ids = [account.id for account in selected]
+            before = _account_samples(selected)
+            batch_id = _create_batch(session, selected) if selected else 0
     processed = _drain_batch_items(batch_id, DRAIN_LIMIT) if batch_id else 0
     with SessionLocal() as session:
         batch = account_security_batch_detail(session, TENANT_ID, batch_id) if batch_id else None
-        selected_after = _accounts_by_id(session, [account.id for account in selected])
+        selected_after = _accounts_by_id(session, selected_ids)
         payload = {
             "tenant_id": TENANT_ID,
             "eligible_account_count": len(accounts),
-            "selected_account_count": len(selected),
+            "selected_account_count": len(selected_ids),
             "batch_id": batch_id,
+            "reused_existing_batch": bool(existing_batch_id),
             "processed_item_count": processed,
             "before_samples": before[:10],
             "after_samples": _account_samples(selected_after)[:10],
@@ -62,6 +70,33 @@ def _eligible_accounts(session) -> list[TgAccount]:
                 TgAccount.session_ciphertext != "",
             )
             .order_by(TgAccount.id.asc())
+        )
+    )
+
+
+def _existing_batch_id(session) -> int:
+    return int(
+        session.scalar(
+            select(TgAccountSecurityBatch.id)
+            .where(
+                TgAccountSecurityBatch.tenant_id == TENANT_ID,
+                TgAccountSecurityBatch.created_by == ACTOR,
+                TgAccountSecurityBatch.reason == REASON,
+                TgAccountSecurityBatch.status != "cancelled",
+            )
+            .order_by(TgAccountSecurityBatch.id.desc())
+            .limit(1)
+        )
+        or 0
+    )
+
+
+def _batch_account_ids(session, batch_id: int) -> list[int]:
+    return list(
+        session.scalars(
+            select(TgAccountSecurityBatchItem.account_id)
+            .where(TgAccountSecurityBatchItem.batch_id == batch_id)
+            .order_by(TgAccountSecurityBatchItem.id.asc())
         )
     )
 
