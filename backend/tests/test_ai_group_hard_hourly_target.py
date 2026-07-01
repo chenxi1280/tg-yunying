@@ -579,7 +579,7 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
 
     assert created == 5
     assert captured["count"] == 5
-    assert captured["require_mimo_draft"] is True
+    assert captured["require_mimo_draft"] is False
     assert len(actions) == 5
     assert all(action.payload["hard_hourly_target"] is True for action in actions)
     assert all(action.payload["hard_hourly_bucket"] == "2026-06-07T20:00:00+08:00" for action in actions)

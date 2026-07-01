@@ -1852,7 +1852,6 @@ def _hard_hourly_round_config(config: dict, progress: dict[str, object]) -> dict
     updated["messages_per_round_mode"] = "manual"
     updated["messages_per_round"] = _hard_hourly_batch_size(config, progress)
     updated["allow_account_repeat"] = True
-    updated["require_mimo_draft"] = True
     return updated
 
 

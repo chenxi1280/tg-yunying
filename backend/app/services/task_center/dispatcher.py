@@ -783,8 +783,6 @@ def _runtime_group_ai_config(task: Task, batch: list[tuple[Action, SendMessagePa
     config["account_profiles"] = _payload_map(batch, "account_profile")
     config["generation_slots"] = _payload_generation_slots(batch)
     first_payload = batch[0][1]
-    if first_payload.hard_hourly_target:
-        config["require_mimo_draft"] = True
     if first_payload.topic_thread:
         config["topic_thread"] = first_payload.topic_thread
     if first_payload.topic_plan:

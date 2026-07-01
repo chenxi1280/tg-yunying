@@ -72,3 +72,13 @@ def test_dispatcher_runtime_config_preserves_deferred_generation_slots():
         "青年短句，接话快",
         "中年谨慎，常追问",
     ]
+
+
+def test_dispatcher_runtime_config_does_not_force_mimo_for_hard_hourly_without_model():
+    payload = _pending_send_payload()
+    payload.hard_hourly_target = True
+    batch = [(SimpleNamespace(account_id=11), payload)]
+
+    config = dispatcher._runtime_group_ai_config(SimpleNamespace(type_config={}), batch)
+
+    assert config.get("require_mimo_draft") is None
