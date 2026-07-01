@@ -369,7 +369,7 @@ def drain_hard_hourly_planner(session) -> dict[str, Any]:
     attempts = 0
     processed = 0
     drained: list[dict[str, Any]] = []
-    pending_ids = task_ids[:HARD_HOURLY_PLANNER_DRAIN_LIMIT]
+    pending_ids = _merge_ordered_task_ids(task_ids, _hard_hourly_planning_task_ids(session, attempts))
     while pending_ids and attempts < HARD_HOURLY_PLANNER_DRAIN_LIMIT:
         round_created, round_results = _drain_hard_hourly_tasks(session, pending_ids, attempts)
         processed += round_created
@@ -389,6 +389,19 @@ def drain_hard_hourly_planner(session) -> dict[str, Any]:
     }
 
 
+def _merge_ordered_task_ids(primary: list[str], secondary: list[str]) -> list[str]:
+    task_ids: list[str] = []
+    seen: set[str] = set()
+    for task_id in [*primary, *secondary]:
+        if task_id in seen:
+            continue
+        task_ids.append(task_id)
+        seen.add(task_id)
+        if len(task_ids) >= HARD_HOURLY_PLANNER_DRAIN_LIMIT:
+            break
+    return task_ids
+
+
 def _drain_hard_hourly_tasks(session, task_ids: list[str], attempts: int) -> tuple[int, list[dict[str, Any]]]:
     available = max(HARD_HOURLY_PLANNER_DRAIN_LIMIT - attempts, 0)
     round_results: list[dict[str, Any]] = []
@@ -405,6 +418,8 @@ def _hard_hourly_planning_task_ids(session, attempts: int) -> list[str]:
         return []
     task_ids: list[str] = []
     for task in active_group_tasks(session):
+        if task.status != "running":
+            continue
         stats = diagnostic_task_stats(session, task)
         if _has_retryable_hard_hourly_deficit(stats):
             task_ids.append(str(task.id))

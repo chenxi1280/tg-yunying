@@ -21,6 +21,30 @@ def load_quality_diagnostics_module():
     return module
 
 
+def hard_hourly_stats(deficit: int, blockers: dict[str, int] | None = None) -> dict[str, object]:
+    return {
+        "hard_hourly_target_enabled": True,
+        "hard_hourly_planning_deficit": deficit,
+        "hard_hourly_last_blockers": blockers or {},
+    }
+
+
+def fake_hard_hourly_task_service(module, *, created: int, woken_ids: list[str]):
+    def wake(_session, *, limit):
+        assert limit == module.HARD_HOURLY_PLANNER_DRAIN_LIMIT
+        return woken_ids
+
+    return SimpleNamespace(
+        _wake_hard_hourly_tasks=wake,
+        hard_hourly_requires_planning=lambda _session, _task, _now: True,
+        _check_stop_conditions=lambda _session, _task: False,
+        _planning_backlog_blocked=lambda _session, _task: False,
+        build_task_plan=lambda _session, _task: created,
+        refresh_task_stats=lambda _session, task: setattr(task, "stats_refreshed", True),
+        next_run_after_task=lambda _task: None,
+    )
+
+
 def test_ai_group_quality_diagnostics_blocks_stale_online_state():
     module = load_quality_diagnostics_module()
 
@@ -160,6 +184,7 @@ def test_ai_group_quality_diagnostics_drains_hard_hourly_until_planning_deficit_
     session = SimpleNamespace(commits=0, get=lambda _model, _task_id: task)
     stats_queue = [
         {"hard_hourly_target_enabled": True, "hard_hourly_planning_deficit": 2},
+        {"hard_hourly_target_enabled": True, "hard_hourly_planning_deficit": 2},
         {"hard_hourly_target_enabled": True, "hard_hourly_planning_deficit": 0},
     ]
 
@@ -277,6 +302,11 @@ def test_ai_group_quality_diagnostics_retries_quality_hard_hourly_blocker(monkey
             "hard_hourly_planning_deficit": 2,
             "hard_hourly_last_blockers": {"duplicate_message": 2},
         },
+        {
+            "hard_hourly_target_enabled": True,
+            "hard_hourly_planning_deficit": 2,
+            "hard_hourly_last_blockers": {"duplicate_message": 2},
+        },
         {"hard_hourly_target_enabled": True, "hard_hourly_planning_deficit": 0},
     ]
 
@@ -327,6 +357,38 @@ def test_ai_group_quality_diagnostics_retries_quality_hard_hourly_blocker(monkey
     assert result["processed"] == 2
     assert result["remaining_task_count"] == 0
     assert [row["created"] for row in result["tasks"]] == [0, 2]
+
+
+def test_ai_group_quality_diagnostics_drains_active_retryable_task_when_wake_is_empty(monkeypatch):
+    module = load_quality_diagnostics_module()
+    active_task = SimpleNamespace(id="active-ai", name="青岛师范学院", status="running", next_run_at=None)
+    paused_task = SimpleNamespace(id="paused-ai", name="历史暂停任务", status="paused", next_run_at=None)
+    tasks_by_id = {active_task.id: active_task, paused_task.id: paused_task}
+    session = SimpleNamespace(commits=0, get=lambda _model, task_id: tasks_by_id.get(task_id))
+    stats_queue = [hard_hourly_stats(1, {"duplicate_message": 6}), hard_hourly_stats(0)]
+
+    session.commit = lambda: setattr(session, "commits", session.commits + 1)
+    monkeypatch.setattr(module, "task_service", fake_hard_hourly_task_service(module, created=1, woken_ids=[]))
+    monkeypatch.setattr(module, "active_group_tasks", lambda _session: [active_task, paused_task])
+
+    def diagnostic_task_stats(_session, task):
+        if task.status == "paused":
+            return hard_hourly_stats(10, {"duplicate_message": 10})
+        if stats_queue:
+            return stats_queue.pop(0)
+        return hard_hourly_stats(0)
+
+    monkeypatch.setattr(module, "diagnostic_task_stats", diagnostic_task_stats)
+
+    result = module.drain_hard_hourly_planner(session)
+
+    assert result["task_count"] == 0
+    assert result["attempts"] == 1
+    assert result["processed"] == 1
+    assert result["remaining_task_count"] == 0
+    assert result["tasks"] == [{"task_id": "active-ai", "name": "青岛师范学院", "created": 1, "status": "planned"}]
+    assert active_task.stats_refreshed is True
+    assert not hasattr(paused_task, "stats_refreshed")
 
 
 def test_ai_group_quality_diagnostics_settles_dispatch_lag_after_drain(monkeypatch):
