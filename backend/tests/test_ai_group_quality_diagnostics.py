@@ -490,6 +490,105 @@ def test_ai_group_quality_diagnostics_does_not_settle_generation_blocker(monkeyp
     assert result == ["blocked"]
 
 
+def test_ai_group_quality_diagnostics_blocks_recent_missed_hard_hourly_bucket():
+    module = load_quality_diagnostics_module()
+
+    blockers = module.hard_hourly_gate_blockers(
+        [
+            {
+                "task_id": "hard-ai",
+                "name": "天津",
+                "status": "running",
+                "stats": {
+                    "hard_hourly_target_enabled": True,
+                    "hard_hourly_bucket": "2026-07-01T21:00:00+08:00",
+                    "hard_hourly_goal": 10,
+                    "hard_hourly_success_count": 10,
+                    "hard_hourly_status": "met",
+                    "hard_hourly_recent_buckets": [
+                        {
+                            "bucket": "2026-07-01T20:00:00+08:00",
+                            "goal": 10,
+                            "success_count": 6,
+                            "future_open_count": 0,
+                            "overdue_open_count": 0,
+                            "deficit": 4,
+                            "planning_deficit": 4,
+                            "status": "missed",
+                            "blockers": {},
+                        },
+                        {
+                            "bucket": "2026-07-01T21:00:00+08:00",
+                            "goal": 10,
+                            "success_count": 10,
+                            "future_open_count": 0,
+                            "overdue_open_count": 0,
+                            "deficit": 0,
+                            "planning_deficit": 0,
+                            "status": "met",
+                            "blockers": {},
+                        },
+                    ],
+                },
+            }
+        ]
+    )
+
+    assert blockers == [
+        {
+            "task_id": "hard-ai",
+            "name": "天津",
+            "status": "running",
+            "missed_bucket_count": 1,
+            "missed_deficit": 4,
+            "buckets": [
+                {
+                    "bucket": "2026-07-01T20:00:00+08:00",
+                    "goal": 10,
+                    "success_count": 6,
+                    "deficit": 4,
+                    "status": "missed",
+                }
+            ],
+            "reason": "hard_hourly_history_missed",
+        }
+    ]
+
+
+def test_ai_group_quality_diagnostics_allows_compensated_hard_hourly_history():
+    module = load_quality_diagnostics_module()
+
+    blockers = module.hard_hourly_gate_blockers(
+        [
+            {
+                "task_id": "hard-ai",
+                "name": "天津",
+                "status": "running",
+                "stats": {
+                    "hard_hourly_target_enabled": True,
+                    "hard_hourly_bucket": "2026-07-01T21:00:00+08:00",
+                    "hard_hourly_goal": 10,
+                    "hard_hourly_success_count": 10,
+                    "hard_hourly_status": "met",
+                    "hard_hourly_backfill_debt": 0,
+                    "hard_hourly_backfill_planning_deficit": 0,
+                    "hard_hourly_recent_buckets": [
+                        {
+                            "bucket": "2026-07-01T20:00:00+08:00",
+                            "goal": 10,
+                            "success_count": 6,
+                            "deficit": 4,
+                            "status": "missed",
+                        }
+                    ],
+                },
+            }
+        ]
+    )
+
+    assert blockers == []
+
+
 def test_ai_group_quality_diagnostics_formats_online_failure_row():
     module = load_quality_diagnostics_module()
     now = datetime(2026, 6, 30, 12, 0, 0)

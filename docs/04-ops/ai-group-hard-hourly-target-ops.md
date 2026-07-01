@@ -29,6 +29,9 @@
 | `hard_hourly_pipeline` | 入群、验证、`can_send`、MiMo/Mino draft、dispatcher、硬目标分阶段状态 |
 | `hard_hourly_last_blockers` | 最近一次未补足原因分布 |
 | `hard_hourly_recent_buckets` | 最近 24 个小时的达标和阻塞摘要 |
+| `hard_hourly_backfill_debt` | 已结束小时缺口扣减后续已送超额后的净补量债务 |
+| `hard_hourly_backfill_planning_deficit` | 扣减当前小时已规划超额后仍需继续创建的补量动作数 |
+| `hard_hourly_backfill_delivery_deficit` | 扣减当前小时已送超额后仍需真实送达的补量数 |
 
 ### 2.2 Action 级指标
 硬目标补量 action 需要带：

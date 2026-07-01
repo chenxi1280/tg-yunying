@@ -13,7 +13,11 @@ from app.database import Base
 from app.models import Action, GroupContextMessage, OperationTarget, SchedulingSetting, Task, Tenant, TgAccount, TgAccountOnlineState, TgGroup, TgGroupAccount
 from app.schemas import GroupAIChatTaskCreate, TaskPrecheckRequest
 from app.services.task_center.executors.group_ai_chat import build_plan as build_group_ai_chat_plan
-from app.services.task_center.hard_hourly import hard_schedule_times, requires_planning as hard_hourly_requires_planning
+from app.services.task_center.hard_hourly import (
+    current_progress as hard_hourly_current_progress,
+    hard_schedule_times,
+    requires_planning as hard_hourly_requires_planning,
+)
 from app.services.task_center.service import (
     _merge_planner_task_ids,
     _wake_hard_hourly_tasks,
@@ -1580,6 +1584,57 @@ def test_hard_hourly_future_pending_covers_planning_deficit_only(monkeypatch):
     assert stats["hard_hourly_deficit"] == 3
     assert stats["hard_hourly_planning_deficit"] == 1
     assert stats["hard_hourly_status"] == "catching_up"
+    assert needs_more is True
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_planning_includes_recent_history_backfill_debt(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-backfill-debt",
+            tenant_id=1,
+            name="天津",
+            type="group_ai_chat",
+            status="running",
+            timezone="Asia/Shanghai",
+            created_at=datetime(2026, 6, 7, 19, 0),
+            type_config={
+                "target_group_id": 7,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 4,
+                "hard_hourly_strategy": "force_planning",
+            },
+            stats={"started_at": "2026-06-07T19:00:00"},
+        )
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                task,
+                _send_action("last-hour-ok", task, "success", executed_at=datetime(2026, 6, 7, 19, 5)),
+                _send_action("current-ok", task, "success", executed_at=datetime(2026, 6, 7, 20, 5)),
+                _send_action("current-future-1", task, "pending", account_id=101, scheduled_at=datetime(2026, 6, 7, 20, 35)),
+                _send_action("current-future-2", task, "pending", account_id=102, scheduled_at=datetime(2026, 6, 7, 20, 40)),
+                _send_action("current-future-3", task, "pending", account_id=103, scheduled_at=datetime(2026, 6, 7, 20, 45)),
+                _send_action("current-future-4", task, "pending", account_id=104, scheduled_at=datetime(2026, 6, 7, 20, 50)),
+                _send_action("current-future-5", task, "pending", account_id=105, scheduled_at=datetime(2026, 6, 7, 20, 55)),
+            ]
+        )
+        session.commit()
+
+        stats = refresh_task_stats(session, task)
+        progress = hard_hourly_current_progress(session, task, now_value)
+        needs_more = hard_hourly_requires_planning(session, task, now_value)
+
+    assert stats["hard_hourly_planning_deficit"] == 0
+    assert stats["hard_hourly_backfill_debt"] == 3
+    assert stats["hard_hourly_backfill_planning_deficit"] == 1
+    assert progress["deficit"] == 1
     assert needs_more is True
 
 

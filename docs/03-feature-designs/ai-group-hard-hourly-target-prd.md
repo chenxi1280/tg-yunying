@@ -523,7 +523,7 @@ AI 活跃群任务卡片增加硬目标摘要：
 - 新建一个测试 AI 活跃群任务，设置最低硬目标 10 条 / 小时，确认当前小时缺口会触发追加规划。
 - 设置高于账号容量的硬目标，确认系统不会伪造成功，会展示容量不足或 TG 限制。
 - 对 3 个线上 AI 活跃群逐一核对：入群完成、验证完成、`can_send`、MiMo/Mino draft、dispatcher 消化和硬目标完成度，不允许只用任务 running 或 pending 数量证明达标。
-- 线上验收必须区分“已结束小时”和“当前小时追赶中”：已结束小时只认 `send_message success >= hourly_min_messages` 且 `hard_hourly_status=met`；当前小时允许 `catching_up`，但必须满足 `success_count + future_open_count >= hourly_min_messages` 且 `overdue_open_count=0`，否则仍视为未验收。生产 AI 活群质量诊断必须使用当前 action 现场重算 hard-hourly stats；running 任务出现无待执行规划、待执行不足、已过期待执行、`blocked` 或 `missed` 时输出 `AI_GROUP_QUALITY_HARD_HOURLY_GATE_FAILED`，不能仅凭任务 running、pending 或旧 stats 放行。
+- 线上验收必须区分“已结束小时”和“当前小时追赶中”：已结束小时保留真实 `missed` 记录，不回写伪造为 `met`；历史缺口必须通过后续真实 `send_message success` 超额补偿，并让 `hard_hourly_backfill_debt=0`。当前小时允许 `catching_up`，但必须满足 `success_count + future_open_count >= hourly_min_messages` 且 `overdue_open_count=0`，否则仍视为未验收。生产 AI 活群质量诊断必须使用当前 action 现场重算 hard-hourly stats；running 任务出现无待执行规划、待执行不足、已过期待执行、`blocked`、当前 `missed` 或历史 `hard_hourly_backfill_debt > 0` 时输出 `AI_GROUP_QUALITY_HARD_HOURLY_GATE_FAILED`，不能仅凭任务 running、pending 或旧 stats 放行。
 - 用至少一个需要验证码 / 加减验证 / 关注多个频道的目标验证准入链路；未完成时应停在 membership / verification blocker，完成后应写回 `can_send=true` 并进入发送规划。
 - 人为让 MiMo/Mino 返回 malformed JSON 或关闭健康供应商时，任务必须显示 AI draft 阻塞，不能生成 mock 成功消息。
 - 对比 `/api/overview`、`/api/tasks`、`/api/tasks/{id}/stats` 和 action 明细，确认成功数、待执行数和缺口一致。

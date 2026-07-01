@@ -273,6 +273,7 @@ def hard_hourly_gate_blockers(snapshots: list[dict[str, Any]]) -> list[dict[str,
             continue
         if not stats.get("hard_hourly_target_enabled"):
             continue
+        blockers.extend(_hard_hourly_history_blockers(snapshot, stats))
         goal = _safe_int(stats.get("hard_hourly_goal"))
         success = _safe_int(stats.get("hard_hourly_success_count"))
         status = str(stats.get("hard_hourly_status") or "")
@@ -280,6 +281,52 @@ def hard_hourly_gate_blockers(snapshots: list[dict[str, Any]]) -> list[dict[str,
             continue
         blockers.append(_hard_hourly_blocker(snapshot, stats, goal, success, status))
     return blockers[:TASK_LIMIT]
+
+
+def _hard_hourly_history_blockers(snapshot: dict[str, Any], stats: dict[str, Any]) -> list[dict[str, Any]]:
+    current_bucket = str(stats.get("hard_hourly_bucket") or "")
+    missed = [
+        item
+        for raw_bucket in stats.get("hard_hourly_recent_buckets") or []
+        if (item := _missed_hard_hourly_bucket(raw_bucket, current_bucket))
+    ]
+    if "hard_hourly_backfill_debt" in stats and _safe_int(stats.get("hard_hourly_backfill_debt")) <= 0:
+        return []
+    if not missed:
+        return []
+    blocker = {
+        "task_id": str(snapshot.get("task_id") or ""),
+        "name": str(snapshot.get("name") or ""),
+        "status": str(snapshot.get("status") or ""),
+        "missed_bucket_count": len(missed),
+        "missed_deficit": sum(int(item["deficit"]) for item in missed),
+        "buckets": missed[:TASK_LIMIT],
+        "reason": "hard_hourly_history_missed",
+    }
+    if "hard_hourly_backfill_debt" in stats:
+        blocker["backfill_debt"] = _safe_int(stats.get("hard_hourly_backfill_debt"))
+        blocker["backfill_planning_deficit"] = _safe_int(stats.get("hard_hourly_backfill_planning_deficit"))
+    return [
+        blocker
+    ]
+
+
+def _missed_hard_hourly_bucket(raw_bucket: object, current_bucket: str) -> dict[str, Any] | None:
+    if not isinstance(raw_bucket, dict) or str(raw_bucket.get("bucket") or "") == current_bucket:
+        return None
+    goal = _safe_int(raw_bucket.get("goal"))
+    success = _safe_int(raw_bucket.get("success_count"))
+    deficit = _safe_int(raw_bucket.get("deficit"))
+    status = str(raw_bucket.get("status") or "")
+    if goal <= 0 or (status != "missed" and (success >= goal or deficit <= 0)):
+        return None
+    return {
+        "bucket": str(raw_bucket.get("bucket") or ""),
+        "goal": goal,
+        "success_count": success,
+        "deficit": deficit,
+        "status": status,
+    }
 
 
 def _hard_hourly_gate_passed(stats: dict[str, Any], goal: int, success: int, status: str) -> bool:

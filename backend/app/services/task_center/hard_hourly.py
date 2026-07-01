@@ -49,12 +49,17 @@ def current_progress(session: Session, task: Task, now: datetime) -> dict[str, A
     now_local = normalize(task, now)
     delivery_deficit = int(stats.get("hard_hourly_deficit") or 0)
     planning_deficit = int(stats.get("hard_hourly_planning_deficit", delivery_deficit) or 0)
+    backfill_delivery_deficit = int(stats.get("hard_hourly_backfill_delivery_deficit") or 0)
+    backfill_planning_deficit = int(stats.get("hard_hourly_backfill_planning_deficit") or 0)
     return {
         "enabled": bool(stats.get("hard_hourly_target_enabled")),
         "goal": int(stats.get("hard_hourly_goal") or 0),
         "bucket": str(stats.get("hard_hourly_bucket") or ""),
-        "deficit": planning_deficit,
-        "delivery_deficit": delivery_deficit,
+        "deficit": planning_deficit + backfill_planning_deficit,
+        "delivery_deficit": delivery_deficit + backfill_delivery_deficit,
+        "backfill_debt": int(stats.get("hard_hourly_backfill_debt") or 0),
+        "backfill_planning_deficit": backfill_planning_deficit,
+        "backfill_delivery_deficit": backfill_delivery_deficit,
         "future_open_count": int(stats.get("hard_hourly_open_count") or 0),
         "overdue_open_count": int(stats.get("hard_hourly_overdue_open_count") or 0),
         "hour_end": hour_bounds(task, now)[1],
@@ -78,6 +83,7 @@ def hard_hourly_stats(session: Session, task: Task, now: datetime, current_stats
     status = _current_status(current, now_local, bucket_end, last_blockers)
     updated = dict(current_stats)
     updated.update(_current_stat_values(task, now_local, current, status, last_blockers))
+    updated.update(_backfill_stat_values(task, buckets, current, current_stats))
     if last_blockers:
         updated["hard_hourly_last_blockers"] = last_blockers
     else:
@@ -347,6 +353,75 @@ def _current_stat_values(
         "hard_hourly_status": status,
         "hard_hourly_pipeline": _pipeline_status(status, blockers),
     }
+
+
+def _backfill_stat_values(
+    task: Task,
+    buckets: list[dict[str, Any]],
+    current: dict[str, Any],
+    current_stats: dict[str, Any],
+) -> dict[str, Any]:
+    debt, missed_count = _history_debt(task, buckets, str(current.get("bucket") or ""), current_stats)
+    current_goal = int(current.get("goal") or 0)
+    current_success = int(current.get("success_count") or 0)
+    current_open = int(current.get("future_open_count") or 0)
+    planned_surplus = max(0, current_success + current_open - current_goal)
+    delivered_surplus = max(0, current_success - current_goal)
+    return {
+        "hard_hourly_backfill_debt": debt,
+        "hard_hourly_backfill_missed_bucket_count": missed_count,
+        "hard_hourly_backfill_planning_deficit": max(0, debt - planned_surplus),
+        "hard_hourly_backfill_delivery_deficit": max(0, debt - delivered_surplus),
+    }
+
+
+def _history_debt(
+    task: Task,
+    buckets: list[dict[str, Any]],
+    current_bucket: str,
+    current_stats: dict[str, Any],
+) -> tuple[int, int]:
+    active_since = _active_since(task, current_stats)
+    raw_debt = 0
+    surplus = 0
+    missed_count = 0
+    for bucket in buckets:
+        if str(bucket.get("bucket") or "") == current_bucket:
+            continue
+        if not _bucket_counts_after_active(task, bucket, active_since):
+            continue
+        bucket_debt = max(0, int(bucket.get("goal") or 0) - int(bucket.get("success_count") or 0))
+        raw_debt += bucket_debt
+        surplus += max(0, int(bucket.get("success_count") or 0) - int(bucket.get("goal") or 0))
+        missed_count += 1 if bucket_debt > 0 else 0
+    return max(0, raw_debt - surplus), missed_count
+
+
+def _active_since(task: Task, current_stats: dict[str, Any]) -> datetime:
+    started_at = _parse_datetime(current_stats.get("started_at"))
+    if started_at is not None:
+        return normalize(task, started_at)
+    if task.scheduled_start is not None:
+        return normalize(task, task.scheduled_start)
+    return normalize(task, task.created_at)
+
+
+def _bucket_counts_after_active(task: Task, bucket: dict[str, Any], active_since: datetime) -> bool:
+    bucket_start = _parse_datetime(bucket.get("bucket"))
+    if bucket_start is None:
+        return False
+    return normalize(task, bucket_start) + timedelta(hours=1) > active_since
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
 
 
 def _pipeline_status(status: str, blockers: dict[str, int]) -> dict[str, str]:
