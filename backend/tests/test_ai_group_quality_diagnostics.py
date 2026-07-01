@@ -266,6 +266,69 @@ def test_ai_group_quality_diagnostics_does_not_redrain_structural_hard_hourly_bl
     assert task.stats_refreshed is True
 
 
+def test_ai_group_quality_diagnostics_retries_quality_hard_hourly_blocker(monkeypatch):
+    module = load_quality_diagnostics_module()
+    task = SimpleNamespace(id="hard-ai", name="石家庄", status="running", next_run_at=None)
+    session = SimpleNamespace(commits=0, get=lambda _model, _task_id: task)
+    created_queue = [0, 2]
+    stats_queue = [
+        {
+            "hard_hourly_target_enabled": True,
+            "hard_hourly_planning_deficit": 2,
+            "hard_hourly_last_blockers": {"duplicate_message": 2},
+        },
+        {"hard_hourly_target_enabled": True, "hard_hourly_planning_deficit": 0},
+    ]
+
+    class FakeTaskService:
+        @staticmethod
+        def _wake_hard_hourly_tasks(_session, *, limit):
+            assert limit == module.HARD_HOURLY_PLANNER_DRAIN_LIMIT
+            return ["hard-ai"]
+
+        @staticmethod
+        def hard_hourly_requires_planning(_session, _task, _now):
+            return True
+
+        @staticmethod
+        def _check_stop_conditions(_session, _task):
+            return False
+
+        @staticmethod
+        def _planning_backlog_blocked(_session, _task):
+            return False
+
+        @staticmethod
+        def build_task_plan(_session, _task):
+            return created_queue.pop(0)
+
+        @staticmethod
+        def refresh_task_stats(_session, _task):
+            _task.stats_refreshed = True
+
+        @staticmethod
+        def next_run_after_task(_task):
+            return None
+
+    session.commit = lambda: setattr(session, "commits", session.commits + 1)
+    monkeypatch.setattr(module, "task_service", FakeTaskService)
+    monkeypatch.setattr(module, "active_group_tasks", lambda _session: [task])
+
+    def diagnostic_task_stats(_session, _task):
+        if stats_queue:
+            return stats_queue.pop(0)
+        return {"hard_hourly_target_enabled": True, "hard_hourly_planning_deficit": 0}
+
+    monkeypatch.setattr(module, "diagnostic_task_stats", diagnostic_task_stats)
+
+    result = module.drain_hard_hourly_planner(session)
+
+    assert result["attempts"] == 2
+    assert result["processed"] == 2
+    assert result["remaining_task_count"] == 0
+    assert [row["created"] for row in result["tasks"]] == [0, 2]
+
+
 def test_ai_group_quality_diagnostics_settles_dispatch_lag_after_drain(monkeypatch):
     module = load_quality_diagnostics_module()
     since = datetime(2026, 7, 1, 10, 0, 0)

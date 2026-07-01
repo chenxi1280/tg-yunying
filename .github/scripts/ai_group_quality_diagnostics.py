@@ -40,7 +40,21 @@ MATERIAL_TRACE_SAMPLE_LIMIT = 8
 HARD_HOURLY_PLANNER_DRAIN_LIMIT = 100
 HARD_HOURLY_DISPATCH_SETTLE_SECONDS = 120
 HARD_HOURLY_DISPATCH_SETTLE_POLL_SECONDS = 10
-HARD_HOURLY_RETRYABLE_BLOCKERS = frozenset({"account_capacity", "account_offline", "dispatcher_lag"})
+HARD_HOURLY_RETRYABLE_BLOCKERS = frozenset(
+    {
+        "account_capacity",
+        "account_offline",
+        "content_policy",
+        "context_insufficient",
+        "dispatcher_lag",
+        "duplicate_message",
+        "hallucination_risk",
+        "quality_filter",
+        "stance_conflict",
+        "template_shell_limited",
+        "voice_profile_mismatch",
+    }
+)
 ACTIVE_TASK_STATUSES = {"running"}
 ONLINE_BLOCK_KEYS = (
     "stale_count",
@@ -361,7 +375,7 @@ def drain_hard_hourly_planner(session) -> dict[str, Any]:
         processed += round_created
         attempts += len(round_results)
         drained.extend(round_results)
-        if round_created <= 0:
+        if not round_results:
             break
         pending_ids = _hard_hourly_planning_task_ids(session, attempts)
     remaining_ids = _hard_hourly_planning_task_ids(session, attempts)
