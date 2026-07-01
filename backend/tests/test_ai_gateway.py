@@ -1365,7 +1365,8 @@ def test_channel_comment_allows_adult_service_context_in_ai_prompt(monkeypatch):
     assert "刚入行能理解" in captured["prompt"]
     assert "大蟒蛇" in captured["prompt"]
     assert "成人服务描述已按安全口径概括" not in captured["prompt"]
-    assert "成人交易/性服务描述可以作为既有上下文理解" in captured["system_prompt"]
+    assert "敏感场景描述只能作为既有上下文理解" in captured["system_prompt"]
+    assert "成人交易/性服务" not in captured["system_prompt"]
     assert "不要新增联系方式、价格、邀约或交易撮合信息" in captured["system_prompt"]
 
 
@@ -1460,7 +1461,8 @@ def test_group_chat_allows_adult_service_context_in_ai_prompt(monkeypatch):
     assert "刚入行能理解" in captured["prompt"]
     assert "大蟒蛇" in captured["prompt"]
     assert "成人服务描述已按安全口径概括" not in captured["prompt"]
-    assert "成人交易/性服务描述可以作为既有上下文理解" in captured["system_prompt"]
+    assert "敏感场景描述只能作为既有上下文理解" in captured["system_prompt"]
+    assert "成人交易/性服务" not in captured["system_prompt"]
     assert "不要新增联系方式、价格、邀约或交易撮合信息" in captured["system_prompt"]
 
 
