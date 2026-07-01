@@ -1623,6 +1623,50 @@ def test_hard_hourly_refresh_clears_stale_blockers_when_future_actions_are_on_ti
 
 
 @pytest.mark.no_postgres
+def test_hard_hourly_refresh_clears_ai_blocker_when_future_actions_cover_planning_deficit(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-covered-ai-blocker",
+            tenant_id=1,
+            name="硬目标 AI 阻塞已覆盖",
+            type="group_ai_chat",
+            status="running",
+            type_config={
+                "target_group_id": 7,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 4,
+                "hard_hourly_strategy": "force_planning",
+            },
+            stats={"hard_hourly_last_blockers": {"ai_generation_unavailable": 1}},
+        )
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                task,
+                _send_action("ok", task, "success", executed_at=datetime(2026, 6, 7, 20, 5)),
+                _send_action("future-1", task, "pending", account_id=101, scheduled_at=datetime(2026, 6, 7, 20, 40)),
+                _send_action("future-2", task, "pending", account_id=102, scheduled_at=datetime(2026, 6, 7, 20, 45)),
+                _send_action("future-3", task, "pending", account_id=103, scheduled_at=datetime(2026, 6, 7, 20, 50)),
+            ]
+        )
+        session.commit()
+
+        stats = refresh_task_stats(session, task)
+
+    assert stats["hard_hourly_deficit"] == 3
+    assert stats["hard_hourly_planning_deficit"] == 0
+    assert stats["hard_hourly_status"] == "catching_up"
+    assert stats["hard_hourly_pipeline"]["ai_draft"] == "ready"
+    assert "hard_hourly_last_blockers" not in stats
+
+
+@pytest.mark.no_postgres
 def test_hard_hourly_refresh_preserves_plan_blockers_while_deficit_remains(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

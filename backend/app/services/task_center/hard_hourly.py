@@ -369,7 +369,9 @@ def _effective_last_blockers(current: dict[str, Any], current_stats: dict[str, A
     blockers = _int_blockers(current.get("blockers"))
     if blockers:
         return blockers
-    if int(current.get("deficit") or 0) <= 0:
+    raw_planning_deficit = current.get("planning_deficit")
+    planning_deficit = raw_planning_deficit if raw_planning_deficit is not None else current.get("deficit")
+    if int(planning_deficit or 0) <= 0:
         return {}
     return {
         reason: count
