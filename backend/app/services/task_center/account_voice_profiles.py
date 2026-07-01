@@ -22,6 +22,7 @@ from app.services.task_center.account_voice_profile_generation import (
     _generate_voice_profile_payloads,
     _parse_voice_profile_payloads,
     _valid_summary,
+    _validate_generated_profile,
     _validate_summary,
     _voice_profile_ai_provider,
 )
@@ -84,7 +85,7 @@ def patch_voice_profile(
     account = _require_account(session, tenant_id, account_id)
     current = _latest_profile(session, tenant_id, account_id)
     next_profile = _patched_profile(tenant_id, account.id, current, patch, actor)
-    _validate_summary(next_profile.short_prompt_summary, account_id)
+    _validate_generated_profile(_serialize_profile(next_profile), account_id)
     if current and current.status == "active":
         current.status = "superseded"
     session.add(next_profile)

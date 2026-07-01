@@ -17,6 +17,8 @@ VOICE_PROFILE_RETRY_MAX_TOKENS = 2048
 ACTIONABLE_LIST_FIELDS = ("interaction_habits", "forbidden_expressions")
 MIN_ACTIONABLE_LIST_ITEMS = 3
 MAX_ACTIONABLE_LIST_ITEMS = 5
+MALE_MASK_TERMS = ("男", "男客", "男大", "男性", "男人", "嫖客", "老哥", "大哥", "老板")
+STRUCTURED_MASK_FIELDS = ("mask_name", "audience_archetype", "identity_frame")
 
 
 def _valid_summary(profile: dict[str, Any], account_id: int) -> str:
@@ -71,8 +73,19 @@ def _validate_summary(summary: str, account_id: int) -> None:
 def _validate_generated_profile(profile: dict[str, Any], account_id: int) -> None:
     summary = str(profile.get("short_prompt_summary") or "").strip()
     _validate_summary(summary, account_id)
+    _validate_male_mask(profile, account_id)
     for field in ACTIONABLE_LIST_FIELDS:
         _validate_actionable_list(field, profile.get(field), account_id)
+
+
+def _validate_male_mask(profile: dict[str, Any], account_id: int) -> None:
+    structured_values = [str(profile.get(field) or "").strip() for field in STRUCTURED_MASK_FIELDS]
+    if not any(structured_values):
+        return
+    identity_text = " ".join([*structured_values, str(profile.get("short_prompt_summary") or "")])
+    if any(term in identity_text for term in MALE_MASK_TERMS):
+        return
+    raise ValueError(f"account mask gender must be male for account {account_id}")
 
 
 def _validate_actionable_list(field: str, value: Any, account_id: int) -> None:
@@ -145,6 +158,7 @@ def _voice_profile_prompt(accounts: list[TgAccount]) -> str:
         "每个账号只输出一行 JSON，不要输出数组、标题、解释、Markdown。\n"
         "每行字段固定为：id,mask,aud,frame,tags,age,px,cx,len,habits,tone,words,emoji,ban,summary。\n"
         "mask 是 6-12 字面具名；aud 是目标受众原型；frame 是账号身份框架；tags 是 2-4 个偏好标签。\n"
+        "所有账号面具性别必须固定为男性嫖客视角，mask/aud/frame/summary 至少一处明确写男客、男大、男性、嫖客、老哥、大哥或老板等男性身份词；禁止生成女客、女性账号或中性身份。\n"
         "px/cx/words 必须是短字符串数组；habits 和 ban 必须各写 3-5 条短句。\n"
         "summary 必须具体可执行，写成 18-36 个汉字。\n"
         "禁止只写自然、随意、真实；禁止冒充真实用户、管理员或指定个人；同批账号身份框架、句长、口头习惯、互动偏好、表情倾向要明显不同。"
@@ -266,6 +280,7 @@ __all__ = [
     "_generate_voice_profile_payloads",
     "_parse_voice_profile_payloads",
     "_valid_summary",
+    "_validate_generated_profile",
     "_validate_summary",
     "_voice_profile_ai_provider",
 ]
