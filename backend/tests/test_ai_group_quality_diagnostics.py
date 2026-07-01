@@ -291,6 +291,43 @@ def test_ai_group_quality_diagnostics_does_not_redrain_structural_hard_hourly_bl
     assert task.stats_refreshed is True
 
 
+def test_ai_group_quality_diagnostics_retries_partial_ai_generation_hard_hourly_blocker(monkeypatch):
+    module = load_quality_diagnostics_module()
+    task = SimpleNamespace(id="hard-ai", name="天津", status="running", next_run_at=None)
+    session = SimpleNamespace(commits=0, get=lambda _model, _task_id: task)
+    stats_queue = [
+        {
+            "hard_hourly_target_enabled": True,
+            "hard_hourly_planning_deficit": 1,
+            "hard_hourly_last_blockers": {"ai_generation_unavailable": 1},
+            "hard_hourly_success_count": 6,
+            "hard_hourly_open_count": 3,
+            "hard_hourly_overdue_open_count": 0,
+        },
+        {"hard_hourly_target_enabled": True, "hard_hourly_planning_deficit": 0},
+    ]
+
+    session.commit = lambda: setattr(session, "commits", session.commits + 1)
+    monkeypatch.setattr(module, "task_service", fake_hard_hourly_task_service(module, created=1, woken_ids=[]))
+    monkeypatch.setattr(module, "active_group_tasks", lambda _session: [task])
+
+    def diagnostic_task_stats(_session, _task):
+        if stats_queue:
+            return stats_queue.pop(0)
+        return {"hard_hourly_target_enabled": True, "hard_hourly_planning_deficit": 0}
+
+    monkeypatch.setattr(module, "diagnostic_task_stats", diagnostic_task_stats)
+
+    result = module.drain_hard_hourly_planner(session)
+
+    assert result["task_count"] == 0
+    assert result["attempts"] == 1
+    assert result["processed"] == 1
+    assert result["remaining_task_count"] == 0
+    assert result["tasks"] == [{"task_id": "hard-ai", "name": "天津", "created": 1, "status": "planned"}]
+    assert task.stats_refreshed is True
+
+
 def test_ai_group_quality_diagnostics_retries_quality_hard_hourly_blocker(monkeypatch):
     module = load_quality_diagnostics_module()
     task = SimpleNamespace(id="hard-ai", name="石家庄", status="running", next_run_at=None)

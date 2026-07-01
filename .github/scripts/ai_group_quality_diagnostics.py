@@ -433,7 +433,18 @@ def _has_retryable_hard_hourly_deficit(stats: dict[str, Any]) -> bool:
     if _safe_int(stats.get("hard_hourly_planning_deficit")) <= 0:
         return False
     blockers = set(dict(stats.get("hard_hourly_last_blockers") or {}).keys())
-    return blockers <= HARD_HOURLY_RETRYABLE_BLOCKERS
+    return blockers <= HARD_HOURLY_RETRYABLE_BLOCKERS or _has_partial_ai_generation_progress(stats, blockers)
+
+
+def _has_partial_ai_generation_progress(stats: dict[str, Any], blockers: set[str]) -> bool:
+    if blockers != {"ai_generation_unavailable"}:
+        return False
+    bucket_progress = (
+        _safe_int(stats.get("hard_hourly_success_count"))
+        + _safe_int(stats.get("hard_hourly_open_count"))
+        + _safe_int(stats.get("hard_hourly_overdue_open_count"))
+    )
+    return bucket_progress > 0
 
 
 def _drain_hard_hourly_task(session, task_id: str) -> dict[str, Any] | None:
