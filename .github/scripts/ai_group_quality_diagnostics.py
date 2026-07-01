@@ -306,6 +306,7 @@ def _hard_hourly_history_blockers(snapshot: dict[str, Any], stats: dict[str, Any
     if "hard_hourly_backfill_debt" in stats:
         blocker["backfill_debt"] = _safe_int(stats.get("hard_hourly_backfill_debt"))
         blocker["backfill_planning_deficit"] = _safe_int(stats.get("hard_hourly_backfill_planning_deficit"))
+        blocker["backfill_delivery_deficit"] = _safe_int(stats.get("hard_hourly_backfill_delivery_deficit"))
     return [
         blocker
     ]
@@ -477,10 +478,16 @@ def _hard_hourly_planning_task_ids(session, attempts: int) -> list[str]:
 def _has_retryable_hard_hourly_deficit(stats: dict[str, Any]) -> bool:
     if not stats.get("hard_hourly_target_enabled"):
         return False
-    if _safe_int(stats.get("hard_hourly_planning_deficit")) <= 0:
+    if _hard_hourly_total_planning_deficit(stats) <= 0:
         return False
     blockers = set(dict(stats.get("hard_hourly_last_blockers") or {}).keys())
     return blockers <= HARD_HOURLY_RETRYABLE_BLOCKERS or _has_partial_ai_generation_progress(stats, blockers)
+
+
+def _hard_hourly_total_planning_deficit(stats: dict[str, Any]) -> int:
+    return _safe_int(stats.get("hard_hourly_planning_deficit")) + _safe_int(
+        stats.get("hard_hourly_backfill_planning_deficit")
+    )
 
 
 def _has_partial_ai_generation_progress(stats: dict[str, Any], blockers: set[str]) -> bool:
@@ -540,6 +547,8 @@ def _all_hard_hourly_blockers_settleable(blockers: list[dict[str, Any]]) -> bool
 
 
 def _is_dispatch_settle_blocker(blocker: dict[str, Any]) -> bool:
+    if blocker.get("reason") == "hard_hourly_history_missed":
+        return _is_backfill_dispatch_settle_blocker(blocker)
     reasons = set(dict(blocker.get("blockers") or {}).keys())
     if not reasons or reasons != {"dispatcher_lag"}:
         return False
@@ -549,6 +558,12 @@ def _is_dispatch_settle_blocker(blocker: dict[str, Any]) -> bool:
         + _safe_int(blocker.get("overdue_open_count"))
     )
     return queued_total >= _safe_int(blocker.get("goal"))
+
+
+def _is_backfill_dispatch_settle_blocker(blocker: dict[str, Any]) -> bool:
+    if _safe_int(blocker.get("backfill_planning_deficit")) > 0:
+        return False
+    return _safe_int(blocker.get("backfill_delivery_deficit")) > 0
 
 
 def online_failure_details(session, blockers: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:

@@ -238,6 +238,48 @@ def test_ai_group_quality_diagnostics_drains_hard_hourly_until_planning_deficit_
     assert task.stats_refreshed is True
 
 
+def test_ai_group_quality_diagnostics_drains_hard_hourly_backfill_deficit(monkeypatch):
+    module = load_quality_diagnostics_module()
+    task = SimpleNamespace(id="hard-ai", name="天津", status="running", next_run_at=None)
+    session = SimpleNamespace(commits=0, get=lambda _model, _task_id: task)
+    stats_queue = [
+        {
+            "hard_hourly_target_enabled": True,
+            "hard_hourly_planning_deficit": 0,
+            "hard_hourly_backfill_planning_deficit": 2,
+        },
+        {
+            "hard_hourly_target_enabled": True,
+            "hard_hourly_planning_deficit": 0,
+            "hard_hourly_backfill_planning_deficit": 0,
+        },
+    ]
+
+    session.commit = lambda: setattr(session, "commits", session.commits + 1)
+    monkeypatch.setattr(module, "task_service", fake_hard_hourly_task_service(module, created=2, woken_ids=[]))
+    monkeypatch.setattr(module, "active_group_tasks", lambda _session: [task])
+
+    def diagnostic_task_stats(_session, _task):
+        if stats_queue:
+            return stats_queue.pop(0)
+        return {
+            "hard_hourly_target_enabled": True,
+            "hard_hourly_planning_deficit": 0,
+            "hard_hourly_backfill_planning_deficit": 0,
+        }
+
+    monkeypatch.setattr(module, "diagnostic_task_stats", diagnostic_task_stats)
+
+    result = module.drain_hard_hourly_planner(session)
+
+    assert result["task_count"] == 0
+    assert result["attempts"] == 1
+    assert result["processed"] == 2
+    assert result["remaining_task_count"] == 0
+    assert result["tasks"] == [{"task_id": "hard-ai", "name": "天津", "created": 2, "status": "planned"}]
+    assert task.stats_refreshed is True
+
+
 def test_ai_group_quality_diagnostics_does_not_redrain_structural_hard_hourly_blocker(monkeypatch):
     module = load_quality_diagnostics_module()
     task = SimpleNamespace(id="hard-ai", name="天津", status="running", next_run_at=None)
@@ -475,6 +517,44 @@ def test_ai_group_quality_diagnostics_does_not_settle_insufficient_dispatch_lag(
     result = module.settle_hard_hourly_gate(session, since, ["blocked"])
 
     assert result == ["blocked"]
+
+
+def test_ai_group_quality_diagnostics_settles_backfill_dispatch_lag(monkeypatch):
+    module = load_quality_diagnostics_module()
+    since = datetime(2026, 7, 1, 10, 0, 0)
+    session = SimpleNamespace(expired=0)
+    snapshots = [["clear"]]
+    blocker = {
+        "reason": "hard_hourly_history_missed",
+        "name": "天津",
+        "backfill_planning_deficit": 0,
+        "backfill_delivery_deficit": 3,
+    }
+
+    def expire_all():
+        session.expired += 1
+
+    session.expire_all = expire_all
+    monkeypatch.setattr(module, "now_local", lambda: since)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(module, "task_snapshots", lambda _session, _since: snapshots.pop(0))
+    monkeypatch.setattr(module, "hard_hourly_gate_blockers", lambda value: [blocker] if value == ["blocked"] else [])
+
+    result = module.settle_hard_hourly_gate(session, since, ["blocked"])
+
+    assert result == ["clear"]
+    assert session.expired == 1
+
+
+def test_ai_group_quality_diagnostics_does_not_settle_unplanned_backfill():
+    module = load_quality_diagnostics_module()
+    blocker = {
+        "reason": "hard_hourly_history_missed",
+        "backfill_planning_deficit": 2,
+        "backfill_delivery_deficit": 3,
+    }
+
+    assert module._is_dispatch_settle_blocker(blocker) is False
 
 
 def test_ai_group_quality_diagnostics_does_not_settle_generation_blocker(monkeypatch):
