@@ -4,6 +4,7 @@ import random
 from datetime import datetime, time, timedelta
 from difflib import SequenceMatcher
 import re
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -48,7 +49,7 @@ AI_NORMAL_CANDIDATE_SHORTFALL_MESSAGE = "AI 普通发言候选不足，已跳过
 ACCOUNT_CAPACITY_BLOCKED_MESSAGE = "账号容量已排满，等待账号额度恢复后继续执行"
 ACCOUNT_COOLDOWN_BLOCKED_MESSAGE = "账号冷却中，等待冷却后继续执行"
 ACCOUNT_UNAVAILABLE_MESSAGE = "没有可用账号，等待账号恢复后继续执行"
-VOICE_PROFILE_MISSING_MESSAGE = "账号表达卡缺失，等待账号表达卡初始化后继续执行"
+VOICE_PROFILE_MISSING_MESSAGE = "账号面具缺失，等待账号面具初始化后继续执行"
 DEFAULT_IDLE_CONTINUATION_SECONDS = 300
 DEFAULT_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 3600
 MIN_CONTEXT_BOUND_SCHEDULE_WINDOW_SECONDS = 60
@@ -477,6 +478,10 @@ def build_plan(session: Session, task: Task) -> int:
                     account_voice_profile_summary=str(voice_profile.get("summary") or ""),
                     account_voice_profile_match_score=int(voice_decision["score"]),
                     account_voice_profile_match_reason=str(voice_decision["reason"]),
+                    account_mask_version=int(voice_profile.get("version") or 0),
+                    account_mask_summary=str(voice_profile.get("summary") or ""),
+                    account_mask_match_score=int(voice_decision["score"]),
+                    account_mask_match_reason=str(voice_decision["reason"]),
                     stance_summary=stance_summary,
                     ai_message_memory_id=memory.id if memory else "",
                     rewrite_attempts=int(quality_item.get("rewrite_attempts") or 0),
@@ -945,7 +950,7 @@ def _missing_voice_profile_samples(stats: dict[str, object], account_ids: list[i
 
 def _account_prompt_profiles(
     account_profiles: dict[str, str],
-    voice_profiles: dict[int, dict[str, str | int]],
+    voice_profiles: dict[int, dict[str, Any]],
     stance_summaries: dict[int, str],
 ) -> dict[str, str]:
     account_ids = set(int(account_id) for account_id in account_profiles.keys())
@@ -955,11 +960,29 @@ def _account_prompt_profiles(
     for account_id in account_ids:
         parts = [
             str(account_profiles.get(str(account_id)) or "").strip(),
-            str((voice_profiles.get(account_id) or {}).get("summary") or "").strip(),
+            _voice_profile_prompt_text(voice_profiles.get(account_id) or {}),
             f"短期立场：{stance_summaries[account_id]}" if stance_summaries.get(account_id) else "",
         ]
         result[str(account_id)] = "；".join(part for part in parts if part)
     return result
+
+
+def _voice_profile_prompt_text(profile: dict[str, Any]) -> str:
+    tags = _voice_profile_tags(profile.get("preference_tags"))
+    parts = [
+        f"面具：{profile['mask_name']}" if str(profile.get("mask_name") or "").strip() else "",
+        f"人群：{profile['audience_archetype']}" if str(profile.get("audience_archetype") or "").strip() else "",
+        f"身份：{profile['identity_frame']}" if str(profile.get("identity_frame") or "").strip() else "",
+        f"偏好：{'、'.join(tags)}" if tags else "",
+        f"表达摘要：{profile['summary']}" if str(profile.get("summary") or "").strip() else "",
+    ]
+    return "；".join(part for part in parts if part)
+
+
+def _voice_profile_tags(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _generation_slots_for_plan(
@@ -1829,6 +1852,7 @@ def _hard_hourly_round_config(config: dict, progress: dict[str, object]) -> dict
     updated["messages_per_round_mode"] = "manual"
     updated["messages_per_round"] = _hard_hourly_batch_size(config, progress)
     updated["allow_account_repeat"] = True
+    updated["require_mimo_draft"] = True
     return updated
 
 
@@ -2559,7 +2583,7 @@ def _expire_open_profileless_actions(session: Session, task: Task, active_profil
     current_time = _now()
     for action in actions:
         payload = action.payload if isinstance(action.payload, dict) else {}
-        if int(payload.get("account_voice_profile_version") or 0) > 0:
+        if _payload_voice_profile_version(payload) > 0:
             continue
         _skip_profileless_action_for_replan(session, action, current_time)
         expired += 1
@@ -2568,6 +2592,10 @@ def _expire_open_profileless_actions(session: Session, task: Task, active_profil
         stats["voice_profile_replanned_open_action_count"] = int(stats.get("voice_profile_replanned_open_action_count") or 0) + expired
         task.stats = stats
     return expired
+
+
+def _payload_voice_profile_version(payload: dict) -> int:
+    return max(int(payload.get("account_voice_profile_version") or 0), int(payload.get("account_mask_version") or 0))
 
 
 def _skip_profileless_action_for_replan(session: Session, action: Action, current_time: datetime) -> None:
@@ -2579,7 +2607,7 @@ def _skip_profileless_action_for_replan(session: Session, action: Action, curren
     action.claim_owner = ""
     action.claim_token = ""
     action.claim_expires_at = None
-    action.result = {"error_code": "voice_profile_replan", "message": "账号表达卡已生效，旧规划已跳过等待重新生成"}
+    action.result = {"error_code": "voice_profile_replan", "message": "账号面具已生效，旧规划已跳过等待重新生成"}
     if memory_id := str(payload.get("ai_message_memory_id") or "").strip():
         mark_group_ai_message_result(
             session,
@@ -2949,9 +2977,9 @@ def _voice_profile_match_decision(content: str, voice_profile: dict) -> dict[str
     emoji_count = len(EMOJI_PATTERN.findall(content))
     normalized_content = _normalize_for_similarity(content)
     if _profile_rejects_emoji(normalized_summary) and (emoji_count >= 2 or _is_emoji_only_message(content)):
-        return {"score": VOICE_PROFILE_MISMATCH_SCORE, "reason": "账号表达卡要求少表情"}
+        return {"score": VOICE_PROFILE_MISMATCH_SCORE, "reason": "账号面具要求少表情"}
     if "短句" in normalized_summary and len(normalized_content) > VOICE_PROFILE_LONG_SHORT_SENTENCE_LIMIT:
-        return {"score": VOICE_PROFILE_MISMATCH_SCORE, "reason": "账号表达卡要求短句"}
+        return {"score": VOICE_PROFILE_MISMATCH_SCORE, "reason": "账号面具要求短句"}
     return {"score": VOICE_PROFILE_MATCH_SCORE, "reason": summary[:80]}
 
 

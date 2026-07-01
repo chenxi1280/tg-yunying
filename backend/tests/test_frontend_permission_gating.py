@@ -791,7 +791,7 @@ def test_ai_voice_profile_manage_permission_is_assignable():
     app_modals_source = (PROJECT_ROOT / "frontend/src/app/AppModals.tsx").read_text()
 
     assert "hasPermission(currentUser, 'ai_voice_profiles.manage')" in system_config_source
-    assert "['ai_voice_profiles.manage', '账号表达卡管理']" in app_modals_source
+    assert "['ai_voice_profiles.manage', '账号面具管理']" in app_modals_source
 
 
 def test_ai_voice_profile_write_routes_have_explicit_manage_guard():
@@ -1825,7 +1825,7 @@ def test_group_ai_quality_funnel_labels_profile_low_match():
     types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
 
     assert "profile_low_match: '画像低分'" in source
-    assert "voice_profile_mismatch: '表达卡低分'" in source
+    assert "voice_profile_mismatch: '面具低分'" in source
     assert "detail: string" in types
     assert "title: '细节'" in source
     assert "dataIndex: 'detail'" in source
@@ -2273,12 +2273,15 @@ def test_task_center_ai_turns_show_voice_profile_and_memory_fields():
 
     assert "account_voice_profile_version: number" in types
     assert "account_voice_profile_summary: string" in types
+    assert "account_mask_version: number" in types
+    assert "account_mask_summary: string" in types
+    assert "turn.account_mask_summary || turn.account_voice_profile_summary" in view
     assert "stance_summary: string" in types
     assert "ai_message_memory_id: string" in types
     assert "material_intent: string" in types
     assert "material_matched_tags: string[]" in types
     assert "material_candidate_count: number" in types
-    assert "表达卡" in view
+    assert "面具" in view
     assert "立场/记忆" in view
     assert "素材意图" in view
     assert "act_type" in view

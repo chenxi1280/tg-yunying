@@ -73,7 +73,7 @@ const adminPermissionGroups = [
     ['system.manage', '系统管理'],
     ['ai.manage', 'AI配置'],
     ['prompt_templates.manage', '提示词管理'],
-    ['ai_voice_profiles.manage', '账号表达卡管理'],
+    ['ai_voice_profiles.manage', '账号面具管理'],
     ['developer_apps.manage', '开发者应用'],
     ['permissions.view', '账号权限'],
     ['permissions.manage', '权限管理'],

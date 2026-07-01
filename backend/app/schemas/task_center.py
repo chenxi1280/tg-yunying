@@ -829,6 +829,10 @@ class TaskAITurnOut(BaseModel):
     account_voice_profile_summary: str = ""
     account_voice_profile_match_score: int = 0
     account_voice_profile_match_reason: str = ""
+    account_mask_version: int = 0
+    account_mask_summary: str = ""
+    account_mask_match_score: int = 0
+    account_mask_match_reason: str = ""
     stance_summary: str = ""
     topic_thread: str = ""
     topic_plan: str = ""

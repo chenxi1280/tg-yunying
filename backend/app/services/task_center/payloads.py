@@ -33,6 +33,10 @@ class SendMessagePayload(BaseModel):
     account_voice_profile_summary: str = ""
     account_voice_profile_match_score: int = 100
     account_voice_profile_match_reason: str = ""
+    account_mask_version: int = 0
+    account_mask_summary: str = ""
+    account_mask_match_score: int = 100
+    account_mask_match_reason: str = ""
     stance_summary: str = ""
     ai_message_memory_id: str = ""
     rewrite_attempts: int = 0

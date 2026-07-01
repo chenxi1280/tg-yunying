@@ -12,6 +12,7 @@ export type GroupAIChatHardHourlyConfig = {
 };
 
 export type HardHourlyBlockers = Record<string, number>;
+export type HardHourlyPipeline = Record<string, string>;
 
 export type HardHourlyRecentBucket = {
   bucket: string;
@@ -57,6 +58,7 @@ export type TaskCenterStats = Record<string, any> & {
   hard_hourly_last_check_at?: string | null;
   hard_hourly_last_planned_count?: number;
   hard_hourly_last_blockers?: HardHourlyBlockers;
+  hard_hourly_pipeline?: HardHourlyPipeline;
   hard_hourly_recent_buckets?: HardHourlyRecentBucket[];
 };
 
@@ -302,6 +304,10 @@ export type TaskCenterDetail = {
       account_voice_profile_summary: string;
       account_voice_profile_match_score: number;
       account_voice_profile_match_reason: string;
+      account_mask_version: number;
+      account_mask_summary: string;
+      account_mask_match_score: number;
+      account_mask_match_reason: string;
       stance_summary: string;
       topic_thread: string;
       topic_plan: string;

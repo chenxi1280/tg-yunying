@@ -14,7 +14,7 @@ from app.services.account_security import create_account_security_batch
 
 AUTO_PROFILE_ACTIONS = ["update_profile", "update_username", "update_avatar"]
 AUTO_PROFILE_REASON = "登录成功后自动初始化账号中文资料和头像"
-AUTO_VOICE_PROFILE_REASON = "登录成功后自动初始化账号表达卡"
+AUTO_VOICE_PROFILE_REASON = "登录成功后自动初始化账号面具"
 AUTO_PROFILE_ACTOR = "account-profile-auto-init"
 OPEN_BATCH_STATUSES = {"ready", "running"}
 OPEN_ITEM_STATUSES = {"pending", "running", "waiting"}
@@ -74,9 +74,9 @@ def _queue_voice_profile_initialization(session: Session, tenant_id: int, accoun
     account_ids = [account.id for account in accounts]
     try:
         created = _ensure_voice_profiles(session, tenant_id, account_ids)
-        _audit_voice_profile_init(session, tenant_id, actor, "账号表达卡初始化", account_ids, f"created={created}")
+        _audit_voice_profile_init(session, tenant_id, actor, "账号面具初始化", account_ids, f"created={created}")
     except (RuntimeError, ValueError) as exc:
-        _audit_voice_profile_init(session, tenant_id, actor, "账号表达卡初始化失败", account_ids, str(exc))
+        _audit_voice_profile_init(session, tenant_id, actor, "账号面具初始化失败", account_ids, str(exc))
 
 
 def _ensure_voice_profiles(session: Session, tenant_id: int, account_ids: list[int]) -> int:

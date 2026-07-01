@@ -38,7 +38,7 @@ from app.services.group_listeners import process_group_listener
 from app.services.task_center.listener_runtime import drain_listener_runtime, reset_listener_runtime_cache, should_collect_listener
 from app.services.task_center.fingerprints import content_fingerprint
 from app.services.task_center.policies import validate_group_send_policy
-from app.services.task_center.service import _action_payload, _channel_subtask_status, _planning_backlog_blocked, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_actions_page, list_ai_cycles_page, list_message_groups_page, list_relay_batches_page, list_tasks, precheck_task_creation, reset_task, stop_task, update_task_settings
+from app.services.task_center.service import _action_payload, _channel_subtask_status, _planning_backlog_blocked, _recover_stale_executing_actions, _retry_failed_actions, add_task_source_filter_override, create_group_ai_chat_task, create_group_relay_task, delete_task, drain_task_center, get_task_detail, list_actions_page, list_ai_cycles_page, list_message_groups_page, list_relay_batches_page, list_tasks, precheck_task_creation, refresh_task_detail_stats, reset_task, stop_task, update_task_settings
 from app.services.task_center.executors.channel_comment import build_plan as build_channel_comment_plan
 from app.services.task_center.payloads import ViewMessagePayload, create_view_action
 from app.services.task_center.stats import planner_backlog_snapshot, refresh_task_stats
@@ -5796,6 +5796,7 @@ def test_planning_backlog_allows_due_hard_hourly_deficit(monkeypatch):
     now_value = datetime(2026, 6, 10, 23, 20, 0)
     monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
     monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.details._now", lambda: now_value)
 
     with Session(engine) as session:
         task = Task(
@@ -5966,6 +5967,79 @@ def test_list_tasks_without_runtime_summary_does_not_recount_actions(monkeypatch
     assert listed["stats"]["success_count"] == 8
     assert listed["stats"]["hard_hourly_goal"] == 300
     assert listed["stats"]["hard_hourly_deficit"] == 292
+
+
+@pytest.mark.no_postgres
+def test_group_ai_hard_hourly_stats_are_consistent_across_task_read_surfaces(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now_value = datetime(2026, 6, 7, 20, 30)
+
+    monkeypatch.setattr("app.services.task_center.stats._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.service._now", lambda: now_value)
+    monkeypatch.setattr("app.services.task_center.details._now", lambda: now_value)
+
+    with Session(engine) as session:
+        task = Task(
+            id="task-hard-hourly-read-consistency",
+            tenant_id=1,
+            name="AI 活跃群",
+            type="group_ai_chat",
+            status="running",
+            type_config={
+                "target_group_id": 7,
+                "hard_hourly_target_enabled": True,
+                "hourly_min_messages": 5,
+                "hard_hourly_strategy": "force_planning",
+            },
+            stats={
+                "hard_hourly_target_enabled": True,
+                "hard_hourly_goal": 5,
+                "hard_hourly_success_count": 0,
+                "hard_hourly_deficit": 5,
+                "hard_hourly_status": "catching_up",
+            },
+        )
+        session.add_all(
+            [
+                Tenant(id=1, name="默认运营空间"),
+                task,
+                Action(
+                    id="hard-hourly-success-read",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="success",
+                    executed_at=datetime(2026, 6, 7, 20, 10),
+                ),
+                Action(
+                    id="hard-hourly-future-read",
+                    tenant_id=1,
+                    task_id=task.id,
+                    task_type="group_ai_chat",
+                    action_type="send_message",
+                    status="pending",
+                    scheduled_at=datetime(2026, 6, 7, 20, 45),
+                ),
+            ]
+        )
+        session.commit()
+
+        listed = list_tasks(session, 1, "group_ai_chat", "running")[0]["stats"]
+        detail = get_task_detail(session, 1, task.id)
+        refreshed = refresh_task_detail_stats(session, 1, task.id)
+
+    expected = {
+        "hard_hourly_success_count": 1,
+        "hard_hourly_open_count": 1,
+        "hard_hourly_deficit": 4,
+        "hard_hourly_planning_deficit": 3,
+        "hard_hourly_status": "catching_up",
+    }
+    for stats in (listed, detail["stats"], detail["task"]["stats"], refreshed):
+        for key, value in expected.items():
+            assert stats[key] == value
 
 
 def test_operation_targets_expose_linked_group_capability_summary():

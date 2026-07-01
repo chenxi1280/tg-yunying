@@ -11,6 +11,10 @@ from app.services.task_center.account_voice_profile_cache import refresh_voice_p
 
 
 PROFILE_COPY_FIELDS = (
+    "mask_name",
+    "audience_archetype",
+    "identity_frame",
+    "preference_tags",
     "age_band",
     "persona_experiences",
     "consumption_experiences",
@@ -141,7 +145,7 @@ def _rollback_audit(
     return AuditLog(
         tenant_id=tenant_id,
         actor=actor,
-        action="回滚账号表达卡",
+        action="回滚账号面具",
         target_type="ai_account_voice_profile",
         target_id=str(account_id),
         detail=f"source_version={source_version},target_version={target_version}",
@@ -153,6 +157,10 @@ def _version_projection(profile: AiAccountVoiceProfile) -> dict[str, Any]:
         "version": profile.version,
         "status": profile.status,
         "source": profile.source,
+        "mask_name": profile.mask_name,
+        "audience_archetype": profile.audience_archetype,
+        "identity_frame": profile.identity_frame,
+        "preference_tags": profile.preference_tags,
         "age_band": profile.age_band,
         "sentence_length": profile.sentence_length,
         "tone_strength": profile.tone_strength,

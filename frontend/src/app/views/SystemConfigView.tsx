@@ -287,7 +287,7 @@ export default function SystemConfigView({
         },
         {
           key: 'ai-voice-profiles',
-          label: '账号表达卡',
+          label: '账号面具',
           children: (
             <AIAccountVoiceProfilesView
               canManageVoiceProfiles={hasPermission(currentUser, 'ai_voice_profiles.manage')}

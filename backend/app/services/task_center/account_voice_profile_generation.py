@@ -35,7 +35,7 @@ def _voice_profile_ai_provider(session: Session, tenant_id: int) -> tuple[AiProv
             .order_by(AiProvider.id.asc())
         )
     if not _provider_usable(provider):
-        raise RuntimeError("账号表达卡重建需要健康可用的 AI 供应商")
+        raise RuntimeError("账号面具重建需要健康可用的 AI 供应商")
     return provider, setting
 
 
@@ -48,7 +48,7 @@ def _generate_voice_profile_payloads(session: Session, tenant_id: int, account_i
         profiles.update(_request_voice_profile_payloads(credentials, setting, [account_by_id[account_id]]))
     final_missing = [account.id for account in accounts if account.id not in profiles]
     if final_missing:
-        raise RuntimeError(f"AI 表达卡缺少账号: {final_missing}")
+        raise RuntimeError(f"AI 面具缺少账号: {final_missing}")
     return [_normalize_generated_profile(profiles[account.id]) for account in accounts]
 
 
@@ -56,7 +56,7 @@ def _parse_voice_profile_payloads(raw: str, expected_account_ids: list[int]) -> 
     profiles = _parse_voice_profile_payload_map(raw)
     missing = [account_id for account_id in expected_account_ids if account_id not in profiles]
     if missing:
-        raise RuntimeError(f"AI 表达卡缺少账号: {missing}")
+        raise RuntimeError(f"AI 面具缺少账号: {missing}")
     return [_normalize_generated_profile(profiles[account_id]) for account_id in expected_account_ids]
 
 
@@ -94,7 +94,7 @@ def _request_voice_profile_payloads(credentials, setting, accounts: list[TgAccou
         _voice_profile_prompt(accounts),
         setting.temperature,
         VOICE_PROFILE_INITIAL_MAX_TOKENS,
-        system_prompt="你是账号表达卡生成器，只输出指定格式的纯文本行，不解释。",
+        system_prompt="你是账号面具生成器，只输出指定格式的纯文本行，不解释。",
         response_format_json=False,
         reasoning_retry_max_tokens=VOICE_PROFILE_RETRY_MAX_TOKENS,
         timeout=VOICE_PROFILE_AI_TIMEOUT_SECONDS,
@@ -119,7 +119,7 @@ def _is_voice_profile_structure_error(exc: BaseException) -> bool:
         return True
     if not isinstance(exc, RuntimeError):
         return False
-    return any(fragment in str(exc) for fragment in ("输出为空", "字段数量错误", "JSON 行不是对象"))
+    return any(fragment in str(exc) for fragment in ("输出为空", "字段数量错误", "JSON 行不是对象", "缺少字段", "字段 tags"))
 
 
 def _accounts_for_generation(session: Session, tenant_id: int, account_ids: list[int]) -> list[TgAccount]:
@@ -141,19 +141,20 @@ def _accounts_for_generation(session: Session, tenant_id: int, account_ids: list
 def _voice_profile_prompt(accounts: list[TgAccount]) -> str:
     account_lines = "\n".join(f"- account_id={item.id}, name={item.display_name}, username={item.username or '-'}" for item in accounts)
     return (
-        f"为以下 {len(accounts)} 个 Telegram 运营账号生成互相差异明显的账号表达卡。\n{account_lines}\n"
+        f"为以下 {len(accounts)} 个 Telegram 运营账号生成互相差异明显的账号面具。\n{account_lines}\n"
         "每个账号只输出一行 JSON，不要输出数组、标题、解释、Markdown。\n"
-        "每行字段固定为：id,age,px,cx,len,habits,tone,words,emoji,ban,summary。\n"
+        "每行字段固定为：id,mask,aud,frame,tags,age,px,cx,len,habits,tone,words,emoji,ban,summary。\n"
+        "mask 是 6-12 字面具名；aud 是目标受众原型；frame 是账号身份框架；tags 是 2-4 个偏好标签。\n"
         "px/cx/words 必须是短字符串数组；habits 和 ban 必须各写 3-5 条短句。\n"
         "summary 必须具体可执行，写成 18-36 个汉字。\n"
-        "禁止只写自然、随意、真实；同批账号句长、口头习惯、互动偏好、表情倾向要明显不同。"
+        "禁止只写自然、随意、真实；禁止冒充真实用户、管理员或指定个人；同批账号身份框架、句长、口头习惯、互动偏好、表情倾向要明显不同。"
     )
 
 
 def _parse_voice_profile_payload_map(raw: str) -> dict[int, dict[str, Any]]:
     lines = [line.strip() for line in _clean_profile_lines(raw).splitlines() if line.strip()]
     if not lines:
-        raise RuntimeError("AI 表达卡输出为空")
+        raise RuntimeError("AI 面具输出为空")
     items = [_profile_from_line(line) for line in lines]
     return {int(item["account_id"]): item for item in items if item.get("account_id") is not None}
 
@@ -172,9 +173,17 @@ def _profile_from_line(line: str) -> dict[str, Any]:
 def _profile_from_json_line(line: str) -> dict[str, Any]:
     payload = json.loads(line)
     if not isinstance(payload, dict):
-        raise RuntimeError("AI 表达卡 JSON 行不是对象")
+        raise RuntimeError("AI 面具 JSON 行不是对象")
+    mask_name = _required_json_text(payload, ("mask", "mask_name"), "mask")
+    audience_archetype = _required_json_text(payload, ("aud", "audience_archetype"), "aud")
+    identity_frame = _required_json_text(payload, ("frame", "identity_frame"), "frame")
+    preference_tags = _required_json_tags(payload)
     return {
         "account_id": payload.get("id"),
+        "mask_name": mask_name,
+        "audience_archetype": audience_archetype,
+        "identity_frame": identity_frame,
+        "preference_tags": preference_tags,
         "age_band": payload.get("age"),
         "persona_experiences": payload.get("px"),
         "consumption_experiences": payload.get("cx"),
@@ -188,12 +197,32 @@ def _profile_from_json_line(line: str) -> dict[str, Any]:
     }
 
 
+def _required_json_text(payload: dict[str, Any], keys: tuple[str, str], label: str) -> str:
+    for key in keys:
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    raise RuntimeError(f"AI 面具 JSON 行缺少字段: {label}")
+
+
+def _required_json_tags(payload: dict[str, Any]) -> list[str]:
+    value = payload.get("tags") if payload.get("tags") is not None else payload.get("preference_tags")
+    tags = _string_list(value)
+    if 2 <= len(tags) <= 4:
+        return tags
+    raise RuntimeError("AI 面具 JSON 行字段 tags 需要 2-4 个偏好标签")
+
+
 def _profile_from_pipe_line(line: str) -> dict[str, Any]:
     parts = [part.strip() for part in line.split("|")]
     if len(parts) != 11:
-        raise RuntimeError("AI 表达卡输出行字段数量错误")
+        raise RuntimeError("AI 面具输出行字段数量错误")
     return {
         "account_id": parts[0],
+        "mask_name": "",
+        "audience_archetype": "",
+        "identity_frame": "",
+        "preference_tags": [],
         "age_band": parts[1],
         "persona_experiences": _semicolon_list(parts[2]),
         "consumption_experiences": _semicolon_list(parts[3]),
@@ -213,10 +242,12 @@ def _semicolon_list(value: str) -> list[str]:
 
 def _normalize_generated_profile(item: Any) -> dict[str, Any]:
     if not isinstance(item, dict):
-        raise RuntimeError("AI 表达卡输出项不是对象")
+        raise RuntimeError("AI 面具输出项不是对象")
     result = dict(item)
-    for key in ("persona_experiences", "consumption_experiences", "interaction_habits", "lexical_preferences", "forbidden_expressions"):
+    for key in ("persona_experiences", "consumption_experiences", "interaction_habits", "lexical_preferences", "forbidden_expressions", "preference_tags"):
         result[key] = _string_list(result.get(key))
+    for key in ("mask_name", "audience_archetype", "identity_frame"):
+        result[key] = str(result.get(key) or "").strip()
     _validate_generated_profile(result, int(result.get("account_id") or 0))
     return result
 

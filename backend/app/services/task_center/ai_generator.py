@@ -878,6 +878,8 @@ def _group_chat_model(config: dict) -> str:
 
 
 def _group_chat_required_model_family(config: dict) -> str:
+    if bool(config.get("require_mimo_draft")):
+        return "mimo"
     model_name = _group_chat_model(config)
     if not model_name:
         return ""

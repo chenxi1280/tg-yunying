@@ -26,7 +26,7 @@ def test_generate_diverse_voice_profile_batch_retries_recoverable_generator_erro
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise RuntimeError("AI 表达卡输出不是完整 JSON")
+            raise RuntimeError("AI 面具输出不是完整 JSON")
         return [
             _generated_profile(account_ids[0], "青年短句，先问位置再接半句"),
             _generated_profile(account_ids[1], "中年中句，先讲体验再轻吐槽"),

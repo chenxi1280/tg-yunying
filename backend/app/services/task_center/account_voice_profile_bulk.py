@@ -48,7 +48,7 @@ def _latest_profile(session: Session, tenant_id: int, account_id: int) -> AiAcco
 
 
 def _audit_status_change(session: Session, tenant_id: int, actor: str, account_id: int, status: str) -> None:
-    action = "批量恢复账号表达卡" if status == "active" else "批量停用账号表达卡"
+    action = "批量恢复账号面具" if status == "active" else "批量停用账号面具"
     session.add(
         AuditLog(
             tenant_id=tenant_id,

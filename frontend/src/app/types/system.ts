@@ -112,6 +112,10 @@ export type AiAccountVoiceProfile = {
   account_status: string;
   profile_status: string;
   version: number;
+  mask_name: string;
+  audience_archetype: string;
+  identity_frame: string;
+  preference_tags: string[];
   age_band: string;
   persona_experiences: string[];
   consumption_experiences: string[];
@@ -152,6 +156,10 @@ export type AiAccountVoiceProfileVersion = {
   version: number;
   status: string;
   source: string;
+  mask_name: string;
+  audience_archetype: string;
+  identity_frame: string;
+  preference_tags: string[];
   age_band: string;
   sentence_length: string;
   tone_strength: string;

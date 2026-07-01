@@ -1193,6 +1193,91 @@ def test_group_chat_generation_uses_default_provider_when_mimo_missing(monkeypat
 
 
 @pytest.mark.no_postgres
+def test_hard_hourly_group_chat_generation_requires_mimo_provider(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    captured: dict[str, str] = {}
+
+    def fake_generate_drafts(credentials, _prompt, **_kwargs):
+        captured["provider_name"] = credentials.provider_name
+        captured["model_name"] = credentials.model_name
+        return mock_generation_result("硬目标使用小米生成")
+
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="DeepSeek",
+                provider_type="openai_compatible",
+                base_url="https://api.deepseek.com/v1",
+                model_name="deepseek-v4-flash",
+                api_key_ciphertext=encrypt_secret("deepseek-key"),
+                health_status="健康",
+            )
+        )
+        session.add(
+            AiProvider(
+                id=2,
+                provider_name="Xiaomi Mino",
+                provider_type="openai_compatible",
+                base_url="https://api.xiaomimimo.com/v1",
+                model_name="mino-v2.5",
+                api_key_ciphertext=encrypt_secret("mino-key"),
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
+        session.commit()
+
+        contents, _tokens = generate_group_messages(
+            session,
+            1,
+            {"require_mimo_draft": True},
+            count=1,
+            target_label="活跃群",
+            history="已有上下文",
+        )
+
+    assert contents == ["硬目标使用小米生成"]
+    assert captured == {"provider_name": "Xiaomi Mino", "model_name": "mino-v2.5"}
+
+
+@pytest.mark.no_postgres
+def test_hard_hourly_group_chat_generation_fails_without_mimo_provider():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="DeepSeek",
+                provider_type="openai_compatible",
+                base_url="https://api.deepseek.com/v1",
+                model_name="deepseek-v4-flash",
+                api_key_ciphertext=encrypt_secret("deepseek-key"),
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
+        session.commit()
+
+        with pytest.raises(AiGenerationUnavailable, match="小米 MiMo/mino"):
+            generate_group_messages(
+                session,
+                1,
+                {"require_mimo_draft": True},
+                count=1,
+                target_label="活跃群",
+                history="已有上下文",
+            )
+
+
+@pytest.mark.no_postgres
 def test_group_chat_generation_requires_mimo_when_model_configured():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)

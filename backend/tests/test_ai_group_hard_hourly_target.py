@@ -96,7 +96,7 @@ def _hard_hourly_profile_refill_task(*, max_concurrent: int = PROFILE_REFILL_ACC
     return Task(
         id="ai-hard-hourly-profile-refill",
         tenant_id=1,
-        name="硬目标表达卡扩池",
+        name="硬目标面具扩池",
         type="group_ai_chat",
         status="running",
         account_config={"selection_mode": "all", "max_concurrent": max_concurrent, "cooldown_per_account_minutes": 0},
@@ -443,6 +443,7 @@ def test_merge_planner_task_ids_preserves_hard_hourly_primary_over_limit():
     assert task_ids == ["hard-1", "hard-2", "hard-3"]
 
 
+@pytest.mark.no_postgres
 def test_refresh_task_stats_calculates_hard_hourly_target_progress(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -495,6 +496,14 @@ def test_refresh_task_stats_calculates_hard_hourly_target_progress(monkeypatch):
     assert stats["hard_hourly_planning_deficit"] == 2
     assert stats["hard_hourly_status"] == "blocked"
     assert stats["hard_hourly_last_blockers"] == {"dispatcher_lag": 1}
+    assert stats["hard_hourly_pipeline"] == {
+        "membership": "ready",
+        "verification": "ready",
+        "can_send": "ready",
+        "ai_draft": "ready",
+        "dispatcher": "blocked",
+        "hourly_target": "blocked",
+    }
     assert stats["hard_hourly_bucket"] == "2026-06-07T20:00:00+08:00"
     assert stats["hard_hourly_last_check_at"] == "2026-06-07T20:20:00"
     buckets = stats["hard_hourly_recent_buckets"]
@@ -505,6 +514,7 @@ def test_refresh_task_stats_calculates_hard_hourly_target_progress(monkeypatch):
     assert previous_bucket["status"] == "missed"
 
 
+@pytest.mark.no_postgres
 def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -513,6 +523,7 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
 
     def fake_generate_group_messages(_session, _tenant_id, _config, *, count, target_label, history):
         captured["count"] = count
+        captured["require_mimo_draft"] = bool(_config.get("require_mimo_draft"))
         samples = [
             "今晚活动几点开始",
             "报名入口有人发下吗",
@@ -568,6 +579,7 @@ def test_group_ai_chat_hard_hourly_target_creates_deficit_actions(monkeypatch):
 
     assert created == 5
     assert captured["count"] == 5
+    assert captured["require_mimo_draft"] is True
     assert len(actions) == 5
     assert all(action.payload["hard_hourly_target"] is True for action in actions)
     assert all(action.payload["hard_hourly_bucket"] == "2026-06-07T20:00:00+08:00" for action in actions)

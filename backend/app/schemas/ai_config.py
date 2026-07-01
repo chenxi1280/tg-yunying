@@ -115,6 +115,10 @@ class TenantAiSettingOut(ApiModel):
 # ── AI Account Voice Profiles ──
 
 class AiAccountVoiceProfileUpdate(BaseModel):
+    mask_name: str | None = None
+    audience_archetype: str | None = None
+    identity_frame: str | None = None
+    preference_tags: list[str] | None = None
     age_band: str | None = None
     persona_experiences: list[str] | None = None
     consumption_experiences: list[str] | None = None
@@ -171,6 +175,10 @@ class AiAccountVoiceProfileOut(ApiModel):
     account_status: str = ""
     profile_status: str = "missing"
     version: int = 0
+    mask_name: str = ""
+    audience_archetype: str = ""
+    identity_frame: str = ""
+    preference_tags: list[str] = Field(default_factory=list)
     age_band: str = ""
     persona_experiences: list[str] = Field(default_factory=list)
     consumption_experiences: list[str] = Field(default_factory=list)
@@ -191,6 +199,10 @@ class AiAccountVoiceProfileVersionOut(ApiModel):
     version: int
     status: str = ""
     source: str = ""
+    mask_name: str = ""
+    audience_archetype: str = ""
+    identity_frame: str = ""
+    preference_tags: list[str] = Field(default_factory=list)
     age_band: str = ""
     sentence_length: str = ""
     tone_strength: str = ""

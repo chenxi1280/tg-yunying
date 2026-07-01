@@ -32,6 +32,7 @@ from app.services.task_center.account_voice_profile_versions import (
     rollback_voice_profile,
 )
 from app.services.task_center.account_voice_profile_bulk import batch_update_voice_profile_status
+from app.services.task_center.executors.group_ai_chat import _account_prompt_profiles
 
 
 pytestmark = pytest.mark.no_postgres
@@ -70,6 +71,10 @@ def _profile(
         tenant_id=1,
         account_id=account_id,
         version=version,
+        mask_name="黑丝偏好男大",
+        audience_archetype="偏年轻的普通男客",
+        identity_frame="男大，预算不高，喜欢先看反馈",
+        preference_tags=["黑丝", "年轻", "别跑空"],
         short_prompt_summary=summary,
         sentence_length="短句",
         interaction_habits=["先接别人话", "爱追问细节", "少量补经历"],
@@ -93,6 +98,10 @@ def _generated_profile_payload(
 ) -> dict:
     return {
         "account_id": account_id,
+        "mask_name": "黑丝偏好男大",
+        "audience_archetype": "偏年轻的普通男客",
+        "identity_frame": "男大，预算不高，喜欢先看反馈",
+        "preference_tags": ["黑丝", "年轻", "别跑空"],
         "age_band": age_band,
         "sentence_length": sentence_length,
         "interaction_habits": ["先接别人话", "爱追问细节", "少量补经历"],
@@ -148,14 +157,37 @@ def test_voice_profile_prompt_details_backfills_redis_cache(monkeypatch):
 
         details = voice_profile_prompt_details(session, tenant_id=1, account_ids=[101])
 
-        assert details == {101: {"version": 3, "summary": "青年短句，先问价格再看反馈"}}
+        assert details[101]["version"] == 3
+        assert details[101]["summary"] == "青年短句，先问价格再看反馈"
+        assert details[101]["mask_name"] == "黑丝偏好男大"
+        assert details[101]["preference_tags"] == ["黑丝", "年轻", "别跑空"]
         assert fake_redis.mget_calls == [["ai_group:voice_profile:1:101"]]
         assert fake_redis.setex_calls
         assert json.loads(fake_redis.setex_calls[0][2]) == {
             "account_id": 101,
             "version": 3,
             "summary": "青年短句，先问价格再看反馈",
+            "mask_name": "黑丝偏好男大",
+            "audience_archetype": "偏年轻的普通男客",
+            "identity_frame": "男大，预算不高，喜欢先看反馈",
+            "preference_tags": ["黑丝", "年轻", "别跑空"],
         }
+
+
+def test_voice_profile_prompt_details_ignores_legacy_summary_only_cache(monkeypatch):
+    legacy_payload = json.dumps({"account_id": 101, "version": 3, "summary": "旧缓存摘要"}, ensure_ascii=False)
+    fake_redis = FakeVoiceProfileRedis([legacy_payload])
+    _enable_voice_profile_redis(monkeypatch, fake_redis)
+    with _session() as session:
+        _account(session, 101, "花花号")
+        session.add(_profile(101, "青年短句，先问价格再看反馈", version=3))
+        session.commit()
+
+        details = voice_profile_prompt_details(session, tenant_id=1, account_ids=[101])
+
+        assert details[101]["summary"] == "青年短句，先问价格再看反馈"
+        assert details[101]["mask_name"] == "黑丝偏好男大"
+        assert fake_redis.setex_calls
 
 
 def test_voice_profile_patch_refreshes_redis_cache(monkeypatch):
@@ -180,7 +212,66 @@ def test_voice_profile_patch_refreshes_redis_cache(monkeypatch):
             "account_id": 101,
             "version": 2,
             "summary": "中年中句，先看反馈再轻吐槽",
+            "mask_name": "黑丝偏好男大",
+            "audience_archetype": "偏年轻的普通男客",
+            "identity_frame": "男大，预算不高，喜欢先看反馈",
+            "preference_tags": ["黑丝", "年轻", "别跑空"],
         }
+
+
+def test_account_mask_fields_patch_and_projection_stay_compatible(monkeypatch):
+    fake_redis = FakeVoiceProfileRedis([None])
+    _enable_voice_profile_redis(monkeypatch, fake_redis)
+    with _session() as session:
+        _account(session, 101, "花花号", username="huahua101")
+        session.add(_profile(101, "青年短句，先问反馈再看照片", version=1))
+        session.commit()
+
+        updated = patch_voice_profile(
+            session,
+            tenant_id=1,
+            account_id=101,
+            patch={
+                "mask_name": "黑丝控男大",
+                "audience_archetype": "偏年轻、怕跑空的男客",
+                "identity_frame": "男大，预算有限，喜欢黑丝和真实反馈",
+                "preference_tags": ["黑丝", "反馈", "别跑空"],
+                "short_prompt_summary": "男大短句，先接反馈再追问黑丝和避坑",
+            },
+            actor="tester",
+        )
+        session.commit()
+
+        rows = list_voice_profiles(session, tenant_id=1, search="黑丝控")
+        details = voice_profile_prompt_details(session, tenant_id=1, account_ids=[101])
+
+        assert updated.mask_name == "黑丝控男大"
+        assert rows[0]["mask_name"] == "黑丝控男大"
+        assert rows[0]["audience_archetype"] == "偏年轻、怕跑空的男客"
+        assert rows[0]["identity_frame"] == "男大，预算有限，喜欢黑丝和真实反馈"
+        assert rows[0]["preference_tags"] == ["黑丝", "反馈", "别跑空"]
+        assert details[101]["version"] == 2
+        assert details[101]["summary"] == "男大短句，先接反馈再追问黑丝和避坑"
+
+
+def test_account_mask_fields_feed_group_ai_prompt_details(monkeypatch):
+    fake_redis = FakeVoiceProfileRedis([None])
+    _enable_voice_profile_redis(monkeypatch, fake_redis)
+    with _session() as session:
+        _account(session, 101, "花花号", username="huahua101")
+        session.add(_profile(101, "男大短句，先接反馈再追问黑丝和避坑", version=4))
+        session.commit()
+
+        details = voice_profile_prompt_details(session, tenant_id=1, account_ids=[101])
+        prompt_profiles = _account_prompt_profiles({}, details, {})
+
+        assert details[101]["mask_name"] == "黑丝偏好男大"
+        assert details[101]["audience_archetype"] == "偏年轻的普通男客"
+        assert details[101]["identity_frame"] == "男大，预算不高，喜欢先看反馈"
+        assert details[101]["preference_tags"] == ["黑丝", "年轻", "别跑空"]
+        assert "面具：黑丝偏好男大" in prompt_profiles["101"]
+        assert "身份：男大，预算不高，喜欢先看反馈" in prompt_profiles["101"]
+        assert "偏好：黑丝、年轻、别跑空" in prompt_profiles["101"]
 
 
 def test_missing_voice_profile_requires_explicit_ai_generator():
@@ -195,6 +286,10 @@ def test_ensure_voice_profiles_uses_batch_generator_and_rejects_generic_summary(
         return [
             {
                 "account_id": 101,
+                "mask_name": "黑丝偏好男大",
+                "audience_archetype": "偏年轻的普通男客",
+                "identity_frame": "男大，预算不高，喜欢先看反馈",
+                "preference_tags": ["黑丝", "年轻", "别跑空"],
                 "age_band": "青年",
                 "sentence_length": "短句",
                 "interaction_habits": ["爱追问价格", "少发表情", "先接别人一句"],
@@ -206,6 +301,10 @@ def test_ensure_voice_profiles_uses_batch_generator_and_rejects_generic_summary(
             },
             {
                 "account_id": 102,
+                "mask_name": "谨慎中年客",
+                "audience_archetype": "怕踩坑、先看口碑的男客",
+                "identity_frame": "中年，谨慎，重视服务稳定和反馈",
+                "preference_tags": ["口碑", "避坑", "服务"],
                 "age_band": "中年",
                 "sentence_length": "中句",
                 "interaction_habits": ["爱补经历", "偶尔轻吐槽", "先观望再接话"],
@@ -226,6 +325,8 @@ def test_ensure_voice_profiles_uses_batch_generator_and_rejects_generic_summary(
         assert [row.account_id for row in rows] == [101, 102]
         assert rows[0].version == 1
         assert rows[0].quality_status == "active"
+        assert rows[0].mask_name == "黑丝偏好男大"
+        assert rows[1].mask_name == "谨慎中年客"
         assert rows[0].similarity_score is not None
         assert rows[1].similarity_score is not None
         assert voice_profile_prompt_summaries(session, tenant_id=1, account_ids=[101, 102]) == {
@@ -249,6 +350,10 @@ def test_ensure_voice_profiles_splits_large_generation_batches():
         return [
                 {
                     "account_id": account_id,
+                    "mask_name": f"差异面具{account_id}",
+                    "audience_archetype": "怕跑空的本地男客",
+                    "identity_frame": f"账号{account_id}，有固定偏好但不抢话",
+                    "preference_tags": [habits[account_id % len(habits)], words[account_id % len(words)]],
                     "age_band": "青年" if account_id % 2 else "中年",
                     "sentence_length": "短句" if account_id % 3 else "中句",
                     "interaction_habits": [habits[account_id % len(habits)], "少发表情", "先接别人一句"],
@@ -385,6 +490,8 @@ def test_parse_voice_profile_pipe_lines_requires_complete_fields():
     profiles = _parse_voice_profile_payloads(raw, [101, 102])
 
     assert [profile["account_id"] for profile in profiles] == ["101", "102"]
+    assert profiles[0]["mask_name"] == ""
+    assert profiles[0]["preference_tags"] == []
     assert profiles[0]["interaction_habits"] == ["先问位置", "爱追问照片", "先接别人话"]
 
 
@@ -395,10 +502,12 @@ def test_parse_voice_profile_pipe_lines_rejects_incomplete_line():
 
 def test_parse_voice_profile_json_lines_accepts_compact_fields():
     raw = (
-        '{"id":101,"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
+        '{"id":101,"mask":"黑丝偏好男大","aud":"怕跑空的年轻男客","frame":"男大，先看反馈再问细节","tags":["黑丝","反馈"],'
+        '"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
         '"habits":["先问位置","爱追问照片","先接别人话"],"tone":"轻松","words":["我看看","别跑空"],'
         '"emoji":"少用","ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"青年短句先问位置和照片偶尔说别跑空"}\n'
-        '{"id":102,"age":"中年","px":["常帮朋友踩点"],"cx":["约过天津场子"],"len":"中句",'
+        '{"id":102,"mask":"谨慎中年客","aud":"先看口碑的男客","frame":"中年，谨慎，重视服务稳定","tags":["口碑","服务"],'
+        '"age":"中年","px":["常帮朋友踩点"],"cx":["约过天津场子"],"len":"中句",'
         '"habits":["先讲经历","偶尔吐槽","追问服务细节"],"tone":"谨慎","words":["稳一点","别急"],'
         '"emoji":"不用表情","ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"中年中句先讲踩点经历说话谨慎不急"}'
     )
@@ -406,18 +515,34 @@ def test_parse_voice_profile_json_lines_accepts_compact_fields():
     profiles = _parse_voice_profile_payloads(raw, [101, 102])
 
     assert [profile["account_id"] for profile in profiles] == [101, 102]
+    assert profiles[0]["mask_name"] == "黑丝偏好男大"
+    assert profiles[0]["audience_archetype"] == "怕跑空的年轻男客"
+    assert profiles[0]["identity_frame"] == "男大，先看反馈再问细节"
+    assert profiles[0]["preference_tags"] == ["黑丝", "反馈"]
     assert profiles[0]["lexical_preferences"] == ["我看看", "别跑空"]
     assert profiles[1]["emoji_policy"] == "不用表情"
 
 
 def test_parse_voice_profile_rejects_sparse_actionable_fields():
     raw = (
-        '{"id":101,"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
+        '{"id":101,"mask":"黑丝偏好男大","aud":"怕跑空的年轻男客","frame":"男大，先看反馈再问细节","tags":["黑丝","反馈"],'
+        '"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
         '"habits":["先问位置","爱追问照片"],"tone":"轻松","words":["我看看","别跑空"],'
         '"emoji":"少用","ban":["确实不错"],"summary":"青年短句先问位置和照片偶尔说别跑空"}'
     )
 
     with pytest.raises(ValueError, match="interaction_habits requires 3-5 items"):
+        _parse_voice_profile_payloads(raw, [101])
+
+
+def test_parse_voice_profile_rejects_json_without_mask_fields():
+    raw = (
+        '{"id":101,"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
+        '"habits":["先问位置","爱追问照片","先接别人话"],"tone":"轻松","words":["我看看","别跑空"],'
+        '"emoji":"少用","ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"青年短句先问位置和照片偶尔说别跑空"}'
+    )
+
+    with pytest.raises(RuntimeError, match="缺少字段: mask"):
         _parse_voice_profile_payloads(raw, [101])
 
 
@@ -428,8 +553,10 @@ def test_generate_voice_profiles_uses_compact_token_budget(monkeypatch):
         captured["max_tokens"] = max_tokens
         captured["reasoning_retry_max_tokens"] = kwargs["reasoning_retry_max_tokens"]
         return (
-            "101|青年|做过夜场熟客|常点花花老师|短句|先问位置；爱追问照片；先接别人话|轻松|我看看；别跑空|少用|确实不错；感觉挺靠谱；这个不错|"
-            "青年短句先问位置和照片偶尔说别跑空",
+            '{"id":101,"mask":"黑丝偏好男大","aud":"怕跑空的年轻男客","frame":"男大，先看反馈再问细节","tags":["黑丝","反馈"],'
+            '"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
+            '"habits":["先问位置","爱追问照片","先接别人话"],"tone":"轻松","words":["我看看","别跑空"],'
+            '"emoji":"少用","ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"青年短句先问位置和照片偶尔说别跑空"}',
             SimpleNamespace(total_tokens=120),
         )
 
@@ -449,7 +576,8 @@ def test_generate_voice_profiles_uses_compact_token_budget(monkeypatch):
         "max_tokens": VOICE_PROFILE_INITIAL_MAX_TOKENS,
         "reasoning_retry_max_tokens": VOICE_PROFILE_RETRY_MAX_TOKENS,
     }
-    assert profiles[0]["account_id"] == "101"
+    assert profiles[0]["account_id"] == 101
+    assert profiles[0]["mask_name"] == "黑丝偏好男大"
 
 
 def test_generate_voice_profiles_refills_missing_accounts(monkeypatch):
@@ -497,13 +625,15 @@ def test_generate_voice_profiles_retries_malformed_batch_as_single_accounts(monk
             return ('{"id":101,"age":"青年" "px":["缺逗号"]}', SimpleNamespace(total_tokens=60))
         if "account_id=101" in prompt:
             return (
-                '{"id":101,"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
+                '{"id":101,"mask":"黑丝偏好男大","aud":"怕跑空的年轻男客","frame":"男大，先看反馈再问细节","tags":["黑丝","反馈"],'
+                '"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
                 '"habits":["先问位置","爱追问照片","先接别人话"],"tone":"轻松","words":["我看看"],"emoji":"少用",'
                 '"ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"青年短句先问位置偶尔说我看看"}',
                 SimpleNamespace(total_tokens=90),
             )
         return (
-            '{"id":102,"age":"中年","px":["常帮朋友踩点"],"cx":["约过天津场子"],"len":"中句",'
+            '{"id":102,"mask":"谨慎踩点中年","aud":"先看评价的稳妥客","frame":"中年熟客，先核反馈再补一句","tags":["稳妥","反馈"],'
+            '"age":"中年","px":["常帮朋友踩点"],"cx":["约过天津场子"],"len":"中句",'
             '"habits":["先讲经历","偶尔吐槽","追问服务细节"],"tone":"谨慎","words":["稳一点"],"emoji":"不用表情",'
             '"ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"中年中句先讲踩点经历说话谨慎"}',
             SimpleNamespace(total_tokens=90),
@@ -526,6 +656,53 @@ def test_generate_voice_profiles_retries_malformed_batch_as_single_accounts(monk
     assert len(calls) == 3
     assert "account_id=101" in calls[1]
     assert "account_id=102" not in calls[1]
+
+
+def test_generate_voice_profiles_retries_batch_missing_mask_fields_as_single_accounts(monkeypatch):
+    calls: list[str] = []
+
+    def fake_post(credentials, prompt, temperature, max_tokens, **kwargs):  # noqa: ANN001
+        calls.append(prompt)
+        if "account_id=101" in prompt and "account_id=102" in prompt:
+            return (
+                '{"id":101,"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
+                '"habits":["先问位置","爱追问照片","先接别人话"],"tone":"轻松","words":["我看看"],"emoji":"少用",'
+                '"ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"青年短句先问位置偶尔说我看看"}',
+                SimpleNamespace(total_tokens=80),
+            )
+        if "account_id=101" in prompt:
+            return (
+                '{"id":101,"mask":"黑丝偏好男大","aud":"怕跑空的年轻男客","frame":"男大，先看反馈再问细节","tags":["黑丝","反馈"],'
+                '"age":"青年","px":["做过夜场熟客"],"cx":["常点花花老师"],"len":"短句",'
+                '"habits":["先问位置","爱追问照片","先接别人话"],"tone":"轻松","words":["我看看"],"emoji":"少用",'
+                '"ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"青年短句先问位置偶尔说我看看"}',
+                SimpleNamespace(total_tokens=90),
+            )
+        return (
+            '{"id":102,"mask":"谨慎踩点中年","aud":"先看评价的稳妥客","frame":"中年熟客，先核反馈再补一句","tags":["稳妥","反馈"],'
+            '"age":"中年","px":["常帮朋友踩点"],"cx":["约过天津场子"],"len":"中句",'
+            '"habits":["先讲经历","偶尔吐槽","追问服务细节"],"tone":"谨慎","words":["稳一点"],"emoji":"不用表情",'
+            '"ban":["确实不错","感觉挺靠谱","这个不错"],"summary":"中年中句先讲踩点经历说话谨慎"}',
+            SimpleNamespace(total_tokens=90),
+        )
+
+    monkeypatch.setattr("app.services.task_center.account_voice_profile_generation.ai_gateway._post_openai_compatible", fake_post)
+
+    with _session() as session:
+        _account(session, 101, "测试号1")
+        _account(session, 102, "测试号2")
+        profiles = _generate_voice_profile_payloads(
+            session,
+            1,
+            [101, 102],
+            SimpleNamespace(model_name="mimo-v2.5"),
+            SimpleNamespace(temperature=0.7, max_tokens=8192),
+        )
+
+    assert [profile["account_id"] for profile in profiles] == [101, 102]
+    assert len(calls) == 3
+    assert profiles[0]["mask_name"] == "黑丝偏好男大"
+    assert profiles[1]["mask_name"] == "谨慎踩点中年"
 
 
 def test_ensure_voice_profiles_retries_overly_similar_batch_before_insert():
@@ -608,7 +785,7 @@ def test_patch_voice_profile_creates_next_version_and_audit_log():
         assert row.version == 2
         assert row.updated_by == "tester"
         assert [profile.status for profile in profiles] == ["superseded", "active"]
-        assert audits[0].action == "编辑账号表达卡"
+        assert audits[0].action == "编辑账号面具"
 
 
 def test_voice_profile_versions_include_all_versions_and_audit_rows():
@@ -616,7 +793,7 @@ def test_voice_profile_versions_include_all_versions_and_audit_rows():
         _account(session, 101, "花花号")
         session.add(_profile(101, "青年短句，爱追问价格，少表情", version=1, status="superseded"))
         session.add(_profile(101, "青年短句，先观望再追问，偶尔说我看看", version=2, status="active"))
-        session.add(AuditLog(tenant_id=1, actor="tester", action="编辑账号表达卡", target_type="ai_account_voice_profile", target_id="101", detail="version=2"))
+        session.add(AuditLog(tenant_id=1, actor="tester", action="编辑账号面具", target_type="ai_account_voice_profile", target_id="101", detail="version=2"))
         session.commit()
 
         versions = list_voice_profile_versions(session, tenant_id=1, account_id=101)
@@ -625,7 +802,7 @@ def test_voice_profile_versions_include_all_versions_and_audit_rows():
         assert [row["version"] for row in versions] == [2, 1]
         assert versions[0]["status"] == "active"
         assert versions[1]["short_prompt_summary"] == "青年短句，爱追问价格，少表情"
-        assert audits[0]["action"] == "编辑账号表达卡"
+        assert audits[0]["action"] == "编辑账号面具"
         assert audits[0]["detail"] == "version=2"
 
 
@@ -640,7 +817,7 @@ def test_rollback_voice_profile_creates_new_active_version_and_audit_log():
         session.commit()
 
         profiles = list(session.scalars(select(AiAccountVoiceProfile).order_by(AiAccountVoiceProfile.version)))
-        audit = session.scalar(select(AuditLog).where(AuditLog.action == "回滚账号表达卡"))
+        audit = session.scalar(select(AuditLog).where(AuditLog.action == "回滚账号面具"))
         assert restored.version == 3
         assert restored.status == "active"
         assert restored.short_prompt_summary == "青年短句，爱追问价格，少表情"
@@ -697,7 +874,7 @@ def test_batch_rebuild_voice_profiles_generates_missing_accounts_only():
                 "version": 1,
                 "similarity_score": None,
                 "failure_reason": "",
-                "skipped_reason": "已有生效表达卡",
+                "skipped_reason": "已有生效面具",
             },
             {
                 "account_id": 102,
@@ -774,7 +951,7 @@ def test_batch_rebuild_missing_with_empty_account_ids_scans_all_active_accounts(
         assert result["created"] == 2
         assert result["skipped"] == 1
         assert [item["status"] for item in result["items"]] == ["skipped", "created", "created"]
-        assert result["items"][0]["skipped_reason"] == "已有生效表达卡"
+        assert result["items"][0]["skipped_reason"] == "已有生效面具"
         assert all(isinstance(item["similarity_score"], int) for item in result["items"][1:])
         assert [row.account_id for row in rows] == [101, 102, 103]
 
@@ -874,7 +1051,7 @@ def test_batch_update_voice_profile_status_disables_and_restores_profiles():
             101: "青年短句，爱追问价格，少表情",
         }
         audits = list(session.scalars(select(AuditLog).order_by(AuditLog.id)))
-        assert [audit.action for audit in audits] == ["批量停用账号表达卡", "批量停用账号表达卡", "批量恢复账号表达卡"]
+        assert [audit.action for audit in audits] == ["批量停用账号面具", "批量停用账号面具", "批量恢复账号面具"]
 
 
 def test_group_stance_memory_upserts_and_reads_summary():

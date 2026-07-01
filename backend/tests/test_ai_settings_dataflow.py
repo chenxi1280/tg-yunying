@@ -93,11 +93,15 @@ def test_system_config_exposes_ai_account_voice_profile_management_tab():
 
     assert "import AIAccountVoiceProfilesView from './AIAccountVoiceProfilesView';" in system_view
     assert "key: 'ai-voice-profiles'" in system_view
-    assert "label: '账号表达卡'" in system_view
+    assert "label: '账号面具'" in system_view
     assert "hasPermission(currentUser, 'ai_voice_profiles.manage')" in system_view
     assert "<AIAccountVoiceProfilesView" in system_view
 
     assert "export type AiAccountVoiceProfile" in system_types
+    assert "mask_name: string;" in system_types
+    assert "audience_archetype: string;" in system_types
+    assert "identity_frame: string;" in system_types
+    assert "preference_tags: string[];" in system_types
     assert "export type AiAccountVoiceProfileBatchResultItem" in system_types
     assert "export type AiAccountVoiceProfileVersion" in system_types
     assert "export type AiAccountVoiceProfileAudit" in system_types
@@ -113,8 +117,12 @@ def test_system_config_exposes_ai_account_voice_profile_management_tab():
     assert "批量生成结果" in profile_view
     assert "title: '失败原因'" in profile_view
     assert "title: '跳过原因'" in profile_view
-    assert "缺表达卡" in profile_view
-    assert "批量补齐缺卡账号" in profile_view
+    assert "缺面具" in profile_view
+    assert "批量补齐缺面具账号" in profile_view
+    assert "面具名称" in profile_view
+    assert "人群设定" in profile_view
+    assert "身份框架" in profile_view
+    assert "偏好标签" in profile_view
     assert "批量重建" in profile_view
     assert "批量停用" in profile_view
     assert "批量恢复" in profile_view

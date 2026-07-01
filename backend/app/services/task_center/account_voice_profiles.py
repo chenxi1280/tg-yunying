@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import AccountStatus, AiAccountVoiceProfile, AuditLog, TgAccount
@@ -29,7 +29,11 @@ from app.services.task_center.account_voice_profile_quality import generate_dive
 from app.services.task_center.account_voice_profile_search import filter_voice_profile_rows
 
 VOICE_PROFILE_BATCH_SIZE = 2
+PROFILE_LIST_FIELDS = {
+    "persona_experiences", "consumption_experiences", "interaction_habits", "lexical_preferences", "forbidden_expressions", "preference_tags",
+}
 EDITABLE_PROFILE_FIELDS = {
+    "mask_name", "audience_archetype", "identity_frame", "preference_tags",
     "age_band", "persona_experiences", "consumption_experiences", "sentence_length", "interaction_habits", "tone_strength",
     "lexical_preferences", "emoji_policy", "forbidden_expressions", "short_prompt_summary", "status", "quality_status",
 }
@@ -84,7 +88,7 @@ def patch_voice_profile(
     if current and current.status == "active":
         current.status = "superseded"
     session.add(next_profile)
-    _audit(session, tenant_id, actor, "编辑账号表达卡", account_id, f"version={next_profile.version}")
+    _audit(session, tenant_id, actor, "编辑账号面具", account_id, f"version={next_profile.version}")
     session.flush()
     refresh_voice_profile_cache(next_profile)
     return next_profile
@@ -105,7 +109,7 @@ def rebuild_voice_profile(
     if current and current.status == "active":
         current.status = "superseded"
     session.add(profile)
-    _audit(session, tenant_id, actor, "重建账号表达卡", account_id, f"version={profile.version}")
+    _audit(session, tenant_id, actor, "重建账号面具", account_id, f"version={profile.version}")
     session.flush()
     refresh_voice_profile_cache(profile)
     return profile
@@ -134,7 +138,7 @@ def generate_voice_profiles_with_ai(session: Session, *, tenant_id: int) -> Call
     provider, setting = _voice_profile_ai_provider(session, tenant_id)
     credentials = ai_provider_credentials(provider)
     if credentials.base_url.startswith("mock://"):
-        raise RuntimeError("账号表达卡重建需要真实 AI 供应商，当前供应商为 mock")
+        raise RuntimeError("账号面具重建需要真实 AI 供应商，当前供应商为 mock")
 
     def _generator(account_ids: list[int]) -> list[dict[str, Any]]:
         return _generate_voice_profile_payloads(session, tenant_id, account_ids, credentials, setting)
@@ -172,7 +176,7 @@ def voice_profile_prompt_details(
     *,
     tenant_id: int,
     account_ids: list[int],
-) -> dict[int, dict[str, str | int]]:
+) -> dict[int, dict[str, Any]]:
     cached, missed_ids = cached_voice_profile_prompt_details(tenant_id, account_ids)
     if not missed_ids:
         return cached
@@ -184,7 +188,7 @@ def voice_profile_prompt_details(
             AiAccountVoiceProfile.quality_status == "active",
         )
     )
-    result: dict[int, dict[str, str | int]] = dict(cached)
+    result: dict[int, dict[str, Any]] = dict(cached)
     backfill_rows: list[AiAccountVoiceProfile] = []
     for row in rows:
         if not _voice_profile_usable(row):
@@ -192,10 +196,21 @@ def voice_profile_prompt_details(
         current = result.get(row.account_id)
         if current and int(current["version"]) >= int(row.version or 0):
             continue
-        result[row.account_id] = {"version": int(row.version or 0), "summary": row.short_prompt_summary}
+        result[row.account_id] = _voice_profile_prompt_detail(row)
         backfill_rows.append(row)
     refresh_voice_profile_cache_many(backfill_rows)
     return result
+
+
+def _voice_profile_prompt_detail(row: AiAccountVoiceProfile) -> dict[str, Any]:
+    return {
+        "version": int(row.version or 0),
+        "summary": row.short_prompt_summary,
+        "mask_name": row.mask_name,
+        "audience_archetype": row.audience_archetype,
+        "identity_frame": row.identity_frame,
+        "preference_tags": row.preference_tags or [],
+    }
 
 
 def _missing_account_ids(session: Session, tenant_id: int, account_ids: list[int]) -> list[int]:
@@ -305,7 +320,7 @@ def _activate_generated_row(session: Session, row: AiAccountVoiceProfile, curren
     if current and current.status == "active":
         current.status = "superseded"
     session.add(row)
-    _audit(session, row.tenant_id, row.updated_by, "批量生成账号表达卡", row.account_id, f"version={row.version}")
+    _audit(session, row.tenant_id, row.updated_by, "批量生成账号面具", row.account_id, f"version={row.version}")
 
 
 def _skipped_existing_profile_items(
@@ -318,7 +333,7 @@ def _skipped_existing_profile_items(
     latest = _latest_profiles(session, tenant_id, candidate_ids)
     target_set = set(target_ids)
     return [
-        _result_item(account_id, "skipped", latest.get(account_id), skipped_reason="已有生效表达卡")
+        _result_item(account_id, "skipped", latest.get(account_id), skipped_reason="已有生效面具")
         for account_id in candidate_ids
         if account_id not in target_set
     ]
@@ -403,8 +418,15 @@ def _profile_projection(account: TgAccount, profile: AiAccountVoiceProfile | Non
 
 def _serialize_profile(profile: AiAccountVoiceProfile | None) -> dict[str, Any]:
     if not profile:
-        return {"version": 0, "short_prompt_summary": ""}
+        return _empty_profile_data()
     return {field: getattr(profile, field) for field in EDITABLE_PROFILE_FIELDS | {"version", "similarity_score", "updated_by", "updated_at"}}
+
+
+def _empty_profile_data() -> dict[str, Any]:
+    return {
+        field: ([] if field in PROFILE_LIST_FIELDS else "")
+        for field in EDITABLE_PROFILE_FIELDS | {"version", "similarity_score", "updated_by", "updated_at"}
+    } | {"version": 0, "similarity_score": None, "updated_by": "", "updated_at": None}
 
 
 def _require_account(session: Session, tenant_id: int, account_id: int) -> TgAccount:
@@ -484,6 +506,10 @@ def _profile_from_generated(
         tenant_id=tenant_id,
         account_id=account_id,
         version=1,
+        mask_name=str(profile.get("mask_name") or ""),
+        audience_archetype=str(profile.get("audience_archetype") or ""),
+        identity_frame=str(profile.get("identity_frame") or ""),
+        preference_tags=list(profile.get("preference_tags") or []),
         age_band=str(profile.get("age_band") or ""),
         persona_experiences=list(profile.get("persona_experiences") or []),
         consumption_experiences=list(profile.get("consumption_experiences") or []),

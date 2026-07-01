@@ -12,9 +12,11 @@ from .executors.common import quantity_jitter_bounds
 from .executors.group_ai_chat import account_profile_summaries
 from .executors.group_relay import relay_source_filter_reason
 from .fingerprints import content_fingerprint
+from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from .ai_act_types import canonical_ai_group_act_type
 from .membership_recovery import classify_membership_recovery
 from .account_coverage import task_account_coverage
+from app.services._common import _now
 from app.services.task_runtime_stage import derive_task_runtime_stage
 
 
@@ -72,6 +74,8 @@ def _task_payload(session: Session, task: Task, actions: list[Action] | None = N
 
 def _stats_with_account_coverage(session: Session, task: Task, stats: dict[str, Any]) -> dict[str, Any]:
     result = dict(stats or {})
+    if task.type == "group_ai_chat" and hard_hourly_enabled(task):
+        result = hard_hourly_stats(session, task, _now(), result)
     coverage = task_account_coverage(session, task)
     if coverage:
         result["account_coverage"] = coverage
@@ -808,6 +812,10 @@ def _ai_turn_payload(action: Action, payload: dict[str, Any], default_turn_index
         "account_voice_profile_summary": str(payload.get("account_voice_profile_summary") or ""),
         "account_voice_profile_match_score": _payload_int(payload, "account_voice_profile_match_score"),
         "account_voice_profile_match_reason": str(payload.get("account_voice_profile_match_reason") or ""),
+        "account_mask_version": _payload_int(payload, "account_mask_version") or _payload_int(payload, "account_voice_profile_version"),
+        "account_mask_summary": str(payload.get("account_mask_summary") or payload.get("account_voice_profile_summary") or ""),
+        "account_mask_match_score": _payload_int(payload, "account_mask_match_score") or _payload_int(payload, "account_voice_profile_match_score"),
+        "account_mask_match_reason": str(payload.get("account_mask_match_reason") or payload.get("account_voice_profile_match_reason") or ""),
         "stance_summary": str(payload.get("stance_summary") or ""),
         "topic_thread": str(payload.get("topic_thread") or ""),
         "topic_plan": str(payload.get("topic_plan") or ""),

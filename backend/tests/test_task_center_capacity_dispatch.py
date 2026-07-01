@@ -990,7 +990,7 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
                         "content": "😀😀",
                         "status": "filtered",
                         "account_id": 11,
-                        "detail": "账号表达卡要求少表情",
+                        "detail": "账号面具要求少表情",
                     }
                 ],
             },
@@ -1143,7 +1143,7 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
         assert funnel["samples"]["duplicate_message"][0]["content"] == "这个确实不错"
         assert funnel["samples"]["profile_low_match"][0]["action_id"] == "quality-profile-low"
         assert funnel["samples"]["voice_profile_mismatch"][0]["content"] == "😀😀"
-        assert funnel["samples"]["voice_profile_mismatch"][0]["detail"] == "账号表达卡要求少表情"
+        assert funnel["samples"]["voice_profile_mismatch"][0]["detail"] == "账号面具要求少表情"
         assert detail["ai_generation_records"][0]["generation_source"] == "human_context"
         cycles, total_cycles = task_service.list_ai_cycles_page(session, 1, task.id)
         assert total_cycles == 1
@@ -1154,6 +1154,10 @@ def test_task_detail_exposes_ai_quality_funnel_with_blocker_samples():
         assert turn["account_voice_profile_summary"] == "青年号，短句追问，少用表情"
         assert turn["account_voice_profile_match_score"] == 86
         assert turn["account_voice_profile_match_reason"] == "voice_profile_matched"
+        assert turn["account_mask_version"] == 3
+        assert turn["account_mask_summary"] == "青年号，短句追问，少用表情"
+        assert turn["account_mask_match_score"] == 86
+        assert turn["account_mask_match_reason"] == "voice_profile_matched"
         assert turn["stance_summary"] == "前面认可花花服务，后续保持谨慎夸"
         assert turn["ai_message_memory_id"] == "memory-quality-ok"
         assert turn["semantic_cluster"] == "huahua_service_feedback"
@@ -4108,7 +4112,7 @@ def test_group_ai_expires_open_actions_without_voice_profile_before_replan():
             account_id=11,
             status="pending",
             scheduled_at=now_value,
-            payload={"message_text": "新文案", "account_voice_profile_version": 2},
+            payload={"message_text": "新文案", "account_mask_version": 2},
         )
         session.add_all([task, memory, profileless, retryable_profileless, profiled])
         session.commit()
@@ -4309,7 +4313,7 @@ def test_group_ai_build_plan_blocks_missing_voice_profile(monkeypatch):
         task = Task(
             id="task-missing-voice-profile",
             tenant_id=1,
-            name="缺表达卡校验",
+            name="缺面具校验",
             type="group_ai_chat",
             status="running",
             account_config={"selection_mode": "all", "max_concurrent": 1, "cooldown_per_account_minutes": 0},
@@ -4375,7 +4379,7 @@ def test_group_ai_build_plan_blocks_voice_profile_mismatch(monkeypatch):
         task = Task(
             id="task-voice-profile-mismatch",
             tenant_id=1,
-            name="表达卡校验",
+            name="面具校验",
             type="group_ai_chat",
             status="running",
             account_config={"selection_mode": "all", "max_concurrent": 1, "cooldown_per_account_minutes": 0},
@@ -4999,7 +5003,7 @@ def test_group_ai_emoji_fallback_bypasses_voice_emoji_rejection(monkeypatch):
         task = Task(
             id="task-emoji-fallback-voice",
             tenant_id=1,
-            name="表情兜底不被表达卡误杀",
+            name="表情兜底不被面具误杀",
             type="group_ai_chat",
             status="running",
             account_config={"selection_mode": "all", "max_concurrent": 10, "cooldown_per_account_minutes": 0},

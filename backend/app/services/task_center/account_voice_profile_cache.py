@@ -17,7 +17,7 @@ VOICE_PROFILE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 def cached_voice_profile_prompt_details(
     tenant_id: int,
     account_ids: list[int],
-) -> tuple[dict[int, dict[str, str | int]], list[int]]:
+) -> tuple[dict[int, dict[str, Any]], list[int]]:
     unique_ids = _unique_account_ids(account_ids)
     settings = get_settings()
     if not _redis_enabled(settings):
@@ -28,7 +28,7 @@ def cached_voice_profile_prompt_details(
     except Exception as exc:  # noqa: BLE001
         logger.warning("ai_group_voice_profile_cache_read_failed", extra={"error": str(exc)})
         return {}, unique_ids
-    cached: dict[int, dict[str, str | int]] = {}
+    cached: dict[int, dict[str, Any]] = {}
     missed: list[int] = []
     for account_id, value in zip(unique_ids, values, strict=False):
         detail = _parse_cached_detail(value)
@@ -87,12 +87,16 @@ def _cache_payload(row: AiAccountVoiceProfile) -> str:
             "account_id": row.account_id,
             "version": int(row.version or 0),
             "summary": row.short_prompt_summary,
+            "mask_name": row.mask_name,
+            "audience_archetype": row.audience_archetype,
+            "identity_frame": row.identity_frame,
+            "preference_tags": row.preference_tags or [],
         },
         ensure_ascii=False,
     )
 
 
-def _parse_cached_detail(value: Any) -> dict[str, str | int] | None:
+def _parse_cached_detail(value: Any) -> dict[str, Any] | None:
     if not value:
         return None
     raw = value.decode("utf-8") if isinstance(value, bytes) else str(value)
@@ -104,9 +108,26 @@ def _parse_cached_detail(value: Any) -> dict[str, str | int] | None:
         return None
     version = payload.get("version")
     summary = str(payload.get("summary") or "")
-    if not summary:
+    if not summary or not _has_mask_payload(payload):
         return None
-    return {"version": int(version or 0), "summary": summary}
+    return {
+        "version": int(version or 0),
+        "summary": summary,
+        "mask_name": str(payload.get("mask_name") or ""),
+        "audience_archetype": str(payload.get("audience_archetype") or ""),
+        "identity_frame": str(payload.get("identity_frame") or ""),
+        "preference_tags": _string_list(payload.get("preference_tags")),
+    }
+
+
+def _has_mask_payload(payload: dict[str, Any]) -> bool:
+    return all(key in payload for key in ("mask_name", "audience_archetype", "identity_frame", "preference_tags"))
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _redis_enabled(settings) -> bool:  # noqa: ANN001

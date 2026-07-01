@@ -9,7 +9,7 @@ const REASON_LABELS: Record<string, string> = {
   duplicate_message: '重复拦截',
   template_shell_limited: '模板壳限频',
   profile_low_match: '画像低分',
-  voice_profile_mismatch: '表达卡低分',
+  voice_profile_mismatch: '面具低分',
   stance_conflict: '立场冲突',
   account_offline: '账号离线',
   context_insufficient: '上下文不足',

@@ -1944,13 +1944,16 @@ export default function TaskCenterView({
     { title: '账号记忆', dataIndex: 'account_memory', width: 260, ellipsis: true, render: (value) => value || '-' },
     { title: '长期画像', dataIndex: 'account_profile', width: 260, ellipsis: true, render: (value) => value || '-' },
     {
-      title: '表达卡',
+      title: '面具',
       key: 'voice_profile',
       width: 260,
       ellipsis: true,
-      render: (_, turn) => turn.account_voice_profile_summary
-        ? `v${turn.account_voice_profile_version || 0} / ${turn.account_voice_profile_match_score || 0} / ${turn.account_voice_profile_summary}`
-        : '-',
+      render: (_, turn) => {
+        const summary = turn.account_mask_summary || turn.account_voice_profile_summary;
+        const version = turn.account_mask_version || turn.account_voice_profile_version || 0;
+        const score = turn.account_mask_match_score || turn.account_voice_profile_match_score || 0;
+        return summary ? `v${version} / ${score} / ${summary}` : '-';
+      },
     },
     {
       title: '立场/记忆',

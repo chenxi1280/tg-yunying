@@ -5,7 +5,7 @@ import type { HardHourlyRecentBucket, TaskCenterAction, TaskCenterDetail, TaskCe
 import { DetailModal, StatusBadge } from '../components/shared';
 import { parseBeijingDate } from '../time';
 import { API_ORIGIN } from '../../shared/api/client';
-import { TYPE_LABEL, accountCoverageLabel, formatDateTime, formatHardHourlyBlockers, hardHourlyStats, hardHourlyStatusColor, hardHourlyStatusLabel, runtimeStage, statusLabel } from './taskCenterViewModel';
+import { TYPE_LABEL, accountCoverageLabel, formatDateTime, formatHardHourlyBlockers, formatHardHourlyPipeline, hardHourlyStats, hardHourlyStatusColor, hardHourlyStatusLabel, runtimeStage, statusLabel } from './taskCenterViewModel';
 import { TaskAccountOnlineSummaryPanel } from './TaskAccountOnlineSummaryPanel';
 import { TaskAIQualityFunnelPanel } from './TaskAIQualityFunnelPanel';
 import { TaskMembershipPanel } from './TaskMembershipPanel';
@@ -176,6 +176,7 @@ function HardHourlyExecutionPanel({ detail }: { detail: TaskCenterDetail }) {
           { key: 'deficit', label: '缺口', children: deficit },
           { key: 'future-open', label: '未来待执行覆盖', children: futureOpen },
           { key: 'overdue-open', label: '执行滞后（不抵扣缺口）', children: overdueOpen },
+          { key: 'pipeline', label: '端到端阶段', children: formatHardHourlyPipeline(stats.hard_hourly_pipeline) },
           { key: 'last-plan', label: '最近强推', children: stats.hard_hourly_last_check_at ? `${formatDateTime(stats.hard_hourly_last_check_at)} / 创建 ${stats.hard_hourly_last_planned_count ?? 0} 条` : '-' },
           { key: 'blockers', label: '阻塞原因', children: formatHardHourlyBlockers(stats.hard_hourly_last_blockers) },
         ]}

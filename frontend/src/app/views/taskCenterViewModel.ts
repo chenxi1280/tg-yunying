@@ -103,6 +103,14 @@ const HARD_HOURLY_BLOCKER_LABELS: Record<string, string> = {
   dispatcher_lag: '执行滞后',
   unknown_after_send: '发送结果未知',
 };
+const HARD_HOURLY_PIPELINE_LABELS: Record<string, string> = {
+  membership: '入群',
+  verification: '验证',
+  can_send: '可发送',
+  ai_draft: 'AI draft',
+  dispatcher: 'dispatcher',
+  hourly_target: '小时目标',
+};
 
 export function precheckReasonLabel(reason: string) {
   return PRECHECK_REASON_LABELS[reason] ?? reason;
@@ -127,6 +135,13 @@ export function hardHourlyBlockerLabel(reason: string): string {
 export function formatHardHourlyBlockers(blockers?: HardHourlyBlockers | null): string {
   const entries = Object.entries(blockers ?? {}).filter(([, value]) => Number(value) > 0);
   return entries.length ? entries.map(([key, value]) => `${hardHourlyBlockerLabel(key)} ${value}`).join('；') : '无';
+}
+
+export function formatHardHourlyPipeline(pipeline?: Record<string, string> | null): string {
+  const entries = Object.entries(pipeline ?? {});
+  return entries.length
+    ? entries.map(([key, value]) => `${HARD_HOURLY_PIPELINE_LABELS[key] ?? key}:${hardHourlyStatusLabel(value)}`).join('；')
+    : '-';
 }
 
 export function hardHourlyStats(task?: TaskCenterTask | null): TaskCenterStats | null {

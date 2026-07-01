@@ -17,6 +17,10 @@ SEND_FILTER = (Action.task_type == "group_ai_chat", Action.action_type == "send_
 STRATEGY_FORCE_PLANNING = "force_planning"
 HARD_HOURLY_FRONTLOAD_WINDOW_SECONDS = 15 * 60
 TRANSIENT_REFRESH_BLOCKERS = frozenset({"account_capacity", "account_offline", "dispatcher_lag"})
+MEMBERSHIP_BLOCKERS = frozenset({"target_join_pending", "target_membership_pending", "target_required_channel_pending"})
+VERIFICATION_BLOCKERS = frozenset({"target_verification_pending", "target_verification_failed", "verification_context_unreadable"})
+CAN_SEND_BLOCKERS = frozenset({"target_can_send_blocked", "target_permission", "rule_binding_missing"})
+AI_DRAFT_BLOCKERS = frozenset({"ai_generation_unavailable", "ai_mino_draft_unavailable", "quality_filter", "content_policy"})
 
 
 @dataclass(frozen=True)
@@ -73,7 +77,7 @@ def hard_hourly_stats(session: Session, task: Task, now: datetime, current_stats
     last_blockers = _effective_last_blockers(current, current_stats)
     status = _current_status(current, now_local, bucket_end, last_blockers)
     updated = dict(current_stats)
-    updated.update(_current_stat_values(task, now_local, current, status))
+    updated.update(_current_stat_values(task, now_local, current, status, last_blockers))
     if last_blockers:
         updated["hard_hourly_last_blockers"] = last_blockers
     else:
@@ -324,7 +328,13 @@ def _current_status(bucket: dict[str, Any], now_local: datetime, hour_end: datet
     return "catching_up"
 
 
-def _current_stat_values(task: Task, now_local: datetime, bucket: dict[str, Any], status: str) -> dict[str, Any]:
+def _current_stat_values(
+    task: Task,
+    now_local: datetime,
+    bucket: dict[str, Any],
+    status: str,
+    blockers: dict[str, int],
+) -> dict[str, Any]:
     return {
         "hard_hourly_target_enabled": True,
         "hard_hourly_goal": goal(task.type_config or {}),
@@ -335,7 +345,24 @@ def _current_stat_values(task: Task, now_local: datetime, bucket: dict[str, Any]
         "hard_hourly_deficit": bucket["deficit"],
         "hard_hourly_planning_deficit": bucket["planning_deficit"],
         "hard_hourly_status": status,
+        "hard_hourly_pipeline": _pipeline_status(status, blockers),
     }
+
+
+def _pipeline_status(status: str, blockers: dict[str, int]) -> dict[str, str]:
+    reasons = set(blockers.keys())
+    return {
+        "membership": _stage_status(reasons, MEMBERSHIP_BLOCKERS),
+        "verification": _stage_status(reasons, VERIFICATION_BLOCKERS),
+        "can_send": _stage_status(reasons, CAN_SEND_BLOCKERS),
+        "ai_draft": _stage_status(reasons, AI_DRAFT_BLOCKERS),
+        "dispatcher": _stage_status(reasons, frozenset({"dispatcher_lag"})),
+        "hourly_target": status,
+    }
+
+
+def _stage_status(reasons: set[str], stage_reasons: frozenset[str]) -> str:
+    return "blocked" if reasons & stage_reasons else "ready"
 
 
 def _effective_last_blockers(current: dict[str, Any], current_stats: dict[str, Any]) -> dict[str, int]:

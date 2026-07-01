@@ -11,8 +11,8 @@ import type {
 } from '../types';
 
 const PROFILE_STATUS_OPTIONS = [
-  { value: '', label: '全部表达卡' },
-  { value: 'missing', label: '缺表达卡' },
+  { value: '', label: '全部面具' },
+  { value: 'missing', label: '缺面具' },
   { value: 'active', label: '已启用' },
   { value: 'disabled', label: '已停用' },
 ];
@@ -23,12 +23,16 @@ const TEXT_LIST_FIELDS = [
   'interaction_habits',
   'lexical_preferences',
   'forbidden_expressions',
+  'preference_tags',
 ] as const;
 
 type TextListField = typeof TEXT_LIST_FIELDS[number];
 
 type EditableProfile = Pick<
   AiAccountVoiceProfile,
+  | 'mask_name'
+  | 'audience_archetype'
+  | 'identity_frame'
   | 'age_band'
   | 'sentence_length'
   | 'tone_strength'
@@ -62,6 +66,9 @@ function joinLines(value: string[]) {
 function editableFromProfile(profile: AiAccountVoiceProfile): EditableProfile {
   return {
     age_band: profile.age_band,
+    mask_name: profile.mask_name,
+    audience_archetype: profile.audience_archetype,
+    identity_frame: profile.identity_frame,
     sentence_length: profile.sentence_length,
     tone_strength: profile.tone_strength,
     emoji_policy: profile.emoji_policy,
@@ -73,12 +80,16 @@ function editableFromProfile(profile: AiAccountVoiceProfile): EditableProfile {
     interaction_habits: profile.interaction_habits,
     lexical_preferences: profile.lexical_preferences,
     forbidden_expressions: profile.forbidden_expressions,
+    preference_tags: profile.preference_tags,
   };
 }
 
 function payloadFromDraft(draft: EditableProfile) {
   return {
     age_band: draft.age_band.trim(),
+    mask_name: draft.mask_name.trim(),
+    audience_archetype: draft.audience_archetype.trim(),
+    identity_frame: draft.identity_frame.trim(),
     sentence_length: draft.sentence_length.trim(),
     tone_strength: draft.tone_strength.trim(),
     emoji_policy: draft.emoji_policy.trim(),
@@ -90,11 +101,12 @@ function payloadFromDraft(draft: EditableProfile) {
     interaction_habits: draft.interaction_habits,
     lexical_preferences: draft.lexical_preferences,
     forbidden_expressions: draft.forbidden_expressions,
+    preference_tags: draft.preference_tags,
   };
 }
 
 function profileStatusTag(status: string) {
-  if (status === 'missing') return <Tag color="red">缺表达卡</Tag>;
+  if (status === 'missing') return <Tag color="red">缺面具</Tag>;
   if (status === 'active') return <Tag color="green">已启用</Tag>;
   if (status === 'disabled') return <Tag color="default">已停用</Tag>;
   return <Tag>{status || '-'}</Tag>;
@@ -194,7 +206,7 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
       setProfiles((current) => current.map((item) => item.account_id === updated.account_id ? updated : item));
       setEditing(null);
       setDraft(null);
-      setNotice('账号表达卡已保存，下一轮规划生效');
+      setNotice('账号面具已保存，下一轮规划生效');
     } catch (saveError) {
       setError(errorText(saveError));
     } finally {
@@ -209,7 +221,7 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
     try {
       const updated = await api<AiAccountVoiceProfile>(`/ai-account-voice-profiles/${profile.account_id}/rebuild`, { method: 'POST' });
       setProfiles((current) => current.map((item) => item.account_id === updated.account_id ? updated : item));
-      setNotice(`${accountTitle(updated)} 已重建表达卡`);
+      setNotice(`${accountTitle(updated)} 已重建面具`);
     } catch (rebuildError) {
       setError(errorText(rebuildError));
     } finally {
@@ -304,7 +316,8 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
     { title: '账号', render: (_: unknown, profile: AiAccountVoiceProfile) => <Space direction="vertical" size={0}><Typography.Text>{accountTitle(profile)}</Typography.Text><Typography.Text type="secondary">{profile.phone_masked || '-'}</Typography.Text></Space> },
     { title: '状态', render: (_: unknown, profile: AiAccountVoiceProfile) => <Space>{profileStatusTag(profile.profile_status)}<Tag>{profile.account_status || '-'}</Tag></Space> },
     { title: '版本', dataIndex: 'version', width: 70 },
-    { title: '表达摘要', dataIndex: 'short_prompt_summary', ellipsis: true },
+    { title: '面具', dataIndex: 'mask_name', ellipsis: true, render: (value: string) => value || '-' },
+    { title: '摘要', dataIndex: 'short_prompt_summary', ellipsis: true },
     { title: '差异度', dataIndex: 'similarity_score', width: 90, render: (value: number | null) => value ?? '-' },
     { title: '更新', width: 170, render: (_: unknown, profile: AiAccountVoiceProfile) => profile.updated_at ? profile.updated_at.replace('T', ' ').slice(0, 16) : '-' },
     { title: '操作', width: 250, render: (_: unknown, profile: AiAccountVoiceProfile) => <Space><Button size="small" onClick={() => openEdit(profile)}>编辑</Button><Button size="small" onClick={() => openHistory(profile)}>版本历史</Button><Button size="small" disabled={!canManageVoiceProfiles} loading={savingKey === `rebuild:${profile.account_id}`} onClick={() => rebuildProfile(profile)}>重建</Button></Space> },
@@ -350,9 +363,9 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
   ];
 
   return (
-    <Card className="panel" title="账号表达卡" extra={<Typography.Text type="secondary">账号级全局真人感原则</Typography.Text>}>
+    <Card className="panel" title="账号面具" extra={<Typography.Text type="secondary">账号级全局真人感原则</Typography.Text>}>
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        {!canManageVoiceProfiles && <Alert type="warning" showIcon message="当前账号没有账号表达卡管理权限，只能查看。" />}
+        {!canManageVoiceProfiles && <Alert type="warning" showIcon message="当前账号没有账号面具管理权限，只能查看。" />}
         {error && <Alert type="error" showIcon message={error} />}
         {notice && <Alert type="success" showIcon message={notice} closable onClose={() => setNotice('')} />}
         <Space wrap>
@@ -361,12 +374,12 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             onSearch={(value) => { setSearch(value); void loadProfiles(value); }}
-            placeholder="搜索账号名 / username / 手机号后四位"
+            placeholder="搜索账号名 / username / 手机号后四位 / 面具名称"
             style={{ width: 320 }}
           />
           <Select value={profileStatus} onChange={setProfileStatus} options={PROFILE_STATUS_OPTIONS} style={{ width: 160 }} />
           <Button onClick={() => loadProfiles()} loading={loading}>刷新</Button>
-          <Button type="primary" disabled={!canManageVoiceProfiles} loading={savingKey === 'batch-rebuild-missing'} onClick={batchRebuildMissing}>批量补齐缺卡账号</Button>
+          <Button type="primary" disabled={!canManageVoiceProfiles} loading={savingKey === 'batch-rebuild-missing'} onClick={batchRebuildMissing}>批量补齐缺面具账号</Button>
           <Button disabled={!canManageVoiceProfiles || !selectedAccountIds.length} loading={savingKey === 'batch-rebuild-selected'} onClick={batchRebuildSelected}>批量重建</Button>
           <Button disabled={!canManageVoiceProfiles || !selectedAccountIds.length} loading={savingKey === 'batch-status:disabled'} onClick={() => batchUpdateStatus('disabled')}>批量停用</Button>
           <Button disabled={!canManageVoiceProfiles || !selectedAccountIds.length} loading={savingKey === 'batch-status:active'} onClick={() => batchUpdateStatus('active')}>批量恢复</Button>
@@ -378,7 +391,7 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
           dataSource={profiles}
           columns={columns}
           rowSelection={rowSelection}
-          locale={{ emptyText: <Empty description="暂无账号表达卡数据" /> }}
+          locale={{ emptyText: <Empty description="暂无账号面具数据" /> }}
           pagination={{ pageSize: 20, showSizeChanger: false }}
         />
         {batchResultItems.length > 0 && (
@@ -397,7 +410,7 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
       </Space>
       <Modal
         className="tg-modal large"
-        title={editing ? `编辑表达卡：${accountTitle(editing)}` : '编辑表达卡'}
+        title={editing ? `编辑面具：${accountTitle(editing)}` : '编辑面具'}
         open={Boolean(editing && draft)}
         width={860}
         okText="保存"
@@ -412,14 +425,18 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
         {draft && (
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <div className="policy-grid">
+              <label>面具名称<Input value={draft.mask_name} onChange={(event) => updateDraft('mask_name', event.target.value)} /></label>
+              <label>人群设定<Input value={draft.audience_archetype} onChange={(event) => updateDraft('audience_archetype', event.target.value)} /></label>
+              <label>身份框架<Input value={draft.identity_frame} onChange={(event) => updateDraft('identity_frame', event.target.value)} /></label>
               <label>年龄段<Input value={draft.age_band} onChange={(event) => updateDraft('age_band', event.target.value)} /></label>
               <label>句长偏好<Input value={draft.sentence_length} onChange={(event) => updateDraft('sentence_length', event.target.value)} /></label>
               <label>语气强度<Input value={draft.tone_strength} onChange={(event) => updateDraft('tone_strength', event.target.value)} /></label>
               <label>表情策略<Input value={draft.emoji_policy} onChange={(event) => updateDraft('emoji_policy', event.target.value)} /></label>
               <label>质量状态<Input value={draft.quality_status} onChange={(event) => updateDraft('quality_status', event.target.value)} /></label>
-              <label>表达卡状态<Select value={draft.profile_status} onChange={(value) => updateDraft('profile_status', value)} options={PROFILE_STATUS_OPTIONS.filter((option) => option.value)} /></label>
+              <label>面具状态<Select value={draft.profile_status} onChange={(value) => updateDraft('profile_status', value)} options={PROFILE_STATUS_OPTIONS.filter((option) => option.value)} /></label>
             </div>
             <label>短摘要<Input.TextArea rows={2} value={draft.short_prompt_summary} onChange={(event) => updateDraft('short_prompt_summary', event.target.value)} /></label>
+            <label>偏好标签<Input.TextArea rows={3} value={joinLines(draft.preference_tags)} onChange={(event) => updateDraft('preference_tags', splitLines(event.target.value))} /></label>
             <label>经历设定<Input.TextArea rows={3} value={joinLines(draft.persona_experiences)} onChange={(event) => updateDraft('persona_experiences', splitLines(event.target.value))} /></label>
             <label>消费经历设定<Input.TextArea rows={3} value={joinLines(draft.consumption_experiences)} onChange={(event) => updateDraft('consumption_experiences', splitLines(event.target.value))} /></label>
             <label>互动习惯<Input.TextArea rows={3} value={joinLines(draft.interaction_habits)} onChange={(event) => updateDraft('interaction_habits', splitLines(event.target.value))} /></label>
@@ -439,7 +456,7 @@ export default function AIAccountVoiceProfilesView({ canManageVoiceProfiles = fa
         centered
       >
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Typography.Text type="secondary">表达卡回滚会创建一个新的启用版本，已生成的 action 仍使用旧版本。</Typography.Text>
+          <Typography.Text type="secondary">账号面具回滚会创建一个新的启用版本，已生成的 action 仍使用旧版本。</Typography.Text>
           <Table
             rowKey="version"
             size="small"

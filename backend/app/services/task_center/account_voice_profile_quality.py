@@ -77,8 +77,10 @@ def _normalized_summary(profile: dict[str, Any]) -> str:
     return "".join(str(profile.get("short_prompt_summary") or "").lower().split())
 
 
-def _style_signature(profile: dict[str, Any]) -> tuple[str, str, str, str]:
+def _style_signature(profile: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
     return (
+        _normalized_scalar(profile.get("mask_name")),
+        _normalized_scalar(profile.get("identity_frame")),
         _normalized_scalar(profile.get("age_band")),
         _normalized_scalar(profile.get("sentence_length")),
         _normalized_scalar(profile.get("tone_strength")),
