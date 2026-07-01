@@ -25,11 +25,13 @@ from app.security import encrypt_secret
 from app.services.task_center.ai_generator import (
     AI_CONTENT_REQUEST_TIMEOUT_SECONDS,
     AiGenerationUnavailable,
+    GROUP_CHAT_PURPOSE,
     _group_chat_prompt,
     _group_chat_reply_prompt,
     _sanitize_sensitive_context,
     clean_channel_comment_contents,
     clean_group_chat_contents,
+    generate_contents,
     generate_channel_comments,
     generate_group_messages,
 )
@@ -78,6 +80,55 @@ def test_sensitive_group_context_is_sanitized_before_provider_prompt():
     assert "300块" not in sanitized
     assert "谨慎观望客" in sanitized
     assert "一定成本" in sanitized
+
+
+@pytest.mark.no_postgres
+def test_provider_boundary_sanitizes_topic_label_and_system_prompt(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    captured: dict[str, str] = {}
+
+    def fake_generate_drafts(_credentials, prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["topic"] = kwargs["topic"]
+        captured["system_prompt"] = kwargs["system_prompt"]
+        return mock_generation_result("先看看大家怎么说")
+
+    monkeypatch.setattr("app.services.task_center.ai_generator.ai_gateway.generate_drafts", fake_generate_drafts)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(
+            AiProvider(
+                id=1,
+                provider_name="MiMo",
+                provider_type="openai_compatible",
+                base_url="https://api.xiaomimimo.com/v1",
+                model_name="mimo-v2.5",
+                api_key_ciphertext=encrypt_secret("test-key"),
+                health_status="健康",
+            )
+        )
+        session.add(TenantAiSetting(tenant_id=1, default_provider_id=1, ai_enabled=True, max_tokens=1024))
+        session.commit()
+
+        contents, _tokens = generate_contents(
+            session,
+            1,
+            topic="郑州楼凤妹子价格位置",
+            requirements="嫖客问半小时300块",
+            count=1,
+            purpose=GROUP_CHAT_PURPOSE,
+            target_label="成人性服务群",
+            system_prompt="性服务描述只能作上下文",
+        )
+
+    assert contents == ["先看看大家怎么说"]
+    provider_text = "\n".join([captured["prompt"], captured["topic"], captured["system_prompt"]])
+    for raw in ["妹子", "价格", "位置", "嫖客", "半小时", "300块", "成人", "性服务"]:
+        assert raw not in provider_text
+    assert "对象" in provider_text
+    assert "成本" in provider_text
 
 
 @pytest.mark.no_postgres
@@ -1367,7 +1418,7 @@ def test_channel_comment_allows_adult_service_context_in_ai_prompt(monkeypatch):
     assert "成人服务描述已按安全口径概括" not in captured["prompt"]
     assert "敏感场景描述只能作为既有上下文理解" in captured["system_prompt"]
     assert "成人交易/性服务" not in captured["system_prompt"]
-    assert "不要新增联系方式、价格、邀约或交易撮合信息" in captured["system_prompt"]
+    assert "不要新增联系线索、成本细节、邀约或促成信息" in captured["system_prompt"]
 
 
 def test_channel_comment_keeps_adult_service_context_outputs(monkeypatch):
@@ -1463,7 +1514,7 @@ def test_group_chat_allows_adult_service_context_in_ai_prompt(monkeypatch):
     assert "成人服务描述已按安全口径概括" not in captured["prompt"]
     assert "敏感场景描述只能作为既有上下文理解" in captured["system_prompt"]
     assert "成人交易/性服务" not in captured["system_prompt"]
-    assert "不要新增联系方式、价格、邀约或交易撮合信息" in captured["system_prompt"]
+    assert "不要新增联系线索、成本细节、邀约或促成信息" in captured["system_prompt"]
 
 
 def test_group_chat_keeps_adult_service_context_outputs(monkeypatch):

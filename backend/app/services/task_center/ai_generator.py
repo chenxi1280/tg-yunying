@@ -24,7 +24,7 @@ AI_CONTENT_REQUEST_TIMEOUT_SECONDS = 120
 LONG_RUNNING_AI_PURPOSES = frozenset({GROUP_CHAT_PURPOSE, GROUP_CHAT_REPLY_PURPOSE, CHANNEL_COMMENT_PURPOSE, CHANNEL_COMMENT_REPLY_PURPOSE})
 SENSITIVE_CONTEXT_GUIDANCE = (
     "敏感场景描述只能作为既有上下文理解和引用，但回复只能围绕原文已有事实做自然短评或追问；"
-    "不要新增联系方式、价格、邀约或交易撮合信息，不要编造亲身交易经历。"
+    "不要新增联系线索、成本细节、邀约或促成信息，不要编造亲身经历。"
 )
 SENSITIVE_CONTEXT_REPLACEMENTS = {
     "嫖客": "谨慎观望客",
@@ -202,6 +202,10 @@ def generate_contents(
     system_prompt: str | None = None,
     required_model_family: str = "",
 ) -> tuple[list[str], int]:
+    topic = _sanitize_sensitive_context(topic)
+    requirements = _sanitize_sensitive_context(requirements)
+    target_label = _sanitize_sensitive_context(target_label)
+    system_prompt = _sanitize_sensitive_context(system_prompt) if system_prompt is not None else None
     provider, setting = _provider(session, tenant_id, provider_id, model_name, required_family=required_model_family)
     if not provider or not setting:
         if purpose in LONG_RUNNING_AI_PURPOSES:
@@ -214,6 +218,7 @@ def generate_contents(
         topic=topic,
         requirements=requirements,
     )
+    prompt = _sanitize_sensitive_context(prompt)
     result = _generate_with_provider_candidates(
         session,
         provider,
