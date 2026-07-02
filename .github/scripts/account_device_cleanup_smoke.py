@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import aliased
 
 from app.database import SessionLocal
 from app.models import AccountStatus, TgAccount, TgAccountAuthorization
@@ -22,8 +21,8 @@ STANDBY_ROLES = {"standby_1", "standby_2"}
 @dataclass(frozen=True)
 class CandidateResult:
     account: TgAccount
-    primary: TgAccountAuthorization
-    standby: TgAccountAuthorization
+    primary: TgAccountAuthorization | None
+    standby: TgAccountAuthorization | None
     precheck: dict[str, Any]
 
 
@@ -43,19 +42,7 @@ def main() -> None:
         }
         if apply:
             payload["cleanup_result"] = _cleanup(session, tenant_id, result.account.id, result.precheck["precheck_id"])
-            payload["self_heal_result"] = self_heal_authorizations(
-                session,
-                result.account.id,
-                actor=ACTOR,
-                reason="生产 smoke：模拟主授权掉线，验证健康备用授权接管",
-            )
-            payload["refresh_previous_primary_result"] = refresh_authorization_slot(
-                session,
-                result.account.id,
-                result.primary.id,
-                actor=ACTOR,
-                reason="生产 smoke：健康槽位刷新原主授权",
-            )
+            payload.update(_authorization_recovery_smoke(session, result))
             payload["authorization_after"] = _authorization_state(session, result.account.id)
         print("ACCOUNT_DEVICE_CLEANUP_SMOKE=" + json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
 
@@ -63,48 +50,36 @@ def main() -> None:
 def _select_candidate(session, tenant_id: int, account_id: int | None, max_scan: int) -> CandidateResult:
     accounts = _candidate_accounts(session, tenant_id, account_id, max_scan)
     if not accounts:
-        raise RuntimeError("no active non-code-receiver account with explicit primary and healthy standby authorization")
-    fallback: CandidateResult | None = None
+        raise RuntimeError("no active non-code-receiver account with session")
+    fallback_any: CandidateResult | None = None
+    fallback_cleanup: CandidateResult | None = None
+    fallback_standby: CandidateResult | None = None
     errors: list[dict[str, Any]] = []
     for account in accounts:
         primary = _primary_authorization(session, account.id)
         standby = _healthy_standby(session, account.id)
-        if primary is None or standby is None:
-            continue
         try:
             precheck = create_device_cleanup_precheck(session, tenant_id, account.id, ACTOR)
         except Exception as exc:  # noqa: BLE001 - production smoke must expose per-account scan failures.
             errors.append({"account_id": account.id, "error": str(exc)})
             continue
         result = CandidateResult(account=account, primary=primary, standby=standby, precheck=precheck)
-        if int(precheck.get("cleanup_count") or 0) > 0:
+        cleanup_ready = int(precheck.get("cleanup_count") or 0) > 0
+        standby_ready = primary is not None and standby is not None
+        if cleanup_ready and standby_ready:
             return result
-        fallback = fallback or result
+        fallback_cleanup = fallback_cleanup or result if cleanup_ready else fallback_cleanup
+        fallback_standby = fallback_standby or result if standby_ready else fallback_standby
+        fallback_any = fallback_any or result
+    fallback = fallback_cleanup or fallback_standby or fallback_any
     if fallback:
         return fallback
     raise RuntimeError("candidate scan failed: " + json.dumps(errors, ensure_ascii=False, sort_keys=True))
 
 
 def _candidate_accounts(session, tenant_id: int, account_id: int | None, max_scan: int) -> list[TgAccount]:
-    primary = aliased(TgAccountAuthorization)
-    standby = aliased(TgAccountAuthorization)
     query = (
         select(TgAccount)
-        .join(
-            primary,
-            (primary.account_id == TgAccount.id)
-            & (primary.disabled_at.is_(None))
-            & (primary.session_ciphertext.is_not(None))
-            & (primary.role == "primary"),
-        )
-        .join(
-            standby,
-            (standby.account_id == TgAccount.id)
-            & (standby.disabled_at.is_(None))
-            & (standby.session_ciphertext.is_not(None))
-            & (standby.role.in_(STANDBY_ROLES))
-            & (standby.status.in_(ACTIVE_AUTH_STATUSES)),
-        )
         .where(
             TgAccount.tenant_id == tenant_id,
             TgAccount.deleted_at.is_(None),
@@ -112,7 +87,6 @@ def _candidate_accounts(session, tenant_id: int, account_id: int | None, max_sca
             TgAccount.status == AccountStatus.ACTIVE.value,
             TgAccount.session_ciphertext.is_not(None),
         )
-        .distinct()
         .order_by(TgAccount.id.asc())
     )
     if account_id is not None:
@@ -151,6 +125,34 @@ def _healthy_standby(session, account_id: int) -> TgAccountAuthorization | None:
 
 def _cleanup(session, tenant_id: int, account_id: int, precheck_id: str) -> dict[str, Any]:
     return cleanup_devices_from_precheck(session, tenant_id, account_id, precheck_id, ACTOR)
+
+
+def _authorization_recovery_smoke(session, result: CandidateResult) -> dict[str, Any]:
+    if result.primary is None or result.standby is None:
+        return {
+            "self_heal_result": {
+                "status": "blocked_no_standby",
+                "detail": "生产没有显式 primary + 健康 standby 授权资产样本，未执行备用接管",
+            },
+            "refresh_previous_primary_result": {
+                "status": "blocked_no_primary_standby_pair",
+                "detail": "缺少可刷新旧主授权的显式授权资产",
+            },
+        }
+    self_heal = self_heal_authorizations(
+        session,
+        result.account.id,
+        actor=ACTOR,
+        reason="生产 smoke：模拟主授权掉线，验证健康备用授权接管",
+    )
+    refresh = refresh_authorization_slot(
+        session,
+        result.account.id,
+        result.primary.id,
+        actor=ACTOR,
+        reason="生产 smoke：健康槽位刷新原主授权",
+    )
+    return {"self_heal_result": self_heal, "refresh_previous_primary_result": refresh}
 
 
 def _authorization_state(session, account_id: int) -> list[dict[str, Any]]:
@@ -206,7 +208,11 @@ def _compact_devices(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _account_summary(account: TgAccount, primary: TgAccountAuthorization, standby: TgAccountAuthorization) -> dict[str, Any]:
+def _account_summary(
+    account: TgAccount,
+    primary: TgAccountAuthorization | None,
+    standby: TgAccountAuthorization | None,
+) -> dict[str, Any]:
     return {
         "account_id": account.id,
         "display_name": account.display_name,
@@ -214,9 +220,10 @@ def _account_summary(account: TgAccount, primary: TgAccountAuthorization, standb
         "status": account.status,
         "developer_app_id": account.developer_app_id,
         "proxy_id": account.proxy_id,
-        "primary_authorization_id": primary.id,
-        "standby_authorization_id": standby.id,
-        "standby_role": standby.role,
+        "primary_authorization_id": primary.id if primary else None,
+        "standby_authorization_id": standby.id if standby else None,
+        "standby_role": standby.role if standby else "",
+        "standby_recovery_ready": bool(primary and standby),
     }
 
 
