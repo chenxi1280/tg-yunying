@@ -33,6 +33,7 @@ from .account_authorization_read_model import (
     authorization_summary_for_account,
     list_account_authorizations,
 )
+from .account_authorization_metadata import read_authorization_metadata
 from .account_two_fa import rotate_managed_two_fa_after_login
 from .developer_apps import credentials_for_developer_app
 
@@ -465,12 +466,14 @@ def _current_authorization_hash_after_login(
     session_ciphertext: str,
 ) -> str:
     proxy = _require_proxy(session, account.tenant_id, flow.proxy_id) if flow.proxy_id else None
-    credentials = credentials_for_developer_app(app, proxy)
-    authorizations = gateway.list_authorizations(session_ciphertext, credentials)
-    for authorization in authorizations:
-        if authorization.is_current and authorization.authorization_hash:
-            return authorization.authorization_hash
-    raise ValueError("备用授权登录已完成，但未能确认 Telegram 授权 hash")
+    metadata = read_authorization_metadata(
+        session,
+        account=account,
+        app=app,
+        proxy=proxy,
+        session_ciphertext=session_ciphertext,
+    )
+    return metadata.authorization_hash
 
 
 def _primary_row(rows: list[TgAccountAuthorization]) -> TgAccountAuthorization | None:

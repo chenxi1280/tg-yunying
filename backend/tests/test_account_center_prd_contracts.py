@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -136,7 +136,7 @@ def test_device_classification_uses_remote_api_id_against_three_slots() -> None:
         assert classified[2]["cleanup_eligible"] is False
 
 
-def test_device_cleanup_candidates_use_api_id_not_telegram_client_names() -> None:
+def test_device_cleanup_candidates_keep_current_session_and_one_official_anchor() -> None:
     with _session() as session:
         session.add(Tenant(id=1, name="默认运营空间"))
         session.add(TelegramDeveloperApp(id=1, app_name="Primary", api_id=12345, api_hash_ciphertext="secret"))
@@ -153,16 +153,36 @@ def test_device_cleanup_candidates_use_api_id_not_telegram_client_names() -> Non
         session.add_all(
             [
                 TgAccountAuthorizationSnapshot(tenant_id=1, account_id=6, api_id=12345, app_name="平台应用", device_model="平台"),
-                TgAccountAuthorizationSnapshot(tenant_id=1, account_id=6, api_id=2040, app_name="Telegram Desktop", device_model="Desktop"),
+                TgAccountAuthorizationSnapshot(tenant_id=1, account_id=6, api_id=12345, app_name="平台应用副本", device_model="平台副本"),
+                TgAccountAuthorizationSnapshot(
+                    tenant_id=1,
+                    account_id=6,
+                    api_id=2040,
+                    app_name="Telegram Desktop",
+                    device_model="Desktop",
+                    date_active=datetime(2026, 1, 2),
+                ),
+                TgAccountAuthorizationSnapshot(
+                    tenant_id=1,
+                    account_id=6,
+                    api_id=6,
+                    app_name="Telegram Android",
+                    device_model="Android",
+                    date_active=datetime(2026, 1, 1),
+                ),
                 TgAccountAuthorizationSnapshot(tenant_id=1, account_id=6, api_id=999999, app_name="Legacy Client", device_model="Unknown"),
                 TgAccountAuthorizationSnapshot(tenant_id=1, account_id=6, api_id=0, app_name="Unknown", device_model="Unknown"),
             ]
         )
+        platform_snapshot = session.scalar(
+            select(TgAccountAuthorizationSnapshot).where(TgAccountAuthorizationSnapshot.account_id == account.id, TgAccountAuthorizationSnapshot.app_name == "平台应用")
+        )
+        platform_snapshot.is_current_session = True
         session.commit()
 
         candidates = cleanup_candidate_authorization_snapshots(session, account)
 
-        assert [item.app_name for item in candidates] == ["Legacy Client"]
+        assert [item.app_name for item in candidates] == ["平台应用副本", "Telegram Android", "Legacy Client"]
 
 
 def test_device_cleanup_confirm_consumes_precheck_snapshot_without_expanding(monkeypatch) -> None:
@@ -188,6 +208,7 @@ def test_device_cleanup_confirm_consumes_precheck_snapshot_without_expanding(mon
                     api_id=12345,
                     app_name="平台应用",
                     authorization_hash_ciphertext=encrypt_secret("platform-hash"),
+                    is_current_session=True,
                 ),
                 TgAccountAuthorizationSnapshot(
                     tenant_id=1,

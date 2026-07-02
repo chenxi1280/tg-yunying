@@ -2143,7 +2143,7 @@ def test_security_drawers_show_cleanup_preservation_and_managed_2fa_policy():
     router = (PROJECT_ROOT / "backend/app/api/routers/account_security.py").read_text()
     auth = (PROJECT_ROOT / "backend/app/auth.py").read_text()
 
-    assert "不会清理 api_id 命中的 primary / standby_1 / standby_2 平台设备" in drawer
+    assert "只保留当前 session、已确认 hash 的 primary / standby_1 / standby_2 和一个官方锚点设备" in drawer
     assert "预计清理外部设备" in drawer
     assert "平台托管 2FA" in drawer
     assert "已设置且平台托管旧密码" in drawer
@@ -2169,7 +2169,7 @@ def test_task_center_account_security_system_task_detail_switches_by_batch_type(
     assert "account_device_cleanup" in source
     assert "account_2fa_setup" in source
     assert "account_standby_session_provision" in source
-    assert "api_id 命中的 primary / standby_1 / standby_2 平台设备" in source
+    assert "当前 session / 已确认 hash 的主备授权 / 1 个官方锚点" in source
     assert "目标槽位" in source
     assert "验证码读取" in source
     assert "params.set('type', nextTaskTypeFilter)" in view

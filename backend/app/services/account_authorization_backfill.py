@@ -1,25 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AccountProxy, TelegramDeveloperApp, TgAccountAuthorization
+from app.models import AccountProxy, TelegramDeveloperApp, TgAccount, TgAccountAuthorization
 from app.security import encrypt_secret
 
-from ._common import audit, gateway
-from .developer_apps import credentials_for_developer_app
+from ._common import audit
+from .account_authorization_metadata import AuthorizationMetadata, read_authorization_metadata
 
 STANDBY_ROLES = {"standby_1", "standby_2"}
 ACTIVE_STANDBY_STATUSES = {"active", "standby"}
-
-
-@dataclass(frozen=True)
-class AuthorizationMetadata:
-    authorization_hash: str
-    api_id: int
 
 
 def backfill_standby_authorization_metadata(
@@ -79,11 +72,6 @@ def _candidate_authorizations(
         TgAccountAuthorization.status.in_(ACTIVE_STANDBY_STATUSES),
         TgAccountAuthorization.session_ciphertext.is_not(None),
         TgAccountAuthorization.session_ciphertext != "",
-        (
-            (TgAccountAuthorization.telegram_authorization_hash_ciphertext == "")
-            | TgAccountAuthorization.telegram_authorization_hash_ciphertext.is_(None)
-            | (TgAccountAuthorization.developer_app_api_id_snapshot == 0)
-        ),
     ]
     if account_id is not None:
         filters.append(TgAccountAuthorization.account_id == account_id)
@@ -92,19 +80,24 @@ def _candidate_authorizations(
 
 
 def _read_current_authorization_metadata(session: Session, authorization: TgAccountAuthorization) -> AuthorizationMetadata:
+    account = _account(session, authorization)
     app = _developer_app(session, authorization)
     proxy = session.get(AccountProxy, authorization.proxy_id) if authorization.proxy_id else None
-    credentials = credentials_for_developer_app(app, proxy)
-    authorizations = gateway.list_authorizations(authorization.session_ciphertext, credentials)
-    current = next((item for item in authorizations if item.is_current), None)
-    if current is None:
-        raise ValueError("current authorization not found")
-    if not current.authorization_hash:
-        raise ValueError("current authorization hash missing")
-    api_id = int(current.api_id or app.api_id or 0)
-    if not api_id:
-        raise ValueError("current authorization api_id missing")
-    return AuthorizationMetadata(authorization_hash=str(current.authorization_hash), api_id=api_id)
+    return read_authorization_metadata(
+        session,
+        account=account,
+        app=app,
+        proxy=proxy,
+        session_ciphertext=authorization.session_ciphertext,
+        exclude_authorization_id=authorization.id,
+    )
+
+
+def _account(session: Session, authorization: TgAccountAuthorization) -> TgAccount:
+    account = session.get(TgAccount, authorization.account_id)
+    if account is None:
+        raise ValueError("authorization account not found")
+    return account
 
 
 def _developer_app(session: Session, authorization: TgAccountAuthorization) -> TelegramDeveloperApp:

@@ -1406,8 +1406,13 @@ def _platform_slot_roles_missing_hash(session: Session, account: TgAccount) -> l
     return [
         row.role
         for row in rows
-        if not row.telegram_authorization_hash_ciphertext
+        if not _usable_authorization_hash(decrypt_secret(row.telegram_authorization_hash_ciphertext) or row.telegram_authorization_hash_ciphertext)
     ]
+
+
+def _usable_authorization_hash(value: str | None) -> bool:
+    raw = str(value or "").strip()
+    return raw not in {"", "0"}
 
 
 def _has_switchable_standby(session: Session, account: TgAccount) -> bool:

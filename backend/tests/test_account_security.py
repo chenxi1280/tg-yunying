@@ -650,7 +650,7 @@ def test_account_security_batches_project_cleanup_2fa_and_standby_task_types():
         item = detail["account_security_batch"]["items"][0]
         assert detail["account_security_batch"]["system_task_type"] == "account_standby_session_provision"
         assert item["standby_session_status"] == "pending"
-        assert item["preserved_devices_summary"] == "api_id 命中的 primary / standby_1 / standby_2 平台设备"
+        assert item["preserved_devices_summary"] == "当前 session / 已确认 hash 的主备授权 / 1 个官方锚点"
 
 
 def test_standby_slot_strategy_is_accepted_by_security_payload_schema():
@@ -1304,7 +1304,7 @@ def test_confirmed_batch_drains_profile_username_and_device_cleanup_independentl
         assert snapshot.two_fa_password_ciphertext
 
 
-def test_device_cleanup_preserves_current_and_platform_api_authorizations(monkeypatch):
+def test_device_cleanup_cleans_unprotected_platform_api_duplicates(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
         cleaned_hashes: list[str] = []
@@ -1325,8 +1325,8 @@ def test_device_cleanup_preserves_current_and_platform_api_authorizations(monkey
         assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
         refreshed = account_security_batch_detail(session, 1, batch.id)
 
-        assert cleaned_hashes == ["external"]
-        assert refreshed.items[0].external_devices_before == 1
+        assert cleaned_hashes == ["platform-api", "external"]
+        assert refreshed.items[0].external_devices_before == 2
         assert refreshed.items[0].external_devices_after == 0
 
 
@@ -1621,7 +1621,7 @@ def test_waiting_account_security_item_is_retried_when_due(monkeypatch):
         refreshed = account_security_batch_detail(session, 1, batch.id)
         assert refreshed.status == "succeeded"
         assert refreshed.items[0].cleanup_status == "succeeded"
-        assert calls["count"] == 2
+        assert calls["count"] == 4
 
 
 def test_username_taken_creates_partial_success_without_rolling_back_profile():

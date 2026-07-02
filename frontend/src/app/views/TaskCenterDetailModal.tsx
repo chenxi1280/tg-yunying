@@ -297,7 +297,7 @@ export function TaskCenterDetailModal({
     { title: '代理', dataIndex: 'proxy_label', width: 110, render: (value) => value || '-' },
     { title: '验证码读取', dataIndex: 'verification_code_status', width: 120, render: (value) => value || '-' },
     { title: '2FA 使用', dataIndex: 'two_fa_usage_status', width: 130, render: (value) => value || '-' },
-    { title: '保留设备', dataIndex: 'preserved_devices_summary', width: 220, render: (value) => value || 'api_id 命中的 primary / standby_1 / standby_2 平台设备' },
+    { title: '保留设备', dataIndex: 'preserved_devices_summary', width: 220, render: (value) => value || '当前 session / 已确认 hash 的主备授权 / 1 个官方锚点' },
     {
       title: '头像回显',
       dataIndex: 'avatar_preview_url',
@@ -425,7 +425,7 @@ export function TaskCenterDetailModal({
               { key: 'batch', label: '批次', children: `#${accountSecurityBatch.batch_id}` },
               { key: 'batch_status', label: '批次状态', children: <DetailStatusBadge status={accountSecurityBatch.batch_status} /> },
               { key: 'type', label: '系统任务', children: TYPE_LABEL[accountSecurityBatch.system_task_type] || accountSecurityBatch.system_task_type },
-              { key: 'preserve', label: '设备保护', children: accountSecurityBatch.system_task_type === 'account_device_cleanup' ? 'api_id 命中的 primary / standby_1 / standby_2 平台设备' : '-' },
+              { key: 'preserve', label: '设备保护', children: accountSecurityBatch.system_task_type === 'account_device_cleanup' ? '当前 session / 已确认 hash 的主备授权 / 1 个官方锚点' : '-' },
               { key: 'two-fa', label: '二步密码', children: accountSecurityBatch.system_task_type === 'account_2fa_setup' ? '平台托管 2FA 设置 / 替换 / 旧密码未知跳过' : '-' },
               { key: 'standby', label: '备用补齐', children: accountSecurityBatch.system_task_type === 'account_standby_session_provision' ? '目标槽位 / 开发者应用 / 代理 / 验证码读取 / 2FA 使用 / 健康检查' : '-' },
             ]}

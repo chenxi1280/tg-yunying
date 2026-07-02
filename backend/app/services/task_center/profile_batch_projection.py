@@ -180,7 +180,7 @@ def _profile_batch_item(session: Session, item: TgAccountSecurityBatchItem) -> d
         "avatar_preview_url": account.avatar_preview_url if account and account.avatar_object_key else "",
         "failure_type": item.failure_type,
         "failure_detail": item.failure_detail,
-        "preserved_devices_summary": "api_id 命中的 primary / standby_1 / standby_2 平台设备",
+        "preserved_devices_summary": "当前 session / 已确认 hash 的主备授权 / 1 个官方锚点",
         "cleaned_devices_summary": _cleaned_devices_summary(item),
         "target_slot": standby_context["target_slot"],
         "developer_app_label": standby_context["developer_app_label"],
