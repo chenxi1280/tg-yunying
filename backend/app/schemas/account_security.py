@@ -91,6 +91,12 @@ class ManagedTwoFaOut(BaseModel):
     password_stored_at: datetime | None
 
 
+class ManagedTwoFaRevealOut(BaseModel):
+    account_id: int
+    password: str
+    revealed_at: datetime
+
+
 class AccountAuthorizationSnapshotOut(ApiModel):
     id: int
     account_id: int
@@ -255,6 +261,7 @@ __all__ = [
     "DeviceCleanupConfirmRequest",
     "DeviceCleanupPrecheckOut",
     "ManagedTwoFaOut",
+    "ManagedTwoFaRevealOut",
     "ManagedTwoFaRequest",
     "ProfileGenerationStrategy",
 ]

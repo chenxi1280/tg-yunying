@@ -24,6 +24,7 @@ from app.schemas.account_security import (
     AccountSecuritySummaryOut,
     DeviceCleanupConfirmRequest,
     DeviceCleanupPrecheckOut,
+    ManagedTwoFaRevealOut,
 )
 from app.services.account_security import (
     account_security_batch_detail,
@@ -36,6 +37,7 @@ from app.services.account_security import (
     list_account_security_batches,
     precheck_account_security_batch,
     refresh_account_security,
+    reveal_managed_two_fa_password,
     retry_account_security_batch,
     rotate_managed_two_fa_password,
     save_managed_two_fa_password,
@@ -230,6 +232,22 @@ def post_account_security_managed_2fa_rotate(
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
         return rotate_managed_two_fa_password(session, current_user.tenant_id or 1, account_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/security/managed-2fa/reveal", response_model=ManagedTwoFaRevealOut)
+def post_account_security_managed_2fa_reveal(
+    account_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    if not current_user.has_permission("accounts.security.credential_manage"):
+        raise HTTPException(status_code=403, detail="accounts.security.credential_manage required")
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return reveal_managed_two_fa_password(session, current_user.tenant_id or 1, account_id, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

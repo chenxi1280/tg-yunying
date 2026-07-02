@@ -756,8 +756,9 @@ frontend/src/app/views/AccountSecurityBatchDetailModal.tsx
 平台托管 2FA 不在账号列表行内编辑，必须放在账号安全配置或账号详情安全区的受控面板里。
 
 - 展示当前策略：未配置、平台统一托管、每账号唯一托管。
-- 密码输入只用于设置或轮换，不回显旧密码。
-- 查看、导出、轮换和自动登录使用都必须展示权限要求和审计说明。
+- 密码输入只用于设置或轮换，不随账号详情默认回显旧密码。
+- 面板提供“查看托管密码”受控动作：具备 `accounts.security.credential_manage` 的人员可以直接查看，后端通过独立 reveal 接口解密并返回当前托管密码，前端只在本面板短时展示并提供复制按钮。
+- 查看、复制、导出、轮换和自动登录使用都必须展示权限要求和审计说明，并写入账号、操作者和时间；查看动作不要求填写或记录原因。
 - 轮换前展示影响范围：会影响多少账号、多少账号旧密码未知、多少账号需人工确认。
 - 未配置托管 2FA 时，备用 session 自动补齐抽屉必须显示阻塞原因，不允许静默跳过后仍显示补齐成功。
 - 保存和轮换托管 2FA 必须绑定当前 `account_id`。切换账号或关闭详情后，旧账号异步响应不得清空当前账号输入、覆盖 loading、错误提示或成功提示。
@@ -1265,8 +1266,9 @@ POST /api/tg-accounts/{account_id}/authorizations/self-heal
 POST /api/tg-accounts/{account_id}/security/cleanup-devices
 POST /api/tg-accounts/{account_id}/security/set-2fa
 POST /api/tg-accounts/{account_id}/security/update-profile
-POST /api/tg-accounts/security/managed-2fa
-POST /api/tg-accounts/security/managed-2fa/rotate
+POST /api/tg-accounts/{account_id}/security/managed-2fa
+POST /api/tg-accounts/{account_id}/security/managed-2fa/rotate
+POST /api/tg-accounts/{account_id}/security/managed-2fa/reveal
 ```
 
 批量接口：

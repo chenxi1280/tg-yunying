@@ -1,5 +1,16 @@
 # Worklog: product
 
+## 2026-07-02 托管 2FA 密码受控查看产品口径
+
+- message_id: 2026-07-02-managed-2fa-reveal-product-001
+- action: 按用户要求先更新 PRD / 专项设计，再交付实现
+- input: 账号详情需要支持查看新托管 2FA 密码，便于人工复制登录
+- output: PRD 明确账号详情“托管 2FA”面板可按需 reveal 当前托管密码；必须具备 `accounts.security.credential_manage` 并写审计，查看不需要填写原因，账号详情不默认回显
+- evidence: `docs/01-product/tg-ops-platform-prd.md`、`docs/03-feature-designs/account-security-hardening-design.md`
+- decision: L2；需要代码实现和本地 QA，release_gate=pending，production_verification=false
+- next_agent: dev
+- unresolved: 未发布生产；QA 线程真实投递未完成
+
 ## 2026-06-27
 
 - message_id: 2026-06-27-docs-practice-plan-001
