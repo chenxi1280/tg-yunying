@@ -48,6 +48,21 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      run_account_device_cleanup_smoke:
+        description: Run a one-account production smoke for device cleanup and standby auth takeover
+        required: false
+        default: false
+        type: boolean
+      account_device_cleanup_apply:
+        description: Confirm the one-account smoke should mutate cleanup/auth state
+        required: false
+        default: false
+        type: boolean
+      account_device_cleanup_account_id:
+        description: Optional TG account id for the one-account cleanup/auth smoke
+        required: false
+        default: ''
+        type: string
       run_tianjin_blocked_account_diagnostics:
         description: Run production diagnostics for blocked Tianjin account 84
         required: false
@@ -477,6 +492,18 @@ jobs:
           ssh silicon-valley-production-server 'timeout 300 docker exec -e ACCOUNT_MASK_DIRECTION_APPLY=true -i tgyunying-backend python -' \
             < .github/scripts/update_account_masks_direction.py
           echo "ACCOUNT_MASK_DIRECTION_UPDATE_END"
+
+      - name: Account device cleanup smoke
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_account_device_cleanup_smoke }}
+        env:
+          ACCOUNT_DEVICE_CLEANUP_APPLY: ${{ inputs.account_device_cleanup_apply }}
+          ACCOUNT_DEVICE_CLEANUP_ACCOUNT_ID: ${{ inputs.account_device_cleanup_account_id }}
+        run: |
+          set -euo pipefail
+          echo "ACCOUNT_DEVICE_CLEANUP_SMOKE_START"
+          ssh silicon-valley-production-server 'timeout 240 docker exec -e ACCOUNT_DEVICE_CLEANUP_APPLY -e ACCOUNT_DEVICE_CLEANUP_ACCOUNT_ID -i tgyunying-backend python -' \
+            < .github/scripts/account_device_cleanup_smoke.py
+          echo "ACCOUNT_DEVICE_CLEANUP_SMOKE_END"
 
       - name: Update MiniMax AI provider
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_minimax_provider }}
