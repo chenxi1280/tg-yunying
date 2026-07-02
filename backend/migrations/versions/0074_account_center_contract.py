@@ -1,6 +1,6 @@
 """add account center prd contract fields
 
-Revision ID: 0074_account_center_prd_contracts
+Revision ID: 0074_account_center_contract
 Revises: 0073_account_mask_fields
 Create Date: 2026-07-01
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0074_account_center_prd_contracts"
+revision = "0074_account_center_contract"
 down_revision = "0073_account_mask_fields"
 branch_labels = None
 depends_on = None
