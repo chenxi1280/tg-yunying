@@ -63,6 +63,11 @@ name: Deploy Production
         required: false
         default: ''
         type: string
+      account_device_cleanup_phone_sha256:
+        description: Optional SHA-256 of normalized phone digits for the one-account cleanup/auth smoke
+        required: false
+        default: ''
+        type: string
       account_device_cleanup_max_scan:
         description: Max active accounts to scan for the one-account cleanup/auth smoke
         required: false
@@ -503,11 +508,12 @@ jobs:
         env:
           ACCOUNT_DEVICE_CLEANUP_APPLY: ${{ inputs.account_device_cleanup_apply }}
           ACCOUNT_DEVICE_CLEANUP_ACCOUNT_ID: ${{ inputs.account_device_cleanup_account_id }}
+          ACCOUNT_DEVICE_CLEANUP_PHONE_SHA256: ${{ inputs.account_device_cleanup_phone_sha256 }}
           ACCOUNT_DEVICE_CLEANUP_MAX_SCAN: ${{ inputs.account_device_cleanup_max_scan }}
         run: |
           set -euo pipefail
           echo "ACCOUNT_DEVICE_CLEANUP_SMOKE_START"
-          ssh silicon-valley-production-server 'timeout 240 docker exec -e ACCOUNT_DEVICE_CLEANUP_APPLY -e ACCOUNT_DEVICE_CLEANUP_ACCOUNT_ID -e ACCOUNT_DEVICE_CLEANUP_MAX_SCAN -i tgyunying-backend python -' \
+          ssh silicon-valley-production-server 'timeout 240 docker exec -e ACCOUNT_DEVICE_CLEANUP_APPLY -e ACCOUNT_DEVICE_CLEANUP_ACCOUNT_ID -e ACCOUNT_DEVICE_CLEANUP_PHONE_SHA256 -e ACCOUNT_DEVICE_CLEANUP_MAX_SCAN -i tgyunying-backend python -' \
             < .github/scripts/account_device_cleanup_smoke.py
           echo "ACCOUNT_DEVICE_CLEANUP_SMOKE_END"
 

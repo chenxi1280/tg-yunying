@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,10 +32,11 @@ class CandidateResult:
 def main() -> None:
     tenant_id = _int_env("ACCOUNT_DEVICE_CLEANUP_TENANT_ID", 1)
     account_id = _optional_int_env("ACCOUNT_DEVICE_CLEANUP_ACCOUNT_ID")
+    phone_sha256 = os.getenv("ACCOUNT_DEVICE_CLEANUP_PHONE_SHA256", "").strip().lower()
     apply = _bool_env("ACCOUNT_DEVICE_CLEANUP_APPLY")
     max_scan = _int_env("ACCOUNT_DEVICE_CLEANUP_MAX_SCAN", DEFAULT_MAX_SCAN)
     with SessionLocal() as session:
-        result = _select_candidate(session, tenant_id, account_id, max_scan)
+        result = _select_candidate(session, tenant_id, account_id, phone_sha256, max_scan)
         before = _authorization_state(session, result.account.id)
         payload: dict[str, Any] = {
             "mode": "apply" if apply else "dry_run",
@@ -48,8 +51,14 @@ def main() -> None:
         print("ACCOUNT_DEVICE_CLEANUP_SMOKE=" + json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
 
 
-def _select_candidate(session, tenant_id: int, account_id: int | None, max_scan: int) -> CandidateResult:
-    accounts = _candidate_accounts(session, tenant_id, account_id, max_scan)
+def _select_candidate(
+    session,
+    tenant_id: int,
+    account_id: int | None,
+    phone_sha256: str,
+    max_scan: int,
+) -> CandidateResult:
+    accounts = _candidate_accounts(session, tenant_id, account_id, phone_sha256, max_scan)
     if not accounts:
         raise RuntimeError("no active non-code-receiver account with session")
     fallback_any: CandidateResult | None = None
@@ -78,7 +87,15 @@ def _select_candidate(session, tenant_id: int, account_id: int | None, max_scan:
     raise RuntimeError("candidate scan failed: " + json.dumps(errors, ensure_ascii=False, sort_keys=True))
 
 
-def _candidate_accounts(session, tenant_id: int, account_id: int | None, max_scan: int) -> list[TgAccount]:
+def _candidate_accounts(
+    session,
+    tenant_id: int,
+    account_id: int | None,
+    phone_sha256: str,
+    max_scan: int,
+) -> list[TgAccount]:
+    if account_id is not None and phone_sha256:
+        raise RuntimeError("account id and phone hash cannot be used together")
     query = (
         select(TgAccount)
         .where(
@@ -92,9 +109,27 @@ def _candidate_accounts(session, tenant_id: int, account_id: int | None, max_sca
     )
     if account_id is not None:
         query = query.where(TgAccount.id == account_id)
+    elif phone_sha256:
+        return _accounts_matching_phone_hash(session, query, phone_sha256)
     else:
         query = query.limit(max(1, max_scan))
     return list(session.scalars(query))
+
+
+def _accounts_matching_phone_hash(session, query, phone_sha256: str) -> list[TgAccount]:
+    matches = [
+        account
+        for account in session.scalars(query)
+        if _phone_digits_sha256(account.phone_number) == phone_sha256
+    ]
+    if len(matches) > 1:
+        raise RuntimeError("phone hash matched multiple active accounts")
+    return matches
+
+
+def _phone_digits_sha256(phone_number: str | None) -> str:
+    digits = re.sub(r"\D+", "", phone_number or "")
+    return hashlib.sha256(digits.encode("utf-8")).hexdigest() if digits else ""
 
 
 def _primary_authorization(session, account_id: int) -> TgAccountAuthorization | None:
