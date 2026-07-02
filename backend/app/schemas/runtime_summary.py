@@ -47,7 +47,10 @@ class AccountRuntimeSummaryOut(ApiModel):
     comment_available: bool
     profile_available: bool
     code_read_available: bool
+    capacity_limit: int = 100
+    capacity_used: int = 0
     remaining_capacity: int
+    capacity_explanation: str = ""
     unavailable_reason: str
     next_retry_at: datetime | None
     failure_trend: dict[str, Any] = {}

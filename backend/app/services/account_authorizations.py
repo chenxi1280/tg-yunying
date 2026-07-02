@@ -15,7 +15,7 @@ from app.models import (
     TgLoginFlow,
     TgVerificationCode,
 )
-from app.security import encrypt_session
+from app.security import encrypt_secret, encrypt_session
 
 from ._common import _is_expired, _now, audit, gateway, get_account_phone
 from .account_authorization_constants import (
@@ -207,6 +207,83 @@ def switch_primary_authorization(
     return account
 
 
+def activate_authorization(
+    session: Session,
+    account_id: int,
+    authorization_id: int,
+    *,
+    actor: str,
+    reason: str,
+) -> TgAccount:
+    return switch_primary_authorization(session, account_id, authorization_id, actor=actor, reason=reason)
+
+
+def refresh_authorization_slot(
+    session: Session,
+    account_id: int,
+    authorization_id: int,
+    *,
+    actor: str,
+    reason: str,
+) -> dict[str, Any]:
+    account = _require_account(session, account_id)
+    target = _require_authorization(session, account, authorization_id)
+    source = _first_healthy_authorization(session, account, exclude_id=target.id)
+    if source is None:
+        _mark_all_down_manual_required(session, account, reason)
+        session.commit()
+        raise ValueError("三槽位全部掉线，只能人工重新登录 / 扫码 / 手动验证码")
+    target.status = "refreshing"
+    target.derived_status = "waiting_code"
+    target.failure_reason = f"等待健康槽位读取 Telegram 官方验证码：{reason}"
+    target.last_health_check_at = _now()
+    audit(
+        session,
+        tenant_id=account.tenant_id,
+        actor=actor,
+        action="刷新账号授权槽位",
+        target_type="tg_account_authorization",
+        target_id=str(target.id),
+        detail=f"source_authorization_id={source.id}; target_role={target.role}; reason={reason}",
+    )
+    session.commit()
+    return {
+        "account_id": account.id,
+        "authorization_id": target.id,
+        "status": "waiting_code",
+        "target_role": target.role,
+        "source_authorization_id": source.id,
+        "source_role": source.role,
+        "next_action": "manual_code_or_auto_code_poll",
+        "detail": target.failure_reason,
+    }
+
+
+def self_heal_authorizations(session: Session, account_id: int, *, actor: str, reason: str) -> dict[str, Any]:
+    account = _require_account(session, account_id)
+    standby = _first_switchable_standby(session, account)
+    if standby is None:
+        _mark_all_down_manual_required(session, account, reason)
+        session.commit()
+        return {
+            "account_id": account.id,
+            "status": "manual_required",
+            "activated_authorization_id": None,
+            "refresh_authorization_id": None,
+            "next_action": "manual_login_or_qr_or_code",
+            "detail": "三槽位全部掉线，只能人工重新登录 / 扫码 / 手动验证码",
+        }
+    switch_primary_authorization(session, account.id, standby.id, actor=actor, reason=reason)
+    return {
+        "account_id": account.id,
+        "status": "activated_standby",
+        "activated_authorization_id": standby.id,
+        "refresh_authorization_id": None,
+        "next_action": "refresh_previous_primary",
+        "detail": "已激活健康备用授权，原主授权保留为待修复资产",
+    }
+
+
 def _authorization_rows(session: Session, account: TgAccount) -> list[TgAccountAuthorization]:
     return list(
         session.scalars(
@@ -336,13 +413,18 @@ def _finish_standby_login(
         session.commit()
         raise ValueError(f"备用授权登录未完成：{status}")
     _mark_same_role_for_repair(session, account, flow)
+    app = _require_developer_app(session, flow.developer_app_id)
+    encrypted_session = encrypt_session(raw_session)
+    authorization_hash = _current_authorization_hash_after_login(session, account, flow, app, encrypted_session)
     asset = TgAccountAuthorization(
         tenant_id=account.tenant_id,
         account_id=account.id,
         role=flow.authorization_role,
         developer_app_id=flow.developer_app_id,
+        developer_app_api_id_snapshot=app.api_id,
         proxy_id=flow.proxy_id,
-        session_ciphertext=encrypt_session(raw_session),
+        session_ciphertext=encrypted_session,
+        telegram_authorization_hash_ciphertext=encrypt_secret(authorization_hash),
         status="standby",
         health_status="healthy",
         is_current=False,
@@ -373,6 +455,22 @@ def _mark_same_role_for_repair(session: Session, account: TgAccount, flow: TgLog
             continue
         row.status = NEEDS_REPAIR_STATUS
         row.failure_reason = "同角色备用授权已重新登录，旧授权待确认后停用"
+
+
+def _current_authorization_hash_after_login(
+    session: Session,
+    account: TgAccount,
+    flow: TgLoginFlow,
+    app: TelegramDeveloperApp,
+    session_ciphertext: str,
+) -> str:
+    proxy = _require_proxy(session, account.tenant_id, flow.proxy_id) if flow.proxy_id else None
+    credentials = credentials_for_developer_app(app, proxy)
+    authorizations = gateway.list_authorizations(session_ciphertext, credentials)
+    for authorization in authorizations:
+        if authorization.is_current and authorization.authorization_hash:
+            return authorization.authorization_hash
+    raise ValueError("备用授权登录已完成，但未能确认 Telegram 授权 hash")
 
 
 def _primary_row(rows: list[TgAccountAuthorization]) -> TgAccountAuthorization | None:
@@ -417,6 +515,27 @@ def _first_switchable_standby(session: Session, account: TgAccount) -> TgAccount
         if _is_healthy_standby(row):
             return row
     return None
+
+
+def _first_healthy_authorization(session: Session, account: TgAccount, *, exclude_id: int) -> TgAccountAuthorization | None:
+    for row in _authorization_rows(session, account):
+        if row.id == exclude_id:
+            continue
+        if not row.session_ciphertext:
+            continue
+        if row.status not in ACTIVE_STATUSES:
+            continue
+        if row.health_status not in {"healthy", "legacy", ""}:
+            continue
+        return row
+    return None
+
+
+def _mark_all_down_manual_required(session: Session, account: TgAccount, reason: str) -> None:
+    for row in _authorization_rows(session, account):
+        row.derived_status = "manual_required"
+        row.failure_reason = f"三槽位全部掉线，只能人工重新登录 / 扫码 / 手动验证码：{reason}"
+    account.status = AccountStatus.NEED_RELOGIN.value
 
 
 def _first_recovery_proxy(session: Session, account: TgAccount) -> AccountProxy | None:

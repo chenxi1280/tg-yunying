@@ -57,7 +57,7 @@ const MODE_CONFIG: Record<Mode, { title: string; alertType: 'info' | 'warning'; 
   cleanup_devices: {
     title: '批量清理登录设备',
     alertType: 'warning',
-    description: '只清理非本平台可信登录设备，不会清理 primary / standby_1 / standby_2 / 官方锚点设备，不会修改资料或设置二步密码。',
+    description: '只清理 api_id 未命中三槽位 Developer App 的登录设备，不会清理 primary / standby_1 / standby_2 平台设备，不会修改资料或设置二步密码。',
     actions: ['cleanup_devices'],
     reason: '批量清理登录设备',
   },
@@ -726,8 +726,8 @@ export function AccountSecurityBatchDrawer({
           <Alert
             type="warning"
             showIcon
-            message="不会清理 primary / standby_1 / standby_2 / 官方锚点设备"
-            description="预检必须列出预计清理外部设备数量；无法确认任一平台 session 授权设备 hash 时，当前账号不能继续一键清理。预计清理外部设备会在批次项中展示。"
+            message="不会清理 api_id 命中的 primary / standby_1 / standby_2 平台设备"
+            description="预检必须列出保留设备、预计清理外部设备和待确认设备；无法确认任一平台 session 授权设备 hash 时，当前账号不能继续一键清理。"
           />
         )}
         {mode === 'set_two_fa' && (

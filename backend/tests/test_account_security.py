@@ -103,6 +103,7 @@ def _remote_cleanup_authorizations() -> list[RemoteAuthorizationSnapshot]:
             platform="Linux",
             app_name="TG运营平台",
         ),
+        _remote_authorization("platform-api", device_model="平台备用", platform="Linux", api_id=12345, app_name="TG运营平台备用"),
         _remote_authorization("external", device_model="Unknown", platform="Unknown", app_name="Legacy Client"),
         _remote_authorization(
             "official-anchor",
@@ -649,7 +650,7 @@ def test_account_security_batches_project_cleanup_2fa_and_standby_task_types():
         item = detail["account_security_batch"]["items"][0]
         assert detail["account_security_batch"]["system_task_type"] == "account_standby_session_provision"
         assert item["standby_session_status"] == "pending"
-        assert item["preserved_devices_summary"] == "primary / standby_1 / standby_2 / 官方锚点设备"
+        assert item["preserved_devices_summary"] == "api_id 命中的 primary / standby_1 / standby_2 平台设备"
 
 
 def test_standby_slot_strategy_is_accepted_by_security_payload_schema():
@@ -1303,7 +1304,7 @@ def test_confirmed_batch_drains_profile_username_and_device_cleanup_independentl
         assert snapshot.two_fa_password_ciphertext
 
 
-def test_device_cleanup_preserves_current_and_platform_trusted_authorizations(monkeypatch):
+def test_device_cleanup_preserves_current_and_platform_api_authorizations(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
         cleaned_hashes: list[str] = []
@@ -1356,7 +1357,7 @@ def test_device_cleanup_preserves_recorded_primary_and_standby_authorization_has
             "list_authorizations",
             lambda *_args, **_kwargs: [
                 _remote_authorization("primary", is_current=True, device_model="平台主控", platform="Linux", app_name="TG运营平台"),
-                _remote_authorization("standby-hash", device_model="Standby", platform="Linux", app_name="TG运营平台备用"),
+                _remote_authorization("standby-hash", device_model="Standby", platform="Linux", api_id=12345, app_name="TG运营平台备用"),
                 _remote_authorization("external-hash", device_model="Unknown", platform="Unknown", app_name="Legacy Client"),
                 _remote_authorization("official-anchor", device_model="Telegram Desktop", platform="macOS", api_id=2040, app_name="Telegram Desktop"),
             ],
@@ -1374,7 +1375,7 @@ def test_device_cleanup_preserves_recorded_primary_and_standby_authorization_has
         assert cleaned_hashes == ["external-hash"]
 
 
-def test_device_cleanup_requires_official_anchor_authorization(monkeypatch):
+def test_device_cleanup_does_not_require_telegram_client_anchor_authorization(monkeypatch):
     with _session() as session:
         account = _seed_account(session)
         cleaned_hashes: list[str] = []
@@ -1402,11 +1403,11 @@ def test_device_cleanup_requires_official_anchor_authorization(monkeypatch):
         assert drain_account_security_batches(lambda: Session(session.bind), limit=10) == 1
         refreshed = account_security_batch_detail(session, 1, batch.id)
 
-        assert cleaned_hashes == []
-        assert refreshed.status == "manual_required"
-        assert refreshed.items[0].status == "manual_required"
-        assert refreshed.items[0].cleanup_status == "manual_required"
-        assert refreshed.items[0].failure_type == "official_anchor_missing"
+        assert cleaned_hashes == ["external-hash"]
+        assert refreshed.status == "succeeded"
+        assert refreshed.items[0].status == "succeeded"
+        assert refreshed.items[0].cleanup_status == "succeeded"
+        assert refreshed.items[0].failure_type == ""
 
 
 def test_device_cleanup_scan_failure_is_not_marked_success(monkeypatch):

@@ -16,8 +16,11 @@ from app.api.response_permissions import (
     accounts_out_for_user,
 )
 from app.services.account_authorizations import (
+    activate_authorization,
     check_standby_authorization_qr_login,
     list_account_authorizations,
+    refresh_authorization_slot,
+    self_heal_authorizations,
     start_standby_authorization_login,
     switch_primary_authorization,
     verify_standby_authorization_login,
@@ -28,10 +31,12 @@ from app.models import (
 from app.repositories.tenant import require_resource_tenant
 from app.schemas import (
     AccountAuthorizationLoginStartRequest, AccountAuthorizationLoginVerifyRequest,
+    AccountIdentityUpdate,
     AccountAuthorizationQrCheckRequest,
-    AccountAuthorizationOut, AccountAuthorizationSwitchRequest,
+    AccountAuthorizationOut, AccountAuthorizationRefreshOut, AccountAuthorizationSelfHealOut, AccountAuthorizationSwitchRequest,
     AccountCloneItemOut, AccountClonePlanCreate, AccountClonePlanOut,
-    AccountDetailOut, AccountGroupOut, AccountOut, AccountSyncRecordOut,
+    AccountDetailOut, AccountExecutionRecordOut, AccountGroupOut, AccountOut,
+    AccountPendingExecutionRecheckOut, AccountSyncRecordOut,
     AvatarUploadOut, ContactOut, DirectMessageTaskCreate, GroupOut,
     LoginFlowOut, LoginStartRequest, LoginVerifyRequest, MessageTaskOut,
     ManualOperationRecordOut, ManualSendRequest, MoveAccountPoolRequest,
@@ -40,7 +45,7 @@ from app.schemas import (
 )
 from app.services import (
     account_clone_plan_detail, account_clone_plans, account_contacts,
-    account_detail, account_groups, account_message_records,
+    account_detail, account_execution_records, account_groups, account_message_records,
     AccountListFilters,
     check_qr_login, confirm_account_clone_plan, create_account,
     create_account_clone_plan, create_direct_message_task,
@@ -48,7 +53,7 @@ from app.services import (
     list_account_sync_records,
     list_login_flows, list_profile_sync_records, list_verification_codes,
     LoginStartFailure,
-    list_verification_tasks, move_account_pool,
+    list_verification_tasks, move_account_pool, recheck_account_pending_execution, set_account_identity,
     poll_account_verification_codes, queue_account_sync_now,
     retry_account_clone_item, retry_account_profile_sync,
     soft_delete_account, start_login, sync_account_contacts, sync_groups,
@@ -172,6 +177,22 @@ def post_account_move_pool(
     require_resource_tenant(session, current_user, AccountPool, payload.pool_id)
     try:
         return account_out_for_user(move_account_pool(session, account_id, payload.pool_id, current_user.name), current_user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/api/tg-accounts/{account_id}/identity", response_model=AccountOut)
+def patch_account_identity(
+    account_id: int,
+    payload: AccountIdentityUpdate,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    require_core_feature_access(current_user)
+    ensure_permission(current_user, "accounts.pool_manage")
+    require_resource_tenant(session, current_user, TgAccount, account_id)
+    try:
+        return account_out_for_user(set_account_identity(session, account_id, payload.identity, current_user.name), current_user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -335,6 +356,57 @@ def post_authorization_switch_primary(
         require_resource_tenant(session, current_user, TgAccount, account_id)
         account = switch_primary_authorization(session, account_id, authorization_id, actor=current_user.name, reason=payload.reason)
         return account_out_for_user(account, current_user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/authorizations/{authorization_id}/activate", response_model=AccountOut)
+def post_authorization_activate(
+    account_id: int,
+    authorization_id: int,
+    payload: AccountAuthorizationSwitchRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    ensure_permission(current_user, "accounts.authorizations.manage")
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        account = activate_authorization(session, account_id, authorization_id, actor=current_user.name, reason=payload.reason)
+        return account_out_for_user(account, current_user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/authorizations/{authorization_id}/refresh", response_model=AccountAuthorizationRefreshOut)
+def post_authorization_refresh(
+    account_id: int,
+    authorization_id: int,
+    payload: SensitiveActionReasonRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    ensure_permission(current_user, "accounts.authorizations.manage")
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return refresh_authorization_slot(session, account_id, authorization_id, actor=current_user.name, reason=payload.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/authorizations/self-heal", response_model=AccountAuthorizationSelfHealOut)
+def post_authorizations_self_heal(
+    account_id: int,
+    payload: SensitiveActionReasonRequest,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    ensure_permission(current_user, "accounts.authorizations.manage")
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return self_heal_authorizations(session, account_id, actor=current_user.name, reason=payload.reason)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -547,6 +619,34 @@ def get_account_message_records(
     try:
         require_resource_tenant(session, current_user, TgAccount, account_id)
         return account_message_records(session, account_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.get("/api/tg-accounts/{account_id}/execution-records", response_model=list[AccountExecutionRecordOut])
+def get_account_execution_records(
+    account_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return account_execution_records(session, account_id)
+    except ValueError as exc:
+        raise not_found(str(exc)) from exc
+
+
+@router.post("/api/tg-accounts/{account_id}/pending-execution/recheck", response_model=AccountPendingExecutionRecheckOut)
+def post_account_pending_execution_recheck(
+    account_id: int,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    require_core_feature_access(current_user)
+    ensure_permission(current_user, "accounts.sync")
+    try:
+        require_resource_tenant(session, current_user, TgAccount, account_id)
+        return recheck_account_pending_execution(session, account_id, current_user.name)
     except ValueError as exc:
         raise not_found(str(exc)) from exc
 

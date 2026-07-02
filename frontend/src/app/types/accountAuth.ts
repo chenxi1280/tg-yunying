@@ -6,6 +6,10 @@ export type AccountAuthorizationSummary = {
   has_standby: boolean;
   is_blocking: boolean;
   risk_hint: string;
+  slot_statuses: Record<string, string>;
+  aggregate_status: string;
+  healthy_slot_count: number;
+  can_rescue: boolean;
 };
 
 export type AccountLatestLoginFlow = {

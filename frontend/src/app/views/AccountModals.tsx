@@ -4,13 +4,14 @@ import type { ColumnsType } from 'antd/es/table';
 import type {
   Account, AccountAvailabilitySummary, AccountPool, AccountDetail, AccountPoolDetail,
   AccountClonePlan, AccountCloneItem, VerificationTask, VerificationChallengeContext, Contact,
-  RuntimeConfig, CurrentUser, AccountGroup, MessageTask, AccountSecurityDetail, AccountAuthorizationSnapshot,
+  RuntimeConfig, CurrentUser, AccountGroup, AccountSecurityDetail, AccountAuthorizationSnapshot,
 } from '../types';
 import { FormActions, StatusBadge, useAntdTableControls } from '../components/shared';
 import { statusAccent, operationLabel, syncTypeLabel } from '../utils';
 import { api } from '../../shared/api/client';
 import { formatBeijingDateTime, parseBeijingDate } from '../time';
 import { AccountAuthorizationAssetsPanel } from './AccountAuthorizationAssetsPanel';
+import { AccountExecutionRecordsPanel } from './AccountExecutionRecordsPanel';
 import { AccountManaged2FaSettingsPanel } from './AccountManaged2FaSettingsPanel';
 
 const accountPhone = (account: Account) => account.phone_number || account.phone_masked;
@@ -534,23 +535,6 @@ export function AccountDetailModal({
     { title: '最近发送', key: 'last_sent_at', width: 200, render: (_, group) => group.last_sent_at ? formatBeijingDateTime(group.last_sent_at) : '暂无发送' },
   ];
 
-  const messageColumns: ColumnsType<MessageTask> = [
-    {
-      title: '任务',
-      key: 'task',
-      render: (_, task) => (
-        <Space direction="vertical" size={0}>
-          <Typography.Text strong>任务 #{task.id}</Typography.Text>
-          <Typography.Text type="secondary">{task.target_type === 'private' ? `私发：${task.target_display}` : `群任务：${task.group_id}`}</Typography.Text>
-          <Typography.Text>{task.content}</Typography.Text>
-        </Space>
-      ),
-    },
-    { title: '状态', key: 'status', width: 120, render: (_, task) => <StatusBadge status={task.status} /> },
-    { title: '失败类型', key: 'failure', width: 130, render: (_, task) => <StatusBadge status={task.failure_type ?? '无失败'} /> },
-    { title: '时间', key: 'time', width: 200, render: (_, task) => formatBeijingDateTime(task.sent_at ?? task.scheduled_at) },
-  ];
-
   const authorizationColumns: ColumnsType<AccountAuthorizationSnapshot> = [
     {
       title: '设备',
@@ -563,6 +547,9 @@ export function AccountDetailModal({
       ),
     },
     { title: '可信状态', key: 'trusted', width: 150, render: (_, authorization) => <StatusBadge status={authorization.is_current_session ? '已完成' : authorization.status} label={authorization.is_current_session ? '平台可信设备' : authorization.status} /> },
+    { title: 'API ID', key: 'api-id', width: 120, render: (_, authorization) => authorization.api_id || '未知' },
+    { title: '设备分类', key: 'classification', width: 190, render: (_, authorization) => <StatusBadge status={authorization.classification} label={authorization.matched_roles.length ? `平台槽位：${authorization.matched_roles.join(' / ')}` : authorization.classification} /> },
+    { title: '清理判断', key: 'cleanup', width: 130, render: (_, authorization) => <StatusBadge status={authorization.cleanup_eligible ? '可清理' : '保留'} /> },
     { title: '位置', key: 'location', width: 160, render: (_, authorization) => [authorization.country, authorization.region, authorization.ip_masked].filter(Boolean).join(' / ') || '-' },
     { title: '最近活跃', key: 'active', width: 190, render: (_, authorization) => formatTime(authorization.date_active || authorization.scanned_at) },
   ];
@@ -582,26 +569,6 @@ export function AccountDetailModal({
         operationLabel(group.auth_status),
         group.account_can_send ? '账号可发言' : '账号不可发言',
         group.last_sent_at,
-      ],
-    ],
-  });
-
-  const messageTable = useAntdTableControls<MessageTask>({
-    rows: accountDetail.message_records,
-    pageSize: 5,
-    pageSizeOptions: [5, 10, 20, 50],
-    placeholder: '搜索任务 / 目标 / 内容 / 状态',
-    search: [
-      (task) => [
-        task.id,
-        task.target_type,
-        task.target_display,
-        task.group_id,
-        task.content,
-        task.status,
-        task.failure_type,
-        task.scheduled_at,
-        task.sent_at,
       ],
     ],
   });
@@ -821,7 +788,9 @@ export function AccountDetailModal({
                     { key: 'comment', label: '可评论', children: <StatusBadge status={availabilitySummary.comment_available ? '可用' : '不可用'} /> },
                     { key: 'profile', label: '可改资料', children: <StatusBadge status={availabilitySummary.profile_available ? '可用' : '不可用'} /> },
                     { key: 'codes', label: '可读验证码', children: <StatusBadge status={availabilitySummary.code_read_available ? '可用' : '不可用'} /> },
-                    { key: 'capacity', label: '剩余容量', children: availabilitySummary.remaining_capacity },
+                    { key: 'capacity', label: '剩余容量', children: `${availabilitySummary.remaining_capacity} / ${availabilitySummary.capacity_limit}` },
+                    { key: 'capacity-used', label: '容量占用', children: availabilitySummary.capacity_used },
+                    { key: 'capacity-explanation', label: '容量口径', children: availabilitySummary.capacity_explanation },
                     { key: 'retry', label: '下次重试', children: formatTime(availabilitySummary.next_retry_at) },
                     { key: 'reason', label: '不可用原因', children: availabilitySummary.unavailable_reason || '暂无' },
                     { key: 'updated', label: '汇总更新时间', children: formatBeijingDateTime(availabilitySummary.updated_at) },
@@ -1084,37 +1053,11 @@ export function AccountDetailModal({
       )}
 
       {(accountDetailTab === '执行记录' || accountDetailTab === '发送记录') && (
-        <>
-          <div className="cards-grid compact-stats">
-            {accountDetail.manual_operation_records.map((record) => (
-              <Card key={record.id} size="small" className={statusAccent(record.status)}>
-                <StatusBadge status={record.status} />
-                <strong>手动发送 #{record.id}</strong>
-                <span>{record.content}</span>
-                <span>{record.remote_message_id || record.failure_detail || formatBeijingDateTime(record.created_at)}</span>
-              </Card>
-            ))}
-            {accountDetail.operation_task_attempts.map((attempt) => (
-              <Card key={`attempt-${attempt.id}`} size="small" className={statusAccent(attempt.status)}>
-                <StatusBadge status={attempt.status} />
-                <strong>{attempt.action_type} #{attempt.task_id}</strong>
-                <span>{attempt.remote_message_id || attempt.failure_detail || (attempt.executed_at ? formatBeijingDateTime(attempt.executed_at) : '待执行')}</span>
-              </Card>
-            ))}
-          </div>
-          <Space className="toolbar-row" wrap>
-            {messageTable.searchInput}
-          </Space>
-          <Table<MessageTask>
-            className="tg-table"
-            rowKey="id"
-            columns={messageColumns}
-            dataSource={messageTable.filteredRows}
-            pagination={messageTable.pagination}
-            scroll={{ x: 840 }}
-            locale={{ emptyText: '暂无发送记录。' }}
-          />
-        </>
+        <AccountExecutionRecordsPanel
+          accountId={accountDetail.account.id}
+          canRecheck={canSyncAccount}
+          isActionPending={isActionPending}
+        />
       )}
       </div>
     </Modal>

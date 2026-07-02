@@ -27,6 +27,24 @@ function hasLoginIssue(account: Account) {
   const flow = account.latest_login_flow;
   return LOGIN_PROBLEM_STATUSES.has(account.status) || account.authorization_summary.primary_status !== 'active' || Boolean(flow?.failure_type || flow?.failure_detail);
 }
+function availabilitySearchText(availability: AccountAvailabilitySummary | undefined) {
+  if (!availability) return '安全待刷新 待刷新 等待汇总';
+  const externalDeviceCount = Number(availability.failure_trend?.external_authorization_count || 0);
+  const values = [
+    availability.unavailable_reason,
+    availability.capacity_explanation,
+    `容量 ${availability.remaining_capacity}`,
+    `容量 ${availability.remaining_capacity} / ${availability.capacity_limit}`,
+    `容量已用 ${availability.capacity_used}`,
+    availability.next_retry_at ? 'account_cooldown 账号冷却 冷却中 待重试' : '',
+    externalDeviceCount > 0 ? `非平台设备 外部设备 ${externalDeviceCount}` : '',
+    availability.send_available ? '可发送' : '发送不可用',
+    availability.risk_level,
+    ...availability.score_reasons,
+    ...availability.non_score_reasons,
+  ];
+  return values.filter(Boolean).join(' ');
+}
 
 interface Props {
   accounts: Account[];
@@ -127,7 +145,7 @@ export default function AccountsView({
         canSecurityRead ? account.proxy_local_address : '',
         canSecurityRead ? account.proxy_status : '',
         canSecurityRead ? account.proxy_alert_status : '',
-        availabilityByAccountId.get(account.id)?.unavailable_reason,
+        availabilitySearchText(availabilityByAccountId.get(account.id)),
         account.tg_first_name,
         account.tg_last_name,
         !account.avatar_object_key ? '无头像 资料待初始化 资料不完整' : '',
@@ -345,7 +363,9 @@ export default function AccountsView({
               <StatusBadge status={availability.join_available ? '可用' : '不可用'} label="加" />
               <StatusBadge status={availability.comment_available ? '可用' : '不可用'} label="评" />
             </Space>
-            <Typography.Text type="secondary">容量 {availability.remaining_capacity}</Typography.Text>
+            <Typography.Text type="secondary">容量 {availability.remaining_capacity} / {availability.capacity_limit}</Typography.Text>
+            <Typography.Text type="secondary">已用 {availability.capacity_used}；{availability.capacity_explanation}</Typography.Text>
+            {Number(availability.failure_trend?.external_authorization_count || 0) > 0 && <Typography.Text type="warning">非平台设备 {Number(availability.failure_trend.external_authorization_count)} 个</Typography.Text>}
             <Typography.Text type={availability.unavailable_reason ? 'danger' : 'secondary'}>{availability.unavailable_reason || '可用'}</Typography.Text>
             <Typography.Text type="secondary">更新 {formatBeijingDateTime(availability.updated_at)}</Typography.Text>
           </Space>

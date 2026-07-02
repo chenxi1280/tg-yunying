@@ -75,6 +75,7 @@ def _fallback_configured_account_ids(session: Session, task: Task, existing_ids:
             TgAccount.tenant_id == task.tenant_id,
             TgAccount.deleted_at.is_(None),
             TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.account_identity != "code_receiver",
             TgAccount.session_ciphertext != "",
         )
     )

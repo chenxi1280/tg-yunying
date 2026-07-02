@@ -59,6 +59,27 @@ class AccountSecurityRetryRequest(BaseModel):
     item_ids: list[int] = Field(default_factory=list)
 
 
+class DeviceCleanupConfirmRequest(BaseModel):
+    precheck_id: str
+    reason: str = Field(min_length=1, max_length=255)
+
+
+class DeviceCleanupPrecheckOut(ApiModel):
+    precheck_id: str
+    account_id: int
+    cleanup_count: int
+    kept_count: int
+    unknown_count: int
+    kept_devices: list[dict[str, object]] = []
+    cleanup_devices: list[dict[str, object]] = []
+    unknown_devices: list[dict[str, object]] = []
+    status: str
+    expires_at: datetime
+    cleaned_count: int = 0
+    failed_count: int = 0
+    failures: list[str] = []
+
+
 class ManagedTwoFaRequest(BaseModel):
     password: str = Field(min_length=1, max_length=255)
     reason: str = Field(min_length=1, max_length=255)
@@ -90,6 +111,9 @@ class AccountAuthorizationSnapshotOut(ApiModel):
     date_active: datetime | None
     status: str
     scanned_at: datetime
+    classification: str = "unknown"
+    matched_roles: list[str] = []
+    cleanup_eligible: bool = False
 
 
 class AccountSecuritySnapshotOut(ApiModel):
@@ -148,6 +172,7 @@ class AccountSecurityBatchItemOut(ApiModel):
     status: str
     precheck_status: str
     cleanup_status: str
+    device_cleanup_precheck_id: str = ""
     two_fa_status: str
     standby_session_status: str = ""
     profile_status: str
@@ -227,6 +252,8 @@ __all__ = [
     "AccountSecuritySnapshotOut",
     "AccountSecuritySummaryOut",
     "AvatarStrategy",
+    "DeviceCleanupConfirmRequest",
+    "DeviceCleanupPrecheckOut",
     "ManagedTwoFaOut",
     "ManagedTwoFaRequest",
     "ProfileGenerationStrategy",

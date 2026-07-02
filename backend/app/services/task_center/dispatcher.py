@@ -586,6 +586,9 @@ def _apply_claim_account_policy(session: Session, action: Action) -> bool:
     if not account or account.deleted_at is not None or account.status != AccountStatus.ACTIVE.value:
         _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "账号不可用", auto_check="拦截", validation_stage="account")
         return False
+    if account.account_identity == "code_receiver":
+        _fail_with_policy(action, FailureType.ACCOUNT_UNAVAILABLE.value, "接码专用账号不参与任务执行", auto_check="拦截", validation_stage="account_identity")
+        return False
     if not account_matches_current_shard(account.id):
         _release_claim(action, delay_seconds=30, reason="account_shard_mismatch")
         action.result = {

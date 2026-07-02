@@ -32,6 +32,7 @@ export type Account = {
   id: number;
   pool_id: number | null;
   pool_name: string;
+  account_identity: 'normal' | 'code_receiver' | string;
   display_name: string;
   username: string | null;
   tg_first_name: string;
@@ -69,9 +70,11 @@ export type AccountAuthorizationAsset = {
   account_id: number;
   role: string;
   developer_app_id: number | null;
+  developer_app_api_id: number;
   proxy_id: number | null;
   status: string;
   health_status: string;
+  derived_status: string;
   is_current: boolean;
   session_available: boolean;
   primary_source: string;
@@ -80,6 +83,26 @@ export type AccountAuthorizationAsset = {
   last_success_at: string | null;
   last_switched_at: string | null;
   disabled_at: string | null;
+};
+
+export type AccountAuthorizationRefreshResult = {
+  account_id: number;
+  authorization_id: number;
+  status: string;
+  target_role: string;
+  source_authorization_id: number | null;
+  source_role: string;
+  next_action: string;
+  detail: string;
+};
+
+export type AccountAuthorizationSelfHealResult = {
+  account_id: number;
+  status: string;
+  activated_authorization_id: number | null;
+  refresh_authorization_id: number | null;
+  next_action: string;
+  detail: string;
 };
 
 export type AccountAvailabilitySummary = {
@@ -92,7 +115,10 @@ export type AccountAvailabilitySummary = {
   comment_available: boolean;
   profile_available: boolean;
   code_read_available: boolean;
+  capacity_limit: number;
+  capacity_used: number;
   remaining_capacity: number;
+  capacity_explanation: string;
   unavailable_reason: string;
   next_retry_at: string | null;
   failure_trend: Record<string, number>;
@@ -109,7 +135,38 @@ export type AccountPool = {
   name: string;
   description: string;
   is_default: boolean;
+  pool_purpose: 'normal' | 'code_receiver' | string;
+  is_system: boolean;
+  system_key: string;
   account_count: number;
+};
+
+export type AccountExecutionRecord = {
+  id: string;
+  source: string;
+  source_id: string | number;
+  task_id: string;
+  task_name: string;
+  task_type: string;
+  action_type: string;
+  action_label: string;
+  status: string;
+  status_label: string;
+  remote_message_id: string;
+  failure_type: string;
+  failure_detail: string;
+  occurred_at: string;
+};
+
+export type AccountPendingExecutionRecheck = {
+  account_id: number;
+  checked_count: number;
+  requeued_count: number;
+  existing_pending_count: number;
+  executing_count: number;
+  skipped_count: number;
+  blocker_count: number;
+  blockers: { action_id: string; reason: string }[];
 };
 
 export type DeveloperApp = {
@@ -196,6 +253,7 @@ export type AccountSecurityBatchItem = {
   status: string;
   precheck_status: string;
   cleanup_status: string;
+  device_cleanup_precheck_id: string;
   two_fa_status: string;
   profile_status: string;
   username_status: string;
@@ -264,6 +322,9 @@ export type AccountAuthorizationSnapshot = {
   date_active: string | null;
   status: string;
   scanned_at: string;
+  classification: string;
+  matched_roles: string[];
+  cleanup_eligible: boolean;
 };
 
 export type AccountSecuritySnapshot = {

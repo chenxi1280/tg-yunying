@@ -16,8 +16,9 @@ from app.schemas import (
     ContactOut, DirectMessageTaskCreate, MessageTaskOut,
 )
 from app.services import (
-    account_pool_contacts, account_pool_detail, create_account_pool,
-    create_pool_direct_message_task, list_account_pools, update_account_pool,
+    account_pool_contacts, account_pool_detail, account_pool_snapshot, create_account_pool,
+    create_pool_direct_message_task, ensure_code_receiver_account_pool,
+    list_account_pools, update_account_pool,
 )
 
 router = APIRouter()
@@ -44,6 +45,19 @@ def post_account_pool(
         return create_account_pool(session, payload.model_copy(update={"tenant_id": tenant_id}), current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/account-pools/code-receiver", response_model=AccountPoolOut)
+def post_code_receiver_account_pool(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    require_core_feature_access(current_user)
+    pool = ensure_code_receiver_account_pool(session, resolve_tenant_id(current_user, tenant_id))
+    session.commit()
+    session.refresh(pool)
+    return account_pool_snapshot(session, pool)
 
 
 @router.patch("/api/account-pools/{pool_id}", response_model=AccountPoolOut)

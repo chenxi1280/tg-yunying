@@ -62,6 +62,9 @@ class AccountPool(Base):
     name: Mapped[str] = mapped_column(String(120))
     description: Mapped[str] = mapped_column(String(255), default="")
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    pool_purpose: Mapped[str] = mapped_column(String(40), default="normal")
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    system_key: Mapped[str] = mapped_column(String(80), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 

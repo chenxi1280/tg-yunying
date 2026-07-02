@@ -59,6 +59,25 @@ class TgAccountAuthorizationSnapshot(Base):
     scanned_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class TgAccountDeviceCleanupPrecheck(Base):
+    __tablename__ = "tg_account_device_cleanup_prechecks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    precheck_id: Mapped[str] = mapped_column(String(80), unique=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    cleanup_authorization_hashes: Mapped[str] = mapped_column(Text, default="[]")
+    cleanup_count: Mapped[int] = mapped_column(Integer, default=0)
+    kept_count: Mapped[int] = mapped_column(Integer, default=0)
+    unknown_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(40), default="ready")
+    created_by: Mapped[str] = mapped_column(String(100), default="")
+    confirmed_by: Mapped[str] = mapped_column(String(100), default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class TgAccountSecurityBatch(Base):
     __tablename__ = "tg_account_security_batches"
 
@@ -96,6 +115,7 @@ class TgAccountSecurityBatchItem(Base):
     status: Mapped[str] = mapped_column(String(40), default="pending")
     precheck_status: Mapped[str] = mapped_column(String(40), default="pending")
     cleanup_status: Mapped[str] = mapped_column(String(40), default="not_requested")
+    device_cleanup_precheck_id: Mapped[str] = mapped_column(String(80), default="")
     two_fa_status: Mapped[str] = mapped_column(String(40), default="not_requested")
     profile_status: Mapped[str] = mapped_column(String(40), default="not_requested")
     username_status: Mapped[str] = mapped_column(String(40), default="not_requested")
@@ -149,6 +169,7 @@ class TgAccountProfileBatchRule(Base):
 
 __all__ = [
     "TgAccountAuthorizationSnapshot",
+    "TgAccountDeviceCleanupPrecheck",
     "TgAccountProfileBatchRule",
     "TgAccountSecurityBatch",
     "TgAccountSecurityBatchItem",

@@ -38,6 +38,10 @@ class MoveAccountPoolRequest(BaseModel):
     pool_id: int
 
 
+class AccountIdentityUpdate(BaseModel):
+    identity: str = Field(pattern="^(normal|code_receiver)$")
+
+
 class TgAccountProfileUpdate(BaseModel):
     display_name: str
     tg_first_name: str = ""
@@ -69,6 +73,26 @@ class SensitiveActionReasonRequest(BaseModel):
         return self
 
 
+class AccountAuthorizationRefreshOut(ApiModel):
+    account_id: int
+    authorization_id: int
+    status: str
+    target_role: str
+    source_authorization_id: int | None = None
+    source_role: str = ""
+    next_action: str = ""
+    detail: str = ""
+
+
+class AccountAuthorizationSelfHealOut(ApiModel):
+    account_id: int
+    status: str
+    activated_authorization_id: int | None = None
+    refresh_authorization_id: int | None = None
+    next_action: str = ""
+    detail: str = ""
+
+
 class AccountClonePlanCreate(BaseModel):
     tenant_id: int = 1
     source_account_id: int
@@ -87,6 +111,10 @@ class AccountAuthorizationSummaryOut(ApiModel):
     has_standby: bool = False
     is_blocking: bool = False
     risk_hint: str = ""
+    slot_statuses: dict[str, str] = Field(default_factory=dict)
+    aggregate_status: str = "all_down"
+    healthy_slot_count: int = 0
+    can_rescue: bool = False
 
 
 class AccountLatestLoginFlowOut(ApiModel):
@@ -103,9 +131,11 @@ class AccountAuthorizationOut(ApiModel):
     account_id: int
     role: str
     developer_app_id: int | None
+    developer_app_api_id: int = 0
     proxy_id: int | None
     status: str
     health_status: str
+    derived_status: str = "unknown"
     is_current: bool
     session_available: bool
     primary_source: str
@@ -149,6 +179,7 @@ class AccountOut(ApiModel):
     tenant_id: int
     pool_id: int | None = None
     pool_name: str = "默认账号池"
+    account_identity: str = "normal"
     display_name: str
     username: str | None
     tg_first_name: str = ""
@@ -188,9 +219,40 @@ class AccountPoolOut(ApiModel):
     name: str
     description: str
     is_default: bool
+    pool_purpose: str = "normal"
+    is_system: bool = False
+    system_key: str = ""
     account_count: int = 0
     created_at: datetime
     updated_at: datetime
+
+
+class AccountExecutionRecordOut(ApiModel):
+    id: str
+    source: str
+    source_id: str | int
+    task_id: str
+    task_name: str
+    task_type: str
+    action_type: str
+    action_label: str
+    status: str
+    status_label: str
+    remote_message_id: str = ""
+    failure_type: str = ""
+    failure_detail: str = ""
+    occurred_at: datetime
+
+
+class AccountPendingExecutionRecheckOut(ApiModel):
+    account_id: int
+    checked_count: int
+    requeued_count: int
+    existing_pending_count: int
+    executing_count: int
+    skipped_count: int
+    blocker_count: int = 0
+    blockers: list[dict[str, str]] = []
 
 
 class LoginFlowOut(ApiModel):
@@ -390,12 +452,12 @@ class AccountPoolDetailOut(BaseModel):
 
 __all__ = [
     "TgAccountCreate", "AccountPoolCreate", "AccountPoolUpdate",
-    "MoveAccountPoolRequest", "TgAccountProfileUpdate",
+    "MoveAccountPoolRequest", "AccountIdentityUpdate", "TgAccountProfileUpdate",
     "LoginStartRequest", "LoginVerifyRequest", "SensitiveActionReasonRequest", "AccountClonePlanCreate",
     "AccountAuthorizationLoginStartRequest", "AccountAuthorizationLoginVerifyRequest",
     "AccountAuthorizationOut", "AccountAuthorizationQrCheckRequest", "AccountAuthorizationSwitchRequest",
     "AvatarUploadOut",
-    "AccountOut", "AccountPoolOut", "LoginFlowOut", "VerificationCodeOut",
+    "AccountAuthorizationRefreshOut", "AccountAuthorizationSelfHealOut", "AccountOut", "AccountPoolOut", "AccountExecutionRecordOut", "AccountPendingExecutionRecheckOut", "LoginFlowOut", "VerificationCodeOut",
     "ProfileSyncRecordOut", "AccountSyncRecordOut",
     "ContactOut", "AccountGroupOut",
     "AccountCloneItemOut", "AccountClonePlanOut",

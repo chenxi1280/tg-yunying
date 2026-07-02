@@ -370,6 +370,7 @@ def _active_session_account_stmt(tenant_id: int):
         TgAccount.tenant_id == tenant_id,
         TgAccount.deleted_at.is_(None),
         TgAccount.status == AccountStatus.ACTIVE.value,
+        TgAccount.account_identity != "code_receiver",
         TgAccount.session_ciphertext.is_not(None),
         TgAccount.session_ciphertext != "",
     )

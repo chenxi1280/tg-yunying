@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from sqlalchemy import or_, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.models import (
     AccountStatus,
@@ -22,6 +22,7 @@ from app.models import (
     TgAccount,
     TgAccountAuthorization,
     TgAccountAuthorizationSnapshot,
+    TgAccountDeviceCleanupPrecheck,
     TgAccountProfileBatchRule,
     TgAccountSecurityBatch,
     TgAccountSecurityBatchItem,
@@ -46,6 +47,7 @@ from app.storage import media_root, object_path, save_avatar_bytes
 
 from .._common import _now, ai_gateway, audit, gateway, require_tenant
 from ..account_authorizations import attempt_standby_authorization_recovery, start_standby_authorization_login, verify_standby_authorization_login
+from .device_classification import classify_account_authorization_snapshots, cleanup_candidate_authorization_snapshots
 from ..account_two_fa import (
     MANAGED_TWO_FA_HINT,
     generate_managed_two_fa_password,
@@ -66,8 +68,6 @@ PROFILE_ACTIONS = {"update_profile", "update_username", "update_avatar"}
 SECURITY_ACTIONS = {"cleanup_devices", "set_two_fa"}
 STANDBY_SESSION_ACTIONS = {"provision_standby_session", "self_heal_session"}
 ALL_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS | STANDBY_SESSION_ACTIONS
-OFFICIAL_ANCHOR_API_IDS = {4, 6, 8, 2040, 2834, 21724}
-OFFICIAL_ANCHOR_PLATFORM_HINTS = ("android", "ios", "iphone", "ipad", "mac", "windows", "linux", "desktop")
 STANDBY_FAILURE_STATUS = {
     "verification_code_unreadable": "code_waiting",
     "two_fa_not_managed": "two_fa_waiting",
@@ -77,6 +77,7 @@ STANDBY_FAILURE_STATUS = {
 }
 STANDBY_CODE_POLL_INTERVAL_SECONDS = 2
 STANDBY_CODE_POLL_FALLBACK_WINDOW_SECONDS = 20
+DEVICE_CLEANUP_PRECHECK_TTL = timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -329,6 +330,7 @@ def _item_out(item: TgAccountSecurityBatchItem):
         "status": item.status,
         "precheck_status": item.precheck_status,
         "cleanup_status": item.cleanup_status,
+        "device_cleanup_precheck_id": item.device_cleanup_precheck_id,
         "two_fa_status": item.two_fa_status,
         "standby_session_status": _standby_session_status(item),
         "profile_status": item.profile_status,
@@ -435,14 +437,10 @@ def refresh_account_security(session: Session, tenant_id: int, account_id: int, 
         return snapshot
 
     session.query(TgAccountAuthorizationSnapshot).filter(TgAccountAuthorizationSnapshot.account_id == account.id).delete()
-    external_count = 0
     trusted = False
     for authorization in authorizations:
         is_current = bool(authorization.is_current)
-        is_anchor = _is_official_anchor_authorization(authorization)
         trusted = trusted or is_current
-        if not is_current and not is_anchor:
-            external_count += 1
         session.add(
             TgAccountAuthorizationSnapshot(
                 tenant_id=account.tenant_id,
@@ -464,10 +462,11 @@ def refresh_account_security(session: Session, tenant_id: int, account_id: int, 
                 scanned_at=now_value,
             )
         )
+    session.flush()
     two_fa = gateway.get_two_fa_status(account.session_ciphertext, credentials)
     snapshot.trusted_session_status = "confirmed" if trusted else "missing"
     snapshot.two_fa_status = two_fa.status if two_fa.ok else "unknown"
-    snapshot.external_authorization_count = external_count
+    snapshot.external_authorization_count = len(cleanup_candidate_authorization_snapshots(session, account))
     snapshot.last_device_scan_at = now_value
     snapshot.last_2fa_check_at = now_value
     snapshot.profile_status = _profile_status(account)
@@ -479,6 +478,156 @@ def refresh_account_security(session: Session, tenant_id: int, account_id: int, 
     session.commit()
     session.refresh(snapshot)
     return snapshot
+
+
+def create_device_cleanup_precheck(session: Session, tenant_id: int, account_id: int, actor: str) -> dict[str, object]:
+    account = _cleanup_precheck_account(session, tenant_id, account_id)
+    precheck = _create_device_cleanup_precheck_record(session, account, actor)
+    session.commit()
+    return _device_cleanup_precheck_out(precheck)
+
+
+def _create_device_cleanup_precheck_record(session: Session, account: TgAccount, actor: str) -> TgAccountDeviceCleanupPrecheck:
+    if not _authorization_snapshots(session, account.id):
+        refresh_account_security(session, account.tenant_id, account.id, actor=actor)
+    missing_roles = _platform_slot_roles_missing_hash(session, account)
+    if missing_roles:
+        raise ValueError(f"平台授权设备 hash 未确认：{', '.join(missing_roles)}")
+    candidates = cleanup_candidate_authorization_snapshots(session, account)
+    cleanup_hashes = [snapshot.authorization_hash_ciphertext for snapshot in candidates if snapshot.authorization_hash_ciphertext]
+    precheck = TgAccountDeviceCleanupPrecheck(
+        precheck_id=f"device_cleanup_{uuid4().hex}",
+        tenant_id=account.tenant_id,
+        account_id=account.id,
+        cleanup_authorization_hashes=json.dumps(cleanup_hashes),
+        cleanup_count=len(cleanup_hashes),
+        kept_count=_platform_authorization_count(session, account),
+        unknown_count=_unknown_authorization_count(session, account),
+        created_by=actor,
+        expires_at=_now() + DEVICE_CLEANUP_PRECHECK_TTL,
+    )
+    session.add(precheck)
+    session.flush()
+    return precheck
+
+
+def cleanup_devices_from_precheck(session: Session, tenant_id: int, account_id: int, precheck_id: str, actor: str) -> dict[str, object]:
+    account = _cleanup_precheck_account(session, tenant_id, account_id)
+    precheck = _device_cleanup_precheck(session, tenant_id, account.id, precheck_id)
+    credentials = credentials_for_account(session, account)
+    cleaned_count = 0
+    failures: list[str] = []
+    for encrypted_hash in _precheck_cleanup_hashes(precheck):
+        raw_hash = decrypt_secret(encrypted_hash) or encrypted_hash
+        result = gateway.cleanup_authorization(account.session_ciphertext, raw_hash, credentials)
+        if result.ok:
+            cleaned_count += 1
+        else:
+            failures.append(result.detail or result.failure_type)
+    precheck.status = "succeeded" if not failures else "partial_success" if cleaned_count else "failed"
+    precheck.confirmed_by = actor
+    precheck.confirmed_at = _now()
+    session.commit()
+    return {
+        **_device_cleanup_precheck_out(precheck),
+        "cleaned_count": cleaned_count,
+        "failed_count": len(failures),
+        "failures": failures,
+    }
+
+
+def _cleanup_precheck_account(session: Session, tenant_id: int, account_id: int) -> TgAccount:
+    account = session.get(TgAccount, account_id)
+    if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
+        raise ValueError("account not found")
+    if account.account_identity == "code_receiver":
+        raise ValueError("接码专用账号禁止执行一键清理登录设备")
+    return account
+
+
+def _device_cleanup_precheck(session: Session, tenant_id: int, account_id: int, precheck_id: str) -> TgAccountDeviceCleanupPrecheck:
+    precheck = session.scalar(
+        select(TgAccountDeviceCleanupPrecheck).where(
+            TgAccountDeviceCleanupPrecheck.tenant_id == tenant_id,
+            TgAccountDeviceCleanupPrecheck.account_id == account_id,
+            TgAccountDeviceCleanupPrecheck.precheck_id == precheck_id,
+        )
+    )
+    if not precheck:
+        raise ValueError("device cleanup precheck not found")
+    if precheck.expires_at < _now():
+        raise ValueError("device cleanup precheck expired")
+    return precheck
+
+
+def _precheck_cleanup_hashes(precheck: TgAccountDeviceCleanupPrecheck) -> list[str]:
+    raw = json.loads(precheck.cleanup_authorization_hashes or "[]")
+    return [str(value) for value in raw if value]
+
+
+def _platform_authorization_count(session: Session, account: TgAccount) -> int:
+    rows = classify_account_authorization_snapshots(session, account.id)
+    return sum(1 for row in rows if row.get("classification") == "platform_app")
+
+
+def _unknown_authorization_count(session: Session, account: TgAccount) -> int:
+    rows = classify_account_authorization_snapshots(session, account.id)
+    return sum(1 for row in rows if row.get("classification") == "unknown")
+
+
+def _device_cleanup_precheck_out(precheck: TgAccountDeviceCleanupPrecheck) -> dict[str, object]:
+    classified = _device_cleanup_precheck_devices(session=object_session(precheck), precheck=precheck)
+    return {
+        "precheck_id": precheck.precheck_id,
+        "account_id": precheck.account_id,
+        "cleanup_count": precheck.cleanup_count,
+        "kept_count": precheck.kept_count,
+        "unknown_count": precheck.unknown_count,
+        "kept_devices": classified["kept_devices"],
+        "cleanup_devices": classified["cleanup_devices"],
+        "unknown_devices": classified["unknown_devices"],
+        "status": precheck.status,
+        "expires_at": precheck.expires_at,
+    }
+
+
+def _device_cleanup_precheck_devices(session: Session | None, precheck: TgAccountDeviceCleanupPrecheck) -> dict[str, list[dict[str, object]]]:
+    if session is None:
+        return {"kept_devices": [], "cleanup_devices": [], "unknown_devices": []}
+    cleanup_hashes = set(_precheck_cleanup_hashes(precheck))
+    devices = classify_account_authorization_snapshots(session, precheck.account_id)
+    result = {"kept_devices": [], "cleanup_devices": [], "unknown_devices": []}
+    for item in devices:
+        device = _device_cleanup_precheck_device_out(item)
+        if item.get("classification") == "unknown":
+            result["unknown_devices"].append(device)
+        elif _snapshot_hash_in_precheck(session, int(item["id"]), cleanup_hashes):
+            result["cleanup_devices"].append(device)
+        else:
+            result["kept_devices"].append(device)
+    return result
+
+
+def _device_cleanup_precheck_device_out(item: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": item.get("id"),
+        "app_name": item.get("app_name"),
+        "device_model": item.get("device_model"),
+        "platform": item.get("platform"),
+        "remote_api_id": item.get("remote_api_id"),
+        "classification": item.get("classification"),
+        "matched_roles": item.get("matched_roles", []),
+        "cleanup_eligible": item.get("cleanup_eligible", False),
+    }
+
+
+def _snapshot_hash_in_precheck(session: Session, snapshot_id: int, cleanup_hashes: set[str]) -> bool:
+    snapshot = session.get(TgAccountAuthorizationSnapshot, snapshot_id)
+    if not snapshot:
+        return False
+    encrypted_hash = snapshot.authorization_hash_ciphertext
+    raw_hash = decrypt_secret(encrypted_hash) or encrypted_hash
+    return bool(raw_hash and (raw_hash in cleanup_hashes or encrypted_hash in cleanup_hashes))
 
 
 def _profile_status(account: TgAccount) -> str:
@@ -504,13 +653,14 @@ def account_security_detail(session: Session, tenant_id: int, account_id: int) -
     if not account or account.tenant_id != tenant_id or account.deleted_at is not None:
         raise ValueError("account not found")
     snapshot = _snapshot(session, account)
-    authorizations = list(
+    authorization_rows = list(
         session.scalars(
             select(TgAccountAuthorizationSnapshot)
             .where(TgAccountAuthorizationSnapshot.tenant_id == tenant_id, TgAccountAuthorizationSnapshot.account_id == account_id)
             .order_by(TgAccountAuthorizationSnapshot.is_current_session.desc(), TgAccountAuthorizationSnapshot.id.desc())
         )
     )
+    classifications = {item["id"]: item for item in classify_account_authorization_snapshots(session, account_id)}
     batches = list(
         session.scalars(
             select(TgAccountSecurityBatch)
@@ -523,9 +673,36 @@ def account_security_detail(session: Session, tenant_id: int, account_id: int) -
     return AccountSecurityDetailOut(
         account_id=account_id,
         snapshot=snapshot,
-        authorizations=authorizations,
+        authorizations=[_authorization_snapshot_out(row, classifications.get(row.id, {})) for row in authorization_rows],
         recent_batches=[_batch_out(batch) for batch in batches],
     )
+
+
+def _authorization_snapshot_out(row: TgAccountAuthorizationSnapshot, classification: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": row.id,
+        "account_id": row.account_id,
+        "batch_id": row.batch_id,
+        "authorization_hash_ciphertext": row.authorization_hash_ciphertext,
+        "is_platform_trusted": row.is_platform_trusted,
+        "is_current_session": row.is_current_session,
+        "device_model": row.device_model,
+        "platform": row.platform,
+        "system_version": row.system_version,
+        "api_id": row.api_id,
+        "app_name": row.app_name,
+        "app_version": row.app_version,
+        "ip_masked": row.ip_masked,
+        "country": row.country,
+        "region": row.region,
+        "date_created": row.date_created,
+        "date_active": row.date_active,
+        "status": row.status,
+        "scanned_at": row.scanned_at,
+        "classification": classification.get("classification", "unknown"),
+        "matched_roles": classification.get("matched_roles", []),
+        "cleanup_eligible": classification.get("cleanup_eligible", False),
+    }
 
 
 def save_managed_two_fa_password(
@@ -721,6 +898,10 @@ def create_account_security_batch(session: Session, tenant_id: int, payload: Acc
     )
     for preview_item in preview.items:
         item_status = "pending" if preview_item.precheck_status == "executable" and batch.status == "running" else preview_item.precheck_status
+        cleanup_precheck_id = ""
+        if "cleanup_devices" in preview.action_types and item_status == "pending":
+            account = _require_account(session, tenant_id, preview_item.account_id)
+            cleanup_precheck_id = _create_device_cleanup_precheck_record(session, account, actor).precheck_id
         item = TgAccountSecurityBatchItem(
             batch_id=batch.id,
             tenant_id=tenant_id,
@@ -728,6 +909,7 @@ def create_account_security_batch(session: Session, tenant_id: int, payload: Acc
             status=item_status,
             precheck_status=preview_item.precheck_status,
             cleanup_status="pending" if "cleanup_devices" in preview.action_types and item_status == "pending" else "not_requested",
+            device_cleanup_precheck_id=cleanup_precheck_id,
             two_fa_status="pending" if "set_two_fa" in preview.action_types and item_status == "pending" else "not_requested",
             profile_status="pending" if "update_profile" in preview.action_types and item_status == "pending" else "not_requested",
             username_status="pending" if "update_username" in preview.action_types and item_status == "pending" else "not_requested",
@@ -1111,74 +1293,53 @@ def _poll_standby_login_code_once(session: Session, account: TgAccount, flow) ->
 
 
 def _execute_cleanup(session: Session, account: TgAccount, item: TgAccountSecurityBatchItem, credentials) -> list[str]:
-    failures: list[str] = []
-    authorizations = list(
-        session.scalars(
-            select(TgAccountAuthorizationSnapshot).where(TgAccountAuthorizationSnapshot.account_id == account.id)
-        )
-    )
-    if not authorizations:
-        snapshot = refresh_account_security(session, account.tenant_id, account.id, actor="account-security-worker")
-        if snapshot.trusted_session_status == "unknown" and snapshot.last_error:
-            item.cleanup_status = "failed"
-            return [f"设备扫描失败：{snapshot.last_error}"]
-        authorizations = list(session.scalars(select(TgAccountAuthorizationSnapshot).where(TgAccountAuthorizationSnapshot.account_id == account.id)))
-    protected_hashes = _protected_authorization_hashes(session, account)
-    if not _has_official_anchor_authorization(authorizations):
+    if account.account_identity == "code_receiver":
         item.status = "manual_required"
         item.cleanup_status = "manual_required"
-        item.failure_type = "official_anchor_missing"
-        return ["无法识别官方锚点设备，禁止一键清理登录设备"]
-    external = [authorization for authorization in authorizations if _can_cleanup_authorization(authorization, protected_hashes)]
-    item.external_devices_before = len(external)
+        item.failure_type = "code_receiver_reserved"
+        return ["接码专用账号禁止执行一键清理登录设备"]
+    if not item.device_cleanup_precheck_id:
+        item.cleanup_status = "failed"
+        item.failure_type = "device_cleanup_precheck_missing"
+        return ["缺少设备清理预检快照，禁止现场重新扫描后清理"]
+    precheck = _device_cleanup_precheck(session, account.tenant_id, account.id, item.device_cleanup_precheck_id)
+    failures: list[str] = []
+    cleanup_hashes = _precheck_cleanup_hashes(precheck)
+    item.external_devices_before = len(cleanup_hashes)
     cleaned = 0
-    for authorization in external:
-        raw_hash = decrypt_secret(authorization.authorization_hash_ciphertext) or authorization.authorization_hash_ciphertext
+    for encrypted_hash in cleanup_hashes:
+        raw_hash = decrypt_secret(encrypted_hash) or encrypted_hash
         result = gateway.cleanup_authorization(account.session_ciphertext, raw_hash, credentials)
         if result.ok:
             cleaned += 1
-            authorization.status = "cleaned"
         else:
             if _is_fresh_reset_forbidden(result.detail or result.failure_type):
                 item.next_retry_at = _now() + timedelta(hours=24)
                 item.cleanup_status = "waiting"
                 item.status = "waiting"
             failures.append(result.detail or result.failure_type)
-    item.external_devices_after = max(0, len(external) - cleaned)
+    item.external_devices_after = max(0, len(cleanup_hashes) - cleaned)
     item.cleanup_status = "succeeded" if not failures else "partial_success" if cleaned else "failed"
+    precheck.status = item.cleanup_status
+    precheck.confirmed_by = "account-security-worker"
+    precheck.confirmed_at = _now()
     snapshot = _snapshot(session, account)
     snapshot.external_authorization_count = item.external_devices_after
     snapshot.last_device_scan_at = _now()
     return failures
 
 
-def _can_cleanup_authorization(authorization: TgAccountAuthorizationSnapshot, protected_hashes: set[str]) -> bool:
-    if authorization.is_current_session or authorization.is_platform_trusted:
-        return False
-    if _is_official_anchor_authorization(authorization):
-        return False
+def _authorization_snapshots(session: Session, account_id: int) -> list[TgAccountAuthorizationSnapshot]:
+    return list(
+        session.scalars(
+            select(TgAccountAuthorizationSnapshot).where(TgAccountAuthorizationSnapshot.account_id == account_id)
+        )
+    )
+
+
+def _has_protected_hash(authorization: TgAccountAuthorizationSnapshot, protected_hashes: set[str]) -> bool:
     raw_hash = decrypt_secret(authorization.authorization_hash_ciphertext) or authorization.authorization_hash_ciphertext
-    if raw_hash in protected_hashes:
-        return False
-    return authorization.status == "active"
-
-
-def _has_official_anchor_authorization(authorizations: list[TgAccountAuthorizationSnapshot]) -> bool:
-    return any(_is_official_anchor_authorization(authorization) for authorization in authorizations)
-
-
-def _is_official_anchor_authorization(authorization) -> bool:
-    if bool(getattr(authorization, "is_current_session", False)) or bool(getattr(authorization, "is_current", False)):
-        return False
-    if bool(getattr(authorization, "is_platform_trusted", False)):
-        return False
-    app_name = str(getattr(authorization, "app_name", "") or "").lower()
-    platform = str(getattr(authorization, "platform", "") or "").lower()
-    device_model = str(getattr(authorization, "device_model", "") or "").lower()
-    api_id = int(getattr(authorization, "api_id", 0) or 0)
-    if api_id not in OFFICIAL_ANCHOR_API_IDS and "telegram" not in app_name:
-        return False
-    return bool(any(hint in platform for hint in OFFICIAL_ANCHOR_PLATFORM_HINTS) or device_model)
+    return bool(raw_hash and raw_hash in protected_hashes)
 
 
 def _protected_authorization_hashes(session: Session, account: TgAccount) -> set[str]:
@@ -1196,6 +1357,22 @@ def _protected_authorization_hashes(session: Session, account: TgAccount) -> set
         for value in [decrypt_secret(row.telegram_authorization_hash_ciphertext) or row.telegram_authorization_hash_ciphertext]
         if value
     }
+
+
+def _platform_slot_roles_missing_hash(session: Session, account: TgAccount) -> list[str]:
+    rows = session.scalars(
+        select(TgAccountAuthorization).where(
+            TgAccountAuthorization.account_id == account.id,
+            TgAccountAuthorization.disabled_at.is_(None),
+            TgAccountAuthorization.role.in_(["primary", "standby_1", "standby_2"]),
+            TgAccountAuthorization.session_ciphertext != "",
+        )
+    )
+    return [
+        row.role
+        for row in rows
+        if not row.telegram_authorization_hash_ciphertext
+    ]
 
 
 def _has_switchable_standby(session: Session, account: TgAccount) -> bool:
@@ -1900,7 +2077,9 @@ __all__ = [
     "account_security_detail",
     "account_security_summary",
     "cancel_account_security_batch",
+    "cleanup_devices_from_precheck",
     "create_account_security_batch",
+    "create_device_cleanup_precheck",
     "drain_account_security_batches",
     "list_account_security_batches",
     "precheck_account_security_batch",

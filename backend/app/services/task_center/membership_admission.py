@@ -483,6 +483,7 @@ def _snapshot_account_ids(session: Session, task: Task) -> list[int]:
             TgAccount.tenant_id == task.tenant_id,
             TgAccount.deleted_at.is_(None),
             TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.account_identity != "code_receiver",
             TgAccount.pool_id.in_(group_ids),
         )
         .order_by(TgAccount.id.asc())

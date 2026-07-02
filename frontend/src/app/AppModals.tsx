@@ -50,6 +50,7 @@ const adminPermissionGroups = [
     ['accounts.security.read', '账号安全查看'],
     ['accounts.security.batch', '账号安全批次'],
     ['accounts.security.credential_manage', '托管 2FA 密码'],
+    ['accounts.security.session_manage', '备用 session 批次'],
     ['accounts.authorizations.manage', '备用授权管理'],
     ['accounts.profile.batch_update', '批量资料初始化'],
     ['accounts.sensitive.read', '敏感账号状态'],

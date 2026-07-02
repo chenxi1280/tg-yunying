@@ -1,5 +1,6 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+import pytest
 
 from app.api.routers import accounts as accounts_router
 from app.auth import CurrentUser
@@ -8,16 +9,19 @@ from app.database import Base
 from app.integrations.telegram.gateway import TelethonTelegramGateway
 from app.integrations.telegram.mock import TelegramGateway
 from app.integrations.telegram.contracts import AccountHealth, LoginChallenge
-from app.models import Action, AccountProxy, AccountStatus, FailureType, Task, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization
+from app.models import Action, AccountProxy, AccountStatus, FailureType, Task, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization, TgLoginFlow
 from app.security import decrypt_session, encrypt_secret
 from app.services import account_authorizations as authorization_service
 from app.services import accounts as accounts_service
 from app.services.task_center import dispatcher
 from app.services.account_authorizations import (
+    activate_authorization,
     attempt_standby_authorization_recovery,
     attempt_primary_proxy_recovery,
     authorization_summary_for_account,
     list_account_authorizations,
+    refresh_authorization_slot,
+    self_heal_authorizations,
     start_standby_authorization_login,
     switch_primary_authorization,
     verify_standby_authorization_login,
@@ -351,6 +355,120 @@ def test_switch_primary_authorization_rejects_standby_without_session() -> None:
             assert str(exc) == "备用授权没有可用 session"
         else:
             raise AssertionError("switch should reject standby without session")
+
+
+@pytest.mark.no_postgres
+def test_authorization_refresh_marks_target_waiting_for_code_with_healthy_source() -> None:
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        account = TgAccount(id=17, tenant_id=1, display_name="互救账号", phone_masked="17", status=AccountStatus.ACTIVE.value)
+        session.add(account)
+        session.flush()
+        target = TgAccountAuthorization(
+            id=1701,
+            tenant_id=1,
+            account_id=17,
+            role="primary",
+            status="active",
+            health_status="expired",
+            session_ciphertext="old-primary",
+        )
+        source = TgAccountAuthorization(
+            id=1702,
+            tenant_id=1,
+            account_id=17,
+            role="standby_1",
+            status="standby",
+            health_status="healthy",
+            session_ciphertext="healthy-standby",
+        )
+        session.add_all([target, source])
+        session.commit()
+
+        result = refresh_authorization_slot(session, 17, 1701, actor="admin", reason="主授权掉线")
+        refreshed = session.get(TgAccountAuthorization, 1701)
+
+        assert result["status"] == "waiting_code"
+        assert result["source_authorization_id"] == 1702
+        assert refreshed.derived_status == "waiting_code"
+        assert refreshed.failure_reason == "等待健康槽位读取 Telegram 官方验证码：主授权掉线"
+
+
+@pytest.mark.no_postgres
+def test_standby_login_persists_developer_app_api_id_snapshot() -> None:
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add(TelegramDeveloperApp(id=33, app_name="备用应用", api_id=33001, api_hash_ciphertext=encrypt_secret("hash")))
+        account = TgAccount(id=25, tenant_id=1, display_name="备用账号", phone_masked="25", status=AccountStatus.ACTIVE.value)
+        flow = TgLoginFlow(
+            tenant_id=1,
+            account_id=25,
+            method="code",
+            status="等待验证码",
+            authorization_role="standby_1",
+            developer_app_id=33,
+            proxy_id=0,
+        )
+        session.add_all([account, flow])
+        session.commit()
+
+        asset = authorization_service._finish_standby_login(session, account, flow, AccountStatus.ACTIVE.value, "raw-session", "tester")
+
+        assert asset.developer_app_api_id_snapshot == 33001
+        assert asset.telegram_authorization_hash_ciphertext
+
+
+@pytest.mark.no_postgres
+def test_authorization_refresh_rejects_all_down_auto_recovery() -> None:
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        account = TgAccount(id=18, tenant_id=1, display_name="全掉线账号", phone_masked="18", status=AccountStatus.SESSION_EXPIRED.value)
+        session.add(account)
+        session.add(TgAccountAuthorization(id=1801, tenant_id=1, account_id=18, role="primary", status="active", health_status="expired", session_ciphertext="old"))
+        session.commit()
+
+        try:
+            refresh_authorization_slot(session, 18, 1801, actor="admin", reason="全部掉线")
+        except ValueError as exc:
+            assert str(exc) == "三槽位全部掉线，只能人工重新登录 / 扫码 / 手动验证码"
+        else:
+            raise AssertionError("refresh should reject all-down auto recovery")
+
+
+@pytest.mark.no_postgres
+def test_self_heal_activates_healthy_standby_before_refreshing_primary() -> None:
+    with _sqlite_session() as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        session.add_all(
+            [
+                TelegramDeveloperApp(id=33, app_name="主应用", api_id=33001, api_hash_ciphertext="encrypted"),
+                TelegramDeveloperApp(id=34, app_name="备用应用", api_id=34001, api_hash_ciphertext="encrypted"),
+                AccountProxy(id=43, tenant_id=1, name="主代理", port=10043),
+                AccountProxy(id=44, tenant_id=1, name="备用代理", port=10044),
+            ]
+        )
+        account = TgAccount(id=19, tenant_id=1, display_name="自愈账号", phone_masked="19", status=AccountStatus.SESSION_EXPIRED.value, developer_app_id=33, proxy_id=43, session_ciphertext="primary-old")
+        session.add(account)
+        standby = TgAccountAuthorization(id=1902, tenant_id=1, account_id=19, role="standby_1", developer_app_id=34, proxy_id=44, status="standby", health_status="healthy", session_ciphertext="standby-ok")
+        session.add(standby)
+        session.commit()
+
+        result = self_heal_authorizations(session, 19, actor="admin", reason="巡检发现 primary 掉线")
+        account = session.get(TgAccount, 19)
+
+        assert result["status"] == "activated_standby"
+        assert result["activated_authorization_id"] == 1902
+        assert account.session_ciphertext == "standby-ok"
+        assert account.status == AccountStatus.ACTIVE.value
+
+
+@pytest.mark.no_postgres
+def test_authorization_routes_expose_refresh_activate_and_self_heal_contracts() -> None:
+    source = (accounts_router.__file__ and open(accounts_router.__file__, encoding="utf-8").read()) or ""
+
+    assert '"/api/tg-accounts/{account_id}/authorizations/{authorization_id}/refresh"' in source
+    assert '"/api/tg-accounts/{account_id}/authorizations/{authorization_id}/activate"' in source
+    assert '"/api/tg-accounts/{account_id}/authorizations/self-heal"' in source
 
 
 def test_attempt_standby_recovery_switches_first_healthy_standby() -> None:

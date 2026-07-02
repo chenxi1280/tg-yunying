@@ -1,7 +1,14 @@
 import React from 'react';
 import { Alert, Button, Card, Empty, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { AccountAuthorizationAsset, AccountProxy, DeveloperApp, LoginFlow } from '../types';
+import type {
+  AccountAuthorizationAsset,
+  AccountAuthorizationRefreshResult,
+  AccountAuthorizationSelfHealResult,
+  AccountProxy,
+  DeveloperApp,
+  LoginFlow,
+} from '../types';
 import { StatusBadge } from '../components/shared';
 import { api } from '../../shared/api/client';
 import { formatBeijingDateTime } from '../time';
@@ -37,6 +44,8 @@ export function AccountAuthorizationAssetsPanel({
   const [error, setError] = React.useState('');
   const [refreshError, setRefreshError] = React.useState('');
   const [switchingId, setSwitchingId] = React.useState<number | null>(null);
+  const [refreshingId, setRefreshingId] = React.useState<number | null>(null);
+  const [selfHealing, setSelfHealing] = React.useState(false);
   const [loginOpen, setLoginOpen] = React.useState(false);
   const [loginLoading, setLoginLoading] = React.useState(false);
   const [developerApps, setDeveloperApps] = React.useState<DeveloperApp[]>([]);
@@ -71,6 +80,8 @@ export function AccountAuthorizationAssetsPanel({
     setLoginFlow(null);
     setLoginLoading(false);
     setSwitchingId(null);
+    setRefreshingId(null);
+    setSelfHealing(false);
     setError('');
     setRefreshError('');
     void loadAssets(accountId);
@@ -262,11 +273,33 @@ export function AccountAuthorizationAssetsPanel({
     const authorizationId = asset.id;
     if (!authorizationId) return;
     Modal.confirm({
-      title: '切换主授权',
-      content: `确认将 ${roleLabel(asset.role)} 切换为当前主授权？`,
-      okText: '切换',
+      title: '激活授权恢复',
+      content: `确认将 ${roleLabel(asset.role)} 激活为当前主授权？故障槽位会保留为待修复授权资产。`,
+      okText: '激活',
       cancelText: '取消',
       onOk: () => switchPrimary(authorizationId),
+    });
+  }
+
+  function confirmRefresh(asset: AccountAuthorizationAsset) {
+    const authorizationId = asset.id;
+    if (!authorizationId) return;
+    Modal.confirm({
+      title: '刷新授权槽位',
+      content: `确认刷新 ${roleLabel(asset.role)}？系统会使用健康槽位读取 Telegram 官方验证码。`,
+      okText: '刷新',
+      cancelText: '取消',
+      onOk: () => refreshAuthorizationSlot(authorizationId),
+    });
+  }
+
+  function confirmSelfHeal() {
+    Modal.confirm({
+      title: '自愈恢复',
+      content: '确认触发三槽位自愈？系统会优先激活健康备用授权；如果三槽位全部掉线，只进入人工重新登录状态。',
+      okText: '自愈',
+      cancelText: '取消',
+      onOk: selfHealAuthorizations,
     });
   }
 
@@ -276,21 +309,69 @@ export function AccountAuthorizationAssetsPanel({
     setError('');
     setRefreshError('');
     try {
-      await api(`/tg-accounts/${targetAccountId}/authorizations/${authorizationId}/switch-primary`, {
+      await api(`/tg-accounts/${targetAccountId}/authorizations/${authorizationId}/activate`, {
         method: 'POST',
-        body: JSON.stringify({ reason: '账号中心手动切换备用授权' }),
+        body: JSON.stringify({ reason: '账号中心激活备用授权恢复' }),
       });
       if (!isActiveAccount(targetAccountId)) return;
       const loaded = await loadAssets(targetAccountId);
       if (!loaded || !isActiveAccount(targetAccountId)) return;
       await refreshChangedAccount(targetAccountId);
       if (!isActiveAccount(targetAccountId)) return;
-      void message.success('已切换主授权');
+      void message.success('已激活授权恢复');
     } catch (error) {
       if (!isActiveAccount(targetAccountId)) return;
-      setError(error instanceof Error ? error.message : '切换主授权失败');
+      setError(error instanceof Error ? error.message : '激活授权恢复失败');
     } finally {
       if (isActiveAccount(targetAccountId)) setSwitchingId(null);
+    }
+  }
+
+  async function refreshAuthorizationSlot(authorizationId: number) {
+    const targetAccountId = accountId;
+    setRefreshingId(authorizationId);
+    setError('');
+    setRefreshError('');
+    try {
+      const result = await api<AccountAuthorizationRefreshResult>(`/tg-accounts/${targetAccountId}/authorizations/${authorizationId}/refresh`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: '账号中心刷新掉线授权槽位' }),
+      });
+      if (!isActiveAccount(targetAccountId)) return;
+      const loaded = await loadAssets(targetAccountId);
+      if (!loaded || !isActiveAccount(targetAccountId)) return;
+      await refreshChangedAccount(targetAccountId);
+      if (!isActiveAccount(targetAccountId)) return;
+      void message.success(result.detail || '授权槽位已进入验证码刷新');
+    } catch (error) {
+      if (!isActiveAccount(targetAccountId)) return;
+      setError(error instanceof Error ? error.message : '刷新授权槽位失败');
+    } finally {
+      if (isActiveAccount(targetAccountId)) setRefreshingId(null);
+    }
+  }
+
+  async function selfHealAuthorizations() {
+    const targetAccountId = accountId;
+    setSelfHealing(true);
+    setError('');
+    setRefreshError('');
+    try {
+      const result = await api<AccountAuthorizationSelfHealResult>(`/tg-accounts/${targetAccountId}/authorizations/self-heal`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: '账号中心手动触发授权自愈' }),
+      });
+      if (!isActiveAccount(targetAccountId)) return;
+      const loaded = await loadAssets(targetAccountId);
+      if (!loaded || !isActiveAccount(targetAccountId)) return;
+      await refreshChangedAccount(targetAccountId);
+      if (!isActiveAccount(targetAccountId)) return;
+      void message.success(result.detail || '授权自愈已触发');
+    } catch (error) {
+      if (!isActiveAccount(targetAccountId)) return;
+      setError(error instanceof Error ? error.message : '授权自愈失败');
+    } finally {
+      if (isActiveAccount(targetAccountId)) setSelfHealing(false);
     }
   }
 
@@ -317,13 +398,14 @@ export function AccountAuthorizationAssetsPanel({
             <StatusBadge status={asset?.health_status || asset?.status || '缺失'} />
             {asset?.is_current && <Tag color="green">当前主授权</Tag>}
           </Space>
-          <Typography.Text type="secondary">开发者应用：{asset?.developer_app_id ? `App #${asset.developer_app_id}` : '未绑定'}</Typography.Text>
+          <Typography.Text type="secondary">开发者应用：{asset?.developer_app_id ? `App #${asset.developer_app_id} / api_id ${asset.developer_app_api_id || '未确认'}` : '未绑定'}</Typography.Text>
           <Typography.Text type="secondary">代理：{asset?.proxy_id ? `Proxy #${asset.proxy_id}` : '未绑定'}</Typography.Text>
           <Typography.Text type="secondary">最近健康检查：{formatTime(asset?.last_health_check_at)}</Typography.Text>
           <Typography.Text type={asset?.failure_reason ? 'danger' : 'secondary'}>{asset?.failure_reason || '验证码不可读取 / 2FA 未托管 / 代理异常等故障槽位原因会显示在这里'}</Typography.Text>
           <Space wrap>
             {!isPrimary && <Button size="small" disabled={!canManage} onClick={() => { setLoginForm((current) => ({ ...current, role })); void openLoginModal(); }}>补齐</Button>}
             {!isPrimary && <Button size="small" disabled={!canRecover} loading={switchingId === asset?.id} onClick={() => asset && confirmSwitch(asset)}>激活恢复</Button>}
+            {asset?.id && <Button size="small" disabled={!canManage} loading={refreshingId === asset.id} onClick={() => confirmRefresh(asset)}>刷新槽位</Button>}
           </Space>
         </Space>
       </Card>
@@ -360,7 +442,7 @@ export function AccountAuthorizationAssetsPanel({
       dataIndex: 'developer_app_id',
       key: 'developer_app_id',
       width: 130,
-      render: (value) => value ? `App #${value}` : '未绑定',
+      render: (value, asset) => value ? `App #${value} / api_id ${asset.developer_app_api_id || '未确认'}` : '未绑定',
     },
     { title: '代理', dataIndex: 'proxy_id', key: 'proxy_id', width: 120, render: (value) => value ? `Proxy #${value}` : '未绑定' },
     { title: '最近切换', key: 'last_switched_at', width: 190, render: (_, asset) => formatTime(asset.last_switched_at) },
@@ -374,10 +456,16 @@ export function AccountAuthorizationAssetsPanel({
           && asset.role !== 'primary'
           && asset.session_available
           && SWITCHABLE_STATUSES.has(asset.status);
+        const canRefresh = canManage && Boolean(asset.id);
         return (
-          <Button size="small" disabled={!canSwitch} loading={switchingId === asset.id} onClick={() => confirmSwitch(asset)}>
-            切为主授权
-          </Button>
+          <Space>
+            <Button size="small" disabled={!canSwitch} loading={switchingId === asset.id} onClick={() => confirmSwitch(asset)}>
+              激活
+            </Button>
+            <Button size="small" disabled={!canRefresh} loading={refreshingId === asset.id} onClick={() => confirmRefresh(asset)}>
+              刷新
+            </Button>
+          </Space>
         );
       },
     },
@@ -390,6 +478,7 @@ export function AccountAuthorizationAssetsPanel({
       extra={(
         <Space>
           <Button size="small" disabled={!canManage} onClick={openLoginModal}>新增备用授权</Button>
+          <Button size="small" disabled={!canManage} loading={selfHealing} onClick={confirmSelfHeal}>自愈恢复</Button>
           <Button size="small" loading={loading} onClick={() => void loadAssets()}>刷新授权资产</Button>
         </Space>
       )}
@@ -401,7 +490,7 @@ export function AccountAuthorizationAssetsPanel({
           type={healthyStandbyCount >= 2 && primaryAsset?.session_available ? 'success' : healthyStandbyCount > 0 ? 'warning' : 'error'}
           showIcon
           message={`恢复能力：${recoveryStatus}`}
-          description="官方锚点设备状态来自登录设备清理预检；故障槽位会保留为待修复授权资产。"
+          description="平台设备状态来自远端授权 api_id 与三槽位 Developer App 的匹配结果；故障槽位会保留为待修复授权资产。"
         />
         <div className="summary-grid">
           {slotCard('primary')}

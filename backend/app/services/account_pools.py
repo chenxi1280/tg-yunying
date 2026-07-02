@@ -21,12 +21,16 @@ __all__ = [
     "account_pool_detail",
     "account_pool_snapshot",
     "create_account_pool",
+    "ensure_code_receiver_account_pool",
     "ensure_default_account_pool",
     "list_account_pools",
     "move_account_pool",
     "seed_account_pools",
+    "set_account_identity",
     "update_account_pool",
 ]
+
+CODE_RECEIVER_POOL_KEY = "code_receiver"
 
 
 def account_pool_snapshot(session: Session, pool: AccountPool) -> dict:
@@ -36,6 +40,9 @@ def account_pool_snapshot(session: Session, pool: AccountPool) -> dict:
         "name": pool.name,
         "description": pool.description,
         "is_default": pool.is_default,
+        "pool_purpose": pool.pool_purpose,
+        "is_system": pool.is_system,
+        "system_key": pool.system_key,
         "account_count": session.scalar(select(func.count(TgAccount.id)).where(TgAccount.pool_id == pool.id, TgAccount.deleted_at.is_(None))) or 0,
         "created_at": pool.created_at,
         "updated_at": pool.updated_at,
@@ -45,11 +52,24 @@ def account_pool_snapshot(session: Session, pool: AccountPool) -> dict:
 def ensure_default_account_pool(session: Session, tenant_id: int) -> AccountPool:
     pool = session.scalar(
         select(AccountPool)
-        .where(AccountPool.tenant_id == tenant_id, AccountPool.is_default.is_(True))
+        .where(
+            AccountPool.tenant_id == tenant_id,
+            AccountPool.is_default.is_(True),
+            AccountPool.pool_purpose != CODE_RECEIVER_POOL_KEY,
+            AccountPool.system_key != CODE_RECEIVER_POOL_KEY,
+        )
         .order_by(AccountPool.id.asc())
     )
     if not pool:
-        pool = session.scalar(select(AccountPool).where(AccountPool.tenant_id == tenant_id).order_by(AccountPool.id.asc()))
+        pool = session.scalar(
+            select(AccountPool)
+            .where(
+                AccountPool.tenant_id == tenant_id,
+                AccountPool.pool_purpose != CODE_RECEIVER_POOL_KEY,
+                AccountPool.system_key != CODE_RECEIVER_POOL_KEY,
+            )
+            .order_by(AccountPool.id.asc())
+        )
     if not pool:
         pool = AccountPool(tenant_id=tenant_id, name="默认账号池", description="系统默认账号分组", is_default=True)
         session.add(pool)
@@ -57,9 +77,48 @@ def ensure_default_account_pool(session: Session, tenant_id: int) -> AccountPool
     return pool
 
 
+def ensure_code_receiver_account_pool(session: Session, tenant_id: int) -> AccountPool:
+    pool = session.scalar(
+        select(AccountPool)
+        .where(
+            AccountPool.tenant_id == tenant_id,
+            AccountPool.system_key == CODE_RECEIVER_POOL_KEY,
+        )
+        .order_by(AccountPool.id.asc())
+    )
+    if not pool:
+        pool = _create_code_receiver_pool(tenant_id)
+        session.add(pool)
+        session.flush()
+    _mark_code_receiver_pool(pool)
+    return pool
+
+
+def _create_code_receiver_pool(tenant_id: int) -> AccountPool:
+    return AccountPool(
+        tenant_id=tenant_id,
+        name="接码专用分组",
+        description="系统固定接码分组",
+        pool_purpose=CODE_RECEIVER_POOL_KEY,
+        is_system=True,
+        system_key=CODE_RECEIVER_POOL_KEY,
+    )
+
+
+def _mark_code_receiver_pool(pool: AccountPool) -> None:
+    pool.pool_purpose = CODE_RECEIVER_POOL_KEY
+    pool.is_system = True
+    pool.system_key = CODE_RECEIVER_POOL_KEY
+
+
+def _is_code_receiver_pool(pool: AccountPool) -> bool:
+    return pool.pool_purpose == CODE_RECEIVER_POOL_KEY or pool.system_key == CODE_RECEIVER_POOL_KEY
+
+
 def seed_account_pools(session: Session) -> None:
     for tenant_id in session.scalars(select(Tenant.id)).all():
         pool = ensure_default_account_pool(session, tenant_id)
+        ensure_code_receiver_account_pool(session, tenant_id)
         accounts = session.scalars(select(TgAccount).where(TgAccount.tenant_id == tenant_id, TgAccount.pool_id.is_(None), TgAccount.deleted_at.is_(None))).all()
         for account in accounts:
             account.pool_id = pool.id
@@ -192,7 +251,32 @@ def move_account_pool(session: Session, account_id: int, pool_id: int, actor: st
     if not account or account.deleted_at is not None or not pool or account.tenant_id != pool.tenant_id:
         raise ValueError("account or pool not found")
     account.pool_id = pool.id
+    account.account_identity = CODE_RECEIVER_POOL_KEY if _is_code_receiver_pool(pool) else "normal"
     audit(session, tenant_id=account.tenant_id, actor=actor, action="移动账号池", target_type="tg_account", target_id=str(account.id), detail=pool.name)
     session.commit()
     session.refresh(account)
     return account
+
+
+def set_account_identity(session: Session, account_id: int, identity: str, actor: str) -> TgAccount:
+    if identity not in {"normal", CODE_RECEIVER_POOL_KEY}:
+        raise ValueError("unsupported account identity")
+    account = session.get(TgAccount, account_id)
+    if not account or account.deleted_at is not None:
+        raise ValueError("account not found")
+    target_pool = _identity_target_pool(session, account, identity)
+    account.account_identity = identity
+    account.pool_id = target_pool.id
+    audit(session, tenant_id=account.tenant_id, actor=actor, action="设置账号身份", target_type="tg_account", target_id=str(account.id), detail=identity)
+    session.commit()
+    session.refresh(account)
+    return account
+
+
+def _identity_target_pool(session: Session, account: TgAccount, identity: str) -> AccountPool:
+    if identity == CODE_RECEIVER_POOL_KEY:
+        return ensure_code_receiver_account_pool(session, account.tenant_id)
+    pool = session.get(AccountPool, account.pool_id) if account.pool_id else None
+    if pool and not _is_code_receiver_pool(pool):
+        return pool
+    return ensure_default_account_pool(session, account.tenant_id)

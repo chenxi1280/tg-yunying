@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -20,6 +19,9 @@ from app.models import (
     GroupAuthStatus,
     MessageTask,
     MessageTaskAttempt,
+    Action,
+    ExecutionAttempt,
+    Task,
     TaskStatus,
     TgAccount,
     TgAccountProfileSyncRecord,
@@ -47,6 +49,7 @@ from .account_pools import account_pool_snapshot, ensure_default_account_pool, s
 ACCOUNT_SYNC_INTERVAL = timedelta(hours=1)
 ACCOUNT_SYNC_STAGGER_STEP = timedelta(seconds=3)
 GENERIC_ACCOUNT_DISPLAY_NAMES = {"", "托管账号", "新托管账号", "未命名账号"}
+PENDING_EXECUTION_REQUEUE_STATUSES = {"failed", "skipped", "unknown_after_send", "retryable_failed"}
 ACCOUNT_SYNC_STALE_AFTER = timedelta(minutes=30)
 ACCOUNT_SYNC_QUEUE_STALE_AFTER = timedelta(hours=6)
 PROFILE_SYNC_STALE_AFTER = timedelta(minutes=30)
@@ -87,6 +90,7 @@ __all__ = [
     "account_contacts",
     "account_detail",
     "account_groups",
+    "account_execution_records",
     "account_message_records",
     "account_profile_snapshot",
     "AccountListFilters",
@@ -109,6 +113,7 @@ __all__ = [
     "process_profile_sync_record",
     "queue_account_sync_now",
     "queue_account_sync_records",
+    "recheck_account_pending_execution",
     "retry_account_profile_sync",
     "run_account_sync_now",
     "start_login",
@@ -1048,6 +1053,212 @@ def account_message_records(session: Session, account_id: int, limit: int = 100)
     )
 
 
+def account_execution_records(session: Session, account_id: int, limit: int = 100) -> list[dict]:
+    account = session.get(TgAccount, account_id)
+    if not account:
+        raise ValueError("account not found")
+    records = [
+        *_task_action_execution_records(session, account),
+        *_legacy_message_execution_records(session, account),
+    ]
+    return sorted(records, key=_execution_record_sort_key, reverse=True)[:limit]
+
+
+def recheck_account_pending_execution(session: Session, account_id: int, actor: str) -> dict:
+    account = session.get(TgAccount, account_id)
+    if not account or account.deleted_at is not None:
+        raise ValueError("account not found")
+    actions = _account_execution_actions(session, account)
+    requeued_count = 0
+    blockers: list[dict] = []
+    for action in actions:
+        blocker = _pending_execution_action_blocker(session, account, action)
+        if blocker:
+            blockers.append(blocker)
+            _mark_pending_execution_blocked(action, blocker)
+            continue
+        if _requeue_pending_execution_action(action):
+            requeued_count += 1
+    _refresh_rechecked_tasks(session, {action.task_id for action in actions if action.task_id})
+    audit(session, tenant_id=account.tenant_id, actor=actor, action="重查账号待处理执行", target_type="tg_account", target_id=str(account.id))
+    session.commit()
+    return _pending_execution_recheck_result(account.id, actions, requeued_count, blockers)
+
+
+def _account_execution_actions(session: Session, account: TgAccount) -> list[Action]:
+    return list(
+        session.scalars(
+            select(Action)
+            .where(Action.tenant_id == account.tenant_id, Action.account_id == account.id)
+            .order_by(Action.created_at.desc())
+        )
+    )
+
+
+def _requeue_pending_execution_action(action: Action) -> bool:
+    if action.status not in PENDING_EXECUTION_REQUEUE_STATUSES:
+        return False
+    previous_status = action.status
+    action.status = "pending"
+    action.scheduled_at = _now()
+    action.executed_at = None
+    action.lease_owner = ""
+    action.lease_expires_at = None
+    action.claim_owner = ""
+    action.claim_token = ""
+    action.claim_expires_at = None
+    action.result = {**(action.result or {}), "pending_execution_rechecked_from": previous_status}
+    return True
+
+
+def _pending_execution_action_blocker(session: Session, account: TgAccount, action: Action) -> dict | None:
+    if action.status not in PENDING_EXECUTION_REQUEUE_STATUSES:
+        return None
+    group_id = _action_target_group_id(action)
+    if not group_id:
+        return None
+    link = session.scalar(
+        select(TgGroupAccount).where(
+            TgGroupAccount.tenant_id == account.tenant_id,
+            TgGroupAccount.account_id == account.id,
+            TgGroupAccount.group_id == group_id,
+            TgGroupAccount.can_send.is_(True),
+        )
+    )
+    if link:
+        return None
+    return {"action_id": action.id, "reason": f"账号尚未具备目标群发送权限：group_id={group_id}"}
+
+
+def _action_target_group_id(action: Action) -> int:
+    payload = action.payload or {}
+    for key in ("group_id", "target_group_id"):
+        value = payload.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return 0
+
+
+def _mark_pending_execution_blocked(action: Action, blocker: dict) -> None:
+    action.result = {**(action.result or {}), "pending_execution_recheck_blocker": blocker}
+
+
+def _refresh_rechecked_tasks(session: Session, task_ids: set[str]) -> None:
+    if not task_ids:
+        return
+    from app.services.task_center.stats import refresh_task_stats
+
+    for task in session.scalars(select(Task).where(Task.id.in_(task_ids))):
+        refresh_task_stats(session, task)
+
+
+def _pending_execution_recheck_result(account_id: int, actions: list[Action], requeued_count: int, blockers: list[dict]) -> dict:
+    return {
+        "account_id": account_id,
+        "checked_count": len(actions),
+        "requeued_count": requeued_count,
+        "existing_pending_count": sum(1 for action in actions if action.status == "pending") - requeued_count,
+        "executing_count": sum(1 for action in actions if action.status == "executing"),
+        "skipped_count": len(actions) - requeued_count,
+        "blocker_count": len(blockers),
+        "blockers": blockers,
+    }
+
+
+def _task_action_execution_records(session: Session, account: TgAccount) -> list[dict]:
+    latest_attempt_ids = (
+        select(ExecutionAttempt.action_id.label("action_id"), func.max(ExecutionAttempt.attempt_no).label("attempt_no"))
+        .where(ExecutionAttempt.account_id == account.id)
+        .group_by(ExecutionAttempt.action_id)
+        .subquery()
+    )
+    rows = session.execute(
+        select(Action, Task, ExecutionAttempt)
+        .join(Task, Task.id == Action.task_id)
+        .outerjoin(latest_attempt_ids, latest_attempt_ids.c.action_id == Action.id)
+        .outerjoin(
+            ExecutionAttempt,
+            (ExecutionAttempt.action_id == Action.id) & (ExecutionAttempt.attempt_no == latest_attempt_ids.c.attempt_no),
+        )
+        .where(Action.tenant_id == account.tenant_id, Action.account_id == account.id)
+        .order_by(Action.created_at.desc())
+    ).all()
+    return [_task_action_execution_record(action, task, attempt) for action, task, attempt in rows]
+
+
+def _legacy_message_execution_records(session: Session, account: TgAccount) -> list[dict]:
+    return [_legacy_message_execution_record(task) for task in account_message_records(session, account.id)]
+
+
+def _task_action_execution_record(action: Action, task: Task, attempt: ExecutionAttempt | None) -> dict:
+    occurred_at = (attempt.after_call_at if attempt else None) or action.executed_at or action.scheduled_at or action.created_at
+    return {
+        "id": f"action:{action.id}:{attempt.id if attempt else 'latest'}",
+        "source": "task_action",
+        "source_id": action.id,
+        "task_id": action.task_id,
+        "task_name": task.name,
+        "task_type": action.task_type,
+        "action_type": action.action_type,
+        "action_label": _action_label(action.action_type),
+        "status": action.status,
+        "status_label": _status_label(action.status),
+        "remote_message_id": attempt.remote_message_id if attempt else "",
+        "failure_type": attempt.failure_type if attempt else "",
+        "failure_detail": attempt.failure_detail if attempt else "",
+        "occurred_at": occurred_at,
+    }
+
+
+def _legacy_message_execution_record(task: MessageTask) -> dict:
+    return {
+        "id": f"message_task:{task.id}",
+        "source": "message_task",
+        "source_id": str(task.id),
+        "task_id": "",
+        "task_name": task.target_display or "私发消息",
+        "task_type": "message_task",
+        "action_type": "direct_message",
+        "action_label": "私发消息",
+        "status": task.status,
+        "status_label": _status_label(task.status),
+        "remote_message_id": "",
+        "failure_type": task.failure_type or "",
+        "failure_detail": task.failure_detail or "",
+        "occurred_at": task.sent_at or task.scheduled_at or task.created_at,
+    }
+
+
+def _execution_record_sort_key(record: dict) -> tuple:
+    return (record.get("occurred_at") or datetime.min, 1 if record.get("source") == "task_action" else 0)
+
+
+def _action_label(action_type: str) -> str:
+    return {
+        "send_message": "发消息",
+        "comment": "评论",
+        "reply": "回复",
+        "view_message": "浏览消息",
+        "like_message": "点赞消息",
+        "post_comment": "发布评论",
+        "view_channel_post": "浏览频道",
+        "like_channel_post": "点赞频道",
+        "invite_group_account": "群聊救援",
+    }.get(action_type, action_type)
+
+
+def _status_label(status: str) -> str:
+    return {
+        "success": "成功",
+        "sent": "成功",
+        "failed": "失败",
+        "pending": "待处理",
+        "executing": "执行中",
+        "unknown_after_send": "结果未知",
+        "cancelled": "已取消",
+    }.get(status, status)
+
+
 def account_contacts(session: Session, account_id: int, limit: int = 200) -> list[TgContact]:
     account = session.get(TgAccount, account_id)
     if not account:
@@ -1289,14 +1500,6 @@ def poll_account_verification_codes(session: Session, account_id: int, actor: st
         if get_settings().tg_gateway_mode != "mock":
             raise ValueError(f"同步TG官方验证码失败：{exc}") from exc
         snapshots = []
-    if not snapshots and get_settings().tg_gateway_mode == "mock":
-        snapshots = [
-            VerificationCodeSnapshot(
-                code=f"{random.randint(10000, 99999)}",
-                expires_at=_now() + timedelta(minutes=3),
-                raw_hint="TG 官方服务消息验证码（mock）",
-            )
-        ]
     for snapshot in snapshots:
         duplicate = session.scalar(
             select(TgVerificationCode)

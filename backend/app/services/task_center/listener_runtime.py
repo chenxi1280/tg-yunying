@@ -205,6 +205,7 @@ def _recover_group_listener_account(session: Session, group: TgGroup, account_id
             TgGroupAccount.group_id == group.id,
             TgGroupAccount.is_listener.is_(True),
             TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.account_identity != "code_receiver",
             TgAccount.deleted_at.is_(None),
         )
         .limit(1)
@@ -350,6 +351,7 @@ def _source_group_account_ids(session: Session, tenant_id: int, group_id: int) -
                 TgGroupAccount.can_send.is_(True),
                 TgAccount.tenant_id == tenant_id,
                 TgAccount.status == AccountStatus.ACTIVE.value,
+                TgAccount.account_identity != "code_receiver",
                 TgAccount.deleted_at.is_(None),
             )
             .order_by(TgGroupAccount.is_listener.desc(), TgAccount.health_score.desc(), TgAccount.id.asc())
@@ -368,6 +370,7 @@ def _usable_group_account_ids(session: Session, group: TgGroup, account_ids: lis
             TgAccount.tenant_id == group.tenant_id,
             TgAccount.id.in_(list(dict.fromkeys(candidate_ids))),
             TgAccount.status == AccountStatus.ACTIVE.value,
+            TgAccount.account_identity != "code_receiver",
             TgAccount.deleted_at.is_(None),
             TgGroupAccount.tenant_id == group.tenant_id,
             TgGroupAccount.group_id == group.id,

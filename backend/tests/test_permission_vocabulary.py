@@ -66,6 +66,8 @@ def test_sensitive_read_routes_have_explicit_least_privilege_rules():
     assert required_permission("GET", "/api/groups/34/verification-tasks") == ("accounts.sync",)
     assert required_permission("GET", "/api/channel-comments") == ("targets.view",)
     assert required_permission("GET", "/api/rules/relay-attribution/report") == ("rules.view",)
+    assert required_permission("PATCH", "/api/tg-accounts/12/identity") == ("accounts.pool_manage",)
+    assert required_permission("POST", "/api/tg-accounts/12/pending-execution/recheck") == ("accounts.sync",)
 
 
 def test_auth_change_password_route_exists_for_frontend_self_service_flow():

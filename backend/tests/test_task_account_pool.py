@@ -6,11 +6,69 @@ from sqlalchemy.orm import Session
 from app.database import Base
 import pytest
 
-from app.models import AccountRuntimeSummary, AccountStatus, Action, Task, Tenant, TgAccount, TgAccountSecuritySnapshot, TgGroup, TgGroupAccount
+from app.models import AccountPool, AccountRuntimeSummary, AccountStatus, Action, Task, Tenant, TgAccount, TgAccountSecuritySnapshot, TgGroup, TgGroupAccount
 from app.services._common import _now
+from app.services.account_pools import ensure_code_receiver_account_pool, move_account_pool, set_account_identity
 from app.services.task_center.account_coverage import task_account_coverage
 from app.services.task_center.account_pool import select_task_accounts
 from app.services.task_center.channel_membership import candidate_accounts_for_config
+
+pytestmark = pytest.mark.no_postgres
+
+
+def test_ensure_code_receiver_account_pool_creates_system_pool_once():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        first = ensure_code_receiver_account_pool(session, 1)
+        second = ensure_code_receiver_account_pool(session, 1)
+
+        assert first.id == second.id
+        assert first.pool_purpose == "code_receiver"
+        assert first.is_system is True
+        assert first.system_key == "code_receiver"
+
+
+def test_move_account_pool_syncs_code_receiver_identity():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = AccountPool(id=1, tenant_id=1, name="普通池", is_default=True)
+        code_pool = AccountPool(id=2, tenant_id=1, name="接码池", pool_purpose="code_receiver", is_system=True, system_key="code_receiver")
+        account = TgAccount(id=1, tenant_id=1, pool_id=1, display_name="账号", phone_masked="1", status=AccountStatus.ACTIVE.value)
+        session.add_all([normal_pool, code_pool, account])
+        session.commit()
+
+        moved = move_account_pool(session, 1, 2, "tester")
+        assert moved.account_identity == "code_receiver"
+
+        moved_back = move_account_pool(session, 1, 1, "tester")
+        assert moved_back.account_identity == "normal"
+
+
+def test_set_account_identity_moves_account_between_code_receiver_and_default_pool():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        normal_pool = AccountPool(id=1, tenant_id=1, name="普通池", is_default=True)
+        account = TgAccount(id=1, tenant_id=1, pool_id=1, display_name="账号", phone_masked="1", status=AccountStatus.ACTIVE.value)
+        session.add_all([normal_pool, account])
+        session.commit()
+
+        code_receiver = set_account_identity(session, 1, "code_receiver", "tester")
+        assert code_receiver.account_identity == "code_receiver"
+        code_pool = session.get(AccountPool, code_receiver.pool_id)
+        assert code_pool.pool_purpose == "code_receiver"
+
+        normal = set_account_identity(session, 1, "normal", "tester")
+        assert normal.account_identity == "normal"
+        assert normal.pool_id == 1
 
 
 def test_select_task_accounts_reduces_low_health_participation_weight():

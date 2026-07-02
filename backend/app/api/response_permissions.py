@@ -121,6 +121,14 @@ def _can_read_phone(current_user: CurrentUser) -> bool:
 
 def account_availability_out_for_user(summary: Any, current_user: CurrentUser) -> dict[str, Any]:
     data = AccountRuntimeSummaryOut.model_validate(summary).model_dump()
+    capacity_limit = int(data.get("capacity_limit") or 100)
+    capacity_used = max(0, capacity_limit - int(data.get("remaining_capacity") or 0))
+    data["capacity_limit"] = capacity_limit
+    data["capacity_used"] = capacity_used
+    data["capacity_explanation"] = (
+        f"剩余容量 = {capacity_limit} - 当前待处理/领取中/执行中/可重试/结果未知占用 {capacity_used}；"
+        "调度前仍会按账号冷却、全局限额和风控实时复检。"
+    )
     if not current_user.has_permission("accounts.security.read"):
         data["unavailable_reason"] = "已隐藏敏感状态" if data.get("unavailable_reason") else ""
         data["failure_trend"] = {}

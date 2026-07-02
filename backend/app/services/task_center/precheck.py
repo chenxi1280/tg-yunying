@@ -354,7 +354,11 @@ def _precheck_blocking_risk_reasons(
 
 
 def _precheck_candidate_accounts(session: Session, tenant_id: int, account_config: dict[str, Any]) -> list[TgAccount]:
-    stmt = select(TgAccount).where(TgAccount.tenant_id == tenant_id, TgAccount.deleted_at.is_(None)).order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
+    stmt = select(TgAccount).where(
+        TgAccount.tenant_id == tenant_id,
+        TgAccount.deleted_at.is_(None),
+        TgAccount.account_identity != "code_receiver",
+    ).order_by(TgAccount.health_score.desc(), TgAccount.id.asc())
     mode = account_config.get("selection_mode") or "all"
     if mode == "manual":
         account_ids = _as_int_list(account_config.get("account_ids"))
