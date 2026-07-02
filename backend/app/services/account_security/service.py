@@ -488,8 +488,12 @@ def create_device_cleanup_precheck(session: Session, tenant_id: int, account_id:
 
 
 def _create_device_cleanup_precheck_record(session: Session, account: TgAccount, actor: str) -> TgAccountDeviceCleanupPrecheck:
-    if not _authorization_snapshots(session, account.id):
-        refresh_account_security(session, account.tenant_id, account.id, actor=actor)
+    snapshots = _authorization_snapshots(session, account.id)
+    if not snapshots:
+        snapshot = refresh_account_security(session, account.tenant_id, account.id, actor=actor)
+        snapshots = _authorization_snapshots(session, account.id)
+        if not snapshots and snapshot.last_error:
+            return _failed_device_cleanup_precheck(session, account, actor)
     missing_roles = _platform_slot_roles_missing_hash(session, account)
     if missing_roles:
         raise ValueError(f"平台授权设备 hash 未确认：{', '.join(missing_roles)}")
@@ -503,6 +507,24 @@ def _create_device_cleanup_precheck_record(session: Session, account: TgAccount,
         cleanup_count=len(cleanup_hashes),
         kept_count=_platform_authorization_count(session, account),
         unknown_count=_unknown_authorization_count(session, account),
+        created_by=actor,
+        expires_at=_now() + DEVICE_CLEANUP_PRECHECK_TTL,
+    )
+    session.add(precheck)
+    session.flush()
+    return precheck
+
+
+def _failed_device_cleanup_precheck(session: Session, account: TgAccount, actor: str) -> TgAccountDeviceCleanupPrecheck:
+    precheck = TgAccountDeviceCleanupPrecheck(
+        precheck_id=f"device_cleanup_{uuid4().hex}",
+        tenant_id=account.tenant_id,
+        account_id=account.id,
+        cleanup_authorization_hashes="[]",
+        cleanup_count=0,
+        kept_count=0,
+        unknown_count=0,
+        status="failed",
         created_by=actor,
         expires_at=_now() + DEVICE_CLEANUP_PRECHECK_TTL,
     )
@@ -1303,6 +1325,10 @@ def _execute_cleanup(session: Session, account: TgAccount, item: TgAccountSecuri
         item.failure_type = "device_cleanup_precheck_missing"
         return ["缺少设备清理预检快照，禁止现场重新扫描后清理"]
     precheck = _device_cleanup_precheck(session, account.tenant_id, account.id, item.device_cleanup_precheck_id)
+    if precheck.status == "failed":
+        item.cleanup_status = "failed"
+        item.failure_type = "device_cleanup_scan_failed"
+        return [_device_cleanup_scan_failure_detail(session, account)]
     failures: list[str] = []
     cleanup_hashes = _precheck_cleanup_hashes(precheck)
     item.external_devices_before = len(cleanup_hashes)
@@ -1327,6 +1353,12 @@ def _execute_cleanup(session: Session, account: TgAccount, item: TgAccountSecuri
     snapshot.external_authorization_count = item.external_devices_after
     snapshot.last_device_scan_at = _now()
     return failures
+
+
+def _device_cleanup_scan_failure_detail(session: Session, account: TgAccount) -> str:
+    snapshot = _snapshot(session, account)
+    detail = snapshot.last_error or "未知错误"
+    return f"设备扫描失败：{detail}"
 
 
 def _authorization_snapshots(session: Session, account_id: int) -> list[TgAccountAuthorizationSnapshot]:
