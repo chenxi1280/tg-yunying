@@ -15,6 +15,7 @@ from app.services.account_security import cleanup_devices_from_precheck, create_
 
 ACTOR = "github-actions-account-device-cleanup-smoke"
 ACTIVE_AUTH_STATUSES = {"active", "standby"}
+DEFAULT_MAX_SCAN = 64
 STANDBY_ROLES = {"standby_1", "standby_2"}
 
 
@@ -30,7 +31,7 @@ def main() -> None:
     tenant_id = _int_env("ACCOUNT_DEVICE_CLEANUP_TENANT_ID", 1)
     account_id = _optional_int_env("ACCOUNT_DEVICE_CLEANUP_ACCOUNT_ID")
     apply = _bool_env("ACCOUNT_DEVICE_CLEANUP_APPLY")
-    max_scan = _int_env("ACCOUNT_DEVICE_CLEANUP_MAX_SCAN", 8)
+    max_scan = _int_env("ACCOUNT_DEVICE_CLEANUP_MAX_SCAN", DEFAULT_MAX_SCAN)
     with SessionLocal() as session:
         result = _select_candidate(session, tenant_id, account_id, max_scan)
         before = _authorization_state(session, result.account.id)
