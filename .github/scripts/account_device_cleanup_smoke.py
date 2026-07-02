@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import aliased
 
 from app.database import SessionLocal
 from app.models import AccountStatus, TgAccount, TgAccountAuthorization
@@ -85,8 +86,25 @@ def _select_candidate(session, tenant_id: int, account_id: int | None, max_scan:
 
 
 def _candidate_accounts(session, tenant_id: int, account_id: int | None, max_scan: int) -> list[TgAccount]:
+    primary = aliased(TgAccountAuthorization)
+    standby = aliased(TgAccountAuthorization)
     query = (
         select(TgAccount)
+        .join(
+            primary,
+            (primary.account_id == TgAccount.id)
+            & (primary.disabled_at.is_(None))
+            & (primary.session_ciphertext.is_not(None))
+            & (primary.role == "primary"),
+        )
+        .join(
+            standby,
+            (standby.account_id == TgAccount.id)
+            & (standby.disabled_at.is_(None))
+            & (standby.session_ciphertext.is_not(None))
+            & (standby.role.in_(STANDBY_ROLES))
+            & (standby.status.in_(ACTIVE_AUTH_STATUSES)),
+        )
         .where(
             TgAccount.tenant_id == tenant_id,
             TgAccount.deleted_at.is_(None),
@@ -94,6 +112,7 @@ def _candidate_accounts(session, tenant_id: int, account_id: int | None, max_sca
             TgAccount.status == AccountStatus.ACTIVE.value,
             TgAccount.session_ciphertext.is_not(None),
         )
+        .distinct()
         .order_by(TgAccount.id.asc())
     )
     if account_id is not None:
