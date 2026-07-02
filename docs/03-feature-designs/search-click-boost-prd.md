@@ -1,0 +1,1254 @@
+# 搜索自动入群（目标机器人 / SOSO 等第三方索引机器人）专项 PRD
+
+## 1. 背景
+
+tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group_relay`、`channel_view`、`channel_like`、`channel_comment`。这些任务主要围绕 Telegram 内的群聊、频道和内容互动展开。
+
+新产品诉求是新增第 6 类主任务：**针对第三方 TG 索引机器人（@searchbot、@soso、@smss 神马、@CJSY 超级索引等）的搜索自动入群**。
+
+业务定位：
+
+- 第三方索引机器人的排序通常综合考虑群组基础属性、描述相关性、成员数、活跃度、搜索命中、加入行为和付费排名等因素。
+- 本任务通过“账号矩阵 × 关键词矩阵 × 搜索机器人 × 翻页匹配 × 点击加入”的流程，让运营配置的目标群被账号通过搜索行为加入。
+- 本任务是独立任务类型，不借用 AI 活跃群、频道浏览或频道点赞任务语义。
+
+关键限制：
+
+- 目标机器人和 Telegram 平台都可能对脚本化、同步化、异常高频行为触发限制。
+- 代理 IP、设备指纹、账号画像、节奏和 decoy 关键词是任务能否灰度运行的硬前置，不是可选增强项。
+- 首版必须先完成真实样本采集门槛：目标机器人回复结构、button payload、分页行为、失败消息、Clash 节点真实出口 IP 都要有样本证据，不能仅按推测协议开发。
+- 本 PRD 中的“iOS / Android 设备指纹”指 Telegram MTProto `initConnection` 客户端元数据画像，不等价于真实原生 iOS / Android 客户端；不得把元数据伪装描述成真机能力。
+- 本 PRD 只定义产品、数据流转、执行和验收口径；不把本地设计完成声明为生产可用。
+
+## 2. 目标
+
+- 新增任务类型 `search_join_group`，支持通过第三方索引机器人执行关键词搜索、翻页、匹配目标群、点击、加入、停留、退出和结果记录。
+- 任务中心完整承载搜索入群任务的创建、预检、启动、Action 流水、任务详情、失败事实和运行汇总。
+- 风控中心承载代理、设备指纹、账号环境栈、搜索机器人异常和 search_join 专属告警。
+- 账号环境栈采用 `account_id + authorization_id/session_role + proxy_node_binding_id + client_metadata` 授权槽位镜像绑定；主授权和备用授权都必须拥有不同代理节点与不同完整 MTProto 客户端元数据，Planner 和 Executor 双重硬校验，缺失即跳过或阻断。
+- 首版只允许人工选择 5-10 个已养号账号灰度，不允许默认全量扩到 100+ 账号。
+- 调度层和 Executor 层都必须执行真实化节奏，不能只在配置层声明。
+
+## 3. 非目标
+
+- 不做“自然搜索观察”或纯排名监测任务；首版只做“搜索后加入目标群”的闭环。
+- 不自建目标 Bot 或自有索引系统；本任务只对接外部已存在的索引机器人。
+- 不替代付费排名，也不承诺目标群一定排到第一。
+- 不把搜索入群任务伪装成其他合法任务；任务类型必须独立可见。
+- 不通过备用授权槽位扩大同账号并发；主 / 备用授权只用于故障切换和连续性，不作为多个独立账号同时执行。
+- 不把 Telethon / MTProto 后端执行描述成真实移动端 UI 渲染或真实手指点击；如果未来要做真机自动化，必须另起专项方案。
+- 不在业务层做合规判断；技术方案只保证灰度、熔断、审计和失败可见。
+
+## 4. 核心概念
+
+### 4.1 搜索入群任务（Search Join Group）
+
+任务定义：
+
+```json
+{
+  "task_type": "search_join_group",
+  "search_bots": ["jisou"],
+  "keywords": [
+    {"text": "迪拜房产", "region": "AE", "lang": "zh", "decoy": false},
+    {"text": "天气预报", "region": "AE", "lang": "zh", "decoy": true}
+  ],
+  "target_groups": [
+    {"operation_target_id": 123, "match_strategy": "username_or_peer_id"}
+  ],
+  "anti_detection": {
+    "warmup_days": 3,
+    "behavior_realism": {},
+    "rhythm": {},
+    "paging": {},
+    "anti_clustering": {}
+  },
+  "proxy_policy": {
+    "required": true,
+    "allowed_proxy_types": ["residential_static", "mobile_4g"],
+    "country_match_account_region": true
+  }
+}
+```
+
+每个 action = 一个账号授权槽位 × 一个关键词 × 一个搜索机器人 × 一个目标群匹配策略 = 一次完整搜索入群链路。
+
+### 4.2 第三方索引机器人
+
+首版目标机器人只接入 `@searchbot`，其余机器人进入第二版适配。
+
+| 机器人 | 代号 | 阶段 | 备注 |
+| --- | --- | --- | --- |
+| `@searchbot` | `jisou` | 第一版 | 首版协议适配和灰度目标 |
+| `@searchbot2bot` | `jisou2bot` | 第二版 | 备用入口 |
+| `@soso` / `@SoSoSearchBot` | `soso` | 第二版 | 老牌搜索入口 |
+| `@smss` | `smss` | 第二版 | 神马搜索 |
+| `@CJSY` / `@So1234Bot` | `cjsy` | 第二版 | 可能包含纯文本 + URL 结果 |
+
+调用方式：向机器人发送关键词文本，机器人返回 inline button 或链接形式的搜索结果。Executor 解析结果、按目标群匹配策略定位结果项，再执行点击、加入和停留。
+
+### 4.3 账号环境栈（Account Environment Stack）
+
+每个执行账号必须绑定：
+
+1. 代理 IP，见 §6。
+2. 设备指纹，见 §7。
+3. 目标群，任务创建时引用 `OperationTarget`。
+4. 搜索机器人，任务创建时选择并写入 `type_config.search_bots`。
+
+环境栈为授权槽位级四元组：`(account_id, authorization_id/session_role, proxy_node_binding_id, fingerprint fields on account_environment_bindings)`。`authorization_id` 引用 `tg_account_authorizations.id`，`session_role` 对应 `primary / standby_1 / standby_2`。主授权和备用授权不能复用同一设备指纹、同一 `client_identity_key` 或同一代理节点；调度层和 Executor 都必须校验，任一缺失不得进入主执行。
+
+### 4.4 Action 状态机
+
+**Action 状态保持现有 5 值不变**：`pending`、`executing`、`success`、`failed`、`skipped`。不新增 `needs_warmup`、`needs_proxy` 等状态值。
+
+原因：现有前端筛选、列表渲染、风控判断、审计、Dispatcher 和 Stats 都依赖固定状态集合；新增状态会扩大回归面，并可能让未知状态在前端被误判。
+
+环境前置校验失败由 `action.payload.lifecycle_phase` 和 `action.result.skip_reason` 表达：
+
+|`lifecycle_phase`|含义|落库状态|skip_reason|
+|---|---|---|---|
+|`main`|主任务阶段，正常执行（默认值）|success / failed|—|
+|`warmup`|账号处于 warmup 期，只允许低强度 decoy 搜索|success（仅 decoy）/ skipped|`in_warmup_period`|
+|`needs_proxy`|账号未绑代理，action 跳过|skipped|`missing_proxy_binding`|
+|`needs_fingerprint`|账号未绑设备指纹，action 跳过|skipped|`missing_device_fingerprint`|
+|`proxy_dead`|账号绑定的代理 IP 健康分 < 60，action 跳过|skipped|`proxy_reputation_below_threshold`|
+|`fingerprint_invalid`|设备指纹异常（如被目标机器人/SOSO 标记），action 跳过|skipped|`fingerprint_anomaly`|
+
+状态机：
+
+```
+pending -> claiming -> executing -> success / failed / skipped
+                      \-> retry -> pending
+```
+
+运营侧的“账号环境未就绪”信息通过 `lifecycle_phase`、`skip_reason`、任务 stats 和风控告警暴露。
+
+### 4.5 运营真实性多层策略
+
+| 防御层 | 触发难度 | 影响权重 | 本 PRD 方案 |
+| --- | --- | --- | --- |
+| 设备指纹层 | 低 | 高 | iOS 优先，授权槽位级运行时生成，主/备授权独立镜像绑定 |
+| IP 层 | 中 | 极高 | 独享静态住宅首版必填，授权槽位-代理节点长期绑定 |
+| 账号画像层 | 中 | 中 | 注册满 30 天、资料完整、已有自然群组和联系人 |
+| 行为层 | 中 | 高 | 真人化随机延迟、翻页回退、停留、退出和转化率控制 |
+| 数据层 | 中 | 中 | decoy 关键词、关键词权重、入群转化率和目标排名轨迹可观测 |
+
+### 4.6 关键词
+
+每个关键词结构：
+
+```json
+{"text": "迪拜房产", "business_region": "AE", "account_locale": "zh-CN", "proxy_country": "SG", "weight": 1.0, "decoy": false}
+```
+
+`decoy=true` 表示非目标关键词，用于行为掩护，不计入目标群加入统计；`decoy=false` 才是真正用于目标群加入的关键词。
+
+`business_region` 表示关键词业务区域，`account_locale` 表示账号语言画像，`proxy_country` 表示代理出口国家。三者不强制相等，只要求组合落入允许矩阵。例如“迪拜房产”可以是中文账号、中文客户端语言、新加坡或阿联酋出口 IP、阿联酋业务区域；不应被旧的 `keyword.region == account.region == ip.country` 硬等式误拦。
+
+### 4.7 执行模式
+
+首版执行模式固定为 `mtproto_userbot`：后端通过 Telethon / MTProto 会话与目标机器人交互，记录发送、等待、解析、callback / URL 跳转、加入、停留和退出的协议事实。文档中“点击”“打开”“浏览”都指可审计的协议动作和等待节奏，不代表真实移动端 UI 渲染。
+
+未来如需真实手机 UI 自动化，必须另建 `mobile_device_automation` 专项设计，覆盖真机设备、系统权限、画面识别、触摸事件、设备农场和更高成本验收；不能在本任务中混用两种执行模式。
+
+### 4.8 真实样本采集门槛
+
+开发 executor 前必须先完成 `protocol_sample_collection`：
+
+| 样本 | 最低数量 | 必须记录 |
+| --- | --- | --- |
+| 目标机器人 `/start` 响应 | 每个首版机器人 ≥ 2 个账号 | 原始消息类型、按钮结构、是否要求验证码 / 入群 / 授权 |
+| 关键词搜索响应 | 每个机器人 ≥ 5 个关键词 | 原始 message id、button text、button type、callback_data hash、url、分页按钮 |
+| 翻页响应 | 每个机器人 ≥ 3 次分页 | 下一页 / 上一页按钮定位、消息更新方式、新旧 message id 关系 |
+| 目标群匹配 | 每种匹配策略 ≥ 3 个样本 | username、peer_id、title fuzzy 的成功 / 失败样例 |
+| 异常响应 | 至少覆盖空结果、无目标、限流或验证码之一 | 原始错误摘要、分类结果、建议动作 |
+
+样本只保存必要结构和 hash，不保存第三方机器人返回的群成员信息、消息正文或其他 PII。未完成样本采集时，`SearchJoinGroupExecutor` 只能实现 parser fixture 和预检，不得进入真实执行灰度。
+
+## 5. 用户故事
+
+1. 运营人员在任务中心创建搜索自动入群任务，选择 `@searchbot`，导入关键词，选择或粘贴目标群，并配置运营真实性参数。
+2. 灰度阶段，运营人员选择 5-10 个已养号 30 天以上的账号，每个账号都绑定独享静态住宅 IP 和镜像设备指纹。
+3. 任务启动后，Planner 按账号授权槽位、关键词、搜索机器人和目标群生成 action；Executor 按真人节奏执行完整链路。
+4. 运营人员在任务详情查看每个账号、关键词、机器人维度的累计入群、目标群平均排名、入群转化率、停留时长和最近失败原因。
+5. 当目标机器人突然加验证码、回复结构变化或拒绝请求时，系统暂停相关任务或账号，并在风控中心生成告警。
+6. 当某个账号 IP 健康分低于阈值或设备指纹异常时，系统下线该账号的搜索入群任务，并保留可审计的失败事实。
+7. 风控中心统一管理账号限流、代理健康、搜索机器人限流和 search_join 专属策略，任务中心只展示执行事实和调度控制。
+
+## 6. IP 池设计
+
+### 6.1 IP 类型分层
+
+按“像真人程度”从高到低：
+
+| 类型 | 来源 | 像真人度 | 成本 | 适用 |
+| --- | --- | --- | --- | --- |
+| 数据中心代理 | 云服务器机房 | 极低 | 低 | 禁用于本任务 |
+| 数据中心静态住宅（伪造） | 机房但 ISP 标为 residential | 中低 | 中 | 不作为首版核心账号 |
+| 动态住宅 IP | 真实家庭宽带轮换 | 高 | 中 | 辅助任务 |
+| 独享静态住宅 IP | 真实家庭宽带、长期绑定 | 很高 | 高 | 核心账号，首版必选 |
+| 4G / 5G 移动代理 | 真实移动运营商 SIM 卡 | 最高 | 最高 | 第二阶段现金牛账号 |
+
+首版（第一阶段）仅采购独享静态住宅 IP；第二阶段再评估 4G / 5G 移动代理。
+
+### 6.2 代理供应商抽象
+```python
+ class ProxyProvider(Protocol): name: str proxy_type: Literal["residential_static", "residential_rotating", "mobile_4g", "datacenter"] async def list_available(self, country: str, count: int) -> list[ProxyInfo]: ... async def acquire(self, country: str, sticky_minutes: int) -> ProxyInfo: ... async def release(self, proxy_id: str) -> None: ... async def check_reputation(self, ip: str) -> ReputationResult: ... async def health_check(self, proxy_id: str) -> HealthResult: ...
+```
+ 首版实现一个具体供应商（如 IPFLY / Bright Data / ProxyScrape 任选其一），第二版接入第二家做容灾。#
+
+### 6.3 机场 Clash 自动代理池
+
+“机场”能力作为 `ProxyProvider` 的一种实现：`proxy_provider="airport_clash"`。系统保存机场 Clash 订阅地址（加密字段），定时拉取并解析 Clash YAML，把可用节点标准化为代理节点，再按授权槽位随机分配并固定绑定。
+
+核心约束：
+
+1. `clash_subscription_url` 必须加密存储，日志、审计摘要和前端列表只展示脱敏名称，不输出完整 URL。
+2. 同一订阅下解析出的节点必须落入 `proxy_airport_nodes`，记录 `node_id`、节点名称、协议、host、port、country、region、asn、isp、健康状态和最近测速结果。
+3. 账号授权槽位首次启用搜索入群时，从可用节点中随机选取一个符合 region / ISP / 健康阈值的节点，写入 `tg_account_proxy_bindings`；绑定后长期固定，不随每次 action 轮换。
+4. 同一账号的 `primary / standby_1 / standby_2` 必须分配不同节点；同一节点绑定授权槽位数不得超过配置阈值，首版建议 `max_authorizations_per_node=1`。
+5. Clash 节点的 `proxy_host` 只是入口，不等于真实出口 IP；每次健康检查必须通过外部探测记录 `observed_exit_ip`、出口国家、ASN、ISP 和稳定性。
+6. 节点健康分低于阈值、订阅失效、节点消失、真实出口 IP 漂移过大或 IP 类型不符时，必须显式暂停对应授权槽位的搜索入群动作并告警，不做静默 fallback。
+7. 换节点只允许由运营手动触发或由明确的 `proxy_reputation_below_threshold` / `exit_ip_changed` 风控事件触发，必须写审计并让该授权槽位重新进入 warmup。
+
+机场订阅与节点模型：
+
+```python
+class ProxyAirportSubscription(Base):
+    __tablename__ = "proxy_airport_subscriptions"
+    id: int
+    name: str
+    clash_subscription_url_encrypted: str
+    provider_label: str | None
+    fetch_interval_minutes: int = 60
+    last_fetched_at: datetime | None
+    last_fetch_status: Literal["success", "failed", "disabled"]
+    last_fetch_error: str | None
+    is_active: bool = True
+
+class ProxyAirportNode(Base):
+    __tablename__ = "proxy_airport_nodes"
+    id: int
+    subscription_id: int
+    node_id: str
+    node_name: str
+    protocol: str
+    proxy_host: str
+    proxy_port: int
+    proxy_username: str | None
+    proxy_password_encrypted: str | None
+    country: str | None
+    region: str | None
+    city: str | None
+    isp: str | None
+    asn: str | None
+    latency_ms: int | None
+    observed_exit_ip: str | None
+    observed_exit_country: str | None
+    observed_exit_asn: str | None
+    observed_exit_isp: str | None
+    exit_ip_stability_score: float
+    health_score: float
+    is_active: bool
+    last_health_check_at: datetime | None
+```
+
+### 6.4 数据库模型
+```python
+ class TgAccountProxyBinding(Base): __tablename__ = "tg_account_proxy_bindings" id: int account_id: int authorization_id: int session_role: str # primary / standby_1 / standby_2 proxy_id: str # 供应商侧代理 ID 或 proxy_airport_nodes.node_id proxy_provider: str # "ipfly" / "bright_data" / "custom" / "airport_clash" proxy_type: str # residential_static / residential_rotating / mobile_4g proxy_host: str # IP 或域名 proxy_port: int proxy_username: str
+
+None # SOCKS5 鉴权 proxy_password: str|None # 加密存储 proxy_country: str # "US" / "DE" / "SG" / "JP" ... proxy_region: str|None proxy_city: str|None proxy_isp: str|None proxy_asn: str|None bound_at: datetime # 绑定时间 last_used_at: datetime|None last_health_check_at: datetime|None ip_reputation_score: float # IP 健康分 0-100 reputation_check_json: dict # 最近一次信誉检查的详细数据 is_active: bool notes: str|
+|
+ None created_at: datetime updated_at: datetime
+```
+ 约束：- `(account_id, authorization_id)` UNIQUE（一授权槽位一代理） - `(account_id, session_role)` UNIQUE - 同一账号不同槽位不得复用 `(proxy_host, proxy_port)` - `ip_reputation_score < 60` 时自动 `is_active=False` - `last_health_check_at` 距今 > 24h 时定时任务重测 #
+
+### 6.5 账号-IP 绑定策略 **绑定而非轮换**是本任务的核心原则。真人不会每天换 IP 登录账号。- 账号注册时的 IP = 养号 IP = 任务 IP，三者保持一致 - 主/备用授权槽位各自固定一个不同代理节点 - `airport_clash` 必须以 `observed_exit_ip` 作为风控事实源，不以节点入口 host 作为出口事实 - 同一出口 IP 至少稳定 30 天后才允许跑入群任务 - 同一 `/24` 子网最多绑 3 个账号 - 同一 ASN 最多绑 5 个账号
+```python
+ class ProxyPolicy(BaseModel): required: bool = True allowed_proxy_types: list[Literal["residential_static", "mobile_4g"]] = ["residential_static"] country_match_account_region: bool = True # 强制 IP 国家与设备语言区域一致 min_ip_reputation_score: float = 70.0 min_binding_age_days: int = 30 max_accounts_per_asn: int = 5 max_accounts_per_ip_cidr_24: int = 3 max_daily_requests_per_ip: int = 50 max_weekly_requests_per_ip: int = 200
+```
+ #
+
+### 6.6 IP 健康度监控 每天 02:00 北京时间定时任务跑 IP 信誉检测：
+```python
+ async def daily_ip_health_check(): bindings = get_all_active_bindings() for binding in bindings: result = await check_ip_reputation(binding.proxy_host, binding.proxy_country) binding.ip_reputation_score = result.score binding.reputation_check_json = result.to_dict() binding.last_health_check_at = utcnow() if result.score < 60: binding.is_active = False await pause_account_tasks( binding.account_id, reason=f"proxy_dead: ip_reputation_score={result.score}" ) await emit_alert( level="warning", kind="proxy_dead", binding_id=binding.id, account_id=binding.account_id, reason=result.reason, )
+```
+ 信誉检查维度：- 真实出口 IP 探测（HTTP / SOCKS 出口、国家、ASN、ISP） - IPQS（ipqualityscore.com）信誉分 - Spamhaus DNSBL 状态 - IP2Location 类型校验（必须 residential / mobile） - 出口 IP 稳定性（24h 内变更次数、国家 / ASN 漂移） - 自有观察数据（被目标机器人/SOSO 拒绝次数、被 TG 触发 FloodWait 次数）
+
+## 7. 客户端元数据画像设计
+
+### 7.1 设备指纹结构
+
+Telethon 客户端在 `initConnection` 协议中暴露的字段：
+
+| 字段 | Telethon 默认值 | 风险 |
+| --- | --- | --- |
+| `device_model` | `"Desktop"` | 全网 Telethon 默认值，风险最高 |
+| `system_version` | `"Windows 10"` | 全网默认，不像移动端账号 |
+| `app_version` | `"4.16.8"` | 全网默认，同质化明显 |
+| `lang_code` | `"en"` | 默认英文，不符合中文运营账号画像 |
+| `client_id` | Telethon 随机 | 不同 session 可能不稳定 |
+| `session_id` | Telethon session 内部值 | 需要和账号授权资产一致追踪 |
+
+所有 Telethon 默认实例共享同一套客户端元数据，容易形成“脚本客户端”标签。本任务必须按授权槽位镜像绑定移动端风格的 MTProto 客户端元数据。主授权和备用授权都必须有完整元数据字段；默认优先使用 iOS 风格元数据，Android 只作为少量多样性补充。
+
+重要边界：这些字段只影响 `initConnection` 里上报的客户端元数据，不等价于真实 iPhone / Android 设备，不证明系统拥有原生移动端 UI、推送 token 或触摸行为。风控判断必须同时结合 API ID、session 来源、代理出口、请求节奏和失败事实。
+
+### 7.2 客户端元数据规则集（不预设固定池） 客户端元数据**没有独立表**——运行时按规则集随机生成，写入 `AccountEnvironmentBinding` 表（见 §7.4.1）。规则集字段如下，存放在配置或代码常量中（推荐代码常量，方便 review）：
+```python
+ # backend/app/services/device_fingerprint/rules.py # 平台分布权重（硬约束：iOS 80% / Android 20%） PLATFORM_WEIGHTS = { "ios": 0.80, "android": 0.20, } # iOS 型号池（按市场真实份额加权） IOS_MODEL_POOL = [ {"device_model": "iPhone 15 Pro Max", "weight": 0.18}, {"device_model": "iPhone 15 Pro", "weight": 0.22}, {"device_model": "iPhone 15 Plus", "weight": 0.08}, {"device_model": "iPhone 15", "weight": 0.12}, {"device_model": "iPhone 14 Pro Max", "weight": 0.10}, {"device_model": "iPhone 14 Pro", "weight": 0.10}, {"device_model": "iPhone 14", "weight": 0.06}, {"device_model": "iPhone 13 Pro", "weight": 0.06}, {"device_model": "iPhone 13", "weight": 0.05}, {"device_model": "iPhone SE 3rd gen", "weight": 0.03}, ] # Android 型号池 ANDROID_MODEL_POOL = [ {"device_model": "Samsung SM-S908B", "weight": 0.18}, {"device_model": "Samsung SM-S921B", "weight": 0.10}, {"device_model": "Samsung SM-A546B", "weight": 0.08}, {"device_model": "Pixel 8 Pro", "weight": 0.12}, {"device_model": "Pixel 8", "weight": 0.10}, {"device_model": "Pixel 7 Pro", "weight": 0.06}, {"device_model": "Xiaomi 14", "weight": 0.10}, {"device_model": "Xiaomi 13", "weight": 0.06}, {"device_model": "Redmi Note 12", "weight": 0.04}, {"device_model": "OnePlus 11", "weight": 0.06}, {"device_model": "OnePlus 10 Pro", "weight": 0.04}, {"device_model": "Huawei P50 Pro", "weight": 0.03}, {"device_model": "Huawei Mate 50 Pro", "weight": 0.03}, ] # 系统版本池（按型号分组，取自真实发布历史） IOS_VERSION_POOL = { "iPhone 15 Pro Max": ["iOS 17.5.1", "iOS 17.4", "iOS 17.3"], "iPhone 15 Pro": ["iOS 17.5.1", "iOS 17.4", "iOS 17.3"], "iPhone 14 Pro": ["iOS 17.5.1", "iOS 17.4", "iOS 16.6.1"], "iPhone 13": ["iOS 16.6.1", "iOS 16.5", "iOS 15.7"], # ... } ANDROID_VERSION_POOL = { "Samsung SM-S908B": ["Android 14", "Android 13"], "Pixel 8 Pro": ["Android 14", "Android 14 QPR3"], "Xiaomi 14": ["Android 14", "HyperOS 1.0"], # ... } # TG app_version（从 TG 官方 GitHub release tag 取真实版本，按平台分组） TG_APP_VERSION_POOL = { "ios": ["10.6.2", "10.6.1", "10.5.2"], "android": ["10.6.2", "10.6.1", "10.5.2"], } # 区域 → lang_code 映射 REGION_LANG_MAP = { "CN": ("zh-hans", "zh-hans", "android" if platform=="android" else "ios"), "HK": ("zh-hant", "zh-hant", "ios"), "TW": ("zh-hant", "zh-hant", "ios"), "US": ("en", "en", "ios"), "JP": ("ja", "ja", "ios"), "KR": ("ko", "ko", "ios"), "DE": ("de", "de", "ios"), # ... } # 完整指纹必填字段 REQUIRED_FINGERPRINT_FIELDS = ["platform", "device_model", "system_version", "app_version", "lang_code", "system_lang_code", "lang_pack", "region_code", "client_identity_key"] # 同组合上限 COMBO_LIMIT_PER_AUTHORIZATION = 1 # 同账号内主/备授权不得复用同一组合 COMBO_LIMIT_PER_ACCOUNT = 3 # 同 (model + version + app_version) 组合最多 3 个账号 DEVICE_MODEL_LIMIT = 10 # 同一 device_model 不限版本最多 10 个账号 APP_VERSION_LIMIT = 30 # 同一 app_version 最多 30 个账号
+```
+ 运行时生成算法见 §7.3.2，绑定规则见 §7.4.2。#
+
+### 7.3 客户端元数据池要求 **核心原则：客户端元数据是授权槽位身份的一部分，主授权和备用授权都需要独立镜像绑定。** 元数据池是"运行时随机生成"，**不预定义固定池**。授权槽位首次创建任务时，从规则集按权重随机抽取一个移动端型号风格 + 系统版本 + TG app_version 组合，**永久绑定到该授权槽位**。##
+
+#### 7.3.1 平台分布（硬约束）
+
+|平台|占比|备注|
+|---|---|---|
+|**iOS**|**80%**（主力）|多数目标用户使用 iPhone 客户端，iOS 客户端 bot 检测相对 Android 更严格但更难被脚本伪造|
+|Android|20%|保留部分多样性|
+|TDesktop|0%|**本任务不适用**|
+|
+ 未来如需调整比例，必须通过 `device_fingerprint_rule_set` 表的 pool_priority 字段调权重，不直接改代码。##
+
+#### 7.3.2 型号池（运行时随机，不预设固定组合） **型号池是元数据，运行时按权重随机抽取组合**：- **iOS 型号池**（80% 权重）：- iPhone 15 Pro / iPhone 15 Pro Max / iPhone 15 / iPhone 15 Plus - iPhone 14 Pro / iPhone 14 Pro Max / iPhone 14 / iPhone 14 Plus - iPhone 13 Pro / iPhone 13 Pro Max / iPhone 13 / iPhone 13 mini - iPhone SE 3rd gen - 每个型号的 pool_priority 反映市场真实份额（如 iPhone 13 占比 > iPhone 15 Pro Max） - **Android 型号池**（20% 权重）：- Samsung SM-S908B / SM-S921B / SM-A546B - Pixel 8 Pro / Pixel 8 / Pixel 7 Pro - Xiaomi 14 / Xiaomi 13 / Redmi Note 12 - OnePlus 11 / OnePlus 10 Pro - Huawei P50 Pro / Mate 50 Pro - **iOS 系统版本池**：从 Apple 官方 iOS 发布历史取真实版本号（iOS 17.5.1 / 17.4 / 16.6.1 / 16.5 / 15.7 等），不编 - **Android 系统版本池**：从 AOSP / OEM 真实发布版本取（Android 14 / 13 / 12 等） - **TG app_version 池**：从 TG 官方 GitHub release tag 取真实版本（tdesktop 4.x、telegram-ios 10.x、telegram-android 10.x 等），不编 **运行时生成算法**（简化）：
+```python
+ def generate_fingerprint(region_code: str) -> DeviceFingerprint: platform = weighted_choice({"ios": 0.8, "android": 0.2}) if platform == "ios": device_model = weighted_choice(IOS_MODEL_POOL) system_version = weighted_choice(IOS_VERSION_POOL[device_model]) else: device_model = weighted_choice(ANDROID_MODEL_POOL) system_version = weighted_choice(ANDROID_VERSION_POOL[device_model]) app_version = weighted_choice(TG_APP_VERSION_POOL[platform]) lang_code, system_lang_code = pick_lang_for_region(region_code) lang_pack = "ios" if platform == "ios" else "android" return DeviceFingerprint( device_model=device_model, system_version=system_version, app_version=app_version, platform=platform, lang_code=lang_code, system_lang_code=system_lang_code, lang_pack=lang_pack, region_code=region_code, )
+```
+ ##
+
+#### 7.3.3 区域与语言一致性
+
+|region_code|平台|lang_code|system_lang_code|lang_pack|
+|---|---|---|---|---|
+|CN|iOS / Android|`zh-hans`|`zh-hans`|ios / android|
+|HK / TW|iOS / Android|`zh-hant`|`zh-hant`|ios / android|
+|US|iOS / Android|`en`|`en`|ios / android|
+|JP|iOS / Android|`ja`|`ja`|ios / android|
+|KR|iOS / Android|`ko`|`ko`|ios / android|
+|DE|iOS / Android|`de`|`de`|ios / android|
+|
+ **一致性校验**：账号 region_code → 设备 lang_code → IP country 三者必须一致；不一致时 executor 拒绝执行。##
+
+#### 7.3.4 同组合上限（避免同质化）
+
+|组合|同质化阈值|说明|
+|---|---|---|
+|同一 `device_model + system_version + app_version` 组合|≤ 3 个账号|iPhone 这种用户基数大，3-5 个仍 OK，但 8+ 明显不真实|
+|同一 `device_model`（不限版本）|≤ 10 个账号|同一型号可多个版本|
+|同一 `app_version`|≤ 30 个账号|同期 TG 版本可能 30% 用户|
+|
+ 新账号抽签时如果目标组合超限，自动换下一组；连续 5 次都超限则报"fingerprint pool exhausted, add more variants"，由运营决定是否扩池。#
+
+### 7.4 授权槽位-客户端元数据绑定（镜像绑定） **客户端元数据与授权槽位"镜像绑定"——主授权、备用授权都是独立客户端身份。** 一旦绑定，整个生命周期都不切换。##
+
+#### 7.4.1 数据模型（合并指纹字段到 binding 表）
+```python
+ class AccountEnvironmentBinding(Base): """授权槽位环境绑定（设备指纹 = 授权槽位客户端身份镜像）""" __tablename__ = "account_environment_bindings" id: int account_id: int authorization_id: int session_role: str # primary / standby_1 / standby_2 proxy_binding_id: int # ↓ 设备指纹字段直接持久化到 binding 表（不依赖外键） device_model: str # "iPhone 15 Pro" system_version: str # "iOS 17.5.1" app_version: str # "10.6.2" platform: str # "ios" / "android" lang_code: str # "zh-hans" system_lang_code: str # "zh-hans" lang_pack: str # "ios" region_code: str # "CN" / "US" / "JP" ... client_identity_key: str # account_id + authorization_id + platform + model + version hash，用于去重和审计 # 镜像冻结标记：true 后任何代码都不能更换 device_* 字段 fingerprint_locked: bool = True # 区域一致性校验 region_consistency_checked: bool region_consistency_errors: list[str]
+
+None bound_at: datetime # 首次绑定时间（永久不变） last_used_at: datetime|None health_score: float notes: str|
+|
+ None
+```
+ ##
+
+#### 7.4.2 镜像绑定规则 1. **首次绑定时机**：账号授权槽位首次创建任务时（手动触发或导入触发），按 §7.3 运行时算法生成一个指纹组合，写入 binding 表。`fingerprint_locked=true`。2. **主/备独立**：同一账号的 `primary / standby_1 / standby_2` 都必须绑定不同 `client_identity_key`、不同 `device_model + system_version + app_version` 组合和不同 `proxy_binding_id`；不能为了省资源让备用 session 复用主账号指纹。3. **完整指纹字段必填**：`platform/device_model/system_version/app_version/lang_code/system_lang_code/lang_pack/region_code/client_identity_key` 全部必填，缺任一字段即 `fingerprint_invalid`。4. **永久不变**：绑定的 device_* 字段在授权槽位生命周期内不切换：- 跨任务（该授权槽位同时跑 search_join_group 和其他任务）→ **同一指纹** - 换 IP（IP 健康分 < 60 换新 IP）→ **同一指纹**，IP 重新绑定即可 - 跨租户（理论上不应该，但万一）→ **同一指纹** - **会话重连 / session 恢复** → **同一指纹**（Telethon session 文件不含 device_fingerprint，但 initConnection 时每次都重新发送） 5. **解绑需要运营手动操作**：必须通过风控中心的 `unbind_environment` 接口，且写入审计日志。**调度层和 Executor 都不允许自动解绑**。6. **同组合查重**：调度层在绑定前查 `account_environment_bindings` 表，按 (device_model + system_version + app_version) 组合查询现有账号数，超过 §7.3.4 阈值则换组合。##
+
+#### 7.4.3 调度层和 Executor 双重硬校验
+```python
+ def assert_environment_ready(account_id: int, authorization_id: int) -> AccountEnvironmentBinding: binding = get_binding_by_authorization(account_id, authorization_id) if not binding: raise NoEnvironmentBindingError(account_id, authorization_id) if not binding.region_consistency_checked: raise EnvironmentInconsistencyError(account_id, authorization_id) if binding.health_score < 60: raise EnvironmentUnhealthyError(account_id, authorization_id, binding.health_score) if binding.fingerprint_locked is False: raise FingerprintNotLockedError(account_id, authorization_id) # 异常：未锁定的指纹应不存在 if missing_required_fingerprint_fields(binding): raise FingerprintIncompleteError(account_id, authorization_id) return binding
+```
+ ##
+
+#### 7.4.4 镜像绑定的语义价值 - **画像连续性**：TG 服务端 / 目标机器人 / SOSO 看到的是"同一个授权槽位 + 同一组客户端元数据 + 同一个代理节点 + 同一个账号"长期一致的画像，不会突然从 iPhone 13 Pro 跳到 Xiaomi Mi 11。- **主备切换可解释**：切换到备用授权时，系统看到的是同账号的另一个稳定客户端元数据组合，而不是同一组合被多个 session 复用。- **行为可追溯**：审计日志能完整看到"该授权槽位从创建到现在的全部客户端元数据/IP/任务历史"。- **横向防御**：即使目标机器人拿到一份账号列表，客户端元数据维度也是稳定的画像信号，不会因任务变化而被标记。
+
+### 7.5 账号授权槽位执行互斥
+
+主 / 备用授权槽位只用于可用性和故障切换，不用于扩大同一账号并发。Planner 和 Dispatcher 必须持有账号级执行互斥锁：
+
+1. 同一 `account_id` 任意时刻最多只有 1 个 `search_join` action 处于 `claiming/executing`。
+2. 备用授权只有在主授权不可用、健康分低于阈值、人工切换或故障切换事件存在时才可执行。
+3. 同账号从 primary 切到 standby 后，必须沿用该 standby 的代理节点和客户端元数据，并记录 `authorization_switch_reason`。
+4. 同账号不同授权槽位不得并行跑同一关键词或不同关键词；并发扩量只能通过不同账号实现。
+
+违反互斥锁时，Planner 不创建 action；Dispatcher 领取时再次校验，失败写 `skip_reason=account_authorization_lock_conflict`。
+
+## 8. 运营真实性设计
+
+### 8.1 配置 Schema
+```jsonc
+ { "anti_detection": { "warmup_days": 3, "warmup_daily_actions": 3, "behavior_realism": { "decision_delay_seconds": [3, 8], "browse_other_results_before_join": [1, 2], "browse_other_results_after_join": [0, 1], "pre_join_decoy_click_probability": 0.35, "pre_join_decoy_click_count": [1, 2], "pre_join_decoy_dwell_seconds": [10, 30], "decoy_join_enabled": false, "post_join_policy": "stay_joined", "post_join_retention_days": [3, 14], "in_group_dwell_seconds": [30, 180], "exit_dwell_seconds": [5, 15], "occasional_message_probability": 0.0, "decoy_keyword_ratio": 0.5 }, "rhythm": { "action_interval_seconds": [300, 1800], "interval_distribution": "normal", "interval_std_dev_ratio": 0.4, "active_hours": ["08:00-23:00"], "skip_probability_per_action": 0.10, "task_start_jitter_seconds": [0, 1800] }, "paging": { "max_pages": 5, "scroll_back_probability": 0.3, "scroll_back_max_times": 2, "non_target_browse_probability": 0.2 }, "anti_clustering": { "max_accounts_per_ip_cidr_24": 3, "max_accounts_per_asn": 5, "max_daily_actions_per_account": 5, "max_daily_searches_per_keyword_per_account": 2, "max_concurrent_accounts_per_keyword": 10 } } }
+```
+ #
+
+### 8.2 Warmup 阶段
+
+**Warmup 维度：`(account_id, authorization_id, proxy_binding_id)` 三元组，不是 `account_id` 一元组。** 每个 (账号, 授权槽位, 代理) 对独立计算 warmup 进度。账号授权槽位换 IP / 节点时，新 (账号, 授权槽位, 新 IP) 对从 warmup 第 1 天重新开始。
+
+新建任务或新 (账号, IP) 对上线后，前 N 天只允许低强度行为：
+
+| 阶段 | 时长（自该账号-授权槽位-IP 对首次 action 起算） | 每天 action 数上限 | 关键词类型 |
+| --- | --- | --- | --- |
+| `warmup` | 1-3 天 | 3 | 全 decoy |
+| `low` | 4-14 天 | 5 | decoy 推荐占比 50%，硬阈值仍为 30% |
+| `steady` | 15 天后 | 按任务和风控策略 | decoy 硬阈值 30%，推荐 50% |
+ 数据模型：
+```python
+ class AccountProxyWarmupState(Base): """(账号, 授权槽位, 代理) 三元组 warmup 进度""" __tablename__ = "account_proxy_warmup_states" id: int account_id: int authorization_id: int session_role: str proxy_binding_id: int stage: Literal["warmup", "low", "steady"] stage_started_at: datetime first_action_at: datetime
+
+None # 该 (账号, IP) 对首次 action 时间 daily_actions_count: int # 当日已执行 action 数 daily_actions_reset_at: datetime # 每日 00:00 重置 total_actions: int # 累计 action 数 reset_at: datetime|None # 重新 warmup 时记录（换 IP 时写入） reset_reason: str|
+|
+ None UNIQUE (account_id, authorization_id, proxy_binding_id)
+```
+ 推进规则：- 每日 00:00 重置 `daily_actions_count` - 阶段切换：`total_actions` 达到该阶段上限天数后，scheduler 在下一次 planner tick 自动切换 stage - 换 IP / 节点：`reset_at` 写入换 IP / 节点时间，`stage` 重置为 `warmup`，`first_action_at` 重新计算 运营可见：任务详情 / 风控中心 / 账号列表均显示当前 (账号, 授权槽位, IP) 的 warmup 阶段和进度条。#
+
+### 8.3 Action 执行链路（行为真实化） 每个 action 必须按以下链路执行，不允许跳过任何步骤：
+```
+ 1. 准备阶段 ├─ 选择本授权槽位对应的搜索机器人、关键词 ├─ 通过 env.stack 拿到 proxy + client_metadata ├─ 创建 Telethon client，传入 device_model / system_version / app_version / lang_code / proxy ├─ 随机等待 jitter（避免多账号同步） └─ 检查账号级授权槽位互斥锁和 warmup 状态 2. 搜索阶段 ├─ 发送搜索关键词到目标机器人 ├─ 等待机器人回复（含 inline button 的搜索结果） └─ 异常处理：FloodWait → 自动重试；超时 → 失败重试 3. 浏览阶段（关键：决策延迟 + 浏览其他结果） ├─ 决策延迟 3-8 秒（normal distribution） ├─ 按 pre_join_decoy_click_probability 概率先打开 1-2 个非目标群 / 频道结果，停留 10-30 秒后返回 ├─ 默认只浏览非目标结果，不加入非目标群 / 频道；`decoy_join_enabled=false` 为硬默认值 └─ 记录 MTProto callback / URL 打开事实，不宣称真实 UI 渲染 4. 匹配阶段 ├─ 解析搜索结果的 inline button / link 列表 ├─ 按 username / peer_id / 群名模糊匹配目标群 └─ 未匹配 → 记录 "target_not_in_results" → skip 5. 加入阶段 ├─ 通过 MTProto 会话执行可审计的 callback / URL join 动作 ├─ 决策停留 1-3 秒（"决策时间"） └─ 加入成功 → 进入目标群；失败 → retry + 记录 6. 停留阶段 ├─ 在目标群真实停留 30-180 秒（normal distribution） ├─ 仅执行低风险 read / history / read_ack 行为 ├─ 首版默认不发言，`occasional_message_probability=0` └─ 需要发言时必须另走内容策略和素材审核 7. 加入后策略 ├─ 默认 `post_join_policy=stay_joined`，不立即退出 ├─ 如配置 `delayed_leave`，必须达到 `post_join_retention_days` 后由独立清理任务退出 ├─ 如配置 `leave_after_dwell`，必须单独风控审批并写审计原因 └─ 返回搜索结果页或关闭会话 8. 记录阶段 ├─ 写 action.result: success / failed / skipped ├─ 记录: 目标群在结果中的 position、total_results、dwell_seconds、pre_join_decoy_clicks、post_join_policy ├─ 触发 IP 健康度累计（被拒绝次数 +1） └─ 触发账号活跃度累计
+```
+ #
+
+### 8.4 Decoy 关键词机制
+
+任务创建硬约束：`decoy=true` 关键词占比必须 ≥ 30%。运营推荐值：灰度期保持 50% 左右。
+
+decoy 关键词是非目标关键词（如“天气预报”“NBA 比分”“美食推荐”），用于：
+
+- 稀释目标关键词搜索频率，避免大量账号只搜索同一目标词。
+- 让账号搜索历史看起来更接近真人。
+- 当 decoy 关键词出现搜索结果时，也按真人行为浏览，但不计入目标群加入统计。
+
+decoy 关键词必须人工或 AI 生成，不能简单从目标关键词同批衍生。
+
+### 8.5 入群转化率 控制
+
+|指标|阈值|控制方式|
+|---|---|---|
+|单账号加入/曝光比|30-60%|`non_target_browse_probability = 0.2` + 入群前非目标浏览后不加入|
+|单关键词单账号每天搜索次数|≤ 2 次|scheduler 硬限|
+|单 IP 每天目标机器人请求次数|≤ 50|IP 健康度检查|
+|跨账号同关键词同时段并发|≤ 10 个账号|task_start_jitter + scheduler|
+|同账号授权槽位并发|= 1|账号级执行互斥锁；主/备槽位不得并行跑同一账号|
+|入群后立即退出比例|= 0（默认）|默认 `post_join_policy=stay_joined`；延迟退出必须由独立清理任务执行|
+
+入群转化率 > 80% 或 < 10% 时标记为运营异常，不作为单次 action 的失败条件；连续异常才触发任务级 warning。入群后 24h 内退出比例、7 天留存状态和目标机器人拒绝率必须同时观察，避免只用“加入成功”误判真实效果。#
+
+### 8.6 失败注入 scheduler 创建 action 时，10% 概率自动 skip（不实际执行，但记录为 "skipped_by_intentional_skip"），让账号的"行动率"看起来像真人有放弃的时候。#
+
+### 8.7 翻页真实化 不允许线性翻页 `1→2→3→4`。必须支持回退：
+```python
+ def generate_paging_sequence(max_pages: int, scroll_back_prob: float, max_back_times: int) -> list[int]: """生成翻页序列，带回退""" pages = [1] current = 1 back_count = 0 while current < max_pages and random.random() < 0.7: if back_count < max_back_times and random.random() < scroll_back_prob and current > 1: current -= 1 back_count += 1 else: current += 1 pages.append(current) return pages
+```
+
+
+## 9. 任务配置 Schema
+
+### 9.1 完整 Payload
+```jsonc
+ { "task_type": "search_join_group", "execution_mode": "mtproto_userbot", "name": "迪拜房产群搜索入群", "search_bots": ["jisou"], "keywords": [ {"text": "迪拜房产", "business_region": "AE", "account_locale": "zh-CN", "proxy_country": "SG", "lang": "zh", "weight": 1.0, "decoy": false}, {"text": "迪拜租房", "business_region": "AE", "account_locale": "zh-CN", "proxy_country": "AE", "lang": "zh", "weight": 0.8, "decoy": false}, {"text": "天气预报", "business_region": "CN", "account_locale": "zh-CN", "proxy_country": "SG", "lang": "zh", "weight": 1.0, "decoy": true} ], "target_groups": [ { "peer_id": 1234567890, "username": "yourgroup", "title": "迪拜华人房产交流", "match_strategy": "username_or_peer_id" } ], "anti_detection": { /* 见 §8.1 */ }, "proxy_policy": { /* 见 §6.5 */ }, "account_config": { "selection_mode": "manual", "account_ids": [101, 102, 103, 104, 105], "authorization_roles": ["primary", "standby_1"], "same_account_concurrency": 1, "authorization_switch_policy": "primary_first_failover_only", "max_concurrent": 5, "cooldown_per_account_minutes": 30, "ban_policy": "pause_task" }, "pacing_config": { "mode": "curve", "curve_type": "steady", "max_actions_per_day": 100, "active_hours": [{"start": "08:00", "end": "23:00"}], "jitter_percent": 40 }, "failure_policy": { "max_retries": 2, "retry_delay_seconds": 300, "on_account_banned": "pause_task", "on_api_rate_limit": "wait_and_retry", "on_target_not_found": "skip" } }
+```
+ ##
+
+#### 9.1.1 关键词字段语义（executor 实际使用）
+
+|字段|类型|executor 中的用途|
+|---|---|---|
+|`text`|string|发送给搜索机器人的关键词原文|
+|`business_region`|ISO 3166-1 alpha-2|关键词业务区域，用于运营统计和允许矩阵，不要求等于账号或代理出口国家|
+|`account_locale`|BCP 47|账号语言画像，例如 `zh-CN`、`en-US`；用于选择客户端元数据和账号池|
+|`proxy_country`|ISO 3166-1 alpha-2|期望代理出口国家；执行前以 `observed_exit_country` 校验，不用 Clash 节点 host 推断|
+|`lang`|ISO 639-1|发送关键词和客户端语言的推荐值；与 `client_metadata.lang_code` 不一致时进入 warning / manual review，不默认硬跳过|
+|`weight`|float (0-10)|**用于 action 配额分配**：planner 按 `Σweight` 计算每个关键词的 action 占比。如目标关键词 weight 总和 10、decoy 关键词 weight 总和 5，则 decoy 占 1/3 触发概率|
+|`decoy`|boolean|true = 非目标关键词，只用于行为掩护，不计入目标群加入统计；false = 目标关键词|
+|
+ ##
+
+关键词合法性由“业务区域、账号语言、代理出口国家”允许矩阵决定。禁止继续使用 `keyword.region == account.region_code == ip.country` 这类硬等式；例如中文账号 + 新加坡出口 + 阿联酋业务关键词是允许组合，但必须在配置矩阵中显式声明。
+
+#### 9.1.2 target_groups 复用 OperationTarget `target_groups[].peer_id` 必须从 `OperationTarget` 表读取（现有 `backend/app/models/operation_target.py`），**不允许直接填 peer_id**。任务创建向导从运营目标列表中选已有目标，或粘贴 username 自动反查 peer_id 后落入 OperationTarget 再引用。#
+
+### 9.2 Pydantic Schema
+```python
+ class SearchBotTarget(BaseModel): username: Literal["jisou", "jisou2bot", "soso", "smss", "CJSY"] weight: float = 1.0 class SearchJoinKeyword(BaseModel): text: str = Field(min_length=1, max_length=64) business_region: str | None = None account_locale: str = "zh-CN" proxy_country: str | None = None lang: str = "zh" weight: float = Field(default=1.0, ge=0, le=10) decoy: bool = False class SearchJoinTargetGroup(BaseModel): peer_id: int|None = None username: str|None = None title: str|None = None match_strategy: Literal["username_only", "peer_id_only", "username_or_peer_id", "title_fuzzy"] = "username_or_peer_id" class AntiDetectionConfig(BaseModel): warmup_days: int = Field(default=3, ge=0, le=30) warmup_daily_actions: int = Field(default=3, ge=1, le=20) behavior_realism: BehaviorRealismConfig rhythm: RhythmConfig paging: PagingConfig anti_clustering: AntiClusteringConfig class ProxyPolicyConfig(BaseModel): required: bool = True allowed_proxy_types: list[Literal["residential_static", "mobile_4g", "airport_clash"]] = ["residential_static", "airport_clash"] min_ip_reputation_score: float = Field(default=70, ge=0, le=100) min_exit_ip_stability_score: float = Field(default=80, ge=0, le=100) min_binding_age_days: int = Field(default=30, ge=0, le=180) max_accounts_per_asn: int = Field(default=5, ge=1, le=50) max_accounts_per_ip_cidr_24: int = Field(default=3, ge=1, le=20) max_daily_requests_per_ip: int = Field(default=50, ge=1, le=500) max_weekly_requests_per_ip: int = Field(default=200, ge=1, le=2000) class SearchJoinGroupConfig(BaseModel): execution_mode: Literal["mtproto_userbot"] = "mtproto_userbot" search_bots: list[SearchBotTarget] = Field(min_length=1) keywords: list[SearchJoinKeyword] = Field(min_length=1, max_length=500) target_groups: list[SearchJoinTargetGroup] = Field(min_length=1, max_length=50) anti_detection: AntiDetectionConfig proxy_policy: ProxyPolicyConfig same_account_concurrency: Literal[1] = 1
+```
+ #
+
+### 9.3 配置校验规则 - `execution_mode` 首版只能是 `mtproto_userbot`，前端必须说明这不是手机 UI 自动化 - 真实机器人协议样本未采集完成时，只允许保存草稿和运行 parser fixture，不允许启动真实灰度 - `decoy=true` 的关键词占比 ≥ 30%（硬约束，否则任务不创建） - `target_groups[].peer_id` 或 `username` 至少填一个 - 关键词的 `business_region / account_locale / proxy_country` 必须落入允许矩阵 - `proxy_policy.required=true` 时，账号池中所有被选授权槽位必须已绑代理节点并完成 `observed_exit_ip` 健康检查 - 主/备用授权槽位必须各自拥有完整客户端元数据，且同账号内不得复用元数据组合或代理节点 - 同一 `account_id` 在 `search_join` 执行中只允许 1 个 action 处于 claiming / executing - `anti_detection.behavior_realism.decision_delay_seconds[0] >= 2`（不允许秒点） - `paging.max_pages >= 3` - `decoy_join_enabled=true` 不作为首版默认能力，若开启必须单独走风控审批和审计 - 默认 `post_join_policy=stay_joined`，任何立即退出策略都必须单独审批并写审计 #
+
+## 10. 目标机器人 / SOSO 协议交互契约 本节定义 executor 与第三方索引机器人（@searchbot、@soso、@smss、@CJSY）交互的协议契约。**dev 必须先按 §4.8 采集真实样本，再按本节实现 parser 和 executor**；样本缺失时只能跑 fixture / precheck，不允许启动真实灰度。#
+
+### 10.1 通用交互流程
+```
+ [账号] 发送搜索词 ──> [机器人] [机器人] 返回搜索结果消息（带 inline button 或 link） [账号] 加入目标群对应的 button / link [机器人] → TG 客户端导航到目标群 [账号] 在目标群停留 N 秒后退出
+```
+ #
+
+### 10.2 @searchbot 目标机器人（首版目标）
+
+已知行为（基于业内调研 + 外网资料）：
+
+| 阶段 | 行为 |
+| --- | --- |
+| 触发 | 账号首次需向 @searchbot 发送 `/start`，否则机器人不响应后续请求 |
+| 搜索 | 发送纯文本关键词，不加 @，不加前缀 |
+| 回复 | 机器人返回一条或多条带 inline keyboard buttons 的消息，每个 button 对应一个群 / 频道结果 |
+| 翻页 | 单次返回 5-10 条结果；更多结果需点击底部“下一页” button |
+| 打开 | 对群对应 button / URL 执行 MTProto callback 或 URL resolve，记录协议事实 |
+| 入群后策略 | 默认留在目标群；如审批为延迟退出，只能由独立清理任务在留存期后执行 |
+ **协议细节**：- **消息格式**：目标机器人结果消息通常为 `InlineKeyboardMarkup`，包含：- 主结果区：每行 1 个 button，button.text 为群名/标题，button.data 或 button.url 携带定位信息 - 底部导航：单独一行 button，如 `« 上一页` `第 1/3 页` `下一页 »` - **button 类型**：- `callback_data`：点击后触发 `GetBotCallbackAnswerRequest`，机器人返回 `BotCallbackAnswer`（含 message 或 url） - `url`：点击后客户端 navigate 到 url 指向的 chat - **目标群匹配**：- 优先按 `button.url`（如 `https://t.me/yourgroup`）匹配 target_groups.username - 次选按 callback_data 携带的 chat_id - 兜底按 button.text 模糊匹配 title #
+
+### 10.3 @soso、@smss、@CJSY（第二版扩展）
+
+|机器人|已知差异|
+|---|---|
+|@soso|类似目标机器人，inline button 模式|
+|@smss|同样 inline button，但可能带"广告位"前置内容|
+|@CJSY / @So1234Bot|经典老牌，部分结果可能用纯文本 + URL 而非 button|
+|
+ **第二版适配**：每个搜索机器人需独立写 `parse_search_results(response, bot_username)` 解析器，前 3 个模式相似可复用，第 4 个需要单独的 plain text parser。#
+
+### 10.4 executor 入口协议
+```python
+ async def search_via_bot( client: TelegramClient, bot_username: str, keyword_text: str, max_pages: int = 5, ) -> SearchResultPage: """统一的搜索入口，按 bot_username 分发到不同解析器""" async with client.conversation(bot_username, timeout=60) as conv: # 1. 触发搜索 await conv.send_message(keyword_text) response = await conv.get_response() # 2. 按机器人分发解析 parser = SEARCH_BOT_PARSERS.get(bot_username) return await parser.parse(response, max_pages=max_pages) @dataclass class SearchResultPage: message_id: int bot_peer: Peer buttons: list[SearchResultButton] # 当前页所有 button has_next: bool current_page: int total_pages_estimated: int
+
+None raw_response: Message # 原始消息，供 fallback @dataclass class SearchResultButton: text: str # button 文字（群名/标题） button_type: Literal["callback_data", "url"] callback_data: bytes|None # callback 类型时 url: str|None # url 类型时 target_chat_id: int|None # 解析出的 chat_id target_username: str|
+|
+ None # 解析出的 username position: int # 在当前页的位置（1-based） is_target: bool = False # 是否匹配目标群
+```
+ #
+
+### 10.5 翻页协议
+```python
+ async def navigate_to_page( client: TelegramClient, current: SearchResultPage, target_page: int, ) -> SearchResultPage: """翻页：支持前进和回退""" delta = target_page - current.current_page if delta == 0: return current # delta > 0 点"下一页"；delta < 0 点"上一页" button_text = "下一页 »" if delta > 0 else "« 上一页" page_nav_button = find_page_nav_button(current, button_text) if page_nav_button is None: raise NoNavigationButtonError(current.current_page, target_page) await client(GetBotCallbackAnswerRequest( peer=current.bot_peer, msg_id=current.message_id, data=page_nav_button.callback_data, )) # 等下一条消息（机器人回复新页结果） new_msg = await client.get_messages(current.bot_peer, ids=[current.message_id + 1]) return parse_search_results(new_msg, max_pages=...)
+```
+ #
+
+### 10.6 已知异常模式
+
+|异常|触发场景|处置|
+|---|---|---|
+|`BotBlockedError`|账号被机器人拉黑（目标机器人主动 block）|账号下线，标记 `bot_blocked`，换账号继续|
+|`TimeoutError` (conv.get_response 超时)|机器人维护 / 网络问题|retry 3 次，指数退避|
+|空消息回复|关键词无结果|action 标 `skipped`，`skip_reason=keyword_no_results`|
+|单 inline keyboard 但无目标群 button|关键词相关但目标群不在结果中|action 标 `skipped`，`skip_reason=target_not_in_results`|
+|验证码 / 人机验证消息|目标机器人偶尔对异常账号弹验证|自动识别 → 中断该 action → 标记 `bot_response_changed` → 告警|
+|FloodWaitError(seconds > 60)|目标机器人对短时间高频请求限流|累计到账号 cooldown，自动 sleep 后重试|
+|
+ #
+
+### 10.7 行为契约 executor 必须严格遵守：- ✅ **必须**走 `client.conversation()` 完整会话，不要直接 `InvokeWithLayerRequest` 等底层 API - ✅ **必须**按 §10.4 协议解析结果，不要假设消息结构 - ✅ **必须**对每个 button 操作间隔至少 1 秒，避免被识别为脚本 - ✅ **允许**在样本确认 button 是 callback 类型时使用 `GetBotCallbackAnswerRequest`，但必须带 conversation 上下文、等待响应、记录 callback/url 事实并审计 - ❌ **禁止**脱离样本和会话上下文盲发 callback - ❌ **禁止**并发向同一机器人发多个请求 - ❌ **禁止**在搜索结果中"全点"所有 button（入群转化率控制见 §8.5）
+
+## 11. 与现有系统的集成边界 本节明确 search_join_group 任务**复用 / 旁路 / 新增**现有代码模块的边界，避免 dev 在实现时遗漏集成点或重复造轮子。#
+
+### 11.1 完全复用（不改代码）
+
+|模块|复用方式|
+|---|---|
+|`backend/app/services/task_center/service.py`|任务的 CRUD、列表、详情、stats、reset、resume 等接口完全复用|
+|`backend/app/services/task_center/dispatcher.py`|Action 的 claim / execute / 回写 result / 重试 完全复用 dispatcher 现有逻辑|
+|`backend/app/services/task_center/precheck.py`|任务创建预检扩展 `search_join_precheck` 字段，其余预检复用|
+|`backend/app/services/task_center/stats.py`|任务 stats 扩展 `search_join_stats` 字段（见 §13.3），其余统计复用|
+|`backend/app/services/task_center/config_normalization.py`|`search_join_group` 加入 `task_types` 白名单，自动绑默认规则集|
+|`backend/app/api/routers/task_center.py`|`POST /api/tasks` 等通用接口完全复用|
+|`backend/app/services/operations_center_rule_sets.py`|规则集支持 `task_types=["search_join_group"]`，复用现有规则集机制|
+|`backend/app/auth.py` + `permission_middleware.py`|权限控制完全复用；新增 `tasks.create.search_join_group` 权限|
+|风控中心账号小时/日上限|复用 `risk_control.account_hourly_limit` / `account_daily_limit`|
+|风控中心账号冷却|复用 `risk_control.account_cooldown_minutes`|
+|监控中心 RuntimeSummary|复用 `RuntimeSummary` 读模型；新增 search_join 维度的统计|
+|审计日志|复用 `audit.py` 的写审计机制|
+|前端 AppShell / 路由|复用 `frontend/src/app/routes.ts` 的 `/task-center` 路由|
+|前端 taskCenterViewModel|扩展 `TaskTypeValue` 支持 `search_join_group`，其余列表 / 详情展示复用|
+|
+ #
+
+### 11.2 旁路与有限复用（不适用主流程，但不能忽略结果验证）
+
+|模块|旁路原因|
+|---|---|
+|`backend/app/services/task_center/channel_membership.py`|本任务不涉及频道关注，旁路|
+|`backend/app/services/task_center/membership_admission.py`|不复用主任务的会员准入子任务，但必须复用挑战/验证码/审批等失败 taxonomy；新增 `SearchJoinMembershipVerifier` 负责入群结果验证、join approval / captcha / invite expired 识别和留存状态回写|
+|`backend/app/services/task_center/listener_runtime.py`|本任务不监听群聊消息，旁路|
+|`backend/app/services/task_center/hard_hourly.py`|本任务的"日级目标"不复用 AI 活群的硬小时目标|
+|`backend/app/services/task_center/ai_generator.py`|本任务的文案是用户提供的关键词，不调用 AI 生成|
+|前端 Wizard 现有 AI 活群 / 频道分支|本任务新建独立的 wizard 分支|
+|前端 GroupAIChat / ChannelComment 等专有组件|本任务不复用这些专有组件|
+|
+ #
+
+### 11.3 新增（独立模块）
+
+|模块|新增位置|说明|
+|---|---|---|
+|`SearchJoinGroupExecutor`|`backend/app/services/task_center/executors/search_join_group.py`|完整 executor 实现（见 §12）|
+|`ProxyProvider` 抽象 + 一家供应商实现|`backend/app/services/proxy_pool/`|代理供应商抽象层|
+|`ClientMetadataGenerator`|`backend/app/services/client_metadata/`|运行时随机生成 MTProto 客户端元数据|
+|`BotSearchDispatcher`|`backend/app/services/task_center/executors/search_join_group.py`|协议解析（见 §10）|
+|`SearchJoinMembershipVerifier`|`backend/app/services/task_center/search_join_membership.py`|验证入群结果、挑战类型、留存策略和失败 taxonomy|
+|数据库表（11 张）|见 §13.1|包含协议样本、机场订阅、机场节点、出口 IP 观测、代理绑定、环境绑定、warmup state、客户端元数据组合审计、授权执行锁、IP 信誉历史和 search_join_action_stats|
+|前端 Wizard 第 5 步 search_join_group 分支|`frontend/src/app/views/TaskCenterWizardSections.tsx`|运营真实性配置面板|
+|前端任务详情"搜索入群统计" Tab|`frontend/src/app/views/TaskCenterDetailModal.tsx`|排名轨迹 + 行为漏斗|
+|风控中心 search_join 维度告警|`frontend/src/app/views/RiskControlView.tsx`|proxy_dead / bot_blocked / fingerprint_anomaly 告警类型|
+|
+ #
+
+### 11.4 与 OperationTarget 的关系 `target_groups[].peer_id` 必须从 `OperationTarget` 读取（现有 `backend/app/models/operation_target.py`）。任务创建向导从运营目标列表中选已有目标，或粘贴 username 自动反查 peer_id 后落入 OperationTarget 再引用。task.payload 只存"匹配策略"和"权重"，不直接存 peer_id。#
+
+### 11.5 与 TG Account 的关系 账号创建 / 资料初始化 / 备用 session / 设备清理等复用现有 `account_security/service.py` 全部机制。本任务新增的"账号环境栈"绑定在 `tg_account_authorizations` 授权资产槽位之上，不修改账号主表；`primary / standby_1 / standby_2` 都按独立客户端身份管理。#
+
+### 11.6 核心模型引用（dev 必读）
+
+|模型 / 服务|文件|复用 / 新增|
+|---|---|---|
+|`Task`|`backend/app/models/task.py`|复用|
+|`Action`|`backend/app/models/task.py`|复用；新增 `action_type=search_join`|
+|`ExecutionAttempt`|`backend/app/models/task.py`|复用|
+|`TgAccount`|`backend/app/models/account.py`|复用|
+|`OperationTarget`|`backend/app/models/operation_target.py`|复用（target_groups 引用）|
+|`TaskTypeValue` Literal|`backend/app/schemas/task_center.py`|扩展|
+|`AccountEnvironmentBinding`|新建 migration|新增|
+|`TgAccountProxyBinding`|新建 migration|新增|
+|`ProxyAirportSubscription`|新建 migration|新增|
+|`ProxyAirportNode`|新建 migration|新增|
+|`AccountProxyWarmupState`|新建 migration|新增|
+|`BotProtocolSample`|新建 migration|新增|
+|`ProxyExitIpObservation`|新建 migration|新增|
+|`AccountAuthorizationExecutionLock`|新建 migration|新增|
+|`IpReputationHistory`|新建 migration|新增|
+|`SearchJoinActionStats`|新建 migration|新增|
+|`RuleSet`|`backend/app/models/rule_set.py`|复用（`task_types` 扩展）|
+|`RuntimeSummary`|`backend/app/models/runtime_summary.py`|复用（新增 search_join 维度）|
+|`TaskRuntimeSummaryOut`|`backend/app/schemas/runtime_summary.py`|复用|
+|`AiGenerator`|`backend/app/ai_gateway.py`|**不调用**（本任务无 AI 生成）|
+|`RiskControl`|`backend/app/services/risk_control.py`|复用账号上限；新增 search_join 维度|
+|
+ #
+
+### 11.7 外部依赖（本任务新增）
+
+|依赖|用途|采购决策|
+|---|---|---|
+|代理供应商（IPFLY / Bright Data / ProxyScrape 任一）|提供独享静态住宅 IP|**用户拍板**：第一版接哪家？灰度期先验证一家，第二季度加第二家容灾|
+|机场 Clash 订阅|提供可解析、可测速、可绑定的代理节点池|首版可作为 `airport_clash` 供应商实现；订阅 URL 加密存储，节点随机分配后固定到授权槽位|
+|IPQS（ipqualityscore.com）|IP 信誉分查询|**必采购**：每日 IP 健康度检测|
+|Spamhaus DNSBL|黑名单查询|公开 API 免费|
+|IP2Location|IP 类型校验（residential / mobile）|付费，必要时采购|
+|
+
+
+## 12. 执行器设计
+
+### 12.1 Executor 文件 `backend/app/services/task_center/executors/search_join_group.py`
+
+### 12.2 核心入口
+```python
+ class SearchJoinGroupExecutor: async def execute_action(self, action: Action) -> ActionResult: # 1. 准备阶段 authorization_id = action.payload["authorization_id"] env = await assert_environment_ready(action.account_id, authorization_id) await assert_protocol_samples_ready(action.payload["bot_username"]) await assert_observed_exit_ip_ready(env.proxy_binding_id) lock = await acquire_account_execution_lock(action.account_id, action.id, action.action_type) if not lock.acquired: return ActionResult(status="skipped", error_code="account_authorization_lock_conflict", result={"skip_reason": "same_account_search_join_running"}) client_metadata = env.client_metadata proxy = self._build_telethon_proxy(env.proxy_binding) client = TelegramClient( session=f"sessions/{action.account_id}/{env.session_role}", api_id=settings.tg_api_id, api_hash=settings.tg_api_hash, proxy=proxy, device_model=client_metadata.device_model, system_version=client_metadata.system_version, app_version=client_metadata.app_version, lang_code=client_metadata.lang_code, system_lang_code=client_metadata.system_lang_code, ) try: # 2. Warmup 检查：不新增 action.status，只用 skipped + skip_reason 表达 if not self._passes_warmup(env.account_id, authorization_id, env.proxy_binding_id, action): return ActionResult(status="skipped", error_code="account_in_warmup", result={"lifecycle_phase": "warmup", "skip_reason": "in_warmup_period"}) # 3. 主流程 async with client: search_results = await self._search(client, action.payload["bot_username"], action.payload["keyword"]) await self._decision_delay(action) pre_join_decoy_clicks = await self._browse_other_results(client, search_results, action, before_click=True) target_button = self._match_target(search_results, action.payload["target_group"]) if not target_button: return ActionResult(status="skipped", error_code="target_not_in_results", result={"results_count": len(search_results.buttons), "pre_join_decoy_clicks": pre_join_decoy_clicks}) click_result = await self._click_target(client, search_results, target_button, action) if not click_result.success: return ActionResult(status="failed", error_code=click_result.error_code, result=click_result.to_dict()) membership = await self.membership_verifier.verify_join(client, action.payload["target_group"]) if not membership.joined: return ActionResult(status="failed", error_code=membership.error_code, result=membership.to_dict()) await self._dwell_in_target_group(client, action.payload["target_group"], action) await self._apply_post_join_policy(client, action) return ActionResult(status="success", result={"target_position": target_button.position, "total_results": len(search_results.buttons), "dwell_seconds": action.result.get("actual_dwell_seconds"), "pre_join_decoy_clicks": pre_join_decoy_clicks, "post_join_policy": action.payload["anti_detection"]["behavior_realism"]["post_join_policy"], "proxy_binding_id": env.proxy_binding_id, "observed_exit_ip": env.proxy_binding.observed_exit_ip, "authorization_id": authorization_id, "session_role": env.session_role, "bot": action.payload["bot_username"], "keyword_hash": hash_keyword(action.payload["keyword"]["text"])}) finally: await release_account_execution_lock(lock)
+```
+ #
+
+### 12.3 关键函数
+```python
+ async def _search(self, client, bot_username, keyword): """向搜索机器人发关键词，等回复；日志只记录 keyword_hash""" async with client.conversation(bot_username, timeout=60) as conv: await conv.send_message(keyword.text) response = await conv.get_response() return parse_search_results(response) async def _decision_delay(self, action): """真人化决策延迟""" config = action.payload["anti_detection"]["behavior_realism"] delay_range = config["decision_delay_seconds"] delay = self._sample_interval(delay_range, distribution="normal", std_dev_ratio=0.3) await asyncio.sleep(delay) async def _browse_other_results(self, client, search_results, action, before_click): """浏览非目标结果；默认只打开、停留、返回，不加入非目标群/频道""" config = action.payload["anti_detection"]["behavior_realism"] clicks = [] if random.random() < config.get("pre_join_decoy_click_probability", 0.35): other = [b for b in search_results.buttons if not b.is_target] for target_btn in random.sample(other, min(len(other), random.randint(*config.get("pre_join_decoy_click_count", [1, 2])))): await self._navigate_to(client, target_btn) await asyncio.sleep(random.uniform(*config.get("pre_join_decoy_dwell_seconds", [10, 30]))) await self._navigate_back(client) clicks.append({"button_hash": hash_button(target_btn), "position": target_btn.position, "joined": False}) return clicks async def _click_target(self, client, search_results, target_button, action): """按真实样本执行 MTProto callback / URL 打开，并等待结果""" async with client.conversation(action.payload["bot_username"], timeout=60) as conv: await assert_button_matches_protocol_sample(action.payload["bot_username"], target_button) if target_button.button_type == "callback_data": answer = await client(GetBotCallbackAnswerRequest(peer=conv.peer, msg_id=search_results.message_id, data=target_button.callback_data)) return await parse_callback_answer(answer, target_button) return await resolve_target_url(client, target_button.url) async def _dwell_in_target_group(self, client, target_group, action): """在目标群停留并执行低风险 read/history/read_ack""" config = action.payload["anti_detection"]["behavior_realism"] dwell_range = config["in_group_dwell_seconds"] dwell = self._sample_interval(dwell_range, distribution="normal") await client.get_messages(target_group.peer_id, limit=random.randint(1, 3)) await asyncio.sleep(dwell) # 首版默认不发言；如概率被审批调高，内容策略必须先通过素材审核 if config.get("occasional_message_probability", 0.0) > 0: await self.content_policy.assert_message_allowed(action) action.result["actual_dwell_seconds"] = dwell
+```
+ #
+
+### 12.4 异常处理
+
+|异常|处理|
+|---|---|
+|`FloodWaitError(seconds=N)`|自动 sleep(N+5)；累计 N > 3600 时把账号置 cooldown 4h|
+|`ChatForbiddenError` / `UsernameNotOccupiedError`|目标群失效 → 任务暂停 + 告警|
+|`BotBlockedError`|账号被搜索机器人拉黑 → 该账号标记 inactive，换账号继续|
+|`SlowModeWaitError`|群内有慢速模式 → 标记该次 action 失败但不计入账号 ban|
+|`telethon.errors.RPCError("FROZEN_METHOD_INVALID")`|账号被冻结 → 暂停账号所有任务 + 告警|
+|网络超时 / 连接错误|retry 3 次，每次间隔指数退避；超过则 action 失败|
+|
+ 每次异常必须写入 `action.result.error_code` 和原始 traceback（脱敏后）。
+
+## 13. 数据流转与存储
+
+### 13.1 新增数据表
+```sql
+-- 设备指纹池
+-- 客户端元数据无独立主表：运行时按 §7.2 规则集随机生成，写入 account_environment_bindings。
+-- 如果需要审计曾经生成过的客户端元数据组合，单独建 fingerprint_combo_history。
+CREATE TABLE fingerprint_combo_history (
+  id BIGSERIAL PRIMARY KEY,
+  device_model VARCHAR(64) NOT NULL,
+  system_version VARCHAR(32) NOT NULL,
+  app_version VARCHAR(16) NOT NULL,
+  platform VARCHAR(16) NOT NULL,
+  combo_key VARCHAR(160) UNIQUE NOT NULL,
+  assigned_authorization_count INT DEFAULT 0,
+  first_assigned_at TIMESTAMP WITH TIME ZONE,
+  last_assigned_at TIMESTAMP WITH TIME ZONE
+);
+
+-- 机场 Clash 订阅
+CREATE TABLE proxy_airport_subscriptions (
+  id BIGSERIAL PRIMARY KEY,
+  name VARCHAR(64) NOT NULL,
+  clash_subscription_url_encrypted TEXT NOT NULL,
+  provider_label VARCHAR(64),
+  fetch_interval_minutes INT DEFAULT 60,
+  last_fetched_at TIMESTAMP WITH TIME ZONE,
+  last_fetch_status VARCHAR(32),
+  last_fetch_error TEXT,
+  is_active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 机场 Clash 节点
+CREATE TABLE proxy_airport_nodes (
+  id BIGSERIAL PRIMARY KEY,
+  subscription_id BIGINT NOT NULL,
+  node_id VARCHAR(128) NOT NULL,
+  node_name VARCHAR(128) NOT NULL,
+  protocol VARCHAR(32) NOT NULL,
+  proxy_host VARCHAR(128) NOT NULL,
+  proxy_port INT NOT NULL,
+  proxy_username VARCHAR(64),
+  proxy_password_encrypted TEXT,
+  country VARCHAR(8),
+  region VARCHAR(64),
+  city VARCHAR(64),
+  isp VARCHAR(64),
+  asn VARCHAR(32),
+  observed_exit_ip VARCHAR(64),
+  observed_exit_country VARCHAR(8),
+  observed_exit_asn VARCHAR(32),
+  observed_exit_isp VARCHAR(64),
+  exit_ip_stability_score FLOAT DEFAULT 0.0,
+  latency_ms INT,
+  health_score FLOAT DEFAULT 100.0,
+  is_active BOOLEAN DEFAULT TRUE,
+  last_health_check_at TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  FOREIGN KEY (subscription_id) REFERENCES proxy_airport_subscriptions(id),
+  UNIQUE (subscription_id, node_id)
+);
+
+-- 代理出口 IP 观测历史
+CREATE TABLE proxy_exit_ip_observations (
+  id BIGSERIAL PRIMARY KEY,
+  proxy_node_id BIGINT,
+  proxy_binding_id BIGINT,
+  observed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  observed_exit_ip VARCHAR(64) NOT NULL,
+  observed_exit_country VARCHAR(8),
+  observed_exit_asn VARCHAR(32),
+  observed_exit_isp VARCHAR(64),
+  check_source VARCHAR(32) NOT NULL,
+  raw_response JSONB,
+  FOREIGN KEY (proxy_node_id) REFERENCES proxy_airport_nodes(id)
+);
+
+-- 授权槽位代理绑定
+CREATE TABLE tg_account_proxy_bindings (
+  id BIGSERIAL PRIMARY KEY,
+  account_id BIGINT NOT NULL,
+  authorization_id BIGINT NOT NULL,
+  session_role VARCHAR(32) NOT NULL,
+  proxy_id VARCHAR(128) NOT NULL,
+  proxy_provider VARCHAR(32) NOT NULL,
+  proxy_type VARCHAR(32) NOT NULL,
+  proxy_host VARCHAR(128) NOT NULL,
+  proxy_port INT NOT NULL,
+  proxy_username VARCHAR(64),
+  proxy_password_encrypted TEXT,
+  proxy_country VARCHAR(8) NOT NULL,
+  proxy_region VARCHAR(64),
+  proxy_city VARCHAR(64),
+  proxy_isp VARCHAR(64),
+  proxy_asn VARCHAR(32),
+  bound_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  last_used_at TIMESTAMP WITH TIME ZONE,
+  last_health_check_at TIMESTAMP WITH TIME ZONE,
+  ip_reputation_score FLOAT DEFAULT 100.0,
+  reputation_check_json JSONB,
+  is_active BOOLEAN DEFAULT TRUE,
+  notes TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE (account_id, authorization_id),
+  UNIQUE (account_id, session_role)
+);
+
+-- 授权槽位环境绑定
+CREATE TABLE account_environment_bindings (
+  id BIGSERIAL PRIMARY KEY,
+  account_id BIGINT NOT NULL,
+  authorization_id BIGINT NOT NULL,
+  session_role VARCHAR(32) NOT NULL,
+  proxy_binding_id BIGINT NOT NULL,
+  device_model VARCHAR(64) NOT NULL,
+  system_version VARCHAR(32) NOT NULL,
+  app_version VARCHAR(16) NOT NULL,
+  platform VARCHAR(16) NOT NULL,
+  lang_code VARCHAR(16) NOT NULL,
+  system_lang_code VARCHAR(16) NOT NULL,
+  lang_pack VARCHAR(16) NOT NULL,
+  client_identity_key VARCHAR(160) NOT NULL,
+  fingerprint_locked BOOLEAN DEFAULT TRUE,
+  region_code VARCHAR(8) NOT NULL,
+  region_consistency_checked BOOLEAN DEFAULT FALSE,
+  region_consistency_errors JSONB,
+  bound_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  last_used_at TIMESTAMP WITH TIME ZONE,
+  health_score FLOAT DEFAULT 100.0,
+  notes TEXT,
+  FOREIGN KEY (proxy_binding_id) REFERENCES tg_account_proxy_bindings(id),
+  UNIQUE (account_id, authorization_id),
+  UNIQUE (client_identity_key)
+);
+
+-- 授权槽位 warmup 状态
+CREATE TABLE account_proxy_warmup_states (
+  id BIGSERIAL PRIMARY KEY,
+  account_id BIGINT NOT NULL,
+  authorization_id BIGINT NOT NULL,
+  session_role VARCHAR(32) NOT NULL,
+  proxy_binding_id BIGINT NOT NULL,
+  stage VARCHAR(32) NOT NULL,
+  stage_started_at TIMESTAMP WITH TIME ZONE NOT NULL,
+  first_action_at TIMESTAMP WITH TIME ZONE,
+  daily_actions_count INT DEFAULT 0,
+  daily_actions_reset_at TIMESTAMP WITH TIME ZONE,
+  total_actions INT DEFAULT 0,
+  reset_at TIMESTAMP WITH TIME ZONE,
+  reset_reason TEXT,
+  UNIQUE (account_id, authorization_id, proxy_binding_id)
+);
+
+-- 目标机器人协议样本
+CREATE TABLE bot_protocol_samples (
+  id BIGSERIAL PRIMARY KEY,
+  bot_username VARCHAR(64) NOT NULL,
+  sample_type VARCHAR(32) NOT NULL,
+  sample_hash VARCHAR(128) UNIQUE NOT NULL,
+  schema_version VARCHAR(32) NOT NULL,
+  structure_json JSONB NOT NULL,
+  captured_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  captured_by VARCHAR(64),
+  pii_scrubbed BOOLEAN DEFAULT TRUE,
+  is_active BOOLEAN DEFAULT TRUE
+);
+
+-- 账号级 search_join 执行锁
+CREATE TABLE account_authorization_execution_locks (
+  id BIGSERIAL PRIMARY KEY,
+  account_id BIGINT NOT NULL,
+  action_type VARCHAR(32) NOT NULL,
+  action_id BIGINT NOT NULL,
+  authorization_id BIGINT NOT NULL,
+  session_role VARCHAR(32) NOT NULL,
+  acquired_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+  released_at TIMESTAMP WITH TIME ZONE,
+  UNIQUE (account_id, action_type)
+);
+
+-- IP 健康度历史
+CREATE TABLE ip_reputation_history (
+  id BIGSERIAL PRIMARY KEY,
+  proxy_binding_id BIGINT NOT NULL,
+  checked_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  score FLOAT NOT NULL,
+  source VARCHAR(32),
+  raw_response JSONB,
+  FOREIGN KEY (proxy_binding_id) REFERENCES tg_account_proxy_bindings(id)
+);
+
+-- 任务搜索结果摘要（按动作维度）
+CREATE TABLE search_join_action_stats (
+  id BIGSERIAL PRIMARY KEY,
+  action_id BIGINT UNIQUE NOT NULL,
+  task_id BIGINT NOT NULL,
+  account_id BIGINT NOT NULL,
+  authorization_id BIGINT NOT NULL,
+  session_role VARCHAR(32) NOT NULL,
+  bot_username VARCHAR(64) NOT NULL,
+  keyword_hash VARCHAR(128) NOT NULL,
+  keyword_display_encrypted TEXT,
+  business_region VARCHAR(8),
+  account_locale VARCHAR(16),
+  proxy_country VARCHAR(8),
+  target_group_id BIGINT NOT NULL,
+  target_position INT,
+  total_results INT,
+  pre_join_decoy_clicks JSONB,
+  post_join_policy VARCHAR(32) NOT NULL DEFAULT 'stay_joined',
+  join_status VARCHAR(32),
+  dwell_seconds INT,
+  error_code VARCHAR(64),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_search_join_stats_task ON search_join_action_stats(task_id);
+CREATE INDEX idx_search_join_stats_keyword ON search_join_action_stats(keyword_hash);
+CREATE INDEX idx_search_join_stats_authorization ON search_join_action_stats(authorization_id);
+```
+ #
+
+### 13.2 Action 扩展 `action.action_type` 新增 `search_join`。`action.payload` 结构：
+```json
+ { "account_id": 101, "authorization_id": 9001, "session_role": "primary", "execution_mode": "mtproto_userbot", "bot_username": "jisou", "keyword": {"text": "迪拜房产", "business_region": "AE", "account_locale": "zh-CN", "proxy_country": "SG", "lang": "zh", "decoy": false}, "target_group": {"peer_id": 1234567890, "username": "yourgroup"}, "phase": "main" }
+```
+ `action.result` 结构：
+```json
+ { "bot": "jisou", "keyword_hash": "sha256:...", "target_username": "yourgroup", "target_position": 3, "total_results": 25, "join_status": "success", "dwell_seconds": 95, "actual_dwell_seconds": 97, "pre_join_decoy_clicks": [{"button_hash": "sha256:...", "position": 1, "joined": false}], "post_join_policy": "stay_joined", "paging_history": [1, 2, 3, 2, 4], "search_attempts": 1, "authorization_id": 9001, "session_role": "primary", "proxy_binding_id": 301, "observed_exit_ip": "203.0.113.10", "observed_exit_country": "SG", "client_identity_key": "iphone_15_pro_ios_17_5_1_zh", "completed_at": "2026-07-02T20:35:12Z" }
+```
+ #
+
+### 13.3 Task Stats 扩展 `task.stats` 增加：
+```json
+ { "search_join_stats": { "protocol_sample_status": {"jisou": "ready"}, "by_bot": { "jisou": {"actions_total": 1234, "success": 987, "target_not_in_results": 198, "failed": 49} }, "by_keyword_hash": { "sha256:...": {"display_name": "迪拜房产", "actions_total": 350, "success": 280, "avg_target_position": 3.2, "avg_dwell_seconds": 92, "pre_join_decoy_clicks": 126} }, "by_target": { "yourgroup": {"clicks_total": 987, "by_keyword_hash": {...}} }, "authorization_environment_summary": { "ready_slots": 18, "missing_proxy_slots": 1, "missing_client_metadata_slots": 2, "ios_slots": 16, "android_slots": 2, "lock_conflicts": 0 }, "exit_ip_health_summary": { "active_accounts": 50, "degraded_accounts": 2, "exit_ip_changed": 1 }, "post_join_policy_summary": {"stay_joined": 987, "delayed_leave": 0, "leave_after_dwell": 0}, "recent_target_positions": [ {"checked_at": "2026-07-02T20:00:00Z", "keyword_hash": "sha256:...", "display_name": "迪拜房产", "position": 5}, {"checked_at": "2026-07-02T20:30:00Z", "keyword_hash": "sha256:...", "display_name": "迪拜房产", "position": 3} ] } }
+```
+
+
+## 14. 前端集成
+
+### 14.1 任务类型枚举
+
+`TaskTypeValue` 增加 `search_join_group`。`TASK_TYPE_OPTIONS` 增加：
+
+```typescript
+{ value: "search_join_group", label: "搜索自动入群（目标机器人等索引机器人）" }
+```
+
+任务类型筛选、规则集适用任务类型、运营方案生成任务类型、任务详情标题和操作手册都必须展示同一名称。
+
+### 14.2 创建向导
+
+5 步向导新增“搜索自动入群”分支：
+
+| 步骤 | 控件 |
+| --- | --- |
+| 1. 基础信息 | 任务名称、目标群聊、结束时间 |
+| 2. 搜索机器人 | 多选搜索机器人；首版仅开放 `@searchbot` |
+| 3. 关键词列表 | 表格录入 `text / business_region / account_locale / proxy_country / lang / weight / decoy`，支持 CSV 导入；decoy 占比提示且低于 30% 阻断 |
+| 4. 运营真实性配置 | warmup、行为真实化、节奏、翻页、反聚类配置，默认折叠高级项 |
+| 5. 账号 + 预览 | 展示 eligible、protocol sample、observed exit IP、missing proxy、missing client metadata、warmup、proxy_dead、account lock conflict 和 keyword matrix mismatch |
+
+预检返回：
+
+```json
+{
+  "search_join_precheck": {
+    "eligible_accounts": 5,
+    "protocol_sample_status": {"jisou": "ready"},
+    "missing_environment": [{"account_id": 105, "authorization_id": 9003, "session_role": "standby_1", "missing": "client_metadata"}],
+    "exit_ip_health": {"ready_bindings": 10, "exit_ip_changed": 0},
+    "decoy_ratio": 0.35,
+    "estimated_daily_actions": 25,
+    "warnings": ["账号 102 已养号 28 天，建议再养 2 天"]
+  }
+}
+```
+
+### 14.3 任务列表
+
+任务列表额外展示：
+
+```text
+[搜索自动入群] 迪拜房产群搜索入群
+累计入群 987 / 1500
+目标群平均排名 P3.2（上升 2 位）
+今日入群转化率 47%
+状态：运行中
+```
+
+筛选条件：任务类型支持按 `search_join_group` 筛选。
+
+### 14.4 任务详情
+
+新增 Tab：搜索入群统计。
+
+| 子模块 | 内容 |
+| --- | --- |
+| 累计入群 | 总成功数 / 失败数 / 跳过数；按机器人、关键词、目标群分别展开 |
+| 排名轨迹 | 按关键词展示目标群在目标机器人结果中的位置变化 |
+| 行为漏斗 | 搜索次数 -> 目标群出现次数 -> 加入成功次数 -> 停留合格次数 |
+| IP / 客户端元数据状态 | 每个账号授权槽位的 observed exit IP、IP 健康分、客户端元数据、warmup 阶段、账号锁冲突和最近失败原因 |
+| Decoy 分布 | decoy vs target 关键词 action 数对比 |
+| 入群前浏览 | pre-join decoy click 次数、停留时长、是否误加入非目标群（首版应始终为 false） |
+| 入群后策略 | `stay_joined / delayed_leave / leave_after_dwell` 分布和 24h / 7d 留存状态 |
+
+### 14.5 风控告警
+
+风控中心增加“搜索入群”维度：
+
+| 告警类型 | 触发条件 | 处置 |
+| --- | --- | --- |
+| `proxy_dead` | IP 健康分 < 60 | 自动暂停该账号任务 |
+| `exit_ip_changed` | 绑定节点最近出口 IP 与历史稳定出口不一致 | 暂停该槽位并重置 warmup |
+| `proxy_airport_subscription_failed` | Clash 订阅拉取失败或节点为空 | 暂停新绑定，保留既有健康节点 |
+| `proxy_node_reused_in_same_account` | 同账号主/备用授权复用同一节点 | 阻断任务创建并要求重新分配 |
+| `fingerprint_anomaly` | 设备指纹异常关联 | 人工审核 |
+| `fingerprint_reused_in_same_account` | 同账号主/备用授权复用同一指纹组合 | 阻断任务创建 |
+| `protocol_sample_missing` | 目标机器人真实样本未采集或过期 | 阻断真实灰度，只允许 fixture |
+| `account_authorization_lock_conflict` | 同账号已有 search_join action 执行中 | 跳过新 action 并上报统计 |
+| `keyword_plaintext_log_detected` | 日志或 stats 出现关键词明文 | critical，阻断发布 |
+| `post_join_fast_leave_rate` | 24h 内退出比例异常 | 暂停退出策略并人工复核 |
+| `bot_blocked` | 账号被目标机器人 / SOSO 拉黑 | 换号 + 告警 |
+| `target_position_degrading` | 目标群排名连续下滑 | 提醒运营调整关键词、强度或付费策略 |
+| `bot_response_changed` | 机器人回复结构无法解析 | 自动暂停相关任务，等待适配 |
+
+## 15. 风控中心集成
+
+风控中心已有的小时 / 日上限、账号冷却规则统一适用：
+
+| 风控项 | 复用现有规则 |
+| --- | --- |
+| 账号小时上限 | `risk_control.account_hourly_limit` |
+| 账号日上限 | `risk_control.account_daily_limit` |
+| 账号冷却 | `risk_control.account_cooldown_minutes` |
+| 规则集 | `rule_sets.task_types` 新增 `search_join_group` |
+
+新增风控点：
+
+| 风控项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `search_join.bot_daily_limit_per_account` | 5 | 单账号对单机器人每天上限 |
+| `search_join.keyword_daily_limit_per_account` | 2 | 单账号对单关键词每天上限 |
+| `search_join.ip_daily_limit` | 50 | 单 IP 每天对所有机器人请求上限 |
+| `search_join.fingerprint_account_max` | 1 | 同指纹最多绑定 1 个账号 |
+| `search_join.auth_slot_client_metadata_required` | true | 主/备用授权槽位都必须绑定完整 MTProto 客户端元数据 |
+| `search_join.protocol_sample_required` | true | 真实机器人协议样本缺失时阻断灰度 |
+| `search_join.exit_ip_observation_required` | true | `airport_clash` 节点必须有真实出口 IP 观测 |
+| `search_join.same_account_concurrency` | 1 | 同账号 search_join action 互斥 |
+| `search_join.keyword_plaintext_log_allowed` | false | 日志、stats 和 action result 不允许关键词明文 |
+| `search_join.pre_join_decoy_click_probability` | 0.35 | 入群前打开非目标群 / 频道结果的默认概率 |
+| `search_join.decoy_join_enabled` | false | 首版默认不加入非目标群 / 频道，只浏览 |
+| `search_join.min_decoy_ratio` | 0.3 | 低于阈值阻断任务创建 |
+
+## 16. 监控与告警
+
+### 16.1 关键指标
+
+|指标|阈值|告警级别|
+|---|---|---|
+|任务级 click/曝光比 (入群转化率)|< 20% 或 > 70%|warning|
+|任务级单 IP 请求成功率|< 80%|warning|
+|授权槽位级 IP 健康分|< 60|auto_pause|
+|授权槽位级出口 IP 变化|任一|auto_pause|
+|授权槽位级设备指纹异常|任一|manual_review|
+|同账号主/备用授权复用代理节点或设备指纹|任一|block_create|
+|协议样本缺失或解析失败|任一|block_start|
+|账号执行锁冲突率|> 5%|warning|
+|关键词明文日志|任一|critical|
+|入群后 24h 内快速退出比例|> 5%|warning|
+|目标机器人/SOSO 拒绝次数（24h）|> 10|critical|
+|FloodWait 触发（账号级）|单次 > 3600s|warning|
+|任务级目标群排名连续下滑|3 次抽样都比上次差|info|
+|
+ #
+
+### 16.2 告警渠道 复用现有告警链路：风控中心告警 → webhook / 邮件 / 站内信。新增专属告警类型：- `search_join.proxy_degraded` - `search_join.proxy_airport_subscription_failed` - `search_join.exit_ip_changed` - `search_join.proxy_node_reused_in_same_account` - `search_join.fingerprint_reused_in_same_account` - `search_join.protocol_sample_missing` - `search_join.account_authorization_lock_conflict` - `search_join.keyword_plaintext_log_detected` - `search_join.post_join_fast_leave_rate` - `search_join.bot_response_changed`（机器人回复格式变化） - `search_join.target_group_missing`（目标群从目标机器人索引消失） - `search_join.suspicious_block`（账号疑似被风控）
+
+## 17. 灰度计划
+
+### 17.0 阶段零：真实样本与出口验证（3-5 天）
+
+- 用 1-2 个人工确认可用账号采集首版目标机器人的 `/start`、搜索、翻页、目标匹配、callback / URL 和异常响应样本。
+- 样本只保存结构、字段路径、hash 和必要按钮类型，不保存成员信息、消息正文或其他 PII。
+- `airport_clash` 节点必须完成真实出口 IP 观测，记录 `observed_exit_ip / observed_exit_country / asn / isp / exit_ip_stability_score`。
+- 阶段零未通过时，不允许进入真实灰度；开发只能实现 parser fixture、预检和管理界面。
+
+### 17.1 阶段一：环境准备（1 周）
+
+- 采购 50 个独享静态住宅 IP（多国分散：US 20 + DE 15 + SG 10 + JP 5），或接入一条合规可用的机场 Clash 订阅并解析为节点池。
+- 建立 iOS 80% / Android 20% 的设备指纹规则集，运行时生成并写入 `account_environment_bindings`；不引入独立 `device_fingerprints` 主表。
+- 主授权和备用授权都补齐完整 iOS 优先设备指纹，并确保同账号不同槽位不复用指纹组合。
+- 实现代理供应商抽象层并接入一家供应商或 `airport_clash` provider。
+- 实现授权槽位级账号环境栈绑定、组合上限校验和 `fingerprint_combo_history` 审计摘要。
+- 实现账号级 `search_join` 执行互斥锁、关键词 hash 存储和无明文日志检查。
+- 完成单元测试和集成测试。
+
+### 17.2 阶段二：养号（30 天） - 50 个真实 TG 账号（人工注册） - 每个授权槽位绑 1 个住宅 IP 或 Clash 节点（注册 IP + 养号 IP + 任务 IP 一致，且以 observed exit IP 为准） - 主/备用授权槽位各绑 1 个不同完整客户端元数据，优先 iOS 风格 - 50 个账号**只做日常活跃**（每天发几条无关消息、看几个频道），不跑入群任务 - 让 TG 自身画像、目标机器人画像都稳定下来
+
+### 17.3 阶段三：灰度（2-4 周） - 选取 5-10 个账号、5-10 个目标关键词、1 个目标群 - 创建第一个 `search_join_group` 任务 - 每个账号每天 1-2 个目标搜索 - 监控指标：- 任务成功率 ≥ 80% - IP 健康分和出口 IP 稳定性无明显下降 - 目标机器人拒绝次数 ≤ 5 - 账号无异常 - 账号执行锁冲突率 ≤ 5% - 关键词明文日志 0 次 - 入群后快速退出比例 ≤ 5% - 目标群排名变化只作为观察指标，不作为灰度通过硬条件 通过条件：- 7 天灰度稳定 → 进入阶段四 - 不通过 → 调整策略（关键词、账号数量、强度、代理出口或后加入群策略）后重试
+
+### 17.4 阶段四：扩量（持续） - 50 账号全部启用（按 warmup → low → steady 阶段递进） - 增加目标群数量 - 持续监控排名变化
+
+### 17.5 阶段五：4G 移动代理（可选，第二季度） - 评估 4G 移动代理供应商 - 10-20 个现金牛账号升级到 4G 移动 - 监控封号率
+
+## 18. 风险与合规
+
+### 18.1 业务定性 本任务的最终合规边界由用户拍板。技术方案只保证：- **运营真实性可控**：行为画像、IP 信誉、授权槽位设备指纹和代理节点环境栈都在阈值内 - **业务可灰度**：环境准备 → 养号 → 小范围灰度 → 扩量 - **异常可熔断**：机器人加验证码、IP 健康分下降、账号被封等场景自动暂停任务 + 告警 法务 / 合规边界由用户自担。#
+
+### 18.2 平台风险
+
+|风险|等级|应对|
+|---|---|---|
+|目标机器人/SOSO 升级反作弊|高|监控告警 + 自动暂停 + 人工验证后恢复|
+|TG 平台封禁 userbot|中|多账号矩阵 + 灰度观察|
+|目标机器人向 TG 投诉大量 IP|中|IP 健康度监控 + 自动换 IP|
+|目标群被目标机器人降权|低|分散关键词 + 稀释 入群转化率|
+|MTProto 客户端元数据被误解为真实设备|高|前端、PRD 和执行日志必须标明 `execution_mode=mtproto_userbot`；真机方案另起专项|
+|同一机场节点真实出口 IP 漂移|高|以 observed exit IP 为准，漂移即暂停并重置 warmup|
+|同账号主/备授权并发执行|高|账号级执行锁硬阻断，备用只做 failover|
+|目标机器人协议样本过期|高|样本解析失败即暂停，不允许 silent fallback|
+|
+ #
+
+### 18.3 账号风险
+
+|风险|等级|应对|
+|---|---|---|
+|账号被举报封禁|中|养号前置 + 账号画像完整|
+|账号被冻结（FROZEN_METHOD_INVALID）|中|FloodWait 监控 + 实时下线|
+|账号被目标机器人拉黑|高|IP 健康度 + 行为真实性|
+|账号 session 泄露|高|加密存储 + 内存解密 + 审计日志|
+|
+ #
+
+### 18.4 数据风险
+
+|风险|等级|应对|
+|---|---|---|
+|worker 数据库被攻击|高|字段级加密 + 权限隔离 + 审计|
+|IP 池被竞品窃取|中|字段级加密|
+|关键词列表被泄露|低|不在日志中打印关键词明文|
+|action/stats 泄露关键词明文|中|只存 `keyword_hash` 和必要的加密展示字段，日志扫描命中即 critical|
+|
+ #
+
+### 18.5 合规边界（再次强调） - 不向中国大陆运营主 worker - 不在欧盟/美国部署主数据中心 - 不采集目标机器人/SOSO 返回的群成员信息、消息内容等 PII - 任务日志只存必要字段（action_id、keyword_hash、bot_username、status、timestamp） - 数据保留期 90 天，到期自动清理
+
+## 19. 实施优先级
+
+### 第一阶段（最小可用，2-3 周）
+
+后端：
+
+- `schemas/task_center.py` 扩展 `TaskTypeValue`、`SearchJoinGroupConfig`。
+- 数据库 migration 新增 `proxy_airport_subscriptions`、`proxy_airport_nodes`、`fingerprint_combo_history`、`tg_account_proxy_bindings`、`account_environment_bindings`、`account_proxy_warmup_states`、`ip_reputation_history`、`search_join_action_stats`。
+- 数据库 migration 同步新增 `bot_protocol_samples`、`proxy_exit_ip_observations`、`account_authorization_execution_locks`。
+- 代理供应商抽象 + 一家供应商或 `airport_clash` 实现。
+- Clash 订阅加密存储、节点解析、真实出口 IP 观测、节点健康检查、随机分配并固定绑定到授权槽位。
+- 设备指纹规则集、运行时生成、授权槽位级镜像绑定和组合上限校验。
+- 授权槽位级账号环境栈绑定 + Planner / Executor 双重校验。
+- 账号级 `search_join` 执行锁，确保主/备用授权槽位不会同账号并发。
+- 目标机器人样本采集 CLI / 管理入口，生成 parser fixture 后才允许真实灰度。
+- 关键词存储与日志只落 `keyword_hash`，明文仅允许加密展示字段。
+- Executor `search_join_group.py` 完整实现首版 `@searchbot` 协议。
+- IP 健康度监控（每天定时）。
+- 风控中心新增 search_join 维度。
+
+前端：
+
+- `TASK_TYPE_OPTIONS` 增加 `search_join_group`。
+- Wizard 新增搜索自动入群分支。
+- 任务列表 / 详情 stats 输出。
+- 风控告警类型展示。
+
+测试：
+
+- mock 目标机器人 / SOSO 的 fixture 测试。
+- 协议样本缺失、样本解析、授权槽位环境栈缺失、warmup、decoy 比例、proxy_dead、exit_ip_changed、fingerprint_invalid、Clash 订阅失败、同账号主/备复用节点或元数据的单元测试。
+- 同账号执行锁、备用 failover、observed exit IP 观测和关键词明文日志扫描测试。
+- pre-join decoy click 默认只浏览不加入、结果写入 `pre_join_decoy_clicks` 的单元测试。
+- `post_join_policy=stay_joined` 默认策略和 24h / 7d 留存状态回写测试。
+- 真实账号 × 1-2 个真实关键词 × 1 个真实目标群 × 7 天灰度。
+
+### 第二阶段（扩量 + 报表，4-6 周）
+
+- 多搜索机器人支持（@soso、@smss、@CJSY）。
+- 排名轨迹 ECharts 报表。
+- 运营数据页 search_join 汇总。
+- 第二个代理供应商接入（容灾）。
+- 行为配置模板化，允许运营保存运营真实性预设。
+
+### 第三阶段（升级，第二季度）
+
+- 4G 移动代理接入。
+- AI 生成 decoy 关键词。
+- 行为模式 ML 调优，基于历史数据自动调整 anti_detection 参数。
+- 跨任务学习：账号在一个任务里的失败经验反哺其他任务。
+
+## 20. 验收口径
+
+### 20.1 后端验收
+
+- 旧任务（5 类主任务）行为不变。
+- `execution_mode` 首版固定为 `mtproto_userbot`，前端和 API 返回不得暗示真实手机 UI 自动化。
+- 未采集真实目标机器人协议样本时，创建启动必须阻断真实灰度，只允许 parser fixture / precheck。
+- 新建 `search_join_group` 任务时，账号池里无授权槽位环境绑定的账号必须在预检中可见；创建并启动时无环境槽位不得进入主执行。
+- 主授权和备用授权都必须绑定不同代理节点与不同完整客户端元数据；同账号任一槽位复用节点或元数据组合时，任务创建必须被阻断。
+- `airport_clash` provider 必须能加密保存 Clash 订阅、解析节点、观测真实出口 IP、健康检查并把随机节点固定到授权槽位；订阅失败、节点为空、出口 IP 漂移不得静默 fallback。
+- 同一 `account_id` 同时只允许 1 个 `search_join` action 执行；锁冲突必须以 `account_authorization_lock_conflict` 跳过并进入 stats。
+- `action.result`、stats、worker 日志和告警不得保存关键词明文，必须使用 `keyword_hash`；展示明文只能走加密展示字段。
+- decoy 关键词占比 < 30% 时任务创建被拒绝。
+- 每个主执行 action 必须经过 §8.3 的完整 8 步链路；warmup / decoy 路径可按 §8.2 放宽，但必须写清 lifecycle 和 skip reason。
+- 授权槽位未绑代理或客户端元数据时，Executor 返回 `skipped`，并写入 `lifecycle_phase=needs_proxy/needs_client_metadata` 与对应 `skip_reason`，不得返回新 action status。
+- 入群前非目标点击默认只打开/停留/返回，不加入非目标群 / 频道；每次点击必须写入 `action.result.pre_join_decoy_clicks`。
+- 默认 `post_join_policy=stay_joined`；任何退出策略都必须记录策略、执行时间、审批原因和留存结果。
+- IP 健康分 < 60 时，该账号所有搜索入群 action 自动标记 `proxy_dead` 并暂停相关账号任务。
+- `proxy_airport_subscriptions`、`proxy_airport_nodes`、`tg_account_proxy_bindings`、`account_environment_bindings`、`fingerprint_combo_history` 的新增、禁用、解绑和修订必须写审计。
+- session 文件加密存储，磁盘不存明文。
+- FloodWait 累计 > 3600s 时账号自动 cooldown 4h。
+- `bot_username=jisou` 的灰度任务能被目标机器人接收且不立即拒绝。
+
+### 20.2 前端验收
+
+- 创建搜索自动入群任务时能选择机器人、导入关键词、配置运营真实性参数、预览账号环境状态。
+- 任务列表展示任务类型、入群转化率、平均排名和状态。
+- 任务详情展示累计入群、排名轨迹、行为漏斗、IP / 客户端元数据状态、协议样本状态、账号锁冲突、入群后策略和 Decoy 分布。
+- 风控中心能查看 search_join 告警。
+- 预检返回的警告和缺失环境清晰可见。
+
+### 20.3 灰度验收（5-10 账号 × 7 天）
+
+- 任务成功率 ≥ 80%。
+- 0 个账号被封。
+- 0 个账号被目标机器人拉黑。
+- IP 健康分和出口 IP 稳定性无明显下降。
+- 账号执行锁冲突率 ≤ 5%。
+- 关键词明文日志 0 次。
+- 入群后 24h 内快速退出比例 ≤ 5%。
+- 目标机器人拒绝请求次数 ≤ 5。
+- 目标群排名变化只作为运营观察指标，不作为系统验收通过条件。
+
+## 21. Product Design Complete 自检
+
+| 检查项 | 结论 |
+| --- | --- |
+| 原始需求覆盖 | 已覆盖“搜索自动入群任务”和“合并到 PRD” |
+| 用户补充细节覆盖 | 已覆盖主/备用独立客户端元数据、机场 Clash 自动代理、随机固定节点、入群前非目标浏览 |
+| 功能设计 | 已定义任务类型、机器人、关键词、目标群、执行模式、环境栈、warmup、执行链路、入群后策略和灰度 |
+| 前端状态 | 已定义创建向导、预检、任务列表、任务详情、协议样本状态、出口 IP 状态和风控告警 |
+| 后端 / API / worker | 已定义 schema、planner、executor、parser、stats、worker 边界、执行锁和异常处理 |
+| 数据流转 | 已定义新增表、Action payload/result、Task stats、OperationTarget 引用、协议样本、出口 IP 观测和审计 |
+| 权限安全 | 已要求任务创建权限、代理管理权限、审计、session 加密、环境栈硬校验和关键词明文禁止落日志 |
+| 边界场景 | 已覆盖 warmup、proxy_dead、exit_ip_changed、client_metadata_invalid、bot_blocked、FloodWait、目标缺失、join approval / captcha 和机器人结构变化 |
+| QA 验收 | 已定义后端、前端、灰度三层验收口径 |
+| 仍需用户拍板 | 第一家代理供应商、首版真实目标机器人账号、灰度目标群、关键词样本和真实样本采集账号 |
+
+## 22. 未来扩展
+
+1. **多机器人策略**：根据机器人类型自动选择不同关键词组合。
+2. **AI 生成关键词**：基于目标群描述自动生成同义词 / 长尾词。
+3. **ML 行为优化**：基于历史行为数据训练 ML 模型，自动调整 anti_detection 参数。
+4. **多目标群入群**：一次任务绑定多个目标群，按权重分配 action。
+5. **自定义 decoy 策略**：运营可上传自家 decoy 词库，避免重复。
+6. **目标机器人付费 API 对接**：作为自然量的补充。
+7. **目标群质量预筛**：自动过滤质量过低的群。
+8. **跨任务数据回流**：一个账号在不同任务中的成功经验反哺 anti_detection 参数。
+9. **真机真卡集群**：自建猫池或采购真机设备，最高安全水位。
+10. **搜索行为分析**：定期抓取目标机器人搜索结果快照，反向分析排名变化曲线。
+
+## 23. 变更记录
+
+|日期|版本|变更人|变更内容|
+|---|---|---|---|
+|2026-07-02|v0.1|Mavis（PRD 起草）|初版草案|
+|2026-07-02|v0.2|Mavis（PRD 修订）|1. §4.4 Action 状态机：移除 `needs_warmup` 状态值，改为 `action.payload.lifecycle_phase` + `result.skip_reason`，避免全链路回归<br>2. §7.2 设备指纹模型改为规则集（无独立表）<br>3. §7.3 设备指纹池改为**运行时随机生成** + **iOS 80% / Android 20% 硬约束**<br>4. §7.4 改为**镜像绑定**（账号生命周期内设备指纹不变，含换 IP / 跨任务）<br>5. §8.2 Warmup 改为 `(account_id, proxy_binding_id)` 二元组维度<br>6. §9.1.1 关键词字段语义：明确 region/lang/weight 在 executor 的实际使用<br>7. §9.1.2 target_groups 复用 OperationTarget<br>8. **新增 §10 目标机器人/SOSO 协议交互契约**（解析协议、翻页、异常模式、行为契约）<br>9. **新增 §11 与现有系统的集成边界**（复用 / 旁路 / 新增列表 + 核心模型引用 + 外部依赖）<br>10. §12 / §13 / §14 / §15 / §16 / §17 / §18 / §19 / §20 等章节编号因新增 §10 / §11 顺延<br>11. §13.1 数据表移除 `device_fingerprints` 独立表，更新 `account_environment_bindings` 字段|
+|2026-07-02|v0.3|Mavis（PRD 修订）|按用户要求措辞中性化：<br>- 全文业务术语替换为更中性表述（如目标机器人 / 运营真实性 / 运营加入行为）<br>- §1 背景与 §18.1 去掉业务定性措辞，改由用户自担|
+|2026-07-02|v0.4|Mavis（PRD 修订）|按用户要求重新定位产品功能：文档标题改为“搜索自动入群”，任务类型英文名改为 `search_join_group`，执行链路改为搜索、翻页、匹配、点击、加入、停留、退出，schema 字段统一为 `search_join_*` 和 `join_status`|
+|2026-07-02|v0.5|Codex（PRD 合并）|补齐主 PRD 合并口径，修正设备指纹无独立主表、iOS 80% / Android 20%、Action 状态不新增 `needs_warmup`、实施清单和验收口径冲突；新增 Product Design Complete 自检|
+|2026-07-02|v0.6|Codex（PRD 补充）|按用户补充细节完善：主/备用授权槽位独立绑定完整 iOS 优先设备指纹；新增机场 Clash 订阅、节点解析、随机分配并固定到授权槽位；入群前 pre-join decoy click 默认只浏览非目标群 / 频道不加入，并写入 action 结果、统计、风控和验收口径|
+|2026-07-03|v0.7|Codex（PRD 设计修复）|深度反思并修复设计缺口：明确首版 `mtproto_userbot` 执行边界和真实样本闸门；把 Clash 节点入口与真实出口 IP 拆开；新增账号级执行锁、协议样本、出口 IP 观测、关键词 hash、默认入群后留存、无明文日志和灰度验收修正；将目标排名 Top 5 从硬验收改为运营观察指标|

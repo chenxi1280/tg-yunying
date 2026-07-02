@@ -40,6 +40,7 @@ from app.schemas.account_security import (
     AccountSecurityRetryRequest,
     AccountSecuritySummaryOut,
     ManagedTwoFaOut,
+    ManagedTwoFaRevealOut,
     ManagedTwoFaRequest,
 )
 from app.security import decrypt_secret, encrypt_secret
@@ -763,6 +764,23 @@ def rotate_managed_two_fa_password(
     audit(session, tenant_id=tenant_id, actor=actor, action="轮换账号托管二步密码", target_type="tg_account", target_id=str(account.id), detail=payload.reason)
     session.commit()
     return _managed_two_fa_out(account.id, snapshot)
+
+
+def reveal_managed_two_fa_password(
+    session: Session,
+    tenant_id: int,
+    account_id: int,
+    actor: str,
+) -> ManagedTwoFaRevealOut:
+    account = _require_account(session, tenant_id, account_id)
+    snapshot = session.scalar(select(TgAccountSecuritySnapshot).where(TgAccountSecuritySnapshot.account_id == account.id))
+    if not snapshot or not snapshot.two_fa_password_ciphertext:
+        raise ValueError("托管 2FA 密码未配置")
+    audit(session, tenant_id=tenant_id, actor=actor, action="查看账号托管二步密码", target_type="tg_account", target_id=str(account.id))
+    revealed_at = _now()
+    password = decrypt_secret(snapshot.two_fa_password_ciphertext)
+    session.commit()
+    return ManagedTwoFaRevealOut(account_id=account.id, password=password, revealed_at=revealed_at)
 
 
 def precheck_account_security_batch(session: Session, tenant_id: int, payload: AccountSecurityPrecheckRequest) -> AccountSecurityPrecheckOut:
@@ -2124,6 +2142,7 @@ __all__ = [
     "list_account_security_batches",
     "precheck_account_security_batch",
     "refresh_account_security",
+    "reveal_managed_two_fa_password",
     "retry_account_security_batch",
     "rotate_managed_two_fa_password",
     "save_managed_two_fa_password",

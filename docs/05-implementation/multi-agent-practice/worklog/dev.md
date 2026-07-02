@@ -1,5 +1,16 @@
 # Worklog: dev
 
+## 2026-07-02 托管 2FA 密码受控查看 Development Complete
+
+- message_id: 2026-07-02-managed-2fa-reveal-devcomplete-001
+- action: 按 PRD 实现账号详情托管 2FA 密码受控查看和复制
+- input: 2026-07-02-managed-2fa-reveal-product-001
+- output: 新增 `managed-2fa/reveal` 后端接口，具备权限校验、密文解密返回和审计，不采集查看原因；前端“托管 2FA”面板新增查看托管密码、短时展示和复制按钮
+- evidence: `backend/.venv/bin/python -m pytest -q -m no_postgres backend/tests/test_account_managed_2fa_dataflow.py backend/tests/test_account_security.py::test_managed_two_fa_reveal_returns_decrypted_password_and_audits` -> 3 passed；py_compile passed；`npm --prefix frontend run build` passed；`git diff --check` passed
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven
+- next_agent: qa
+- unresolved: 未真实投递 QA 线程；未发布生产
+
 ## 2026-06-27
 
 - message_id: 2026-06-27-docs-practice-devcomplete-001

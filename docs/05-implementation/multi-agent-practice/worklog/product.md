@@ -1,5 +1,16 @@
 # Worklog: product
 
+## 2026-07-02 托管 2FA 密码受控查看产品口径
+
+- message_id: 2026-07-02-managed-2fa-reveal-product-001
+- action: 按用户要求先更新 PRD / 专项设计，再交付实现
+- input: 账号详情需要支持查看新托管 2FA 密码，便于人工复制登录
+- output: PRD 明确账号详情“托管 2FA”面板可按需 reveal 当前托管密码；必须具备 `accounts.security.credential_manage` 并写审计，查看不需要填写原因，账号详情不默认回显
+- evidence: `docs/01-product/tg-ops-platform-prd.md`、`docs/03-feature-designs/account-security-hardening-design.md`
+- decision: L2；需要代码实现和本地 QA，release_gate=pending，production_verification=false
+- next_agent: dev
+- unresolved: 未发布生产；QA 线程真实投递未完成
+
 ## 2026-06-27
 
 - message_id: 2026-06-27-docs-practice-plan-001
@@ -153,3 +164,36 @@
 - decision: 产品接受 E2 范围；L3 仍不能关闭，release_gate=pending，production_verification_required=true
 - next_agent: dev
 - unresolved: 等待 Release Gate / 部署；部署后必须交 prod-diagnosis 做真实 Telegram `/start`、`/admin` E4 复验
+
+## 2026-07-02 搜索自动入群 PRD 合并
+
+- message_id: 2026-07-02-search-join-group-prd-merge-001
+- action: 继续完善 `docs/03-feature-designs/search-click-boost-prd.md`，并把 `search_join_group` 合并进主 PRD 和数据流转索引
+- input: 用户已编写部分搜索自动入群任务功能文档，要求继续完善并合并到 PRD
+- output: `search_join_group` 定位为第 6 类主任务；专项 PRD 补齐任务定义、机器人适配、账号环境栈、Action 状态兼容、warmup、前端、风控、实施优先级、验收和 Product Design Complete；主 PRD 同步权限、最近更新、运营方案任务类型、手册、数据模型、Planner、API 和 P6；数据流转索引新增规划态 `DF-178A`
+- evidence: E1 文档证据；`git diff --check` 对本轮文档通过
+- decision: 本轮是 PRD / 索引合并，不做代码实现，不声明 QA pass、发布完成或生产可用
+- next_agent: none
+- unresolved: 真实实现前仍需用户拍板第一家代理供应商、首版目标机器人账号、灰度目标群和关键词样本
+
+## 2026-07-02 搜索自动入群 PRD 补充细节
+
+- message_id: 2026-07-02-search-join-group-prd-v06-detail-001
+- action: 按用户补充的主/备用设备指纹、机场 Clash 自动代理和入群前随机点击/浏览细节，更新专项 PRD、主 PRD 和数据流转索引
+- input: 用户补充：主账号和备用账号都需不同完整设备指纹，最好 iOS；需要构建机场自动代理并配置 Clash 地址，账号随机分配固定到节点；自动加入前需考虑随机点击其他群或频道
+- output: 专项 PRD v0.6 明确授权槽位级环境栈、Clash 订阅节点池、随机分配固定节点、pre-join decoy click 默认只浏览不加入；主 PRD 和 DF-178A 同步表、校验、API 和风控口径
+- evidence: E1 文档证据；本轮 `git diff --check` 和行尾空白检查通过
+- decision: 本轮仍为 PRD / 索引设计更新，不做代码实现，不声明 QA pass、发布完成或生产可用
+- next_agent: none
+- unresolved: 真实实现前仍需确认 Clash 订阅来源、节点质量阈值、首版目标机器人账号、灰度目标群和关键词样本
+
+## 2026-07-03 搜索自动入群 PRD 设计修复
+
+- message_id: 2026-07-03-search-join-group-prd-design-repair-001
+- action: 按用户要求深度反思并修复搜索自动入群 PRD 设计缺口，同步专项 PRD、主 PRD、数据流转索引和状态板
+- input: 用户强调主/备用账号不同设备指纹、机场 Clash 自动代理、入群前随机点击其他群或频道，并要求“深度思考，反思我们还有哪些问题”“完成 PRD 设计的修复”
+- output: 专项 PRD v0.7 明确首版 `mtproto_userbot` 执行边界、真实机器人协议样本闸门、Clash observed exit IP、账号级执行互斥、关键词 hash 禁明文、默认 `post_join_policy=stay_joined`、入群前非目标浏览默认不加入、主/备用授权独立客户端元数据和灰度验收修正；主 PRD 和 DF-178A 同步新增 `BotProtocolSample`、`ProxyExitIpObservation`、`AccountAuthorizationExecutionLock` 等数据流
+- evidence: E1 文档证据；本轮 `git diff --check`、未跟踪专项 PRD `git diff --no-index --check`、行尾空白检查和旧口径残留扫描通过，残留命中仅为用户原话、历史变更记录或非持久化参数名
+- decision: 本轮是 PRD / 索引设计修复，不做代码实现，不声明 QA pass、发布完成或生产可用
+- next_agent: none
+- unresolved: 真实实现前仍需采集目标机器人协议样本、确认 Clash 订阅来源和节点质量、选择首版目标机器人账号、灰度目标群和关键词样本

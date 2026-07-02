@@ -2,10 +2,16 @@ import React from 'react';
 import { Alert, Button, Card, Input, Space, Typography, message } from 'antd';
 import { api } from '../../shared/api/client';
 
-type Managed2FaAction = 'save' | 'rotate';
+type Managed2FaAction = 'save' | 'rotate' | 'reveal';
+
+type Managed2FaRevealResponse = {
+  account_id: number;
+  password: string;
+  revealed_at: string;
+};
 
 function managed2FaPath(accountId: number, action: Managed2FaAction) {
-  const suffix = action === 'save' ? 'managed-2fa' : 'managed-2fa/rotate';
+  const suffix = action === 'save' ? 'managed-2fa' : `managed-2fa/${action}`;
   return `/tg-accounts/${accountId}/security/${suffix}`;
 }
 
@@ -18,6 +24,7 @@ export function AccountManaged2FaSettingsPanel({
 }) {
   const [password, setPassword] = React.useState('');
   const [reason, setReason] = React.useState('');
+  const [revealedPassword, setRevealedPassword] = React.useState('');
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState('');
   const activeAccountId = React.useRef(accountId);
@@ -35,6 +42,7 @@ export function AccountManaged2FaSettingsPanel({
     managed2FaRequestRef.current = { accountId, action: '', seq: managed2FaRequestRef.current.seq + 1 };
     setPassword('');
     setReason('');
+    setRevealedPassword('');
     setError('');
     setLoading(false);
   }, [accountId]);
@@ -75,6 +83,7 @@ export function AccountManaged2FaSettingsPanel({
     const requestSeq = beginManaged2FaRequest(targetAccountId, action);
     setLoading(true);
     setError('');
+    setRevealedPassword('');
     try {
       const path = managed2FaPath(targetAccountId, action);
       await api(path, {
@@ -91,6 +100,33 @@ export function AccountManaged2FaSettingsPanel({
     } finally {
       if (isCurrentManaged2FaRequest(targetAccountId, action, requestSeq)) setLoading(false);
     }
+  }
+
+  async function revealManagedPassword() {
+    const targetAccountId = accountId;
+    const requestSeq = beginManaged2FaRequest(targetAccountId, 'reveal');
+    setLoading(true);
+    setError('');
+    setRevealedPassword('');
+    try {
+      const revealed = await api<Managed2FaRevealResponse>(managed2FaPath(targetAccountId, 'reveal'), {
+        method: 'POST',
+      });
+      if (!isCurrentManaged2FaRequest(targetAccountId, 'reveal', requestSeq)) return;
+      setRevealedPassword(revealed.password);
+      void message.success('托管 2FA 密码已显示');
+    } catch (error) {
+      if (!isCurrentManaged2FaRequest(targetAccountId, 'reveal', requestSeq)) return;
+      setError(error instanceof Error ? error.message : '查看托管 2FA 失败');
+    } finally {
+      if (isCurrentManaged2FaRequest(targetAccountId, 'reveal', requestSeq)) setLoading(false);
+    }
+  }
+
+  async function copyRevealedPassword() {
+    if (!revealedPassword) return;
+    await navigator.clipboard.writeText(revealedPassword);
+    void message.success('托管密码已复制');
   }
 
   return (
@@ -114,9 +150,16 @@ export function AccountManaged2FaSettingsPanel({
           disabled={!canManageCredentials}
           rows={2}
           value={reason}
-          placeholder="操作原因"
+          placeholder="保存或轮换的操作原因"
           onChange={(event) => setReason(event.target.value)}
         />
+        {revealedPassword && (
+          <Input.Password
+            readOnly
+            value={revealedPassword}
+            addonAfter={<Button type="link" size="small" onClick={() => void copyRevealedPassword()}>复制托管密码</Button>}
+          />
+        )}
         <Space wrap>
           <Button
             type="primary"
@@ -132,6 +175,13 @@ export function AccountManaged2FaSettingsPanel({
             onClick={() => saveManagedPassword('rotate')}
           >
             轮换托管密码
+          </Button>
+          <Button
+            disabled={!canManageCredentials}
+            loading={loading}
+            onClick={() => void revealManagedPassword()}
+          >
+            查看托管密码
           </Button>
         </Space>
       </Space>

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.database import Base
 from app.integrations.telegram.contracts import AccountAuthorizationSnapshot as RemoteAuthorizationSnapshot
 from app.integrations.telegram.contracts import RemoteProfile
-from app.models import AiProvider, AccountProxy, AccountStatus, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot, TgVerificationCode
+from app.models import AiProvider, AccountProxy, AccountStatus, AuditLog, Material, TelegramDeveloperApp, Tenant, TenantAiSetting, TgAccount, TgAccountAuthorization, TgAccountAuthorizationSnapshot, TgAccountSecurityBatch, TgAccountSecurityBatchItem, TgAccountSecuritySnapshot, TgVerificationCode
 from app.schemas import TgAccountCreate
 from app.schemas.account_security import AccountSecurityBatchCreate, AccountSecurityPrecheckRequest, AccountSecurityProfileOverride, AvatarStrategy, ManagedTwoFaRequest, ProfileGenerationStrategy
 from app.security import decrypt_secret, encrypt_secret, encrypt_session
@@ -1465,6 +1465,36 @@ def test_managed_two_fa_save_and_rotate_store_encrypted_password(monkeypatch):
         assert calls == [{"password": "new-password", "current_password": "old-password"}]
         assert snapshot.two_fa_password_ciphertext
         assert snapshot.two_fa_password_ciphertext != "new-password"
+
+
+@pytest.mark.no_postgres
+def test_managed_two_fa_reveal_returns_decrypted_password_and_audits(monkeypatch):
+    monkeypatch.setenv("TEST_DATABASE_URL", "sqlite:///:memory:")
+    with _session() as session:
+        account = _seed_account(session)
+        save_managed_two_fa_password(
+            session,
+            1,
+            account.id,
+            ManagedTwoFaRequest(password="stored-password", reason="首次托管"),
+            "tester",
+        )
+
+        revealed = account_security_service.reveal_managed_two_fa_password(
+            session,
+            1,
+            account.id,
+            "tester",
+        )
+        audit_row = session.scalar(select(AuditLog).where(AuditLog.action == "查看账号托管二步密码"))
+
+        assert revealed.account_id == account.id
+        assert revealed.password == "stored-password"
+        assert revealed.revealed_at is not None
+        assert audit_row is not None
+        assert audit_row.target_type == "tg_account"
+        assert audit_row.target_id == str(account.id)
+        assert audit_row.detail == ""
 
 
 def test_modal_confirmation_text_starts_batch_without_legacy_phrase():
