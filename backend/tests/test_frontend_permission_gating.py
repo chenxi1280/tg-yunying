@@ -590,7 +590,7 @@ def test_managed_2fa_panel_ignores_stale_account_responses():
     effect = source[source.index("React.useEffect(() => {"):source.index("\n  function isActiveAccount")]
     save_body = source[source.index("async function saveManagedPassword"):source.index("\n\n  return")]
 
-    assert "type Managed2FaAction = 'save' | 'rotate';" in source
+    assert "type Managed2FaAction = 'save' | 'rotate' | 'reveal';" in source
     assert "function managed2FaPath(accountId: number, action: Managed2FaAction)" in source
     assert "const activeAccountId = React.useRef(accountId);" in source
     assert "function isActiveAccount(targetAccountId: number)" in source
@@ -610,6 +610,7 @@ def test_managed_2fa_panel_ignores_stale_account_responses():
     assert "onClick={() => saveManagedPassword(`/tg-accounts/${accountId}/security/managed-2fa`)}" not in source
     assert "onClick={() => saveManagedPassword('save')}" in source
     assert "onClick={() => saveManagedPassword('rotate')}" in source
+    assert "onClick={() => void revealManagedPassword()}" in source
 
 
 def test_managed_2fa_panel_ignores_stale_same_account_actions():
@@ -2152,10 +2153,11 @@ def test_security_drawers_show_cleanup_preservation_and_managed_2fa_policy():
     assert "托管 2FA" in modals
     assert "密码设置 / 轮换不回显旧密码" in modals
     assert "accountId={accountDetail.account.id}" in modals
-    assert "const suffix = action === 'save' ? 'managed-2fa' : 'managed-2fa/rotate';" in managed_2fa
+    assert "const suffix = action === 'save' ? 'managed-2fa' : `managed-2fa/${action}`;" in managed_2fa
     assert "return `/tg-accounts/${accountId}/security/${suffix}`;" in managed_2fa
     assert "post_account_security_managed_2fa" in router
     assert "post_account_security_managed_2fa_rotate" in router
+    assert "post_account_security_managed_2fa_reveal" in router
     assert "accounts.security.credential_manage" in auth
 
 
