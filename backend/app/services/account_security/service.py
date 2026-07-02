@@ -524,7 +524,7 @@ def _failed_device_cleanup_precheck(session: Session, account: TgAccount, actor:
         cleanup_count=0,
         kept_count=0,
         unknown_count=0,
-        status="failed",
+        status="scan_failed",
         created_by=actor,
         expires_at=_now() + DEVICE_CLEANUP_PRECHECK_TTL,
     )
@@ -1325,7 +1325,7 @@ def _execute_cleanup(session: Session, account: TgAccount, item: TgAccountSecuri
         item.failure_type = "device_cleanup_precheck_missing"
         return ["缺少设备清理预检快照，禁止现场重新扫描后清理"]
     precheck = _device_cleanup_precheck(session, account.tenant_id, account.id, item.device_cleanup_precheck_id)
-    if precheck.status == "failed":
+    if precheck.status == "scan_failed":
         item.cleanup_status = "failed"
         item.failure_type = "device_cleanup_scan_failed"
         return [_device_cleanup_scan_failure_detail(session, account)]
@@ -1333,6 +1333,7 @@ def _execute_cleanup(session: Session, account: TgAccount, item: TgAccountSecuri
     cleanup_hashes = _precheck_cleanup_hashes(precheck)
     item.external_devices_before = len(cleanup_hashes)
     cleaned = 0
+    waiting_for_fresh_reset = False
     for encrypted_hash in cleanup_hashes:
         raw_hash = decrypt_secret(encrypted_hash) or encrypted_hash
         result = gateway.cleanup_authorization(account.session_ciphertext, raw_hash, credentials)
@@ -1343,9 +1344,11 @@ def _execute_cleanup(session: Session, account: TgAccount, item: TgAccountSecuri
                 item.next_retry_at = _now() + timedelta(hours=24)
                 item.cleanup_status = "waiting"
                 item.status = "waiting"
+                waiting_for_fresh_reset = True
             failures.append(result.detail or result.failure_type)
     item.external_devices_after = max(0, len(cleanup_hashes) - cleaned)
-    item.cleanup_status = "succeeded" if not failures else "partial_success" if cleaned else "failed"
+    if not waiting_for_fresh_reset or not failures:
+        item.cleanup_status = "succeeded" if not failures else "partial_success" if cleaned else "failed"
     precheck.status = item.cleanup_status
     precheck.confirmed_by = "account-security-worker"
     precheck.confirmed_at = _now()

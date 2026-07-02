@@ -258,13 +258,7 @@ class TelegramGateway:
         session_ciphertext: str | None = None,
         credentials: DeveloperAppCredentials | None = None,
     ) -> list[VerificationCodeSnapshot]:
-        return [
-            VerificationCodeSnapshot(
-                code="12345",
-                raw_hint="Telegram 官方服务消息：Login code 12345",
-                expires_at=datetime.now(BEIJING_TZ) + timedelta(minutes=5),
-            )
-        ]
+        return []
 
     def list_contacts(
         self,

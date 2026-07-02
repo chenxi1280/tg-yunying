@@ -9,7 +9,7 @@ from app.config import get_settings
 from app.auth import get_challenge_target
 from app.database import SessionLocal
 from app.main import app
-from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult
+from app.integrations.telegram import ChannelCommentSnapshot, ChannelMessageSnapshot, DeveloperAppCredentials, GroupMessageSnapshot, GroupSnapshot, OperationResult, SendResult, VerificationCodeSnapshot
 from app.models import AccountStatus, Action, AiDraft, AiGroupMessageMemory, AiUsageLedger, AuditLog, Campaign, DeveloperAppHealthStatus, FailureType, GroupContextMessage, ListenerSourceState, ManualOperationRecord, Material, MessageFingerprint, MessageTask, OperationTarget, OperationTaskAttempt, ReviewQueue, SchedulingSetting, SourceMediaAsset, Task, TaskStatus, TelegramDeveloperApp, Tenant, TgAccount, TgAccountOnlineState, TgAccountProfileSyncRecord, TgAccountSyncRecord, TgGroup, TgGroupAccount, TgLoginFlow, VerificationTask
 from app.services._common import _now
 from app.services.notifications import NotificationResult
@@ -2605,7 +2605,7 @@ def test_system_prompt_skips_ai_when_tenant_ai_disabled():
             )
 
 
-def test_account_detail_codes_and_direct_message_queue():
+def test_account_detail_codes_and_direct_message_queue(monkeypatch):
     with TestClient(app) as client:
         headers = auth_headers(client)
         account, _ = ensure_test_workspace(client, headers)
@@ -2615,6 +2615,16 @@ def test_account_detail_codes_and_direct_message_queue():
         assert "groups" in detail
         assert "message_records" in detail
 
+        monkeypatch.setattr(
+            "app.services.accounts.gateway.poll_verification_codes",
+            lambda *_args, **_kwargs: [
+                VerificationCodeSnapshot(
+                    code="12345",
+                    raw_hint="Telegram 官方服务消息：Login code 12345",
+                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                )
+            ],
+        )
         codes = client.post(f"/api/tg-accounts/{account['id']}/verification-codes/poll", headers=headers, json={"reason": "测试提取验证码"}).json()
         assert codes
         assert codes[0]["source"] == "telegram_service_message"
