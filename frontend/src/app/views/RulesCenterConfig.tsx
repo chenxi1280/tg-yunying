@@ -18,7 +18,7 @@ export const TASK_TYPE_OPTIONS = [
   { value: 'group_relay', label: '监听转发' },
   { value: 'group_ai_chat', label: 'AI 回复' },
   { value: 'channel_comment', label: 'AI 评论' },
-  { value: 'search_join_group', label: '搜索自动入群' },
+  { value: 'search_join_group', label: '搜索目标群点击任务' },
   { value: 'message_send', label: '普通消息发送' },
 ];
 

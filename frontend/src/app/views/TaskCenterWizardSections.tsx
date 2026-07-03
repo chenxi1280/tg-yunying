@@ -295,7 +295,7 @@ export function WizardTypeConfig({
         <Alert
           type="warning"
           showIcon
-          message="搜索自动入群首版固定 mtproto_userbot；缺少真实协议样本、代理出口或客户端元数据时 fail closed，不会假成功。"
+          message="搜索目标群点击任务首版固定 mtproto_userbot；缺少真实协议样本、代理出口或客户端元数据时 fail closed，不会假成功。已在目标群内的账号仍会执行搜索和目标确认。"
         />
         <div className="form-grid">
           <Form.Item name="search_bots" label="搜索机器人" rules={[{ required: true }]}>
@@ -308,9 +308,9 @@ export function WizardTypeConfig({
           <Form.Item name="business_region" label="业务地区"><Input placeholder="CN-SH" /></Form.Item>
           <Form.Item name="account_locale" label="账号语言"><Input placeholder="zh-CN" /></Form.Item>
           <Form.Item name="proxy_country" label="代理出口国家"><Input placeholder="SG / JP / US" /></Form.Item>
-          <Form.Item name="pre_join_decoy_click_max" label="入群前非目标浏览上限"><InputNumber min={0} max={3} precision={0} /></Form.Item>
-          <Form.Item name="post_join_safe_navigation_max" label="入群后安全浏览上限"><InputNumber min={0} max={3} precision={0} /></Form.Item>
-          <Form.Item name="hourly_min_successful_joins" label="每小时最低成功入群"><InputNumber min={1} max={500} precision={0} /></Form.Item>
+          <Form.Item name="pre_join_decoy_click_max" label="目标确认前非目标浏览上限"><InputNumber min={0} max={3} precision={0} /></Form.Item>
+          <Form.Item name="post_join_safe_navigation_max" label="目标确认后安全浏览上限"><InputNumber min={0} max={3} precision={0} /></Form.Item>
+          <Form.Item name="hourly_min_successful_joins" label="每小时最低成功点击"><InputNumber min={1} max={500} precision={0} /></Form.Item>
           <Form.Item name="actions_per_round" label="每轮规划数"><InputNumber min={1} max={20} precision={0} /></Form.Item>
           <Form.Item name="target_relevance_score" label="目标资料相关性"><InputNumber min={0} max={100} precision={0} /></Form.Item>
           <Form.Item name="target_content_health" label="内容健康"><Select options={[{ value: 'healthy', label: '健康' }, { value: 'weak', label: '偏弱' }, { value: 'blocked', label: '阻断' }, { value: 'unknown', label: '未知' }]} /></Form.Item>

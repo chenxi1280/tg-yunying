@@ -142,7 +142,7 @@ def test_task_center_frontend_supports_search_join_group_contract():
     grouping = (PROJECT_ROOT / "frontend/src/app/views/taskCenterListGrouping.ts").read_text()
 
     assert "'search_join_group'" in types
-    assert "搜索自动入群" in view_model
+    assert "搜索目标群点击任务" in view_model
     assert "search_join_group: '/tasks/search-join-group'" in view_model
     assert "search_join_group: '/tasks/search-join-group/create-and-start'" in view_model
     for field in ["search_bots", "keyword_hashes", "pre_join_decoy_click_max", "post_join_safe_navigation_max"]:

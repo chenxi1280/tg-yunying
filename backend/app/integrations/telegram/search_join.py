@@ -242,13 +242,23 @@ async def _join_target(client: Any, button: SearchJoinButton, target: dict[str, 
 async def _join_channel(client: Any, entity: Any) -> None:
     from telethon import functions
 
-    await client(functions.channels.JoinChannelRequest(channel=entity))
+    try:
+        await client(functions.channels.JoinChannelRequest(channel=entity))
+    except Exception as exc:
+        if _is_already_participant_error(exc):
+            return
+        raise
 
 
 async def _import_invite(client: Any, invite_hash: str) -> None:
     from telethon import functions
 
-    await client(functions.messages.ImportChatInviteRequest(invite_hash))
+    try:
+        await client(functions.messages.ImportChatInviteRequest(invite_hash))
+    except Exception as exc:
+        if _is_already_participant_error(exc):
+            return
+        raise
 
 
 async def _mark_read_if_supported(client: Any, target: str) -> None:
@@ -360,6 +370,11 @@ def _invite_hash(url: str) -> str:
 
 def _click_result_url(result: Any) -> str:
     return str(getattr(result, "url", "") or "").strip()
+
+
+def _is_already_participant_error(exc: Exception) -> bool:
+    text = f"{exc.__class__.__name__} {exc}".lower()
+    return "already" in text and ("participant" in text or "member" in text)
 
 
 def _target_chat_id(button: Any) -> int | None:

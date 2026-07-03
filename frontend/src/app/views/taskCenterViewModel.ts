@@ -10,7 +10,7 @@ export const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
   { value: 'channel_view', label: '频道消息浏览' },
   { value: 'channel_like', label: '频道消息点赞' },
   { value: 'channel_comment', label: '频道消息评论/回复' },
-  { value: 'search_join_group', label: '搜索自动入群' },
+  { value: 'search_join_group', label: '搜索目标群点击任务' },
 ];
 
 export const TYPE_LABEL: Record<string, string> = Object.fromEntries(TASK_TYPES.map((item) => [item.value, item.label]));
@@ -58,7 +58,7 @@ export const ACTION_LABEL: Record<string, string> = {
   like_message: '点赞',
   post_comment: '评论',
   view_message: '浏览',
-  search_join: '搜索入群',
+  search_join: '搜索目标点击',
 };
 
 const PRECHECK_REASON_LABELS: Record<string, string> = {

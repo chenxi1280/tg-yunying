@@ -55,8 +55,9 @@ class FakeConversation:
 
 
 class FakeSearchJoinClient:
-    def __init__(self, responses: list[FakeMessage]) -> None:
+    def __init__(self, responses: list[FakeMessage], join_error: Exception | None = None) -> None:
         self.responses = responses
+        self.join_error = join_error
         self.sent: list[tuple[str, str]] = []
         self.joined: list[str] = []
         self.imported_invites: list[str] = []
@@ -75,6 +76,8 @@ class FakeSearchJoinClient:
     async def __call__(self, request):
         name = request.__class__.__name__
         if name == "JoinChannelRequest":
+            if self.join_error:
+                raise self.join_error
             self.joined.append(str(request.channel))
         if name == "ImportChatInviteRequest":
             self.imported_invites.append(str(request.hash))
@@ -84,6 +87,11 @@ class FakeSearchJoinClient:
 @dataclass
 class FakeCallbackAnswer:
     url: str
+
+
+class FakeAlreadyParticipantError(Exception):
+    def __str__(self) -> str:
+        return "The authenticated user is already a participant of the channel"
 
 
 def _payload(**overrides) -> dict:
@@ -158,6 +166,20 @@ def test_execute_search_join_joins_known_target_when_message_text_matches() -> N
     assert client.joined == ["xiaozisk"]
     assert result["target_match_source"] == "message_text"
     assert result["target_line"] == "👥郑州平价资源（交流群） 46k"
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_counts_target_click_success_when_account_already_joined() -> None:
+    target = FakeButton("目标群", url="https://t.me/target_group")
+    message = FakeMessage(101, [[target]])
+    client = FakeSearchJoinClient([FakeMessage(100, []), message], join_error=FakeAlreadyParticipantError())
+
+    result = asyncio.run(execute_search_join_with_client(client, _payload(), keyword_text="上海 留学"))
+
+    assert result["success"] is True
+    assert message.clicked == [(0, 0)]
+    assert client.read_targets == ["target_group"]
+    assert result["join_status"] == "membership_observed"
 
 
 @pytest.mark.no_postgres
