@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 TELEGRAM_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
 NAVIGATION_MARKERS = ("下一页", "上一页", "next", "prev", "page", "页")
+GROUP_CATEGORY_TEXTS = {"👥", "群组", "群聊", "groups", "group"}
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
         await conv.get_response()
         await conv.send_message(keyword_text)
         page = await conv.get_response()
+        page = await _open_group_results_page(conv, page)
         for page_no in range(1, max_pages + 1):
             buttons = _parse_buttons(page)
             total_results += len(buttons)
@@ -57,6 +59,24 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
             await _click_button(page, next_button)
             page = await conv.get_response()
     return {**_failed("target_not_in_results", "目标群未出现在搜索结果"), "total_results": total_results}
+
+
+async def _open_group_results_page(conv: Any, page: Any) -> Any:
+    buttons = _parse_buttons(page)
+    group_button = _find_group_category_button(buttons)
+    if group_button is None:
+        return page
+    await _click_button(page, group_button)
+    return await conv.get_response()
+
+
+def _find_group_category_button(buttons: list[SearchJoinButton]) -> SearchJoinButton | None:
+    for button in buttons:
+        if button.effect != "unknown":
+            continue
+        if button.text.strip().lower() in GROUP_CATEGORY_TEXTS:
+            return button
+    return None
 
 
 async def _click_page_decoys(page: Any, buttons: list[SearchJoinButton], payload: dict[str, Any], decoys: list[dict[str, Any]]) -> None:

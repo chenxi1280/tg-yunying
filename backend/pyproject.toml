@@ -15,6 +15,7 @@ dependencies = [
   "PyYAML>=6.0.0",
   "telethon>=1.36.0",
   "PySocks>=1.7.1",
+  "python-socks[asyncio]>=2.4.0",
   "redis>=5.0.0",
   "cryptography>=42.0.0",
 ]

@@ -131,6 +131,26 @@ def test_execute_search_join_matches_real_peer_id_and_title() -> None:
 
 
 @pytest.mark.no_postgres
+def test_execute_search_join_opens_group_category_before_matching_results() -> None:
+    category_page = FakeMessage(101, [[FakeButton("👥", data=b"group-category")], [FakeButton("📢", data=b"channel-category")]])
+    result_page = FakeMessage(102, [[FakeButton("郑州平价资源（交流群）", url="https://t.me/xiaozisk")]])
+    client = FakeSearchJoinClient([FakeMessage(100, []), category_page, result_page])
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(target_username="xiaozisk", target_title="郑州平价资源（交流群）", target_peer_id="-1002188784621"),
+            keyword_text="郑州",
+        )
+    )
+
+    assert result["success"] is True
+    assert category_page.clicked == [(0, 0)]
+    assert result_page.clicked == [(0, 0)]
+    assert client.joined == ["xiaozisk"]
+
+
+@pytest.mark.no_postgres
 def test_execute_search_join_reports_target_not_in_results_without_joining() -> None:
     message = FakeMessage(101, [[FakeButton("其他群", url="https://t.me/other_group")]])
     client = FakeSearchJoinClient([FakeMessage(100, []), message])
