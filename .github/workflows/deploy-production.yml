@@ -571,7 +571,7 @@ jobs:
           CLASH_NODE_LIMIT: ${{ inputs.clash_search_join_node_limit }}
           CLASH_TEST_ACCOUNT_COUNT: ${{ inputs.clash_search_join_test_account_count }}
           CLASH_TARGET_QUERY: ${{ inputs.clash_search_join_target_query }}
-          CLASH_IMAGE: ghcr.io/metacubex/mihomo:latest
+          CLASH_IMAGE: metacubex/mihomo:latest
         run: |
           set -euo pipefail
           test -n "${CLASH_SUBSCRIPTION_URL}"
