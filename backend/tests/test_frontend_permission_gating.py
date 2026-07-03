@@ -630,6 +630,7 @@ def test_managed_2fa_panel_ignores_stale_account_responses():
     assert "onClick={() => saveManagedPassword(`/tg-accounts/${accountId}/security/managed-2fa`)}" not in source
     assert "onClick={() => saveManagedPassword('save')}" in source
     assert "onClick={() => saveManagedPassword('rotate')}" in source
+    assert "onClick={() => void revealManagedPassword()}" in source
 
 
 def test_managed_2fa_panel_ignores_stale_same_account_actions():
