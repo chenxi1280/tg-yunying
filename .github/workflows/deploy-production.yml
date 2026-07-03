@@ -1304,6 +1304,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "AI_GROUP_QUALITY_DIAGNOSTICS_START"
-          ssh silicon-valley-production-server 'timeout 1200 docker exec -i tgyunying-backend python -' \
+          AI_GROUP_RELEASE_LIVE_AT="$(TZ=Asia/Shanghai date +'%Y-%m-%dT%H:%M:%S')"
+          echo "AI_GROUP_RELEASE_LIVE_AT=${AI_GROUP_RELEASE_LIVE_AT}"
+          ssh silicon-valley-production-server "timeout 1200 docker exec -e AI_GROUP_RELEASE_LIVE_AT='${AI_GROUP_RELEASE_LIVE_AT}' -i tgyunying-backend python -" \
             < .github/scripts/ai_group_quality_diagnostics.py
           echo "AI_GROUP_QUALITY_DIAGNOSTICS_END"

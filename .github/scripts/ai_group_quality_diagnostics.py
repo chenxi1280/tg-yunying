@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -147,6 +148,19 @@ def normalized_text(value: object) -> str:
 
 def now_local() -> datetime:
     return datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+
+
+def release_live_since() -> datetime | None:
+    raw_value = str(os.environ.get("AI_GROUP_RELEASE_LIVE_AT") or "").strip()
+    if not raw_value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SystemExit(f"Invalid AI_GROUP_RELEASE_LIVE_AT: {raw_value}") from exc
+    if parsed.tzinfo:
+        parsed = parsed.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    return parsed
 
 
 def worker_snapshot(session, now: datetime) -> dict[str, Any]:
@@ -889,6 +903,10 @@ def recent_action_duplicate_snapshot(session, since: datetime) -> dict[str, Any]
     return recent_action_duplicate_summary(actions)
 
 
+def windowed_summary(payload: dict[str, Any], since: datetime) -> dict[str, Any]:
+    return {"since": iso(since), **payload}
+
+
 def recent_action_duplicate_summary(actions: list[Action]) -> dict[str, Any]:
     grouped = _group_actions_by_text(actions)
     repeated_texts = [
@@ -989,6 +1007,7 @@ def _quality_payload_field_present(payload: dict[str, Any], field: str) -> bool:
 def main() -> None:
     captured_at = now_local()
     since = captured_at - timedelta(hours=WINDOW_HOURS)
+    release_since = release_live_since()
     with SessionLocal() as session:
         json_line("AI_GROUP_QUALITY_WORKERS", worker_snapshot(session, captured_at))
         json_line("AI_GROUP_QUALITY_VOICE_PROFILES", voice_profile_snapshot(session))
@@ -1001,6 +1020,11 @@ def main() -> None:
         if recent_duplicates["quality_payload_blockers"]:
             json_line("AI_GROUP_QUALITY_PAYLOAD_GATE_FAILED", recent_duplicates)
             raise SystemExit("AI group quality payload gate failed")
+        if release_since:
+            release_recent_duplicates = recent_action_duplicate_snapshot(session, release_since)
+            json_line("AI_GROUP_QUALITY_RECENT_ACTIONS_AFTER_RELEASE", windowed_summary(release_recent_duplicates, release_since))
+            release_snapshots = task_snapshots(session, release_since)
+            json_line("AI_GROUP_REALISM_AUDIT_AFTER_RELEASE", windowed_summary(realism_audit_summary(release_snapshots), release_since))
         pre_online_snapshots = task_snapshots(session, since)
         json_line("AI_GROUP_REALISM_AUDIT_PRE_ONLINE", realism_audit_summary(pre_online_snapshots))
         snapshots = wait_for_online_gate(session, since)

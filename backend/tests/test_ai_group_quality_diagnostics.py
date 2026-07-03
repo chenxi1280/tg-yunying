@@ -927,6 +927,23 @@ def test_ai_group_quality_diagnostics_flags_ai_like_or_off_mask_samples():
     ]
 
 
+def test_ai_group_quality_diagnostics_parses_release_live_since(monkeypatch):
+    module = load_quality_diagnostics_module()
+    monkeypatch.setenv("AI_GROUP_RELEASE_LIVE_AT", "2026-07-03T17:23:59Z")
+
+    assert module.release_live_since() == datetime(2026, 7, 4, 1, 23, 59)
+
+
+def test_ai_group_quality_diagnostics_adds_release_window_to_summary():
+    module = load_quality_diagnostics_module()
+    since = datetime(2026, 7, 4, 1, 23, 59)
+
+    assert module.windowed_summary({"risk_sample_count": 0}, since) == {
+        "since": "2026-07-04T01:23:59",
+        "risk_sample_count": 0,
+    }
+
+
 def test_ai_group_quality_diagnostics_reports_success_only_duplicates_without_blocking():
     module = load_quality_diagnostics_module()
     actions = [
