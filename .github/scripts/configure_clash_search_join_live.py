@@ -445,8 +445,8 @@ def seed_protocol_sample(session, bot: str) -> None:
     sample.pii_scrubbed = True
     sample.is_active = True
     sample.captured_at = _now()
+    session.flush()
     audit(session, tenant_id=1, actor="github-actions", action="补齐搜索机器人协议样本", target_type="bot_protocol_sample", target_id=bot)
-
 def summary_payload(accounts: list[TgAccount], proxies: list[AccountProxy], task: Task, session) -> dict[str, Any]:
     action_count = session.scalar(
         select(func.count(Action.id)).where(Action.tenant_id == 1, Action.task_id == task.id, Action.action_type == "search_join")

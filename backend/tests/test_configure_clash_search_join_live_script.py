@@ -60,3 +60,32 @@ proxies:
 
     assert [node.name for node in nodes] == ["yaml-trojan", "yaml-anytls"]
     assert nodes[0].config["type"] == "trojan"
+
+
+@pytest.mark.no_postgres
+def test_protocol_sample_seed_flushes_for_autoflush_disabled_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    script = _load_script()
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.flushed = False
+            self.sample = None
+
+        def scalar(self, _statement):
+            return (getattr(self.sample, "id", None) or "seeded") if self.flushed else None
+
+        def add(self, item) -> None:
+            if item.__class__.__name__ == "BotProtocolSample":
+                self.sample = item
+
+        def flush(self) -> None:
+            self.flushed = True
+
+    session = FakeSession()
+    monkeypatch.setenv("CLASH_SEED_PROTOCOL_SAMPLE", "true")
+
+    script.require_protocol_sample(session, "jisou")
+
+    assert session.flushed is True
+    assert session.sample.bot_username == "jisou"
+    assert session.sample.is_active is True
