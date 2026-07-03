@@ -16,6 +16,7 @@ import yaml
 from sqlalchemy import func, select
 from app.database import SessionLocal
 from app.models import (
+    AccountEnvironmentBinding,
     AccountProxy,
     AccountProxyBinding,
     AccountStatus,
@@ -29,6 +30,7 @@ from app.models import (
 )
 from app.schemas.task_center import AccountConfig, SearchJoinBotConfig, SearchJoinGroupTaskCreate
 from app.services._common import _now, audit
+from app.services.client_metadata import ensure_search_join_environment
 from app.services.task_center.executors import build_task_plan
 from app.services.task_center.service import _assert_precheck_allows_start, _mark_task_started, _new_task
 
@@ -338,6 +340,21 @@ def bind_account(session, account: TgAccount, proxy: AccountProxy) -> None:
         auth.updated_at = _now()
     audit(session, tenant_id=1, actor="github-actions", action="绑定 Clash 代理", target_type="account", target_id=account.id, detail=f"{previous_proxy_id}->{proxy.id}")
 
+def bind_account_environments(session, accounts: list[TgAccount]) -> dict[str, Any]:
+    failures: list[dict[str, Any]] = []
+    for account in accounts:
+        try:
+            environment = ensure_search_join_environment(session, account)
+        except ValueError as exc:
+            failures.append({"account_id": account.id, "error": str(exc)})
+            continue
+        if environment is None:
+            failures.append({"account_id": account.id, "error": "needs_client_metadata"})
+    if failures:
+        raise RuntimeError("account environment binding failed: " + json.dumps(failures[:20], ensure_ascii=False))
+    binding_count = session.scalar(select(func.count(AccountEnvironmentBinding.id)).where(AccountEnvironmentBinding.tenant_id == 1))
+    return {"environment_binding_count": int(binding_count or 0), "environment_bound_account_count": len(accounts)}
+
 def apply_database(nodes: list[ProxyNode]) -> dict[str, Any]:
     healthy = set(healthy_indexes())
     selected = [node for node in nodes if node.index in healthy]
@@ -351,9 +368,10 @@ def apply_database(nodes: list[ProxyNode]) -> dict[str, Any]:
         proxies = [upsert_proxy(session, node, capacity) for node in selected]
         for offset, account in enumerate(accounts):
             bind_account(session, account, proxies[offset % len(proxies)])
+        environment_summary = bind_account_environments(session, accounts)
         task = create_zhengzhou_task(session, accounts)
         session.commit()
-        return summary_payload(accounts, proxies, task, session)
+        return summary_payload(accounts, proxies, task, session, environment_summary)
 
 def preflight_database(nodes: list[ProxyNode]) -> dict[str, Any]:
     healthy = set(healthy_indexes())
@@ -447,7 +465,7 @@ def seed_protocol_sample(session, bot: str) -> None:
     sample.captured_at = _now()
     session.flush()
     audit(session, tenant_id=1, actor="github-actions", action="补齐搜索机器人协议样本", target_type="bot_protocol_sample", target_id=bot)
-def summary_payload(accounts: list[TgAccount], proxies: list[AccountProxy], task: Task, session) -> dict[str, Any]:
+def summary_payload(accounts: list[TgAccount], proxies: list[AccountProxy], task: Task, session, environment_summary: dict[str, Any]) -> dict[str, Any]:
     action_count = session.scalar(
         select(func.count(Action.id)).where(Action.tenant_id == 1, Action.task_id == task.id, Action.action_type == "search_join")
     )
@@ -458,6 +476,7 @@ def summary_payload(accounts: list[TgAccount], proxies: list[AccountProxy], task
         "test_task_status": task.status,
         "test_task_last_error": task.last_error,
         "search_join_action_count": int(action_count or 0),
+        **environment_summary,
     }
 
 def phase_prepare() -> None:
