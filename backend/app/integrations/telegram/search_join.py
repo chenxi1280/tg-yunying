@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 TELEGRAM_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
 NAVIGATION_MARKERS = ("下一页", "上一页", "next", "prev", "page", "页")
-GROUP_CATEGORY_TEXTS = {"👥", "群组", "群聊", "groups", "group"}
+HUMAN_VERIFICATION_MARKERS = ("人机验证", "计算结果", "captcha")
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,12 @@ class SearchJoinButton:
     url: str = ""
     target_username: str = ""
     target_chat_id: int | None = None
+
+
+@dataclass(frozen=True)
+class TextTargetMatch:
+    position: int
+    line: str
 
 
 async def execute_search_join_with_client(client: Any, payload: dict[str, Any], *, keyword_text: str) -> dict[str, Any]:
@@ -45,11 +51,15 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
         await conv.get_response()
         await conv.send_message(keyword_text)
         page = await conv.get_response()
-        page = await _open_group_results_page(conv, page)
         for page_no in range(1, max_pages + 1):
+            if _human_verification_required(page):
+                return _failed("bot_human_verification_required", "搜索机器人要求人机验证，当前账号不能自动执行")
             buttons = _parse_buttons(page)
             total_results += len(buttons)
             await _click_page_decoys(page, buttons, payload, decoys)
+            text_match = _find_target_in_text(page, target)
+            if text_match:
+                return await _execute_text_target_join(client, payload, target, text_match, decoys, page_no, total_results)
             target_button = _find_target_button(buttons, target)
             if target_button:
                 return await _execute_target_join(client, page, payload, target, target_button, decoys, page_no, total_results)
@@ -59,24 +69,6 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
             await _click_button(page, next_button)
             page = await conv.get_response()
     return {**_failed("target_not_in_results", "目标群未出现在搜索结果"), "total_results": total_results}
-
-
-async def _open_group_results_page(conv: Any, page: Any) -> Any:
-    buttons = _parse_buttons(page)
-    group_button = _find_group_category_button(buttons)
-    if group_button is None:
-        return page
-    await _click_button(page, group_button)
-    return await conv.get_response()
-
-
-def _find_group_category_button(buttons: list[SearchJoinButton]) -> SearchJoinButton | None:
-    for button in buttons:
-        if button.effect != "unknown":
-            continue
-        if button.text.strip().lower() in GROUP_CATEGORY_TEXTS:
-            return button
-    return None
 
 
 async def _click_page_decoys(page: Any, buttons: list[SearchJoinButton], payload: dict[str, Any], decoys: list[dict[str, Any]]) -> None:
@@ -103,6 +95,29 @@ async def _execute_target_join(
     joined_target = await _join_target(client, button, target, click_result)
     await _mark_read_if_supported(client, joined_target)
     return _success(payload, button, total, decoys, page_no)
+
+
+async def _execute_text_target_join(
+    client: Any,
+    payload: dict[str, Any],
+    target: dict[str, Any],
+    match: TextTargetMatch,
+    decoys: list[dict[str, Any]],
+    page_no: int,
+    total: int,
+) -> dict[str, Any]:
+    join_ref = str(target.get("username") or target.get("group_id") or "").strip()
+    if not join_ref:
+        return _failed("target_join_reference_missing", "正文命中目标但缺少可加入的 username / peer")
+    entity = await client.get_entity(join_ref)
+    await _join_channel(client, entity)
+    await _mark_read_if_supported(client, str(entity))
+    return {
+        **_success(payload, None, total, decoys, page_no),
+        "target_position": match.position,
+        "target_match_source": "message_text",
+        "target_line": match.line,
+    }
 
 
 def _parse_buttons(message: Any) -> list[SearchJoinButton]:
@@ -251,11 +266,11 @@ def _external_blocked(button: SearchJoinButton, total: int, decoys: list[dict[st
     }
 
 
-def _success(payload: dict[str, Any], button: SearchJoinButton, total: int, decoys: list[dict[str, Any]], page_no: int) -> dict[str, Any]:
+def _success(payload: dict[str, Any], button: SearchJoinButton | None, total: int, decoys: list[dict[str, Any]], page_no: int) -> dict[str, Any]:
     return {
         "success": True,
         "join_status": "membership_observed",
-        "target_position": button.position,
+        "target_position": button.position if button else 0,
         "page": page_no,
         "total_results": total,
         "target_group_id": payload.get("target_group_id"),
@@ -277,6 +292,31 @@ def _bot_username(payload: dict[str, Any]) -> str:
 def _safe(payload: dict[str, Any]) -> dict[str, Any]:
     safe = payload.get("safe_navigation")
     return safe if isinstance(safe, dict) else {}
+
+
+def _find_target_in_text(message: Any, target: dict[str, Any]) -> TextTargetMatch | None:
+    title = str(target.get("title") or "").strip().lower()
+    username = str(target.get("username") or "").strip().lower().lstrip("@")
+    if not title and not username:
+        return None
+    for position, line in enumerate(_message_text(message).splitlines(), start=1):
+        normalized = line.strip().lower()
+        if not normalized:
+            continue
+        if title and title in normalized:
+            return TextTargetMatch(position, line.strip())
+        if username and username in normalized:
+            return TextTargetMatch(position, line.strip())
+    return None
+
+
+def _human_verification_required(message: Any) -> bool:
+    text = _message_text(message).lower()
+    return any(marker in text for marker in HUMAN_VERIFICATION_MARKERS)
+
+
+def _message_text(message: Any) -> str:
+    return str(getattr(message, "raw_text", "") or getattr(message, "message", "") or "")
 
 
 def _target_spec(payload: dict[str, Any]) -> dict[str, Any]:

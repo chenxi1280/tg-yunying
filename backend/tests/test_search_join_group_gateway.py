@@ -18,11 +18,18 @@ class FakeButton:
 
 
 class FakeMessage:
-    def __init__(self, message_id: int, buttons: list[list[FakeButton]], click_results: dict[tuple[int, int], object] | None = None) -> None:
+    def __init__(
+        self,
+        message_id: int,
+        buttons: list[list[FakeButton]],
+        click_results: dict[tuple[int, int], object] | None = None,
+        raw_text: str = "",
+    ) -> None:
         self.id = message_id
         self.buttons = buttons
         self.clicked: list[tuple[int, int]] = []
         self.click_results = click_results or {}
+        self.raw_text = raw_text
 
     async def click(self, row: int, col: int):
         self.clicked.append((row, col))
@@ -131,10 +138,13 @@ def test_execute_search_join_matches_real_peer_id_and_title() -> None:
 
 
 @pytest.mark.no_postgres
-def test_execute_search_join_opens_group_category_before_matching_results() -> None:
-    category_page = FakeMessage(101, [[FakeButton("👥", data=b"group-category")], [FakeButton("📢", data=b"channel-category")]])
-    result_page = FakeMessage(102, [[FakeButton("郑州平价资源（交流群）", url="https://t.me/xiaozisk")]])
-    client = FakeSearchJoinClient([FakeMessage(100, []), category_page, result_page])
+def test_execute_search_join_joins_known_target_when_message_text_matches() -> None:
+    result_page = FakeMessage(
+        101,
+        [[FakeButton("👥", data=b"group-category")], [FakeButton("下一页", data=b"next", effect="navigate_only")]],
+        raw_text="👥郑州平价资源（交流群） 46k\n📢其他频道 2k",
+    )
+    client = FakeSearchJoinClient([FakeMessage(100, []), result_page])
 
     result = asyncio.run(
         execute_search_join_with_client(
@@ -145,9 +155,21 @@ def test_execute_search_join_opens_group_category_before_matching_results() -> N
     )
 
     assert result["success"] is True
-    assert category_page.clicked == [(0, 0)]
-    assert result_page.clicked == [(0, 0)]
     assert client.joined == ["xiaozisk"]
+    assert result["target_match_source"] == "message_text"
+    assert result["target_line"] == "👥郑州平价资源（交流群） 46k"
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_reports_bot_human_verification() -> None:
+    captcha_page = FakeMessage(101, [[FakeButton("42", data=b"answer")]], raw_text="您必须完成人机验证才能继续使用\n请选择计算结果")
+    client = FakeSearchJoinClient([FakeMessage(100, []), captcha_page])
+
+    result = asyncio.run(execute_search_join_with_client(client, _payload(), keyword_text="郑州"))
+
+    assert result["success"] is False
+    assert result["error_code"] == "bot_human_verification_required"
+    assert captcha_page.clicked == []
 
 
 @pytest.mark.no_postgres
