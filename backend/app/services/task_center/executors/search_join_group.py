@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import BotProtocolSample, OperationTarget, Task
+from app.models import AccountProxy, BotProtocolSample, OperationTarget, Task, TgAccount
 from app.services._common import _now
 
 from ..account_pool import select_task_accounts
@@ -38,14 +38,14 @@ def build_plan(session: Session, task: Task) -> int:
     plan = SearchJoinPlan(bot_username=bot_username, keyword_hash="", target=_target(session, task), hourly=hourly)
     created = 0
     for account in accounts[:plan_count]:
-        payload = _payload(config, plan, created)
+        payload = _payload(session, config, plan, created, account)
         create_search_join_action(session, task, account.id, _now(), payload)
         created += 1
     task.last_error = ""
     return _record_hourly(task, hourly, created, {})
 
 
-def _payload(config: dict, plan: SearchJoinPlan, index: int) -> SearchJoinPayload:
+def _payload(session: Session, config: dict, plan: SearchJoinPlan, index: int, account: TgAccount) -> SearchJoinPayload:
     keyword_hashes = _keyword_hashes(config)
     keyword_hash = str(keyword_hashes[index % len(keyword_hashes)])
     keyword_ciphertexts = list(config.get("keyword_text_ciphertexts") or [])
@@ -64,8 +64,20 @@ def _payload(config: dict, plan: SearchJoinPlan, index: int) -> SearchJoinPayloa
         post_join_policy=str(config.get("post_join_policy") or "stay_joined"),
         hourly_execution=dict(plan.hourly),
         linked_task_policy=list(config.get("post_join_task_links") or []),
-        runtime_environment={"proxy_egress_guard": "missing"},
+        runtime_environment=_runtime_environment(session, account),
     )
+
+
+def _runtime_environment(session: Session, account: TgAccount) -> dict[str, str]:
+    proxy_id = int(account.proxy_id or 0)
+    proxy = session.get(AccountProxy, proxy_id) if proxy_id else None
+    if not proxy or proxy.status != "healthy" or proxy.alert_status != "normal":
+        return {"proxy_egress_guard": "missing"}
+    return {
+        "proxy_egress_guard": "verified",
+        "proxy_id": str(proxy.id),
+        "proxy_name": proxy.name,
+    }
 
 
 def _safe_navigation(config: dict) -> dict:

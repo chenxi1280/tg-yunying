@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountStatus, Action, BotProtocolSample, OperationTarget, Task, Tenant, TgAccount
+from app.models import AccountProxy, AccountStatus, Action, BotProtocolSample, OperationTarget, Task, Tenant, TgAccount
 from app.security import encrypt_secret
 from app.services._common import _now
 from app.services.task_center.executors import build_task_plan
@@ -85,6 +85,23 @@ def test_search_join_planner_creates_hash_only_search_join_actions(session: Sess
     assert all(action.payload["safe_navigation"]["total_max"] == 3 for action in actions)
     assert all(action.payload["safe_navigation"]["decoy_join_enabled"] is False for action in actions)
     assert actions[0].payload["search_visibility_attribution"]["target_content_health"] == "healthy"
+    assert {action.payload["runtime_environment"]["proxy_egress_guard"] for action in actions} == {"missing"}
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_marks_verified_proxy_guard(session: Session) -> None:
+    session.add(AccountProxy(id=31, tenant_id=1, name="airport-clash-001", port=7890, status="healthy", alert_status="normal"))
+    for account in session.scalars(select(TgAccount).where(TgAccount.id.in_([101, 102]))):
+        account.proxy_id = 31
+    task = _task()
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 2
+    actions = session.scalars(select(Action).where(Action.task_id == task.id)).all()
+
+    assert {action.payload["runtime_environment"]["proxy_egress_guard"] for action in actions} == {"verified"}
+    assert {action.payload["runtime_environment"]["proxy_id"] for action in actions} == {"31"}
 
 
 @pytest.mark.no_postgres

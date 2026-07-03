@@ -12,6 +12,7 @@ dependencies = [
   "python-dotenv>=1.0.0",
   "python-multipart>=0.0.9",
   "alembic>=1.13.0",
+  "PyYAML>=6.0.0",
   "telethon>=1.36.0",
   "PySocks>=1.7.1",
   "redis>=5.0.0",

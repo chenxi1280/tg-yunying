@@ -88,6 +88,31 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      configure_clash_search_join_live:
+        description: Configure production Mihomo/Clash proxies and create the Zhengzhou search-join smoke task
+        required: false
+        default: false
+        type: boolean
+      clash_search_join_apply:
+        description: Apply DB proxy bindings and create the Zhengzhou smoke task after proxy egress passes
+        required: false
+        default: false
+        type: boolean
+      clash_search_join_node_limit:
+        description: Max subscription nodes to configure
+        required: false
+        default: '64'
+        type: string
+      clash_search_join_test_account_count:
+        description: Number of accounts for the Zhengzhou smoke task
+        required: false
+        default: '3'
+        type: string
+      clash_search_join_target_query:
+        description: Operation target title query for the search-join smoke task
+        required: false
+        default: '郑州'
+        type: string
       force_cancel_in_progress:
         description: Explicitly cancel a stuck in-progress Deploy Production run before this manual run
         required: false
@@ -164,6 +189,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev]'
           python -m compileall -q app
+          python -m compileall -q ../.github/scripts
           python -m pytest -q
 
       - name: Set up Node
@@ -536,6 +562,125 @@ jobs:
             printf "%s" "${script_b64}" | base64 -d | timeout 120 docker exec -e MINIMAX_API_KEY -e MINIMAX_BASE_URL=https://api.minimaxi.com/v1 -e MINIMAX_MODEL_NAME=MiniMax-M3 -e MINIMAX_TENANT_ID=1 -i tgyunying-backend python -
           '
           echo "MINIMAX_PROVIDER_UPDATE_END"
+
+      - name: Configure Clash proxies and Zhengzhou smoke task
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.configure_clash_search_join_live }}
+        env:
+          CLASH_SUBSCRIPTION_URL: ${{ secrets.TGYUNYING_CLASH_SUBSCRIPTION_URL }}
+          CLASH_LIVE_APPLY: ${{ inputs.clash_search_join_apply }}
+          CLASH_NODE_LIMIT: ${{ inputs.clash_search_join_node_limit }}
+          CLASH_TEST_ACCOUNT_COUNT: ${{ inputs.clash_search_join_test_account_count }}
+          CLASH_TARGET_QUERY: ${{ inputs.clash_search_join_target_query }}
+          CLASH_IMAGE: ghcr.io/metacubex/mihomo:latest
+        run: |
+          set -euo pipefail
+          test -n "${CLASH_SUBSCRIPTION_URL}"
+          echo "CLASH_SEARCH_JOIN_LIVE_START"
+          {
+            printf '%s\n' "$(printf '%s' "${CLASH_SUBSCRIPTION_URL}" | base64 | tr -d '\n')"
+            printf '%s\n' "$(printf '%s' "${CLASH_LIVE_APPLY}" | base64 | tr -d '\n')"
+            printf '%s\n' "$(printf '%s' "${CLASH_NODE_LIMIT}" | base64 | tr -d '\n')"
+            printf '%s\n' "$(printf '%s' "${CLASH_TEST_ACCOUNT_COUNT}" | base64 | tr -d '\n')"
+            printf '%s\n' "$(printf '%s' "${CLASH_TARGET_QUERY}" | base64 | tr -d '\n')"
+            printf '%s\n' "$(printf '%s' "${CLASH_IMAGE}" | base64 | tr -d '\n')"
+            base64 < .github/scripts/configure_clash_search_join_live.py | tr -d '\n'
+            printf '\n'
+          } | ssh silicon-valley-production-server 'set -euo pipefail
+            read -r subscription_b64
+            read -r apply_b64
+            read -r node_limit_b64
+            read -r test_count_b64
+            read -r target_query_b64
+            read -r image_b64
+            read -r script_b64
+
+            export CLASH_SUBSCRIPTION_URL="$(printf "%s" "${subscription_b64}" | base64 -d)"
+            export CLASH_LIVE_APPLY="$(printf "%s" "${apply_b64}" | base64 -d)"
+            export CLASH_NODE_LIMIT="$(printf "%s" "${node_limit_b64}" | base64 -d)"
+            export CLASH_TEST_ACCOUNT_COUNT="$(printf "%s" "${test_count_b64}" | base64 -d)"
+            export CLASH_TARGET_QUERY="$(printf "%s" "${target_query_b64}" | base64 -d)"
+            CLASH_IMAGE="$(printf "%s" "${image_b64}" | base64 -d)"
+
+            script=/tmp/tgyunying_configure_clash_search_join_live.py
+            candidate_dir="/data/tgyunying/shared/mihomo/candidates/$(date +%Y%m%d%H%M%S)"
+            prefix=tgyunying-mihomo
+            next_prefix=tgyunying-mihomo-next
+            printf "%s" "${script_b64}" | base64 -d > "${script}"
+            chmod 600 "${script}"
+
+            docker exec tgyunying-backend sh -lc "rm -rf /tmp/tgyunying-mihomo-configs"
+            timeout 180 docker exec \
+              -e CLASH_SUBSCRIPTION_URL \
+              -e CLASH_NODE_LIMIT \
+              -e CLASH_SETUP_PHASE=prepare_configs \
+              -i tgyunying-backend python - < "${script}"
+
+            rm -rf "${candidate_dir}"
+            mkdir -p "${candidate_dir}"
+            docker cp tgyunying-backend:/tmp/tgyunying-mihomo-configs/. "${candidate_dir}/"
+            docker ps -a --format "{{.Names}}" | grep "^${next_prefix}-" | xargs -r docker rm -f || true
+            docker pull "${CLASH_IMAGE}"
+
+            for config in "${candidate_dir}"/${prefix}-*.yaml; do
+              test -f "${config}"
+              name="$(basename "${config}" .yaml)"
+              suffix="${name##*-}"
+              next_name="${next_prefix}-${suffix}"
+              docker run -d --restart unless-stopped --name "${next_name}" --network infra_default \
+                -v "${config}:/root/.config/mihomo/config.yaml:ro" "${CLASH_IMAGE}" >/dev/null
+            done
+
+            sleep 5
+            healthy_indexes=""
+            for config in "${candidate_dir}"/${prefix}-*.yaml; do
+              name="$(basename "${config}" .yaml)"
+              suffix="${name##*-}"
+              next_name="${next_prefix}-${suffix}"
+              index="$(printf "%s" "${suffix}" | sed "s/^0*//")"
+              test -n "${index}" || index=0
+              if timeout 20 docker exec tgyunying-backend curl -fsS --max-time 12 \
+                -x "socks5h://${next_name}:7890" https://api.ipify.org >/tmp/tgyunying_clash_egress_ip; then
+                echo "CLASH_PROXY_EGRESS_OK name=${next_name}"
+                healthy_indexes="${healthy_indexes:+${healthy_indexes},}${index}"
+              else
+                echo "CLASH_PROXY_EGRESS_FAILED name=${next_name}"
+                docker logs --tail 80 "${next_name}" || true
+                docker rm -f "${next_name}" || true
+              fi
+            done
+            test -n "${healthy_indexes}"
+            echo "CLASH_PROXY_HEALTHY_INDEXES=${healthy_indexes}"
+
+            if [ "${CLASH_LIVE_APPLY}" = "true" ]; then
+              export CLASH_HEALTHY_INDEXES="${healthy_indexes}"
+              timeout 180 docker exec \
+                -e CLASH_SUBSCRIPTION_URL \
+                -e CLASH_NODE_LIMIT \
+                -e CLASH_TEST_ACCOUNT_COUNT \
+                -e CLASH_TARGET_QUERY \
+                -e CLASH_HEALTHY_INDEXES \
+                -e CLASH_SETUP_PHASE=preflight_db \
+                -i tgyunying-backend python - < "${script}"
+              docker ps -a --format "{{.Names}}" | grep "^${prefix}-[0-9][0-9][0-9]$" | xargs -r docker rm -f || true
+              for index in ${healthy_indexes//,/ }; do
+                suffix="$(printf "%03d" "${index}")"
+                docker rename "${next_prefix}-${suffix}" "${prefix}-${suffix}"
+              done
+              timeout 300 docker exec \
+                -e CLASH_SUBSCRIPTION_URL \
+                -e CLASH_LIVE_APPLY \
+                -e CLASH_NODE_LIMIT \
+                -e CLASH_TEST_ACCOUNT_COUNT \
+                -e CLASH_TARGET_QUERY \
+                -e CLASH_HEALTHY_INDEXES \
+                -e CLASH_SETUP_PHASE=apply_db \
+                -i tgyunying-backend python - < "${script}"
+            else
+              docker ps -a --format "{{.Names}}" | grep "^${next_prefix}-" | xargs -r docker rm -f || true
+              echo "CLASH_DB_APPLY_SKIPPED apply=false"
+            fi
+          '
+          echo "CLASH_SEARCH_JOIN_LIVE_END"
 
       - name: Diagnose Tianjin blocked account
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tianjin_blocked_account_diagnostics }}
