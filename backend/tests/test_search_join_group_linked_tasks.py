@@ -55,6 +55,15 @@ def _action(task: Task, result: dict | None = None) -> Action:
             "bot_username": "jisou",
             "keyword_hash": "a" * 64,
             "keyword_text_ciphertext": encrypt_secret("上海 留学"),
+            "authorization_id": 201,
+            "session_role": "primary",
+            "client_metadata": {
+                "device_model": "iPhone 15",
+                "system_version": "iOS 17.5",
+                "app_version": "10.14.1",
+                "platform": "ios",
+                "client_identity_key": "identity-201",
+            },
             "target_operation_target_id": 17,
             "target_username": "shanghai",
             "safe_navigation": {"total_max": 3, "decoy_join_enabled": False},
@@ -91,7 +100,7 @@ def test_search_join_dispatch_fails_closed_without_gateway_support(session: Sess
 @pytest.mark.no_postgres
 def test_search_join_dispatch_calls_gateway_with_session_credentials_and_keyword(monkeypatch, session: Session) -> None:
     _task, action = _persist_task_and_action(session)
-    action.payload = {**action.payload, "runtime_environment": {"proxy_egress_guard": "verified"}}
+    action.payload = {**action.payload, "runtime_environment": {"proxy_egress_guard": "verified", "client_metadata_guard": "verified"}}
     calls: list[dict] = []
 
     def execute_search_join(account_id, payload, session_ciphertext, credentials, keyword_text):
@@ -141,7 +150,7 @@ def test_search_join_dispatch_creates_linked_records_after_membership_observed(m
     _task, action = _persist_task_and_action(session)
     action.payload = {
         **action.payload,
-        "runtime_environment": {"proxy_egress_guard": "verified"},
+        "runtime_environment": {"proxy_egress_guard": "verified", "client_metadata_guard": "verified"},
         "linked_task_policy": [{"linked_task_id": "ai-task-1", "cooldown_minutes": 30}],
     }
 

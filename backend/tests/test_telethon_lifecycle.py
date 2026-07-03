@@ -5,6 +5,8 @@ from app.config import Settings
 from app.integrations.telegram import DeveloperAppCredentials
 from app.telethon_lifecycle import TelethonClientLifecycle, shutdown_telethon_lifecycle
 
+pytestmark = pytest.mark.no_postgres
+
 
 class FakeTelethonClient:
     def __init__(self, name: str) -> None:
@@ -41,7 +43,7 @@ def test_telethon_lifecycle_enforces_cache_limit(monkeypatch):
     credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
     clients: list[FakeTelethonClient] = []
 
-    def fake_new_client(_credentials, raw_session):
+    def fake_new_client(_credentials, raw_session, client_metadata=None):
         client = FakeTelethonClient(raw_session or "")
         clients.append(client)
         return client
@@ -91,7 +93,7 @@ def test_telethon_lifecycle_cache_key_includes_proxy(monkeypatch):
     )
     clients: list[FakeTelethonClient] = []
 
-    def fake_new_client(credentials, raw_session):
+    def fake_new_client(credentials, raw_session, client_metadata=None):
         client = FakeTelethonClient(f"{credentials.proxy_id}:{raw_session}")
         clients.append(client)
         return client
@@ -141,6 +143,69 @@ def test_telethon_lifecycle_passes_proxy_to_new_client(monkeypatch):
     assert captured["proxy"][1:] == ("127.0.0.1", 1080, True, "user", "pass")
 
 
+def test_telethon_lifecycle_passes_client_metadata_to_new_client(monkeypatch):
+    reset_lifecycle_state()
+    settings = Settings(telethon_operation_timeout_seconds=1)
+    lifecycle = TelethonClientLifecycle(settings)
+    credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
+    captured: dict[str, object] = {}
+
+    class FakeTelegramClient:
+        def __init__(self, session, api_id, api_hash, **kwargs):
+            captured.update(kwargs)
+
+    metadata = {
+        "device_model": "iPhone 15",
+        "system_version": "iOS 17.5",
+        "app_version": "10.14.1",
+        "lang_code": "zh",
+        "system_lang_code": "zh-CN",
+        "platform": "ios",
+        "client_identity_key": "identity-1",
+    }
+    monkeypatch.setattr("telethon.TelegramClient", FakeTelegramClient)
+    monkeypatch.setattr("telethon.sessions.StringSession", lambda value="": f"session:{value}")
+
+    lifecycle.new_client(credentials, "raw", metadata)
+
+    assert captured["device_model"] == "iPhone 15"
+    assert captured["system_version"] == "iOS 17.5"
+    assert captured["app_version"] == "10.14.1"
+    assert captured["lang_code"] == "zh"
+    assert captured["system_lang_code"] == "zh-CN"
+    assert "platform" not in captured
+
+
+def test_telethon_lifecycle_cache_key_includes_client_metadata(monkeypatch):
+    reset_lifecycle_state()
+    settings = Settings(
+        telethon_client_cache_size=10,
+        telethon_client_idle_seconds=3600,
+        telethon_client_connect_timeout_seconds=1,
+        telethon_operation_timeout_seconds=1,
+    )
+    lifecycle = TelethonClientLifecycle(settings)
+    credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
+    clients: list[FakeTelethonClient] = []
+
+    def fake_new_client(_credentials, raw_session, client_metadata=None):
+        client = FakeTelethonClient(f"{raw_session}:{client_metadata['client_identity_key']}")
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(lifecycle, "new_client", fake_new_client)
+
+    async def scenario():
+        first = await lifecycle.get_or_create_client(credentials, "same-session", {"client_identity_key": "one"})
+        second = await lifecycle.get_or_create_client(credentials, "same-session", {"client_identity_key": "two"})
+        return first, second
+
+    first_client, second_client = asyncio.run(scenario())
+
+    assert first_client is not second_client
+    assert [client.name for client in clients] == ["same-session:one", "same-session:two"]
+
+
 def test_telethon_lifecycle_rejects_unknown_proxy_protocol(monkeypatch):
     reset_lifecycle_state()
     settings = Settings(telethon_operation_timeout_seconds=1)
@@ -178,7 +243,7 @@ def test_telethon_lifecycle_prunes_idle_clients(monkeypatch):
     credentials = DeveloperAppCredentials(app_id=1, api_id=123, api_hash="hash", credentials_version=1)
     clients: list[FakeTelethonClient] = []
 
-    def fake_new_client(_credentials, raw_session):
+    def fake_new_client(_credentials, raw_session, client_metadata=None):
         client = FakeTelethonClient(raw_session or "")
         clients.append(client)
         return client

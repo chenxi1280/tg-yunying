@@ -87,6 +87,16 @@ def _button_url(button: Any) -> str:
     return ""
 
 
+def _search_join_client_metadata(payload: dict[str, Any]) -> dict[str, str]:
+    metadata = payload.get("client_metadata") if isinstance(payload, dict) else None
+    if not isinstance(metadata, dict):
+        raise ValueError("search_join client_metadata missing")
+    required = ("device_model", "system_version", "app_version", "client_identity_key")
+    if any(not str(metadata.get(key) or "").strip() for key in required):
+        raise ValueError("search_join client_metadata incomplete")
+    return {key: str(value) for key, value in metadata.items()}
+
+
 def _verification_button_click_target(message: Any) -> tuple[int, int, str] | None:
     first_text_button: tuple[int, int, str] | None = None
     first_button: tuple[int, int, str] | None = None
@@ -359,13 +369,23 @@ class TelethonTelegramGateway(TelegramGateway):
         """Schedule a coroutine on the persistent event loop and block for its result."""
         return self._lifecycle.run(coro)
 
-    def _new_client(self, credentials: DeveloperAppCredentials, raw_session: str | None = None) -> Any:
+    def _new_client(
+        self,
+        credentials: DeveloperAppCredentials,
+        raw_session: str | None = None,
+        client_metadata: dict[str, str] | None = None,
+    ) -> Any:
         """Create a fresh, unconnected Telethon client. Used for login flows where the session is not yet established."""
-        return self._lifecycle.new_client(credentials, raw_session)
+        return self._lifecycle.new_client(credentials, raw_session, client_metadata)
 
-    async def _get_or_create_client(self, credentials: DeveloperAppCredentials, raw_session: str) -> Any:
+    async def _get_or_create_client(
+        self,
+        credentials: DeveloperAppCredentials,
+        raw_session: str,
+        client_metadata: dict[str, str] | None = None,
+    ) -> Any:
         """Return a connected Telethon client from the cache, or create and connect a new one."""
-        return await self._lifecycle.get_or_create_client(credentials, raw_session)
+        return await self._lifecycle.get_or_create_client(credentials, raw_session, client_metadata)
 
     @staticmethod
     def _usable_phone(phone: str | None) -> str:
@@ -995,7 +1015,7 @@ class TelethonTelegramGateway(TelegramGateway):
         raw_session = decrypt_session(session_ciphertext)
         if not raw_session:
             return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "账号没有可用 session"}
-        client = await self._get_or_create_client(credentials, raw_session)
+        client = await self._get_or_create_client(credentials, raw_session, _search_join_client_metadata(payload))
         if not await client.is_user_authorized():
             return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "session 已失效"}
         return await execute_search_join_with_client(client, payload, keyword_text=keyword_text)

@@ -4,6 +4,7 @@ import asyncio
 import threading
 import time
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 from .config import Settings, get_settings
@@ -56,7 +57,12 @@ class TelethonClientLifecycle:
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result(timeout=self.settings.telethon_operation_timeout_seconds)
 
-    def new_client(self, credentials: DeveloperAppCredentialsLike, raw_session: str | None = None) -> Any:
+    def new_client(
+        self,
+        credentials: DeveloperAppCredentialsLike,
+        raw_session: str | None = None,
+        client_metadata: Mapping[str, str] | None = None,
+    ) -> Any:
         try:
             from telethon import TelegramClient
         except ImportError as exc:
@@ -68,12 +74,17 @@ class TelethonClientLifecycle:
             int(credentials.api_id),
             credentials.api_hash,
             proxy=self._proxy_config(credentials),
+            **self._client_metadata_options(client_metadata),
         )
 
-    async def get_or_create_client(self, credentials: DeveloperAppCredentialsLike, raw_session: str) -> Any:
+    async def get_or_create_client(
+        self,
+        credentials: DeveloperAppCredentialsLike,
+        raw_session: str,
+        client_metadata: Mapping[str, str] | None = None,
+    ) -> Any:
         await self.prune_idle_clients()
-        api_id = int(credentials.api_id)
-        cache_key = self._cache_key(credentials, raw_session)
+        cache_key = self._cache_key(credentials, raw_session, client_metadata)
         now = time.monotonic()
 
         with self._lock:
@@ -96,14 +107,21 @@ class TelethonClientLifecycle:
                 if current and current.client is client:
                     self._cache.pop(cache_key, None)
 
-        client = self.new_client(credentials, raw_session)
+        client = self.new_client(credentials, raw_session, client_metadata)
         await asyncio.wait_for(client.connect(), timeout=self.settings.telethon_client_connect_timeout_seconds)
-        await self.remember_connected_client(credentials, raw_session, client)
+        await self.remember_connected_client(credentials, raw_session, client, client_metadata=client_metadata)
         await self.enforce_cache_limit()
         return client
 
-    async def remember_connected_client(self, credentials: DeveloperAppCredentialsLike, raw_session: str, client: Any) -> None:
-        cache_key = self._cache_key(credentials, raw_session)
+    async def remember_connected_client(
+        self,
+        credentials: DeveloperAppCredentialsLike,
+        raw_session: str,
+        client: Any,
+        *,
+        client_metadata: Mapping[str, str] | None = None,
+    ) -> None:
+        cache_key = self._cache_key(credentials, raw_session, client_metadata)
         now = time.monotonic()
         with self._lock:
             self._cache[cache_key] = _ClientCacheEntry(client=client, created_at=now, last_used_at=now)
@@ -140,8 +158,28 @@ class TelethonClientLifecycle:
         await self._disconnect_entries(evicted)
         return len(evicted)
 
-    def _cache_key(self, credentials: DeveloperAppCredentialsLike, raw_session: str) -> tuple[int, str, str]:
-        return (int(credentials.api_id), raw_session, self._proxy_fingerprint(credentials))
+    def _cache_key(
+        self,
+        credentials: DeveloperAppCredentialsLike,
+        raw_session: str,
+        client_metadata: Mapping[str, str] | None = None,
+    ) -> tuple[int, str, str, str]:
+        return (int(credentials.api_id), raw_session, self._proxy_fingerprint(credentials), self._client_metadata_fingerprint(client_metadata))
+
+    @staticmethod
+    def _client_metadata_options(client_metadata: Mapping[str, str] | None) -> dict[str, str]:
+        metadata = client_metadata or {}
+        return {
+            key: value
+            for key in ("device_model", "system_version", "app_version", "lang_code", "system_lang_code")
+            if (value := str(metadata.get(key) or "").strip())
+        }
+
+    @staticmethod
+    def _client_metadata_fingerprint(client_metadata: Mapping[str, str] | None) -> str:
+        metadata = client_metadata or {}
+        keys = ("device_model", "system_version", "app_version", "platform", "lang_code", "system_lang_code", "client_identity_key")
+        return "|".join(str(metadata.get(key) or "").strip() for key in keys)
 
     @staticmethod
     def _proxy_fingerprint(credentials: DeveloperAppCredentialsLike) -> str:

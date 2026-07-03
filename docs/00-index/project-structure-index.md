@@ -50,6 +50,8 @@
 | 运营中心/报表 | PRD 运营中心、运营数据 | `api/routers/system.py`, `operations_center.py`; `services/runtime_summary.py`, `reports.py`, `operation_login_drop_rates.py` | `OverviewView.tsx`, `UsageReportsView.tsx` | `test_overview_view_dataflow.py`, `test_usage_reports_dataflow.py`, `test_runtime_summary_models.py` |
 | Telegram 真实适配 | PRD TG Gateway / 执行器 | `integrations/telegram/gateway.py`, `contracts.py`, `mock.py`, `telethon_*` | 间接由账号、任务、消息页面触发 | `test_telethon_lifecycle.py`, `test_telethon_group_permissions.py` |
 
+搜索自动入群实现补充：授权环境栈由 `backend/app/services/client_metadata/` 负责生成和固化，ORM 模型在 `backend/app/models/search_join_environment.py`，迁移为 `backend/migrations/versions/0076_search_join_environment_bindings.py`。`search_join_group` planner 必须先拿到授权槽位、健康代理绑定和完整 client metadata 才创建 `search_join` action；dispatcher 同时要求 `proxy_egress_guard=verified` 与 `client_metadata_guard=verified`；`telethon_lifecycle.py` 将 MTProto client metadata 传入 `TelegramClient` 并把 metadata 纳入缓存 key。
+
 ## 4. API 路由索引
 
 | Router 文件 | 路由数量 | 维护边界 |

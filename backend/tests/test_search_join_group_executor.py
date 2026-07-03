@@ -5,7 +5,20 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountProxy, AccountStatus, Action, BotProtocolSample, OperationTarget, Task, Tenant, TgAccount
+from app.models import (
+    AccountEnvironmentBinding,
+    AccountProxy,
+    AccountStatus,
+    Action,
+    BotProtocolSample,
+    FingerprintComboHistory,
+    OperationTarget,
+    Task,
+    TelegramDeveloperApp,
+    Tenant,
+    TgAccount,
+    TgAccountAuthorization,
+)
 from app.security import encrypt_secret
 from app.services._common import _now
 from app.services.task_center.executors import build_task_plan
@@ -68,7 +81,32 @@ def _task(**overrides) -> Task:
 
 
 @pytest.mark.no_postgres
+def _bind_search_join_environment(session: Session, account_ids: list[int]) -> None:
+    session.add(TelegramDeveloperApp(id=51, app_name="TG运营", api_id=2040, api_hash_ciphertext="hash"))
+    for index, account_id in enumerate(account_ids, start=1):
+        proxy_id = 30 + index
+        session.add(AccountProxy(id=proxy_id, tenant_id=1, name=f"airport-clash-{index:03d}", port=7800 + index, status="healthy", alert_status="normal"))
+        account = session.get(TgAccount, account_id)
+        account.proxy_id = proxy_id
+        session.add(
+            TgAccountAuthorization(
+                tenant_id=1,
+                account_id=account_id,
+                role="primary",
+                developer_app_id=51,
+                developer_app_api_id_snapshot=2040,
+                proxy_id=proxy_id,
+                session_ciphertext=f"session-{account_id}",
+                status="active",
+                health_status="healthy",
+                is_current=True,
+            )
+        )
+
+
+@pytest.mark.no_postgres
 def test_search_join_planner_creates_hash_only_search_join_actions(session: Session) -> None:
+    _bind_search_join_environment(session, [101, 102])
     task = _task()
     session.add(task)
     session.commit()
@@ -85,14 +123,18 @@ def test_search_join_planner_creates_hash_only_search_join_actions(session: Sess
     assert all(action.payload["safe_navigation"]["total_max"] == 3 for action in actions)
     assert all(action.payload["safe_navigation"]["decoy_join_enabled"] is False for action in actions)
     assert actions[0].payload["search_visibility_attribution"]["target_content_health"] == "healthy"
-    assert {action.payload["runtime_environment"]["proxy_egress_guard"] for action in actions} == {"missing"}
+    assert {action.payload["runtime_environment"]["proxy_egress_guard"] for action in actions} == {"verified"}
+    assert all(action.payload["authorization_id"] for action in actions)
+    assert all(action.payload["session_role"] == "primary" for action in actions)
+    assert all(action.payload["client_metadata"]["device_model"] for action in actions)
+    assert all(action.payload["client_metadata"]["app_version"] for action in actions)
+    assert session.query(AccountEnvironmentBinding).count() == 2
+    assert session.query(FingerprintComboHistory).count() == 2
 
 
 @pytest.mark.no_postgres
 def test_search_join_planner_marks_verified_proxy_guard(session: Session) -> None:
-    session.add(AccountProxy(id=31, tenant_id=1, name="airport-clash-001", port=7890, status="healthy", alert_status="normal"))
-    for account in session.scalars(select(TgAccount).where(TgAccount.id.in_([101, 102]))):
-        account.proxy_id = 31
+    _bind_search_join_environment(session, [101, 102])
     task = _task()
     session.add(task)
     session.commit()
@@ -101,11 +143,24 @@ def test_search_join_planner_marks_verified_proxy_guard(session: Session) -> Non
     actions = session.scalars(select(Action).where(Action.task_id == task.id)).all()
 
     assert {action.payload["runtime_environment"]["proxy_egress_guard"] for action in actions} == {"verified"}
-    assert {action.payload["runtime_environment"]["proxy_id"] for action in actions} == {"31"}
+    assert {action.payload["runtime_environment"]["client_metadata_guard"] for action in actions} == {"verified"}
+    assert {action.payload["runtime_environment"]["proxy_id"] for action in actions} == {"31", "32"}
+
+
+@pytest.mark.no_postgres
+def test_search_join_planner_fails_closed_without_authorization_environment(session: Session) -> None:
+    task = _task()
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 0
+    assert session.scalar(select(Action).where(Action.task_id == task.id)) is None
+    assert task.stats["search_join_stats"]["hourly_execution"]["last_blockers"] == {"needs_client_metadata": 1}
 
 
 @pytest.mark.no_postgres
 def test_search_join_planner_respects_hourly_success_deficit(session: Session) -> None:
+    _bind_search_join_environment(session, [101])
     task = _task()
     session.add(task)
     session.flush()

@@ -14,6 +14,7 @@ from .groups import *  # noqa: F401,F403
 from .rules import *  # noqa: F401,F403
 from .risk_control import *  # noqa: F401,F403
 from .runtime_summary import *  # noqa: F401,F403
+from .search_join_environment import *  # noqa: F401,F403
 from .tenant_learning import *  # noqa: F401,F403
 from .tenants import *  # noqa: F401,F403
 from .task_center import *  # noqa: F401,F403

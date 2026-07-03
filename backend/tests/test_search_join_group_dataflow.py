@@ -7,7 +7,14 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import BotProtocolSample, SearchJoinLinkedTaskDispatch, SearchJoinRankObservation, Tenant
+from app.models import (
+    AccountEnvironmentBinding,
+    BotProtocolSample,
+    FingerprintComboHistory,
+    SearchJoinLinkedTaskDispatch,
+    SearchJoinRankObservation,
+    Tenant,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +29,8 @@ def test_search_join_group_dataflow_tables_exist_in_metadata() -> None:
     assert "search_join_rank_observations" in tables
     assert "search_join_linked_task_dispatches" in tables
     assert "bot_protocol_samples" in tables
+    assert "account_environment_bindings" in tables
+    assert "fingerprint_combo_history" in tables
 
 
 @pytest.mark.no_postgres
@@ -80,6 +89,38 @@ def test_search_join_rank_observation_and_linked_dispatch_roundtrip() -> None:
 
 
 @pytest.mark.no_postgres
+def test_search_join_environment_binding_roundtrip() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        binding = AccountEnvironmentBinding(
+            tenant_id=1,
+            account_id=101,
+            authorization_id=201,
+            session_role="primary",
+            proxy_binding_id=301,
+            proxy_id=31,
+            device_model="iPhone 15",
+            system_version="iOS 17.5",
+            app_version="10.14.1",
+            platform="ios",
+            client_identity_key="identity-1",
+        )
+        history = FingerprintComboHistory(tenant_id=1, combo_key="combo-1", usage_count=1)
+        session.add_all([binding, history])
+        session.commit()
+
+        saved_binding = session.query(AccountEnvironmentBinding).one()
+        saved_history = session.query(FingerprintComboHistory).one()
+
+    assert saved_binding.device_model == "iPhone 15"
+    assert saved_binding.fingerprint_locked is True
+    assert saved_history.combo_key == "combo-1"
+
+
+@pytest.mark.no_postgres
 def test_search_join_group_migration_declares_tables() -> None:
     migration = PROJECT_ROOT / "backend/migrations/versions/0075_search_join_group.py"
     source = migration.read_text()
@@ -87,3 +128,12 @@ def test_search_join_group_migration_declares_tables() -> None:
     assert "search_join_rank_observations" in source
     assert "search_join_linked_task_dispatches" in source
     assert "bot_protocol_samples" in source
+
+
+@pytest.mark.no_postgres
+def test_search_join_environment_migration_declares_tables() -> None:
+    migration = PROJECT_ROOT / "backend/migrations/versions/0076_search_join_environment_bindings.py"
+    source = migration.read_text()
+
+    assert "account_environment_bindings" in source
+    assert "fingerprint_combo_history" in source

@@ -3471,6 +3471,9 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
     if not _search_join_proxy_guard_verified(payload):
         _fail(action, "proxy_egress_guard_missing", "搜索入群缺少已验证代理出口 guard，禁止回退本机直连", validation_stage="search_join_proxy")
         return True
+    if not _search_join_client_metadata_verified(payload):
+        _fail(action, "client_metadata_missing", "搜索入群缺少已绑定客户端 metadata，禁止使用默认 MTProto 指纹", validation_stage="search_join_client_metadata")
+        return True
     keyword_text = decrypt_secret(payload.keyword_text_ciphertext) or ""
     if not keyword_text.strip():
         _fail(action, "keyword_text_missing", "搜索入群缺少可执行关键词密文", validation_stage="search_join_payload")
@@ -3487,6 +3490,13 @@ def _dispatch_search_join(session: Session, action: Action, account: TgAccount, 
 def _search_join_proxy_guard_verified(payload: SearchJoinPayload) -> bool:
     runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
     return runtime.get("proxy_egress_guard") == "verified"
+
+
+def _search_join_client_metadata_verified(payload: SearchJoinPayload) -> bool:
+    runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
+    metadata = payload.client_metadata if isinstance(payload.client_metadata, dict) else {}
+    required = ("device_model", "system_version", "app_version", "platform", "client_identity_key")
+    return runtime.get("client_metadata_guard") == "verified" and all(metadata.get(key) for key in required)
 
 
 def _create_search_join_linked_dispatches(session: Session, action: Action, payload: SearchJoinPayload) -> None:

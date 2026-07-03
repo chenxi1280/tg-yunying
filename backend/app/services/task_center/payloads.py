@@ -241,6 +241,9 @@ class SearchJoinPayload(BaseModel):
     bot_username: str = Field(min_length=1, max_length=80)
     keyword_hash: str = Field(min_length=64, max_length=64)
     keyword_text_ciphertext: str = Field(default="", max_length=1000)
+    authorization_id: int = Field(default=0, ge=0)
+    session_role: str = ""
+    client_metadata: dict[str, str] = Field(default_factory=dict)
     target_operation_target_id: int | None = None
     target_group_id: int | None = None
     target_username: str = ""
@@ -259,7 +262,18 @@ class SearchJoinPayload(BaseModel):
             raise ValueError("search_join safe navigation total_max cannot exceed 3")
         if safe.get("decoy_join_enabled") is True:
             raise ValueError("search_join decoy navigation cannot join non-target groups")
+        if self.authorization_id <= 0:
+            raise ValueError("search_join requires authorization_id")
+        if not self.session_role.strip():
+            raise ValueError("search_join requires session_role")
+        if _missing_client_metadata(self.client_metadata):
+            raise ValueError("search_join requires complete client_metadata")
         return self
+
+
+def _missing_client_metadata(metadata: dict[str, str]) -> bool:
+    required = ("device_model", "system_version", "app_version", "platform", "client_identity_key")
+    return any(not str(metadata.get(key) or "").strip() for key in required)
 
 
 PAYLOAD_MODELS = {
