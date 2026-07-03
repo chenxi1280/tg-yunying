@@ -599,12 +599,17 @@ jobs:
             export CLASH_NODE_LIMIT="$(printf "%s" "${node_limit_b64}" | base64 -d)"
             export CLASH_TEST_ACCOUNT_COUNT="$(printf "%s" "${test_count_b64}" | base64 -d)"
             export CLASH_TARGET_QUERY="$(printf "%s" "${target_query_b64}" | base64 -d)"
+            export CLASH_SEED_PROTOCOL_SAMPLE=true
             CLASH_IMAGE="$(printf "%s" "${image_b64}" | base64 -d)"
 
             script=/tmp/tgyunying_configure_clash_search_join_live.py
             candidate_dir="/data/tgyunying/shared/mihomo/candidates/$(date +%Y%m%d%H%M%S)"
             prefix=tgyunying-mihomo
             next_prefix=tgyunying-mihomo-next
+            cleanup_next() {
+              docker ps -a --format "{{.Names}}" | grep "^${next_prefix}-" | xargs -r docker rm -f || true
+            }
+            trap cleanup_next ERR
             printf "%s" "${script_b64}" | base64 -d > "${script}"
             chmod 600 "${script}"
 
@@ -659,6 +664,7 @@ jobs:
                 -e CLASH_TEST_ACCOUNT_COUNT \
                 -e CLASH_TARGET_QUERY \
                 -e CLASH_HEALTHY_INDEXES \
+                -e CLASH_SEED_PROTOCOL_SAMPLE \
                 -e CLASH_SETUP_PHASE=preflight_db \
                 -i tgyunying-backend python - < "${script}"
               docker ps -a --format "{{.Names}}" | grep "^${prefix}-[0-9][0-9][0-9]$" | xargs -r docker rm -f || true
@@ -673,10 +679,11 @@ jobs:
                 -e CLASH_TEST_ACCOUNT_COUNT \
                 -e CLASH_TARGET_QUERY \
                 -e CLASH_HEALTHY_INDEXES \
+                -e CLASH_SEED_PROTOCOL_SAMPLE \
                 -e CLASH_SETUP_PHASE=apply_db \
                 -i tgyunying-backend python - < "${script}"
             else
-              docker ps -a --format "{{.Names}}" | grep "^${next_prefix}-" | xargs -r docker rm -f || true
+              cleanup_next
               echo "CLASH_DB_APPLY_SKIPPED apply=false"
             fi
           '

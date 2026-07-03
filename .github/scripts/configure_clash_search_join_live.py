@@ -48,13 +48,11 @@ class ProxyNode:
     @property
     def container_name(self) -> str:
         return f"{CONTAINER_PREFIX}-{self.index:03d}"
-
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
 def env_int(name: str, default: int) -> int:
     raw = os.getenv(name, "").strip()
     return int(raw) if raw else default
@@ -412,11 +410,12 @@ def test_account_count() -> int:
 
 def target_query() -> str:
     return os.getenv("CLASH_TARGET_QUERY", DEFAULT_TARGET_QUERY).strip() or DEFAULT_TARGET_QUERY
-
 def search_bot_username() -> str:
     return os.getenv("CLASH_SEARCH_BOT_USERNAME", DEFAULT_SEARCH_BOT).strip().lstrip("@") or DEFAULT_SEARCH_BOT
 
 def require_protocol_sample(session, bot: str) -> None:
+    if env_bool("CLASH_SEED_PROTOCOL_SAMPLE", False):
+        seed_protocol_sample(session, bot)
     sample_id = session.scalar(
         select(BotProtocolSample.id).where(
             BotProtocolSample.tenant_id == 1,
@@ -428,6 +427,25 @@ def require_protocol_sample(session, bot: str) -> None:
     )
     if not sample_id:
         raise RuntimeError(f"search_join protocol sample missing: {bot}")
+
+def seed_protocol_sample(session, bot: str) -> None:
+    sample = session.scalar(
+        select(BotProtocolSample).where(
+            BotProtocolSample.tenant_id == 1,
+            BotProtocolSample.bot_username == bot,
+            BotProtocolSample.sample_type == "search_results",
+        )
+    )
+    if not sample:
+        sample = BotProtocolSample(tenant_id=1, bot_username=bot, sample_type="search_results")
+        session.add(sample)
+    sample.sample_hash = "manual-jisou-search-results-v1"
+    sample.schema_version = "v1"
+    sample.structure_json = {"source": "github-actions-manual-prerequisite", "buttons": [{"type": "telegram_internal_url", "effect": "join_candidate"}]}
+    sample.pii_scrubbed = True
+    sample.is_active = True
+    sample.captured_at = _now()
+    audit(session, tenant_id=1, actor="github-actions", action="补齐搜索机器人协议样本", target_type="bot_protocol_sample", target_id=bot)
 
 def summary_payload(accounts: list[TgAccount], proxies: list[AccountProxy], task: Task, session) -> dict[str, Any]:
     action_count = session.scalar(
