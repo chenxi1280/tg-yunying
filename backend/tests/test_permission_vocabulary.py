@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from app.auth import ROLE_TEMPLATE_PERMISSIONS, all_permissions, normalize_permissions
-from app.permission_middleware import required_permission
+from app.permission_middleware import permission_check_result, required_permission
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -103,6 +103,19 @@ def test_system_and_legacy_task_write_routes_have_backend_permission_rules():
     assert required_permission("GET", "/api/review-queue") == ("tasks.view",)
     assert required_permission("POST", "/api/review/abc/approve") == ("tasks.manage",)
     assert required_permission("POST", "/api/review/abc/reject") == ("tasks.manage",)
+    assert required_permission("POST", "/api/tasks/search-join-group") == ("tasks.manage", "tasks.create.search_join_group")
+    assert required_permission("POST", "/api/tasks/search-join-group/create-and-start") == (
+        "tasks.manage",
+        "tasks.create.search_join_group",
+    )
+    assert permission_check_result(("tasks.manage", "tasks.create.search_join_group"), {"tasks.manage"}) == [
+        "tasks.create.search_join_group"
+    ]
+    assert permission_check_result(
+        ("tasks.manage", "tasks.create.search_join_group"),
+        {"tasks.manage", "tasks.create.search_join_group"},
+    ) == []
+    assert permission_check_result(("overview.view", "operation_issues.manage"), {"overview.view"}) == []
 
 
 def test_legacy_campaign_routes_use_message_sending_permissions():

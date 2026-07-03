@@ -46,10 +46,10 @@ export function WizardTarget({ taskType, groupTargets, channelTargets, messages,
     }));
   const sendableGroupTargetOptions = groupTargetOptions.filter((option) => groupTargets.find((target) => target.id === option.value)?.can_send);
   const channelTargetOptions = channelTargets.map((target) => ({ value: target.id, label: target.title }));
-  if (taskType === 'group_ai_chat' || taskType === 'group_membership_admission') {
+  if (taskType === 'group_ai_chat' || taskType === 'group_membership_admission' || taskType === 'search_join_group') {
     return (
       <div className="form-grid">
-        <Form.Item name="target_operation_target_id" label="已有运营目标群" rules={[{ required: taskType === 'group_membership_admission' }]}><Select allowClear options={groupTargetOptions} {...targetSelectProps} /></Form.Item>
+        <Form.Item name="target_operation_target_id" label="已有运营目标群" rules={[{ required: taskType !== 'group_ai_chat' }]}><Select allowClear options={groupTargetOptions} {...targetSelectProps} /></Form.Item>
         {taskType === 'group_ai_chat' && allowInlineTarget && <Form.Item name="target_input" label="粘贴新群入口"><Input placeholder="@group_name / https://t.me/+invite / peer id" /></Form.Item>}
         {taskType === 'group_ai_chat' && allowInlineTarget && <Form.Item name="target_title" label="目标名称"><Input placeholder="可选，不填时使用入口作为名称" /></Form.Item>}
       </div>
@@ -285,6 +285,37 @@ export function WizardTypeConfig({
           <Form.Item name="test_message_min_chars" label="测试发言最少字数" rules={[{ required: true }]}><InputNumber min={1} max={80} /></Form.Item>
           <Form.Item name="test_message_max_chars" label="测试发言最多字数" rules={[{ required: true }]}><InputNumber min={1} max={120} /></Form.Item>
           <Form.Item name="delete_after_send" valuePropName="checked"><Checkbox>发送成功后尝试删除测试消息</Checkbox></Form.Item>
+        </div>
+      </Space>
+    );
+  }
+  if (taskType === 'search_join_group') {
+    return (
+      <Space direction="vertical" style={{ width: '100%' }}>
+        <Alert
+          type="warning"
+          showIcon
+          message="搜索自动入群首版固定 mtproto_userbot；缺少真实协议样本、代理出口或客户端元数据时 fail closed，不会假成功。"
+        />
+        <div className="form-grid">
+          <Form.Item name="search_bots" label="搜索机器人" rules={[{ required: true }]}>
+            <Input placeholder="jisou，可用逗号或换行配置多个" />
+          </Form.Item>
+          <Form.Item name="keywords" label="关键词列表" rules={[{ required: true }]}>
+            <Input.TextArea rows={4} placeholder={'上海 留学\n上海 国际学校'} />
+          </Form.Item>
+          <Form.Item name="keyword_hashes" hidden><Input /></Form.Item>
+          <Form.Item name="business_region" label="业务地区"><Input placeholder="CN-SH" /></Form.Item>
+          <Form.Item name="account_locale" label="账号语言"><Input placeholder="zh-CN" /></Form.Item>
+          <Form.Item name="proxy_country" label="代理出口国家"><Input placeholder="SG / JP / US" /></Form.Item>
+          <Form.Item name="pre_join_decoy_click_max" label="入群前非目标浏览上限"><InputNumber min={0} max={3} precision={0} /></Form.Item>
+          <Form.Item name="post_join_safe_navigation_max" label="入群后安全浏览上限"><InputNumber min={0} max={3} precision={0} /></Form.Item>
+          <Form.Item name="hourly_min_successful_joins" label="每小时最低成功入群"><InputNumber min={1} max={500} precision={0} /></Form.Item>
+          <Form.Item name="actions_per_round" label="每轮规划数"><InputNumber min={1} max={20} precision={0} /></Form.Item>
+          <Form.Item name="target_relevance_score" label="目标资料相关性"><InputNumber min={0} max={100} precision={0} /></Form.Item>
+          <Form.Item name="target_content_health" label="内容健康"><Select options={[{ value: 'healthy', label: '健康' }, { value: 'weak', label: '偏弱' }, { value: 'blocked', label: '阻断' }, { value: 'unknown', label: '未知' }]} /></Form.Item>
+          <Form.Item name="jisou_ecosystem_status" label="极搜生态"><Select options={[{ value: 'bot_joined', label: '已收录/机器人入驻' }, { value: 'flow_alliance', label: '流量联盟' }, { value: 'unknown', label: '未知' }]} /></Form.Item>
+          <Form.Item name="paid_keyword_ad_status" label="付费关键词广告"><Select options={[{ value: 'none', label: '无' }, { value: 'active', label: '投放中' }, { value: 'expired', label: '已过期' }, { value: 'unknown', label: '未知' }]} /></Form.Item>
         </div>
       </Space>
     );

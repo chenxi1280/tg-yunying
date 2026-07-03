@@ -234,6 +234,34 @@ class InviteGroupAccountPayload(BaseModel):
         return self
 
 
+class SearchJoinPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_mode: str = "mtproto_userbot"
+    bot_username: str = Field(min_length=1, max_length=80)
+    keyword_hash: str = Field(min_length=64, max_length=64)
+    keyword_text_ciphertext: str = Field(default="", max_length=1000)
+    target_operation_target_id: int | None = None
+    target_group_id: int | None = None
+    target_username: str = ""
+    safe_navigation: dict[str, Any] = Field(default_factory=dict)
+    search_visibility_attribution: dict[str, Any] = Field(default_factory=dict)
+    post_join_policy: str = "stay_joined"
+    hourly_execution: dict[str, Any] = Field(default_factory=dict)
+    linked_task_policy: list[dict[str, Any]] = Field(default_factory=list)
+    runtime_environment: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_safe_navigation(self) -> "SearchJoinPayload":
+        safe = self.safe_navigation or {}
+        total_max = int(safe.get("total_max") or 0)
+        if total_max > 3:
+            raise ValueError("search_join safe navigation total_max cannot exceed 3")
+        if safe.get("decoy_join_enabled") is True:
+            raise ValueError("search_join decoy navigation cannot join non-target groups")
+        return self
+
+
 PAYLOAD_MODELS = {
     "ensure_channel_membership": EnsureChannelMembershipPayload,
     "ensure_target_membership": EnsureChannelMembershipPayload,
@@ -244,6 +272,7 @@ PAYLOAD_MODELS = {
     "view_message": ViewMessagePayload,
     "like_message": LikeMessagePayload,
     "post_comment": PostCommentPayload,
+    "search_join": SearchJoinPayload,
 }
 
 DEDUPE_VOLATILE_PAYLOAD_FIELDS = frozenset(
@@ -375,6 +404,10 @@ def create_comment_action(session: Session, task: Task, account_id: int | None, 
     return _create_action(session, task, "post_comment", account_id, scheduled_at, payload)
 
 
+def create_search_join_action(session: Session, task: Task, account_id: int | None, scheduled_at: datetime, payload: SearchJoinPayload) -> Action:
+    return _create_action(session, task, "search_join", account_id, scheduled_at, payload)
+
+
 def payload_error_message(exc: ValidationError | ValueError) -> str:
     if isinstance(exc, ValidationError):
         return "; ".join(".".join(str(part) for part in error["loc"]) + ": " + error["msg"] for error in exc.errors())
@@ -385,12 +418,14 @@ __all__ = [
     "EnsureChannelMembershipPayload",
     "LikeMessagePayload",
     "PostCommentPayload",
+    "SearchJoinPayload",
     "SendMessagePayload",
     "ViewMessagePayload",
     "create_comment_action",
     "create_like_action",
     "create_membership_action",
     "create_send_action",
+    "create_search_join_action",
     "create_view_action",
     "payload_error_message",
     "validate_action_payload",

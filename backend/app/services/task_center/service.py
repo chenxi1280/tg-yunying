@@ -30,6 +30,8 @@ from app.schemas.task_center import (
     GroupRelayTaskCreate,
     GroupRelayTaskConfigUpdate,
     RecommendTaskAccountsRequest,
+    SearchJoinGroupTaskCreate,
+    SearchJoinGroupTaskConfigUpdate,
     TaskPrecheckRequest,
     TaskRetryRequest,
     TaskSettingsUpdate,
@@ -180,6 +182,10 @@ def create_channel_comment_task(session: Session, tenant_id: int, payload: Chann
     return _create_task(session, tenant_id, "channel_comment", payload, actor)
 
 
+def create_search_join_group_task(session: Session, tenant_id: int, payload: SearchJoinGroupTaskCreate, actor: str) -> Task:
+    return _create_task(session, tenant_id, "search_join_group", payload, actor)
+
+
 def create_and_start_group_ai_chat_task(session: Session, tenant_id: int, payload: GroupAIChatTaskCreate, actor: str) -> Task:
     return _create_and_start_task(session, tenant_id, "group_ai_chat", payload, actor)
 
@@ -202,6 +208,10 @@ def create_and_start_channel_like_task(session: Session, tenant_id: int, payload
 
 def create_and_start_channel_comment_task(session: Session, tenant_id: int, payload: ChannelCommentTaskCreate, actor: str) -> Task:
     return _create_and_start_task(session, tenant_id, "channel_comment", payload, actor)
+
+
+def create_and_start_search_join_group_task(session: Session, tenant_id: int, payload: SearchJoinGroupTaskCreate, actor: str) -> Task:
+    return _create_and_start_task(session, tenant_id, "search_join_group", payload, actor)
 
 
 def _new_task(session: Session, tenant_id: int, task_type: str, payload) -> Task:
@@ -567,6 +577,10 @@ def update_channel_like_config(session: Session, tenant_id: int, task_id: str, p
 
 def update_channel_comment_config(session: Session, tenant_id: int, task_id: str, payload: ChannelCommentTaskConfigUpdate, actor: str) -> Task:
     return _update_type_config(session, tenant_id, task_id, "channel_comment", payload, actor)
+
+
+def update_search_join_group_config(session: Session, tenant_id: int, task_id: str, payload: SearchJoinGroupTaskConfigUpdate, actor: str) -> Task:
+    return _update_type_config(session, tenant_id, task_id, "search_join_group", payload, actor)
 
 
 def start_task(session: Session, tenant_id: int, task_id: str, actor: str) -> Task:
@@ -2072,12 +2086,14 @@ __all__ = [
     "create_and_start_group_ai_chat_task",
     "create_and_start_group_membership_admission_task",
     "create_and_start_group_relay_task",
+    "create_and_start_search_join_group_task",
     "create_channel_comment_task",
     "create_channel_like_task",
     "create_channel_view_task",
     "create_group_ai_chat_task",
     "create_group_membership_admission_task",
     "create_group_relay_task",
+    "create_search_join_group_task",
     "add_task_source_filter_override",
     "delete_task",
     "drain_task_center",
@@ -2120,6 +2136,7 @@ __all__ = [
     "update_channel_view_config",
     "update_group_ai_chat_config",
     "update_group_relay_config",
+    "update_search_join_group_config",
     "update_task_settings",
     "update_task",
 ]

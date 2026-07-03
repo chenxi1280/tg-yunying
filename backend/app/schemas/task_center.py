@@ -1,21 +1,33 @@
 from __future__ import annotations
 
+import hashlib
+import re
 from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.security import encrypt_secret
+
 from .api import ApiModel
 from .operation_plans import OperationPlanTaskLinkOut
 from .runtime_summary import TaskRuntimeSummaryOut
 
-TaskTypeValue = Literal["group_ai_chat", "group_relay", "group_membership_admission", "channel_view", "channel_like", "channel_comment"]
+TaskTypeValue = Literal["group_ai_chat", "group_relay", "group_membership_admission", "channel_view", "channel_like", "channel_comment", "search_join_group"]
 TaskStatusValue = Literal["draft", "pending", "running", "paused", "target_reached", "wrapping_up", "completed", "stopped", "failed", "deleted"]
 ActionStatusValue = Literal["pending", "executing", "success", "failed", "skipped"]
 ReviewStatusValue = Literal["pending", "approved", "rejected", "expired"]
 GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 10
 CHANNEL_COUNT_JITTER_DEFAULT = 0.2
 MAX_TOTAL_COMMENT_JITTER = 0.3
+MAX_SEARCH_JOIN_SAFE_NAVIGATION = 3
+DEFAULT_SEARCH_JOIN_CURVE = [1, 1, 0, 0, 0, 0, 1, 2, 2, 3, 3, 3, 2, 2, 3, 4, 4, 5, 5, 5, 4, 3, 2, 1]
+KEYWORD_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _hash_keyword(value: str) -> str:
+    normalized = " ".join(value.strip().lower().split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 class QuietHours(BaseModel):
@@ -464,6 +476,99 @@ class GroupMembershipAdmissionConfig(BaseModel):
         return self
 
 
+class SearchJoinBotConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1, max_length=80)
+    display_name: str = Field(default="", max_length=120)
+
+    @model_validator(mode="after")
+    def normalize_username(self) -> "SearchJoinBotConfig":
+        self.username = self.username.strip().lstrip("@")
+        if not self.username:
+            raise ValueError("search bot username 不能为空")
+        return self
+
+
+class SearchJoinVisibilityAttribution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    organic_search_join: bool = True
+    linked_ai_activity: bool = True
+    jisou_ecosystem: Literal["bot_joined", "flow_alliance", "unknown"] = "unknown"
+    paid_keyword_ad: Literal["none", "active", "expired", "unknown"] = "unknown"
+    content_health: Literal["healthy", "weak", "blocked", "unknown"] = "unknown"
+
+
+class SearchJoinGroupConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_operation_target_id: int | None = Field(default=None, gt=0)
+    target_group_id: int | None = Field(default=None, gt=0)
+    target_input: str | None = Field(default=None, max_length=300)
+    target_title: str | None = Field(default=None, max_length=180)
+    execution_mode: Literal["mtproto_userbot"] = "mtproto_userbot"
+    search_bots: list[SearchJoinBotConfig] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list, exclude=True)
+    keyword_hashes: list[str] = Field(default_factory=list)
+    keyword_text_ciphertexts: list[str] = Field(default_factory=list)
+    business_region: str = Field(default="", max_length=80)
+    account_locale: str = Field(default="zh-CN", max_length=20)
+    proxy_country: str = Field(default="", max_length=20)
+    pre_join_decoy_click_min: int = Field(default=0, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION)
+    pre_join_decoy_click_max: int = Field(default=2, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION)
+    post_join_safe_navigation_min: int = Field(default=0, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION)
+    post_join_safe_navigation_max: int = Field(default=1, ge=0, le=MAX_SEARCH_JOIN_SAFE_NAVIGATION)
+    decoy_join_enabled: bool = False
+    hourly_round_curve: list[int] = Field(default_factory=lambda: list(DEFAULT_SEARCH_JOIN_CURVE))
+    actions_per_round: int = Field(default=1, ge=1, le=20)
+    max_actions_per_hour: int = Field(default=20, ge=1, le=500)
+    hourly_min_successful_joins: int = Field(default=1, ge=1, le=500)
+    target_relevance_score: int | None = Field(default=None, ge=0, le=100)
+    target_content_health: Literal["healthy", "weak", "blocked", "unknown"] = "unknown"
+    jisou_ecosystem_status: Literal["bot_joined", "flow_alliance", "unknown"] = "unknown"
+    paid_keyword_ad_status: Literal["none", "active", "expired", "unknown"] = "unknown"
+    search_visibility_attribution: SearchJoinVisibilityAttribution = Field(default_factory=SearchJoinVisibilityAttribution)
+    post_join_policy: Literal["stay_joined"] = "stay_joined"
+    post_join_task_links: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_search_join_config(self) -> "SearchJoinGroupConfig":
+        if not self.target_group_id and not self.target_operation_target_id and not (self.target_input or "").strip():
+            raise ValueError("target_group_id、target_operation_target_id 或 target_input 至少填写一个")
+        if not self.search_bots:
+            raise ValueError("search_bots 至少选择一个搜索机器人")
+        if len(self.hourly_round_curve) != 24:
+            raise ValueError("hourly_round_curve 必须包含 24 个小时点")
+        if self.pre_join_decoy_click_min > self.pre_join_decoy_click_max:
+            raise ValueError("pre_join_decoy_click_min 不能大于 pre_join_decoy_click_max")
+        if self.post_join_safe_navigation_min > self.post_join_safe_navigation_max:
+            raise ValueError("post_join_safe_navigation_min 不能大于 post_join_safe_navigation_max")
+        if self.pre_join_decoy_click_max + self.post_join_safe_navigation_max > MAX_SEARCH_JOIN_SAFE_NAVIGATION:
+            raise ValueError("非目标安全浏览总量不能超过 3")
+        if self.decoy_join_enabled:
+            raise ValueError("不得加入非目标群")
+        self.keyword_hashes = _keyword_hashes(self.keywords, self.keyword_hashes)
+        if not self.keyword_hashes:
+            raise ValueError("keywords 或 keyword_hashes 至少提供一个")
+        if any(not KEYWORD_HASH_RE.fullmatch(item) for item in self.keyword_hashes):
+            raise ValueError("keyword_hashes 必须是 64 位小写 hex")
+        self.keyword_text_ciphertexts = _keyword_text_ciphertexts(self.keywords, self.keyword_text_ciphertexts)
+        return self
+
+
+def _keyword_hashes(keywords: list[str], existing_hashes: list[str]) -> list[str]:
+    hashes = [item.strip().lower() for item in existing_hashes if item.strip()]
+    hashes.extend(_hash_keyword(item) for item in keywords if item.strip())
+    return list(dict.fromkeys(hashes))
+
+
+def _keyword_text_ciphertexts(keywords: list[str], existing_values: list[str]) -> list[str]:
+    values = [item.strip() for item in existing_values if item.strip()]
+    values.extend(encrypt_secret(item.strip()) for item in keywords if item.strip())
+    return values
+
+
 class TaskCreateCommon(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -508,6 +613,10 @@ class GroupMembershipAdmissionTaskCreate(TaskCreateCommon, GroupMembershipAdmiss
     pass
 
 
+class SearchJoinGroupTaskCreate(TaskCreateCommon, SearchJoinGroupConfig):
+    pass
+
+
 class GroupAIChatTaskConfigUpdate(GroupAIChatConfig):
     pass
 
@@ -529,6 +638,10 @@ class ChannelCommentTaskConfigUpdate(ChannelCommentConfig):
 
 
 class GroupMembershipAdmissionTaskConfigUpdate(GroupMembershipAdmissionConfig):
+    pass
+
+
+class SearchJoinGroupTaskConfigUpdate(SearchJoinGroupConfig):
     pass
 
 
@@ -1181,6 +1294,11 @@ __all__ = [
     "ReviewApproveRequest",
     "ReviewQueueOut",
     "ReviewRejectRequest",
+    "SearchJoinBotConfig",
+    "SearchJoinGroupConfig",
+    "SearchJoinGroupTaskConfigUpdate",
+    "SearchJoinGroupTaskCreate",
+    "SearchJoinVisibilityAttribution",
     "TaskCreateCommon",
     "TaskAIAccountProfileOut",
     "TaskAICycleOut",

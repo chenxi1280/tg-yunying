@@ -134,6 +134,26 @@ def test_task_center_detail_section_pages_ignore_stale_task_responses():
     assert catch_guard_index < catch_page_index < catch_error_index
 
 
+def test_task_center_frontend_supports_search_join_group_contract():
+    types = (PROJECT_ROOT / "frontend/src/app/types/taskCenter.ts").read_text()
+    view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
+    wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
+    detail = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterDetailModal.tsx").read_text()
+    grouping = (PROJECT_ROOT / "frontend/src/app/views/taskCenterListGrouping.ts").read_text()
+
+    assert "'search_join_group'" in types
+    assert "搜索自动入群" in view_model
+    assert "search_join_group: '/tasks/search-join-group'" in view_model
+    assert "search_join_group: '/tasks/search-join-group/create-and-start'" in view_model
+    for field in ["search_bots", "keyword_hashes", "pre_join_decoy_click_max", "post_join_safe_navigation_max"]:
+        assert field in wizard
+        assert field in view_model
+    for label in ["目标资料相关性", "内容健康", "极搜生态", "付费关键词广告", "排名观察", "联动状态"]:
+        assert label in detail
+    assert "search_join_stats" in detail
+    assert "search_join_group" in grouping
+
+
 def test_task_center_membership_pages_ignore_stale_task_responses():
     source = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterView.tsx").read_text()
     load_for_detail_start = source.index("async function loadMembershipForDetail")
@@ -590,7 +610,7 @@ def test_managed_2fa_panel_ignores_stale_account_responses():
     effect = source[source.index("React.useEffect(() => {"):source.index("\n  function isActiveAccount")]
     save_body = source[source.index("async function saveManagedPassword"):source.index("\n\n  return")]
 
-    assert "type Managed2FaAction = 'save' | 'rotate';" in source
+    assert "type Managed2FaAction = 'save' | 'rotate' | 'reveal';" in source
     assert "function managed2FaPath(accountId: number, action: Managed2FaAction)" in source
     assert "const activeAccountId = React.useRef(accountId);" in source
     assert "function isActiveAccount(targetAccountId: number)" in source
@@ -2152,10 +2172,11 @@ def test_security_drawers_show_cleanup_preservation_and_managed_2fa_policy():
     assert "托管 2FA" in modals
     assert "密码设置 / 轮换不回显旧密码" in modals
     assert "accountId={accountDetail.account.id}" in modals
-    assert "const suffix = action === 'save' ? 'managed-2fa' : 'managed-2fa/rotate';" in managed_2fa
+    assert "const suffix = action === 'save' ? 'managed-2fa' : `managed-2fa/${action}`;" in managed_2fa
     assert "return `/tg-accounts/${accountId}/security/${suffix}`;" in managed_2fa
     assert "post_account_security_managed_2fa" in router
     assert "post_account_security_managed_2fa_rotate" in router
+    assert "post_account_security_managed_2fa_reveal" in router
     assert "accounts.security.credential_manage" in auth
 
 

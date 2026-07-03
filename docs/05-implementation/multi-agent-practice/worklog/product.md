@@ -197,3 +197,69 @@
 - decision: 本轮是 PRD / 索引设计修复，不做代码实现，不声明 QA pass、发布完成或生产可用
 - next_agent: none
 - unresolved: 真实实现前仍需采集目标机器人协议样本、确认 Clash 订阅来源和节点质量、选择首版目标机器人账号、灰度目标群和关键词样本
+
+## 2026-07-03 搜索自动入群 iOS 指纹目的澄清
+
+- message_id: 2026-07-03-search-join-group-ios-fingerprint-purpose-001
+- action: 按用户澄清修正 PRD 中 iOS 设备指纹的目的和可见面边界
+- input: 用户说明 iOS 设备指纹主要想解决点击按钮的请求到第三方上识别为正常的地址
+- output: 专项 PRD 补充 button 请求可见面分层：callback_data 和 Telegram 内部 URL 走 MTProto 会话，iOS 客户端元数据用于让 Telegram / 目标机器人链路看到稳定移动端画像；外部 HTTP URL 不会自动继承 MTProto 指纹，首版必须跳过并标记 `external_url_requires_web_profile`。主 PRD 和 DF-178A 同步 button 目标类型与外部 URL 边界
+- evidence: E1 文档证据；本轮 `git diff --check`、未跟踪专项 PRD `git diff --no-index --check`、行尾空白检查和关键口径扫描通过
+- decision: 本轮是 PRD / 索引设计澄清，不做代码实现，不声明 QA pass、发布完成或生产可用
+- next_agent: none
+- unresolved: 若后续必须打开外部 HTTP URL，需要另起 WebView / browser profile 设计，覆盖 HTTP UA、Header、Cookie、出口 IP 和审计
+
+## 2026-07-03 搜索自动入群按钮请求正常地址遗漏审查
+
+- message_id: 2026-07-03-search-join-group-button-address-gap-review-001
+- action: 按“点击按钮请求到第三方识别为正常地址/画像”的逻辑审查 PRD 遗漏并修复
+- input: 用户要求按该逻辑检查还有没有遗漏问题
+- output: 补齐 5 类遗漏：目标机器人不一定直接看到 `device_model`，不能过度承诺第三方直读 iOS 指纹；所有 MTProto 搜索/翻页/callback/Telegram 内部 URL resolve/join 必须通过 `proxy_egress_guard` 证明走绑定代理且不得直连回退；授权槽位登录 API ID、session、运行时 API ID/API hash 和客户端元数据必须一致；协议样本必须记录 button type 和 button effect；decoy 浏览只允许 `button_effect=navigate_only`，外部 HTTP URL 和 unknown effect 必须跳过
+- evidence: E1 文档证据；本轮 `git diff --check`、未跟踪专项 PRD `git diff --no-index --check`、行尾空白检查和关键口径扫描通过
+- decision: 本轮是 PRD / 索引设计遗漏修复，不做代码实现，不声明 QA pass、发布完成或生产可用
+- next_agent: none
+- unresolved: 真实实现前仍需用真实账号采集目标机器人样本，并用真实代理验证 `proxy_egress_guard` 能 fail closed
+
+## 2026-07-03 搜索自动入群机场订阅与节点容灾修复
+
+- message_id: 2026-07-03-search-join-group-airport-subscription-failover-001
+- action: 按用户提供的机场订阅格式实测结果，修复搜索自动入群 PRD 的订阅解析、节点容量和节点不可用策略
+- input: 用户提供机场订阅地址，要求阅读返回结构；PRD 需要支持配置每个节点多少账号/授权槽位，节点不通切换下一个节点，完全不通时不进行操作
+- output: 实测返回体为 Base64 URI 列表而非直接 JSON，解码后包含 `anytls` / `trojan` 节点及套餐/流量伪节点；专项 PRD v0.8 补齐 Base64 URI 列表 / Clash YAML / JSON 自动识别、伪节点过滤、每节点容量默认值和单节点覆盖、`switch_to_next_healthy_node` 故障切换、`airport_all_nodes_unavailable` 全订阅不可用停手；主 PRD、DF-178A 和状态板同步
+- evidence: E1 文档证据；订阅只做结构识别和脱敏摘要，未把原始 URL、token 或节点密钥写入文档；本轮 `git diff --check`、行尾空白检查、敏感订阅 URL/token/节点域名扫描和关键口径扫描通过
+- decision: 本轮是 PRD / 索引设计修复，不做代码实现，不声明 QA pass、发布完成或生产可用
+- next_agent: none
+- unresolved: 真实实现前仍需把订阅样本固化为脱敏 parser fixture，并用真实 Clash / Mihomo 出口探测验证每种节点协议的连通性和 fail closed 行为
+
+## 2026-07-03 搜索自动入群 Bot 通知与小时执行量修复
+
+- message_id: 2026-07-03-search-join-group-admin-notify-hourly-execution-001
+- action: 按用户补充修复搜索自动入群 PRD 的全节点掉线通知和小时执行数量模型
+- input: 用户要求代理节点全部掉线时在 Bot 上推送消息给配置的群消息管理员，并且搜索加入群的小时执行数量可以和现在的活群逻辑相似
+- output: 专项 PRD v0.9 明确 `airport_all_nodes_unavailable` 时复用租户 Telegram Bot Token 和 `Tenant.admin_chat_id` 向全部管理员 Chat ID 发送脱敏告警，通知失败写 `admin_notification_failed`；新增搜索入群小时执行量模型，复用 AI 活跃群自然小时桶、24 小时曲线、future open、overdue open、deficit 和状态思想，但指标独立为 `search_join` 成功 action；主 PRD、DF-178A 和状态板同步
+- evidence: E1 文档证据；本轮 `git diff --check`、行尾空白检查、敏感订阅 URL/token/节点域名扫描和关键口径扫描通过；未做代码实现、QA 或生产验证
+- decision: 本轮是 PRD / 索引设计修复；小时执行量只复用活群的调度统计模型，不复用 AI 发言或生成语义
+- next_agent: none
+- unresolved: 真实实现前需验证租户 Bot 多管理员广播链路、通知失败审计、小时桶时区归一化和代理全不可用时的 fail closed 行为
+
+## 2026-07-03 搜索自动入群公开排名规则与后续任务联动修复
+
+- message_id: 2026-07-03-search-join-group-ranking-linked-tasks-001
+- action: 联网核查极搜/Telegram 搜索公开资料，并把搜索自动入群的排名规则推断、非目标安全浏览和入群后联动 AI 活跃群等任务补入专项 PRD、主 PRD、数据流转索引和状态板
+- input: 用户要求查找群/极搜排名规则，并和前面“不给别人刷、入群后继续点击不超过 3-4 次、小时执行数量类似活群”等问题一起优化；同时要求入群后和我们的活群等任务联动
+- output: 专项 PRD v0.10 补充公开排名规则只能作为产品推断，映射名称/内容相关性、持续更新、用户互动、开放活跃、流量联盟/付费广告、反作弊和 Telegram 搜索变化为可观测指标；把非目标点击修正为入群前/入群后安全浏览，总量默认不超过 3 且只允许 navigate_only，不加入非目标群；新增搜索入群成功后联动 AI 活跃群、转发监听、频道评论等后续任务的状态机、冷却、留存观察、can_send 复检、新成员占比限制和 linked ready pool 阻塞原因；主 PRD 和 DF-178A 同步
+- evidence: E1 文档证据；联网来源包括极搜官方公告、极搜广告/关键词排名频道、TGInfo Telegram 搜索变化整理和公开搜索机器人目录；本轮未做代码实现、QA 或生产验证
+- decision: 本轮是 PRD / 索引设计修复；目标排名变化仍是运营观察指标，不作为系统验收通过硬条件；搜索入群成功不等于 AI 活跃群 ready，必须经过 linked task gate
+- next_agent: none
+- unresolved: 真实实现前仍需采集目标机器人真实协议样本，确认目标群是否已加入极搜生态/流量联盟，验证 linked AI 活跃群 ready pool 的生产数据流，以及选择灰度关键词和目标群
+
+## 2026-07-03 搜索自动入群调研落地强化
+
+- message_id: 2026-07-03-search-join-group-research-prd-landing-001
+- action: 按“我们的调研”继续更新搜索自动入群设计 PRD，把公开规则从概念映射补强为数据模型、页面解释和验收边界
+- input: 用户要求“按我们的调研来更新设计prd”
+- output: 专项 PRD v0.11 新增“调研驱动的设计决策”，把目标资料先行、内容健康、极搜生态状态、排名观察、入群后运营任务联动、非目标安全浏览和反作弊结果可见固化为设计决策；新增效果归因结构 `search_visibility_attribution`，新增 `search_join_rank_observations` 排名观察快照和 `search_join_linked_task_dispatches` 联动投递记录；主 PRD 和 DF-178A 同步数据模型与硬前置口径
+- evidence: E1 文档证据；调研来源仍为极搜官方公告、极搜广告/关键词排名频道、TGInfo Telegram 搜索变化整理和公开搜索机器人目录；未做代码实现、QA 或生产验证
+- decision: 排名观察、付费关键词广告、流量联盟和内容健康只能作为解释与 warning，不计入 `search_join` action success；搜索入群事实、排名观察和后续活群联动必须分开记账
+- next_agent: none
+- unresolved: 真实实现前仍需用目标机器人真实样本校验字段可得性，并确认目标群内容健康/极搜生态状态的采集方式

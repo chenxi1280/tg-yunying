@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from app.integrations.telegram import OperationResult, OutboundSegment
 from app.config import get_settings
 from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
+from app.security import decrypt_secret
 from app.services._common import _now, audit, gateway
 from app.services.account_online_state import is_account_online_ready
 from app.services.account_authorizations import attempt_primary_proxy_recovery, attempt_standby_authorization_recovery
@@ -41,9 +42,10 @@ from .channel_membership import account_satisfies_authorized_target, linked_chan
 from .executors.common import quantity_jitter_bounds, stats_inc
 from .executors.channel_comment import _resolved_total_comment_limit, _total_comment_action_count
 from .group_rescue import GROUP_RESCUE_FAILURE_THRESHOLD, infer_rescue_admin_rate_limit, permission_failure_count_for_send_action, refresh_group_rescue_action, trigger_group_rescue
-from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
+from .payloads import DeprecatedGroupRescuePayload, DeleteMessagePayload, EnsureChannelMembershipPayload, InviteGroupAccountPayload, LikeMessagePayload, PostCommentPayload, SearchJoinPayload, SendMessagePayload, ViewMessagePayload, create_membership_action, payload_error_message, validate_action_payload
 from .policies import validate_group_send_policy
 from .review import has_pending_review
+from .search_join_linking import create_linked_dispatch_if_membership_observed
 from . import runtime_resources as _runtime_resources
 
 _ACTION_RESERVATIONS = _runtime_resources._ACTION_RESERVATIONS
@@ -228,6 +230,8 @@ def dispatch_action(session: Session, action: Action) -> bool:
         return True
     try:
         payload = validate_action_payload(action.action_type, action.payload or {})
+        if action.action_type == "search_join":
+            return _dispatch_search_join(session, action, account, payload)
         if action.action_type in {"view_message", "like_message", "post_comment"} and not _ensure_channel_action_membership(session, action, account, payload.channel_target_id):
             return True
         credentials = credentials_for_account(session, account)
@@ -3456,6 +3460,56 @@ def _unavailable_reaction_siblings(session: Session, action: Action, channel_tar
 def _skip_like_unavailable_message(action: Action, detail: str) -> None:
     _skip(action, "reaction_unavailable_message", f"该消息无法点赞：{detail}")
     action.result = {**(action.result or {}), "validation_stage": "channel_like_runtime"}
+
+
+def _dispatch_search_join(session: Session, action: Action, account: TgAccount, payload: SearchJoinPayload) -> bool:
+    search_join = getattr(gateway, "execute_search_join", None)
+    if not callable(search_join):
+        _skip(action, "search_join_gateway_unavailable", "搜索入群 gateway 尚未接入真实 MTProto 执行器")
+        action.result = {**(action.result or {}), "validation_stage": "search_join_gateway", "bot_username": payload.bot_username}
+        return True
+    if not _search_join_proxy_guard_verified(payload):
+        _fail(action, "proxy_egress_guard_missing", "搜索入群缺少已验证代理出口 guard，禁止回退本机直连", validation_stage="search_join_proxy")
+        return True
+    keyword_text = decrypt_secret(payload.keyword_text_ciphertext) or ""
+    if not keyword_text.strip():
+        _fail(action, "keyword_text_missing", "搜索入群缺少可执行关键词密文", validation_stage="search_join_payload")
+        return True
+    credentials = credentials_for_account(session, account)
+    result = search_join(account.id, payload.model_dump(mode="json"), account.session_ciphertext, credentials, keyword_text)
+    action.status = "success" if result.get("success") else "failed"
+    action.result = {**(action.result or {}), **result}
+    action.executed_at = _now()
+    _create_search_join_linked_dispatches(session, action, payload)
+    return True
+
+
+def _search_join_proxy_guard_verified(payload: SearchJoinPayload) -> bool:
+    runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
+    return runtime.get("proxy_egress_guard") == "verified"
+
+
+def _create_search_join_linked_dispatches(session: Session, action: Action, payload: SearchJoinPayload) -> None:
+    if action.status != "success":
+        return
+    for policy in payload.linked_task_policy:
+        linked_task_id = str(policy.get("linked_task_id") or "").strip()
+        if not linked_task_id:
+            continue
+        create_linked_dispatch_if_membership_observed(
+            session,
+            action,
+            linked_task_id=linked_task_id,
+            activation_not_before=_linked_activation_not_before(policy),
+            can_send_checked_at=_now() if policy.get("can_send_rechecked") else None,
+        )
+
+
+def _linked_activation_not_before(policy: dict) -> datetime | None:
+    cooldown_minutes = int(policy.get("cooldown_minutes") or 0)
+    if cooldown_minutes <= 0:
+        return None
+    return _now() + timedelta(minutes=cooldown_minutes)
 
 
 def _fail(action: Action, failure_type: str, detail: str, *, auto_check: str = "失败", validation_stage: str = "") -> None:

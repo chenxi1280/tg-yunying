@@ -1149,6 +1149,34 @@ export default function TaskCenterView({
     return payload;
   }
 
+  function searchJoinPayload(values: any, base: Record<string, any>) {
+    return {
+      ...base,
+      target_operation_target_id: values.target_operation_target_id ?? null,
+      execution_mode: 'mtproto_userbot',
+      search_bots: words(values.search_bots || 'jisou').map((username) => ({ username })),
+      keywords: words(values.keywords),
+      keyword_hashes: [],
+      business_region: values.business_region ?? '',
+      account_locale: values.account_locale ?? 'zh-CN',
+      proxy_country: values.proxy_country ?? '',
+      pre_join_decoy_click_min: 0,
+      pre_join_decoy_click_max: values.pre_join_decoy_click_max ?? 2,
+      post_join_safe_navigation_min: 0,
+      post_join_safe_navigation_max: values.post_join_safe_navigation_max ?? 1,
+      decoy_join_enabled: false,
+      hourly_round_curve: curveNumbers(values.hourly_activity_curve),
+      actions_per_round: values.actions_per_round ?? 1,
+      max_actions_per_hour: values.max_actions_per_hour ?? 20,
+      hourly_min_successful_joins: values.hourly_min_successful_joins ?? 1,
+      target_relevance_score: values.target_relevance_score ?? null,
+      target_content_health: values.target_content_health ?? 'unknown',
+      jisou_ecosystem_status: values.jisou_ecosystem_status ?? 'unknown',
+      paid_keyword_ad_status: values.paid_keyword_ad_status ?? 'unknown',
+      post_join_policy: 'stay_joined',
+    };
+  }
+
   function parseExcludedSenderInput(value?: string) {
     const result = { peerIds: [] as string[], usernames: [] as string[], names: [] as string[] };
     String(value ?? '')
@@ -1236,6 +1264,9 @@ export default function TaskCenterView({
           delete_after_send: Boolean(values.delete_after_send),
         },
       };
+    }
+    if (taskType === 'search_join_group') {
+      return searchJoinPayload(values, base);
     }
     if (taskType === 'group_ai_chat') {
       const target = groupTargets.find((item) => item.id === values.target_operation_target_id);
@@ -1379,6 +1410,9 @@ export default function TaskCenterView({
         return { operation_target_id: id, group_name: target?.title ?? '', is_active: true };
       }) : [...(values.source_groups ?? [])];
       return { ...base, source_groups: sourceGroups, target_operation_target_id: values.target_operation_target_id ?? null, target_operation_target_ids: targetOperationIds, rule_set_id: values.rule_set_id ?? null, rule_set_version_id: values.rule_set_version_id ?? null, content_mode: values.content_mode ?? 'light_rewrite', ...relaySourceFilterPayload(values), require_review: false };
+    }
+    if (type === 'search_join_group') {
+      return searchJoinPayload(values, base);
     }
     if (type === 'channel_view') {
       return { ...base, ...channelViewProductionPayload(values) };

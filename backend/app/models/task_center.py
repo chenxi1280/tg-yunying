@@ -154,6 +154,74 @@ class RuntimeMetricSnapshot(Base):
     tags: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class BotProtocolSample(Base):
+    __tablename__ = "bot_protocol_samples"
+    __table_args__ = (
+        Index("ix_bot_protocol_samples_active", "tenant_id", "bot_username", "sample_type", "is_active"),
+        Index("ix_bot_protocol_samples_captured", "tenant_id", "bot_username", "captured_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    bot_username: Mapped[str] = mapped_column(String(80), default="")
+    sample_type: Mapped[str] = mapped_column(String(60), default="search_results")
+    sample_hash: Mapped[str] = mapped_column(String(120), default="")
+    schema_version: Mapped[str] = mapped_column(String(40), default="v1")
+    structure_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    pii_scrubbed: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class SearchJoinRankObservation(Base):
+    __tablename__ = "search_join_rank_observations"
+    __table_args__ = (
+        Index("ix_search_join_rank_task_time", "tenant_id", "task_id", "observed_at"),
+        Index("ix_search_join_rank_keyword", "tenant_id", "keyword_hash", "observed_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    task_id: Mapped[str] = mapped_column(String(36))
+    bot_username: Mapped[str] = mapped_column(String(80), default="")
+    keyword_hash: Mapped[str] = mapped_column(String(64), default="")
+    target_group_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    observed_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_results: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    observed_region: Mapped[str] = mapped_column(String(80), default="")
+    observation_source: Mapped[str] = mapped_column(String(80), default="")
+    paid_keyword_ad_status: Mapped[str] = mapped_column(String(40), default="unknown")
+    jisou_ecosystem_status: Mapped[str] = mapped_column(String(40), default="unknown")
+    target_relevance_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_content_health: Mapped[str] = mapped_column(String(40), default="unknown")
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SearchJoinLinkedTaskDispatch(Base):
+    __tablename__ = "search_join_linked_task_dispatches"
+    __table_args__ = (
+        Index("ix_search_join_linked_source", "tenant_id", "source_task_id", "created_at"),
+        Index("ix_search_join_linked_status", "tenant_id", "status", "activation_not_before"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
+    search_join_action_id: Mapped[str] = mapped_column(String(36), default="")
+    source_task_id: Mapped[str] = mapped_column(String(36), default="")
+    linked_task_id: Mapped[str] = mapped_column(String(36), default="")
+    account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_group_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    link_type: Mapped[str] = mapped_column(String(40), default="")
+    status: Mapped[str] = mapped_column(String(40), default="linked_task_ready_pending")
+    block_reason: Mapped[str] = mapped_column(String(120), default="")
+    can_send_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    activation_not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ready_pool_item_id: Mapped[str] = mapped_column(String(80), default="")
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class TaskMembershipAdmissionItem(Base):
     __tablename__ = "task_membership_admission_items"
     __table_args__ = (
@@ -512,6 +580,9 @@ __all__ = [
     "ReviewQueue",
     "RuntimeMetricSnapshot",
     "RuntimeCleanupAudit",
+    "BotProtocolSample",
+    "SearchJoinLinkedTaskDispatch",
+    "SearchJoinRankObservation",
     "SourceMediaAsset",
     "Task",
     "TaskMembershipAdmissionItem",

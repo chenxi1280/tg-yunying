@@ -147,6 +147,7 @@ PERMISSION_RULES: list[PermissionRule] = [
     _compile("POST", r"^/api/operation-metrics/export$", "usage.export"),
     _compile("POST", r"^/api/operation-tasks(?:/.*)?$", "tasks.manage"),
     _compile("POST", r"^/api/review/[^/]+/(?:approve|reject)$", "tasks.manage"),
+    _compile("POST", r"^/api/tasks/search-join-group(?:/create-and-start)?$", ("tasks.manage", "tasks.create.search_join_group")),
     _compile("POST", r"^/api/tasks/[^/]+/reset$", "tasks.dispatch_control"),
     _compile("POST", r"^/api/tasks(?:/.*)?$", "tasks.manage"),
     _compile("PATCH", r"^/api/tasks(?:/.*)?$", "tasks.manage"),
@@ -175,6 +176,20 @@ def required_permission(method: str, path: str) -> PermissionSet | None:
         if rule_method == method and pattern.match(path):
             return permission
     return None
+
+
+def permission_check_result(permissions: PermissionSet, granted_permissions: set[str]) -> list[str]:
+    if "*" in granted_permissions:
+        return []
+    if _requires_all(permissions):
+        return [permission for permission in permissions if permission not in granted_permissions]
+    if any(permission in granted_permissions for permission in permissions):
+        return []
+    return list(permissions)
+
+
+def _requires_all(permissions: PermissionSet) -> bool:
+    return any(permission.startswith("tasks.create.") for permission in permissions)
 
 
 def _audit_permission_denied(
@@ -210,9 +225,11 @@ async def permission_middleware(request: Request, call_next: Callable[[Request],
     try:
         with SessionLocal() as session:
             current_user = current_user_from_authorization(request.headers.get("authorization"), session)
-            has_allowed_permission = any(current_user.has_permission(permission) for permission in permissions)
-            if not has_allowed_permission:
-                missing_permissions = list(permissions)
+            granted_permissions = {permission for permission in permissions if current_user.has_permission(permission)}
+            if current_user.has_permission("*"):
+                granted_permissions.add("*")
+            missing_permissions = permission_check_result(permissions, granted_permissions)
+            if missing_permissions:
                 _audit_permission_denied(session, current_user, request, missing_permissions)
                 return JSONResponse({"detail": "permission denied", "permission": ",".join(missing_permissions)}, status_code=403)
     except HTTPException as exc:

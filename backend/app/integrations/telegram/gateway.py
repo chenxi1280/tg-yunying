@@ -37,6 +37,7 @@ from app.security import decrypt_session
 from app.telethon_lifecycle import TelethonClientLifecycle
 from .telethon_media import _parse_custom_emoji_source, _telegram_entity_length, send_media_segment
 from .telethon_utils import resolve_telethon_target, telethon_send_target
+from .search_join import execute_search_join_with_client
 from app.timezone import BEIJING_TZ
 
 _resolve_telethon_target = resolve_telethon_target
@@ -982,6 +983,33 @@ class TelethonTelegramGateway(TelegramGateway):
                 group_id=group_id,
                 reply_to_message_id=reply_to_message_id,
             )
+        )
+
+    async def _execute_search_join_async(
+        self,
+        session_ciphertext: str | None,
+        credentials: DeveloperAppCredentials,
+        payload: dict[str, Any],
+        keyword_text: str,
+    ) -> dict[str, Any]:
+        raw_session = decrypt_session(session_ciphertext)
+        if not raw_session:
+            return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "账号没有可用 session"}
+        client = await self._get_or_create_client(credentials, raw_session)
+        if not await client.is_user_authorized():
+            return {"success": False, "error_code": FailureType.ACCOUNT_UNAVAILABLE.value, "detail": "session 已失效"}
+        return await execute_search_join_with_client(client, payload, keyword_text=keyword_text)
+
+    def execute_search_join(
+        self,
+        account_id: int,
+        payload: dict[str, Any],
+        session_ciphertext: str | None = None,
+        credentials: DeveloperAppCredentials | None = None,
+        keyword_text: str = "",
+    ) -> dict[str, Any]:
+        return self._run(
+            self._execute_search_join_async(session_ciphertext, self._usable_credentials(credentials), payload, keyword_text)
         )
 
     async def _view_channel_message_async(

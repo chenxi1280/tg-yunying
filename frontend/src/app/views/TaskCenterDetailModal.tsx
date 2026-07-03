@@ -40,6 +40,23 @@ const deleteStatusLabel = (status?: string | null) => {
   return status ? labels[status] || status : '-';
 };
 
+function searchJoinDetailItems(detail: TaskCenterDetail) {
+  const config = detail.task.type_config || {};
+  const stats = detail.task.stats?.search_join_stats || {};
+  const hourly = stats.hourly_execution || {};
+  return [
+    { key: 'success', label: '累计入群', children: detail.task.stats?.success_count ?? 0 },
+    { key: 'ranking', label: '排名观察', children: hourly.recent_target_positions?.length ? `${hourly.recent_target_positions.length} 条` : '独立快照，不计入 action success' },
+    { key: 'hourly', label: '小时执行', children: `${hourly.status || '-'} / 缺口 ${hourly.deficit ?? 0} / 未来 ${hourly.future_open_count ?? 0}` },
+    { key: 'link', label: '联动状态', children: stats.linked_task_status || '等待 membership_observed 后进入 ready pool 判定' },
+    { key: 'relevance', label: '目标资料相关性', children: config.target_relevance_score ?? '-' },
+    { key: 'health', label: '内容健康', children: config.target_content_health || '-' },
+    { key: 'jisou', label: '极搜生态', children: config.jisou_ecosystem_status || '-' },
+    { key: 'paid', label: '付费关键词广告', children: config.paid_keyword_ad_status || '-' },
+    { key: 'decoy', label: '非目标安全浏览', children: `入群前 ${config.pre_join_decoy_click_max ?? 0} / 入群后 ${config.post_join_safe_navigation_max ?? 0}` },
+  ];
+}
+
 const topicDirectionTags = (value: unknown) => {
   const items = Array.isArray(value) ? value : [];
   if (!items.length) return '-';
@@ -348,10 +365,25 @@ export function TaskCenterDetailModal({
   ];
   const admissionTotal = Number(detail?.membership_admission_phase?.snapshot_total ?? admissionItemPagination.total ?? 0);
   const showAiTab = detail?.task.type === 'group_ai_chat';
+  const showSearchJoinTab = detail?.task.type === 'search_join_group';
   const botMissingReasons = botAvailabilityReasons(telegramBotSettings);
   const showTargetTab = detail ? ['group_relay', 'channel_view', 'channel_like', 'channel_comment'].includes(detail.task.type) : false;
   const accountCoverage = detail?.task.stats?.account_coverage;
   const detailTabs = detail ? [
+    showSearchJoinTab ? {
+      key: 'search-join',
+      label: '搜索入群统计',
+      children: (
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            message="排名观察、极搜生态、付费关键词广告和内容健康只作为调研解释，不改写搜索入群 action 成功数。"
+          />
+          <Descriptions bordered size="small" column={3} items={searchJoinDetailItems(detail)} />
+        </Space>
+      ),
+    } : null,
     showAiTab ? {
       key: 'ai-settings',
       label: 'AI 设置',

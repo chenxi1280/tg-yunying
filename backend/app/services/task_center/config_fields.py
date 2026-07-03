@@ -13,6 +13,8 @@ from app.schemas.task_center import (
     GroupMembershipAdmissionTaskCreate,
     GroupRelayConfig,
     GroupRelayTaskCreate,
+    SearchJoinGroupConfig,
+    SearchJoinGroupTaskCreate,
 )
 
 TYPE_CONFIG_MODELS = {
@@ -22,6 +24,7 @@ TYPE_CONFIG_MODELS = {
     "channel_view": ChannelViewConfig,
     "channel_like": ChannelLikeConfig,
     "channel_comment": ChannelCommentConfig,
+    "search_join_group": SearchJoinGroupConfig,
 }
 TASK_CREATE_MODELS = {
     "group_ai_chat": GroupAIChatTaskCreate,
@@ -30,6 +33,7 @@ TASK_CREATE_MODELS = {
     "channel_view": ChannelViewTaskCreate,
     "channel_like": ChannelLikeTaskCreate,
     "channel_comment": ChannelCommentTaskCreate,
+    "search_join_group": SearchJoinGroupTaskCreate,
 }
 CHANNEL_DYNAMIC_TASK_TYPES = {"channel_view", "channel_like", "channel_comment"}
 
@@ -219,5 +223,33 @@ TYPE_SETTINGS_FIELDS = {
         "max_comment_length",
         "max_comments_per_account_per_hour",
         "require_review",
+    },
+    "search_join_group": {
+        "target_operation_target_id",
+        "target_group_id",
+        "target_input",
+        "target_title",
+        "execution_mode",
+        "search_bots",
+        "keyword_hashes",
+        "business_region",
+        "account_locale",
+        "proxy_country",
+        "pre_join_decoy_click_min",
+        "pre_join_decoy_click_max",
+        "post_join_safe_navigation_min",
+        "post_join_safe_navigation_max",
+        "decoy_join_enabled",
+        "hourly_round_curve",
+        "actions_per_round",
+        "max_actions_per_hour",
+        "hourly_min_successful_joins",
+        "target_relevance_score",
+        "target_content_health",
+        "jisou_ecosystem_status",
+        "paid_keyword_ad_status",
+        "search_visibility_attribution",
+        "post_join_policy",
+        "post_join_task_links",
     },
 }

@@ -54,3 +54,25 @@
 - decision: status=ready_for_release_gate
 - next_agent: qa
 - unresolved: CI/deploy evidence not yet recorded
+
+## 2026-07-03 搜索自动入群 Development Complete（本地验证）
+
+- message_id: 2026-07-03-search-join-group-devcomplete-001
+- action: 按 PRD 新功能设计实现任务中心第 6 类 `search_join_group` 的首版代码闭环
+- input: 2026-07-02-search-join-group-prd-merge-001
+- output: 后端新增创建/启动/配置接口、schema、配置字段、ORM 模型、Alembic 迁移、`search_join` payload、planner、小时执行统计、dispatcher fail-closed 分支和联动投递记录服务；前端新增任务类型、创建端点、向导字段、payload 构造、规则中心类型、任务详情“搜索入群统计”Tab 和快速分组识别。
+- evidence: `backend/.venv/bin/pytest -q -m no_postgres` 覆盖 search_join 定向、task-center 相关回归和 frontend gating -> 212 passed / 79 deselected；`backend/.venv/bin/python -m compileall app` passed；`backend/.venv/bin/python -m py_compile backend/migrations/versions/0075_search_join_group.py` passed；`npm --prefix frontend run build` passed；`git diff --check` passed。
+- decision: status=local_verified_pending_release；ready_for_validation=local；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 未真实投递 QA 长期线程；未执行 GitHub Actions release / production deploy；真实 MTProto gateway 执行器仍 fail-closed，需要协议样本和 gateway 接入后才能生产灰度。
+
+## 2026-07-03 搜索自动入群监督补缺 Development Complete（本地验证）
+
+- message_id: 2026-07-03-search-join-group-supervised-fix-devcomplete-001
+- action: 按只读监督子代理发现的缺口补齐 `search_join_group` 可执行边界
+- input: 子代理指出关键词空列表会导致 planner 取模崩溃、协议样本闸门依赖不可通过的 config 魔法字段、真实 gateway 缺 proxy egress guard、成功入群后未自动写 linked dispatch、后端专项权限缺失。
+- output: schema 强制 keywords / keyword_hashes 至少一个且 hash 为 64 位小写 hex；新增 `bot_protocol_samples` 模型与迁移，planner 改查活跃且已脱敏的真实协议样本；search_join action 默认 `proxy_egress_guard=missing`，dispatcher 在真实 gateway 前要求 `verified`，缺失时失败且不调用 gateway；membership_observed 成功后按 `linked_task_policy` 写 `SearchJoinLinkedTaskDispatch`；新增 `tasks.create.search_join_group` 后端权限规则和运营管理员模板权限。
+- evidence: `backend/.venv/bin/python - <<'PY' ... pytest -q -m no_postgres ... PY` -> 653 passed / 798 deselected；`backend/.venv/bin/python -m compileall backend/app` passed；`backend/.venv/bin/python -m py_compile backend/migrations/versions/0075_search_join_group.py` passed；`npm --prefix frontend run build` passed；`git diff --check` passed。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 机场订阅/节点容量/failover/出口 IP 观测/授权槽位环境栈/warmup/执行锁等基础设施仍仅 PRD 化或 fail-closed，未达到真实灰度可运行；发布后只能证明代码上线和 fail-closed 边界，不能宣称 7 天搜索入群灰度完成。

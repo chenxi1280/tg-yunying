@@ -10,6 +10,7 @@ export const TASK_TYPES: Array<{ value: TaskCenterTaskType; label: string }> = [
   { value: 'channel_view', label: '频道消息浏览' },
   { value: 'channel_like', label: '频道消息点赞' },
   { value: 'channel_comment', label: '频道消息评论/回复' },
+  { value: 'search_join_group', label: '搜索自动入群' },
 ];
 
 export const TYPE_LABEL: Record<string, string> = Object.fromEntries(TASK_TYPES.map((item) => [item.value, item.label]));
@@ -25,6 +26,7 @@ export const CREATE_ENDPOINT: Record<TaskCenterTaskType, string> = {
   channel_view: '/tasks/channel-view',
   channel_like: '/tasks/channel-like',
   channel_comment: '/tasks/channel-comment',
+  search_join_group: '/tasks/search-join-group',
 };
 
 export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
@@ -34,6 +36,7 @@ export const CREATE_AND_START_ENDPOINT: Record<TaskCenterTaskType, string> = {
   channel_view: '/tasks/channel-view/create-and-start',
   channel_like: '/tasks/channel-like/create-and-start',
   channel_comment: '/tasks/channel-comment/create-and-start',
+  search_join_group: '/tasks/search-join-group/create-and-start',
 };
 
 export const WIZARD_STEPS = ['基础信息', '目标来源', '任务配置', '账号与节奏', '预检确认'];
@@ -55,6 +58,7 @@ export const ACTION_LABEL: Record<string, string> = {
   like_message: '点赞',
   post_comment: '评论',
   view_message: '浏览',
+  search_join: '搜索入群',
 };
 
 const PRECHECK_REASON_LABELS: Record<string, string> = {
@@ -481,6 +485,24 @@ export function typeInitialValues(type: TaskCenterTaskType, setting?: Scheduling
       delete_after_send: false,
     };
   }
+  if (type === 'search_join_group') {
+    return {
+      target_operation_target_id: null,
+      search_bots: 'jisou',
+      keywords: '',
+      business_region: '',
+      account_locale: 'zh-CN',
+      proxy_country: '',
+      pre_join_decoy_click_max: 2,
+      post_join_safe_navigation_max: 1,
+      hourly_min_successful_joins: 1,
+      actions_per_round: 1,
+      post_join_policy: 'stay_joined',
+      target_content_health: 'unknown',
+      jisou_ecosystem_status: 'unknown',
+      paid_keyword_ad_status: 'unknown',
+    };
+  }
   if (type === 'channel_view') {
     return {
       message_scope: 'dynamic_new',
@@ -537,7 +559,7 @@ export function defaultRuleSelection(ruleSets: RuleSet[], taskType: TaskCenterTa
 export function fieldsForStep(step: number, taskType: TaskCenterTaskType, messageScope: string, accountMode: string): string[] {
   if (step === 0) return ['name'];
   if (step === 1) {
-    if (taskType === 'group_ai_chat' || taskType === 'group_membership_admission') return ['target_operation_target_id'];
+    if (taskType === 'group_ai_chat' || taskType === 'group_membership_admission' || taskType === 'search_join_group') return ['target_operation_target_id'];
     if (taskType === 'group_relay') return ['source_operation_target_ids', 'target_operation_target_id'];
     const fields = ['target_channel_id', 'message_scope'];
     if (['latest_n', 'dynamic_new'].includes(messageScope)) fields.push('message_count');
@@ -642,6 +664,26 @@ export function fieldsForSubmit(taskType: TaskCenterTaskType, messageScope: stri
       'test_message_min_chars',
       'test_message_max_chars',
       'delete_after_send',
+    ];
+  }
+  if (taskType === 'search_join_group') {
+    return [
+      ...baseFields,
+      'target_operation_target_id',
+      'search_bots',
+      'keywords',
+      'keyword_hashes',
+      'business_region',
+      'account_locale',
+      'proxy_country',
+      'pre_join_decoy_click_max',
+      'post_join_safe_navigation_max',
+      'hourly_min_successful_joins',
+      'actions_per_round',
+      'target_relevance_score',
+      'target_content_health',
+      'jisou_ecosystem_status',
+      'paid_keyword_ad_status',
     ];
   }
   if (taskType === 'channel_view') {

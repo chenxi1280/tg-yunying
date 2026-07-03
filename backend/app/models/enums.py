@@ -55,6 +55,7 @@ class TaskCenterTaskType(StrEnum):
     CHANNEL_VIEW = "channel_view"
     CHANNEL_LIKE = "channel_like"
     CHANNEL_COMMENT = "channel_comment"
+    SEARCH_JOIN_GROUP = "search_join_group"
 
 
 class TaskCenterStatus(StrEnum):
@@ -75,6 +76,7 @@ class TaskCenterActionType(StrEnum):
     INVITE_GROUP_ACCOUNT = "invite_group_account"
     ENSURE_TARGET_MEMBERSHIP = "ensure_target_membership"
     ENSURE_CHANNEL_MEMBERSHIP = "ensure_channel_membership"
+    SEARCH_JOIN = "search_join"
 
 
 class TaskCenterActionStatus(StrEnum):

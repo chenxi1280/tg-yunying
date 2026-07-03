@@ -34,6 +34,8 @@ from app.schemas import (
     ReviewApproveRequest,
     ReviewQueueOut,
     ReviewRejectRequest,
+    SearchJoinGroupTaskConfigUpdate,
+    SearchJoinGroupTaskCreate,
     TaskDetailOut,
     TaskAICycleOut,
     TaskMessageGroupOut,
@@ -58,12 +60,14 @@ from app.services.task_center import (
     create_and_start_group_ai_chat_task,
     create_and_start_group_membership_admission_task,
     create_and_start_group_relay_task,
+    create_and_start_search_join_group_task,
     create_channel_comment_task,
     create_channel_like_task,
     create_channel_view_task,
     create_group_ai_chat_task,
     create_group_membership_admission_task,
     create_group_relay_task,
+    create_search_join_group_task,
     delete_task,
     generate_channel_comment_preview,
     generate_group_ai_chat_preview,
@@ -99,6 +103,7 @@ from app.services.task_center import (
     update_channel_view_config,
     update_group_ai_chat_config,
     update_group_relay_config,
+    update_search_join_group_config,
     update_task_settings,
 )
 
@@ -208,6 +213,22 @@ def post_channel_comment_create_and_start(payload: ChannelCommentTaskCreate, ses
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/api/tasks/search-join-group", response_model=TaskOut)
+def post_search_join_group_task(payload: SearchJoinGroupTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return create_search_join_group_task(session, current_user.tenant_id or 1, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/tasks/search-join-group/create-and-start", response_model=TaskOut)
+def post_search_join_group_create_and_start(payload: SearchJoinGroupTaskCreate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return create_and_start_search_join_group_task(session, current_user.tenant_id or 1, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/api/tasks", response_model=list[TaskOut])
 def get_tasks(
     type: str | None = None,  # noqa: A002 - public query shape.
@@ -310,6 +331,14 @@ def patch_channel_like_config(task_id: str, payload: ChannelLikeTaskConfigUpdate
 def patch_channel_comment_config(task_id: str, payload: ChannelCommentTaskConfigUpdate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
     try:
         return update_channel_comment_config(session, current_user.tenant_id or 1, task_id, payload, current_user.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/api/tasks/{task_id}/search-join-group", response_model=TaskOut)
+def patch_search_join_group_config(task_id: str, payload: SearchJoinGroupTaskConfigUpdate, session: Session = Depends(get_session), current_user: CurrentUser = Depends(get_current_user)):
+    try:
+        return update_search_join_group_config(session, current_user.tenant_id or 1, task_id, payload, current_user.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
