@@ -4029,7 +4029,7 @@ def test_group_ai_chat_generation_uses_healthy_provider_and_model_override(monke
     assert "8-24 个字" in str(captured["prompt"])
     assert "不要每句都补完整逗号和句号" in str(captured["system_prompt"])
     assert "短、碎、具体" in str(captured["system_prompt"])
-    assert "AI 黑话配置：敏感场景行业黑话" in str(captured["system_prompt"])
+    assert "AI 黑话配置：夜场话题行业黑话" in str(captured["system_prompt"])
     assert "老师=对象" in str(captured["system_prompt"])
     assert "开课=开始营业" in str(captured["system_prompt"])
     assert "成人行业黑话" not in str(captured["system_prompt"])
