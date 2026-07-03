@@ -263,3 +263,25 @@
 - decision: 排名观察、付费关键词广告、流量联盟和内容健康只能作为解释与 warning，不计入 `search_join` action success；搜索入群事实、排名观察和后续活群联动必须分开记账
 - next_agent: none
 - unresolved: 真实实现前仍需用目标机器人真实样本校验字段可得性，并确认目标群内容健康/极搜生态状态的采集方式
+
+## 2026-07-03 搜索自动入群 Release Gate 产品待验收
+
+- message_id: 2026-07-03-search-join-group-release-gate-product-pending-001
+- action: 接收 dev/QA 对 `search_join_group` 代码实现、监督补缺、本地校验和生产部署的汇总交接
+- input: 2026-07-03-search-join-group-release-gate-qa-001
+- output: 已真实投递 product 线程 `019f07c6-d189-7b21-bed2-695abe7b4918`；状态进入 product acceptance pending。
+- evidence: Deploy Production run `28644819954` passed；release head `32b0257b1694f5dd8b5ea73cc159bb8e670d300a`；生产 release `20260703071946_32b0257`；公网 `/api/health` 和 `/task-center` HTTP 200；运行记录 `runs/2026-07-03-search-join-group-supervised-release.md`。
+- decision: release_gate_passed_prod_health_ok；product_accepted 仍 pending；不能声明真实搜索入群 7 天灰度完成。
+- next_agent: none
+- unresolved: product 线程 ACK / 接受未返回；目标机器人协议样本、真实代理出口、授权槽位环境栈、机场节点容灾和真实灰度执行仍未证明。
+
+## 2026-07-03 search_join_group fail-closed 首版产品验收
+
+- message_id: 2026-07-03-search-join-group-product-acceptance-001
+- action: 对监督补缺并已上线的 `search_join_group` 首版做 Product Acceptance
+- input: 2026-07-03-search-join-group-supervised-fix-001
+- output: product_accepted
+- evidence: 后端 no_postgres 653 passed / 798 deselected，compileall、迁移 py_compile、frontend build、git diff --check passed；Deploy Production run `28644819954` success；release `20260703071946_32b0257` live；健康检查和公网 `/task-center` HTTP 200；DF-178A 已从规划态修正为已实现态
+- decision: 接受“首版可上线 fail-closed 代码边界”；不接受/不证明真实 7 天搜索入群灰度成功、真实代理出口/机场 failover、目标机器人协议样本采集、授权槽位环境栈/warmup/执行锁完整生产闭环
+- next_agent: none
+- unresolved: 后续真实灰度前仍需生产级协议样本、代理出口、机场节点容量/failover、Bot 管理员通知和授权槽位闭环证据

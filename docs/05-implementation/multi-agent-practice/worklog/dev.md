@@ -76,3 +76,14 @@
 - decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
 - next_agent: qa
 - unresolved: 机场订阅/节点容量/failover/出口 IP 观测/授权槽位环境栈/warmup/执行锁等基础设施仍仅 PRD 化或 fail-closed，未达到真实灰度可运行；发布后只能证明代码上线和 fail-closed 边界，不能宣称 7 天搜索入群灰度完成。
+
+## 2026-07-03 搜索自动入群 Release Gate Complete
+
+- message_id: 2026-07-03-search-join-group-release-gate-dev-001
+- action: 将监督补缺后的 `search_join_group` 代码合入生产发布路径并完成 Release Gate 记录
+- input: 2026-07-03-search-join-group-supervised-fix-local-qa-001
+- output: `master` 和 `release` 已推进到 `32b0257b1694f5dd8b5ea73cc159bb8e670d300a`；Deploy Production run `28644819954` 通过 checks、build-images、deploy；生产 release `20260703071946_32b0257` live。
+- evidence: GitHub Actions run `28644819954`；公网 `https://tgyunying.telema.cn/api/health` HTTP 200 `{"status":"ok"}`；公网 `/task-center` HTTP 200；运行记录 `runs/2026-07-03-search-join-group-supervised-release.md`。
+- decision: release_gate=passed；production_health=ok；handoff_delivery_status=sent。
+- next_agent: product
+- unresolved: product acceptance 未确认；真实目标机器人协议样本、真实代理出口、机场节点容灾、授权槽位环境栈和 7 天灰度仍 unproven，当前实现保持 fail-closed。

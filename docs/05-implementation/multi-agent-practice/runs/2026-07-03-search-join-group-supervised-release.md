@@ -5,7 +5,7 @@
 - intake_id: `intake-2026-07-02-search-join-group-prd-merge-001`
 - lane: `search-join-group`
 - level: L2
-- status: local QA pass, release pending
+- status: release gate passed, production health ok, product acceptance pending
 
 ## Local Evidence
 
@@ -27,10 +27,46 @@
 
 ## Release Gate
 
-- GitHub Actions deploy: pending.
-- Production health: pending.
-- `/task-center` public reachability: pending.
-- Production migration table check: pending.
+- GitHub Actions deploy: passed.
+- Run ID: `28644819954`.
+- Release head: `32b0257b1694f5dd8b5ea73cc159bb8e670d300a`.
+- GitHub Actions URL: `https://github.com/chenxi1280/tg-yunying/actions/runs/28644819954`.
+- Production release: `20260703071946_32b0257`.
+- Backend image: `ghcr.io/chenxi1280/tg-yunying-backend:32b0257b1694f5dd8b5ea73cc159bb8e670d300a`.
+- Frontend image: `ghcr.io/chenxi1280/tg-yunying-frontend:32b0257b1694f5dd8b5ea73cc159bb8e670d300a`.
+- Production health: passed.
+- `/task-center` public reachability: passed.
+
+## Production Evidence
+
+- `checks`, `build-images` and `deploy` jobs completed successfully in Deploy Production run `28644819954`.
+- Deploy logs show backend and worker containers healthy, including planner, dispatcher 1-4, listener, recovery, account-security, account-online, ai-memory and metrics.
+- Deploy logs show local API health, host nginx API health and public API health all returned HTTP 200.
+- Independent public probe after deploy:
+  - `https://tgyunying.telema.cn/api/health` returned HTTP 200 and `{"status":"ok"}`.
+  - `https://tgyunying.telema.cn/task-center` returned HTTP 200 text/html with `Last-Modified: Fri, 03 Jul 2026 07:19:24 GMT`.
+
+## Handoff Evidence
+
+- QA thread delivery: `019f07c7-1c0d-72a2-95fe-9f618aff0a00`.
+- Product thread delivery: `019f07c6-d189-7b21-bed2-695abe7b4918`.
+- Tool returned target thread IDs but no separate message IDs.
+
+## Product Acceptance
+
+- message_id: `2026-07-03-search-join-group-product-acceptance-001`
+- reply_to_message_id: `2026-07-03-search-join-group-supervised-fix-001`
+- status: `product_accepted`
+- evidence_level: E3
+- accepted_scope: first-version deployed fail-closed code boundary
+- release_gate: passed
+- production_verification_required: false for this acceptance boundary
+
+Product accepts the first-version `search_join_group` code boundary that is already deployed and health-checked, with explicit limits:
+
+- Accepted: task type/API/schema/config/router/service, no plaintext keywords in `type_config` / action payload, non-empty keyword material, 64-char lowercase `keyword_hashes`, `bot_protocol_samples` fail-closed gate, `search_join` planner/action/stats, dispatcher proxy egress guard fail-closed behavior, membership-observed linked dispatch,专项权限, frontend creation/detail/rules-center surfaces, PRD/dataflow/structure/run/worklog updates.
+- Not accepted as proven: real seven-day search-join gray success, real `airport_clash` subscription capacity/failover, Bot admin notification production path, proxy egress guard with real nodes, target bot protocol sample collection, full authorization-slot environment stack/warmup/execution lock production loop.
+- Product acceptance must not be used to claim real search-join效果、排名提升、目标群加入灰度成功 or complete production behavior.
 
 ## Unproven
 

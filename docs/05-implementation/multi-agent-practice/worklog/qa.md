@@ -54,3 +54,14 @@
 - decision: 关键词校验、协议样本表闸门、planner fail-closed、proxy egress guard、gateway 成功后联动记录、专项权限和前端 build 均有本地证据。
 - next_agent: product
 - unresolved: 这不是独立 QA 线程 ACK；CI / release deploy / 生产健康 / 真实代理出口 / 真实目标机器人协议样本 / 7 天灰度仍 unproven。
+
+## 2026-07-03 搜索自动入群 Release Gate QA Handoff
+
+- message_id: 2026-07-03-search-join-group-release-gate-qa-001
+- action: 接收监督补缺本地 QA 后的生产发布证据，并记录真实 QA 线程投递
+- input: 2026-07-03-search-join-group-supervised-fix-devcomplete-001
+- output: qa_pass 范围升级为“本地契约通过 + Release Gate 通过 + 生产健康通过”；已真实投递 QA 线程 `019f07c7-1c0d-72a2-95fe-9f618aff0a00`。
+- evidence: 本地 no_postgres 653 passed / 798 deselected；frontend build passed；Deploy Production run `28644819954` passed；生产 release `20260703071946_32b0257`；公网 `/api/health` 和 `/task-center` HTTP 200。
+- decision: qa_pass_for_code_and_release_health；不声明真实搜索入群灰度通过。
+- next_agent: product
+- unresolved: QA 线程 ACK 未返回；product acceptance 未确认；真实协议样本、代理出口和 7 天灰度未验证。
