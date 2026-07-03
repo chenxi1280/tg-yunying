@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 TELEGRAM_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
 NAVIGATION_MARKERS = ("下一页", "上一页", "next", "prev", "page", "页")
 HUMAN_VERIFICATION_MARKERS = ("人机验证", "计算结果", "captcha")
+MAX_SEARCH_JOIN_PAGES = 70
 
 
 @dataclass(frozen=True)
@@ -42,9 +43,11 @@ async def execute_search_join_with_client(client: Any, payload: dict[str, Any], 
 
 
 async def _execute_search_pages(client: Any, bot_username: str, keyword_text: str, payload: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
-    max_pages = max(1, int(payload.get("max_pages") or 3))
+    max_pages = _max_pages(payload)
     decoys: list[dict[str, Any]] = []
     total_results = 0
+    page_no = 0
+    pages_exhausted = False
     bot = bot_username.strip().lstrip("@")
     async with client.conversation(bot, timeout=60) as conv:
         await conv.send_message("/start")
@@ -52,6 +55,7 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
         await conv.send_message(keyword_text)
         page = await conv.get_response()
         for page_no in range(1, max_pages + 1):
+            pages_exhausted = page_no == max_pages
             if _human_verification_required(page):
                 return _failed("bot_human_verification_required", "搜索机器人要求人机验证，当前账号不能自动执行")
             buttons = _parse_buttons(page)
@@ -68,7 +72,25 @@ async def _execute_search_pages(client: Any, bot_username: str, keyword_text: st
                 break
             await _click_button(page, next_button)
             page = await conv.get_response()
-    return {**_failed("target_not_in_results", "目标群未出现在搜索结果"), "total_results": total_results}
+    return _target_not_found(total_results, decoys, page_no, max_pages, pages_exhausted)
+
+
+def _max_pages(payload: dict[str, Any]) -> int:
+    raw = int(payload.get("max_pages") or MAX_SEARCH_JOIN_PAGES)
+    if raw < 1 or raw > MAX_SEARCH_JOIN_PAGES:
+        raise ValueError(f"search_join max_pages must be between 1 and {MAX_SEARCH_JOIN_PAGES}")
+    return raw
+
+
+def _target_not_found(total: int, decoys: list[dict[str, Any]], page_no: int, max_pages: int, pages_exhausted: bool) -> dict[str, Any]:
+    return {
+        **_failed("target_not_in_results", "目标群未出现在搜索结果"),
+        "total_results": total,
+        "pre_join_decoy_clicks": decoys,
+        "page": page_no,
+        "max_pages": max_pages,
+        "pages_exhausted": pages_exhausted,
+    }
 
 
 async def _click_page_decoys(page: Any, buttons: list[SearchJoinButton], payload: dict[str, Any], decoys: list[dict[str, Any]]) -> None:

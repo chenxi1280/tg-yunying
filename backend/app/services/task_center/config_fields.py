@@ -231,6 +231,7 @@ TYPE_SETTINGS_FIELDS = {
         "target_title",
         "execution_mode",
         "search_bots",
+        "max_pages",
         "keyword_hashes",
         "business_region",
         "account_locale",

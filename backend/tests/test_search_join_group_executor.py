@@ -119,6 +119,7 @@ def test_search_join_planner_creates_hash_only_search_join_actions(session: Sess
     assert all(action.payload["keyword_hash"] in {"a" * 64, "b" * 64} for action in actions)
     assert all(action.payload["keyword_text_ciphertext"].startswith("enc:v2:") for action in actions)
     assert all("keyword" not in action.payload for action in actions)
+    assert all(action.payload["max_pages"] == 70 for action in actions)
     assert "上海 留学" not in str([action.payload for action in actions])
     assert all(action.payload["safe_navigation"]["total_max"] == 3 for action in actions)
     assert all(action.payload["safe_navigation"]["decoy_join_enabled"] is False for action in actions)

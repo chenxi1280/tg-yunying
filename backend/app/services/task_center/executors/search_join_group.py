@@ -32,6 +32,7 @@ class PayloadInput:
 
 
 ENVIRONMENT_CANDIDATE_MULTIPLIER = 3
+DEFAULT_MAX_SEARCH_JOIN_PAGES = 70
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -75,6 +76,7 @@ def _payload(payload_input: PayloadInput) -> SearchJoinPayload:
     return SearchJoinPayload(
         execution_mode="mtproto_userbot",
         bot_username=payload_input.plan.bot_username,
+        max_pages=_max_pages(config),
         keyword_hash=keyword_hash,
         keyword_text_ciphertext=keyword_text_ciphertext,
         authorization_id=payload_input.environment.authorization_id,
@@ -110,6 +112,10 @@ def _keyword_ciphertext(config: dict, index: int) -> str:
     if not keyword_ciphertexts:
         return ""
     return str(keyword_ciphertexts[index % len(keyword_ciphertexts)])
+
+
+def _max_pages(config: dict) -> int:
+    return int(config.get("max_pages") or DEFAULT_MAX_SEARCH_JOIN_PAGES)
 
 
 def _runtime_environment(environment: SearchJoinEnvironment) -> dict[str, str]:

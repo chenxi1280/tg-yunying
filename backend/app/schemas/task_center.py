@@ -21,6 +21,7 @@ GROUP_AI_HARD_HOURLY_MIN_MESSAGES = 10
 CHANNEL_COUNT_JITTER_DEFAULT = 0.2
 MAX_TOTAL_COMMENT_JITTER = 0.3
 MAX_SEARCH_JOIN_SAFE_NAVIGATION = 3
+MAX_SEARCH_JOIN_PAGES = 70
 DEFAULT_SEARCH_JOIN_CURVE = [1, 1, 0, 0, 0, 0, 1, 2, 2, 3, 3, 3, 2, 2, 3, 4, 4, 5, 5, 5, 4, 3, 2, 1]
 KEYWORD_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -509,6 +510,7 @@ class SearchJoinGroupConfig(BaseModel):
     target_title: str | None = Field(default=None, max_length=180)
     execution_mode: Literal["mtproto_userbot"] = "mtproto_userbot"
     search_bots: list[SearchJoinBotConfig] = Field(default_factory=list)
+    max_pages: int = Field(default=MAX_SEARCH_JOIN_PAGES, ge=1, le=MAX_SEARCH_JOIN_PAGES)
     keywords: list[str] = Field(default_factory=list, exclude=True)
     keyword_hashes: list[str] = Field(default_factory=list)
     keyword_text_ciphertexts: list[str] = Field(default_factory=list)
