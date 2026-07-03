@@ -126,6 +126,8 @@ def test_search_join_planner_creates_hash_only_search_join_actions(session: Sess
     assert {action.payload["runtime_environment"]["proxy_egress_guard"] for action in actions} == {"verified"}
     assert all(action.payload["authorization_id"] for action in actions)
     assert all(action.payload["session_role"] == "primary" for action in actions)
+    assert all(action.payload["target_title"] == "上海群" for action in actions)
+    assert all(action.payload["target_peer_id"] == "-10017" for action in actions)
     assert all(action.payload["client_metadata"]["device_model"] for action in actions)
     assert all(action.payload["client_metadata"]["app_version"] for action in actions)
     assert session.query(AccountEnvironmentBinding).count() == 2
@@ -145,6 +147,36 @@ def test_search_join_planner_marks_verified_proxy_guard(session: Session) -> Non
     assert {action.payload["runtime_environment"]["proxy_egress_guard"] for action in actions} == {"verified"}
     assert {action.payload["runtime_environment"]["client_metadata_guard"] for action in actions} == {"verified"}
     assert {action.payload["runtime_environment"]["proxy_id"] for action in actions} == {"31", "32"}
+
+
+@pytest.mark.no_postgres
+def test_search_join_environment_keeps_fingerprint_and_syncs_proxy_rebind(session: Session) -> None:
+    _bind_search_join_environment(session, [101])
+    task = _task(type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1})
+    session.add(task)
+    session.commit()
+
+    assert build_task_plan(session, task) == 1
+    binding = session.scalar(select(AccountEnvironmentBinding).where(AccountEnvironmentBinding.account_id == 101))
+    original_identity = binding.client_identity_key
+
+    session.add(AccountProxy(id=99, tenant_id=1, name="airport-clash-new", port=7890, status="healthy", alert_status="normal"))
+    account = session.get(TgAccount, 101)
+    authorization = session.scalar(select(TgAccountAuthorization).where(TgAccountAuthorization.account_id == 101))
+    account.proxy_id = 99
+    authorization.proxy_id = 99
+    next_task = _task(id=2, type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1})
+    session.add(next_task)
+    session.commit()
+
+    assert build_task_plan(session, next_task) == 1
+    session.refresh(binding)
+    action = session.scalar(select(Action).where(Action.task_id == next_task.id))
+
+    assert binding.client_identity_key == original_identity
+    assert binding.proxy_id == 99
+    assert action.payload["runtime_environment"]["proxy_id"] == "99"
+    assert action.payload["client_metadata"]["client_identity_key"] == original_identity
 
 
 @pytest.mark.no_postgres

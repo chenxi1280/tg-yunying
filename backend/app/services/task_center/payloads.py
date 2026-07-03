@@ -247,6 +247,8 @@ class SearchJoinPayload(BaseModel):
     target_operation_target_id: int | None = None
     target_group_id: int | None = None
     target_username: str = ""
+    target_title: str = ""
+    target_peer_id: str = ""
     safe_navigation: dict[str, Any] = Field(default_factory=dict)
     search_visibility_attribution: dict[str, Any] = Field(default_factory=dict)
     post_join_policy: str = "stay_joined"

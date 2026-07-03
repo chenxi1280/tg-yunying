@@ -25,6 +25,7 @@ from app.models import (
     OperationTarget,
     ProxyHealthCheck,
     Task,
+    TelegramDeveloperApp,
     TgAccount,
     TgAccountAuthorization,
 )
@@ -39,6 +40,7 @@ CONFIG_DIR = Path(os.getenv("CLASH_CONFIG_DIR", "/tmp/tgyunying-mihomo-configs")
 CONTAINER_PREFIX = os.getenv("CLASH_CONTAINER_PREFIX", "tgyunying-mihomo")
 DEFAULT_TARGET_QUERY = "郑州"
 DEFAULT_SEARCH_BOT = "jisou"
+DEFAULT_ACTOR = "github-actions"
 MAX_SUBSCRIPTION_BYTES = 5 * 1024 * 1024
 NODE_SKIP_RE = re.compile(r"(剩余|套餐|到期|官网|流量|expire|traffic)", re.IGNORECASE)
 
@@ -324,7 +326,7 @@ def upsert_proxy(session, node: ProxyNode, capacity: int) -> AccountProxy:
     proxy.max_concurrent_sessions = 2
     proxy.last_check_at = _now()
     proxy.last_error = ""
-    proxy.notes = "airport_clash live egress verified by GitHub Actions"
+    proxy.notes = f"airport_clash live egress verified by {actor()}"
     return proxy
 
 def bind_account(session, account: TgAccount, proxy: AccountProxy) -> None:
@@ -333,12 +335,76 @@ def bind_account(session, account: TgAccount, proxy: AccountProxy) -> None:
     for binding in session.scalars(select(AccountProxyBinding).where(AccountProxyBinding.tenant_id == 1, AccountProxyBinding.account_id == account.id, AccountProxyBinding.status == "active")):
         binding.status = "replaced"
         binding.unbound_at = _now()
-    session.add(AccountProxyBinding(tenant_id=1, account_id=account.id, proxy_id=proxy.id, status="active", change_reason="airport_clash_live_binding", bound_by="github-actions"))
-    session.add(ProxyHealthCheck(tenant_id=1, proxy_id=proxy.id, check_type="egress_curl", status="success", checked_by="github-actions", checked_at=_now()))
+    session.add(AccountProxyBinding(tenant_id=1, account_id=account.id, proxy_id=proxy.id, status="active", change_reason="airport_clash_live_binding", bound_by=actor()))
+    session.add(ProxyHealthCheck(tenant_id=1, proxy_id=proxy.id, check_type="egress_curl", status="success", checked_by=actor(), checked_at=_now()))
     for auth in session.scalars(select(TgAccountAuthorization).where(TgAccountAuthorization.tenant_id == 1, TgAccountAuthorization.account_id == account.id, TgAccountAuthorization.disabled_at.is_(None))):
         auth.proxy_id = proxy.id
         auth.updated_at = _now()
-    audit(session, tenant_id=1, actor="github-actions", action="绑定 Clash 代理", target_type="account", target_id=account.id, detail=f"{previous_proxy_id}->{proxy.id}")
+    audit(session, tenant_id=1, actor=actor(), action="绑定 Clash 代理", target_type="account", target_id=account.id, detail=f"{previous_proxy_id}->{proxy.id}")
+
+def backfill_legacy_primary_authorizations(session, accounts: list[TgAccount]) -> dict[str, Any]:
+    created: list[int] = []
+    failures: list[dict[str, Any]] = []
+    for account in accounts:
+        if has_executable_authorization(session, account.id):
+            continue
+        try:
+            authorization = legacy_primary_authorization(session, account)
+        except ValueError as exc:
+            failures.append({"account_id": account.id, "error": str(exc)})
+            continue
+        session.add(authorization)
+        session.flush()
+        created.append(account.id)
+    if failures:
+        raise RuntimeError("legacy primary authorization backfill failed: " + json.dumps(failures[:20], ensure_ascii=False))
+    if created:
+        audit(session, tenant_id=1, actor=actor(), action="回填旧账号主授权槽位", target_type="tg_account_authorizations", target_id="1", detail=f"created={len(created)}")
+    return {"legacy_primary_authorization_created_count": len(created)}
+
+def has_executable_authorization(session, account_id: int) -> bool:
+    statement = select(TgAccountAuthorization.id).where(
+        TgAccountAuthorization.account_id == account_id,
+        TgAccountAuthorization.disabled_at.is_(None),
+        TgAccountAuthorization.status.in_(("active", "standby")),
+        TgAccountAuthorization.session_ciphertext.is_not(None),
+        TgAccountAuthorization.session_ciphertext != "",
+    )
+    return session.scalar(statement.limit(1)) is not None
+
+def legacy_primary_authorization(session, account: TgAccount) -> TgAccountAuthorization:
+    if not account.session_ciphertext:
+        raise ValueError("legacy_account_session_missing")
+    if has_primary_authorization(session, account.id):
+        raise ValueError("primary_authorization_not_executable")
+    app = session.get(TelegramDeveloperApp, int(account.developer_app_id or 0)) if account.developer_app_id else None
+    if app is None:
+        raise ValueError("developer_app_missing")
+    if not account.proxy_id:
+        raise ValueError("proxy_missing")
+    return TgAccountAuthorization(
+        tenant_id=account.tenant_id,
+        account_id=account.id,
+        role="primary",
+        developer_app_id=app.id,
+        developer_app_api_id_snapshot=app.api_id,
+        proxy_id=account.proxy_id,
+        session_ciphertext=account.session_ciphertext,
+        status="active",
+        health_status="legacy",
+        derived_status="legacy_primary_backfilled",
+        is_current=True,
+        last_success_at=account.last_active_at or _now(),
+        created_by=actor(),
+    )
+
+def has_primary_authorization(session, account_id: int) -> bool:
+    statement = select(TgAccountAuthorization.id).where(
+        TgAccountAuthorization.account_id == account_id,
+        TgAccountAuthorization.disabled_at.is_(None),
+        (TgAccountAuthorization.is_current.is_(True) | (TgAccountAuthorization.role == "primary")),
+    )
+    return session.scalar(statement.limit(1)) is not None
 
 def bind_account_environments(session, accounts: list[TgAccount]) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
@@ -368,10 +434,11 @@ def apply_database(nodes: list[ProxyNode]) -> dict[str, Any]:
         proxies = [upsert_proxy(session, node, capacity) for node in selected]
         for offset, account in enumerate(accounts):
             bind_account(session, account, proxies[offset % len(proxies)])
+        legacy_summary = backfill_legacy_primary_authorizations(session, accounts)
         environment_summary = bind_account_environments(session, accounts)
         task = create_zhengzhou_task(session, accounts)
         session.commit()
-        return summary_payload(accounts, proxies, task, session, environment_summary)
+        return summary_payload(accounts, proxies, task, session, {**legacy_summary, **environment_summary})
 
 def preflight_database(nodes: list[ProxyNode]) -> dict[str, Any]:
     healthy = set(healthy_indexes())
@@ -392,11 +459,36 @@ def create_zhengzhou_task(session, accounts: list[TgAccount]) -> Task:
     query = target_query()
     bot = search_bot_username()
     target = target_group(session, query)
-    selected_ids = [account.id for account in accounts[:count]]
+    require_protocol_sample(session, bot)
+    selected_ids = prechecked_test_account_ids(session, accounts, target, query, bot, count)
     if len(selected_ids) != count:
         raise RuntimeError(f"need exactly {count} test accounts, got {len(selected_ids)}")
-    require_protocol_sample(session, bot)
-    payload = SearchJoinGroupTaskCreate(
+    payload = search_join_task_payload(query, target, bot, selected_ids)
+    _assert_precheck_allows_start(session, 1, "search_join_group", payload.model_dump(mode="json"))
+    task = _new_task(session, 1, "search_join_group", payload)
+    audit(session, tenant_id=1, actor=actor(), action="创建任务中心任务", target_type="task", target_id=task.id, detail=task.type)
+    _mark_task_started(task)
+    audit(session, tenant_id=1, actor=actor(), action="启动任务中心任务", target_type="task", target_id=task.id)
+    created = build_task_plan(session, task)
+    if created != count:
+        raise RuntimeError(f"search_join action count mismatch: expected={count}, created={created}")
+    return task
+
+def prechecked_test_account_ids(session, accounts: list[TgAccount], target: OperationTarget, query: str, bot: str, count: int) -> list[int]:
+    selected: list[int] = []
+    for account in accounts:
+        payload = search_join_task_payload(query, target, bot, [account.id])
+        try:
+            _assert_precheck_allows_start(session, 1, "search_join_group", payload.model_dump(mode="json"))
+        except ValueError:
+            continue
+        selected.append(account.id)
+        if len(selected) == count:
+            return selected
+    return selected
+
+def search_join_task_payload(query: str, target: OperationTarget, bot: str, selected_ids: list[int]) -> SearchJoinGroupTaskCreate:
+    return SearchJoinGroupTaskCreate(
         name=f"{query}搜索入群线上测试-{len(selected_ids)}账号",
         priority=1,
         account_config=AccountConfig(selection_mode="manual", account_ids=selected_ids, max_concurrent=len(selected_ids), cooldown_per_account_minutes=0),
@@ -410,15 +502,6 @@ def create_zhengzhou_task(session, accounts: list[TgAccount]) -> Task:
         max_actions_per_hour=len(selected_ids),
         hourly_min_successful_joins=len(selected_ids),
     )
-    _assert_precheck_allows_start(session, 1, "search_join_group", payload.model_dump(mode="json"))
-    task = _new_task(session, 1, "search_join_group", payload)
-    audit(session, tenant_id=1, actor="github-actions", action="创建任务中心任务", target_type="task", target_id=task.id, detail=task.type)
-    _mark_task_started(task)
-    audit(session, tenant_id=1, actor="github-actions", action="启动任务中心任务", target_type="task", target_id=task.id)
-    created = build_task_plan(session, task)
-    if created != count:
-        raise RuntimeError(f"search_join action count mismatch: expected={count}, created={created}")
-    return task
 
 def test_account_count() -> int:
     count = env_int("CLASH_TEST_ACCOUNT_COUNT", 3)
@@ -430,6 +513,9 @@ def target_query() -> str:
     return os.getenv("CLASH_TARGET_QUERY", DEFAULT_TARGET_QUERY).strip() or DEFAULT_TARGET_QUERY
 def search_bot_username() -> str:
     return os.getenv("CLASH_SEARCH_BOT_USERNAME", DEFAULT_SEARCH_BOT).strip().lstrip("@") or DEFAULT_SEARCH_BOT
+
+def actor() -> str:
+    return os.getenv("CLASH_SETUP_ACTOR", DEFAULT_ACTOR).strip() or DEFAULT_ACTOR
 
 def require_protocol_sample(session, bot: str) -> None:
     if env_bool("CLASH_SEED_PROTOCOL_SAMPLE", False):
@@ -459,12 +545,12 @@ def seed_protocol_sample(session, bot: str) -> None:
         session.add(sample)
     sample.sample_hash = "manual-jisou-search-results-v1"
     sample.schema_version = "v1"
-    sample.structure_json = {"source": "github-actions-manual-prerequisite", "buttons": [{"type": "telegram_internal_url", "effect": "join_candidate"}]}
+    sample.structure_json = {"source": f"{actor()}-manual-prerequisite", "buttons": [{"type": "telegram_internal_url", "effect": "join_candidate"}]}
     sample.pii_scrubbed = True
     sample.is_active = True
     sample.captured_at = _now()
     session.flush()
-    audit(session, tenant_id=1, actor="github-actions", action="补齐搜索机器人协议样本", target_type="bot_protocol_sample", target_id=bot)
+    audit(session, tenant_id=1, actor=actor(), action="补齐搜索机器人协议样本", target_type="bot_protocol_sample", target_id=bot)
 def summary_payload(accounts: list[TgAccount], proxies: list[AccountProxy], task: Task, session, environment_summary: dict[str, Any]) -> dict[str, Any]:
     action_count = session.scalar(
         select(func.count(Action.id)).where(Action.tenant_id == 1, Action.task_id == task.id, Action.action_type == "search_join")

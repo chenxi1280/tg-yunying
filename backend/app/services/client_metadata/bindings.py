@@ -100,6 +100,8 @@ def ensure_search_join_environment(session: Session, account: TgAccount) -> Sear
     binding = _existing_binding(session, authorization.id, authorization.role)
     if binding is None:
         binding = _create_binding(session, EnvironmentTarget(account, authorization, proxy))
+    else:
+        _sync_binding_proxy(session, binding, account, proxy)
     return _environment_from_binding(binding, proxy)
 
 
@@ -198,6 +200,16 @@ def _ensure_proxy_binding(session: Session, account: TgAccount, proxy: AccountPr
     session.add(binding)
     session.flush()
     return binding
+
+
+def _sync_binding_proxy(session: Session, binding: AccountEnvironmentBinding, account: TgAccount, proxy: AccountProxy) -> None:
+    proxy_binding = _ensure_proxy_binding(session, account, proxy)
+    if binding.proxy_id == proxy.id and binding.proxy_binding_id == proxy_binding.id:
+        return
+    binding.proxy_id = proxy.id
+    binding.proxy_binding_id = proxy_binding.id
+    binding.updated_at = _now()
+    session.flush()
 
 
 def _active_proxy_binding(session: Session, account_id: int, proxy_id: int) -> AccountProxyBinding | None:

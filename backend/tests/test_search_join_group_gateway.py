@@ -14,6 +14,7 @@ class FakeButton:
     url: str = ""
     data: bytes | None = None
     effect: str = ""
+    target_chat_id: int | None = None
 
 
 class FakeMessage:
@@ -108,6 +109,25 @@ def test_execute_search_join_sends_keyword_clicks_safe_navigation_and_joins_targ
     assert result["join_status"] == "membership_observed"
     assert result["pre_join_decoy_clicks"][0]["joined"] is False
     assert "上海 留学" not in str(result)
+
+
+@pytest.mark.no_postgres
+def test_execute_search_join_matches_real_peer_id_and_title() -> None:
+    target = FakeButton("郑州平价资源（交流群）", data=b"target", target_chat_id=2188784621)
+    message = FakeMessage(101, [[target]], click_results={(0, 0): FakeCallbackAnswer("https://t.me/xiaozisk")})
+    client = FakeSearchJoinClient([FakeMessage(100, []), message])
+
+    result = asyncio.run(
+        execute_search_join_with_client(
+            client,
+            _payload(target_username="", target_title="郑州平价资源（交流群）", target_peer_id="-1002188784621"),
+            keyword_text="郑州平价资源",
+        )
+    )
+
+    assert result["success"] is True
+    assert message.clicked == [(0, 0)]
+    assert client.joined == ["xiaozisk"]
 
 
 @pytest.mark.no_postgres

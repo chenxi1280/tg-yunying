@@ -262,9 +262,18 @@ def _safe(payload: dict[str, Any]) -> dict[str, Any]:
 def _target_spec(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "username": payload.get("target_username"),
-        "group_id": payload.get("target_group_id") or payload.get("target_operation_target_id"),
+        "group_id": _telegram_channel_id(payload.get("target_peer_id")) or payload.get("target_group_id"),
         "title": payload.get("target_title"),
     }
+
+
+def _telegram_channel_id(value: Any) -> int:
+    text = str(value or "").strip()
+    if not text.lstrip("-").isdigit():
+        return 0
+    if text.startswith("-100") and len(text) > 4:
+        return int(text[4:])
+    return abs(int(text))
 
 
 def _telegram_username(url: str) -> str:

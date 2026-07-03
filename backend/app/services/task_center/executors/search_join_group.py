@@ -83,6 +83,8 @@ def _payload(payload_input: PayloadInput) -> SearchJoinPayload:
         target_operation_target_id=int(config.get("target_operation_target_id") or 0) or None,
         target_group_id=int(config.get("target_group_id") or 0) or None,
         target_username=target.username if target else "",
+        target_title=target.title if target else "",
+        target_peer_id=target.tg_peer_id if target else "",
         safe_navigation=_safe_navigation(config),
         search_visibility_attribution=_attribution(config),
         post_join_policy=str(config.get("post_join_policy") or "stay_joined"),
