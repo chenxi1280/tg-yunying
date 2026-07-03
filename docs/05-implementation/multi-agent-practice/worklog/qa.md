@@ -65,3 +65,14 @@
 - decision: qa_pass_for_code_and_release_health；不声明真实搜索入群灰度通过。
 - next_agent: product
 - unresolved: QA 线程 ACK 未返回；product acceptance 未确认；真实协议样本、代理出口和 7 天灰度未验证。
+
+## 2026-07-03 接码专用账号只接码限制本地 QA
+
+- message_id: 2026-07-03-code-receiver-restriction-local-qa-001
+- action: 对接码专用账号限制做本地自动化复验
+- input: 2026-07-03-code-receiver-restriction-devcomplete-001
+- output: local_qa_pass_for_code_receiver_contracts
+- evidence: `python -m pytest -q backend/tests/test_account_profile_auto_initialization.py backend/tests/test_task_account_pool.py backend/tests/test_account_center_prd_contracts.py -m no_postgres` -> 57 passed；py_compile changed backend files passed；`git diff --check` passed。
+- decision: 接码账号不会触发登录后资料初始化 / 账号面具初始化；资料/2FA/设备清理批次预检和 worker 执行前会跳过；消息发送公共入口和旧私聊入口阻断；备用 session 补齐 / 自愈未被禁用。
+- next_agent: product
+- unresolved: 这不是独立 QA 线程 ACK；CI / release deploy / 生产验证仍 unproven。

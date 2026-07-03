@@ -121,6 +121,24 @@ def test_verify_login_initializes_missing_ai_voice_profile(monkeypatch):
         assert voice_profile.short_prompt_summary == "青年短句，先观望再追问，偶尔说我看看"
 
 
+def test_login_skips_profile_and_voice_initialization_for_code_receiver(monkeypatch):
+    with _session() as session:
+        account = _seed_login_account(session)
+        account.account_identity = "code_receiver"
+        session.commit()
+        _stub_successful_login(monkeypatch)
+
+        def fail_voice_profile_init(*_args, **_kwargs):
+            raise AssertionError("code receiver must not create voice profile")
+
+        monkeypatch.setattr(account_profile_auto_init, "_ensure_voice_profiles", fail_voice_profile_init)
+
+        accounts_service.verify_login(session, account.id, "12345", None, actor="tester")
+
+        assert session.scalar(select(TgAccountSecurityBatch)) is None
+        assert session.scalar(select(AiAccountVoiceProfile)) is None
+
+
 def test_qr_login_queues_profile_initialization_after_success(monkeypatch):
     with _session() as session:
         account = _seed_login_account(session)
@@ -184,6 +202,94 @@ def test_local_profile_batch_names_do_not_cluster_on_four_to_six_characters():
         assert any(len(name) <= 3 for name in names)
         assert any(len(name) >= 7 for name in names)
         assert clustered_count <= 45
+
+
+def test_account_security_precheck_skips_code_receiver_profile_and_2fa(monkeypatch):
+    with _session() as session:
+        _seed_tenant_and_app(session)
+        account = TgAccount(
+            id=11,
+            tenant_id=1,
+            display_name="John Smith",
+            tg_first_name="John",
+            phone_masked="138****0000",
+            developer_app_id=1,
+            status=AccountStatus.ACTIVE.value,
+            account_identity="code_receiver",
+            session_ciphertext=encrypt_session("session"),
+            health_score=90,
+        )
+        session.add(account)
+        session.commit()
+
+        def fail_security_refresh(*_args, **_kwargs):
+            raise AssertionError("code receiver maintenance precheck should not refresh security")
+
+        monkeypatch.setattr(account_security_service, "refresh_account_security", fail_security_refresh)
+
+        preview = precheck_account_security_batch(
+            session,
+            1,
+            AccountSecurityPrecheckRequest(
+                account_ids=[account.id],
+                action_types=["update_profile", "update_username", "update_avatar", "set_two_fa"],
+                profile_strategy=ProfileGenerationStrategy(generation_mode="local_random"),
+            ),
+        )
+
+        item = preview.items[0]
+        assert preview.summary["executable"] == 0
+        assert preview.summary["skipped"] == 1
+        assert item.precheck_status == "skipped"
+        assert "接码专用账号只允许接收验证码" in item.blockers
+
+
+def test_account_security_worker_blocks_code_receiver_profile_and_2fa(monkeypatch):
+    with _session() as session:
+        _seed_tenant_and_app(session)
+        account = TgAccount(
+            id=11,
+            tenant_id=1,
+            display_name="John Smith",
+            phone_masked="138****0000",
+            developer_app_id=1,
+            status=AccountStatus.ACTIVE.value,
+            account_identity="code_receiver",
+            session_ciphertext=encrypt_session("session"),
+            health_score=90,
+        )
+        batch = TgAccountSecurityBatch(
+            id=1,
+            tenant_id=1,
+            action_types='["update_profile", "set_two_fa"]',
+            status="running",
+            total_count=1,
+        )
+        item = TgAccountSecurityBatchItem(
+            id=1,
+            batch_id=1,
+            tenant_id=1,
+            account_id=11,
+            status="pending",
+            precheck_status="executable",
+            profile_status="pending",
+            two_fa_status="pending",
+        )
+        session.add_all([account, batch, item])
+        session.commit()
+
+        def fail_credentials(*_args, **_kwargs):
+            raise AssertionError("code receiver worker should block before credentials lookup")
+
+        monkeypatch.setattr(account_security_service, "credentials_for_account", fail_credentials)
+
+        account_security_service._execute_batch_item(session, item.id)
+
+        blocked = session.get(TgAccountSecurityBatchItem, item.id)
+        assert blocked.status == "skipped"
+        assert blocked.failure_type == "code_receiver_reserved"
+        assert blocked.profile_status == "skipped"
+        assert blocked.two_fa_status == "skipped"
 
 
 def test_ai_profile_parser_rejects_english_mixed_display_fields():

@@ -9,6 +9,8 @@ import pytest
 from app.models import AccountPool, AccountRuntimeSummary, AccountStatus, Action, Task, Tenant, TgAccount, TgAccountSecuritySnapshot, TgGroup, TgGroupAccount
 from app.services._common import _now
 from app.services.account_pools import ensure_code_receiver_account_pool, move_account_pool, set_account_identity
+from app.schemas import DirectMessageTaskCreate, MessageSendTaskCreate
+from app.services.messages import create_message_send_task, create_pool_direct_message_task
 from app.services.task_center.account_coverage import task_account_coverage
 from app.services.task_center.account_pool import select_task_accounts
 from app.services.task_center.channel_membership import candidate_accounts_for_config
@@ -69,6 +71,60 @@ def test_set_account_identity_moves_account_between_code_receiver_and_default_po
         normal = set_account_identity(session, 1, "normal", "tester")
         assert normal.account_identity == "normal"
         assert normal.pool_id == 1
+
+
+def test_code_receiver_pool_account_cannot_create_direct_message_task():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        pool = AccountPool(id=2, tenant_id=1, name="接码池", pool_purpose="code_receiver", is_system=True, system_key="code_receiver")
+        account = TgAccount(
+            id=1,
+            tenant_id=1,
+            pool_id=2,
+            display_name="接码账号",
+            phone_masked="1",
+            status=AccountStatus.ACTIVE.value,
+            account_identity="code_receiver",
+        )
+        session.add_all([pool, account])
+        session.commit()
+
+        with pytest.raises(ValueError, match="接码专用账号不参与消息发送"):
+            create_pool_direct_message_task(
+                session,
+                pool.id,
+                DirectMessageTaskCreate(account_id=account.id, target_peer_id="@target", content="hi"),
+                "tester",
+            )
+
+
+def test_code_receiver_account_cannot_create_message_send_task():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(Tenant(id=1, name="默认运营空间"))
+        account = TgAccount(
+            id=1,
+            tenant_id=1,
+            display_name="接码账号",
+            phone_masked="1",
+            status=AccountStatus.ACTIVE.value,
+            account_identity="code_receiver",
+        )
+        session.add(account)
+        session.commit()
+
+        with pytest.raises(ValueError, match="接码专用账号不参与消息发送"):
+            create_message_send_task(
+                session,
+                MessageSendTaskCreate(account_id=account.id, target_type="private", target_peer_id="@target", content="hi"),
+                "tester",
+                tenant_id=1,
+            )
 
 
 def test_select_task_accounts_reduces_low_health_participation_weight():

@@ -12,6 +12,7 @@ from app.schemas.account_security import AccountSecurityBatchCreate, AvatarStrat
 from app.services.account_security import create_account_security_batch
 
 
+CODE_RECEIVER_IDENTITY = "code_receiver"
 AUTO_PROFILE_ACTIONS = ["update_profile", "update_username", "update_avatar"]
 AUTO_PROFILE_REASON = "登录成功后自动初始化账号中文资料和头像"
 AUTO_VOICE_PROFILE_REASON = "登录成功后自动初始化账号面具"
@@ -54,7 +55,7 @@ def queue_profile_initialization_for_accounts(
 ) -> ProfileInitializationQueueResult:
     accounts = _candidate_accounts(session, tenant_id, account_ids)
     selected = [account for account in accounts if _should_queue_account(session, account)]
-    _queue_voice_profile_initialization(session, tenant_id, accounts, actor)
+    _queue_voice_profile_initialization(session, tenant_id, _operational_accounts(accounts), actor)
     batch_ids: list[int] = []
     for overwrite_existing in (False, True):
         group = [account for account in selected if _requires_name_overwrite(account) is overwrite_existing]
@@ -122,7 +123,13 @@ def _candidate_accounts(session: Session, tenant_id: int, account_ids: list[int]
     return list(session.scalars(stmt.order_by(TgAccount.id.asc())))
 
 
+def _operational_accounts(accounts: list[TgAccount]) -> list[TgAccount]:
+    return [account for account in accounts if account.account_identity != CODE_RECEIVER_IDENTITY]
+
+
 def _should_queue_account(session: Session, account: TgAccount) -> bool:
+    if account.account_identity == CODE_RECEIVER_IDENTITY:
+        return False
     return not profile_is_ready(account) and not _has_open_profile_initialization(session, account.id)
 
 

@@ -69,6 +69,9 @@ PROFILE_ACTIONS = {"update_profile", "update_username", "update_avatar"}
 SECURITY_ACTIONS = {"cleanup_devices", "set_two_fa"}
 STANDBY_SESSION_ACTIONS = {"provision_standby_session", "self_heal_session"}
 ALL_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS | STANDBY_SESSION_ACTIONS
+CODE_RECEIVER_IDENTITY = "code_receiver"
+CODE_RECEIVER_RESERVED_ACTIONS = PROFILE_ACTIONS | SECURITY_ACTIONS
+CODE_RECEIVER_RESERVED_REASON = "接码专用账号只允许接收验证码"
 STANDBY_FAILURE_STATUS = {
     "verification_code_unreadable": "code_waiting",
     "two_fa_not_managed": "two_fa_waiting",
@@ -789,10 +792,14 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
     accounts = _accounts_for_payload(session, tenant_id, payload.account_ids)
     trace_id = uuid4().hex
     items: list[AccountSecurityPreviewItem] = []
+    action_set = set(action_types)
     needs_profile_preview = bool(set(action_types) & PROFILE_ACTIONS)
     overrides = {override.account_id: override for override in payload.preview_overrides}
     if needs_profile_preview:
-        accounts_needing_generation = [account for account in accounts if account.id not in overrides]
+        accounts_needing_generation = [
+            account for account in accounts
+            if account.id not in overrides and not _blocks_code_receiver_actions(account, set(action_types))
+        ]
         generated_by_id = {
             account.id: generated_item
             for account, generated_item in zip(
@@ -801,13 +808,16 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
             )
         }
         generated = [
-            _account_profile_preview(account) if account.id in overrides else generated_by_id[account.id]
+            _account_profile_preview(account)
+            if account.id in overrides or _blocks_code_receiver_actions(account, action_set)
+            else generated_by_id[account.id]
             for account in accounts
         ]
     else:
         generated = [_account_profile_preview(account) for account in accounts]
     for index, account in enumerate(accounts):
-        if set(action_types) & SECURITY_ACTIONS:
+        code_receiver_blocked = _blocks_code_receiver_actions(account, action_set)
+        if action_set & SECURITY_ACTIONS and not code_receiver_blocked:
             try:
                 snapshot = refresh_account_security(session, tenant_id, account.id, actor="precheck")
             except ValueError:
@@ -819,6 +829,10 @@ def precheck_account_security_batch(session: Session, tenant_id: int, payload: A
         suggested: list[str] = []
         status = "executable"
         can_self_heal = "self_heal_session" in action_types and _has_switchable_standby(session, account)
+        if code_receiver_blocked:
+            blockers.append(CODE_RECEIVER_RESERVED_REASON)
+            suggested.append("接码专用账号仅保留验证码读取和备用 session 维护能力")
+            status = "skipped"
         if (account.status != AccountStatus.ACTIVE.value or not account.session_ciphertext) and not can_self_heal:
             blockers.append("账号未在线或缺少可用 session")
             suggested.append("已自动跳过；处理登录或 session 后可重新发起")
@@ -1093,6 +1107,10 @@ def _execute_batch_item(session: Session, item_id: int) -> None:
         session.commit()
         return
     action_types = set(_json_list(batch.action_types))
+    if _blocks_code_receiver_actions(account, action_types):
+        _skip_code_receiver_batch_item(item, action_types)
+        session.commit()
+        return
     item.status = "running"
     item.started_at = _now()
     session.commit()
@@ -1815,6 +1833,29 @@ def _accounts_for_payload(session: Session, tenant_id: int, account_ids: list[in
     if not accounts:
         raise ValueError("no accounts selected")
     return accounts
+
+
+def _blocks_code_receiver_actions(account: TgAccount, action_types: set[str]) -> bool:
+    return account.account_identity == CODE_RECEIVER_IDENTITY and bool(action_types & CODE_RECEIVER_RESERVED_ACTIONS)
+
+
+def _skip_code_receiver_batch_item(item: TgAccountSecurityBatchItem, action_types: set[str]) -> None:
+    item.status = "skipped"
+    item.precheck_status = "skipped"
+    item.skipped_reason = CODE_RECEIVER_RESERVED_REASON
+    item.failure_type = "code_receiver_reserved"
+    item.failure_detail = CODE_RECEIVER_RESERVED_REASON
+    item.finished_at = _now()
+    if "cleanup_devices" in action_types:
+        item.cleanup_status = "skipped"
+    if "set_two_fa" in action_types:
+        item.two_fa_status = "skipped"
+    if "update_profile" in action_types:
+        item.profile_status = "skipped"
+    if "update_username" in action_types:
+        item.username_status = "skipped"
+    if "update_avatar" in action_types:
+        item.avatar_status = "skipped"
 
 
 def _generate_profiles(session: Session, tenant_id: int, accounts: list[TgAccount], strategy) -> list[dict[str, object]]:

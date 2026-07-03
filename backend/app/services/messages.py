@@ -49,6 +49,7 @@ MEDIA_MESSAGE_TYPES = {"图片", "表情包", "文件", "组合消息"}
 SEGMENT_MEDIA_TYPES = {"图片", "表情包", "文件"}
 READY_CACHE_STATUS = "ready"
 UNAVAILABLE_CACHE_STATUSES = {"not_cached", "refreshing", "flood_wait", "unrecoverable", "cache_failed"}
+CODE_RECEIVER_IDENTITY = "code_receiver"
 
 
 def _validate_message_material(session: Session, tenant_id: int, message_type: str, material_id: int | None) -> Material | None:
@@ -192,6 +193,8 @@ def _resolve_send_account(session: Session, account_id: int, tenant_id: int | No
         raise ValueError("发送账号不属于当前租户")
     if account.status != AccountStatus.ACTIVE.value:
         raise ValueError("请选择已在线的发送账号")
+    if account.account_identity == CODE_RECEIVER_IDENTITY:
+        raise ValueError("接码专用账号不参与消息发送")
     return account
 
 
@@ -498,6 +501,8 @@ def create_direct_message_task(session: Session, account_id: int, payload: Direc
     account = session.get(TgAccount, account_id)
     if not account or account.deleted_at is not None:
         raise ValueError("account not found")
+    if account.account_identity == CODE_RECEIVER_IDENTITY:
+        raise ValueError("接码专用账号不参与消息发送")
     contact = find_account_contact(session, account, payload.target_peer_id)
     if not contact:
         raise ValueError("请先同步联系人或群友，并从列表中选择发送对象")

@@ -87,3 +87,14 @@
 - decision: release_gate=passed；production_health=ok；handoff_delivery_status=sent。
 - next_agent: product
 - unresolved: product acceptance 未确认；真实目标机器人协议样本、真实代理出口、机场节点容灾、授权槽位环境栈和 7 天灰度仍 unproven，当前实现保持 fail-closed。
+
+## 2026-07-03 接码专用账号只接码限制 Development Complete（本地验证）
+
+- message_id: 2026-07-03-code-receiver-restriction-devcomplete-001
+- action: 将接码专用分组账号限制为只用于接码、授权资产诊断和备用 session 补齐 / 自愈
+- input: 用户确认“接码专用分组只需用于接码；不改名字、不改 2FA 密码、不参与任务；接码账号允许备用 session 补齐 / 自愈”
+- output: PRD、账号安全专项、数据流转索引和项目结构索引同步；登录后自动资料初始化排除 `code_receiver`，不创建资料批次、不初始化账号面具；账号安全预检和 worker 对资料、username、头像、设置 2FA、设备清理动作硬跳过；消息发送公共入口和旧私聊入口阻断接码账号；备用 session 补齐 / 自愈未纳入禁用集合。
+- evidence: 先新增 red tests 并确认失败；实现后 `python -m pytest -q backend/tests/test_account_profile_auto_initialization.py backend/tests/test_task_account_pool.py backend/tests/test_account_center_prd_contracts.py -m no_postgres` -> 57 passed；py_compile changed backend files passed；`git diff --check` passed。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 未真实投递 QA 长期线程；未执行 GitHub Actions release / production deploy。
