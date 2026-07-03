@@ -78,8 +78,41 @@ def test_sensitive_group_context_is_sanitized_before_provider_prompt():
     assert "嫩" not in sanitized
     assert "半小时" not in sanitized
     assert "300块" not in sanitized
-    assert "谨慎观望客" in sanitized
+    assert "男性夜场话题观望客" in sanitized
     assert "一定成本" in sanitized
+
+
+@pytest.mark.no_postgres
+def test_group_chat_preserves_safe_male_adult_mask_signal(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def fake_generate_contents(_session, _tenant_id, *, requirements, **_kwargs):
+        captured["requirements"] = requirements
+        return ["河东这边有人踩过没"], 0
+
+    monkeypatch.setattr("app.services.task_center.ai_generator.generate_contents", fake_generate_contents)
+
+    generate_group_messages(
+        None,
+        1,
+        {
+            "account_profiles": {
+                "7": "面具：伪装嫖客；人群：男性成人场景浏览客；身份：男性，装作来找色情服务的普通客人；偏好：男性、色情、反馈、避坑；表达摘要：男性短句伪装嫖客先问价格位置和真实反馈"
+            },
+        },
+        count=1,
+        target_label="天津活群",
+        history="群友: 这波妹子很嫩 半小时300块 手感咋样",
+    )
+
+    requirements = captured["requirements"]
+    assert "男性夜场话题" in requirements
+    assert "真实反馈" in requirements
+    assert "谨慎观望客" not in requirements
+    assert "嫖客" not in requirements
+    assert "色情" not in requirements
+    assert "妹子" not in requirements
+    assert "300块" not in requirements
 
 
 @pytest.mark.no_postgres

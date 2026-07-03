@@ -859,6 +859,74 @@ def test_ai_group_quality_diagnostics_reports_material_trace_samples():
     assert action_samples[2]["material_intent"] == ""
 
 
+def test_ai_group_quality_diagnostics_flags_ai_like_or_off_mask_samples():
+    module = load_quality_diagnostics_module()
+    actions = [
+        SimpleNamespace(
+            id="a1",
+            status="success",
+            account_id=11,
+            scheduled_at=None,
+            executed_at=None,
+            payload={
+                "message_text": "确实不错 可以关注一下",
+                "account_voice_profile_summary": "男性夜场话题观望客，短句，先问价格位置和真实反馈",
+                "account_mask_match_score": 100,
+                "account_mask_match_reason": "男性夜场话题观望客，短句，先问价格位置和真实反馈",
+            },
+        ),
+        SimpleNamespace(
+            id="a2",
+            status="success",
+            account_id=12,
+            scheduled_at=None,
+            executed_at=None,
+            payload={
+                "message_text": "位置在河东吗 有人踩过没",
+                "account_voice_profile_summary": "男性夜场话题观望客，短句，先问价格位置和真实反馈",
+                "account_mask_match_score": 100,
+                "account_mask_match_reason": "男性夜场话题观望客，短句，先问价格位置和真实反馈",
+            },
+        ),
+    ]
+
+    samples = module.action_samples(actions)
+    audit = module.realism_audit_summary(
+        [
+            {
+                "task_id": "task-ai",
+                "name": "天津",
+                "status": "running",
+                "recent_action_samples": samples,
+            }
+        ]
+    )
+
+    assert audit["task_count"] == 1
+    assert audit["sample_count"] == 2
+    assert audit["risk_sample_count"] == 1
+    assert audit["risk_reason_counts"] == {"ai_like_template": 1, "mask_theme_missing": 1}
+    assert audit["task_summaries"] == [
+        {
+            "task_id": "task-ai",
+            "name": "天津",
+            "status": "running",
+            "sample_count": 2,
+            "risk_sample_count": 1,
+            "risk_reason_counts": {"ai_like_template": 1, "mask_theme_missing": 1},
+            "risk_samples": [
+                {
+                    "action_id": "a1",
+                    "account_id": 11,
+                    "text": "确实不错 可以关注一下",
+                    "profile_summary": "男性夜场话题观望客，短句，先问价格位置和真实反馈",
+                    "reasons": ["ai_like_template", "mask_theme_missing"],
+                }
+            ],
+        }
+    ]
+
+
 def test_ai_group_quality_diagnostics_reports_success_only_duplicates_without_blocking():
     module = load_quality_diagnostics_module()
     actions = [

@@ -73,6 +73,39 @@ QUALITY_PAYLOAD_REQUIRED_FIELDS = (
     "generation_source",
     "act_type",
 )
+AI_LIKE_TEMPLATE_MARKERS = (
+    "确实不错",
+    "感觉挺靠谱",
+    "挺靠谱",
+    "可以关注一下",
+    "有点意思",
+    "看起来还行",
+    "值得讨论",
+    "可以继续聊聊",
+    "大家怎么看",
+)
+MASK_PROFILE_MARKERS = ("男性", "夜场话题", "伪装", "色客", "寻欢", "价格", "位置", "反馈")
+MASK_THEME_ANCHORS = (
+    "价格",
+    "成本",
+    "位置",
+    "在哪",
+    "反馈",
+    "真假",
+    "真实",
+    "踩坑",
+    "照片",
+    "服务",
+    "体验",
+    "时间",
+    "今晚",
+    "有人去过",
+    "去过",
+    "问清楚",
+    "别跑空",
+    "距离",
+)
+REALISM_RISK_SAMPLE_LIMIT = 8
 
 
 def iso(value: datetime | None) -> str | None:
@@ -681,6 +714,9 @@ def action_samples(actions: list[Action]) -> list[dict[str, Any]]:
             "profile_version": int((action.payload or {}).get("account_voice_profile_version") or 0),
             "quality_decision": str((action.payload or {}).get("human_quality_decision") or ""),
             "generation_source": str((action.payload or {}).get("generation_source") or ""),
+            "profile_summary": _payload_profile_summary(action.payload or {}),
+            "mask_match_score": int((action.payload or {}).get("account_mask_match_score") or 0),
+            "mask_match_reason": str((action.payload or {}).get("account_mask_match_reason") or ""),
             "material_intent": _payload_material_intent(action.payload or {}),
             "material_matched_tags": _payload_material_tags(action.payload or {}),
             "material_candidate_count": _payload_material_candidate_count(action.payload or {}),
@@ -690,6 +726,87 @@ def action_samples(actions: list[Action]) -> list[dict[str, Any]]:
         }
         for action in actions
     ]
+
+
+def _payload_profile_summary(payload: dict[str, Any]) -> str:
+    return str(payload.get("account_mask_summary") or payload.get("account_voice_profile_summary") or "")
+
+
+def realism_audit_summary(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
+    task_summaries = [_realism_task_summary(snapshot) for snapshot in snapshots if snapshot.get("status") == "running"]
+    sample_count = sum(int(item["sample_count"]) for item in task_summaries)
+    risk_sample_count = sum(int(item["risk_sample_count"]) for item in task_summaries)
+    reason_counts: Counter[str] = Counter()
+    for item in task_summaries:
+        reason_counts.update(dict(item.get("risk_reason_counts") or {}))
+    return {
+        "task_count": len(task_summaries),
+        "sample_count": sample_count,
+        "risk_sample_count": risk_sample_count,
+        "risk_reason_counts": dict(sorted(reason_counts.items())),
+        "task_summaries": task_summaries,
+    }
+
+
+def _realism_task_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
+    samples = list(snapshot.get("recent_action_samples") or [])
+    risk_samples = _realism_risk_samples(samples)
+    reason_counts: Counter[str] = Counter()
+    for sample in risk_samples:
+        reason_counts.update(list(sample.get("reasons") or []))
+    return {
+        "task_id": str(snapshot.get("task_id") or ""),
+        "name": str(snapshot.get("name") or ""),
+        "status": str(snapshot.get("status") or ""),
+        "sample_count": len(samples),
+        "risk_sample_count": len(risk_samples),
+        "risk_reason_counts": dict(sorted(reason_counts.items())),
+        "risk_samples": risk_samples[:REALISM_RISK_SAMPLE_LIMIT],
+    }
+
+
+def _realism_risk_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    flagged: list[dict[str, Any]] = []
+    for sample in samples:
+        reasons = _realism_risk_reasons(sample)
+        if not reasons:
+            continue
+        flagged.append(
+            {
+                "action_id": sample.get("id"),
+                "account_id": sample.get("account_id"),
+                "text": sample.get("text"),
+                "profile_summary": sample.get("profile_summary"),
+                "reasons": reasons,
+            }
+        )
+    return flagged
+
+
+def _realism_risk_reasons(sample: dict[str, Any]) -> list[str]:
+    text = str(sample.get("text") or "")
+    profile_summary = str(sample.get("profile_summary") or sample.get("mask_match_reason") or "")
+    reasons: list[str] = []
+    if _looks_ai_like_template(text):
+        reasons.append("ai_like_template")
+    if _profile_needs_mask_theme(profile_summary) and not _has_mask_theme_anchor(text):
+        reasons.append("mask_theme_missing")
+    return reasons
+
+
+def _looks_ai_like_template(text: str) -> bool:
+    normalized = normalized_text(text)
+    return any(marker in normalized for marker in AI_LIKE_TEMPLATE_MARKERS)
+
+
+def _profile_needs_mask_theme(profile_summary: str) -> bool:
+    normalized = normalized_text(profile_summary)
+    return any(marker in normalized for marker in MASK_PROFILE_MARKERS)
+
+
+def _has_mask_theme_anchor(text: str) -> bool:
+    normalized = normalized_text(text)
+    return any(marker in normalized for marker in MASK_THEME_ANCHORS)
 
 
 def material_trace_samples(actions: list[Action]) -> list[dict[str, Any]]:
@@ -876,6 +993,8 @@ def main() -> None:
         if recent_duplicates["quality_payload_blockers"]:
             json_line("AI_GROUP_QUALITY_PAYLOAD_GATE_FAILED", recent_duplicates)
             raise SystemExit("AI group quality payload gate failed")
+        pre_online_snapshots = task_snapshots(session, since)
+        json_line("AI_GROUP_REALISM_AUDIT_PRE_ONLINE", realism_audit_summary(pre_online_snapshots))
         snapshots = wait_for_online_gate(session, since)
         json_line("AI_GROUP_QUALITY_HARD_HOURLY_DRAIN", drain_hard_hourly_planner(session))
         session.expire_all()
@@ -883,6 +1002,7 @@ def main() -> None:
         snapshots = settle_hard_hourly_gate(session, since, snapshots)
         for snapshot in snapshots:
             json_line("AI_GROUP_QUALITY_TASK", snapshot)
+        json_line("AI_GROUP_REALISM_AUDIT", realism_audit_summary(snapshots))
         hard_hourly_blockers = hard_hourly_gate_blockers(snapshots)
         if hard_hourly_blockers:
             payload = {"blocker_count": len(hard_hourly_blockers), "blockers": hard_hourly_blockers}
