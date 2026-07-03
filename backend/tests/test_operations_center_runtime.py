@@ -27,7 +27,7 @@ from app.services.account_capacity import AccountCapacityCache, AccountCapacityR
 from app.services.messages import create_message_send_task, dispatch_task, filter_tasks, retry_task, validate_group_task_policy
 from app.services.operations import filter_operation_targets, operation_target_detail, retry_operation_target_admission, sync_all_operation_targets, update_operation_target, update_operation_target_account_policy
 from app.services.verification import resolve_group_restriction_batch
-from app.services.task_center.executors.group_ai_chat import _choose_turn_account, _topic_relevant_context_rows, ai_cycle_mode, build_plan as build_group_ai_chat_plan
+from app.services.task_center.executors.group_ai_chat import _choose_turn_account, _topic_relevant_context_rows, _voice_profile_match_decision, ai_cycle_mode, build_plan as build_group_ai_chat_plan
 from app.services.task_center.ai_generator import _humanize_group_chat_punctuation
 from app.services.operations_center import _is_stale_heartbeat, listener_summary, list_listener_errors, list_listener_events, list_rule_sets, operation_metrics_summary, relay_attribution_csv, relay_attribution_report, reset_listener_watermark, rule_center_summary, switch_listener_account, test_rules as preview_rules, update_rule_set_config
 from app.services.reports import _hourly_activity_24h, build_overview
@@ -5032,6 +5032,27 @@ def test_group_ai_chat_drops_repeated_fixed_shell_phrases(monkeypatch):
     assert [action.payload["message_text"] for action in actions] == ["这点加分", "最近榜单更新挺快"]
     assert [action.payload["semantic_cluster"] for action in actions] == ["fixed_shell_bonus", ""]
     assert task.stats["duplicate_risk"] == "semantic_cluster"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_chat_rejects_mask_profile_message_without_theme_anchor():
+    decision = _voice_profile_match_decision(
+        "快进效率跟得上哈哈",
+        {"summary": "本地男性短句寻欢客重点问位置时间和避坑"},
+    )
+
+    assert decision["score"] == 0
+    assert decision["reason"] == "账号面具要求夜场主题锚点"
+
+
+@pytest.mark.no_postgres
+def test_group_ai_chat_accepts_mask_profile_message_with_theme_anchor():
+    decision = _voice_profile_match_decision(
+        "这个价格还是得自己问清楚",
+        {"summary": "本地男性短句寻欢客重点问位置时间和避坑"},
+    )
+
+    assert decision["score"] == 100
 
 
 def test_group_ai_chat_idle_continuation_can_be_disabled(monkeypatch):

@@ -110,6 +110,43 @@ VAGUE_AI_FILLER_DETAIL_MARKERS = (
     "上榜",
     "药",
 )
+MASK_THEME_PROFILE_MARKERS = (
+    "男性",
+    "男客",
+    "老哥",
+    "夜场",
+    "寻欢",
+    "消费",
+    "楼凤",
+    "价位",
+    "包夜",
+    "技师",
+    "场子",
+)
+MASK_THEME_CONTENT_ANCHORS = (
+    "价格",
+    "成本",
+    "位置",
+    "在哪",
+    "反馈",
+    "真假",
+    "真实",
+    "真人",
+    "踩坑",
+    "照片",
+    "服务",
+    "体验",
+    "时间",
+    "今晚",
+    "老师",
+    "身材",
+    "榜",
+    "熟客",
+    "推荐",
+    "口味",
+    "温柔",
+    "别跑空",
+)
 
 
 def build_plan(session: Session, task: Task) -> int:
@@ -2979,6 +3016,8 @@ def _voice_profile_match_decision(content: str, voice_profile: dict) -> dict[str
         return {"score": VOICE_PROFILE_MISMATCH_SCORE, "reason": "账号面具要求少表情"}
     if "短句" in normalized_summary and len(normalized_content) > VOICE_PROFILE_LONG_SHORT_SENTENCE_LIMIT:
         return {"score": VOICE_PROFILE_MISMATCH_SCORE, "reason": "账号面具要求短句"}
+    if _profile_requires_mask_theme(normalized_summary) and not _has_mask_theme_anchor(normalized_content):
+        return {"score": VOICE_PROFILE_MISMATCH_SCORE, "reason": "账号面具要求夜场主题锚点"}
     return {"score": VOICE_PROFILE_MATCH_SCORE, "reason": summary[:80]}
 
 
@@ -2999,6 +3038,14 @@ def _has_marker(normalized_text: str, markers: tuple[str, ...]) -> bool:
 def _profile_rejects_emoji(normalized_summary: str) -> bool:
     markers = ("少表情", "不发表情", "不用表情", "不连续发表情", "少emoji", "不用emoji")
     return any(marker in normalized_summary for marker in markers)
+
+
+def _profile_requires_mask_theme(normalized_summary: str) -> bool:
+    return _has_marker(normalized_summary, MASK_THEME_PROFILE_MARKERS)
+
+
+def _has_mask_theme_anchor(normalized_content: str) -> bool:
+    return _has_marker(normalized_content, MASK_THEME_CONTENT_ANCHORS)
 
 
 def _is_emoji_only_message(content: str) -> bool:
