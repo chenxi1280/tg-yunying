@@ -52,21 +52,34 @@
 - Product thread delivery: `019f07c6-d189-7b21-bed2-695abe7b4918`.
 - Tool returned target thread IDs but no separate message IDs.
 
-## Product Acceptance
+## Product Acceptance Pending
 
 - message_id: `2026-07-03-search-join-group-product-acceptance-001`
 - reply_to_message_id: `2026-07-03-search-join-group-supervised-fix-001`
-- status: `product_accepted`
+- status: `pending_product_ack`
 - evidence_level: E3
-- accepted_scope: first-version deployed fail-closed code boundary
+- pending_scope: first-version deployed fail-closed code boundary
 - release_gate: passed
-- production_verification_required: false for this acceptance boundary
+- production_verification_required: true for any future claim of real gray / production success
 
-Product accepts the first-version `search_join_group` code boundary that is already deployed and health-checked, with explicit limits:
+Product handoff describes the first-version `search_join_group` code boundary that is already deployed and health-checked, with explicit limits. It must remain pending until the product thread returns an explicit acceptance / ACK:
 
-- Accepted: task type/API/schema/config/router/service, no plaintext keywords in `type_config` / action payload, non-empty keyword material, 64-char lowercase `keyword_hashes`, `bot_protocol_samples` fail-closed gate, `search_join` planner/action/stats, dispatcher proxy egress guard fail-closed behavior, membership-observed linked dispatch,专项权限, frontend creation/detail/rules-center surfaces, PRD/dataflow/structure/run/worklog updates.
-- Not accepted as proven: real seven-day search-join gray success, real `airport_clash` subscription capacity/failover, Bot admin notification production path, proxy egress guard with real nodes, target bot protocol sample collection, full authorization-slot environment stack/warmup/execution lock production loop.
-- Product acceptance must not be used to claim real search-join效果、排名提升、目标群加入灰度成功 or complete production behavior.
+- Ready for product review: task type/API/schema/config/router/service, no plaintext keywords in `type_config` / action payload, non-empty keyword material, 64-char lowercase `keyword_hashes`, `bot_protocol_samples` fail-closed gate, `search_join` planner/action/stats, dispatcher proxy egress guard fail-closed behavior, membership-observed linked dispatch,专项权限, frontend creation/detail/rules-center surfaces, PRD/dataflow/structure/run/worklog updates.
+- Not proven: real seven-day search-join gray success, real `airport_clash` subscription capacity/failover, Bot admin notification production path, proxy egress guard with real nodes, target bot protocol sample collection, full authorization-slot environment stack/warmup/execution lock production loop.
+- This handoff must not be used to claim real search-join效果、排名提升、目标群加入灰度成功, product acceptance, or complete production behavior.
+
+## QA Code And Release Gate Recheck
+
+- message_id: `2026-07-03-search-join-group-qa-to-product-code-releasegate-001`
+- from_agent: qa
+- to_agent: product
+- status: `qa_pass`
+- scoped_result: `qa_pass_for_code_and_release_gate`
+- evidence_level: E3
+- release_gate: passed
+- production_verification_required: true only for any future claim of real gray / production success
+
+QA formally rechecked the product-review boundary: keyword/hash validation, active and PII-scrubbed protocol sample gate, proxy egress guard before real gateway execution, linked dispatch after `membership_observed`, `tasks.manage` + `tasks.create.search_join_group` permission AND semantics, and Deploy Production run `28644819954` on head SHA `32b0257b1694f5dd8b5ea73cc159bb8e670d300a`. Product acceptance remains pending until the product thread returns an explicit ACK;真实目标机器人样本、真实代理出口、机场节点容灾、授权槽位环境栈和 7 天灰度仍为 unproven.
 
 ## Unproven
 

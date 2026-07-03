@@ -275,13 +275,24 @@
 - next_agent: none
 - unresolved: product 线程 ACK / 接受未返回；目标机器人协议样本、真实代理出口、授权槽位环境栈、机场节点容灾和真实灰度执行仍未证明。
 
-## 2026-07-03 search_join_group fail-closed 首版产品验收
+## 2026-07-03 search_join_group fail-closed 首版产品待验收
 
 - message_id: 2026-07-03-search-join-group-product-acceptance-001
-- action: 对监督补缺并已上线的 `search_join_group` 首版做 Product Acceptance
+- action: 记录监督补缺并已上线的 `search_join_group` 首版产品待验收边界
 - input: 2026-07-03-search-join-group-supervised-fix-001
-- output: product_accepted
+- output: product_acceptance_pending
 - evidence: 后端 no_postgres 653 passed / 798 deselected，compileall、迁移 py_compile、frontend build、git diff --check passed；Deploy Production run `28644819954` success；release `20260703071946_32b0257` live；健康检查和公网 `/task-center` HTTP 200；DF-178A 已从规划态修正为已实现态
-- decision: 接受“首版可上线 fail-closed 代码边界”；不接受/不证明真实 7 天搜索入群灰度成功、真实代理出口/机场 failover、目标机器人协议样本采集、授权槽位环境栈/warmup/执行锁完整生产闭环
-- next_agent: none
-- unresolved: 后续真实灰度前仍需生产级协议样本、代理出口、机场节点容量/failover、Bot 管理员通知和授权槽位闭环证据
+- decision: 首版可上线 fail-closed 代码边界已具备产品复核材料；product thread ACK / acceptance 未返回前不写 `product_accepted`；不接受/不证明真实 7 天搜索入群灰度成功、真实代理出口/机场 failover、目标机器人协议样本采集、授权槽位环境栈/warmup/执行锁完整生产闭环
+- next_agent: product
+- unresolved: product 线程 ACK / 接受未返回；后续真实灰度前仍需生产级协议样本、代理出口、机场节点容量/failover、Bot 管理员通知和授权槽位闭环证据
+
+## 2026-07-03 search_join_group QA code/release gate 复核确认
+
+- message_id: 2026-07-03-search-join-group-qa-to-product-code-releasegate-001
+- action: 接收 QA 对 `search_join_group` 代码与 Release Gate 范围的正式复核，并保持产品验收边界不扩大
+- input: QA pass for code and release gate，production_verification_required=true 仅适用于未来真实灰度 / 生产成功声明
+- output: 维持 `release_gate_passed_prod_health_ok_qa_rechecked`
+- evidence: 关键词/hash、协议样本闸门、proxy egress guard、linked dispatch、权限 AND 语义、Deploy Production run `28644819954` 均通过 QA 复核
+- decision: 不退回；不声明 product_accepted、search_join_group 真实灰度成功或 production_fixed
+- next_agent: product
+- unresolved: product 线程 ACK / 接受未返回；真实目标机器人协议样本、真实 proxy egress、机场节点容灾、授权槽位环境栈和 7 天灰度仍为 unproven
