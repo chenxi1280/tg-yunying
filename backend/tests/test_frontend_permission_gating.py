@@ -1962,6 +1962,7 @@ def test_production_ai_hourly_probe_reports_membership_failures():
     assert "run_production_diagnostics:" in workflow
     assert "run_tianjin_diagnostics:" in workflow
     assert "run_ai_group_quality_diagnostics:" in workflow
+    assert "ai_group_quality_release_live_at:" in workflow
     assert "cleanup_tianjin_admission_backlog:" in workflow
     assert "force_cancel_in_progress:" in workflow
     assert "cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.force_cancel_in_progress }}" in workflow
@@ -1993,6 +1994,7 @@ def test_production_ai_hourly_probe_reports_membership_failures():
     assert ".github/scripts/ai_group_quality_diagnostics.py" in workflow
     assert "AI_GROUP_QUALITY_DIAGNOSTICS_START" in workflow
     assert "AI_GROUP_QUALITY_DIAGNOSTICS_END" in workflow
+    assert "inputs.ai_group_quality_release_live_at" in workflow
     assert "AI_GROUP_RELEASE_LIVE_AT=" in workflow
     assert "timeout 1200 docker exec -e AI_GROUP_RELEASE_LIVE_AT=" in workflow
     assert "AI_GROUP_QUALITY_VOICE_PROFILES" in quality_diagnostics

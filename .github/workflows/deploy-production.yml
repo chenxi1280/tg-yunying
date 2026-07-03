@@ -83,6 +83,11 @@ name: Deploy Production
         required: false
         default: false
         type: boolean
+      ai_group_quality_release_live_at:
+        description: Optional Beijing-time cutoff for AI group post-release diagnostics
+        required: false
+        default: ''
+        type: string
       update_minimax_provider:
         description: Upsert MiniMax provider from GitHub secret TGYUNYING_MINIMAX_API_KEY after deploy
         required: false
@@ -1304,7 +1309,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "AI_GROUP_QUALITY_DIAGNOSTICS_START"
-          AI_GROUP_RELEASE_LIVE_AT="$(TZ=Asia/Shanghai date +'%Y-%m-%dT%H:%M:%S')"
+          AI_GROUP_RELEASE_LIVE_AT="${{ inputs.ai_group_quality_release_live_at }}"
+          if [[ -z "${AI_GROUP_RELEASE_LIVE_AT}" ]]; then
+            AI_GROUP_RELEASE_LIVE_AT="$(TZ=Asia/Shanghai date +'%Y-%m-%dT%H:%M:%S')"
+          fi
           echo "AI_GROUP_RELEASE_LIVE_AT=${AI_GROUP_RELEASE_LIVE_AT}"
           ssh silicon-valley-production-server "timeout 1200 docker exec -e AI_GROUP_RELEASE_LIVE_AT='${AI_GROUP_RELEASE_LIVE_AT}' -i tgyunying-backend python -" \
             < .github/scripts/ai_group_quality_diagnostics.py
