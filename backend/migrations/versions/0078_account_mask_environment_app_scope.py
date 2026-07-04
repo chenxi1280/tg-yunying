@@ -1,6 +1,6 @@
 """add account mask environment app scope
 
-Revision ID: 0078_account_mask_environment_app_scope
+Revision ID: 0078_account_mask_env_scope
 Revises: 0077_search_join_pacing
 Create Date: 2026-07-04
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0078_account_mask_environment_app_scope"
+revision = "0078_account_mask_env_scope"
 down_revision = "0077_search_join_pacing"
 branch_labels = None
 depends_on = None

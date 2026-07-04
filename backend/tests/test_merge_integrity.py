@@ -33,8 +33,9 @@ def test_alembic_versions_have_single_head():
         elif isinstance(down_revision, tuple):
             referenced.update(item for item in down_revision if item)
 
+    assert all(len(revision) <= 32 for revision in revisions)
     heads = sorted(set(revisions) - referenced)
-    assert heads == ["0078_account_mask_environment_app_scope"]
+    assert heads == ["0078_account_mask_env_scope"]
 
 
 def test_backend_test_names_are_unique_per_file():
