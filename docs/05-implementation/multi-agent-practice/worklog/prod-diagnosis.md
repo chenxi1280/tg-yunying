@@ -32,3 +32,14 @@
 - decision: 代码发布与生产健康通过；不声明郑州 3 账号真实搜索入群灰度完成
 - next_agent: product
 - unresolved: 真实目标机器人协议样本、真实代理出口、机场节点容灾、授权槽位环境栈和郑州 3 账号线上加入测试仍需单独生产执行证据
+
+## 2026-07-04 授权槽位代理事实源修正发布生产复核
+
+- message_id: 2026-07-04-account-proxy-slot-runtime-release-001
+- action: 对账号面具授权槽位代理/指纹运行时修正完成生产发布复核
+- input: 2026-07-04-account-proxy-slot-runtime-fix-local-qa-001；子代理指出的代理重绑唯一索引冲突和 Dispatcher 未校验 `account_proxy_bindings` 行本身已修复
+- output: release_gate_passed_prod_health_ok
+- evidence: Deploy Production run `28700295899` 在 release head `f44a5e25500ce940cfff556eb83fdc7022682af0` 通过 checks、build-images、deploy；`origin/release` 与 `origin/master` 均为 `f44a5e25500ce940cfff556eb83fdc7022682af0`；公网 `https://tgyunying.telema.cn/api/health` 返回 `{"status":"ok"}`；公网 `/task-center` 返回 HTTP 200 text/html
+- decision: 代码发布与生产健康通过；不声明远端 Telegram 授权设备已立即变更，不声明真实 Clash 同步、真实出口 IP 观测或郑州 3 账号真实加入测试通过
+- next_agent: product
+- unresolved: 本次 workflow 中 `Configure Clash proxies and Zhengzhou smoke task` 等可选生产动作是 skipped；线上 Clash 订阅同步、账号授权指纹重登生效、远端授权快照刷新和郑州 3 账号真实加入测试仍需单独生产执行证据
