@@ -155,6 +155,16 @@ def test_search_join_group_settings_update_accepts_pacing_but_other_tasks_reject
     other = Task(tenant_id=1, name="普通任务", type="channel_like", status="running", type_config={}, stats={})
     session.add(other)
     session.commit()
+
+    generic = update_task_settings(
+        session,
+        1,
+        other.id,
+        TaskSettingsUpdate(name=other.name, pacing_config={"mode": "template", "max_actions_per_day": 10}),
+        actor="tester",
+    )
+
+    assert generic.pacing_config["max_actions_per_day"] == 10
     with pytest.raises(ValueError, match="search_join_group 专属 pacing 字段不能用于其他任务类型"):
         update_task_settings(
             session,
