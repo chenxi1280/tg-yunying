@@ -97,14 +97,17 @@ def ensure_search_join_environment(session: Session, account: TgAccount) -> Sear
     authorization = _active_authorization(session, account.id)
     if authorization is None:
         return None
-    proxy = _healthy_proxy(session, authorization.proxy_id)
-    if proxy is None:
-        return None
     binding = _existing_binding(session, account.id, authorization)
     if binding is None:
+        proxy = _healthy_proxy(session, authorization.proxy_id)
+        if proxy is None:
+            return None
         binding = _create_binding(session, EnvironmentTarget(account, authorization, proxy))
     else:
-        _sync_binding_proxy(session, binding, account, authorization, proxy)
+        _hydrate_binding_app_scope(binding, authorization)
+        proxy = _healthy_proxy(session, binding.proxy_id)
+        if proxy is None:
+            return None
     return _environment_from_binding(binding, proxy)
 
 
@@ -157,7 +160,7 @@ def _create_binding(session: Session, target: EnvironmentTarget) -> AccountEnvir
         target.authorization.id,
         target.authorization.role,
     )
-    proxy_binding = _ensure_proxy_binding(session, target.account, target.proxy)
+    proxy_binding = _ensure_proxy_binding(session, target)
     binding_input = BindingInput(target.account, target.authorization, target.proxy, proxy_binding.id, metadata)
     binding = _new_binding(binding_input)
     session.add(binding)
@@ -217,32 +220,24 @@ def _combo_used_by_account_app(session: Session, account_id: int, developer_app_
     return session.scalar(stmt.limit(1)) is not None
 
 
-def _ensure_proxy_binding(session: Session, account: TgAccount, proxy: AccountProxy) -> AccountProxyBinding:
-    existing = _active_proxy_binding(session, account.id, proxy.id)
+def _ensure_proxy_binding(session: Session, target: EnvironmentTarget) -> AccountProxyBinding:
+    existing = _active_proxy_binding(session, target, target.proxy.id)
     if existing is not None:
         return existing
-    binding = AccountProxyBinding(tenant_id=account.tenant_id, account_id=account.id, proxy_id=proxy.id, change_reason="search_join_environment_binding", bound_by="system")
+    binding = AccountProxyBinding(
+        tenant_id=target.account.tenant_id,
+        account_id=target.account.id,
+        developer_app_id=target.authorization.developer_app_id,
+        developer_app_api_id_snapshot=int(target.authorization.developer_app_api_id_snapshot or 0),
+        authorization_id=target.authorization.id,
+        session_role=target.authorization.role,
+        proxy_id=target.proxy.id,
+        change_reason="search_join_environment_binding",
+        bound_by="system",
+    )
     session.add(binding)
     session.flush()
     return binding
-
-
-def _sync_binding_proxy(
-    session: Session,
-    binding: AccountEnvironmentBinding,
-    account: TgAccount,
-    authorization: TgAccountAuthorization,
-    proxy: AccountProxy,
-) -> None:
-    proxy_binding = _ensure_proxy_binding(session, account, proxy)
-    _hydrate_binding_app_scope(binding, authorization)
-    if binding.proxy_id == proxy.id and binding.proxy_binding_id == proxy_binding.id:
-        session.flush()
-        return
-    binding.proxy_id = proxy.id
-    binding.proxy_binding_id = proxy_binding.id
-    binding.updated_at = _now()
-    session.flush()
 
 
 def _hydrate_binding_app_scope(
@@ -256,9 +251,17 @@ def _hydrate_binding_app_scope(
     binding.updated_at = _now()
 
 
-def _active_proxy_binding(session: Session, account_id: int, proxy_id: int) -> AccountProxyBinding | None:
+def _active_proxy_binding(
+    session: Session,
+    target: EnvironmentTarget,
+    proxy_id: int,
+) -> AccountProxyBinding | None:
     stmt = select(AccountProxyBinding).where(
-        AccountProxyBinding.account_id == account_id,
+        AccountProxyBinding.tenant_id == target.account.tenant_id,
+        AccountProxyBinding.account_id == target.account.id,
+        AccountProxyBinding.developer_app_id == target.authorization.developer_app_id,
+        AccountProxyBinding.authorization_id == target.authorization.id,
+        AccountProxyBinding.session_role == target.authorization.role,
         AccountProxyBinding.proxy_id == proxy_id,
         AccountProxyBinding.status == "active",
         AccountProxyBinding.unbound_at.is_(None),

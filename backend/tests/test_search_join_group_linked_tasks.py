@@ -7,7 +7,19 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import AccountProxy, AccountStatus, Action, SearchJoinLinkedTaskDispatch, Task, TelegramDeveloperApp, Tenant, TgAccount, TgAccountAuthorization
+from app.models import (
+    AccountEnvironmentBinding,
+    AccountProxy,
+    AccountProxyBinding,
+    AccountStatus,
+    Action,
+    SearchJoinLinkedTaskDispatch,
+    Task,
+    TelegramDeveloperApp,
+    Tenant,
+    TgAccount,
+    TgAccountAuthorization,
+)
 from app.security import encrypt_secret
 from app.services._common import _now
 from app.services.task_center import dispatcher
@@ -23,6 +35,7 @@ def session() -> Session:
         db.add(Tenant(id=1, name="默认运营空间"))
         db.add(TelegramDeveloperApp(id=1, app_name="测试应用", api_id=12345, api_hash_ciphertext=encrypt_secret("hash")))
         db.add(AccountProxy(id=31, tenant_id=1, name="节点A", protocol="socks5", host="127.0.0.1", port=1080, status="healthy", alert_status="normal"))
+        db.add(AccountProxyBinding(id=301, tenant_id=1, account_id=101, developer_app_id=1, developer_app_api_id_snapshot=12345, authorization_id=201, session_role="primary", proxy_id=31))
         db.add(
             TgAccount(
                 id=101,
@@ -48,6 +61,24 @@ def session() -> Session:
                 status="active",
                 health_status="healthy",
                 is_current=True,
+            )
+        )
+        db.add(
+            AccountEnvironmentBinding(
+                id="env-201",
+                tenant_id=1,
+                account_id=101,
+                developer_app_id=1,
+                developer_app_api_id_snapshot=12345,
+                authorization_id=201,
+                session_role="primary",
+                proxy_binding_id=301,
+                proxy_id=31,
+                device_model="iPhone 15",
+                system_version="iOS 17.5",
+                app_version="10.14.1",
+                platform="ios",
+                client_identity_key="identity-201",
             )
         )
         db.commit()
@@ -103,6 +134,19 @@ def _persist_task_and_action(session: Session, result: dict | None = None) -> tu
     return task, action
 
 
+def _verified_runtime() -> dict[str, str]:
+    return {
+        "proxy_egress_guard": "verified",
+        "client_metadata_guard": "verified",
+        "developer_app_id": "1",
+        "developer_app_api_id": "12345",
+        "proxy_id": "31",
+        "proxy_binding_id": "301",
+        "environment_binding_id": "env-201",
+        "client_identity_key": "identity-201",
+    }
+
+
 @pytest.mark.no_postgres
 def test_search_join_dispatch_fails_closed_without_gateway_support(session: Session) -> None:
     _task, action = _persist_task_and_action(session)
@@ -116,7 +160,7 @@ def test_search_join_dispatch_fails_closed_without_gateway_support(session: Sess
 @pytest.mark.no_postgres
 def test_search_join_dispatch_calls_gateway_with_session_credentials_and_keyword(monkeypatch, session: Session) -> None:
     _task, action = _persist_task_and_action(session)
-    action.payload = {**action.payload, "runtime_environment": {"proxy_egress_guard": "verified", "client_metadata_guard": "verified"}}
+    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
     calls: list[dict] = []
 
     def execute_search_join(account_id, payload, session_ciphertext, credentials, keyword_text):
@@ -126,6 +170,7 @@ def test_search_join_dispatch_calls_gateway_with_session_credentials_and_keyword
                 "payload": payload,
                 "session_ciphertext": session_ciphertext,
                 "api_id": credentials.api_id,
+                "proxy_id": credentials.proxy_id,
                 "keyword_text": keyword_text,
             }
         )
@@ -141,7 +186,47 @@ def test_search_join_dispatch_calls_gateway_with_session_credentials_and_keyword
     assert calls[0]["payload"]["bot_username"] == "jisou"
     assert calls[0]["session_ciphertext"] == "slot-session-201"
     assert calls[0]["api_id"] == 12345
+    assert calls[0]["proxy_id"] == 31
     assert calls[0]["keyword_text"] == "上海 留学"
+
+
+@pytest.mark.no_postgres
+def test_search_join_dispatch_uses_environment_proxy_not_authorization_proxy(monkeypatch, session: Session) -> None:
+    _task, action = _persist_task_and_action(session)
+    session.add(AccountProxy(id=99, tenant_id=1, name="节点B", protocol="socks5", host="127.0.0.2", port=1099, status="healthy", alert_status="normal"))
+    authorization = session.get(TgAccountAuthorization, 201)
+    authorization.proxy_id = 99
+    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
+    calls: list[int | None] = []
+
+    def execute_search_join(_account_id, _payload, _session_ciphertext, credentials, _keyword_text):
+        calls.append(credentials.proxy_id)
+        return {"success": True, "join_status": "membership_observed", "target_group_id": 17}
+
+    monkeypatch.setattr(dispatcher.gateway, "execute_search_join", execute_search_join, raising=False)
+
+    assert dispatch_action(session, action) is True
+    assert calls == [31]
+
+
+@pytest.mark.no_postgres
+def test_search_join_dispatch_blocks_inactive_environment_proxy_binding(monkeypatch, session: Session) -> None:
+    _task, action = _persist_task_and_action(session)
+    proxy_binding = session.get(AccountProxyBinding, 301)
+    proxy_binding.status = "inactive"
+    action.payload = {**action.payload, "runtime_environment": _verified_runtime()}
+    calls: list[dict] = []
+
+    def execute_search_join(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return {"success": True}
+
+    monkeypatch.setattr(dispatcher.gateway, "execute_search_join", execute_search_join, raising=False)
+
+    assert dispatch_action(session, action) is True
+    assert calls == []
+    assert action.status == "failed"
+    assert action.result["error_code"] == "search_join_proxy_binding_environment_mismatch"
 
 
 @pytest.mark.no_postgres
@@ -166,7 +251,7 @@ def test_search_join_dispatch_creates_linked_records_after_membership_observed(m
     _task, action = _persist_task_and_action(session)
     action.payload = {
         **action.payload,
-        "runtime_environment": {"proxy_egress_guard": "verified", "client_metadata_guard": "verified"},
+        "runtime_environment": _verified_runtime(),
         "linked_task_policy": [{"linked_task_id": "ai-task-1", "cooldown_minutes": 30}],
     }
 
@@ -188,7 +273,7 @@ def test_search_join_dispatch_stops_task_when_target_not_found_after_max_pages(m
     action.payload = {
         **action.payload,
         "max_pages": 70,
-        "runtime_environment": {"proxy_egress_guard": "verified", "client_metadata_guard": "verified"},
+        "runtime_environment": _verified_runtime(),
     }
     pending = _action(task)
     pending.payload = dict(action.payload)

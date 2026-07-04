@@ -87,3 +87,14 @@
 - decision: 本地合同验收通过；不声明生产真实订阅同步或真实 Telegram 远端授权快照已刷新。
 - next_agent: product
 - unresolved: CI / release deploy / 生产健康 / 生产数据迁移和真实配置验证仍 unproven。
+
+## 2026-07-04 授权槽位代理事实源修正本地 QA
+
+- message_id: 2026-07-04-account-proxy-slot-runtime-fix-local-qa-001
+- action: 对 PRD 补洞、授权槽位代理绑定唯一约束、账号面具代理重绑、search_join Dispatcher 双事实源校验做本地自动化验收。
+- input: 2026-07-04-account-proxy-slot-runtime-fix-devcomplete-001；监督子代理指出代理重绑唯一索引冲突和 Dispatcher 未校验 `account_proxy_bindings` 行本身。
+- output: local_qa_pass_for_slot_proxy_runtime_contracts
+- evidence: 定向 39 passed；全量 no_postgres 60s gate 728 passed / 787 deselected；frontend build passed；backend compileall 和 0079 migration py_compile passed；`git diff --check` passed。覆盖点包括同槽位换代理时旧 `AccountProxyBinding` 置 inactive、`0079` 单 head、Dispatcher 不使用 `TgAccountAuthorization.proxy_id` 覆盖环境代理、失效/错槽位 `account_proxy_bindings` fail closed、search_join 实时 pacing/random 不调用 LLM。
+- decision: 本地合同验收通过；不声明生产真实订阅同步、真实出口 IP 观测、远端授权设备已立即改变或真实搜索入群灰度通过。
+- next_agent: prod-diagnosis
+- unresolved: CI / release deploy / 生产健康 / 生产数据迁移和真实配置验证仍 unproven。

@@ -238,12 +238,19 @@ def _apply_binding(
 def _proxy_binding_id(session: Session, binding: AccountEnvironmentBinding, proxy: AccountProxy | None) -> int | None:
     if proxy is None:
         return None
-    existing = _active_proxy_binding(session, binding.account_id, proxy.id)
-    if existing is not None:
-        return existing.id
+    active_bindings = _active_proxy_bindings_for_slot(session, binding)
+    for active in active_bindings:
+        if active.proxy_id == proxy.id:
+            _deactivate_proxy_bindings(active_bindings, keep_id=active.id)
+            return active.id
+    _deactivate_proxy_bindings(active_bindings)
     proxy_binding = AccountProxyBinding(
         tenant_id=binding.tenant_id,
         account_id=binding.account_id,
+        developer_app_id=binding.developer_app_id,
+        developer_app_api_id_snapshot=binding.developer_app_api_id_snapshot,
+        authorization_id=binding.authorization_id,
+        session_role=binding.session_role,
         proxy_id=proxy.id,
         change_reason="account_environment_binding",
         bound_by="account_masks",
@@ -253,14 +260,28 @@ def _proxy_binding_id(session: Session, binding: AccountEnvironmentBinding, prox
     return proxy_binding.id
 
 
-def _active_proxy_binding(session: Session, account_id: int, proxy_id: int) -> AccountProxyBinding | None:
+def _active_proxy_bindings_for_slot(
+    session: Session,
+    binding: AccountEnvironmentBinding,
+) -> list[AccountProxyBinding]:
     stmt = select(AccountProxyBinding).where(
-        AccountProxyBinding.account_id == account_id,
-        AccountProxyBinding.proxy_id == proxy_id,
+        AccountProxyBinding.tenant_id == binding.tenant_id,
+        AccountProxyBinding.account_id == binding.account_id,
+        AccountProxyBinding.developer_app_id == binding.developer_app_id,
+        AccountProxyBinding.authorization_id == binding.authorization_id,
+        AccountProxyBinding.session_role == binding.session_role,
         AccountProxyBinding.status == "active",
         AccountProxyBinding.unbound_at.is_(None),
     )
-    return session.scalar(stmt.order_by(AccountProxyBinding.id.desc()).limit(1))
+    return list(session.scalars(stmt.order_by(AccountProxyBinding.id.desc())).all())
+
+
+def _deactivate_proxy_bindings(bindings: list[AccountProxyBinding], *, keep_id: int | None = None) -> None:
+    for binding in bindings:
+        if keep_id is not None and binding.id == keep_id:
+            continue
+        binding.status = "inactive"
+        binding.unbound_at = _now()
 
 
 def _record_combo(session: Session, binding: AccountEnvironmentBinding) -> None:

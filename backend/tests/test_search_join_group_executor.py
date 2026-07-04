@@ -11,6 +11,7 @@ from app.database import Base
 from app.models import (
     AccountEnvironmentBinding,
     AccountProxy,
+    AccountProxyBinding,
     AccountStatus,
     Action,
     BotProtocolSample,
@@ -142,6 +143,12 @@ def test_search_join_planner_creates_hash_only_search_join_actions(session: Sess
     assert all(action.payload["client_metadata"]["device_model"] for action in actions)
     assert all(action.payload["client_metadata"]["app_version"] for action in actions)
     assert session.query(AccountEnvironmentBinding).count() == 2
+    action_authorizations = {action.account_id: action.payload["authorization_id"] for action in actions}
+    proxy_bindings = session.query(AccountProxyBinding).order_by(AccountProxyBinding.account_id).all()
+    assert [(row.account_id, row.developer_app_id, row.authorization_id, row.session_role) for row in proxy_bindings] == [
+        (101, 51, action_authorizations[101], "primary"),
+        (102, 51, action_authorizations[102], "primary"),
+    ]
     assert session.query(FingerprintComboHistory).count() == 2
 
 
@@ -161,7 +168,7 @@ def test_search_join_planner_marks_verified_proxy_guard(session: Session) -> Non
 
 
 @pytest.mark.no_postgres
-def test_search_join_environment_keeps_fingerprint_and_syncs_proxy_rebind(session: Session) -> None:
+def test_search_join_environment_keeps_fingerprint_and_slot_proxy_when_authorization_proxy_changes(session: Session) -> None:
     _bind_search_join_environment(session, [101])
     task = _task(type_config={"actions_per_round": 1, "hourly_min_successful_joins": 1})
     session.add(task)
@@ -187,8 +194,8 @@ def test_search_join_environment_keeps_fingerprint_and_syncs_proxy_rebind(sessio
     assert binding.client_identity_key == original_identity
     assert binding.developer_app_id == 51
     assert binding.developer_app_api_id_snapshot == 2040
-    assert binding.proxy_id == 99
-    assert action.payload["runtime_environment"]["proxy_id"] == "99"
+    assert binding.proxy_id == 31
+    assert action.payload["runtime_environment"]["proxy_id"] == "31"
     assert action.payload["client_metadata"]["client_identity_key"] == original_identity
 
 

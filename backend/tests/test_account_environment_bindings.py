@@ -206,4 +206,94 @@ def test_patch_account_environment_binding_persists_app_scoped_fingerprint() -> 
     assert saved.developer_app_id == 11
     assert saved.client_identity_key == "manual-client-1"
     assert saved.proxy_binding_id is not None
-    assert session.query(AccountProxyBinding).count() == 1
+    proxy_binding = session.query(AccountProxyBinding).one()
+    assert proxy_binding.developer_app_id == 11
+    assert proxy_binding.developer_app_api_id_snapshot == 10011
+    assert proxy_binding.authorization_id == 201
+    assert proxy_binding.session_role == "primary"
+
+
+def test_patch_account_environment_binding_rebinds_proxy_without_active_slot_conflict() -> None:
+    with _session() as session:
+        _seed_environment(session)
+        session.add(AccountProxy(id=32, tenant_id=1, name="节点B", protocol="socks5", host="127.0.0.2", port=1081, status="healthy", alert_status="normal"))
+        for proxy_id in (31, 32):
+            patch_account_environment_binding(
+                session,
+                tenant_id=1,
+                account_id=101,
+                payload=AccountEnvironmentBindingPatch(
+                    developer_app_id=11,
+                    authorization_id=201,
+                    session_role="primary",
+                    proxy_id=proxy_id,
+                    device_model="iPhone 15 Pro",
+                    system_version="iOS 17.5",
+                    app_version="10.14.1",
+                    platform="ios",
+                    lang_code="zh",
+                    system_lang_code="zh-CN",
+                    lang_pack="",
+                    region_code="CN",
+                    client_identity_key="manual-client-1",
+                ),
+                actor="tester",
+            )
+        session.commit()
+
+        binding = session.query(AccountEnvironmentBinding).one()
+        proxy_bindings = session.query(AccountProxyBinding).order_by(AccountProxyBinding.id).all()
+
+    assert binding.proxy_id == 32
+    assert [row.proxy_id for row in proxy_bindings] == [31, 32]
+    assert proxy_bindings[0].status == "inactive"
+    assert proxy_bindings[0].unbound_at is not None
+    assert proxy_bindings[1].status == "active"
+    assert proxy_bindings[1].unbound_at is None
+
+
+def test_account_environment_proxy_binding_is_authorization_slot_scoped() -> None:
+    with _session() as session:
+        _seed_environment(session)
+        session.add(
+            TgAccountAuthorization(
+                id=202,
+                tenant_id=1,
+                account_id=101,
+                role="standby_1",
+                developer_app_id=11,
+                developer_app_api_id_snapshot=10011,
+                proxy_id=31,
+                session_ciphertext="enc-session-standby",
+                status="standby",
+            )
+        )
+        session.commit()
+
+        for auth_id, role, identity in [(201, "primary", "manual-client-1"), (202, "standby_1", "manual-client-2")]:
+            patch_account_environment_binding(
+                session,
+                tenant_id=1,
+                account_id=101,
+                payload=AccountEnvironmentBindingPatch(
+                    developer_app_id=11,
+                    authorization_id=auth_id,
+                    session_role=role,
+                    proxy_id=31,
+                    device_model=f"iPhone {auth_id}",
+                    system_version="iOS 17.5",
+                    app_version="10.14.1",
+                    platform="ios",
+                    lang_code="zh",
+                    system_lang_code="zh-CN",
+                    lang_pack="",
+                    region_code="CN",
+                    client_identity_key=identity,
+                ),
+                actor="tester",
+            )
+        session.commit()
+
+        bindings = session.query(AccountProxyBinding).order_by(AccountProxyBinding.authorization_id).all()
+
+    assert [(row.authorization_id, row.session_role, row.proxy_id) for row in bindings] == [(201, "primary", 31), (202, "standby_1", 31)]

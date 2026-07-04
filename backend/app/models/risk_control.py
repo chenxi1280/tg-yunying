@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -44,10 +44,27 @@ class AccountProxy(Base):
 
 class AccountProxyBinding(Base):
     __tablename__ = "account_proxy_bindings"
+    __table_args__ = (
+        Index(
+            "uq_account_proxy_binding_active_slot",
+            "tenant_id",
+            "account_id",
+            "developer_app_id",
+            "authorization_id",
+            "session_role",
+            unique=True,
+            sqlite_where=text("status = 'active' AND unbound_at IS NULL AND developer_app_id IS NOT NULL AND authorization_id IS NOT NULL AND session_role != ''"),
+            postgresql_where=text("status = 'active' AND unbound_at IS NULL AND developer_app_id IS NOT NULL AND authorization_id IS NOT NULL AND session_role != ''"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), default=1)
     account_id: Mapped[int] = mapped_column(ForeignKey("tg_accounts.id"))
+    developer_app_id: Mapped[int | None] = mapped_column(ForeignKey("telegram_developer_apps.id"), nullable=True)
+    developer_app_api_id_snapshot: Mapped[int] = mapped_column(Integer, default=0)
+    authorization_id: Mapped[int | None] = mapped_column(ForeignKey("tg_account_authorizations.id"), nullable=True)
+    session_role: Mapped[str] = mapped_column(String(24), default="")
     proxy_id: Mapped[int | None] = mapped_column(ForeignKey("account_proxies.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="active")
     change_reason: Mapped[str] = mapped_column(String(255), default="")

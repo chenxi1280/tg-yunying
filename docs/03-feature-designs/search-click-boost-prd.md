@@ -15,7 +15,7 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
 关键限制：
 
 - 目标机器人和 Telegram 平台都可能对脚本化、同步化、异常高频行为触发限制。
-- 代理 IP、设备指纹、账号画像、节奏和 decoy 关键词是任务能否灰度运行的硬前置，不是可选增强项。
+- 授权槽位级代理出口、授权槽位级客户端元数据、账号画像、节奏和 decoy 关键词是任务能否灰度运行的硬前置，不是可选增强项；同一 Telegram 账号在不同 TG 开发者应用、不同 session key 和主 / 备用授权槽位下可以绑定不同代理和不同客户端元数据，但每个授权槽位一旦绑定必须长期固定并可审计。
 - 首版必须先完成真实样本采集门槛：目标机器人回复结构、button payload、分页行为、失败消息、Clash 节点真实出口 IP 都要有样本证据，不能仅按推测协议开发。
 - 本 PRD 中的“iOS / Android 设备指纹”主要用于让搜索、翻页、button callback / URL resolve 等 Telegram 协议动作在 Telegram / 目标机器人链路上呈现为稳定、完整、移动端风格的客户端画像。它指 Telegram MTProto `initConnection` 客户端元数据，不等价于真实原生 iOS / Android 客户端；不得把元数据伪装描述成真机能力。
 - 本 PRD 只定义产品、数据流转、执行和验收口径；不把本地设计完成声明为生产可用。
@@ -25,7 +25,7 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
 - 新增任务类型 `search_join_group`，用户可见名称为“搜索目标群点击任务”，支持通过第三方索引机器人执行关键词搜索、翻页、匹配目标群、button callback / Telegram 内部 URL resolve、加入或已加入确认、停留、后续策略和结果记录。
 - 任务中心完整承载搜索目标群点击任务的创建、预检、启动、Action 流水、任务详情、失败事实和运行汇总。
 - 风控中心承载代理、客户端元数据、账号环境栈、搜索机器人异常和 search_join 专属告警。
-- 账号环境栈采用 `account_id + authorization_id/session_role + proxy_node_binding_id + client_metadata` 授权槽位镜像绑定；主授权和备用授权都必须拥有不同代理节点与不同完整 MTProto 客户端元数据，Planner 和 Executor 双重硬校验，缺失即跳过或阻断。
+- 账号环境栈采用授权槽位级镜像绑定：代理节点、客户端元数据、API ID 和 session 都按 `account_id + developer_app_id/api_id + authorization_id/session_role` 绑定；Planner 和 Executor 双重硬校验，缺失、复用或观测冲突即跳过或阻断。
 - 搜索入群支持类似 AI 活跃群的小时执行量模型：按租户时区自然小时统计 `search_join` 成功数、未来待执行数、过期待执行数和缺口，使用 24 小时曲线、每轮 action 上限和每小时硬上限调度，但统计指标是搜索入群 action，不是发言消息。
 - 搜索入群成功后支持和 AI 活跃群、转发监听、后续频道互动等任务联动：先写入加入事实和留存观察，再按任务链接、账号冷却、可发言复检和新成员占比限制，把账号动态追加到后续任务 ready pool。
 - 机场订阅全部节点不可用时必须通过已配置的租户 Telegram Bot 向全部管理员 Chat ID 推送告警；Bot 未配置时仍要写告警和审计，不得把通知失败当作可继续执行的理由。
@@ -69,7 +69,7 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
   "proxy_policy": {
     "required": true,
     "allowed_proxy_types": ["residential_static", "mobile_4g"],
-    "country_match_account_region": true
+    "country_match_account_region": false
   }
 }
 ```
@@ -99,7 +99,9 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
 3. 目标群，任务创建时引用 `OperationTarget`。
 4. 搜索机器人，任务创建时选择并写入 `type_config.search_bots`。
 
-环境栈为授权槽位级四元组：`(account_id, authorization_id/session_role, proxy_node_binding_id, client_metadata fields on account_environment_bindings)`。`authorization_id` 引用 `tg_account_authorizations.id`，`session_role` 对应 `primary / standby_1 / standby_2`。主授权和备用授权不能复用同一客户端元数据、同一 `client_identity_key` 或同一代理节点；调度层和 Executor 都必须校验，任一缺失不得进入主执行。
+环境栈为授权槽位级五元组：`(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id, client_metadata fields on account_environment_bindings)`。`authorization_id` 引用 `tg_account_authorizations.id`，`session_role` 对应 `primary / standby_1 / standby_2`。主授权和备用授权不能复用同一客户端元数据、同一 `client_identity_key` 或同一代理节点；不同 TG 开发者应用和不同授权槽位可以拥有不同代理和客户端元数据。
+
+任一绑定缺失、冲突或观测不一致，都不得进入主执行。
 
 ### 4.4 Action 状态机
 
@@ -114,8 +116,9 @@ tg-yunying 当前任务中心已支持 5 类主任务：`group_ai_chat`、`group
 |`main`|主任务阶段，正常执行（默认值）|success / failed|—|
 |`warmup`|账号处于 warmup 期，只允许低强度 decoy 搜索|success（仅 decoy）/ skipped|`in_warmup_period`|
 |`needs_proxy`|账号未绑代理，action 跳过|skipped|`missing_proxy_binding`|
+|`authorization_proxy_conflict`|同账号主/备用授权复用同一代理节点、同一授权槽位存在多个 active 代理，或 observed exit IP 与绑定不一致|skipped|`authorization_proxy_conflict`|
 |`needs_client_metadata`|账号未绑客户端元数据，action 跳过|skipped|`missing_client_metadata`|
-|`proxy_dead`|账号绑定的代理 IP 健康分 < 60，action 跳过|skipped|`proxy_reputation_below_threshold`|
+|`proxy_dead`|授权槽位绑定的代理 IP 健康分 < 60，action 跳过|skipped|`proxy_reputation_below_threshold`|
 |`client_metadata_invalid`|客户端元数据异常或与授权资产不一致，action 跳过|skipped|`client_metadata_anomaly`|
 |`api_id_client_metadata_mismatch`|授权槽位登录 API ID / session / 运行时 API ID / 客户端元数据组合不一致|skipped|`api_id_client_metadata_mismatch`|
 |`proxy_egress_guard_failed`|MTProto 连接未证明走绑定代理或出现直连风险，action 跳过|skipped|`proxy_egress_guard_failed`|
@@ -136,7 +139,7 @@ pending -> claiming -> executing -> success / failed / skipped
 | 防御层 | 触发难度 | 影响权重 | 本 PRD 方案 |
 | --- | --- | --- | --- |
 | 客户端元数据层 | 低 | 高 | iOS 优先，授权槽位级运行时生成，主/备授权独立镜像绑定 |
-| IP 层 | 中 | 极高 | 独享静态住宅首版必填，授权槽位-代理节点长期绑定 |
+| IP 层 | 中 | 极高 | 独享静态住宅或健康 `airport_clash` 节点首版必填，按授权槽位长期绑定唯一固定代理节点 |
 | 账号画像层 | 中 | 中 | 注册满 30 天、资料完整、已有自然群组和联系人 |
 | 行为层 | 中 | 高 | 真人化随机延迟、翻页回退、停留、入群后留存和转化率控制 |
 | 数据层 | 中 | 中 | decoy 关键词、关键词权重、入群转化率和目标排名轨迹可观测 |
@@ -163,11 +166,11 @@ pending -> claiming -> executing -> success / failed / skipped
 | --- | --- | --- | --- |
 | `callback_data` inline button | 目标机器人收到 Telegram callback query / bot 响应链路，不直接看到浏览器 UA | 让 Telegram 协议层的用户客户端画像更像稳定移动端，而不是 Telethon 默认 Desktop | Telegram 侧连接出口稳定，降低账号 / session / IP 组合异常 |
 | `t.me` / Telegram 内部 URL | Telegram 侧执行 username / invite / peer resolve 和加入动作 | 同上，影响 MTProto 会话画像 | 同上 |
-| 外部 HTTP URL | 外部网站看到的是 HTTP 请求 IP、User-Agent、Header、Cookie 等；MTProto `initConnection` 元数据不会自动变成 HTTP UA | 不足以让外部 HTTP 请求看起来像 iOS Safari / Telegram iOS WebView | 必须使用同一授权槽位绑定代理出口；如需真实 HTTP 打开，要另加 mobile webview / browser profile 设计 |
+| 外部 HTTP URL | 外部网站看到的是 HTTP 请求 IP、User-Agent、Header、Cookie 等；MTProto `initConnection` 元数据不会自动变成 HTTP UA | 不足以让外部 HTTP 请求看起来像 iOS Safari / Telegram iOS WebView | 必须使用发起该操作的同一授权槽位绑定代理出口；如需真实 HTTP 打开，要另加 mobile webview / browser profile 设计 |
 
 因此，首版“点击按钮正常化”的目标是：Telegram 协议链路上使用稳定的账号、session、API ID、iOS 风格客户端元数据、绑定代理出口和节奏组合；目标机器人可观察到的是 callback / 消息 / 加入行为和 Telegram 传递给机器人的有限上下文，不应假设目标机器人能直接读取 `device_model`、`system_version` 或完整客户端指纹。若某个按钮跳到非 Telegram 外部网站，首版不得默认打开；必须标记为 `external_url_requires_web_profile`，等待单独的 WebView / 浏览器画像设计。
 
-“正常地址”首先指网络出口正常：所有搜索、翻页、callback、Telegram 内部 URL resolve 和 join 请求必须走该授权槽位绑定代理，不能在代理失败时回退本机直连。Executor 每次真实 action 前必须完成 `proxy_egress_guard`：通过绑定代理探测 `observed_exit_ip`，确认与 `tg_account_proxy_bindings` / `proxy_exit_ip_observations` 一致；如果代理连接失败、DNS / TCP 直连、出口 IP 漂移或探测不可用，action 必须 `skipped` 并写 `proxy_egress_guard_failed`，不得继续点击按钮。
+“正常地址”首先指网络出口正常：所有搜索、翻页、callback、Telegram 内部 URL resolve 和 join 请求必须走该授权槽位绑定代理，不能在代理失败时回退本机直连。Executor 每次真实 action 前必须完成 `proxy_egress_guard`：通过授权槽位绑定代理探测 `observed_exit_ip`，确认与 `account_proxy_bindings` / `proxy_exit_ip_observations` 一致；如果代理连接失败、DNS / TCP 直连、出口 IP 漂移或探测不可用，action 必须 `skipped` 并写 `proxy_egress_guard_failed` 或 `authorization_proxy_exit_ip_mismatch`，不得继续点击按钮。
 
 未来如需真实手机 UI 自动化，必须另建 `mobile_device_automation` 专项设计，覆盖真机设备、系统权限、画面识别、触摸事件、设备农场和更高成本验收；不能在本任务中混用两种执行模式。
 
@@ -268,7 +271,7 @@ pending -> claiming -> executing -> success / failed / skipped
 
 ### 6.3 机场 Clash 自动代理池
 
-“机场”能力作为 `ProxyProvider` 的一种实现：`proxy_provider="airport_clash"`。系统设置提供“Clash 配置”Tab，只保存一个全局 Clash 订阅地址 / 接口配置（加密字段），定时拉取并自动识别订阅格式，把可用节点标准化为代理节点。系统设置不负责单账号代理分配；单账号代理绑定在“账号面具”一级菜单的“账号代理”Tab 完成，按 `account_id + developer_app_id/api_id + authorization_role` 选择并固定节点。订阅输入必须同时支持：
+“机场”能力作为 `ProxyProvider` 的一种实现：`proxy_provider="airport_clash"`。系统设置提供“Clash 配置”Tab，只保存一个全局 Clash 订阅地址 / 接口配置（加密字段），定时拉取并自动识别订阅格式，把可用节点标准化为代理节点。系统设置不负责授权槽位代理分配；账号的授权槽位代理绑定在“账号面具”一级菜单的“账号代理”Tab 完成，按 `account_id + developer_app_id/api_id + authorization_id/session_role` 选择并固定节点。订阅输入必须同时支持：
 
 - Base64 URI 列表：例如订阅返回体是单行 Base64，解码后每行是 `anytls://`、`trojan://`、`ss://`、`vmess://` 等节点 URI；套餐到期、剩余流量等伪节点必须过滤。
 - Clash YAML：包含 `proxies` / `proxy-groups` 的标准 Clash 配置。
@@ -280,19 +283,19 @@ pending -> claiming -> executing -> success / failed / skipped
 
 1. `clash_subscription_url` 必须加密存储，日志、审计摘要和前端列表只展示脱敏名称，不输出完整 URL。
 2. 同一订阅下解析出的节点必须落入 `proxy_airport_nodes`，记录 `node_id`、节点名称、协议、host、port、country、region、asn、isp、健康状态和最近测速结果。
-3. 账号授权槽位首次启用搜索入群时，从可用节点中随机选取一个符合 region / ISP / 健康阈值的节点，写入 `tg_account_proxy_bindings`；绑定后长期固定，不随每次 action 轮换。
+3. 账号授权槽位首次启用搜索入群时，从可用节点中随机选取一个符合 region / ISP / 健康阈值的节点，按 `account_id + developer_app_id/api_id + authorization_id/session_role` 写入 active `account_proxy_bindings`；绑定后长期固定，不随每次 action 轮换。
 4. 同一账号的 `primary / standby_1 / standby_2` 必须分配不同节点；同一节点绑定授权槽位数不得超过配置阈值。系统必须支持全局默认容量 `max_authorizations_per_node_default` 和单节点覆盖 `node_capacity_override`，首版建议默认 `1`。
 5. Clash 节点的 `proxy_host` 只是入口，不等于真实出口 IP；每次健康检查必须通过外部探测记录 `observed_exit_ip`、出口国家、ASN、ISP 和稳定性。
 
 配置入口与权限：
 
-- 系统设置 / Clash 配置：保存全局订阅地址、测试连通性、同步节点、展示最近同步时间、节点总数、健康节点数和失败原因；需要 `system.manage`。
-- 账号面具 / 账号代理：按账号、TG 开发者应用 `api_id/api_hash`、授权槽位绑定代理节点；需要 `account_environment.manage`。
+- 系统设置 / Clash 配置：读取全局订阅脱敏状态需要 `system.view`；保存全局订阅地址、测试连通性、同步节点、展示最近同步时间、节点总数、健康节点数和失败原因需要 `system.manage`。
+- 账号面具 / 账号代理：按 `account_id + developer_app_id/api_id + authorization_id/session_role` 绑定代理节点，展示每个授权槽位的绑定节点、真实出口 IP、健康状态、warmup 状态和最近故障切换；需要 `account_environment.manage`。
 - 普通日志、任务 stats、前端非敏感字段不得输出订阅完整 URL、节点密码、token 或 URI 原文。
 6. 节点健康分低于阈值、订阅失效、节点消失、真实出口 IP 漂移过大或 IP 类型不符时，必须显式暂停对应授权槽位的搜索入群动作并告警，不做静默 fallback。
-7. 当前绑定节点连接失败、TCP / TLS 不通、代理认证失败或 `proxy_egress_guard` 无法证明出口时，允许自动执行 `switch_to_next_healthy_node`：只在同一订阅、同一容量约束、同账号不复用节点约束下选择下一个健康节点，写入 `proxy_node_failover_events`，并让新 `(account_id, authorization_id, proxy_binding_id)` 重新进入 warmup。
+7. 当前绑定节点连接失败、TCP / TLS 不通、代理认证失败或 `proxy_egress_guard` 无法证明出口时，允许自动执行 `switch_to_next_healthy_node`：只在同一订阅、节点授权槽位容量未超限、出口 IP 可观测的约束下为当前授权槽位选择下一个健康节点，写入 `proxy_node_failover_events`，并让新 `(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id)` 重新进入 warmup。
 8. 自动故障切换不是每次 action 轮换。正常情况下授权槽位长期固定节点；只有明确的 `proxy_node_unreachable`、`proxy_reputation_below_threshold`、`exit_ip_changed`、`node_removed_from_subscription` 事件才能触发换节点。
-9. 如果订阅下没有任何候选节点通过连通性、容量、出口 IP 和同账号去重校验，Executor 必须返回 `skipped` + `airport_all_nodes_unavailable`，不发送搜索、不点击按钮、不 join，也不回退本机直连。
+9. 如果订阅下没有任何候选节点通过连通性、容量和出口 IP 校验，Executor 必须返回 `skipped` + `airport_all_nodes_unavailable`，不发送搜索、不点击按钮、不 join，也不回退本机直连。
 10. `airport_all_nodes_unavailable` 必须触发租户 Bot 管理员通知：复用 `Tenant.admin_chat_id` 的多管理员 Chat ID 和已配置的 Bot Token，通过 Telegram Bot `sendMessage` 广播到所有管理员；通知内容只包含任务名、订阅脱敏名、受影响账号/授权槽位数量、最近失败摘要和处理入口，不包含订阅 URL、token、节点密码或关键词明文。
 
 机场订阅与节点模型：
@@ -350,17 +353,17 @@ class ProxyAirportNode(Base):
 
 ### 6.4 数据库模型
 ```python
- class TgAccountProxyBinding(Base): __tablename__ = "tg_account_proxy_bindings" id: int account_id: int authorization_id: int session_role: str # primary / standby_1 / standby_2 proxy_id: str # 供应商侧代理 ID 或 proxy_airport_nodes.node_id proxy_provider: str # "ipfly" / "bright_data" / "custom" / "airport_clash" proxy_type: str # residential_static / residential_rotating / mobile_4g proxy_host: str # IP 或域名 proxy_port: int proxy_username: str
+ class AccountProxyBinding(Base): __tablename__ = "account_proxy_bindings" id: int account_id: int developer_app_id: int developer_app_api_id_snapshot: int authorization_id: int session_role: str # primary / standby_1 / standby_2 proxy_id: str # 供应商侧代理 ID 或 proxy_airport_nodes.node_id proxy_provider: str # "ipfly" / "bright_data" / "custom" / "airport_clash" proxy_type: str # residential_static / residential_rotating / mobile_4g proxy_host: str # IP 或域名 proxy_port: int proxy_username: str
 
 None # SOCKS5 鉴权 proxy_password: str|None # 加密存储 proxy_country: str # "US" / "DE" / "SG" / "JP" ... proxy_region: str|None proxy_city: str|None proxy_isp: str|None proxy_asn: str|None bound_at: datetime # 绑定时间 last_used_at: datetime|None last_health_check_at: datetime|None ip_reputation_score: float # IP 健康分 0-100 reputation_check_json: dict # 最近一次信誉检查的详细数据 is_active: bool notes: str|
 |
  None created_at: datetime updated_at: datetime
 ```
- 约束：- `(account_id, authorization_id)` UNIQUE（一授权槽位一代理） - `(account_id, session_role)` UNIQUE - 同一账号不同槽位不得复用 `(proxy_host, proxy_port)` - `ip_reputation_score < 60` 时自动 `is_active=False` - `last_health_check_at` 距今 > 24h 时定时任务重测 #
+ 约束：- active 代理绑定唯一键为 `(account_id, developer_app_id/api_id, authorization_id/session_role)` - 同一账号不同 TG 开发者应用、主授权和备用授权槽位可以拥有不同 active 绑定 - 同一授权槽位不允许同时存在多个 active `proxy_host:proxy_port` 或多个 observed exit IP - `ip_reputation_score < 60` 时自动 `is_active=False` 并暂停该授权槽位相关动作 - `last_health_check_at` 距今 > 24h 时定时任务重测 #
 
-### 6.5 账号-IP 绑定策略 **绑定而非轮换**是本任务的核心原则。真人不会每天换 IP 登录账号。- 账号注册时的 IP = 养号 IP = 任务 IP，三者保持一致 - 主/备用授权槽位各自固定一个不同代理节点 - `airport_clash` 必须以 `observed_exit_ip` 作为风控事实源，不以节点入口 host 作为出口事实 - 所有 MTProto 连接必须显式走授权槽位绑定代理，代理不可用时 fail closed，不允许回退本机直连 - 当前机场节点完全不通时只能按 `switch_to_next_healthy_node` 切换到下一个健康节点；全订阅节点都不通时必须 `airport_all_nodes_unavailable` 并停止真实操作 - 同一出口 IP 至少稳定 30 天后才允许跑入群任务 - 同一 `/24` 子网最多绑 3 个账号 - 同一 ASN 最多绑 5 个账号
+### 6.5 账号-IP 绑定策略 **绑定而非轮换**是本任务的核心原则。真人不会每天换 IP 登录账号。- 账号注册时的 IP、养号 IP、任务 IP 要尽量保持连续，实际以授权槽位 `observed_exit_ip` 为风控事实源 - 代理绑定粒度为 `account_id + developer_app_id/api_id + authorization_id/session_role`，同一账号在不同 TG 开发者应用、不同 session key 和主 / 备用授权槽位下可以绑定不同节点，但每个授权槽位必须固定 - `airport_clash` 必须以 `observed_exit_ip` 作为风控事实源，不以节点入口 host 作为出口事实 - 所有 MTProto 连接必须显式走授权槽位绑定代理，代理不可用时 fail closed，不允许回退本机直连 - 当前机场节点完全不通时只能按 `switch_to_next_healthy_node` 为该授权槽位切换到下一个健康节点，且切换后该 `(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id)` 重新进入 warmup；全订阅节点都不通时必须 `airport_all_nodes_unavailable` 并停止真实操作 - 同一出口 IP 至少稳定 30 天后才允许跑入群任务 - 同一 `/24` 子网最多绑 3 个账号 - 同一 ASN 最多绑 5 个账号
 ```python
- class ProxyPolicy(BaseModel): required: bool = True allowed_proxy_types: list[Literal["residential_static", "mobile_4g", "airport_clash"]] = ["residential_static", "airport_clash"] proxy_egress_guard_required: bool = True allow_direct_egress_fallback: bool = False country_match_account_region: bool = False # 由关键词允许矩阵控制，不再强制三者硬相等 min_ip_reputation_score: float = 70.0 min_exit_ip_stability_score: float = 80.0 min_binding_age_days: int = 30 max_authorizations_per_node_default: int = 1 node_capacity_overrides: dict[str, int] = {} node_failover_policy: Literal["switch_to_next_healthy_node", "pause_only"] = "switch_to_next_healthy_node" all_nodes_down_policy: Literal["pause_task", "skip_action"] = "pause_task" max_accounts_per_asn: int = 5 max_accounts_per_ip_cidr_24: int = 3 max_daily_requests_per_ip: int = 50 max_weekly_requests_per_ip: int = 200
+ class ProxyPolicy(BaseModel): required: bool = True allowed_proxy_types: list[Literal["residential_static", "mobile_4g", "airport_clash"]] = ["residential_static", "airport_clash"] proxy_egress_guard_required: bool = True allow_direct_egress_fallback: bool = False enforce_unique_proxy_per_authorization: bool = True country_match_account_region: bool = False # 由关键词允许矩阵控制，不再强制三者硬相等 min_ip_reputation_score: float = 70.0 min_exit_ip_stability_score: float = 80.0 min_binding_age_days: int = 30 max_authorizations_per_node_default: int = 1 node_capacity_overrides: dict[str, int] = {} node_failover_policy: Literal["switch_to_next_healthy_node", "pause_only"] = "switch_to_next_healthy_node" all_nodes_down_policy: Literal["pause_task", "skip_action"] = "pause_task" max_accounts_per_asn: int = 5 max_accounts_per_ip_cidr_24: int = 3 max_daily_requests_per_ip: int = 50 max_weekly_requests_per_ip: int = 200
 ```
  #
 
@@ -428,7 +431,7 @@ Telethon 客户端在 `initConnection` 协议中暴露的字段：
 |KR|iOS / Android|`ko`|`ko`|ios / android|
 |DE|iOS / Android|`de`|`de`|ios / android|
 |
- **一致性校验**：账号 region_code → 设备 lang_code → IP country 三者必须一致；不一致时 executor 拒绝执行。##
+ **一致性校验**：账号 region_code、设备语言和代理出口国家必须进入同一套关键词允许矩阵和风险评分。默认不要求三者硬相等；当矩阵明确不允许、出口 IP 与任务区域冲突、或 `country_match_account_region=true` 的任务显式要求强一致时，Executor 才拒绝执行并写入 `region_proxy_language_mismatch`。##
 
 #### 7.3.4 同组合上限（避免同质化）
 
@@ -444,7 +447,7 @@ Telethon 客户端在 `initConnection` 协议中暴露的字段：
 
 #### 7.4.1 数据模型（合并指纹字段到 binding 表）
 ```python
- class AccountEnvironmentBinding(Base): """授权槽位环境绑定（设备指纹 = 授权槽位客户端身份镜像）""" __tablename__ = "account_environment_bindings" id: int account_id: int authorization_id: int session_role: str # primary / standby_1 / standby_2 proxy_binding_id: int # ↓ 设备指纹字段直接持久化到 binding 表（不依赖外键） device_model: str # "iPhone 15 Pro" system_version: str # "iOS 17.5.1" app_version: str # "10.6.2" platform: str # "ios" / "android" lang_code: str # "zh-hans" system_lang_code: str # "zh-hans" lang_pack: str # "ios" region_code: str # "CN" / "US" / "JP" ... client_identity_key: str # account_id + authorization_id + platform + model + version hash，用于去重和审计 # 镜像冻结标记：true 后任何代码都不能更换 device_* 字段 fingerprint_locked: bool = True # 区域一致性校验 region_consistency_checked: bool region_consistency_errors: list[str]
+ class AccountEnvironmentBinding(Base): """授权槽位环境绑定（代理 + 设备指纹 = 授权槽位客户端身份镜像）""" __tablename__ = "account_environment_bindings" id: int account_id: int developer_app_id: int developer_app_api_id_snapshot: int authorization_id: int session_role: str # primary / standby_1 / standby_2 proxy_binding_id: int # 引用该授权槽位 active 代理绑定 # ↓ 设备指纹字段直接持久化到 binding 表（不依赖外键） device_model: str # "iPhone 15 Pro" system_version: str # "iOS 17.5.1" app_version: str # "10.6.2" platform: str # "ios" / "android" lang_code: str # "zh-hans" system_lang_code: str # "zh-hans" lang_pack: str # "ios" region_code: str # "CN" / "US" / "JP" ... client_identity_key: str # account_id + developer_app_id + authorization_id + platform + model + version hash，用于去重和审计 # 镜像冻结标记：true 后任何代码都不能更换 device_* 字段 fingerprint_locked: bool = True # 区域一致性校验 region_consistency_checked: bool region_consistency_errors: list[str]
 
 None bound_at: datetime # 首次绑定时间（永久不变） last_used_at: datetime|None health_score: float notes: str|
 |
@@ -452,7 +455,7 @@ None bound_at: datetime # 首次绑定时间（永久不变） last_used_at: dat
 ```
  ##
 
-#### 7.4.2 镜像绑定规则 1. **首次绑定时机**：账号授权槽位首次创建任务时（手动触发或导入触发），按 §7.3 运行时算法生成一个指纹组合，写入 binding 表。`fingerprint_locked=true`。2. **主/备独立**：同一账号的 `primary / standby_1 / standby_2` 都必须绑定不同 `client_identity_key`、不同 `device_model + system_version + app_version` 组合和不同 `proxy_binding_id`；不能为了省资源让备用 session 复用主账号指纹。3. **完整指纹字段必填**：`platform/device_model/system_version/app_version/lang_code/system_lang_code/lang_pack/region_code/client_identity_key` 全部必填，缺任一字段即 `fingerprint_invalid`。4. **永久不变**：绑定的 device_* 字段在授权槽位生命周期内不切换：- 跨任务（该授权槽位同时跑 search_join_group 和其他任务）→ **同一指纹** - 换 IP（IP 健康分 < 60 换新 IP）→ **同一指纹**，IP 重新绑定即可 - 跨租户（理论上不应该，但万一）→ **同一指纹** - **会话重连 / session 恢复** → **同一指纹**（Telethon session 文件不含 device_fingerprint，但 initConnection 时每次都重新发送） 5. **解绑需要运营手动操作**：必须通过风控中心的 `unbind_environment` 接口，且写入审计日志。**调度层和 Executor 都不允许自动解绑**。6. **同组合查重**：调度层在绑定前查 `account_environment_bindings` 表，按 (device_model + system_version + app_version) 组合查询现有账号数，超过 §7.3.4 阈值则换组合。##
+#### 7.4.2 镜像绑定规则 1. **首次绑定时机**：账号授权槽位首次创建任务时（手动触发或导入触发），按 §7.3 运行时算法生成一个指纹组合，并按 §6 绑定代理节点，写入 binding 表。`fingerprint_locked=true`。2. **主/备客户端和代理都独立**：同一账号的 `primary / standby_1 / standby_2` 都必须绑定不同 `client_identity_key`、不同 `device_model + system_version + app_version` 组合和不同代理节点；不能为了省资源让备用 session 复用主账号指纹或代理出口。3. **完整指纹字段必填**：`platform/device_model/system_version/app_version/lang_code/system_lang_code/lang_pack/region_code/client_identity_key` 全部必填，缺任一字段即 `fingerprint_invalid`。4. **永久不变**：绑定的 device_* 字段在授权槽位生命周期内不切换：- 跨任务（该授权槽位同时跑 search_join_group 和其他任务）→ **同一指纹** - 授权槽位换代理（IP 健康分 < 60 换新 IP）→ **同一指纹**，仅代理绑定代际变化 - 跨租户（理论上不应该，但万一）→ **同一指纹** - **会话重连 / session 恢复** → **同一指纹**（Telethon session 文件不含 device_fingerprint，但 initConnection 时每次都重新发送） 5. **解绑需要运营手动操作**：必须通过风控中心的 `unbind_environment` 接口，且写入审计日志。**调度层和 Executor 都不允许自动解绑**。6. **同组合查重**：调度层在绑定前查 `account_environment_bindings` 表，按 (device_model + system_version + app_version) 组合查询现有账号数，超过 §7.3.4 阈值则换组合。##
 
 #### 7.4.3 调度层和 Executor 双重硬校验
 ```python
@@ -460,7 +463,7 @@ None bound_at: datetime # 首次绑定时间（永久不变） last_used_at: dat
 ```
  ##
 
-#### 7.4.4 镜像绑定的语义价值 - **画像连续性**：TG 服务端 / 目标机器人 / SOSO 看到的是"同一个授权槽位 + 同一组客户端元数据 + 同一个代理节点 + 同一个账号"长期一致的画像，不会突然从 iPhone 13 Pro 跳到 Xiaomi Mi 11。- **主备切换可解释**：切换到备用授权时，系统看到的是同账号的另一个稳定客户端元数据组合，而不是同一组合被多个 session 复用。- **行为可追溯**：审计日志能完整看到"该授权槽位从创建到现在的全部客户端元数据/IP/任务历史"。- **横向防御**：即使目标机器人拿到一份账号列表，客户端元数据维度也是稳定的画像信号，不会因任务变化而被标记。
+#### 7.4.4 镜像绑定的语义价值 - **画像连续性**：TG 服务端 / 目标机器人 / SOSO 看到的是"同一个账号 + 稳定授权槽位代理出口 + 稳定授权槽位客户端元数据"长期一致的画像，不会某个授权槽位在不同 action 间反复换 IP，也不会突然从 iPhone 13 Pro 跳到 Xiaomi Mi 11。- **主备切换可解释**：切换到备用授权时，系统看到的是同账号下另一个稳定代理出口和另一个稳定客户端元数据组合，而不是同一组合被多个 session 复用。- **行为可追溯**：审计日志能完整看到"该授权槽位代理出口、授权槽位客户端元数据和任务历史"。- **横向防御**：即使目标机器人拿到一份账号列表，客户端元数据维度也是稳定的画像信号，不会因任务变化而被标记。
 
 #### 7.4.5 配置入口、应用粒度和生效边界
 
@@ -473,9 +476,9 @@ account_id + developer_app_id/api_id + authorization_id/session_role
 ```
 
 - `developer_app_id/api_id` 指系统里的 TG 开发者应用 `api_id/api_hash`。
-- 同一账号在不同 TG 开发者应用下可以绑定不同代理节点和不同客户端元数据。
-- 同一账号的 `primary / standby_1 / standby_2` 必须拥有不同代理节点、不同 `client_identity_key` 和不同 `device_model + system_version + app_version` 组合。
-- Executor 必须使用授权槽位登录时绑定的同一 TG 开发者应用、代理和客户端元数据；不能用另一个应用下的配置替代。
+- 同一账号在不同 TG 开发者应用下可以绑定不同客户端元数据和不同代理节点。
+- 同一账号的 `primary / standby_1 / standby_2` 必须拥有不同 `client_identity_key`、不同 `device_model + system_version + app_version` 组合和不同代理节点。
+- Executor 必须使用授权槽位登录时绑定的同一 TG 开发者应用和客户端元数据，并显式走该账号的唯一 active 代理绑定；不能用另一个应用下的指纹配置替代，不能为某个 session 单独换代理，也不能回退本机直连。
 
 修改授权指纹配置只影响下一次使用该授权槽位建立连接、重登或新 session 初始化时上报的 MTProto 客户端元数据。保存配置成功只能表示“配置指纹已更新”，不能声明 Telegram 远端授权设备型号已经立即变更。远端实际显示必须通过 `tg_account_authorization_snapshots` 读取后作为“远端观测指纹”展示。
 
@@ -493,7 +496,7 @@ account_id + developer_app_id/api_id + authorization_id/session_role
 
 1. 同一 `account_id` 任意时刻最多只有 1 个 `search_join` action 处于 `claiming/executing`。
 2. 备用授权只有在主授权不可用、健康分低于阈值、人工切换或故障切换事件存在时才可执行。
-3. 同账号从 primary 切到 standby 后，必须沿用该 standby 的代理节点和客户端元数据，并记录 `authorization_switch_reason`。
+3. 同账号从 primary 切到 standby 后，必须切到该 standby 自己绑定的代理节点和客户端元数据，记录 `authorization_switch_reason`。
 4. 同账号不同授权槽位不得并行跑同一关键词或不同关键词；并发扩量只能通过不同账号实现。
 
 违反互斥锁时，Planner 不创建 action；Dispatcher 领取时再次校验，失败写 `skip_reason=account_authorization_lock_conflict`。
@@ -502,30 +505,30 @@ account_id + developer_app_id/api_id + authorization_id/session_role
 
 ### 8.1 配置 Schema
 ```jsonc
- { "anti_detection": { "warmup_days": 3, "warmup_daily_actions": 3, "behavior_realism": { "decision_delay_seconds": [3, 8], "browse_other_results_before_join": [0, 2], "browse_other_results_after_join": [0, 1], "max_non_target_safe_navigation_per_action": 3, "pre_join_decoy_click_probability": 0.35, "pre_join_decoy_click_count": [0, 2], "pre_join_decoy_dwell_seconds": [10, 30], "post_join_safe_browse_probability": 0.25, "post_join_safe_browse_count": [0, 1], "post_join_safe_browse_dwell_seconds": [8, 20], "decoy_join_enabled": false, "post_join_policy": "stay_joined", "post_join_retention_days": [3, 14], "in_group_dwell_seconds": [30, 180], "post_join_linked_task_policy": { "enabled": true, "activation_delay_minutes": [60, 360], "min_retention_before_ai_minutes": 360, "max_new_joined_accounts_per_hour_ratio": 0.2 }, "exit_dwell_seconds": [5, 15], "occasional_message_probability": 0.0, "decoy_keyword_ratio": 0.5 }, "rhythm": { "action_interval_seconds": [300, 1800], "interval_distribution": "normal", "interval_std_dev_ratio": 0.4, "active_hours": ["08:00-23:00"], "task_start_jitter_seconds": [0, 1800] }, "paging": { "max_pages": 70, "scroll_back_probability": 0.3, "scroll_back_max_times": 2, "non_target_browse_probability": 0.2 }, "anti_clustering": { "max_accounts_per_ip_cidr_24": 3, "max_accounts_per_asn": 5, "max_daily_actions_per_account": 5, "max_daily_searches_per_keyword_per_account": 2, "max_concurrent_accounts_per_keyword": 10 } }, "proxy_airport_policy": { "subscription_format": "auto", "supported_formats": ["base64_uri_list", "clash_yaml", "json"], "max_authorizations_per_node_default": 1, "node_capacity_overrides": {"香港 01": 1, "日本 01": 2}, "node_failover_policy": "switch_to_next_healthy_node", "all_nodes_down_policy": "pause_task", "filter_non_node_entries": true, "allow_direct_egress_fallback": false } }
+ { "anti_detection": { "warmup_days": 3, "warmup_daily_actions": 3, "behavior_realism": { "decision_delay_seconds": [3, 8], "browse_other_results_before_join": [0, 2], "browse_other_results_after_join": [0, 1], "max_non_target_safe_navigation_per_action": 3, "pre_join_decoy_click_probability": 0.35, "pre_join_decoy_click_count": [0, 2], "pre_join_decoy_dwell_seconds": [10, 30], "post_join_safe_browse_probability": 0.25, "post_join_safe_browse_count": [0, 1], "post_join_safe_browse_dwell_seconds": [8, 20], "decoy_join_enabled": false, "post_join_policy": "stay_joined", "post_join_retention_days": [3, 14], "in_group_dwell_seconds": [30, 180], "post_join_linked_task_policy": { "enabled": true, "activation_delay_minutes": [60, 360], "min_retention_before_ai_minutes": 360, "max_new_joined_accounts_per_hour_ratio": 0.2 }, "exit_dwell_seconds": [5, 15], "occasional_message_probability": 0.0, "decoy_keyword_ratio": 0.5 }, "rhythm": { "action_interval_seconds": [300, 1800], "interval_distribution": "normal", "interval_std_dev_ratio": 0.4, "active_hours": ["08:00-23:00"], "task_start_jitter_seconds": [0, 1800] }, "paging": { "max_pages": 70, "scroll_back_probability": 0.3, "scroll_back_max_times": 2, "non_target_browse_probability": 0.2 }, "anti_clustering": { "max_accounts_per_ip_cidr_24": 3, "max_accounts_per_asn": 5, "max_daily_actions_per_account": 5, "max_daily_searches_per_keyword_per_account": 2, "max_concurrent_accounts_per_keyword": 10 } }, "proxy_airport_policy": { "subscription_format": "auto", "supported_formats": ["base64_uri_list", "clash_yaml", "json"], "max_authorizations_per_node_default": 1, "node_capacity_overrides": {"香港 01": 1, "日本 01": 2}, "enforce_unique_proxy_per_authorization": true, "node_failover_policy": "switch_to_next_healthy_node", "all_nodes_down_policy": "pause_task", "filter_non_node_entries": true, "allow_direct_egress_fallback": false } }
 ```
  #
 
 ### 8.2 Warmup 阶段
 
-**Warmup 维度：`(account_id, authorization_id, proxy_binding_id)` 三元组，不是 `account_id` 一元组。** 每个 (账号, 授权槽位, 代理) 对独立计算 warmup 进度。账号授权槽位换 IP / 节点时，新 (账号, 授权槽位, 新 IP) 对从 warmup 第 1 天重新开始。
+**Warmup 维度：`(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id)` 五元组。** 每个 (账号, TG 开发者应用, 授权槽位, 代理) 对独立计算 warmup 进度。授权槽位换 IP / 节点时，新 (账号, 应用, 授权槽位, 新 IP) 对从 warmup 第 1 天重新开始。
 
 新建任务或新 (账号, IP) 对上线后，前 N 天只允许低强度行为：
 
-| 阶段 | 时长（自该账号-授权槽位-IP 对首次 action 起算） | 每天 action 数上限 | 关键词类型 |
+| 阶段 | 时长（自该账号-IP 对首次 action 起算） | 每天 action 数上限 | 关键词类型 |
 | --- | --- | --- | --- |
 | `warmup` | 1-3 天 | 3 | 全 decoy |
 | `low` | 4-14 天 | 5 | decoy 推荐占比 50%，硬阈值仍为 30% |
 | `steady` | 15 天后 | 按任务和风控策略 | decoy 硬阈值 30%，推荐 50% |
  数据模型：
 ```python
- class AccountProxyWarmupState(Base): """(账号, 授权槽位, 代理) 三元组 warmup 进度""" __tablename__ = "account_proxy_warmup_states" id: int account_id: int authorization_id: int session_role: str proxy_binding_id: int stage: Literal["warmup", "low", "steady"] stage_started_at: datetime first_action_at: datetime
+ class AccountProxyWarmupState(Base): """(账号, 应用, 授权槽位, 代理) 五元组 warmup 进度""" __tablename__ = "account_proxy_warmup_states" id: int account_id: int developer_app_id: int developer_app_api_id_snapshot: int authorization_id: int session_role: str proxy_binding_id: int stage: Literal["warmup", "low", "steady"] stage_started_at: datetime first_action_at: datetime
 
-None # 该 (账号, IP) 对首次 action 时间 daily_actions_count: int # 当日已执行 action 数 daily_actions_reset_at: datetime # 每日 00:00 重置 total_actions: int # 累计 action 数 reset_at: datetime|None # 重新 warmup 时记录（换 IP 时写入） reset_reason: str|
+None # 该 (账号, 应用, 授权槽位, IP) 对首次 action 时间 daily_actions_count: int # 当日已执行 action 数 daily_actions_reset_at: datetime # 每日 00:00 重置 total_actions: int # 累计 action 数 reset_at: datetime|None # 重新 warmup 时记录（换 IP 时写入） reset_reason: str|
 |
- None UNIQUE (account_id, authorization_id, proxy_binding_id)
+ None UNIQUE (account_id, developer_app_id, authorization_id, session_role, proxy_binding_id)
 ```
- 推进规则：- 每日 00:00 重置 `daily_actions_count` - 阶段切换：`total_actions` 达到该阶段上限天数后，scheduler 在下一次 planner tick 自动切换 stage - 换 IP / 节点：`reset_at` 写入换 IP / 节点时间，`stage` 重置为 `warmup`，`first_action_at` 重新计算 运营可见：任务详情 / 风控中心 / 账号列表均显示当前 (账号, 授权槽位, IP) 的 warmup 阶段和进度条。#
+ 推进规则：- 每日 00:00 重置 `daily_actions_count` - 阶段切换：`total_actions` 达到该阶段上限天数后，scheduler 在下一次 planner tick 自动切换 stage - 换 IP / 节点：`reset_at` 写入换 IP / 节点时间，`stage` 重置为 `warmup`，`first_action_at` 重新计算 运营可见：任务详情 / 风控中心 / 账号列表均显示当前 (账号, 应用, 授权槽位, IP) 的 warmup 阶段和进度条。#
 
 ### 8.3 Action 执行链路（行为真实化） 每个 action 必须按以下链路执行，不允许跳过任何步骤：
 
@@ -787,7 +790,7 @@ search_join success
 |字段|类型|executor 中的用途|
 |---|---|---|
 |`text`|string|发送给搜索机器人的关键词原文|
-|`business_region`|ISO 3166-1 alpha-2|关键词业务区域，用于运营统计和允许矩阵，不要求等于账号或代理出口国家|
+|`business_region`|ISO 3166-1 alpha-2|关键词业务区域，用于运营统计和允许矩阵，不要求等于账号，也不能让备用 session 使用另一个代理出口国家|
 |`account_locale`|BCP 47|账号语言画像，例如 `zh-CN`、`en-US`；用于选择客户端元数据和账号池|
 |`proxy_country`|ISO 3166-1 alpha-2|期望代理出口国家；执行前以 `observed_exit_country` 校验，不用 Clash 节点 host 推断|
 |`lang`|ISO 639-1|发送关键词和客户端语言的推荐值；与 `client_metadata.lang_code` 不一致时进入 warning / manual review，不默认硬跳过|
@@ -945,7 +948,7 @@ None raw_response: Message # 原始消息，供 fallback @dataclass class Search
 |`OperationTarget`|`backend/app/models/operation_target.py`|复用（target_groups 引用）|
 |`TaskTypeValue` Literal|`backend/app/schemas/task_center.py`|扩展|
 |`AccountEnvironmentBinding`|新建 migration|新增|
-|`TgAccountProxyBinding`|新建 migration|新增|
+|`AccountProxyBinding`|新建 migration|新增|
 |`ProxyAirportSubscription`|新建 migration|新增|
 |`ProxyAirportNode`|新建 migration|新增|
 |`AccountProxyWarmupState`|新建 migration|新增|
@@ -967,7 +970,7 @@ None raw_response: Message # 原始消息，供 fallback @dataclass class Search
 |依赖|用途|采购决策|
 |---|---|---|
 |代理供应商（IPFLY / Bright Data / ProxyScrape 任一）|提供独享静态住宅 IP|**用户拍板**：第一版接哪家？灰度期先验证一家，第二季度加第二家容灾|
-|机场订阅|提供可解析、可测速、可绑定的代理节点池|首版可作为 `airport_clash` 供应商实现；支持 Base64 URI 列表 / Clash YAML / JSON，订阅 URL 加密存储，节点按容量随机分配后固定到授权槽位，节点不通时按策略切换下一个健康节点|
+|机场订阅|提供可解析、可测速、可绑定的代理节点池|首版可作为 `airport_clash` 供应商实现；支持 Base64 URI 列表 / Clash YAML / JSON，订阅 URL 加密存储，节点按授权槽位容量随机分配后固定到授权槽位，节点不通时按策略切换下一个健康节点并让该授权槽位重新 warmup|
 |IPQS（ipqualityscore.com）|IP 信誉分查询|**必采购**：每日 IP 健康度检测|
 |Spamhaus DNSBL|黑名单查询|公开 API 免费|
 |IP2Location|IP 类型校验（residential / mobile）|付费，必要时采购|
@@ -980,7 +983,40 @@ None raw_response: Message # 原始消息，供 fallback @dataclass class Search
 
 ### 12.2 核心入口
 ```python
- class SearchJoinGroupExecutor: async def execute_action(self, action: Action) -> ActionResult: # 1. 准备阶段 authorization_id = action.payload["authorization_id"] env = await assert_environment_ready(action.account_id, authorization_id) await assert_protocol_samples_ready(action.payload["bot_username"]) await assert_authorization_api_id_matches_runtime(env.authorization, env.client_metadata) failover = await self.proxy_failover.ensure_healthy_node_or_switch(env) if failover.all_nodes_unavailable: return ActionResult(status="skipped", error_code="airport_all_nodes_unavailable", result={"lifecycle_phase": "airport_all_nodes_unavailable", "skip_reason": "airport_all_nodes_unavailable", "proxy_failover_event_id": failover.event_id}) if failover.switched: return ActionResult(status="skipped", error_code="proxy_node_unreachable", result={"lifecycle_phase": "proxy_node_unreachable", "skip_reason": "proxy_node_unreachable", "proxy_failover_event_id": failover.event_id}) await assert_observed_exit_ip_ready(env.proxy_binding_id) egress_guard = await assert_proxy_egress_guard(env.proxy_binding) lock = await acquire_account_execution_lock(action.account_id, action.id, action.action_type) if not lock.acquired: return ActionResult(status="skipped", error_code="account_authorization_lock_conflict", result={"skip_reason": "same_account_search_join_running"}) client_metadata = env.client_metadata proxy = self._build_telethon_proxy(env.proxy_binding) client = TelegramClient( session=f"sessions/{action.account_id}/{env.session_role}", api_id=env.authorization.developer_app_api_id_snapshot, api_hash=env.authorization.developer_app_api_hash, proxy=proxy, device_model=client_metadata.device_model, system_version=client_metadata.system_version, app_version=client_metadata.app_version, lang_code=client_metadata.lang_code, system_lang_code=client_metadata.system_lang_code, ) try: # 2. Warmup 检查：不新增 action.status，只用 skipped + skip_reason 表达 if not self._passes_warmup(env.account_id, authorization_id, env.proxy_binding_id, action): return ActionResult(status="skipped", error_code="account_in_warmup", result={"lifecycle_phase": "warmup", "skip_reason": "in_warmup_period"}) # 3. 主流程 async with client: search_results = await self._search(client, action.payload["bot_username"], action.payload["keyword"]) await self._decision_delay(action) pre_join_decoy_clicks = await self._browse_other_results(client, search_results, action, before_click=True) target_button = self._match_target(search_results, action.payload["target_group"]) if not target_button: return ActionResult(status="skipped", error_code="target_not_in_results", result={"results_count": len(search_results.buttons), "pre_join_decoy_clicks": pre_join_decoy_clicks}) click_result = await self._click_target(client, search_results, target_button, action) if not click_result.success: return ActionResult(status="failed", error_code=click_result.error_code, result=click_result.to_dict()) membership = await self.membership_verifier.verify_join(client, action.payload["target_group"]) if not membership.joined: return ActionResult(status="failed", error_code=membership.error_code, result=membership.to_dict()) await self._dwell_in_target_group(client, action.payload["target_group"], action) await self._apply_post_join_policy(client, action) return ActionResult(status="success", result={"target_position": target_button.position, "total_results": len(search_results.buttons), "dwell_seconds": action.result.get("actual_dwell_seconds"), "pre_join_decoy_clicks": pre_join_decoy_clicks, "post_join_policy": action.payload["anti_detection"]["behavior_realism"]["post_join_policy"], "proxy_binding_id": env.proxy_binding_id, "proxy_node_id": env.proxy_node_id, "proxy_failover_event_id": failover.event_id, "observed_exit_ip": egress_guard.observed_exit_ip, "proxy_exit_ip_observation_id": egress_guard.observation_id, "authorization_id": authorization_id, "session_role": env.session_role, "bot": action.payload["bot_username"], "keyword_hash": hash_keyword(action.payload["keyword"]["text"])}) finally: await release_account_execution_lock(lock)
+class SearchJoinGroupExecutor:
+    async def execute_action(self, action: Action) -> ActionResult:
+        env = await assert_environment_ready(
+            account_id=action.account_id,
+            developer_app_id=action.payload["developer_app_id"],
+            authorization_id=action.payload["authorization_id"],
+            session_role=action.payload["session_role"],
+        )
+        await assert_authorization_api_id_matches_runtime(env.authorization, env.client_metadata)
+        failover = await self.proxy_failover.ensure_healthy_node_or_switch_authorization(env)
+        if failover.all_nodes_unavailable:
+            return ActionResult(status="skipped", error_code="airport_all_nodes_unavailable")
+        await assert_observed_exit_ip_ready(env.proxy_binding_id)
+        egress_guard = await assert_proxy_egress_guard(env.proxy_binding)
+        lock = await acquire_account_execution_lock(action.account_id, action.id, action.action_type)
+        if not lock.acquired:
+            return ActionResult(status="skipped", error_code="account_authorization_lock_conflict")
+        client = TelegramClient(
+            session=env.authorization.session_ciphertext,
+            api_id=env.authorization.developer_app_api_id_snapshot,
+            api_hash=env.authorization.developer_app_api_hash,
+            proxy=self._build_telethon_proxy(env.proxy_binding),
+            device_model=env.client_metadata.device_model,
+            system_version=env.client_metadata.system_version,
+            app_version=env.client_metadata.app_version,
+            lang_code=env.client_metadata.lang_code,
+            system_lang_code=env.client_metadata.system_lang_code,
+        )
+        try:
+            if not self._passes_warmup(env, action):
+                return ActionResult(status="skipped", error_code="account_in_warmup")
+            # Search, decoy navigation, target click, membership observe, dwell and post policy.
+        finally:
+            await release_account_execution_lock(lock)
 ```
  #
 
@@ -1017,7 +1053,7 @@ CREATE TABLE fingerprint_combo_history (
   app_version VARCHAR(16) NOT NULL,
   platform VARCHAR(16) NOT NULL,
   combo_key VARCHAR(160) UNIQUE NOT NULL,
-  assigned_authorization_count INT DEFAULT 0,
+  assigned_account_count INT DEFAULT 0,
   first_assigned_at TIMESTAMP WITH TIME ZONE,
   last_assigned_at TIMESTAMP WITH TIME ZONE
 );
@@ -1066,7 +1102,7 @@ CREATE TABLE proxy_airport_nodes (
   exit_ip_stability_score FLOAT DEFAULT 0.0,
   latency_ms INT,
   node_capacity INT DEFAULT 1,
-  assigned_authorization_count INT DEFAULT 0,
+  assigned_account_count INT DEFAULT 0,
   failover_rank INT DEFAULT 0,
   consecutive_failures INT DEFAULT 0,
   last_unreachable_at TIMESTAMP WITH TIME ZONE,
@@ -1084,8 +1120,6 @@ CREATE TABLE proxy_node_failover_events (
   id BIGSERIAL PRIMARY KEY,
   subscription_id BIGINT NOT NULL,
   account_id BIGINT NOT NULL,
-  authorization_id BIGINT NOT NULL,
-  session_role VARCHAR(32) NOT NULL,
   from_node_id BIGINT,
   to_node_id BIGINT,
   reason VARCHAR(64) NOT NULL,
@@ -1117,9 +1151,11 @@ CREATE TABLE proxy_exit_ip_observations (
 );
 
 -- 授权槽位代理绑定
-CREATE TABLE tg_account_proxy_bindings (
+CREATE TABLE account_proxy_bindings (
   id BIGSERIAL PRIMARY KEY,
   account_id BIGINT NOT NULL,
+  developer_app_id BIGINT NOT NULL,
+  developer_app_api_id_snapshot INT NOT NULL,
   authorization_id BIGINT NOT NULL,
   session_role VARCHAR(32) NOT NULL,
   proxy_node_id BIGINT,
@@ -1146,8 +1182,7 @@ CREATE TABLE tg_account_proxy_bindings (
   notes TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  UNIQUE (account_id, authorization_id),
-  UNIQUE (account_id, session_role),
+  -- partial unique index in migration: one active proxy binding per account + developer app + authorization slot
   FOREIGN KEY (proxy_node_id) REFERENCES proxy_airport_nodes(id)
 );
 
@@ -1155,6 +1190,8 @@ CREATE TABLE tg_account_proxy_bindings (
 CREATE TABLE account_environment_bindings (
   id BIGSERIAL PRIMARY KEY,
   account_id BIGINT NOT NULL,
+  developer_app_id BIGINT NOT NULL,
+  developer_app_api_id_snapshot INT NOT NULL,
   authorization_id BIGINT NOT NULL,
   session_role VARCHAR(32) NOT NULL,
   proxy_binding_id BIGINT NOT NULL,
@@ -1174,15 +1211,17 @@ CREATE TABLE account_environment_bindings (
   last_used_at TIMESTAMP WITH TIME ZONE,
   health_score FLOAT DEFAULT 100.0,
   notes TEXT,
-  FOREIGN KEY (proxy_binding_id) REFERENCES tg_account_proxy_bindings(id),
-  UNIQUE (account_id, authorization_id),
+  FOREIGN KEY (proxy_binding_id) REFERENCES account_proxy_bindings(id),
+  UNIQUE (account_id, developer_app_id, authorization_id, session_role),
   UNIQUE (client_identity_key)
 );
 
--- 授权槽位 warmup 状态
+-- 授权槽位代理 warmup 状态
 CREATE TABLE account_proxy_warmup_states (
   id BIGSERIAL PRIMARY KEY,
   account_id BIGINT NOT NULL,
+  developer_app_id BIGINT NOT NULL,
+  developer_app_api_id_snapshot INT NOT NULL,
   authorization_id BIGINT NOT NULL,
   session_role VARCHAR(32) NOT NULL,
   proxy_binding_id BIGINT NOT NULL,
@@ -1194,7 +1233,7 @@ CREATE TABLE account_proxy_warmup_states (
   total_actions INT DEFAULT 0,
   reset_at TIMESTAMP WITH TIME ZONE,
   reset_reason TEXT,
-  UNIQUE (account_id, authorization_id, proxy_binding_id)
+  UNIQUE (account_id, developer_app_id, authorization_id, session_role, proxy_binding_id)
 );
 
 -- 目标机器人协议样本
@@ -1233,7 +1272,7 @@ CREATE TABLE ip_reputation_history (
   score FLOAT NOT NULL,
   source VARCHAR(32),
   raw_response JSONB,
-  FOREIGN KEY (proxy_binding_id) REFERENCES tg_account_proxy_bindings(id)
+  FOREIGN KEY (proxy_binding_id) REFERENCES account_proxy_bindings(id)
 );
 
 -- 任务搜索结果摘要（按动作维度）
@@ -1426,16 +1465,16 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 | 告警类型 | 触发条件 | 处置 |
 | --- | --- | --- |
 | `proxy_dead` | IP 健康分 < 60 | 自动暂停该账号任务 |
-| `exit_ip_changed` | 绑定节点最近出口 IP 与历史稳定出口不一致 | 暂停该槽位并重置 warmup |
+| `exit_ip_changed` | 绑定节点最近出口 IP 与历史稳定出口不一致 | 暂停该授权槽位并重置授权槽位 warmup |
 | `proxy_airport_subscription_failed` | 订阅拉取失败、格式识别失败、节点为空或只解析出套餐/流量伪节点 | 暂停新绑定，保留既有健康节点 |
 | `proxy_node_unreachable` | 当前绑定机场节点 TCP / TLS / 代理认证 / 出口探测不通 | 自动尝试 `switch_to_next_healthy_node`，写 failover 审计并重置 warmup |
 | `airport_all_nodes_unavailable` | 同一订阅下所有候选节点均不可达、超容量或未通过出口探测 | 暂停任务或跳过 action，不发送搜索、不点击、不 join，并通过租户 Bot 向全部管理员 Chat ID 推送告警 |
 | `admin_notification_failed` | 全节点不可用通知发送失败、Bot Token 缺失或管理员 Chat ID 缺失 | 仍保持任务暂停 / 跳过，并在风控中心展示通知失败原因 |
-| `proxy_node_reused_in_same_account` | 同账号主/备用授权复用同一节点 | 阻断任务创建并要求重新分配 |
+| `authorization_proxy_conflict` | 同账号主/备用授权复用同一代理节点、同一授权槽位存在多个 active 代理，或 observed exit IP 与绑定不一致 | 阻断任务创建 / 执行并要求收敛为授权槽位唯一代理 |
 | `fingerprint_anomaly` | 设备指纹异常关联 | 人工审核 |
 | `fingerprint_reused_in_same_account` | 同账号主/备用授权复用同一指纹组合 | 阻断任务创建 |
 | `protocol_sample_missing` | 目标机器人真实样本未采集或过期 | 阻断真实灰度，只允许 fixture |
-| `proxy_egress_guard_failed` | MTProto 连接未证明走绑定代理，或 observed exit IP 与绑定不一致 | 阻断真实点击，暂停该授权槽位 |
+| `proxy_egress_guard_failed` | MTProto 连接未证明走授权槽位绑定代理，或 observed exit IP 与授权槽位绑定不一致 | 阻断真实点击，暂停该授权槽位 |
 | `api_id_client_metadata_mismatch` | 授权槽位登录 API ID / session / 运行时 API ID / 客户端元数据不一致 | 阻断该槽位，要求重新绑定授权资产 |
 | `button_effect_unknown` | 样本无法判断按钮是否外跳、入群或触发验证 | 阻断该按钮点击，等待样本确认 |
 | `account_authorization_lock_conflict` | 同账号已有 search_join action 执行中 | 跳过新 action 并上报统计 |
@@ -1469,8 +1508,9 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 | `search_join.auth_slot_client_metadata_required` | true | 主/备用授权槽位都必须绑定完整 MTProto 客户端元数据 |
 | `search_join.protocol_sample_required` | true | 真实机器人协议样本缺失时阻断灰度 |
 | `search_join.exit_ip_observation_required` | true | `airport_clash` 节点必须有真实出口 IP 观测 |
-| `search_join.proxy_egress_guard_required` | true | 每次真实点击前证明 MTProto 连接走绑定代理 |
+| `search_join.proxy_egress_guard_required` | true | 每次真实点击前证明 MTProto 连接走授权槽位绑定代理 |
 | `search_join.allow_direct_egress_fallback` | false | 代理不可用时 fail closed，不允许直连 |
+| `search_join.unique_proxy_per_authorization_required` | true | 每个账号 + TG 开发者应用 + 授权槽位必须绑定唯一代理出口，主 / 备用授权不得复用同一代理节点 |
 | `search_join.notify_admin_on_all_nodes_down` | true | 机场订阅全节点不可用时通过租户 Bot 推送给配置的管理员 Chat ID |
 | `search_join.hourly_execution_model_enabled` | true | 搜索入群按自然小时桶统计成功、future open、overdue open 和缺口 |
 | `search_join.hourly_min_successful_joins_default` | 0 | 默认不强制硬目标；配置大于 0 时按缺口追规划 |
@@ -1496,7 +1536,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |API ID / session / 客户端元数据不一致|任一|block_start|
 |button effect unknown|任一真实点击目标|block_action|
 |授权槽位级设备指纹异常|任一|manual_review|
-|同账号主/备用授权复用代理节点或设备指纹|任一|block_create|
+|同账号主 / 备用授权复用代理节点或设备指纹，或同一授权槽位出现多个 active 代理 / 多出口 IP|任一|block_create|
 |协议样本缺失或解析失败|任一|block_start|
 |账号执行锁冲突率|> 5%|warning|
 |关键词明文日志|任一|critical|
@@ -1528,7 +1568,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 - 实现账号级 `search_join` 执行互斥锁、关键词 hash 存储和无明文日志检查。
 - 完成单元测试和集成测试。
 
-### 17.2 阶段二：养号（30 天） - 50 个真实 TG 账号（人工注册） - 每个授权槽位绑 1 个住宅 IP 或 Clash 节点（注册 IP + 养号 IP + 任务 IP 一致，且以 observed exit IP 为准） - 主/备用授权槽位各绑 1 个不同完整客户端元数据，优先 iOS 风格 - 50 个账号**只做日常活跃**（每天发几条无关消息、看几个频道），不跑入群任务 - 让 TG 自身画像、目标机器人画像都稳定下来
+### 17.2 阶段二：养号（30 天） - 50 个真实 TG 账号（人工注册） - 每个账号的主 / 备用授权槽位各绑定 1 个住宅 IP 或 Clash 节点（注册 IP、养号 IP、任务 IP 尽量连续，实际以授权槽位 observed exit IP 为准；每个授权槽位长期固定自身出口） - 主/备用授权槽位各绑 1 个不同完整客户端元数据，优先 iOS 风格 - 50 个账号**只做日常活跃**（每天发几条无关消息、看几个频道），不跑入群任务 - 让 TG 自身画像、目标机器人画像都稳定下来
 
 ### 17.3 阶段三：灰度（2-4 周） - 选取 5-10 个账号、5-10 个目标关键词、1 个目标群 - 创建第一个 `search_join_group` 任务 - 每个账号每天 1-2 个目标搜索 - 监控指标：- 任务成功率 ≥ 80% - IP 健康分和出口 IP 稳定性无明显下降 - 目标机器人拒绝次数 ≤ 5 - 账号无异常 - 账号执行锁冲突率 ≤ 5% - 关键词明文日志 0 次 - 入群后快速退出比例 ≤ 5% - 目标群排名变化只作为观察指标，不作为灰度通过硬条件 通过条件：- 7 天灰度稳定 → 进入阶段四 - 不通过 → 调整策略（关键词、账号数量、强度、代理出口或后加入群策略）后重试
 
@@ -1538,7 +1578,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 
 ## 18. 风险与合规
 
-### 18.1 业务定性 本任务的最终合规边界由用户拍板。技术方案只保证：- **运营真实性可控**：行为画像、IP 信誉、授权槽位设备指纹和代理节点环境栈都在阈值内 - **业务可灰度**：环境准备 → 养号 → 小范围灰度 → 扩量 - **异常可熔断**：机器人加验证码、IP 健康分下降、账号被封等场景自动暂停任务 + 告警 法务 / 合规边界由用户自担。#
+### 18.1 业务定性 本任务的最终合规边界由用户拍板。技术方案只保证：- **运营真实性可控**：行为画像、IP 信誉、授权槽位代理出口和授权槽位设备指纹环境栈都在阈值内 - **业务可灰度**：环境准备 → 养号 → 小范围灰度 → 扩量 - **异常可熔断**：机器人加验证码、IP 健康分下降、账号被封等场景自动暂停任务 + 告警 法务 / 合规边界由用户自担。#
 
 ### 18.2 平台风险
 
@@ -1586,7 +1626,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 后端：
 
 - `schemas/task_center.py` 扩展 `TaskTypeValue`、`SearchJoinGroupConfig`。
-- 数据库 migration 新增 `proxy_airport_subscriptions`、`proxy_airport_nodes`、`proxy_node_failover_events`、`fingerprint_combo_history`、`tg_account_proxy_bindings`、`account_environment_bindings`、`account_proxy_warmup_states`、`ip_reputation_history`、`search_join_action_stats` 和 `search_join_pacing_decisions`。
+- 数据库 migration 新增 `proxy_airport_subscriptions`、`proxy_airport_nodes`、`proxy_node_failover_events`、`fingerprint_combo_history`、`account_proxy_bindings`、`account_environment_bindings`、`account_proxy_warmup_states`、`ip_reputation_history`、`search_join_action_stats` 和 `search_join_pacing_decisions`。
 - 数据库 migration 同步新增 `bot_protocol_samples`、`proxy_exit_ip_observations`、`account_authorization_execution_locks`。
 - 代理供应商抽象 + 一家供应商或 `airport_clash` 实现。
 - 机场订阅加密存储，自动识别 Base64 URI 列表 / Clash YAML / JSON，过滤套餐和流量伪节点，解析 `anytls` / `trojan` 等节点，完成真实出口 IP 观测、节点健康检查、容量分配、随机固定绑定和故障切换审计。
@@ -1615,7 +1655,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 测试：
 
 - mock 目标机器人 / SOSO 的 fixture 测试。
-- 协议样本缺失、样本解析、button type / button effect 分类、授权槽位环境栈缺失、warmup、decoy 比例、proxy_dead、exit_ip_changed、proxy_egress_guard_failed、proxy_node_unreachable、airport_all_nodes_unavailable、admin_notification_failed、search_join_hourly_execution、api_id_client_metadata_mismatch、fingerprint_invalid、订阅格式识别失败、Clash / Base64 URI / JSON 订阅解析失败、同账号主/备复用节点或元数据的单元测试。
+- 协议样本缺失、样本解析、button type / button effect 分类、授权槽位环境栈缺失、warmup、decoy 比例、proxy_dead、exit_ip_changed、proxy_egress_guard_failed、authorization_proxy_conflict、proxy_node_unreachable、airport_all_nodes_unavailable、admin_notification_failed、search_join_hourly_execution、api_id_client_metadata_mismatch、fingerprint_invalid、订阅格式识别失败、Clash / Base64 URI / JSON 订阅解析失败、授权槽位多 active 代理 / 多出口 IP 和主备复用元数据的单元测试。
 - 同账号执行锁、备用 failover、observed exit IP 观测、防直连回退、decoy 只点 `navigate_only` 和关键词明文日志扫描测试。
 - pre-join decoy click 默认只浏览不加入、结果写入 `pre_join_decoy_clicks` 的单元测试。
 - post-join safe navigation 默认只浏览不加入、总非目标安全浏览次数不超过 3、结果写入 `post_join_safe_navigation` 的单元测试。
@@ -1649,7 +1689,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 - 未采集真实目标机器人协议样本时，创建启动必须阻断真实灰度，只允许 parser fixture / precheck。
 - 真实协议样本必须区分 `callback_data / telegram_url / external_http_url` 和 `button_effect`；外部 HTTP URL、unknown effect、可能直接入群的非目标 decoy button 都不得被默认点击。
 - 新建 `search_join_group` 任务时，账号池里无授权槽位环境绑定的账号必须在预检中可见；创建并启动时无环境槽位不得进入主执行。
-- 主授权和备用授权都必须绑定不同代理节点与不同完整客户端元数据；同账号任一槽位复用节点或元数据组合时，任务创建必须被阻断。
+- 主授权和备用授权都必须绑定不同完整客户端元数据和不同代理节点；同账号主 / 备用授权复用代理节点或元数据组合、同一授权槽位出现多个 active 代理 / 多出口 IP 时，任务创建必须被阻断。
 - `airport_clash` provider 必须能加密保存订阅 URL，自动识别 Base64 URI 列表 / Clash YAML / JSON，过滤套餐和流量伪节点，解析节点，按默认容量和单节点覆盖控制“每个节点多少授权槽位”，观测真实出口 IP、健康检查并把随机节点固定到授权槽位；订阅失败、节点为空、出口 IP 漂移不得静默 fallback。
 - 当前绑定节点不通时，必须按 `switch_to_next_healthy_node` 在同订阅内选择下一个健康且未超容量的节点，写 `proxy_node_failover_events`，并让新代理绑定重新 warmup；如果全订阅节点都不可用，必须 `skipped` / 暂停并写 `airport_all_nodes_unavailable`，不得搜索、点击或加入。
 - 全订阅节点不可用时，必须通过租户 Bot 向全部配置的管理员 Chat ID 推送脱敏告警；Bot Token 或管理员 Chat ID 未配置、发送失败时必须写 `admin_notification_failed` 和审计，但不得恢复执行或改走直连。
@@ -1660,7 +1700,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 - `action.result`、stats、worker 日志和告警不得保存关键词明文，必须使用 `keyword_hash`；展示明文只能走加密展示字段。
 - decoy 关键词占比 < 30% 时任务创建被拒绝。
 - 每个主执行 action 必须经过 §8.3 的完整 8 步链路；warmup / decoy 路径可按 §8.2 放宽，但必须写清 lifecycle 和 skip reason。
-- 授权槽位未绑代理或客户端元数据时，Executor 返回 `skipped`，并写入 `lifecycle_phase=needs_proxy/needs_client_metadata` 与对应 `skip_reason`，不得返回新 action status。
+- 授权槽位未绑唯一代理、同一授权槽位存在多 active 代理、授权槽位未绑客户端元数据时，Executor 返回 `skipped`，并写入 `lifecycle_phase=needs_proxy/needs_client_metadata/authorization_proxy_conflict` 与对应 `skip_reason`，不得返回新 action status。
 - 入群前非目标点击默认只打开/停留/返回，不加入非目标群 / 频道；每次点击必须写入 `action.result.pre_join_decoy_clicks`。
 - 入群后安全浏览默认只打开/停留/返回，不加入非目标群 / 频道；每次点击必须写入 `action.result.post_join_safe_navigation`。
 - 入群前和入群后的非目标安全浏览总数不得超过 3；只允许 `button_effect=navigate_only`；`join_candidate / external / unknown` 都必须跳过。
@@ -1668,7 +1708,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 - 搜索入群成功不得直接等同于 AI 活跃群 ready；必须在留存观察、冷却、`can_send` 复检、新成员占比和任务状态全部满足后，才能把账号追加到 linked task ready pool。
 - 排名观察必须写入独立 `search_join_rank_observations`，不得计入 action success，也不得把付费广告、流量联盟或内容健康变化自动归因为 search_join action。
 - IP 健康分 < 60 时，该账号所有搜索入群 action 自动标记 `proxy_dead` 并暂停相关账号任务。
-- `proxy_airport_subscriptions`、`proxy_airport_nodes`、`tg_account_proxy_bindings`、`account_environment_bindings`、`fingerprint_combo_history` 的新增、禁用、解绑和修订必须写审计。
+- `proxy_airport_subscriptions`、`proxy_airport_nodes`、`account_proxy_bindings`、`account_environment_bindings`、`fingerprint_combo_history` 的新增、禁用、解绑和修订必须写审计。
 - session 文件加密存储，磁盘不存明文。
 - FloodWait 累计 > 3600s 时账号自动 cooldown 4h。
 - `bot_username=jisou` 的灰度任务能被目标机器人接收且不立即拒绝。
@@ -1740,3 +1780,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-03|v0.12|Codex（任务命名与已入群口径修复）|按用户确认，将用户可见任务名调整为“搜索目标群点击任务”；内部任务类型 `search_join_group` 保持兼容。成功口径从“必须新加入”修正为“完成搜索、目标点击 / 确认并观察到目标成员关系”，账号已在群内时仍执行搜索和目标确认，`membership_observed` 仍计入成功。|
 |2026-07-04|v0.13|Codex（节奏与账号上限补齐）|按用户确认，新增仅 `search_join_group` 生效的搜索节奏与账号上限设计：每账号总上限 / 每日上限 / 间隔天数、单账号单关键词每日上限、任务每日上限、小时 / 天跳过、单 action 显式跳过、小时 / 天抖动；补齐 Planner 闸门顺序、统计口径、创建编辑页字段、配置校验和验收口径。|
 |2026-07-04|v0.14|Codex（PRD 漏洞审查补齐）|审查并补齐 PRD 内部漏洞：统一用户可见名称为“搜索目标群点击任务”；收敛 `target_groups` 到 `OperationTarget` 持久引用；明确 `pacing_config` 是跳过 / 抖动唯一权威来源；补齐租户时区日界线、并发计数事务、随机采样持久化、运行中编辑生效规则、全局风控与任务内上限优先级，以及 `search_join_pacing_decisions` 数据表。|
+|2026-07-04|v0.15|Codex（账号面具环境粒度复核）|完整复核账号面具、全局 Clash 和授权指纹口径：授权环境配置落到 `account_id + developer_app_id/api_id + authorization_id/session_role`；系统设置 Clash 配置拆分读取 `system.view` 与保存 / 测试 / 同步 `system.manage`；保存指纹仍只代表配置更新，不代表远端授权设备立即变更。|
+|2026-07-04|v0.16|Codex（代理粒度复核）|曾按 `account_id + developer_app_id/api_id + authorization_id/session_role` 讨论代理和授权指纹同粒度绑定；该口径已被 v0.17 覆盖，不能作为当前实现依据。|
+|2026-07-04|v0.17|Codex（授权槽位级代理定稿）|按用户最新口径完整收口：系统设置只保存一个全局 Clash 订阅地址；“账号面具”一级菜单承载授权槽位级代理和授权指纹配置；同一账号不同 TG 开发者应用、session key 和主 / 备用授权槽位可以使用不同代理和不同指纹；修改指纹配置只影响下一次连接 / 重登 / 新 session 初始化，不声明远端授权设备立即变更。|
+|2026-07-04|v0.18|Codex（PRD 缺口复核）|补齐系统设置页 Clash 配置入口验收文字；修正示例配置和区域一致性口径，默认由关键词允许矩阵与风险评分决定，不再强制账号区域、设备语言和代理出口国家三者硬相等；强化“配置指纹已保存”不等于“远端已观测一致”。|

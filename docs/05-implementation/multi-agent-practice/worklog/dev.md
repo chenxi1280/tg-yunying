@@ -109,3 +109,14 @@
 - decision: status=local_verified_pending_release；subagent_supervision=done_with_P1_fixed；release_gate=pending；production_verification=unproven。
 - next_agent: qa
 - unresolved: 未执行 GitHub Actions release / production deploy；真实机场订阅拉取/节点同步和真实远端 Telegram 授权快照刷新仍需生产环境验证。
+
+## 2026-07-04 授权槽位代理事实源修正 Development Complete（本地验证）
+
+- message_id: 2026-07-04-account-proxy-slot-runtime-fix-devcomplete-001
+- action: 按最新 PRD 重新梳理账号面具、全局 Clash、授权槽位代理/指纹和 search_join 执行链路，并修复子代理监督指出的运行时缺口。
+- input: 用户要求完整梳理并写入 PRD；监督子代理指出 search_join 仍可能使用旧授权代理、`account_proxy_bindings` 缺槽位唯一约束、代理重绑会撞唯一索引、Dispatcher 未校验代理绑定行本身。
+- output: PRD 补齐系统设置 Clash 配置入口、授权指纹远端观测边界和区域一致性矩阵口径；`account_proxy_bindings` 增加授权槽位字段与 active 槽位唯一索引；账号环境保存同槽位换代理时关闭旧 active 绑定；search_join planner 已写入 `environment_binding_id/proxy_binding_id/proxy_id`，Dispatcher 强制回查 `account_environment_bindings` 和 `account_proxy_bindings`，代理绑定失效、错槽位或漂移时 fail closed，不回退本机直连或旧授权代理。
+- evidence: 子代理 `019f2c2f-21bd-79a1-8e1c-a73810e9e45b` 只读复核发现 2 个 blocker，已补测试并修复；定向 `backend/.venv/bin/python -m pytest backend/tests/test_search_join_group_linked_tasks.py backend/tests/test_search_join_group_executor.py backend/tests/test_account_environment_bindings.py backend/tests/test_merge_integrity.py -q` -> 39 passed；全量 no_postgres 60s gate -> 728 passed / 787 deselected；`npm --prefix frontend run build` passed；changed backend compile/py_compile passed；`git diff --check` passed；旧口径扫描无命中。
+- decision: status=local_verified_pending_release；subagent_supervision=done_with_blockers_fixed；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 未执行 GitHub Actions release / production deploy；真实生产 Clash 订阅同步、节点出口观测、远端 Telegram 授权快照刷新和郑州 3 账号真实加入测试仍需生产验证。

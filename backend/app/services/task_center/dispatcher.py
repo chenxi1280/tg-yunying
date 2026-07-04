@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from app.integrations.telegram import DeveloperAppCredentials, OperationResult, OutboundSegment
 from app.config import get_settings
 from app.models import AccountStatus, Action, ChannelMessage, ExecutionAttempt, FailureType, GroupAuthStatus, GroupContextMessage, OperationTarget, ReviewQueue, Task, Tenant, TgAccount, TgGroup, TgGroupAccount, VerificationTask
-from app.models import AccountProxy, TelegramDeveloperApp, TgAccountAuthorization
+from app.models import AccountEnvironmentBinding, AccountProxy, AccountProxyBinding, TelegramDeveloperApp, TgAccountAuthorization
 from app.security import decrypt_secret
 from app.services._common import _now, audit, gateway
 from app.services.account_online_state import is_account_online_ready
@@ -3527,7 +3527,7 @@ def _search_join_runtime_authorization(
     if not authorization.session_ciphertext:
         raise ValueError("search_join_authorization_session_missing")
     app = _search_join_developer_app(session, authorization, payload)
-    proxy = _search_join_proxy(session, authorization, payload)
+    proxy = _search_join_proxy(session, account, authorization, payload)
     return SearchJoinRuntimeAuthorization(
         session_ciphertext=authorization.session_ciphertext,
         credentials=credentials_for_developer_app(app, proxy),
@@ -3551,19 +3551,76 @@ def _search_join_developer_app(
 
 def _search_join_proxy(
     session: Session,
+    account: TgAccount,
     authorization: TgAccountAuthorization,
     payload: SearchJoinPayload,
 ) -> AccountProxy:
-    proxy = session.get(AccountProxy, int(authorization.proxy_id or 0)) if authorization.proxy_id else None
-    if proxy is None:
-        raise ValueError("search_join_authorization_proxy_missing")
     runtime = payload.runtime_environment if isinstance(payload.runtime_environment, dict) else {}
+    binding = _search_join_environment_binding(session, account, authorization, runtime)
+    proxy_binding = _search_join_proxy_binding(session, binding, runtime)
+    proxy = session.get(AccountProxy, int(proxy_binding.proxy_id or 0)) if proxy_binding.proxy_id else None
+    if proxy is None:
+        raise ValueError("search_join_environment_proxy_missing")
     expected = int(runtime.get("proxy_id") or 0)
     if expected and expected != proxy.id:
         raise ValueError("search_join_proxy_scope_mismatch")
     if proxy.status != "healthy" or proxy.alert_status != "normal":
-        raise ValueError("search_join_authorization_proxy_unhealthy")
+        raise ValueError("search_join_environment_proxy_unhealthy")
     return proxy
+
+
+def _search_join_environment_binding(
+    session: Session,
+    account: TgAccount,
+    authorization: TgAccountAuthorization,
+    runtime: dict,
+) -> AccountEnvironmentBinding:
+    binding_id = str(runtime.get("environment_binding_id") or "").strip()
+    if not binding_id:
+        raise ValueError("search_join_environment_binding_missing")
+    binding = session.get(AccountEnvironmentBinding, binding_id)
+    if binding is None:
+        raise ValueError("search_join_environment_binding_not_found")
+    if binding.tenant_id != account.tenant_id or binding.account_id != account.id:
+        raise ValueError("search_join_environment_binding_scope_mismatch")
+    if binding.authorization_id != authorization.id or binding.session_role != authorization.role:
+        raise ValueError("search_join_environment_authorization_mismatch")
+    if int(binding.developer_app_id or 0) != int(authorization.developer_app_id or 0):
+        raise ValueError("search_join_environment_developer_app_mismatch")
+    if binding.status != "active" or binding.unbound_at is not None:
+        raise ValueError("search_join_environment_binding_inactive")
+    if not binding.proxy_binding_id:
+        raise ValueError("search_join_proxy_binding_missing")
+    return binding
+
+
+def _search_join_proxy_binding(
+    session: Session,
+    binding: AccountEnvironmentBinding,
+    runtime: dict,
+) -> AccountProxyBinding:
+    expected = int(runtime.get("proxy_binding_id") or 0)
+    if expected and expected != int(binding.proxy_binding_id or 0):
+        raise ValueError("search_join_proxy_binding_scope_mismatch")
+    proxy_binding = session.get(AccountProxyBinding, int(binding.proxy_binding_id or 0))
+    if proxy_binding is None:
+        raise ValueError("search_join_proxy_binding_not_found")
+    if not _proxy_binding_matches_environment(proxy_binding, binding):
+        raise ValueError("search_join_proxy_binding_environment_mismatch")
+    return proxy_binding
+
+
+def _proxy_binding_matches_environment(proxy_binding: AccountProxyBinding, binding: AccountEnvironmentBinding) -> bool:
+    return (
+        proxy_binding.tenant_id == binding.tenant_id
+        and proxy_binding.account_id == binding.account_id
+        and proxy_binding.developer_app_id == binding.developer_app_id
+        and proxy_binding.authorization_id == binding.authorization_id
+        and proxy_binding.session_role == binding.session_role
+        and proxy_binding.proxy_id == binding.proxy_id
+        and proxy_binding.status == "active"
+        and proxy_binding.unbound_at is None
+    )
 
 
 def _stop_search_join_task_if_target_exhausted(session: Session, action: Action, result: dict) -> None:
