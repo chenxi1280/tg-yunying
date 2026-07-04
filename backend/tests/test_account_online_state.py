@@ -262,6 +262,54 @@ def test_probe_due_online_states_marks_session_failure_login_required(monkeypatc
         assert state.next_probe_at > now
 
 
+def test_probe_due_online_states_continues_after_auth_key_duplicate(monkeypatch):
+    class AuthKeyDuplicatedError(Exception):
+        pass
+
+    now = _now()
+    with _session() as session:
+        first = _account(session, 101)
+        second = _account(session, 102)
+        first_state = TgAccountOnlineState(
+            tenant_id=1,
+            account_id=first.id,
+            desired_online=True,
+            desired_sources=[{"source_type": "task", "source_id": "ai-running"}],
+            online_status="warming",
+        )
+        second_state = TgAccountOnlineState(
+            tenant_id=1,
+            account_id=second.id,
+            desired_online=True,
+            desired_sources=[{"source_type": "task", "source_id": "ai-running"}],
+            online_status="warming",
+        )
+        session.add_all([first_state, second_state])
+        session.commit()
+
+        def _check_health(session_ciphertext, _credentials):
+            if session_ciphertext == "session-duplicated":
+                raise AuthKeyDuplicatedError("authorization key duplicated")
+            return AccountHealth(status=AccountStatus.ACTIVE.value, health_score=96, detail="账号 session 可用")
+
+        first.session_ciphertext = "session-duplicated"
+        second.session_ciphertext = "session-ok"
+        monkeypatch.setattr("app.services.account_online_probe.credentials_for_account", lambda _session, _account: object())
+        monkeypatch.setattr("app.services.account_online_probe.gateway.check_account_health", _check_health)
+
+        assert probe_due_online_states(session, limit=10, now=now) == 2
+        session.commit()
+
+        assert first.status == AccountStatus.SESSION_EXPIRED.value
+        assert first_state.online_status == "login_required"
+        assert first_state.failure_type == "account_unavailable"
+        assert "AuthKeyDuplicatedError" in first_state.failure_detail
+        assert first_state.next_probe_at > now
+        assert second.status == AccountStatus.ACTIVE.value
+        assert second_state.online_status == "online"
+        assert second_state.failure_type == ""
+
+
 def test_probe_due_online_states_marks_missing_developer_app_blocked(monkeypatch):
     now = _now()
     with _session() as session:

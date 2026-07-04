@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
@@ -16,6 +17,10 @@ from app.services.account_online_constants import (
     ONLINE_STALE_GRACE,
 )
 from app.services.developer_apps import credentials_for_account
+
+
+logger = logging.getLogger(__name__)
+MAX_PROBE_FAILURE_DETAIL_LENGTH = 500
 
 
 def probe_due_online_states(session: Session, *, limit: int = 100, now: datetime | None = None) -> int:
@@ -51,10 +56,31 @@ def _probe_account_state(session: Session, account: TgAccount, state: TgAccountO
     except ValueError as exc:
         _mark_probe_blocked(state, now, "developer_app_unavailable", str(exc))
         return
+    except Exception as exc:
+        logger.warning("account online probe failed for account_id=%s", account.id, exc_info=True)
+        _mark_probe_exception(account, state, now, exc)
+        return
     if result.status == AccountStatus.ACTIVE.value:
         _mark_probe_online(account, state, now, result.health_score, result.detail)
         return
     _mark_probe_unavailable(account, state, now, result.status, result.health_score, result.detail)
+
+
+def _mark_probe_exception(account: TgAccount, state: TgAccountOnlineState, now: datetime, exc: Exception) -> None:
+    detail = _probe_exception_detail(exc)
+    if _is_auth_key_duplicated(exc):
+        _mark_probe_unavailable(account, state, now, AccountStatus.SESSION_EXPIRED.value, 0, detail)
+        return
+    _mark_probe_blocked(state, now, "account_health_probe_failed", detail)
+
+
+def _probe_exception_detail(exc: Exception) -> str:
+    detail = f"{exc.__class__.__name__}: {exc}"
+    return detail[:MAX_PROBE_FAILURE_DETAIL_LENGTH]
+
+
+def _is_auth_key_duplicated(exc: Exception) -> bool:
+    return exc.__class__.__name__ == "AuthKeyDuplicatedError"
 
 
 def _mark_probe_online(account: TgAccount, state: TgAccountOnlineState, now: datetime, health_score: float, detail: str) -> None:
