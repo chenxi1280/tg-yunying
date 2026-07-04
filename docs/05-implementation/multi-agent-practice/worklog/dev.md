@@ -120,3 +120,14 @@
 - decision: status=local_verified_pending_release；subagent_supervision=done_with_blockers_fixed；release_gate=pending；production_verification=unproven。
 - next_agent: qa
 - unresolved: 未执行 GitHub Actions release / production deploy；真实生产 Clash 订阅同步、节点出口观测、远端 Telegram 授权快照刷新和郑州 3 账号真实加入测试仍需生产验证。
+
+## 2026-07-04 搜索目标群点击任务小时容量热修 Development Complete（本地验证）
+
+- message_id: 2026-07-04-search-join-hourly-cap-null-hotfix-devcomplete-001
+- action: 修复线上郑州 3 账号搜索目标群点击任务创建后一直 0 actions 的容量合并缺口。
+- input: 生产浏览器 API 证据显示任务 `62cbbb12-dccd-4208-b5fe-820a7ffa98d7` 的 `type_config.max_actions_per_hour=3` 已落库，但 `stats.search_join_stats.hourly_execution.max_actions_per_hour=0`、`capacity=0`，原因是 `pacing_config.max_actions_per_hour=null` 覆盖了业务小时上限。
+- output: 新增 `runtime_search_join_config`，`search_join_group` planner 和小时统计共用运行时配置合并；`pacing_config` 中的 `None` 不再覆盖 `type_config` 的有效值，显式 `0` 仍保留为关闭容量；schema 和前端只对 search_join 允许该 0 语义；PRD、专项设计和项目结构索引同步该边界。
+- evidence: 子代理监督指出 API/schema 路径仍不允许 0，已补 `SearchJoinPacingConfig`、前端任务类型 min 值和专项 PRD；`backend/.venv/bin/python -m pytest backend/tests/test_search_join_group_config.py backend/tests/test_search_join_group_executor.py backend/tests/test_search_join_group_runtime_config.py backend/tests/test_frontend_permission_gating.py::test_search_join_group_frontend_exposes_pacing_controls_and_details backend/tests/test_frontend_permission_gating.py::test_task_center_runtime_form_exposes_hour_limit_without_generic_task_daily_cap -q` -> 34 passed；`backend/.venv/bin/python -m compileall -q backend/app` passed；`npm --prefix frontend run build` passed；`git diff --check` passed。
+- decision: status=local_verified_pending_release；release_gate=pending；production_verification=unproven。
+- next_agent: qa
+- unresolved: 尚未推送 release/master；尚未执行 Deploy Production；生产任务仍需部署后重新触发或等待 planner 验证 actions 生成与真实加入结果。

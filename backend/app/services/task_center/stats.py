@@ -14,6 +14,7 @@ from app.timezone import BEIJING_TZ, as_beijing
 from .config_fields import CHANNEL_DYNAMIC_TASK_TYPES
 from .hard_hourly import enabled as hard_hourly_enabled, hard_hourly_stats
 from .pacing import ai_next_run_after, next_run_after
+from .search_join_config import runtime_search_join_config
 
 ARCHIVED_SKIP_ERROR_CODES = {"context_expired"}
 DEFAULT_AUTO_RETRY_STATUSES = ("failed", "retryable_failed")
@@ -88,7 +89,7 @@ def refresh_task_stats(session: Session, task: Task) -> dict[str, Any]:
 
 
 def search_join_hourly_execution(session: Session, task: Task, now_value: datetime) -> dict[str, Any]:
-    config = {**(task.type_config or {}), **(task.pacing_config or {})}
+    config = runtime_search_join_config(task)
     bucket_start = now_value.replace(minute=0, second=0, microsecond=0)
     bucket_end = bucket_start + timedelta(hours=1)
     success_count = _search_join_success_count(session, task, bucket_start, bucket_end)

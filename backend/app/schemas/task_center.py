@@ -122,6 +122,7 @@ class PacingConfig(BaseModel):
 
 
 class SearchJoinPacingConfig(PacingConfig):
+    max_actions_per_hour: int | None = Field(default=None, ge=0, le=500)
     per_account_total_action_limit: int = Field(default=0, ge=0, le=100000)
     per_account_daily_action_limit: int = Field(default=DEFAULT_SEARCH_JOIN_DAILY_ACCOUNT_LIMIT, ge=0, le=1000)
     per_account_cooldown_days: int = Field(default=0, ge=0, le=365)

@@ -12,6 +12,7 @@ from app.services._common import _now
 
 from ..account_pool import select_task_accounts
 from ..payloads import SearchJoinPayload, create_search_join_action
+from ..search_join_config import runtime_search_join_config
 from ..search_join_pacing import PacingStats, account_base_allowed, keyword_allowed, pacing_window, planned_action_decision, should_skip_window, task_daily_capacity
 from ..stats import search_join_hourly_execution
 
@@ -93,7 +94,7 @@ def build_plan(session: Session, task: Task) -> int:
 
 
 def _runtime_config(task: Task) -> dict:
-    return {**(task.type_config or {}), **(task.pacing_config or {})}
+    return runtime_search_join_config(task)
 
 
 def _lock_task_for_planning(session: Session, task: Task) -> None:

@@ -1919,7 +1919,8 @@ def test_task_center_runtime_form_exposes_hour_limit_without_generic_task_daily_
     wizard = (PROJECT_ROOT / "frontend/src/app/views/TaskCenterWizardSections.tsx").read_text()
     view_model = (PROJECT_ROOT / "frontend/src/app/views/taskCenterViewModel.ts").read_text()
 
-    assert 'name="max_actions_per_hour" label="每小时最大发送量"' in wizard
+    assert "searchJoinTask ? '每小时最大搜索点击数' : '每小时最大发送量'" in wizard
+    assert "min={searchJoinTask ? 0 : 1}" in wizard
     assert 'placeholder="预检后按账号数推荐"' in wizard
     assert 'name="max_actions_per_day" label="每日上限"' not in wizard
     assert "每日上限 ${values.max_actions_per_day" not in wizard

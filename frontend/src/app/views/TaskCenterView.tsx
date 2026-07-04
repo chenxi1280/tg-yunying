@@ -2207,7 +2207,7 @@ export default function TaskCenterView({
                     children: (
                       <Space direction="vertical" style={{ width: '100%' }}>
                         <div className="form-grid">
-                          <TaskRuntimeAdvancedFields />
+                          <TaskRuntimeAdvancedFields taskType={taskType} />
                         </div>
                       </Space>
                     ),
@@ -2263,7 +2263,7 @@ export default function TaskCenterView({
               )}
             />
           )}
-          <TaskRuntimeAdvancedFields />
+          <TaskRuntimeAdvancedFields taskType={editableTaskType} />
         </Form>
       </Modal>
 

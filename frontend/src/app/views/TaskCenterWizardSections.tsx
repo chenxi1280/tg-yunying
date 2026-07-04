@@ -475,13 +475,14 @@ export function WizardOperationProfile({ form, values, taskType }: { form: any; 
   );
 }
 
-export function TaskRuntimeAdvancedFields() {
+export function TaskRuntimeAdvancedFields({ taskType }: { taskType?: TaskCenterTaskType }) {
+  const searchJoinTask = taskType === 'search_join_group';
   return (
     <>
       <Form.Item name="max_concurrent" label="账号并发上限（账号数）"><InputNumber min={1} max={500} /></Form.Item>
       <Form.Item name="cooldown_per_account_minutes" label="账号冷却分钟"><InputNumber min={0} /></Form.Item>
       <Form.Item name="ban_policy" label="异常账号处理"><Select options={[{ value: 'skip', label: '跳过账号' }, { value: 'pause_task', label: '暂停任务' }, { value: 'alert', label: '只告警' }]} /></Form.Item>
-      <Form.Item name="max_actions_per_hour" label="每小时最大发送量"><InputNumber min={1} placeholder="预检后按账号数推荐" /></Form.Item>
+      <Form.Item name="max_actions_per_hour" label={searchJoinTask ? '每小时最大搜索点击数' : '每小时最大发送量'}><InputNumber min={searchJoinTask ? 0 : 1} placeholder="预检后按账号数推荐" /></Form.Item>
       <Form.Item name="max_retries" label="失败重试次数"><InputNumber min={0} max={10} /></Form.Item>
     </>
   );

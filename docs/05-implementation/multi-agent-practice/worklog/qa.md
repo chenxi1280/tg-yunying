@@ -98,3 +98,14 @@
 - decision: 本地合同验收通过；不声明生产真实订阅同步、真实出口 IP 观测、远端授权设备已立即改变或真实搜索入群灰度通过。
 - next_agent: prod-diagnosis
 - unresolved: CI / release deploy / 生产健康 / 生产数据迁移和真实配置验证仍 unproven。
+
+## 2026-07-04 搜索目标群点击任务小时容量热修本地 QA
+
+- message_id: 2026-07-04-search-join-hourly-cap-null-hotfix-local-qa-001
+- action: 对 `pacing_config.max_actions_per_hour=null` 覆盖 `type_config.max_actions_per_hour` 的线上复现缺口做本地回归验收。
+- input: 2026-07-04-search-join-hourly-cap-null-hotfix-devcomplete-001。
+- output: local_qa_pass_for_search_join_runtime_config_contracts
+- evidence: 新增 `test_search_join_group_runtime_config.py` 覆盖 null 不覆盖和显式 0 关闭容量；`test_search_join_group_config.py` 覆盖 create / config update / settings update API 路径允许 search_join 0；前端静态合同覆盖 search_join min=0、其他任务保持 min=1；定向套件 34 passed；backend compileall passed；frontend build passed；`git diff --check` passed。
+- decision: 本地合同验收通过；不声明生产任务已生成 actions 或真实加入成功。
+- next_agent: prod-diagnosis
+- unresolved: CI / release deploy / 生产健康 / 郑州 3 账号真实搜索点击 / 加入结果仍 unproven。

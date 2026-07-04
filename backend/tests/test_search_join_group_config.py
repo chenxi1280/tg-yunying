@@ -152,6 +152,16 @@ def test_search_join_group_settings_update_accepts_pacing_but_other_tasks_reject
 
     assert updated.pacing_config["per_account_daily_action_limit"] == 0
 
+    stopped_capacity = update_task_settings(
+        session,
+        1,
+        task.id,
+        TaskSettingsUpdate(name=task.name, pacing_config={"mode": "template", "max_actions_per_hour": 0}),
+        actor="tester",
+    )
+
+    assert stopped_capacity.pacing_config["max_actions_per_hour"] == 0
+
     other = Task(tenant_id=1, name="普通任务", type="channel_like", status="running", type_config={}, stats={})
     session.add(other)
     session.commit()
@@ -202,3 +212,27 @@ def test_search_join_group_config_update_rolls_back_type_config_when_pacing_fail
     session.rollback()
     session.refresh(task)
     assert task.type_config["business_region"] == original_region
+
+
+@pytest.mark.no_postgres
+def test_search_join_group_schema_accepts_zero_pacing_hourly_override(session: Session) -> None:
+    payload = _payload(pacing_config={"mode": "template", "max_actions_per_hour": 0})
+    task = create_search_join_group_task(session, 1, payload, actor="tester")
+
+    assert task.type_config["max_actions_per_hour"] == 20
+    assert task.pacing_config["max_actions_per_hour"] == 0
+
+    updated = task_service.update_search_join_group_config(
+        session,
+        1,
+        task.id,
+        SearchJoinGroupTaskConfigUpdate(
+            target_operation_target_id=17,
+            search_bots=[{"username": "jisou", "display_name": "极搜"}],
+            keyword_hashes=["a" * 64],
+            pacing_config={"mode": "template", "max_actions_per_hour": 0},
+        ),
+        actor="tester",
+    )
+
+    assert updated.pacing_config["max_actions_per_hour"] == 0
