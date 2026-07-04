@@ -11,6 +11,15 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function proxyAirportReadinessLabel(config: ProxyAirportSubscription | null) {
+  if (!config?.subscription_url_configured) return '未配置';
+  if (config.last_error) return '节点同步失败';
+  if (config.healthy_node_count > 0) return '健康节点可用';
+  if (config.node_count > 0) return '同步成功但健康节点为 0';
+  if (config.sync_status === 'test_pending') return '节点同步中';
+  return '配置已保存，等待节点同步';
+}
+
 export default function ProxyAirportSubscriptionView({ canManageSystem = false }: Props) {
   const [config, setConfig] = React.useState<ProxyAirportSubscription | null>(null);
   const [subscriptionUrl, setSubscriptionUrl] = React.useState('');
@@ -59,7 +68,7 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
     try {
       const tested = await api<ProxyAirportSubscription>('/proxy-airport-subscription/test', { method: 'POST' });
       setConfig(tested);
-      setNotice('Clash 订阅测试已提交');
+      setNotice('订阅节点已解析，健康探测完成前不可作为可用代理池');
     } catch (testError) {
       setError(errorText(testError));
     } finally {
@@ -82,6 +91,7 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
         items={[
           { key: 'configured', label: '订阅状态', children: config?.subscription_url_configured ? '已配置' : '未配置' },
           { key: 'preview', label: '订阅地址', children: config?.subscription_url_preview || '-' },
+          { key: 'readiness', label: '代理池状态', children: proxyAirportReadinessLabel(config) },
           { key: 'sync', label: '同步状态', children: config?.sync_status || '-' },
           { key: 'nodes', label: '节点', children: `${config?.healthy_node_count ?? 0}/${config?.node_count ?? 0}` },
           { key: 'updated', label: '更新时间', children: config?.updated_at ? config.updated_at.replace('T', ' ').slice(0, 16) : '-' },
@@ -105,7 +115,7 @@ export default function ProxyAirportSubscriptionView({ canManageSystem = false }
             保存
           </Button>
           <Button onClick={testConfig} loading={saving} disabled={!canManageSystem || !config?.subscription_url_configured}>
-            测试
+            测试/同步
           </Button>
         </Space>
       </Space>

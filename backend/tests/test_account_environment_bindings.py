@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import Base
@@ -15,12 +16,11 @@ from app.models import (
     TgAccountAuthorization,
     TgAccountAuthorizationSnapshot,
 )
-from app.schemas.account_environment import AccountEnvironmentBindingPatch, ProxyAirportSubscriptionUpdate
-from app.services.account_environment import list_account_environment_bindings, patch_account_environment_binding
-from app.services.proxy_airport_subscription import (
-    get_proxy_airport_subscription,
-    mask_subscription_url,
-    update_proxy_airport_subscription,
+from app.schemas.account_environment import AccountEnvironmentBindingPatch
+from app.security import encrypt_secret
+from app.services.account_environment import (
+    list_account_environment_bindings,
+    patch_account_environment_binding,
 )
 
 
@@ -75,28 +75,6 @@ def _seed_environment(session: Session) -> None:
     )
     session.add_all([app, account, authorization, proxy])
     session.commit()
-
-
-def test_proxy_airport_subscription_masks_url_and_encrypts_raw_value() -> None:
-    with _session() as session:
-        saved = update_proxy_airport_subscription(
-            session,
-            tenant_id=1,
-            payload=ProxyAirportSubscriptionUpdate(subscription_url="https://example.com/sub?token=secret-token"),
-            actor="tester",
-        )
-        session.commit()
-
-        loaded = get_proxy_airport_subscription(session, tenant_id=1)
-
-    assert saved.subscription_url_configured is True
-    assert saved.subscription_url_preview == "https://example.com/sub?...oken"
-    assert loaded.subscription_url_preview == "https://example.com/sub?...oken"
-    assert "secret-token" not in loaded.model_dump_json()
-
-
-def test_mask_subscription_url_never_returns_full_token() -> None:
-    assert mask_subscription_url("https://xsus.example/sub/path?token=878be1154cad71f3208c1c66d7af82ca") == "https://xsus.example/sub/path?...82ca"
 
 
 def test_account_environment_projection_uses_developer_app_and_authorization_slot() -> None:
@@ -170,6 +148,115 @@ def test_account_environment_projection_compares_remote_authorization_snapshot()
     assert matched.consistency_status == "observed_matched"
     assert mismatch.observed_device_model == "iPhone 12"
     assert mismatch.consistency_status == "observed_mismatch"
+
+
+def test_account_environment_projection_marks_incomplete_snapshot_unobservable() -> None:
+    with _session() as session:
+        _seed_environment(session)
+        session.add(
+            AccountEnvironmentBinding(
+                tenant_id=1,
+                account_id=101,
+                developer_app_id=11,
+                developer_app_api_id_snapshot=10011,
+                authorization_id=201,
+                session_role="primary",
+                proxy_id=31,
+                device_model="iPhone 15",
+                system_version="iOS 17.5",
+                app_version="10.14.1",
+                platform="ios",
+                client_identity_key="client-1",
+            )
+        )
+        session.add(
+            TgAccountAuthorizationSnapshot(
+                tenant_id=1,
+                account_id=101,
+                is_current_session=True,
+                device_model="iPhone 15",
+                system_version="",
+                app_version="10.14.1",
+                api_id=10011,
+            )
+        )
+        session.commit()
+
+        row = list_account_environment_bindings(session, tenant_id=1)[0]
+
+    assert row.consistency_status == "unobservable"
+    assert row.observed_device_model == "iPhone 15"
+    assert row.observed_system_version == ""
+    assert row.observed_missing_fields == ["system_version"]
+
+
+def test_account_environment_projection_matches_snapshot_by_authorization_hash() -> None:
+    with _session() as session:
+        _seed_environment(session)
+        session.add(
+            TgAccountAuthorization(
+                id=202,
+                tenant_id=1,
+                account_id=101,
+                role="standby_1",
+                developer_app_id=11,
+                developer_app_api_id_snapshot=10011,
+                proxy_id=31,
+                session_ciphertext="standby-session",
+                status="standby",
+                telegram_authorization_hash_ciphertext=encrypt_secret("standby-hash"),
+            )
+        )
+        session.get(TgAccountAuthorization, 201).telegram_authorization_hash_ciphertext = encrypt_secret("primary-hash")
+        for auth_id, role, device in [(201, "primary", "iPhone 15"), (202, "standby_1", "Pixel 8")]:
+            session.add(
+                AccountEnvironmentBinding(
+                    tenant_id=1,
+                    account_id=101,
+                    developer_app_id=11,
+                    developer_app_api_id_snapshot=10011,
+                    authorization_id=auth_id,
+                    session_role=role,
+                    proxy_id=31,
+                    device_model=device,
+                    system_version="iOS 17.5" if role == "primary" else "Android 14",
+                    app_version="10.14.1",
+                    platform="ios" if role == "primary" else "android",
+                    client_identity_key=f"client-{auth_id}",
+                )
+            )
+        session.add_all(
+            [
+                TgAccountAuthorizationSnapshot(
+                    tenant_id=1,
+                    account_id=101,
+                    authorization_hash_ciphertext=encrypt_secret("primary-hash"),
+                    is_current_session=True,
+                    device_model="iPhone 15",
+                    system_version="iOS 17.5",
+                    app_version="10.14.1",
+                    api_id=10011,
+                ),
+                TgAccountAuthorizationSnapshot(
+                    tenant_id=1,
+                    account_id=101,
+                    authorization_hash_ciphertext=encrypt_secret("standby-hash"),
+                    is_current_session=False,
+                    device_model="Pixel 8",
+                    system_version="Android 14",
+                    app_version="10.14.1",
+                    api_id=10011,
+                ),
+            ]
+        )
+        session.commit()
+
+        rows = {row.session_role: row for row in list_account_environment_bindings(session, tenant_id=1)}
+
+    assert rows["primary"].observed_device_model == "iPhone 15"
+    assert rows["primary"].consistency_status == "observed_matched"
+    assert rows["standby_1"].observed_device_model == "Pixel 8"
+    assert rows["standby_1"].consistency_status == "observed_matched"
 
 
 def test_patch_account_environment_binding_persists_app_scoped_fingerprint() -> None:

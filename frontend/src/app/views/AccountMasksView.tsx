@@ -34,7 +34,14 @@ function statusTag(status: string) {
   if (status === 'pending_effect') return <Tag color="gold">待下次生效</Tag>;
   if (status === 'observed_matched') return <Tag color="green">已匹配</Tag>;
   if (status === 'observed_mismatch') return <Tag color="red">不一致</Tag>;
+  if (status === 'unobservable') return <Tag color="orange">不可观测</Tag>;
   return <Tag>{status || '未连接'}</Tag>;
+}
+
+function observedFingerprintText(row: AccountEnvironmentBinding) {
+  const observed = [row.observed_device_model, row.observed_system_version, row.observed_app_version].filter(Boolean).join(' / ');
+  const missing = row.observed_missing_fields?.length ? `缺失字段：${row.observed_missing_fields.join(', ')}` : '';
+  return [observed, missing].filter(Boolean).join('；') || '-';
 }
 
 function draftFromRow(row: AccountEnvironmentBinding): EnvironmentDraft {
@@ -113,6 +120,18 @@ export default function AccountMasksView({ currentUser }: Props) {
     }
   }
 
+  async function refreshObservations() {
+    setLoading(true);
+    setError('');
+    try {
+      setRows(await api<AccountEnvironmentBinding[]>('/account-environment-bindings/refresh-observations', { method: 'POST' }));
+    } catch (refreshError) {
+      setError(errorText(refreshError));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const environmentTable = (
     <>
       {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
@@ -126,6 +145,7 @@ export default function AccountMasksView({ currentUser }: Props) {
           style={{ width: 320 }}
         />
         <Button onClick={() => void loadEnvironment()} loading={loading}>刷新</Button>
+        <Button disabled={!canManageEnvironment} onClick={() => void refreshObservations()} loading={loading}>刷新远端观测</Button>
       </Space>
       <Table
         rowKey={(row) => `${row.account_id}:${row.authorization_id}:${row.session_role}`}
@@ -139,7 +159,7 @@ export default function AccountMasksView({ currentUser }: Props) {
           { title: '授权槽位', dataIndex: 'session_role' },
           { title: '代理', key: 'proxy', render: (_, row) => row.proxy_name || (row.proxy_id ? `Proxy #${row.proxy_id}` : '-') },
           { title: '配置指纹', key: 'device', render: (_, row) => [row.device_model, row.system_version, row.app_version].filter(Boolean).join(' / ') || '-' },
-          { title: '远端观测', key: 'observed', render: (_, row) => [row.observed_device_model, row.observed_system_version, row.observed_app_version].filter(Boolean).join(' / ') || '-' },
+          { title: '远端观测', key: 'observed', render: (_, row) => observedFingerprintText(row) },
           { title: '状态', key: 'status', render: (_, row) => statusTag(row.consistency_status) },
           { title: '操作', key: 'action', render: (_, row) => <Button size="small" disabled={!canManageEnvironment} onClick={() => openEdit(row)}>编辑</Button> },
         ]}

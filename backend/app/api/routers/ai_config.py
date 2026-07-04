@@ -41,7 +41,11 @@ from app.schemas.ai_config import (
     MaterialReferencesOut,
     MaterialVersionHistoryOut,
 )
-from app.services.account_environment import list_account_environment_bindings, patch_account_environment_binding
+from app.services.account_environment import (
+    list_account_environment_bindings,
+    patch_account_environment_binding,
+)
+from app.services.account_environment_observations import refresh_account_environment_observations
 from app.services.task_center.account_voice_profiles import (
     batch_rebuild_voice_profiles,
     generate_voice_profiles_with_ai,
@@ -271,6 +275,22 @@ def patch_account_environment_binding_route(
     except ValueError as exc:
         session.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/account-environment-bindings/refresh-observations", response_model=list[AccountEnvironmentBindingOut])
+def post_account_environment_observation_refresh(
+    tenant_id: int | None = None,
+    session: Session = Depends(get_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    _require_account_environment_manage(current_user)
+    rows = refresh_account_environment_observations(
+        session,
+        tenant_id=resolve_tenant_id(current_user, tenant_id),
+        actor=current_user.name,
+    )
+    session.commit()
+    return rows
 
 
 @router.patch("/api/ai-account-voice-profiles/{account_id}", response_model=AiAccountVoiceProfileOut)

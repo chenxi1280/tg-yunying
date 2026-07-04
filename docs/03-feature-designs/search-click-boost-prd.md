@@ -258,16 +258,16 @@ pending -> claiming -> executing -> success / failed / skipped
 | 数据中心代理 | 云服务器机房 | 极低 | 低 | 禁用于本任务 |
 | 数据中心静态住宅（伪造） | 机房但 ISP 标为 residential | 中低 | 中 | 不作为首版核心账号 |
 | 动态住宅 IP | 真实家庭宽带轮换 | 高 | 中 | 辅助任务 |
-| 独享静态住宅 IP | 真实家庭宽带、长期绑定 | 很高 | 高 | 核心账号，首版必选 |
+| 独享静态住宅 IP | 真实家庭宽带、长期绑定 | 很高 | 高 | 核心账号推荐采购路线；若通过 `airport_clash` 节点达到稳定出口、健康分和容量要求，可作为首版灰度节点来源 |
 | 4G / 5G 移动代理 | 真实移动运营商 SIM 卡 | 最高 | 最高 | 第二阶段现金牛账号 |
 
-首版（第一阶段）仅采购独享静态住宅 IP；第二阶段再评估 4G / 5G 移动代理。
+首版可用代理路径以 `airport_clash` 全局订阅接入为落地实现：系统设置保存一个全局 Clash 订阅，解析节点、观测真实出口 IP 和健康状态，再在“账号面具 > 账号代理”按授权槽位固定绑定。独享静态住宅 IP 是首版灰度推荐的节点质量目标，不要求另做一个住宅代理供应商实现；如果后续直接采购 IPFLY / Bright Data 等供应商，按同一 `ProxyProvider` 抽象扩展。第二阶段再评估 4G / 5G 移动代理。
 
 ### 6.2 代理供应商抽象
 ```python
  class ProxyProvider(Protocol): name: str proxy_type: Literal["residential_static", "residential_rotating", "mobile_4g", "datacenter"] async def list_available(self, country: str, count: int) -> list[ProxyInfo]: ... async def acquire(self, country: str, sticky_minutes: int) -> ProxyInfo: ... async def release(self, proxy_id: str) -> None: ... async def check_reputation(self, ip: str) -> ReputationResult: ... async def health_check(self, proxy_id: str) -> HealthResult: ...
 ```
- 首版实现一个具体供应商（如 IPFLY / Bright Data / ProxyScrape 任选其一），第二版接入第二家做容灾。#
+首版具体 provider 为 `airport_clash`。IPFLY / Bright Data / ProxyScrape 等直连供应商作为后续扩展，不阻断当前 `search_join_group` 灰度验收。
 
 ### 6.3 机场 Clash 自动代理池
 
@@ -290,7 +290,9 @@ pending -> claiming -> executing -> success / failed / skipped
 配置入口与权限：
 
 - 系统设置 / Clash 配置：读取全局订阅脱敏状态需要 `system.view`；保存全局订阅地址、测试连通性、同步节点、展示最近同步时间、节点总数、健康节点数和失败原因需要 `system.manage`。
+- 系统设置 / Clash 配置必须拆分保存状态、订阅解析状态、节点同步状态和健康探测状态：保存成功只表示加密订阅地址已更新；`test/sync` 成功只表示已拉取订阅并把 Base64 URI 列表 / Clash YAML / JSON 中的真实节点写入 `proxy_airport_nodes`；节点同步成功且健康节点数大于 0 才能作为授权槽位代理候选来源。保存成功但同步失败、同步成功但健康节点为 0、订阅解析失败、节点全不可用都必须显示可读错误和重试入口，不能把订阅保存成功或节点解析成功当作代理池可用。
 - 账号面具 / 账号代理：按 `account_id + developer_app_id/api_id + authorization_id/session_role` 绑定代理节点，展示每个授权槽位的绑定节点、真实出口 IP、健康状态、warmup 状态和最近故障切换；需要 `account_environment.manage`。
+- 账号面具 / 账号代理必须把 `primary / standby_1 / standby_2` 和不同 TG 开发者应用分开展示；运营可以按账号、应用、授权槽位、节点、健康分、warmup、故障切换状态筛选。批量重排代理必须先展示影响授权槽位数、预计重新 warmup 数和不可用节点数，确认后写审计。
 - 普通日志、任务 stats、前端非敏感字段不得输出订阅完整 URL、节点密码、token 或 URI 原文。
 6. 节点健康分低于阈值、订阅失效、节点消失、真实出口 IP 漂移过大或 IP 类型不符时，必须显式暂停对应授权槽位的搜索入群动作并告警，不做静默 fallback。
 7. 当前绑定节点连接失败、TCP / TLS 不通、代理认证失败或 `proxy_egress_guard` 无法证明出口时，允许自动执行 `switch_to_next_healthy_node`：只在同一订阅、节点授权槽位容量未超限、出口 IP 可观测的约束下为当前授权槽位选择下一个健康节点，写入 `proxy_node_failover_events`，并让新 `(account_id, developer_app_id/api_id, authorization_id/session_role, proxy_binding_id)` 重新进入 warmup。
@@ -486,9 +488,17 @@ account_id + developer_app_id/api_id + authorization_id/session_role
 
 - 配置指纹：运营在后台设置的目标 `platform/device_model/system_version/app_version/lang_* / region_code / client_identity_key`。
 - 远端观测指纹：从 Telegram 授权设备列表读取到的 `device_model/platform/system_version/app_name/app_version/api_id`。
-- 一致性状态：`not_connected`、`pending_effect`、`observed_matched`、`observed_mismatch`。
+- 一致性状态：`not_connected`、`pending_effect`、`observed_matched`、`observed_mismatch`、`unobservable`。
 
-`observed_mismatch` 只能提示重登 / 刷新授权 / 人工检查，不能自动改写现有 session，也不能把配置保存包装成远端已变更。
+`observed_mismatch` 只能提示重登 / 刷新授权 / 人工检查，不能自动改写现有 session，也不能把配置保存包装成远端已变更。`unobservable` 表示 Telegram 授权设备快照没有返回足够字段用于比对，必须展示缺失字段；它既不能算匹配，也不能算配置失败。
+
+生命周期口径：
+
+- 新建授权槽位：首次连接前写入配置指纹；连接成功后通过授权设备快照刷新远端观测指纹。
+- 修改已有授权槽位配置：保存后状态为 `pending_effect`，现有 Telegram 远端授权设备不会被立即改名或改型号；只有下一次该授权槽位重登、新 session 初始化或重新建立会触发 `initConnection` 的连接时，才可能被 Telegram 记录为新的客户端元数据。
+- 刷新远端观测：只读取 Telegram 授权设备列表并更新观测字段，不改配置指纹，不自动重登。
+- 批量更新：只批量写配置和审计，结果必须按授权槽位返回 `configured / pending_effect / observed_matched / observed_mismatch / unobservable / failed`；不得返回“远端设备已批量更新成功”。
+- 手动重登 / 新 session：属于账号授权资产操作，必须走账号安全 / 授权资产流程和对应审计，不能由“保存指纹”按钮隐式触发。
 
 ### 7.5 账号授权槽位执行互斥
 
@@ -623,7 +633,7 @@ Planner 规则：
 3. `hourly_round_curve[current_hour]=0` 时不主动开新轮；下一次运行时间跳到下一个非 0 小时。
 4. `hourly_min_successful_joins > 0` 且 `deficit > 0` 时可以压缩本小时剩余窗口内的规划间隔，但仍不得绕过 warmup、账号锁、代理 egress guard、节点容量、关键词日上限和 Bot 协议样本门槛。
 5. 已过期的 open action 不计入未来覆盖，必须进入 `overdue_open_count` 和 `dispatcher_lag / worker_backlog` 诊断。
-6. 全订阅节点不可用时，本小时执行状态必须变为 `blocked` 或 `paused`，不得继续补量；补量恢复必须等代理节点重新健康后重排未来 action。
+6. 全订阅节点不可用时，action 级结果为 `skipped` + `airport_all_nodes_unavailable`，小时 stats 级状态为 `blocked`，任务主状态按 `all_nodes_down_policy` 进入 `paused` 或保持 running 但不再补量；补量恢复必须等代理节点重新健康后重排未来 action。
 
 任务详情展示：
 
@@ -650,6 +660,13 @@ Planner 规则：
 | `skip_probability_per_action` | `0.1` | 单个候选 action 的显式放弃概率；命中后可创建 `skipped` action，`skip_reason=skipped_by_behavior_pacing` |
 | `hourly_jitter_percent` | `30` | 小时内 action 计划时间抖动百分比；影响本小时 `scheduled_at` 分布，不突破小时硬上限 |
 | `daily_jitter_percent` | `20` | 日内预算分布抖动百分比；影响全天 action 在可执行时段内的分配，不突破日硬上限 |
+
+字段校验：
+
+- `per_account_total_action_limit`、`per_account_daily_action_limit`、`per_account_cooldown_days`、`per_keyword_account_daily_limit`、`max_actions_per_day` 必须是 `>= 0` 的整数；空值按默认值写入，负数拒绝保存。
+- `hourly_skip_probability`、`daily_skip_probability`、`skip_probability_per_action` 必须是 `0..1` 小数。前端可以用百分比输入展示，但提交给 API 前必须归一为 `0..1`；提交 `10` 这类未归一百分数必须被拒绝。
+- `hourly_jitter_percent`、`daily_jitter_percent` 必须是 `0..100` 的整数或一位小数；超过 100、负数或非数字拒绝保存。
+- `actions_per_round`、`max_actions_per_hour` 和 `hourly_min_successful_joins` 必须是 `>= 0` 的整数；`hourly_min_successful_joins > max_actions_per_hour` 时拒绝保存。
 
 “操作次数”统计口径：
 
@@ -697,6 +714,9 @@ Planner 硬闸门顺序：
 - 任务级设置展示：任务每日上限、每小时上限、每轮 action 数、每小时最低成功数。
 - 跳过与抖动设置展示：小时跳过、天跳过、单 action 显式跳过、小时抖动、天抖动。
 - 详情页必须展示本日剩余额度、账号命中限制数量、被 pacing 跳过数量和最近一次命中的限制原因。
+- 编辑运行中任务时必须展示“仅影响未来规划”的提示；如果运营选择重排 pending action，页面必须展示将取消 / 重建的 action 数、影响账号数、影响关键词数和审计原因输入框。
+- 所有 `0` 作为“不设该项上限”的字段必须在页面文案中显示为“不限制”，不得显示成“0 次”导致误解；但 `max_actions_per_hour=0` 或 `hourly_round_curve` 当前小时为 0 表示该小时不主动规划，页面必须区分“不限制”和“不规划”。
+- 仅 search_join 生效的字段不得出现在 AI 活跃群、频道浏览、频道点赞、频道评论 / 回复等任务创建页，也不得被通用 pacing normalization 写回其他任务类型。
 
 ### 8.6 入群转化率 控制
 
@@ -1697,6 +1717,7 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 - 每次真实搜索、翻页、callback、Telegram 内部 URL resolve 和 join 前必须通过 `proxy_egress_guard`；代理失败、直连风险或出口 IP 与绑定不一致时必须 `skipped`，不得继续执行。
 - 授权槽位登录 API ID、session 文件、运行时 API ID / API hash 和客户端元数据必须一致；不一致时必须 `skipped` 并写 `api_id_client_metadata_mismatch`。
 - 同一 `account_id` 同时只允许 1 个 `search_join` action 执行；锁冲突必须以 `account_authorization_lock_conflict` 跳过并进入 stats。
+- `search_join_group` 的 planner、dispatcher、executor 实时路径不得调用 AI Gateway、AI Provider 或 `task_center/ai_generator.py`；测试必须能在未配置任何 AI 供应商时创建 pacing decision、规划或跳过 search_join action，并断言 pacing/random decision 没有触发 AI 调用。LLM 只允许在离线配置建议、关键词生成、目标相关性解释和复盘分析接口中出现。
 - `action.result`、stats、worker 日志和告警不得保存关键词明文，必须使用 `keyword_hash`；展示明文只能走加密展示字段。
 - decoy 关键词占比 < 30% 时任务创建被拒绝。
 - 每个主执行 action 必须经过 §8.3 的完整 8 步链路；warmup / decoy 路径可按 §8.2 放宽，但必须写清 lifecycle 和 skip reason。
@@ -1709,6 +1730,8 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 - 排名观察必须写入独立 `search_join_rank_observations`，不得计入 action success，也不得把付费广告、流量联盟或内容健康变化自动归因为 search_join action。
 - IP 健康分 < 60 时，该账号所有搜索入群 action 自动标记 `proxy_dead` 并暂停相关账号任务。
 - `proxy_airport_subscriptions`、`proxy_airport_nodes`、`account_proxy_bindings`、`account_environment_bindings`、`fingerprint_combo_history` 的新增、禁用、解绑和修订必须写审计。
+- 系统设置 Clash 配置验收必须区分订阅保存、订阅解析、节点同步、节点健康检查和授权槽位绑定五个阶段；任一阶段失败都必须有独立状态和错误原因，不能用保存成功覆盖后续失败。
+- 授权指纹验收必须证明配置指纹、远端观测指纹和一致性状态同时存在；保存配置后未重登时必须进入 `pending_effect`，远端快照缺字段时必须进入 `unobservable` 并展示缺失字段，不能显示 `observed_matched` 或“远端已更新”。
 - session 文件加密存储，磁盘不存明文。
 - FloodWait 累计 > 3600s 时账号自动 cooldown 4h。
 - `bot_username=jisou` 的灰度任务能被目标机器人接收且不立即拒绝。
@@ -1716,8 +1739,11 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 ### 20.2 前端验收
 
 - 创建搜索目标群点击任务时能选择机器人、导入关键词、配置运营真实性参数、仅 search_join 生效的节奏与账号上限、预览账号环境状态。
+- 创建 / 编辑页必须只在 `search_join_group` 下展示每账号总上限、每日上限、间隔天数、同账号同关键词日上限、任务日上限、小时 / 天跳过、单 action 跳过、小时 / 天抖动；其他任务类型不得出现这些字段。
+- 运行中编辑节奏与账号上限时，页面必须提示只影响未来规划；如选择重排 pending action，必须展示影响预览并要求填写审计原因。
 - 任务列表展示任务类型、入群转化率、平均排名、后续任务联动摘要和状态。
 - 任务详情展示累计入群、排名轨迹、行为漏斗、IP / 客户端元数据状态、协议样本状态、账号锁冲突、入群后安全浏览、入群后策略、后续任务联动、调研规则解释和 Decoy 分布。
+- 任务详情必须能解释“本小时没执行”的原因：日 / 小时跳过、账号日上限、账号总上限、账号间隔天数、同账号同关键词日上限、任务日上限、全局风控上限、代理不可用、缺指纹、协议样本缺失和 worker backlog 需要分开展示。
 - 风控中心能查看 search_join 告警。
 - 预检返回的警告和缺失环境清晰可见。
 
@@ -1739,15 +1765,33 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 | 检查项 | 结论 |
 | --- | --- |
 | 原始需求覆盖 | 已覆盖“搜索目标群点击任务”和“合并到 PRD” |
-| 用户补充细节覆盖 | 已覆盖主/备用独立客户端元数据、机场订阅自动代理、订阅格式识别、每节点容量配置、随机固定节点、节点不通切换下一个健康节点、全订阅不通停止操作、Bot 管理员通知、小时执行数量类似 AI 活群模型、搜索节奏与账号上限、小时 / 天跳过、小时 / 天抖动、入群前非目标浏览、入群后安全浏览和 AI 活跃群等后续任务联动 |
+| 用户补充细节覆盖 | 已覆盖主/备用独立客户端元数据、机场订阅自动代理、订阅格式识别、每节点容量配置、随机固定节点、节点不通切换下一个健康节点、全订阅不通停止操作、Bot 管理员通知、小时执行数量类似 AI 活群模型、搜索节奏与账号上限、小时 / 天跳过、小时 / 天抖动、实时 pacing / random 不调用 LLM、入群前非目标浏览、入群后安全浏览、授权指纹配置与远端观测分离和 AI 活跃群等后续任务联动 |
 | 功能设计 | 已定义任务类型、机器人、关键词、目标群、公开排名规则推导、执行模式、环境栈、warmup、小时执行量、搜索节奏与账号上限、执行链路、入群后策略、后续任务联动和灰度 |
-| 前端状态 | 已定义创建向导、预检、任务列表、任务详情、小时执行状态、节奏与账号上限状态、协议样本状态、出口 IP 状态和风控告警 |
+| 前端状态 | 已定义创建向导、预检、运行中编辑影响预览、任务列表、任务详情、小时执行状态、节奏与账号上限状态、协议样本状态、出口 IP 状态、Clash 保存 / 同步状态、授权指纹配置 / 远端观测状态和风控告警 |
 | 后端 / API / worker | 已定义 schema、planner、executor、parser、stats、worker 边界、执行锁和异常处理 |
 | 数据流转 | 已定义新增表、Action payload/result、Task stats、OperationTarget 引用、协议样本、出口 IP 观测、节点容量、故障切换审计、管理员通知状态、小时执行 stats、pacing decision、排名观察快照和 linked task ready pool 投递 |
 | 权限安全 | 已要求任务创建权限、代理管理权限、审计、session 加密、环境栈硬校验和关键词明文禁止落日志 |
-| 边界场景 | 已覆盖 warmup、proxy_dead、proxy_node_unreachable、airport_all_nodes_unavailable、admin_notification_failed、search_join_hourly_blocked、exit_ip_changed、client_metadata_invalid、bot_blocked、FloodWait、目标缺失、join approval / captcha 和机器人结构变化 |
+| 边界场景 | 已覆盖 warmup、proxy_dead、proxy_node_unreachable、airport_all_nodes_unavailable、admin_notification_failed、search_join_hourly_blocked、exit_ip_changed、client_metadata_pending_effect、client_metadata_observed_mismatch、client_metadata_unobservable、bot_blocked、FloodWait、目标缺失、join approval / captcha 和机器人结构变化 |
 | QA 验收 | 已定义后端、前端、灰度三层验收口径 |
-| 仍需用户拍板 | 第一家代理供应商、首版真实目标机器人账号、灰度目标群、关键词样本和真实样本采集账号 |
+| 仍需用户拍板 | 首版真实目标机器人账号、灰度目标群、关键词样本、真实样本采集账号和灰度账号范围 |
+
+### 21.1 完整梳理缺口处理矩阵
+
+| 复核项 | 缺口 / 易混点 | PRD 收口 |
+| --- | --- | --- |
+| 任务命名 | “搜索自动入群”容易让运营误解为只要未入群才执行 | 用户可见统一为“搜索目标群点击任务”；账号已在群内也必须执行搜索、目标点击 / 确认，成功事实写 `membership_observed` |
+| 找不到目标 | 只写“翻页匹配”不足以说明失败终止条件 | 默认最多翻 70 页；找满仍未命中写 `target_not_in_results` 和 `pages_exhausted=true`，该搜索目标群点击任务自动停止 |
+| 非目标浏览 | “假装点击其他结果”容易被实现成全点或误加入 | 非目标浏览只允许 `button_effect=navigate_only`，不得加入、关注、外跳或点击 `join_candidate/external/unknown`；pre + post 总数默认不超过 3，并写入 action result |
+| 节奏配置 | 每账号总上限、每日上限、间隔天数、小时 / 天跳过和抖动可能被通用任务误用 | `pacing_config` 是 search_join 专属；创建 / 编辑页只在 `search_join_group` 展示这些字段；planner 先执行账号 / 关键词 / 任务日限额，再做小时补量 |
+| 随机决策 | 实时 pacing / random decision 如果调 LLM 会不可复现且增加失败面 | 实时路径禁止调用 AI Gateway、AI Provider 和 `task_center/ai_generator.py`；只允许规则、配置、seeded random 和持久化 `search_join_pacing_decisions` |
+| Clash 配置 | 系统设置保存订阅地址容易被误报为代理池可用 | 系统设置只保存一个全局 Clash 订阅；保存、解析、同步、健康检查和授权槽位绑定分阶段展示；健康节点数为 0 或同步失败不能作为候选代理池 |
+| 账号代理 | 单账号代理配置容易被放回系统设置或只按账号粒度保存 | 账号代理在“账号面具 > 账号代理”配置，粒度为 `account_id + developer_app_id/api_id + authorization_id/session_role`；同一槽位只允许一个 active 代理和一个 observed exit IP |
+| 授权指纹 | “修改指纹配置”容易被误报成远端授权设备已立即改变 | 授权指纹在“账号面具 > 授权指纹”配置；保存只写配置和审计，只影响下一次连接 / 重登 / 新 session 初始化；远端显示必须来自授权设备快照 |
+| 远端观测 | Telegram 快照缺字段时不能判断一致或失败 | 一致性状态增加 `unobservable`；页面必须展示缺失字段，不能显示 `observed_matched` 或“远端已更新” |
+| 首版代理路径 | “独享静态住宅 IP 必选”和用户给的 Clash 订阅配置存在冲突 | 首版落地 provider 为 `airport_clash`；独享静态住宅 IP 是节点质量目标和采购路线，不阻塞当前 Clash 订阅灰度 |
+| 全节点不可用 | 只写“节点不可用”不足以约束 action、小时 stats 和任务状态 | action 写 `skipped + airport_all_nodes_unavailable`；小时 stats 为 `blocked`；任务按 `all_nodes_down_policy` 暂停或保持 running 但不补量，并发送管理员脱敏通知 |
+| 登录体验 | 登录不支持回车会导致运营误以为提交无响应 | 主 PRD 要求验证码、2FA、登录确认表单支持 Enter 回车提交，并复用点击主按钮逻辑；本专项依赖账号授权资产流程提供同等体验 |
+| 线上验收 | 本地测试、CI 或发布健康不能证明真实业务动作成功 | 真实 Clash 同步、出口观测、远端授权快照刷新和 Zhengzhou 3 账号线上搜索加入测试必须分别产出生产证据；未取证前只能写 `unproven` |
 
 ## 22. 未来扩展
 
@@ -1784,3 +1828,4 @@ AI 活跃群联动 126 个账号待冷却 / 64 个已进入 ready pool
 |2026-07-04|v0.16|Codex（代理粒度复核）|曾按 `account_id + developer_app_id/api_id + authorization_id/session_role` 讨论代理和授权指纹同粒度绑定；该口径已被 v0.17 覆盖，不能作为当前实现依据。|
 |2026-07-04|v0.17|Codex（授权槽位级代理定稿）|按用户最新口径完整收口：系统设置只保存一个全局 Clash 订阅地址；“账号面具”一级菜单承载授权槽位级代理和授权指纹配置；同一账号不同 TG 开发者应用、session key 和主 / 备用授权槽位可以使用不同代理和不同指纹；修改指纹配置只影响下一次连接 / 重登 / 新 session 初始化，不声明远端授权设备立即变更。|
 |2026-07-04|v0.18|Codex（PRD 缺口复核）|补齐系统设置页 Clash 配置入口验收文字；修正示例配置和区域一致性口径，默认由关键词允许矩阵与风险评分决定，不再强制账号区域、设备语言和代理出口国家三者硬相等；强化“配置指纹已保存”不等于“远端已观测一致”。|
+|2026-07-04|v0.19|Codex（PRD 完整梳理）|按主线程和子代理复核补齐缺口：主 PRD 任务类型表新增 `search_join_group`；系统设置 / 账号面具 / 风控中心代理权属拆成全局 Clash 订阅、授权槽位代理绑定、代理健康处置三层；首版代理路径定为 `airport_clash`；补齐远端观测 `unobservable`、观测刷新 API、运行中节奏编辑影响预览、概率 / 抖动字段范围、全节点不可用 action / 小时 / task 三层状态，以及实时 pacing / random 不调用 AI Gateway 的验收。|

@@ -557,11 +557,13 @@ export function AccountAuthorizationAssetsPanel({
                 value={loginForm.code}
                 placeholder="验证码"
                 onChange={(event) => setLoginForm({ ...loginForm, code: event.target.value })}
+                onPressEnter={verifyStandbyLogin}
               />
               <Input.Password
                 value={loginForm.password_2fa}
                 placeholder="2FA 密码（如需要）"
                 onChange={(event) => setLoginForm({ ...loginForm, password_2fa: event.target.value })}
+                onPressEnter={verifyStandbyLogin}
               />
               <Button type="primary" loading={loginLoading} onClick={verifyStandbyLogin}>完成备用授权登录</Button>
             </>

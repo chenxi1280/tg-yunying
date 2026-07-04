@@ -217,6 +217,7 @@ export type AccountEnvironmentBinding = {
   observed_system_version: string;
   observed_app_version: string;
   observed_api_id: number;
+  observed_missing_fields: string[];
   lang_code: string;
   system_lang_code: string;
   lang_pack: string;

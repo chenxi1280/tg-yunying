@@ -492,6 +492,7 @@ export function AppModals() {
                   <Input
                     value={accountLoginForm.code}
                     onChange={(event) => setAccountLoginForm((current) => ({ ...current, code: event.target.value, error: '' }))}
+                    onPressEnter={submitAccountLoginCode}
                     placeholder="输入 Telegram 收到的验证码"
                     autoFocus
                   />
@@ -513,6 +514,7 @@ export function AppModals() {
                   <Input.Password
                     value={accountLoginForm.password_2fa}
                     onChange={(event) => setAccountLoginForm((current) => ({ ...current, password_2fa: event.target.value, error: '' }))}
+                    onPressEnter={submitAccountLoginPassword}
                     placeholder="输入 Telegram 2FA 密码"
                     autoFocus
                   />

@@ -131,6 +131,7 @@ def test_global_proxy_airport_subscription(
         session.commit()
         return tested
     except ValueError as exc:
+        session.commit()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

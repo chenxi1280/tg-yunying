@@ -1,14 +1,27 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import json
+import re
+import urllib.parse
+import urllib.request
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
+import yaml
+from sqlalchemy import delete
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ProxyAirportSubscription
+from app.models import ProxyAirportNode, ProxyAirportSubscription
 from app.schemas.account_environment import ProxyAirportSubscriptionOut, ProxyAirportSubscriptionUpdate
-from app.security import encrypt_secret
+from app.security import decrypt_secret, encrypt_secret
 from app.services._common import _now, audit
+
+MAX_SUBSCRIPTION_BYTES = 5 * 1024 * 1024
+NODE_SKIP_RE = re.compile(r"(剩余|套餐|到期|官网|流量|expire|traffic)", re.IGNORECASE)
+SubscriptionFetcher = Callable[[str], str]
 
 
 def mask_subscription_url(url: str) -> str:
@@ -39,8 +52,13 @@ def update_proxy_airport_subscription(
     row.subscription_url_ciphertext = encrypt_secret(payload.subscription_url)
     row.subscription_url_preview = mask_subscription_url(payload.subscription_url)
     row.sync_status = "configured"
+    row.node_count = 0
+    row.healthy_node_count = 0
+    row.last_sync_at = None
     row.last_error = ""
     row.updated_at = _now()
+    if row.id is not None:
+        _delete_subscription_nodes(session, row)
     session.flush()
     audit(
         session,
@@ -55,22 +73,212 @@ def update_proxy_airport_subscription(
 
 
 def mark_proxy_airport_subscription_tested(session: Session, *, tenant_id: int, actor: str) -> ProxyAirportSubscriptionOut:
+    return sync_proxy_airport_subscription(session, tenant_id=tenant_id, actor=actor)
+
+
+def sync_proxy_airport_subscription(
+    session: Session,
+    *,
+    tenant_id: int,
+    actor: str,
+    fetcher: SubscriptionFetcher | None = None,
+) -> ProxyAirportSubscriptionOut:
     row = _active_subscription(session, tenant_id)
     if row is None or not row.subscription_url_ciphertext:
         raise ValueError("clash_subscription_not_configured")
-    row.sync_status = "test_pending"
-    row.updated_at = _now()
-    session.flush()
+    try:
+        raw = (fetcher or fetch_subscription)(_decrypt_subscription_url(row))
+        nodes = parsed_proxy_nodes(raw)
+        _replace_subscription_nodes(session, row, nodes)
+        row.sync_status = "synced"
+        row.node_count = len(nodes)
+        row.healthy_node_count = 0
+        row.last_error = ""
+        row.last_sync_at = _now()
+        row.updated_at = _now()
+        session.flush()
+    except ValueError as exc:
+        _record_sync_failure(session, row, actor, str(exc))
+        raise
+    except OSError as exc:
+        _record_sync_failure(session, row, actor, "proxy_airport_subscription_fetch_failed")
+        raise ValueError("proxy_airport_subscription_fetch_failed") from exc
     audit(
         session,
         tenant_id=tenant_id,
         actor=actor,
-        action="测试全局 Clash 订阅",
+        action="同步全局 Clash 订阅",
         target_type="proxy_airport_subscription",
         target_id=str(row.id),
-        detail=f"status={row.sync_status}",
+        detail=f"nodes={row.node_count}; healthy={row.healthy_node_count}",
     )
     return _subscription_out(row)
+
+
+def fetch_subscription(url: str) -> str:
+    request = urllib.request.Request(url, headers={"User-Agent": "tg-yunying-clash-sync/1.0"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        raw = response.read(MAX_SUBSCRIPTION_BYTES + 1)
+    if len(raw) > MAX_SUBSCRIPTION_BYTES:
+        raise ValueError("subscription_response_too_large")
+    return raw.decode("utf-8", errors="replace")
+
+
+def parsed_proxy_nodes(raw: str) -> list[dict[str, Any]]:
+    text = _subscription_text(raw)
+    configs = _structured_proxy_configs(text) if _looks_structured(text) else _uri_proxy_configs(text)
+    nodes = [_node_record(index, item) for index, item in enumerate(configs, start=1)]
+    if not nodes:
+        raise ValueError("no_supported_proxy_nodes")
+    return nodes
+
+
+def _structured_proxy_configs(text: str) -> list[dict[str, Any]]:
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ValueError("invalid_clash_subscription_yaml") from exc
+    items = loaded if isinstance(loaded, list) else loaded.get("proxies") if isinstance(loaded, dict) else None
+    if not isinstance(items, list):
+        raise ValueError("clash_subscription_missing_proxies")
+    return [_normalized_structured_config(item) for item in items if _usable_structured_config(item)]
+
+
+def _uri_proxy_configs(text: str) -> list[dict[str, Any]]:
+    configs: list[dict[str, Any]] = []
+    for line in [item.strip() for item in text.splitlines()]:
+        if not line or "://" not in line or NODE_SKIP_RE.search(line):
+            continue
+        config = _parse_proxy_uri(line, len(configs) + 1)
+        if config is not None:
+            configs.append(config)
+    if not configs:
+        raise ValueError("no_supported_proxy_nodes")
+    return configs
+
+
+def _parse_proxy_uri(uri: str, index: int) -> dict[str, Any] | None:
+    scheme = uri.split(":", 1)[0].lower()
+    if scheme in {"trojan", "anytls", "vless"}:
+        return _base_uri_config(uri, scheme, index)
+    if scheme == "vmess":
+        return _vmess_uri_config(uri, index)
+    if scheme == "ss":
+        return _shadowsocks_uri_config(uri, index)
+    return None
+
+
+def _base_uri_config(uri: str, protocol: str, index: int) -> dict[str, Any]:
+    parsed = urllib.parse.urlsplit(uri)
+    port = int(parsed.port or 0)
+    if not parsed.hostname or not port:
+        raise ValueError("invalid_proxy_node")
+    query = urllib.parse.parse_qs(parsed.query)
+    config = {
+        "name": _sanitize_name(urllib.parse.unquote(parsed.fragment or f"{protocol}-{index:03d}")),
+        "type": protocol,
+        "server": parsed.hostname,
+        "port": port,
+    }
+    credential_field = "uuid" if protocol == "vless" else "password"
+    config[credential_field] = urllib.parse.unquote(parsed.username or "")
+    if _first(query, "sni"):
+        config["sni"] = _first(query, "sni")
+    if _first(query, "type"):
+        config["network"] = _first(query, "type")
+    return config
+
+
+def _first(query: dict[str, list[str]], name: str) -> str:
+    values = query.get(name) or []
+    return urllib.parse.unquote(values[0]) if values else ""
+
+
+def _node_label(protocol: str, index: int) -> str:
+    return f"{protocol}-{index:03d}"
+
+
+def _validate_host_port(config: dict[str, Any]) -> dict[str, Any]:
+    host = str(config.get("server") or config.get("host") or "").strip()
+    port = int(config.get("port") or 0)
+    if not host or port <= 0:
+        raise ValueError("invalid_proxy_node")
+    config["server"] = host
+    config["port"] = port
+    return config
+
+
+def _config_from_structured(item: Any) -> dict[str, Any]:
+    config = dict(item)
+    config["name"] = _sanitize_name(config["name"])
+    config["type"] = str(config["type"]).strip().lower()
+    return _validate_host_port(config)
+
+
+def _vmess_uri_config(uri: str, index: int) -> dict[str, Any] | None:
+    data = json.loads(_decode_base64_text(uri.split("://", 1)[1]))
+    config = {
+        "name": _sanitize_name(data.get("ps") or _node_label("vmess", index)),
+        "type": "vmess",
+        "server": data.get("add"),
+        "port": int(data.get("port") or 0),
+        "uuid": data.get("id"),
+        "alterId": int(data.get("aid") or 0),
+        "cipher": "auto",
+    }
+    return _validate_host_port(config) if config["uuid"] else None
+
+
+def _shadowsocks_uri_config(uri: str, index: int) -> dict[str, Any] | None:
+    parsed = urllib.parse.urlsplit(uri)
+    userinfo = urllib.parse.unquote(parsed.username or "")
+    if ":" not in userinfo:
+        userinfo = _decode_base64_text(userinfo)
+    if ":" not in userinfo:
+        return None
+    cipher, password = userinfo.split(":", 1)
+    return _validate_host_port({
+        "name": _sanitize_name(urllib.parse.unquote(parsed.fragment or _node_label("ss", index))),
+        "type": "ss",
+        "server": parsed.hostname or "",
+        "port": int(parsed.port or 0),
+        "cipher": cipher,
+        "password": password,
+    })
+
+
+def _replace_subscription_nodes(session: Session, row: ProxyAirportSubscription, nodes: list[dict[str, Any]]) -> None:
+    _delete_subscription_nodes(session, row)
+    for node in nodes:
+        session.add(
+            ProxyAirportNode(
+                tenant_id=row.tenant_id,
+                subscription_id=row.id,
+                node_key=node["node_key"],
+                node_name=node["node_name"],
+                protocol=node["protocol"],
+                proxy_host=node["proxy_host"],
+                proxy_port=int(node["proxy_port"]),
+                node_config_ciphertext=node["node_config_ciphertext"],
+                status="unknown",
+            )
+        )
+
+
+def _record_sync_failure(session: Session, row: ProxyAirportSubscription, actor: str, error: str) -> None:
+    row.sync_status = "failed"
+    row.node_count = 0
+    row.healthy_node_count = 0
+    row.last_error = error
+    row.last_sync_at = _now()
+    row.updated_at = _now()
+    _delete_subscription_nodes(session, row)
+    session.flush()
+    audit(session, tenant_id=row.tenant_id, actor=actor, action="同步全局 Clash 订阅失败", target_type="proxy_airport_subscription", target_id=str(row.id), detail=error)
+
+
+def _delete_subscription_nodes(session: Session, row: ProxyAirportSubscription) -> None:
+    session.execute(delete(ProxyAirportNode).where(ProxyAirportNode.tenant_id == row.tenant_id, ProxyAirportNode.subscription_id == row.id))
 
 
 def _active_subscription(session: Session, tenant_id: int) -> ProxyAirportSubscription | None:
@@ -109,9 +317,69 @@ def _subscription_out(row: ProxyAirportSubscription) -> ProxyAirportSubscription
     )
 
 
+def _decrypt_subscription_url(row: ProxyAirportSubscription) -> str:
+    url = decrypt_secret(row.subscription_url_ciphertext) or ""
+    if not url:
+        raise ValueError("clash_subscription_not_configured")
+    return url
+
+
+def _subscription_text(raw: str) -> str:
+    if "://" in raw or _looks_structured(raw):
+        return raw
+    decoded = _decode_base64_text(raw)
+    return decoded if decoded.strip() else raw
+
+
+def _decode_base64_text(raw: str) -> str:
+    compact = "".join(raw.strip().split())
+    padded = compact + "=" * (-len(compact) % 4)
+    try:
+        return base64.b64decode(padded, validate=False).decode("utf-8", errors="replace")
+    except binascii.Error:
+        return ""
+
+
+def _looks_structured(text: str) -> bool:
+    stripped = text.lstrip()
+    return stripped.startswith(("{", "[")) or "proxies:" in text
+
+
+def _usable_structured_config(item: Any) -> bool:
+    return isinstance(item, dict) and bool(item.get("name")) and bool(item.get("type")) and not NODE_SKIP_RE.search(str(item.get("name") or ""))
+
+
+def _normalized_structured_config(item: Any) -> dict[str, Any]:
+    return _config_from_structured(item)
+
+
+def _node_record(index: int, config: dict[str, Any]) -> dict[str, str]:
+    return {
+        "node_key": f"{index:03d}-{_sanitize_key(config['name'])}",
+        "node_name": _sanitize_name(config["name"]),
+        "protocol": str(config["type"]).strip().lower()[:40],
+        "proxy_host": str(config["server"]).strip(),
+        "proxy_port": str(int(config["port"])),
+        "node_config_ciphertext": encrypt_secret(json.dumps(config, ensure_ascii=False, sort_keys=True)),
+    }
+
+
+def _sanitize_name(raw: Any) -> str:
+    name = str(raw or "").strip()[:120]
+    return name or "proxy-node"
+
+
+def _sanitize_key(raw: Any) -> str:
+    key = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(raw or "").strip().lower()).strip("-")
+    return (key or "proxy-node")[:120]
+
+
 __all__ = [
+    "fetch_subscription",
     "get_proxy_airport_subscription",
     "mark_proxy_airport_subscription_tested",
     "mask_subscription_url",
+    "parsed_proxy_nodes",
+    "sync_proxy_airport_subscription",
     "update_proxy_airport_subscription",
 ]

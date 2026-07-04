@@ -85,6 +85,7 @@ class AccountEnvironmentBindingOut(BaseModel):
     observed_system_version: str = ""
     observed_app_version: str = ""
     observed_api_id: int = 0
+    observed_missing_fields: list[str] = []
     lang_code: str
     system_lang_code: str
     lang_pack: str

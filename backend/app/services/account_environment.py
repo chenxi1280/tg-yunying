@@ -13,6 +13,7 @@ from app.models import (
     TgAccountAuthorization,
     TgAccountAuthorizationSnapshot,
 )
+from app.security import decrypt_secret
 from app.schemas.account_environment import AccountEnvironmentBindingOut, AccountEnvironmentBindingPatch
 from app.services._common import _now, audit
 
@@ -135,6 +136,7 @@ def _environment_out(
         observed_system_version=snapshot.system_version if snapshot else "",
         observed_app_version=snapshot.app_version if snapshot else "",
         observed_api_id=snapshot.api_id if snapshot else 0,
+        observed_missing_fields=_observed_missing_fields(snapshot),
         lang_code=binding.lang_code if binding else "zh",
         system_lang_code=binding.system_lang_code if binding else "zh-CN",
         lang_pack=binding.lang_pack if binding else "",
@@ -150,6 +152,46 @@ def _observed_snapshot(session: Session, authorization: TgAccountAuthorization) 
     api_id = int(authorization.developer_app_api_id_snapshot or 0)
     if api_id <= 0:
         return None
+    scoped = _observed_snapshot_for_authorization_scope(session, authorization, api_id)
+    if scoped is not None:
+        return scoped
+    candidates = _observed_snapshot_candidates(session, authorization, api_id)
+    authorization_hash = _authorization_hash(authorization)
+    if authorization_hash:
+        return _snapshot_by_authorization_hash(candidates, authorization_hash)
+    if authorization.is_current or authorization.role == "primary":
+        return next((snapshot for snapshot in candidates if snapshot.is_current_session), None)
+    return None
+
+
+def _observed_snapshot_for_authorization_scope(
+    session: Session,
+    authorization: TgAccountAuthorization,
+    api_id: int,
+) -> TgAccountAuthorizationSnapshot | None:
+    if authorization.id is None:
+        return None
+    stmt = (
+        select(TgAccountAuthorizationSnapshot)
+        .where(
+            TgAccountAuthorizationSnapshot.tenant_id == authorization.tenant_id,
+            TgAccountAuthorizationSnapshot.account_id == authorization.account_id,
+            TgAccountAuthorizationSnapshot.authorization_id == authorization.id,
+            TgAccountAuthorizationSnapshot.developer_app_id == authorization.developer_app_id,
+            TgAccountAuthorizationSnapshot.session_role == authorization.role,
+            TgAccountAuthorizationSnapshot.api_id == api_id,
+            TgAccountAuthorizationSnapshot.status == "active",
+        )
+        .order_by(TgAccountAuthorizationSnapshot.scanned_at.desc(), TgAccountAuthorizationSnapshot.id.desc())
+    )
+    return session.scalar(stmt.limit(1))
+
+
+def _observed_snapshot_candidates(
+    session: Session,
+    authorization: TgAccountAuthorization,
+    api_id: int,
+) -> list[TgAccountAuthorizationSnapshot]:
     stmt = (
         select(TgAccountAuthorizationSnapshot)
         .where(
@@ -160,7 +202,35 @@ def _observed_snapshot(session: Session, authorization: TgAccountAuthorization) 
         )
         .order_by(TgAccountAuthorizationSnapshot.is_current_session.desc(), TgAccountAuthorizationSnapshot.scanned_at.desc(), TgAccountAuthorizationSnapshot.id.desc())
     )
-    return session.scalar(stmt.limit(1))
+    return list(session.scalars(stmt).all())
+
+
+def _snapshot_by_authorization_hash(
+    candidates: list[TgAccountAuthorizationSnapshot],
+    authorization_hash: str,
+) -> TgAccountAuthorizationSnapshot | None:
+    return next((snapshot for snapshot in candidates if _snapshot_authorization_hash(snapshot) == authorization_hash), None)
+
+
+def _authorization_hash(authorization: TgAccountAuthorization) -> str:
+    value = authorization.telegram_authorization_hash_ciphertext or ""
+    return decrypt_secret(value) or value
+
+
+def _snapshot_authorization_hash(snapshot: TgAccountAuthorizationSnapshot) -> str:
+    value = snapshot.authorization_hash_ciphertext or ""
+    return decrypt_secret(value) or value
+
+
+def _observed_missing_fields(snapshot: TgAccountAuthorizationSnapshot | None) -> list[str]:
+    if snapshot is None:
+        return []
+    fields = {
+        "device_model": snapshot.device_model,
+        "system_version": snapshot.system_version,
+        "app_version": snapshot.app_version,
+    }
+    return [field for field, value in fields.items() if not str(value or "").strip()]
 
 
 def _require_authorization(
@@ -351,6 +421,8 @@ def _consistency_status(
         return "pending_effect"
     expected = (binding.device_model, binding.system_version, binding.app_version)
     observed = (snapshot.device_model, snapshot.system_version, snapshot.app_version)
+    if any(not str(value or "").strip() for value in observed):
+        return "unobservable"
     return "observed_matched" if expected == observed else "observed_mismatch"
 
 
@@ -369,4 +441,8 @@ def _row_matches(row: AccountEnvironmentBindingOut, needle: str) -> bool:
     return any(needle in str(value or "").lower() for value in values)
 
 
-__all__ = ["EFFECT_BOUNDARY", "list_account_environment_bindings", "patch_account_environment_binding"]
+__all__ = [
+    "EFFECT_BOUNDARY",
+    "list_account_environment_bindings",
+    "patch_account_environment_binding",
+]
