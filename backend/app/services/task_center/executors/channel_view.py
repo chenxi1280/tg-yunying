@@ -56,7 +56,7 @@ def build_plan(session: Session, task: Task) -> int:
         ),
     )
     if not actions:
-        task.last_error = task.last_error or "没有可新增的有效浏览账号"
+        task.last_error = _empty_view_plan_message(session, task, config, messages, total_target)
         return 0
     return _create_view_actions(session, task, channel, config, actions, execution_date, daily_target, total_target)
 
@@ -216,6 +216,32 @@ def _message_expired(message: ChannelMessage, config: dict) -> bool:
     if active_days <= 0 or not message.published_at:
         return False
     return message.published_at < _now() - timedelta(days=active_days)
+
+
+def _empty_view_plan_message(
+    session: Session,
+    task: Task,
+    config: dict,
+    messages: list[ChannelMessage],
+    total_target: int,
+) -> str:
+    if _view_targets_inactive_or_reached(session, task, config, messages, total_target):
+        return ""
+    return task.last_error or "没有可新增的有效浏览账号"
+
+
+def _view_targets_inactive_or_reached(
+    session: Session,
+    task: Task,
+    config: dict,
+    messages: list[ChannelMessage],
+    total_target: int,
+) -> bool:
+    if not messages:
+        return False
+    if all(_message_expired(message, config) for message in messages):
+        return True
+    return all(_completed_view_count(session, task, message) >= total_target for message in messages)
 
 
 __all__ = ["build_plan"]

@@ -55,7 +55,7 @@ def build_plan(session: Session, task: Task) -> int:
     record_channel_capacity_warning(task, "点赞", target_per_message, len(accounts))
     actions = _like_actions_for_messages(session, task, config, messages, accounts, reactions, target_per_message)
     if not actions:
-        task.last_error = task.last_error or "没有可新增的有效点赞账号"
+        task.last_error = _empty_like_plan_message(session, task, messages, target_per_message)
         return 0
     return _create_like_actions(session, task, channel, config, actions)
 
@@ -104,6 +104,40 @@ def _like_actions_for_messages(
         actions.extend((message, available_accounts[index].id, message_reactions[index]) for index in range(quantity))
         coverage_remaining = max(0, coverage_remaining - quantity)
     return actions
+
+
+def _empty_like_plan_message(
+    session: Session,
+    task: Task,
+    messages: list[ChannelMessage],
+    target_per_message: int,
+) -> str:
+    if _all_like_targets_reached(session, task, messages, target_per_message):
+        return ""
+    return task.last_error or "没有可新增的有效点赞账号"
+
+
+def _all_like_targets_reached(
+    session: Session,
+    task: Task,
+    messages: list[ChannelMessage],
+    target_per_message: int,
+) -> bool:
+    target = max(1, int(target_per_message or 1))
+    if not messages:
+        return False
+    return all(_like_account_count(session, task, message) >= target for message in messages)
+
+
+def _like_account_count(session: Session, task: Task, message: ChannelMessage) -> int:
+    account_ids = channel_message_account_ids(
+        session,
+        task,
+        "like_message",
+        message,
+        include_skipped_codes=LIKE_UNAVAILABLE_SKIP_CODES,
+    )
+    return len(account_ids)
 
 
 def _reaction_plan(reactions: list[str], quantity: int, reaction_type: str = "random") -> list[str]:
