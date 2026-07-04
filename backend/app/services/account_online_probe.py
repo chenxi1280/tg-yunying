@@ -23,15 +23,23 @@ logger = logging.getLogger(__name__)
 MAX_PROBE_FAILURE_DETAIL_LENGTH = 500
 
 
-def probe_due_online_states(session: Session, *, limit: int = 100, now: datetime | None = None) -> int:
+def probe_due_online_states(
+    session: Session,
+    *,
+    limit: int = 100,
+    now: datetime | None = None,
+    commit_each: bool = False,
+) -> int:
     current_time = now or _now()
     states = _due_probe_states(session, limit=limit, now=current_time)
     for state in states:
         account = session.get(TgAccount, state.account_id)
         if not account or account.deleted_at is not None:
             _mark_probe_blocked(state, current_time, "account_missing", "账号不存在或已删除")
+            _commit_probe_progress(session, commit_each)
             continue
         _probe_account_state(session, account, state, current_time)
+        _commit_probe_progress(session, commit_each)
     return len(states)
 
 
@@ -81,6 +89,11 @@ def _probe_exception_detail(exc: Exception) -> str:
 
 def _is_auth_key_duplicated(exc: Exception) -> bool:
     return exc.__class__.__name__ == "AuthKeyDuplicatedError"
+
+
+def _commit_probe_progress(session: Session, commit_each: bool) -> None:
+    if commit_each:
+        session.commit()
 
 
 def _mark_probe_online(account: TgAccount, state: TgAccountOnlineState, now: datetime, health_score: float, detail: str) -> None:

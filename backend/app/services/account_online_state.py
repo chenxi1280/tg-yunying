@@ -14,6 +14,7 @@ from app.timezone import as_beijing
 
 ONLINE_TASK_STATUSES = {"running", "paused"}
 ONLINE_AVAILABLE_STATUSES = {"online", "warming", "recovering"}
+ACCOUNT_ONLINE_PROBE_BATCH_LIMIT = 20
 GLOBAL_KEEPALIVE_EXCLUDED_STATUSES = {
     AccountStatus.PENDING_LOGIN.value,
     AccountStatus.WAITING_CODE.value,
@@ -101,8 +102,9 @@ def drain_account_online_keepalive(session_factory, limit: int = 100) -> int:
     with session_factory() as session:
         record_worker_heartbeat(session, process_type="account-online", metadata={"limit": limit})
         reconcile_runtime_online_sources(session)
-        batch_limit = max(1, limit)
-        processed = probe_due_online_states(session, limit=batch_limit)
+        session.commit()
+        batch_limit = min(max(1, limit), ACCOUNT_ONLINE_PROBE_BATCH_LIMIT)
+        processed = probe_due_online_states(session, limit=batch_limit, commit_each=True)
         if processed < batch_limit:
             processed += mark_stale_online_states(session, limit=batch_limit)
         session.commit()

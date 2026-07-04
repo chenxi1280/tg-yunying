@@ -101,10 +101,25 @@ def test_drain_account_online_keepalive_defers_stale_marking_when_probe_batch_is
     calls: list[str] = []
 
     monkeypatch.setattr("app.services.account_online_state.reconcile_runtime_online_sources", lambda _session: calls.append("reconcile") or 0)
-    monkeypatch.setattr("app.services.account_online_state.probe_due_online_states", lambda _session, limit: calls.append(f"probe:{limit}") or limit)
+    monkeypatch.setattr("app.services.account_online_state.probe_due_online_states", lambda _session, limit, commit_each=False: calls.append(f"probe:{limit}:commit_each={commit_each}") or limit)
     monkeypatch.setattr("app.services.account_online_state.mark_stale_online_states", lambda _session, limit: calls.append(f"stale:{limit}") or 1)
 
     from app.services.account_online_state import drain_account_online_keepalive
 
     assert drain_account_online_keepalive(lambda: Session(engine), limit=3) == 3
-    assert calls == ["reconcile", "probe:3"]
+    assert calls == ["reconcile", "probe:3:commit_each=True"]
+
+
+def test_drain_account_online_keepalive_caps_large_probe_batches(monkeypatch):
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    calls: list[str] = []
+
+    monkeypatch.setattr("app.services.account_online_state.reconcile_runtime_online_sources", lambda _session: calls.append("reconcile") or 0)
+    monkeypatch.setattr("app.services.account_online_state.probe_due_online_states", lambda _session, limit, commit_each=False: calls.append(f"probe:{limit}:commit_each={commit_each}") or limit)
+    monkeypatch.setattr("app.services.account_online_state.mark_stale_online_states", lambda _session, limit: calls.append(f"stale:{limit}") or 1)
+
+    from app.services.account_online_state import drain_account_online_keepalive
+
+    assert drain_account_online_keepalive(lambda: Session(engine), limit=500) == 20
+    assert calls == ["reconcile", "probe:20:commit_each=True"]
